@@ -28,6 +28,7 @@ mcmc = MCMC(
     num_warmup=1000,
     num_samples=2000,
     num_chains=4,
+    seed=2026,
 )
 result = mcmc.run(model, x, observations)
 
@@ -47,6 +48,14 @@ adaptation when `mass_matrix` is set to `"diagonal"` or `"dense"`
 (the default `"identity"` disables mass-matrix adaptation). Chains
 run sequentially: the driver loops over `num_chains`, and within
 each chain warmup and sampling advance one leapfrog step at a time.
+Each chain derives an independent local generator from `seed`; that
+stream controls initialization, momentum, tree direction, subtree
+selection, and acceptance. Thus repeated runs with the same seed are
+reproducible without changing Torch's global RNG state. Pass a CPU
+`torch.Generator` as `generator=` instead when successive calls should
+advance a caller-owned stream. `seed` and `generator` are mutually
+exclusive. Step-size and mass-matrix adaptation start fresh for every
+chain and every call to `run`.
 
 The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site
 [split `R̂` and effective sample size (Vehtari et al.

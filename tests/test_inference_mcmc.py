@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 
 from quivers.dsl import loads
@@ -29,6 +30,7 @@ from quivers.inference.mcmc.adapt import (
     find_reasonable_step_size,
 )
 from quivers.inference.mcmc import HMCKernel, MCMC, NUTSKernel
+from quivers.inference.registry import LatentRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +193,7 @@ def test_mcmc_result_carries_diagnostics() -> None:
     assert "mu" in result.ess
     assert result.acceptance_rates.shape == (2,)
     assert result.divergence_counts.shape == (2,)
+    assert result.divergence_counts.dtype == torch.int64
 
 
 def test_mcmc_init_strategy_zero_is_deterministic() -> None:
@@ -215,6 +218,221 @@ def test_mcmc_init_strategy_zero_is_deterministic() -> None:
     a = _run()
     b = _run()
     assert torch.allclose(a, b)
+
+
+def test_mcmc_seed_is_reproducible_chain_local_and_preserves_global_rng() -> None:
+    model = _normal_normal_model()
+    observations = {"y": torch.linspace(0.0, 1.0, 20)}
+
+    def _run(seed: int) -> torch.Tensor:
+        driver = MCMC(
+            kernel=HMCKernel(
+                step_size=0.05,
+                num_steps=3,
+                mass_matrix="identity",
+                adapt_step_size=False,
+                adapt_mass_matrix=False,
+            ),
+            num_warmup=2,
+            num_samples=8,
+            num_chains=2,
+            seed=seed,
+        )
+        return driver.run(model, torch.zeros(1, 1), observations).samples["mu"]
+
+    torch.manual_seed(9876)
+    state_before = torch.random.get_rng_state().clone()
+    first = _run(41)
+    state_after = torch.random.get_rng_state()
+    repeated = _run(41)
+    changed = _run(42)
+
+    assert torch.equal(state_before, state_after)
+    assert torch.equal(first, repeated)
+    assert not torch.equal(first, changed)
+    assert not torch.equal(first[0], first[1])
+
+
+def test_mcmc_generator_reproduces_from_equal_generator_states() -> None:
+    model = _normal_normal_model()
+    observations = {"y": torch.linspace(0.0, 1.0, 20)}
+
+    def _run(generator: torch.Generator) -> torch.Tensor:
+        driver = MCMC(
+            kernel=HMCKernel(
+                step_size=0.05,
+                num_steps=2,
+                adapt_step_size=False,
+                adapt_mass_matrix=False,
+            ),
+            num_warmup=1,
+            num_samples=5,
+            num_chains=2,
+            generator=generator,
+        )
+        return driver.run(model, torch.zeros(1, 1), observations).samples["mu"]
+
+    first = _run(torch.Generator().manual_seed(123))
+    repeated = _run(torch.Generator().manual_seed(123))
+    assert torch.equal(first, repeated)
+
+
+def test_mcmc_rejects_seed_and_generator_together() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        MCMC(
+            HMCKernel(),
+            num_warmup=1,
+            num_samples=1,
+            seed=1,
+            generator=torch.Generator(),
+        )
+
+
+def test_nuts_adaptation_is_fresh_per_chain_and_run() -> None:
+    model = _normal_normal_model()
+    observations = {"y": torch.linspace(0.0, 1.0, 20)}
+    kernel = NUTSKernel(
+        step_size=0.01,
+        max_tree_depth=2,
+        mass_matrix="diagonal",
+        adapt_step_size=True,
+        adapt_mass_matrix=True,
+    )
+    driver = MCMC(
+        kernel,
+        num_warmup=3,
+        num_samples=2,
+        num_chains=2,
+        init_strategy="zero",
+        seed=7,
+    )
+
+    driver.run(model, torch.zeros(1, 1), observations)
+    assert kernel._dual_avg is not None
+    assert kernel._dual_avg.step_count == 3
+    assert kernel._welford is not None
+    assert kernel._welford.n == 3
+    first_step_size = kernel.step_size
+
+    driver.run(model, torch.zeros(1, 1), observations)
+    assert kernel._dual_avg is not None
+    assert kernel._dual_avg.step_count == 3
+    assert kernel._welford is not None
+    assert kernel._welford.n == 3
+    assert kernel.step_size == first_step_size
+
+
+def test_mcmc_rejects_nonfinite_guide_initialization() -> None:
+    class _NonfiniteGuide:
+        def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+            del x
+            return {"mu": torch.randn(1) * float("nan")}
+
+    model = _normal_normal_model()
+    driver = MCMC(
+        HMCKernel(),
+        num_warmup=1,
+        num_samples=1,
+        num_chains=1,
+        init_strategy="guide",
+        seed=1,
+    )
+    torch.manual_seed(314)
+    state_before = torch.random.get_rng_state().clone()
+    with pytest.raises(ValueError, match="initial_position.*finite"):
+        driver.run(
+            model,
+            torch.zeros(1, 1),
+            {"y": torch.zeros(20)},
+            guide=_NonfiniteGuide(),  # type: ignore[arg-type]
+        )
+    assert torch.equal(torch.random.get_rng_state(), state_before)
+
+
+def test_hmc_and_nuts_reject_nonfinite_initial_positions() -> None:
+    model = _normal_normal_model()
+    observations = {"y": torch.zeros(20)}
+    registry = LatentRegistry.from_model(model, set(observations))
+    for kernel in (HMCKernel(), NUTSKernel()):
+        for value in (float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="initial_position.*finite"):
+                kernel.init(
+                    registry,
+                    model,
+                    torch.zeros(1, 1),
+                    observations,
+                    torch.tensor([value]),
+                )
+
+
+def test_nuts_propagates_divergence_from_nested_subtree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quivers.inference.mcmc.hmc as hmc_module
+    from quivers.inference.mcmc.hmc import _MassMatrix
+
+    calls = 0
+
+    def _leapfrog_with_nested_divergence(
+        z, p, grad, step_size, n_steps, potential, mass
+    ):
+        nonlocal calls
+        del step_size, n_steps, potential, mass
+        calls += 1
+        log_density = torch.tensor(0.0 if calls == 1 else -100.0)
+        return z + 1.0, p, log_density, grad
+
+    monkeypatch.setattr(hmc_module, "_leapfrog", _leapfrog_with_nested_divergence)
+    kernel = NUTSKernel(divergence_threshold=10.0, adapt_step_size=False)
+    kernel._mass = _MassMatrix(1, "identity")
+    kernel._set_generator(torch.Generator().manual_seed(0))
+    tree = kernel._build_tree(
+        torch.tensor([0.0]),
+        torch.tensor([1.0]),
+        torch.tensor([0.0]),
+        direction=1,
+        depth=1,
+        h0=0.0,
+        potential=object(),  # type: ignore[arg-type]
+        eps=1.0,
+    )
+
+    assert calls == 2
+    assert tree.diverged
+    assert not tree.turning
+
+
+def test_nuts_uturn_is_not_a_divergence(monkeypatch: pytest.MonkeyPatch) -> None:
+    import quivers.inference.mcmc.hmc as hmc_module
+    from quivers.inference.mcmc.hmc import _MassMatrix
+
+    calls = 0
+
+    def _leapfrog_with_uturn(z, p, grad, step_size, n_steps, potential, mass):
+        nonlocal calls
+        del step_size, n_steps, potential, mass
+        calls += 1
+        next_p = p if calls == 1 else -p
+        return z + 1.0, next_p, torch.tensor(0.0), grad
+
+    monkeypatch.setattr(hmc_module, "_leapfrog", _leapfrog_with_uturn)
+    kernel = NUTSKernel(divergence_threshold=10.0, adapt_step_size=False)
+    kernel._mass = _MassMatrix(1, "identity")
+    kernel._set_generator(torch.Generator().manual_seed(0))
+    tree = kernel._build_tree(
+        torch.tensor([0.0]),
+        torch.tensor([1.0]),
+        torch.tensor([0.0]),
+        direction=1,
+        depth=1,
+        h0=0.0,
+        potential=object(),  # type: ignore[arg-type]
+        eps=1.0,
+    )
+
+    assert calls == 2
+    assert tree.turning
+    assert not tree.diverged
 
 
 # ---------------------------------------------------------------------------

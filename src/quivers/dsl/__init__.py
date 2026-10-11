@@ -39,6 +39,7 @@ from quivers.dsl.compiler import Compiler, CompileError
 from quivers.dsl.constraints import Violation, check_constraints
 from quivers.dsl.emit import EmitError, module_to_source, static_argument_to_source
 from quivers.dsl.family_schemas import (
+    DISTRIBUTION_FAMILIES,
     FAMILY_ALIASES,
     family_parameter_names,
     family_parameterizations,
@@ -145,6 +146,7 @@ def load(
 
 
 __all__ = [
+    "DISTRIBUTION_FAMILIES",
     "FAMILY_ALIASES",
     "QIEC_STATEMENT_TYPES",
     "QVR_DEDUCTION_PROTOCOL",

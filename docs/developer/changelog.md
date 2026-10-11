@@ -4,6 +4,18 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.25.1] - 2026-10-09
+
+### Added
+
+- **Explicit MCMC random streams.** `MCMC` accepts either a reproducible `seed` or a caller-owned CPU `torch.Generator`, derives an independent local generator for every chain, and routes initialization, momentum, NUTS tree direction, multinomial subtree selection, and HMC acceptance through that stream without mutating Torch's global RNG state.
+
+### Fixed
+
+- **MCMC adaptation is independent across chains and runs.** Every chain now starts with fresh dual-averaging, mass-matrix, and adaptation state instead of inheriting the preceding chain's tuned state; reusing an `MCMC` driver also starts a fresh adaptation lifecycle.
+- **NUTS reports every divergent subtree.** U-turn termination and divergence are represented separately, divergence propagates from either child at every tree depth, and an ordinary U-turn is not counted as a divergence.
+- **MCMC initialization and diagnostics preserve their contracts.** Generated and guide-provided initial positions must be finite before sampling begins, and `MCMCResult.divergence_counts` is an integer tensor containing one post-warmup count per chain.
+
 ## [0.25.0] - 2026-10-07
 
 ### Added

@@ -186,6 +186,17 @@ class MCMCKernel(ABC):
     """
 
     is_adapting: bool = False
+    _generator: torch.Generator | None = None
+
+    def _set_generator(self, generator: torch.Generator) -> None:
+        """Install the chain-local random-number generator.
+
+        `MCMC` calls this before initializing each chain. Keeping the
+        generator on the kernel lets concrete kernels route momentum,
+        proposal-selection, and acceptance draws through one stream
+        without changing the public `step` signature.
+        """
+        self._generator = generator
 
     @abstractmethod
     def init(

@@ -262,7 +262,14 @@ class HMCKernel(MCMCKernel):
                 f"HMCKernel.init: initial_position must have shape "
                 f"({D},); got {tuple(initial_position.shape)}"
             )
+        if not torch.isfinite(initial_position).all():
+            raise ValueError(
+                "HMCKernel.init: initial_position must contain only finite values"
+            )
+        self.is_adapting = False
         self._mass = _MassMatrix(D, self._mass_kind)
+        self._dual_avg = None
+        self._welford = None
         if self._adapt_mass_matrix:
             self._welford = WelfordCovariance(
                 D, regularise=True, diagonal=(self._mass_kind == "diagonal")
@@ -275,7 +282,7 @@ class HMCKernel(MCMCKernel):
 
     def start_adaptation(self) -> None:
         super().start_adaptation()
-        if self._adapt_step_size and self._dual_avg is None:
+        if self._adapt_step_size:
             self._dual_avg = DualAveraging(
                 self._step_size, target_accept=self._target_accept
             )
@@ -305,7 +312,7 @@ class HMCKernel(MCMCKernel):
             state.grad_log_density = g0
         ld0 = state.log_density
         g0 = state.grad_log_density
-        p0 = self._mass.sample_momentum()
+        p0 = self._mass.sample_momentum(generator=self._generator)
         h0 = -ld0 + self._mass.kinetic(p0)
         eps = self.step_size
         z1, p1, ld1, g1 = _leapfrog(
@@ -318,8 +325,14 @@ class HMCKernel(MCMCKernel):
             log_accept = torch.tensor(-float("inf"))
         accept_prob = float(torch.exp(torch.clamp_max(log_accept, 0.0)))
         accept_prob = max(0.0, min(1.0, accept_prob))
-        diverged = bool(torch.abs(delta_h).item() > self._divergence_threshold)
-        if accept_prob >= 1.0 or torch.rand(()).item() < accept_prob:
+        diverged = bool(
+            not torch.isfinite(delta_h)
+            or torch.abs(delta_h).item() > self._divergence_threshold
+        )
+        if (
+            accept_prob >= 1.0
+            or torch.rand((), generator=self._generator).item() < accept_prob
+        ):
             new_position = z1.detach()
             new_log_density = ld1.detach()
             new_grad = g1.detach()
@@ -363,7 +376,8 @@ class _NUTSBuildTreeResult:
         "log_density_proposal",
         "log_weight",
         "n_proposals",
-        "terminated",
+        "turning",
+        "diverged",
         "sum_accept_prob",
         "n_accept_steps",
     )
@@ -380,7 +394,8 @@ class _NUTSBuildTreeResult:
         log_density_proposal: torch.Tensor,
         log_weight: float,
         n_proposals: int,
-        terminated: bool,
+        turning: bool,
+        diverged: bool,
         sum_accept_prob: float,
         n_accept_steps: int,
     ) -> None:
@@ -394,7 +409,8 @@ class _NUTSBuildTreeResult:
         self.log_density_proposal = log_density_proposal
         self.log_weight = log_weight
         self.n_proposals = n_proposals
-        self.terminated = terminated
+        self.turning = turning
+        self.diverged = diverged
         self.sum_accept_prob = sum_accept_prob
         self.n_accept_steps = n_accept_steps
 
@@ -492,7 +508,14 @@ class NUTSKernel(MCMCKernel):
                 f"NUTSKernel.init: initial_position must have shape "
                 f"({D},); got {tuple(initial_position.shape)}"
             )
+        if not torch.isfinite(initial_position).all():
+            raise ValueError(
+                "NUTSKernel.init: initial_position must contain only finite values"
+            )
+        self.is_adapting = False
         self._mass = _MassMatrix(D, self._mass_kind)
+        self._dual_avg = None
+        self._welford = None
         if self._adapt_mass_matrix:
             self._welford = WelfordCovariance(
                 D, regularise=True, diagonal=(self._mass_kind == "diagonal")
@@ -505,7 +528,7 @@ class NUTSKernel(MCMCKernel):
 
     def start_adaptation(self) -> None:
         super().start_adaptation()
-        if self._adapt_step_size and self._dual_avg is None:
+        if self._adapt_step_size:
             self._dual_avg = DualAveraging(
                 self._step_size, target_accept=self._target_accept
             )
@@ -522,7 +545,6 @@ class NUTSKernel(MCMCKernel):
         z: torch.Tensor,
         p: torch.Tensor,
         grad: torch.Tensor,
-        log_u: float,
         direction: int,
         depth: int,
         h0: float,
@@ -547,7 +569,10 @@ class NUTSKernel(MCMCKernel):
             accept_prob = math.exp(min(0.0, -energy_err))
             if not math.isfinite(accept_prob):
                 accept_prob = 0.0
-            terminated = (log_u + energy_err) > self._divergence_threshold
+            diverged = (
+                not math.isfinite(energy_err)
+                or abs(energy_err) > self._divergence_threshold
+            )
             n_proposals = 1
             return _NUTSBuildTreeResult(
                 z_minus=z1,
@@ -560,21 +585,19 @@ class NUTSKernel(MCMCKernel):
                 log_density_proposal=ld1,
                 log_weight=log_weight,
                 n_proposals=n_proposals,
-                terminated=terminated,
+                turning=False,
+                diverged=diverged,
                 sum_accept_prob=accept_prob,
                 n_accept_steps=1,
             )
-        left = self._build_tree(
-            z, p, grad, log_u, direction, depth - 1, h0, potential, eps
-        )
-        if left.terminated:
+        left = self._build_tree(z, p, grad, direction, depth - 1, h0, potential, eps)
+        if left.turning or left.diverged:
             return left
         if direction == -1:
             right = self._build_tree(
                 left.z_minus,
                 left.p_minus,
                 left.grad_minus,
-                log_u,
                 direction,
                 depth - 1,
                 h0,
@@ -592,7 +615,6 @@ class NUTSKernel(MCMCKernel):
                 left.z_plus,
                 left.p_plus,
                 left.grad_plus,
-                log_u,
                 direction,
                 depth - 1,
                 h0,
@@ -621,18 +643,19 @@ class NUTSKernel(MCMCKernel):
             prob_right = math.exp(log_w_right - log_total)
         else:
             prob_right = 0.0
-        if torch.rand(()).item() < prob_right:
+        if torch.rand((), generator=self._generator).item() < prob_right:
             z_prop = right.z_proposal
             ld_prop = right.log_density_proposal
         else:
             z_prop = left.z_proposal
             ld_prop = left.log_density_proposal
         assert self._mass is not None
-        terminated = (
-            left.terminated
-            or right.terminated
+        turning = (
+            left.turning
+            or right.turning
             or _uturn(z_minus, z_plus, p_minus, p_plus, self._mass)
         )
+        diverged = left.diverged or right.diverged
         return _NUTSBuildTreeResult(
             z_minus=z_minus,
             p_minus=p_minus,
@@ -644,7 +667,8 @@ class NUTSKernel(MCMCKernel):
             log_density_proposal=ld_prop,
             log_weight=log_total,
             n_proposals=left.n_proposals + right.n_proposals,
-            terminated=terminated,
+            turning=turning,
+            diverged=diverged,
             sum_accept_prob=left.sum_accept_prob + right.sum_accept_prob,
             n_accept_steps=left.n_accept_steps + right.n_accept_steps,
         )
@@ -662,12 +686,9 @@ class NUTSKernel(MCMCKernel):
             state.grad_log_density = g
         ld = state.log_density
         g = state.grad_log_density
-        p = self._mass.sample_momentum()
+        p = self._mass.sample_momentum(generator=self._generator)
         h0 = float(-ld + self._mass.kinetic(p))
         eps = self.step_size
-        # Slice variable for multinomial sampling; use Hoffman-Gelman's
-        # numerical-stability trick of subtracting the energy at start.
-        log_u = -float("inf")  # Unused in pure-multinomial variant.
         z_minus = z
         p_minus = p
         grad_minus = g
@@ -681,16 +702,16 @@ class NUTSKernel(MCMCKernel):
         terminated = False
         sum_accept_prob = 0.0
         n_accept_steps = 0
-        subtree_diverged = False
-        subtree_n_proposals = 0
+        diverged = False
         while not terminated and depth < self._max_depth:
-            direction = 1 if torch.rand(()).item() > 0.5 else -1
+            direction = (
+                1 if torch.rand((), generator=self._generator).item() > 0.5 else -1
+            )
             if direction == -1:
                 subtree = self._build_tree(
                     z_minus,
                     p_minus,
                     grad_minus,
-                    log_u,
                     direction,
                     depth,
                     h0,
@@ -705,7 +726,6 @@ class NUTSKernel(MCMCKernel):
                     z_plus,
                     p_plus,
                     grad_plus,
-                    log_u,
                     direction,
                     depth,
                     h0,
@@ -717,7 +737,7 @@ class NUTSKernel(MCMCKernel):
                 grad_plus = subtree.grad_plus
             sum_accept_prob += subtree.sum_accept_prob
             n_accept_steps += subtree.n_accept_steps
-            if not subtree.terminated:
+            if not subtree.turning and not subtree.diverged:
                 # Multinomial choice between current proposal and
                 # the new subtree. ``log_total = log(e^a + e^b)``
                 # via the numerically-stable logaddexp form:
@@ -734,15 +754,16 @@ class NUTSKernel(MCMCKernel):
                     prob_new = math.exp(subtree.log_weight - log_total)
                 else:
                     prob_new = 0.0
-                if torch.rand(()).item() < prob_new:
+                if torch.rand((), generator=self._generator).item() < prob_new:
                     z_proposal = subtree.z_proposal
                     log_density_proposal = subtree.log_density_proposal
                 log_weight = log_total
-            terminated = subtree.terminated or _uturn(
-                z_minus, z_plus, p_minus, p_plus, self._mass
+            diverged = diverged or subtree.diverged
+            terminated = (
+                subtree.turning
+                or subtree.diverged
+                or _uturn(z_minus, z_plus, p_minus, p_plus, self._mass)
             )
-            subtree_diverged = subtree.terminated
-            subtree_n_proposals = subtree.n_proposals
             depth += 1
         accept_prob = (
             sum_accept_prob / float(n_accept_steps) if n_accept_steps > 0 else 0.0
@@ -753,7 +774,6 @@ class NUTSKernel(MCMCKernel):
             _, new_grad = potential.value_and_grad(z_proposal)
         else:
             new_grad = g
-        diverged = subtree_diverged and subtree_n_proposals == 1
         if self.is_adapting and self._dual_avg is not None:
             self._dual_avg.update(accept_prob)
         if self.is_adapting and self._welford is not None:

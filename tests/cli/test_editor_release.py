@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 from pathlib import Path
 import re
 import runpy
 import tomllib
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -189,11 +192,21 @@ def _pygments_classes() -> dict[tuple[int, str], str]:
 
 def _docs_hook_namespace() -> dict[str, object]:
     """Load the MkDocs lexer while containing its deliberate monkey-patch."""
-    import markdown.extensions.codehilite as codehilite
     import pygments.lexers
-    import pymdownx.highlight as highlight
 
-    targets = (pygments.lexers, codehilite, highlight)
+    targets = [pygments.lexers]
+    try:
+        import markdown.extensions.codehilite as codehilite
+
+        targets.append(codehilite)
+    except ImportError:
+        pass
+    try:
+        import pymdownx.highlight as highlight
+
+        targets.append(highlight)
+    except ImportError:
+        pass
     originals = {
         (module, "get_lexer_by_name"): getattr(module, "get_lexer_by_name", None)
         for module in targets
@@ -301,4 +314,21 @@ def test_docs_highlighter_uses_the_authoritative_lexer() -> None:
     """MkDocs must not carry a second, drift-prone QVR vocabulary."""
     from quivers.dsl.pygments_lexer import QvrLexer
 
+    assert _docs_hook_namespace()["QvrLexer"] is QvrLexer
+
+
+def test_docs_highlighter_check_tolerates_missing_docs_extras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dev test environment need not install the documentation toolchain."""
+    from quivers.dsl.pygments_lexer import QvrLexer
+
+    real_import = builtins.__import__
+
+    def _without_docs_extras(name, *args, **kwargs):
+        if name.startswith(("markdown", "pymdownx")):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _without_docs_extras)
     assert _docs_hook_namespace()["QvrLexer"] is QvrLexer
