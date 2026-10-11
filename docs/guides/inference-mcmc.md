@@ -32,8 +32,8 @@ mcmc = MCMC(
 )
 result = mcmc.run(model, x, observations)
 
-print(result.r_hat)             # per-site split R-hat (Vehtari et al. 2021)
-print(result.ess)               # effective sample size
+print(result.r_hat)             # rank-normalized folded split R-hat
+print(result.ess)               # rank-normalized bulk ESS
 print(result.divergence_counts) # per-chain divergence count
 print(result.total_divergences) # sum across chains
 samples = result.samples        # dict[str, Tensor] of shape (chains, draws, ...)
@@ -58,9 +58,12 @@ exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
 The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site
-[split `R̂` and effective sample size (Vehtari et al.
-2021)](https://doi.org/10.1214/20-BA1221) via `r_hat` and `ess`,
-per-chain divergence counts via `divergence_counts` (with
+[rank-normalized folded `R̂` and bulk effective sample size
+(Vehtari et al. 2021)](https://doi.org/10.1214/20-BA1221) via
+`r_hat` and `ess`. Each `r_hat` coordinate is the conservative
+maximum of the rank-normalized and folded split statistics, while
+`ess` is the rank-normalized cross-chain bulk ESS. The result also
+exposes per-chain divergence counts via `divergence_counts` (with
 `total_divergences` summing across chains), and posterior log
 densities per draw via `log_densities`.
 

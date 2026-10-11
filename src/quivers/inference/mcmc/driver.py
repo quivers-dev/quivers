@@ -17,15 +17,16 @@ chains across a real multi-core / multi-GPU workload, wrap an
 
 The result is an `MCMCResult` carrying per-site posterior
 draws (already pushed through the constraint bijectors so they
-sit in the model's natural support) plus split-:math:`\\hat R`
-(Vehtari et al. 2021, `doi:10.1214/20-BA1221
-<https://doi.org/10.1214/20-BA1221>`_) and effective sample size
-diagnostics computed across chains.
+sit in the model's natural support) plus rank-normalized folded
+split-:math:`\\hat R` (Vehtari et al. 2021,
+`doi:10.1214/20-BA1221 <https://doi.org/10.1214/20-BA1221>`_) and
+bulk effective sample size diagnostics computed across chains.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Literal
 
 import torch
@@ -67,11 +68,13 @@ class MCMCResult:
         Per-chain post-warmup divergence count. Shape
         ``(num_chains,)``.
     r_hat : dict[str, torch.Tensor]
-        Per-site split-:math:`\\hat R`. Each site's tensor has the
-        site's shape (one scalar per coordinate).
+        Per-site rank-normalized folded split-:math:`\\hat R`.
+        Each coordinate reports the conservative maximum of the
+        rank-normalized and folded statistics. Each site's tensor
+        has the site's shape (one scalar per coordinate).
     ess : dict[str, torch.Tensor]
-        Per-site effective sample size. Same shape convention as
-        `r_hat`.
+        Per-site rank-normalized bulk effective sample size pooled
+        across chains. Same shape convention as `r_hat`.
     num_warmup : int
     num_samples : int
     """
@@ -98,64 +101,149 @@ class MCMCResult:
         return int(self.divergence_counts.sum().item())
 
 
-def _split_rhat_1d(chains: torch.Tensor) -> torch.Tensor:
-    """Split-:math:`\\hat R` along axis 0 (chains) × axis 1
-    (samples) of a 2-axis tensor. Returns a scalar.
-
-    Implementation follows Vehtari et al. 2021 equation 3; we split
-    each chain in half so the within-chain variance estimator picks
-    up trend pathologies.
-    """
-    n_chains, n_samples = chains.shape
-    half = n_samples // 2
-    if half < 2:
-        return torch.tensor(float("nan"))
-    split_chains = torch.cat([chains[:, :half], chains[:, half : 2 * half]], dim=0)
-    m = float(split_chains.shape[0])
-    n = float(split_chains.shape[1])
-    chain_means = split_chains.mean(dim=1)
-    grand_mean = chain_means.mean()
-    B = n * ((chain_means - grand_mean) ** 2).sum() / (m - 1)
-    chain_vars = split_chains.var(dim=1, unbiased=True)
-    W = chain_vars.mean()
-    var_hat = ((n - 1) / n) * W + B / n
-    if W.item() <= 0:
-        return torch.tensor(float("nan"))
-    return torch.sqrt(var_hat / W)
+def _nan_scalar(chains: torch.Tensor) -> torch.Tensor:
+    """Return a floating NaN on the input tensor's device."""
+    return torch.tensor(float("nan"), dtype=torch.float64, device=chains.device)
 
 
-def _ess_1d(chains: torch.Tensor) -> torch.Tensor:
-    """Effective sample size for one coordinate across chains.
+def _split_chains(chains: torch.Tensor) -> torch.Tensor:
+    """Split each chain in half, dropping the middle draw when odd."""
+    half = chains.shape[1] // 2
+    return torch.cat([chains[:, :half], chains[:, -half:]], dim=0)
 
-    Uses the standard initial monotone sequence estimator
-    (Geyer 1992) with the Vehtari et al. 2021 correction for
-    cross-chain pooling.
-    """
-    n_chains, n_samples = chains.shape
-    if n_samples < 4:
-        return torch.tensor(float("nan"))
+
+def _rank_normalize(chains: torch.Tensor) -> torch.Tensor:
+    """Apply average ranks and Blom's normal-score transform."""
+    flat = chains.reshape(-1).to(dtype=torch.float64)
+    order = torch.argsort(flat, stable=True)
+    sorted_values = flat[order]
+    ranks = torch.empty_like(flat)
+
+    starts = (
+        torch.cat(
+            [
+                torch.ones(1, dtype=torch.bool, device=flat.device),
+                sorted_values[1:] != sorted_values[:-1],
+            ]
+        )
+        .nonzero(as_tuple=False)
+        .flatten()
+    )
+    ends = torch.cat([starts[1:], torch.tensor([flat.numel()], device=flat.device)])
+    for start, end in zip(starts.tolist(), ends.tolist(), strict=True):
+        # Average of the one-indexed ranks from start + 1 through end.
+        ranks[order[start:end]] = (start + 1 + end) / 2
+
+    probabilities = (ranks - 3.0 / 8.0) / (flat.numel() + 1.0 / 4.0)
+    normal_scores = math.sqrt(2.0) * torch.erfinv(2.0 * probabilities - 1.0)
+    return normal_scores.reshape(chains.shape)
+
+
+def _rhat(chains: torch.Tensor) -> torch.Tensor:
+    """Potential scale reduction factor for already transformed chains."""
+    n_samples = chains.shape[1]
+    chain_means = chains.mean(dim=1)
+    between = n_samples * chain_means.var(unbiased=True)
+    within = chains.var(dim=1, unbiased=True).mean()
+    return torch.sqrt((between / within + n_samples - 1) / n_samples)
+
+
+def _autocov(chains: torch.Tensor) -> torch.Tensor:
+    """Biased per-chain autocovariance estimates for every lag."""
+    n_samples = chains.shape[1]
     centered = chains - chains.mean(dim=1, keepdim=True)
-    # Compute autocorrelations via FFT, averaged over chains.
     pad = 1
     while pad < 2 * n_samples:
         pad *= 2
-    f = torch.fft.rfft(centered, n=pad, dim=1)
-    acov = torch.fft.irfft(f * torch.conj(f), n=pad, dim=1)[:, :n_samples]
-    acov = acov / torch.arange(n_samples, 0, -1, dtype=acov.dtype)
-    var_plus = acov.mean(dim=0)
-    if var_plus[0].item() <= 0:
-        return torch.tensor(float("nan"))
-    rho = var_plus / var_plus[0]
-    # Sum pairs until the sum-of-pairs goes non-positive.
-    sum_rho = torch.tensor(-1.0)
-    t = 0
-    while t < n_samples - 1:
-        pair = rho[t] + rho[t + 1] if t + 1 < n_samples else rho[t]
-        if pair.item() <= 0:
-            break
-        sum_rho = sum_rho + 2 * pair
-        t += 2
-    return torch.tensor(float(n_chains * n_samples) / max(1.0, float(sum_rho)))
+    spectrum = torch.fft.rfft(centered, n=pad, dim=1)
+    covariance = torch.fft.irfft(spectrum * torch.conj(spectrum), n=pad, dim=1)[
+        :, :n_samples
+    ]
+    return covariance / n_samples
+
+
+def _ess(chains: torch.Tensor) -> torch.Tensor:
+    """Cross-chain ESS with Geyer's initial monotone sequence."""
+    if (chains.max() - chains.min()).item() < torch.finfo(torch.float64).resolution:
+        return torch.tensor(
+            float(chains.numel()), dtype=torch.float64, device=chains.device
+        )
+
+    n_chains, n_samples = chains.shape
+    autocovariance = _autocov(chains)
+    chain_means = chains.mean(dim=1)
+    mean_variance = autocovariance[:, 0].mean() * n_samples / (n_samples - 1.0)
+    pooled_variance = mean_variance * (n_samples - 1.0) / n_samples
+    if n_chains > 1:
+        pooled_variance += chain_means.var(unbiased=True)
+
+    rho = torch.zeros(n_samples, dtype=torch.float64, device=chains.device)
+    rho_even = torch.tensor(1.0, dtype=torch.float64, device=chains.device)
+    rho[0] = rho_even
+    rho_odd = 1.0 - (mean_variance - autocovariance[:, 1].mean()) / pooled_variance
+    rho[1] = rho_odd
+
+    lag = 1
+    while lag < n_samples - 3 and (rho_even + rho_odd).item() > 0.0:
+        rho_even = (
+            1.0 - (mean_variance - autocovariance[:, lag + 1].mean()) / pooled_variance
+        )
+        rho_odd = (
+            1.0 - (mean_variance - autocovariance[:, lag + 2].mean()) / pooled_variance
+        )
+        if (rho_even + rho_odd).item() >= 0.0:
+            rho[lag + 1] = rho_even
+            rho[lag + 2] = rho_odd
+        lag += 2
+
+    max_lag = lag - 2
+    if rho_even.item() > 0.0:
+        rho[max_lag + 1] = rho_even
+
+    lag = 1
+    while lag <= max_lag - 2:
+        previous_pair = rho[lag - 1] + rho[lag]
+        next_pair = rho[lag + 1] + rho[lag + 2]
+        if next_pair.item() > previous_pair.item():
+            rho[lag + 1] = previous_pair / 2.0
+            rho[lag + 2] = previous_pair / 2.0
+        lag += 2
+
+    total = n_chains * n_samples
+    tau = -1.0 + 2.0 * rho[: max_lag + 1].sum() + rho[max_lag + 1 : max_lag + 2].sum()
+    tau = torch.maximum(
+        tau,
+        torch.tensor(
+            1.0 / math.log10(total), dtype=torch.float64, device=chains.device
+        ),
+    )
+    if torch.isnan(rho).any().item():
+        return _nan_scalar(chains)
+    return total / tau
+
+
+def _split_rhat_1d(chains: torch.Tensor) -> torch.Tensor:
+    """Rank-normalized folded split R-hat for one coordinate.
+
+    The reported value is the conservative maximum of bulk
+    rank-normalized split R-hat and the folded statistic, which is
+    sensitive to scale and tail disagreement.
+    """
+    if chains.shape[0] < 2 or chains.shape[1] < 4 or torch.isnan(chains).any().item():
+        return _nan_scalar(chains)
+
+    split = _split_chains(chains)
+    bulk = _rhat(_rank_normalize(split))
+    folded = torch.abs(split - torch.quantile(split, 0.5))
+    tail = _rhat(_rank_normalize(folded))
+    return torch.maximum(bulk, tail)
+
+
+def _ess_1d(chains: torch.Tensor) -> torch.Tensor:
+    """Rank-normalized bulk ESS for one coordinate across chains."""
+    if chains.shape[1] < 4 or torch.isnan(chains).any().item():
+        return _nan_scalar(chains)
+    return _ess(_rank_normalize(_split_chains(chains)))
 
 
 def _diagnostics(
