@@ -129,8 +129,8 @@ A healthy SVI run often shows an upward ELBO trend and decreasing gradient norms
 
 [`MCMCResult`](../../api/inference/predictive.md) carries three first-class diagnostic fields:
 
-- `result.r_hat[site]`: rank-normalised split-R-hat per site.
-- `result.ess[site]`: bulk effective sample size per site.
+- `result.r_hat[site]`: maximum of rank-normalised and folded split-R-hat per site.
+- `result.ess[site]`: rank-normalised cross-chain bulk effective sample size per site.
 - `result.total_divergences`: integer count of divergent transitions across all chains.
 
 The mapping from observation to fix:

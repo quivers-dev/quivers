@@ -70,7 +70,7 @@ with ArviZ-compatible groups.
 ```python
 import arviz as az
 from quivers.diagnostics import (
-    to_datatree, compare, posterior_predictive_check,
+    to_datatree, compare, loo, posterior_predictive_check,
 )
 
 idata_a = to_datatree(
@@ -83,8 +83,16 @@ idata_a = to_datatree(
 )
 idata_b = to_datatree(fit_b.posterior, ...)
 
-# PSIS-LOO ranked comparison + stacking weights.
-print(compare({"a": idata_a, "b": idata_b}))
+# Pointwise PSIS-LOO on ArviZ's canonical log scale.
+loo_result = loo(idata_a, pointwise=True, var_name="y")
+print(loo_result.elpd_i, loo_result.pareto_k)
+
+# Ranked comparison + full-precision stacking weights.
+print(compare(
+    {"a": idata_a, "b": idata_b},
+    var_name="y",
+    round_to="none",
+))
 
 # Posterior-predictive p-value on a chosen test statistic.
 result = posterior_predictive_check(
@@ -107,6 +115,13 @@ delegates to
 [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html)
 with stacking weights
 ([Yao et al. 2018](https://doi.org/10.1214/17-BA1091)).
+Its `round_to` parameter is ArviZ's rounding policy:
+`"auto"` is the display-oriented default, an integer selects decimal
+places, and `"none"` preserves full numeric precision. The
+[`loo` wrapper](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.loo)
+delegates PSIS to [`arviz.loo`](https://python.arviz.org/en/stable/api/generated/arviz.loo.html);
+with `pointwise=True`, its `elpd_i` and `pareto_k` arrays contain
+one value per observation without filtering nonfinite Pareto estimates.
 [`posterior_predictive_check`](../api/diagnostics/predictive_checks.md#quivers.diagnostics.predictive_checks.posterior_predictive_check)
 computes the canonical
 [posterior-predictive p-value](https://en.wikipedia.org/wiki/Posterior_predictive_p-value)

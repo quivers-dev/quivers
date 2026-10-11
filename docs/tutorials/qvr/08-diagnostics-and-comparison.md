@@ -72,7 +72,7 @@ print(summary)
 
 The columns to watch:
 
-- `r_hat`: rank-normalised split-R-hat. Should be < 1.01 for every site.
+- `r_hat`: maximum of rank-normalised and folded split-R-hat. Should be < 1.01 for every site.
 - `ess_bulk`, `ess_tail`: bulk and tail effective sample sizes. Judge them against the Monte Carlo precision needed for the estimand; this example runs two chains.
 - `mcse_mean`, `mcse_sd`: Monte Carlo standard error of the posterior mean and standard deviation. Should be small relative to the posterior `sd`.
 
@@ -114,16 +114,23 @@ Suppose you also fit a quadratic-in-`x` version of the same regression. Each fit
 
 <!-- python: skip -->
 ```python
-from quivers.diagnostics import compare
+from quivers.diagnostics import compare, loo
 
-table = compare({"linear": tree_linear, "quadratic": tree_quad})
+linear_loo = loo(tree_linear, pointwise=True, var_name="y")
+print(linear_loo.elpd_i, linear_loo.pareto_k)
+
+table = compare(
+    {"linear": tree_linear, "quadratic": tree_quad},
+    var_name="y",
+    round_to="none",
+)
 print(table)
 ```
 
-[`compare`](../../api/diagnostics/index.md) delegates to [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html), which runs PSIS-LOO ([Vehtari, Gelman & Gabry, 2017](https://doi.org/10.1007/s11222-016-9696-4)) on each fit and ranks them by expected log-pointwise predictive density (`elpd_loo`). The `dse` column gives the standard error of the difference relative to the top model. Quivers uses ArviZ's default stacking method unless `method=` selects another weighting scheme.
+[`compare`](../../api/diagnostics/index.md) delegates to [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html), which runs PSIS-LOO ([Vehtari, Gelman & Gabry, 2017](https://doi.org/10.1007/s11222-016-9696-4)) on each fit and ranks them by expected log-pointwise predictive density (`elpd`). The `dse` column gives the standard error of the difference relative to the reference model. Quivers uses ArviZ's default stacking method unless `method=` selects another weighting scheme. Pass `round_to="none"` when model weights will be used numerically rather than displayed.
 
-Inspect `p_loo` as an estimate of effective model complexity, but do not apply a
-fixed `p_loo / N` cutoff: its interpretation depends on the model and data.
+Inspect `p` as an estimate of effective model complexity, but do not apply a
+fixed `p / N` cutoff: its interpretation depends on the model and data.
 The actionable PSIS diagnostic is the observation-level Pareto shape. A
 reported `k > 0.7` indicates that the importance-sampling approximation needs
 attention ([Vehtari, Simpson, Gelman, Yao & Gabry, 2024](https://doi.org/10.48550/arXiv.1507.02646)); follow ArviZ's warning and consider a moment-matching,

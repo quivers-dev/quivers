@@ -21,7 +21,7 @@ from quivers.diagnostics.arviz_io import (
     to_datatree_any,
     to_datatree_from_svi,
 )
-from quivers.diagnostics.comparison import compare
+from quivers.diagnostics.comparison import compare, loo
 from quivers.diagnostics.predictive_checks import (
     STATISTICS,
     loo_pit,
@@ -33,6 +33,7 @@ __all__ = [
     "to_datatree_any",
     "to_datatree_from_svi",
     "compare",
+    "loo",
     "posterior_predictive_check",
     "loo_pit",
     "STATISTICS",

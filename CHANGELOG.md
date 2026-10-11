@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.25.2] - 2026-10-11
+
+### Added
+
+- **Pointwise PSIS-LOO is public.** `quivers.diagnostics.loo` delegates to ArviZ on its canonical log scale, supports `pointwise` and `var_name`, preserves every per-observation `elpd_i` and `pareto_k` value, and reports named errors for missing, ambiguous, or unknown log-likelihood variables.
+
+### Fixed
+
+- **MCMC convergence diagnostics follow the modern cross-chain definitions.** `MCMCResult.r_hat` now reports the conservative maximum of rank-normalized and folded split R-hat per coordinate, detecting both location and scale disagreement. `MCMCResult.ess` is explicitly the rank-normalized bulk ESS, with pooled autocorrelation that includes between-chain variance.
+- **Model-comparison precision is caller-controlled.** `quivers.diagnostics.compare` exposes ArviZ's `round_to`; `"none"` preserves full numeric precision, integers retain ArviZ's decimal-place semantics, and the option composes with every supported weighting method, `var_name`, and `reference`.
+
 ## [0.25.1] - 2026-10-09
 
 ### Added
