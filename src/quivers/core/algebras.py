@@ -5,10 +5,15 @@ structure that parameterizes composition in a V-enriched category:
 
     (g ∘ f)(a, c) = ⋁_b f(a, b) ⊗ g(b, c)
 
-Different algebras yield different categories of relations:
+Different operation pairs give different finite weighted contractions:
 
     - BooleanAlgebra:  {0,1} with ∧, ∨         → Rel (crisp relations)
-    - ProductFuzzyAlgebra:     [0,1] with ×, noisy-OR   → FuzzyRel (product t-norm)
+    - ProductFuzzyAlgebra: [0,1] with ×, noisy-OR → fuzzy weighted contraction
+
+The interface does not establish categorical laws. Associative matrix
+composition requires appropriate distributivity and reduction laws;
+the product/noisy-OR pair fails distributivity. ``join`` names the
+implemented reduction and need not be a lattice supremum.
 
 The enrichment determines composition, identity, marginalization, and
 quantification, all derived from the algebra's operations.
@@ -36,14 +41,13 @@ class CompositionRule(ABC):
     The hierarchy below this class is:
 
     * `CompositionRule` — the bare composition surface.
-    * `Semigroupoid` — adds the assumption that ⊗ is
-      associative, so composition forms a semigroupoid (a
-      category without identities).
-    * `Algebra` — adds identity (``unit`` / ``zero``),
-      a meet ⋀, a negation, and the full algebra-axiom
-      package. This is the level at which compact-closed
-      operations (``identity``, ``cup``, ``cap``, ``dagger``,
-      ``trace``) become well-defined.
+    * `Semigroupoid` — marks an intended associativity contract.
+      Associativity of scalar ``tensor_op`` alone does not establish
+      associativity of matrix composition; compatible reduction and
+      distributivity laws are also needed.
+    * `Algebra` — supplies ``unit`` / ``zero``, meet, and negation,
+      enabling the runtime's identity and compact-style operations.
+      Membership does not prove the mathematical laws of those operations.
 
     Operations that need identity check at runtime that the
     composition rule is at least a `Algebra`; a clear
@@ -107,15 +111,16 @@ class CompositionRule(ABC):
 
 
 class Semigroupoid(CompositionRule):
-    """A composition rule whose ``tensor_op`` is associative.
+    """A marker interface intended for associative composition rules.
 
     Semantically a `CompositionRule` with the marker
     promise of associativity. No identity, no compact-closed
     structure, no negation — those need `Algebra`.
 
-    Material implication composition (``a ⊗ b = 1 - a + a*b``,
-    ``⋁ = product``) is the canonical example: associative under
-    its ⊗, but no tensor satisfies ``f >> id == f`` for all f.
+    The marker does not check the contract. In particular, the
+    material-implication operation ``1 - a + a*b`` is not associative,
+    and associative scalar multiplication alone would not suffice
+    without the required reduction and distributivity laws.
     """
 
     pass

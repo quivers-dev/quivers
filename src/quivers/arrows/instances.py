@@ -50,11 +50,13 @@ def _iter_indices(shape: tuple[int, ...]):
 
 
 def _trace_v_rel(f: Morphism, C: SetObject) -> Morphism:
-    """Iterative algebra trace ``Tr^C : Hom(A⊗C, B⊗C) → Hom(A, B)``.
+    """Finite diagonal contraction ``Tr^C : Hom(A⊗C, B⊗C) → Hom(A, B)``.
 
-    Computed as ``trace(f)(a, b) = ⨁_c f((a, c), (b, c))`` — the
-    diagonal-on-C V-relation join. This is the canonical traced-
-    symmetric-monoidal trace on V-Rel (Joyal-Street-Verity 1996, §3).
+    Computes ``trace(f)(a, b) = ⨁_c f((a, c), (b, c))``. With a
+    commutative semiring or suitable quantale, this is the compact-closed
+    trace on weighted relations; the general trace axioms are described in
+    [Joyal et al. (1996)](<https://www.cambridge.org/core/journals/mathematical-proceedings-of-the-cambridge-philosophical-society/article/abs/traced-monoidal-categories/2BE85628D269D9FABAB41B6364E117C8>). The implementation performs the contraction for the
+    selected algebra, whose class membership alone does not prove the axioms.
     """
     if not isinstance(f.domain, ProductSet) or len(f.domain.components) != 2:
         raise TypeError(f"trace requires f : A⊗C → B⊗C; got domain {f.domain!r}")

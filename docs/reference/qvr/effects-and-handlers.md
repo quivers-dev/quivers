@@ -3,10 +3,17 @@
 An effect declaration gives names and types to requests. An instance gives one
 application of that interface a lexical identity. A computation's effect row
 then records the instances it may request from, and a handler interprets one
-instance. This separation is the **lexical-instance discipline (LID)**: two
-instances of `State[Int]` have the same interface but remain distinct effects.
+instance. Two instances of `State[Int]` have the same interface but remain distinct effects.
 
 ## Declare an interface
+
+An interface specifies the requests a service accepts, an
+instance as one particular service, and a handler as its implementation.
+Two integer state cells support the same `get` and `put` requests but
+hold distinct identities. Qualifying `left.get()` makes it clear which
+cell the computation asks about. An effect row naming both cells thus
+records two separate state dependencies.
+
 
 <!-- compile: qiec -->
 ```qvr
@@ -45,7 +52,7 @@ These interfaces are available without a source declaration:
 | `Compute[X, A]` | `apply(X) -> A` | process-local host computation |
 | `Param` | `get[A](String) -> A` | named learned-parameter lookup |
 
-`Search` is generated for a deduction or schema-backed parser because its
+`Search` is generated for a [deduction](../../guides/deduction.md#the-framework) or schema-backed parser because its
 choice arity depends on the elaborated system. Structural declarations create
 `Compute` instances; a caller normally encounters them through
 `Program.run`, not by writing the requests manually.
@@ -73,6 +80,14 @@ or introduces the same lexical name that a caller's tail might otherwise
 contain.
 
 ## Handler declarations
+
+In `robustify(8.0)` below, execution reaches `robust.shrink(8.0)` and
+hands that request to `half_weight`. The clause computes `4.0`, then
+`resume(4.0)` continues the suspended computation with `adjusted = 4.0`.
+The program returns `4.0`, and the handler's return clause passes it
+through. *Deep* handling means later requests in that resumed computation
+are handled by the same handler. [@plotkin2009handlers]
+
 
 A handler declares the interface it handles, an input and answer type, options,
 one return clause, and operation clauses:
@@ -118,6 +133,16 @@ implicit outer request.
 
 ### Resumption grades
 
+The [compositional effects guide](../../guides/effects.md#typeclass-hierarchy) relates sequencing to `bind`; the [computation reference](computations.md#handling-and-scoped-instances) shows where a handler enters the execution. Pyro’s [handler implementation walkthrough](https://pyro.ai/examples/effect_handlers.html#Implementing-new-effect-handlers-with-the-Messenger-API) provides a Python implementation to compare with QVR’s explicit resumption clauses. [@pyroEffects]
+
+A handler can stop the computation, continue it once, or explore
+several possible continuations. The grade records which behavior the
+clause promises. An abort has no continuation; a normal state read
+continues once; exhaustive search can continue once per alternative.
+Duplicating a continuation requires the corresponding permission because
+it may also duplicate subsequent requests.
+
+
 | Grade | Contract |
 | --- | --- |
 | `0` | the clause must not resume |
@@ -131,6 +156,12 @@ continues once normally uses `1`; an abort clause uses `0`.
 
 ## Scoped instances
 
+The following handler always answers `get` with `7` and ignores the
+value passed to `put`, so `local_read()` returns `7` even after `put(3)`.
+To implement a mutable cell, the `put` clause would instead pass its new
+value into the resumed computation for subsequent `get` requests.
+
+
 `with instance` creates a fresh lexical identity inside a computation:
 
 <!-- compile: qiec -->
@@ -139,7 +170,7 @@ effect State[S : Type]
     get : Unit -> S
     put : S -> Unit
 
-handler run_state for State[Int] : Int -> Int [coverage=total, forwards=none, implementation=authored]
+handler fixed_reply for State[Int] : Int -> Int [coverage=total, forwards=none, implementation=authored]
     return x =>
         return x
     get resumes 1 =>
@@ -149,7 +180,7 @@ handler run_state for State[Int] : Int -> Int [coverage=total, forwards=none, im
 
 define local_read() : Int !{} =
     with instance cell : State[Int] in
-        handle cell with run_state in
+        handle cell with fixed_reply in
             perform cell.put(3)
             let value <- perform cell.get()
             return value

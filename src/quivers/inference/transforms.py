@@ -31,8 +31,8 @@ Coverage
 * `NeuralSplineCouplingTransform`: monotone rational-quadratic
   spline coupling (Durkan, Bekasov, Murray, Papamakarios 2019,
   `doi:10.48550/arXiv.1906.04032 <https://doi.org/10.48550/arXiv.1906.04032>`_).
-  Strictly more expressive than affine coupling at the same
-  parameter budget.
+  Allows nonlinear monotone transformations within each coupling
+  layer. Expressiveness depends on the spline and network configuration.
 * `LULinearTransform`: LU-decomposed linear permutation
   (Kingma, Dhariwal 2018 Glow,
   `doi:10.48550/arXiv.1807.03039 <https://doi.org/10.48550/arXiv.1807.03039>`_).
@@ -257,8 +257,7 @@ class _MaskedLinear(nn.Linear):
 
 class MADE(nn.Module):
     """Masked Autoencoder for Distribution Estimation
-    (Germain, Gregor, Mnih, Larochelle 2015,
-    `doi:10.48550/arXiv.1502.03509 <https://doi.org/10.48550/arXiv.1502.03509>`_).
+    (Germain, Gregor, Murray, and Larochelle 2015) [Germain et al. (2015)](<https://proceedings.mlr.press/v37/germain15.html>).
 
     Outputs ``n_per_dim`` parameters per input coordinate. The
     masking guarantees that output parameters for coordinate ``j``

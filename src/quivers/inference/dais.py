@@ -10,15 +10,13 @@ parameters* trained by SVI. Concretely, every leapfrog operation
 is reparameterized through the momentum and position so gradients
 flow end-to-end through the trajectory.
 
-DAIS gives an *unbiased* lower-bound estimator of the model
-evidence (Geffner-Domke 2021,
-`doi:10.48550/arXiv.2102.07501
-<https://doi.org/10.48550/arXiv.2102.07501>`_; Zhang et al. 2021,
-`doi:10.48550/arXiv.2107.10211
-<https://doi.org/10.48550/arXiv.2107.10211>`_) that strictly
-dominates the base guide's ELBO for ``num_steps >= 1``. Combined
-with multimodal base guides (`AutoMixtureGuide`) it
-recovers multimodal posteriors that plain VI misses.
+The DAIS construction uses a variational bound on an extended target;
+see Zhang, Hsu, Li, Finn, and Grosse (2021),
+[Differentiable Annealed Importance Sampling and the Perils of Gradient
+Noise](https://proceedings.neurips.cc/paper_files/paper/2021/hash/a1a609f1ac109d0be28d8ae112db1bbb-Abstract.html).
+An estimate of that objective is not an unbiased estimate of log evidence.
+Adding transitions or a multimodal base guide does not guarantee that a
+particular fitted run improves on the base guide or recovers every mode.
 
 The implementation tracks the auxiliary "extended-target" form: a
 fresh momentum is sampled at the start of each transition and

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This example combines source and target branches in an encoder-decoder-shaped model ([Sutskever, Vinyals, and Le, 2014](https://doi.org/10.48550/arXiv.1409.3215)). Each branch contains parallel MLP-Normal kernels and feed-forward stages. A `cross` morphism merges paired source and target representations before a Categorical head. The source contains no self-attention, cross-attention, or causal mask.
+This example combines source and target branches in an encoder-decoder-shaped model [@sutskever2014sequence]. Each branch contains parallel MLP-Normal kernels and feed-forward stages. A `cross` morphism merges paired source and target representations before a Categorical head. The source contains no self-attention, cross-attention, or causal mask.
 
 ## QVR source
 
@@ -72,6 +72,18 @@ program seq2seq : Source * Target -> Target
 
 export seq2seq
 ```
+
+## Understanding the model
+
+The source and target branches encode different inputs into vectors. Their
+[parallel product](../guides/morphisms.md#tensor-product-the-operator) pairs those vectors, and `cross` learns how to combine them
+before the output distribution predicts a token. This explains why both input
+columns are needed and why their types must match the two branch domains.
+
+The runnable input supplies aligned token pairs as batch rows. Each prediction
+thus conditions on that supplied pair and any hidden values fixed during
+scoring. Generating a target sequence would require an additional loop that
+feeds previous target tokens back into the decoder and chooses its source context. Alammar illustrates [the Transformer decoder’s access to source and target positions](https://jalammar.github.io/illustrated-transformer/#the-decoder-side) [@alammar2018transformer].
 
 ## Walkthrough
 
@@ -220,7 +232,7 @@ print("divergences:", int(result.divergence_counts.sum()))
 
 ## Categorical perspective
 
-The seq2seq model denotes a Kleisli morphism $\mathrm{Source} \times \mathrm{Target} \to \mathcal{G}(\mathrm{Target})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The encoder and decoder are independent Kleisli morphisms over distinct objects; the [tensor product](https://ncatlab.org/nlab/show/tensor+product) `@` is their strong-monoidal product, and `cross` is the merge that closes the bilinear pairing into a single combined latent. The Categorical head puts a finite-set codomain on the composite, and `observe` is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) closing the LM likelihood.
+The seq2seq model denotes a Kleisli morphism $\mathrm{Source} \times \mathrm{Target} \to \mathcal{G}(\mathrm{Target})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The encoder and decoder are independent Kleisli morphisms over distinct objects; the [tensor product](https://ncatlab.org/nlab/show/tensor+product) `@` is their strong-monoidal product, and `cross` is the merge that closes the bilinear pairing into a single combined latent. The Categorical head puts a finite-set codomain on the composite, and `observe` is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) closing the LM likelihood. [@giry1982categorical]
 
 
 ## Model reference

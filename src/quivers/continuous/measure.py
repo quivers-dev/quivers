@@ -473,9 +473,11 @@ class Mixture(Measure):
 
         Returns a `Mixture` whose components are each
         `Restrict(component, low, high)` and whose weights are the
-        reweighted-by-component-mass form. Reference: the v2 design
-        note's rewrite rules section (Welsh et al. 1996 for the
-        statistical motivation).
+        form weighted by each component's mass on the subset. This
+        is the ordinary conditional probability rule: multiply each
+        prior mixture weight by the probability of the subset under
+        that component, then normalize the resulting weights. The
+        total mass of the subset must be positive.
         """
         restricted_raw = [Restrict(c, low=low, high=high) for c in self.components]
         log_w = torch.log(

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Classical [factor analysis](https://en.wikipedia.org/wiki/Factor_analysis) ([Spearman, 1904](https://www.jstor.org/stable/1412107); [Bartholomew, Knott, and Moustaki, 2011](https://doi.org/10.1002/9781119970583)) decomposes a $D$-dimensional observation as a linear-Gaussian transformation of a $K$-dimensional latent factor plus diagonal idiosyncratic noise:
+Classical [factor analysis](https://en.wikipedia.org/wiki/Factor_analysis) ([@spearman1904intelligence]; [@bartholomew2011latent]) decomposes a $D$-dimensional observation as a linear-Gaussian transformation of a $K$-dimensional latent factor plus diagonal idiosyncratic noise:
 
 $$
 z_i \sim \mathcal{N}(0, I_K), \quad y_i \mid z_i \sim \mathcal{N}(W z_i, \mathrm{diag}(\psi)).
@@ -69,9 +69,37 @@ program factor_analysis_program : Resp -> Val
 export factor_analysis_program
 ```
 
+## Understanding the model
+
+Suppose several observed measurements rise and fall together. A small latent
+vector can explain those shared patterns, and a loading matrix maps its
+coordinates back to measurement space. With two factors, one predicted cell
+is `z[i, 0] * W[0, d] + z[i, 1] * W[1, d]`. Observation noise accounts for
+variation left over after that reconstruction.
+
+A factor coordinate has no unique orientation: rotating the code and undoing
+that rotation in the loadings leaves every predicted measurement unchanged.
+Thus fitted factor entries need not match their synthetic counterparts.
+Compare reconstructed means and the implied observation covariance. This
+source uses one shared residual scale, so its noise is the [isotropic PPCA](ppca.md#understanding-the-model)
+special case of factor analysis.
+
 ## Walkthrough
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; each position it can occupy gives it a different one, and this file uses four. In `morphism Z : Item -> LatentDim` the codomain is the arrow's own value space, which is what makes `Z` an `Item x LatentDim` real matrix. In `[over=LatentDim]` the object fixes the *event width* instead, the two coordinates a latent code or a loading row spans. In `observe y : Resp <- Normal(mu, sigma)` it fixes the *plate extent*, the 160 response rows, one per `(Item, ObsDim)` cell, which is why an object in that slot must be discrete; what a row holds is not `Resp`'s business but the family's, and `Normal` is what makes each response real. And in the program signature `Resp -> Val` the codomain names the *value space* of what the program returns: `return y` gives back one real response per row, so that space is `Real 1`, declared as `object Val : Real 1`. Reading that codomain as an index instead is the misstep to avoid: a signature `Resp -> Resp` would claim the program returns an element of the response index set, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain.
+The same object declaration can identify an axis in several roles. Read the
+position where it is used:
+
+| Use | Meaning in this model |
+|---|---|
+| `morphism Z : Item -> LatentDim` | A table with one row per item and one column per latent coordinate. |
+| `[over=LatentDim]` | The coordinates making up one vector-valued draw. |
+| `observe y : Resp <- Normal(...)` | One scored response per element of the flattened response index. |
+| `program ... : Resp -> Val` | A response-indexed program returning real values; `Val` is `Real 1`. |
+
+A row index tells you which observation is being scored; the Normal family
+tells you that its value is real. These are separate roles even if their
+sizes happen to coincide. Keep the return-space declaration consistent with
+the returned values rather than assuming an index name is also a value type.
 
 The two latent declarations introduce the per-item factor and the loading matrix as arrows. Under `composition real [level=algebra]` the composition `Z >> W` is a real-valued matmul: the `(i, d)` entry of the `Item x ObsDim` model tensor is $\sum_k Z_{i,k} W_{k,d}$, the factor analysis model mean.
 
@@ -164,7 +192,7 @@ The top-level mean is the real-algebra composition $Z \mathbin{>>} W$, whose ten
 - [DSL Guide: Hierarchical Bayesian Models](../guides/programs-hierarchical.md#hierarchical-models-with-parametric-templates) for the morphism-valued prior syntax.
 
 
-## References
+## Sources and further reading
 
-- Charles Spearman. 1904. "General intelligence," objectively determined and measured. *The American Journal of Psychology*, 15(2):201–293.
-- David J. Bartholomew, Martin Knott, and Irini Moustaki. 2011. *Latent Variable Models and Factor Analysis: A Unified Approach*, 3rd edition. Wiley.
+- *"General Intelligence," Objectively Determined and Measured* [@spearman1904intelligence].
+- *Latent Variable Models and Factor Analysis: A Unified Approach* [@bartholomew2011latent].

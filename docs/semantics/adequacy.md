@@ -1,10 +1,10 @@
 # Implementation Correspondence and Limits
 
-This page records the **implementation-correspondence claim** (ICC): the compiler should construct the runtime object described by the semantics pages for each supported QVR phrase. The ICC is a specification tested on representative cases. It is not a mechanized adequacy theorem for the whole language.
+For each supported QVR phrase, the compiler should construct the runtime object described by its semantic clause. This page connects those clauses to the operations that implement them and the tests that check them.
 
 ## 1. What the compiler returns
 
-`Compiler` resolves a parsed module into an environment of objects, morphisms, programs, deductions, structural components, and exports. A successful compilation does not always return one `Program`, and `Program.forward` does not in general return a probability distribution. Depending on the compiled artifact, evaluation may return a tensor, a sample, a dictionary of returned values, or another runtime wrapper.
+`Compiler` resolves a parsed module into an environment of objects, morphisms, programs, deductions, structural components, and exports. Evaluation returns an artifact-specific value: a tensor for a discrete morphism, a sample for a sampler, or a dictionary of returned values for a program.
 
 Thus correspondence must be stated per artifact:
 
@@ -35,18 +35,28 @@ Third, the expression combinators have distinct operational contracts:
 | `stack(f, n)` | sequentially composes deep copies, giving each layer independent parameters |
 | `scan(cell)` | iterates a continuous cell `A * H -> H` over an implicit time axis and returns the final state |
 
-These last two distinctions matter: `stack` is not tensor power, and `scan` is not `.trace`.
+With `stack(f, 3)`, the output of the first copy enters the second, then the third. With `scan(cell)`, the hidden state passes between successive time steps.
 
 ## 3. Probabilistic composition
 
+The primer first performs this elimination as a [finite matrix product](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value). The [continuous composition equations](morphisms.md#3-continuous-morphisms) replace that sum with an integral, and the [Python guide](../guides/continuous-spaces.md#composition-sampledcomposition) exercises the estimator discussed here.
+
+Suppose $f$ chooses an intermediate state and $g$ draws an output conditional
+on that state. Generating one output is straightforward: draw the state,
+then draw the output. Computing the density at a fixed output is a different
+task, because every possible intermediate state contributes. With a finite
+two-state kernel this is $p(y)=p(0)p(y\mid0)+p(1)p(y\mid1)$; a continuous
+intermediate state requires an integral. The sampler visits one intermediate state per draw; density evaluation
+accumulates contributions across the intermediate space.
+
 Sampling from `f >> g` is ancestral: sample the intermediate value with `f.rsample`, then pass it to `g.rsample`. This produces samples from the composite kernel when the component samplers implement their declared kernels.
 
-Density evaluation is different. `SampledComposition.log_prob` draws a fixed number of intermediate samples, evaluates the second density, and combines the values with `logsumexp - log(n)`. The density-scale average is a Monte Carlo estimator of the integral; taking its logarithm introduces finite-sample bias. The default sample count is 100. Thus the returned log density is an approximation, not pointwise equality with the Chapman–Kolmogorov integral.
+Density evaluation is different. `SampledComposition.log_prob` draws a fixed number of intermediate samples, evaluates the second density, and combines the values with `logsumexp - log(n)`. The density-scale average is a Monte Carlo estimator of the integral; taking its logarithm introduces finite-sample bias. The default sample count is 100. Increasing the sample count reduces Monte Carlo error; analytic compositions provide a reference for checking the estimator.
 
 `ScanMorphism.log_prob(x, y)` constructs the canonical reference trajectory
-ending at `y` and returns `log_joint` for that fixed trajectory. It does not
-integrate over the intermediate hidden states. Thus it is a trajectory score,
-not the marginal density of the final recurrent state. A cell without a
+ending at `y` and returns `log_joint` for that fixed trajectory. The marginal
+density of the final state would require summing or integrating these joint
+scores across all intermediate trajectories. A cell without a
 conditional density contributes zero instead.
 
 ## 4. Programs and data
@@ -62,27 +72,25 @@ Program statements preserve their leading-keyword distinction:
   single-sample path rather than computing a continuous integral;
 - `return` selects the program result.
 
-`from_data("key")` is resolved through data bound to the compiler before expression compilation. It should not be described as a learnable value or as an unbound runtime lookup.
+`from_data("key")` retrieves data bound to the compiler before expression compilation. Bind the key before compiling the expression that uses it.
 
 ## 5. What the tests establish
 
-The repository contains focused evidence rather than one exhaustive theorem:
+The tests cover four parts of the implementation:
 
 - compiler and DSL tests exercise parsing, resolution, typing errors, expression composition, contractions, programs, and structural declarations;
 - `tests/test_program_theory.py` checks extraction and validation of program-shape schemas;
 - `tests/test_model_roundtrips.py` checks JSON round trips for `dx.Model` values;
 - `tests/transpile/test_structural.py`, `test_lens_laws.py`, `test_external_syntax.py`, and `test_numeric_equivalence.py` test the separate transpilation pipeline described in [Transpilation correctness](transpile-correctness/index.md).
 
-Passing these tests supports the covered cases. It does not establish equality for every phrase, algebra, distribution parameterization, backend, input, or floating-point value.
-
 ## 6. Conditions and open gaps
 
-The ICC must be qualified in five places.
+Five conditions determine how these correspondences can be used.
 
-1. Categorical equations that use distributivity, arbitrary joins, or compact closure require those laws of the active algebra. The `Algebra` class does not prove them.
+1. Categorical equations that use distributivity, arbitrary joins, or compact closure require those laws of the active algebra. The counterexamples in [Algebras](algebras.md#21-a-note-on-the-product-fuzzy-and-ukasiewicz-pairs) show why these hypotheses are needed.
 2. Floating-point operations may differ from exact real arithmetic, especially near support boundaries and saturated reductions.
 3. Monte Carlo density calculations are approximate at finite sample counts.
-4. Family registries state support and parameter maps operationally; registry membership alone does not prove measurability, normalization, or equivalence to an external library.
-5. Schema extraction records program shape. Equality of extracted schemas is not equality of program behavior or parameter values.
+4. External family comparisons require matching support, parameter maps, and normalizing constants; the [target pages](transpile-correctness/index.md) record these maps.
+5. Schema extraction records program shape. Two models with the same extracted schema can carry different learned weights and assign different probabilities.
 
-These limits identify concrete work: add property tests for each claimed algebraic law, compare probabilistic compositions against analytic cases, and connect each declarative typing rule to a compiler test. Until then, the semantics pages should distinguish implemented behavior, test evidence, and conditional mathematical interpretation.
+Useful extensions are property tests for each algebraic law, comparisons of sampled compositions with analytic Gaussian cases, and compiler tests for each declarative typing rule.

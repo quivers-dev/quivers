@@ -576,6 +576,25 @@ def render_page(cells: list[Cell]) -> str:
         "[transpilation architecture](semantics/transpile-architecture.md), "
         "which describes how a program reaches a target at all.",
         "",
+        "## Reading the measurements",
+        "",
+        "Transpilation translates a checked QVR program into source for another "
+        "probabilistic programming system. A `yes` in the matrix means source "
+        "bytes were produced; it does not mean that system executed them, that "
+        "inference converged, or that a density-equivalence test was run for "
+        "this cell. Those are separate checks.",
+        "",
+        "Start with a gallery model similar to yours, then inspect the construct "
+        "rows for the features you need. A fixture isolates one feature; your "
+        "own program can combine several. Run the target check and transpilation "
+        "on that complete program before relying on a measured neighboring cell.",
+        "",
+        "For instance, `qiec:capability:search:lp_parser__run` says that the target "
+        "cannot preserve the search capability required by the named parser "
+        "entry. The identifier points to a missing execution feature, not a "
+        "statistical failure of the parser. A refusal shared by every backend "
+        "requires a supported reformulation or execution in Quivers itself.",
+        "",
         "## Coverage at a glance",
         "",
     ]

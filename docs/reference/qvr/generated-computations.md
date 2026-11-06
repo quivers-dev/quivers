@@ -2,21 +2,29 @@
 
 Several high-level QVR declarations generate checked QIEC definitions. Their
 surface remains the convenient way to write the model, while the generated
-graph supplies one execution, inspection, and diagnostic boundary. This is
-the **generated-core contract (GCC)**: elaboration may add families,
-instances, handlers, and helper computations, but every generated node is
+graph supplies one execution, inspection, and diagnostic boundary. Elaboration may add families,
+instances, [handlers](effects-and-handlers.md#handler-declarations), and helper computations, but every generated node is
 typed and remains visible to tooling.
 
 ## What each declaration generates
 
+Generated computations are explicit expansions of convenient source
+forms. A parser declaration, for instance, implies choices among
+rules and accumulation of weights; its generated graph spells out
+those operations. You normally call the [public entry](execution-and-tooling.md#list-entry-points) and inspect
+the helpers when debugging types, effects, or backend support.
+The expansion retains source information so a generated failure can
+still point back to the declaration you wrote.
+
+
 | Source declaration | Principal QIEC graph | Runtime requirement |
 | --- | --- | --- |
-| `program` | one computation over canonical `random` and `score`; helpers for marginalization and scans | core reference handlers; optional model attachments |
+| `program` | one computation over canonical `random` and `score`; helpers for [marginalization](probabilistic-programs.md#exact-marginalization) and scans | core reference handlers; optional model attachments |
 | `deduction` | closed item family, recursive derivation, `Search`, `Weight[K]`, `Param`, collecting handlers, run entry | core search, semiring, and parameter providers |
-| `define p = parser(...)` | finite item family and a goal-directed deduction instantiated from schemas and bundles | same search runtime as a deduction |
+| `define p = parser(...)` | finite item family and a goal-directed [deduction](../../guides/deduction.md#the-framework) instantiated from schemas and bundles | same search runtime as a deduction |
 | `signature` | opaque term family indexed by declared sorts | structural term values at the host boundary |
-| `encoder` | typed `Compute[Term, Code]` request and named computation | attached PyTorch encoder |
-| `decoder` | typed `Compute[Code, Term]` and negative-log-likelihood computations | attached PyTorch decoder |
+| `encoder` | typed `Compute[Term, Code]` request and named computation | attached PyTorch [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) |
+| `decoder` | typed `Compute[Code, Term]` and negative-log-likelihood computations | attached PyTorch [decoder](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks) |
 | `loss` | named computation calling its encoder/decoder dependencies | attachments reachable from the loss |
 
 `Program.entry_points()` lists the public computations a compiled module can
@@ -70,6 +78,14 @@ program in the module calls it; the reachable call graph determines whether a
 target can emit the model.
 
 ## Structural signatures and autoencoders
+
+A checked module can describe the type of a neural computation without
+containing the neural module itself. Its attachment descriptor is like
+a typed reference to an implementation; the runtime provider supplies
+the actual PyTorch object. Saving the checked description thus
+differs from saving learned parameters or serializing a runnable
+Python module. Both pieces must be supplied at the execution boundary.
+
 
 A `signature` defines typed host values, including data leaves, recursive
 constructors, binders, and de Bruijn variables. It lowers to an opaque family
@@ -146,8 +162,9 @@ qvr repl model.qvr
 ```
 
 In Python, `program.entry_points()` gives the public invocation surface and
-`program.qiec` gives the checked module. The latter is a stable typed model,
-not a promise that generated helper names will remain a hand-authored API.
+`program.qiec` gives the checked module. Invoke the entries returned by
+`entry_points()`; use the internal helpers in `program.qiec` to inspect
+how those entries were compiled.
 
 ## Capability failures are part of the contract
 
@@ -156,5 +173,5 @@ surface line. For instance, `parser(...)` introduces search, and a loss over a
 decoder introduces neural attachments. Quivers attributes the diagnostic to
 the reachable computation and preserves its source range. Use
 `qvr check --target TARGET` or set the LSP target while editing, so core QIEC
-requirements appear early. Then run the actual transpiler: the target check is
-a capability analysis and does not exercise every renderer-specific refusal.
+requirements appear while editing. Then run the transpiler to check
+restrictions imposed by the target renderer.

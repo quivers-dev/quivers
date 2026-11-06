@@ -100,6 +100,7 @@ markdown_extensions:
 hooks:
   - docs/hooks/register_qvr_lexer.py
   - docs/hooks/sync_changelog.py
+  - docs/hooks/bibliography.py
 
 plugins:
   - search
@@ -130,9 +131,11 @@ plugins:
 
 nav:
   - Home: index.md
+  - References: references.md
   - Learn:
     - Getting started:
       - Installation: getting-started/installation.md
+      - Concepts by example: getting-started/concepts.md
       - Quickstart: getting-started/quickstart.md
       - Architecture: getting-started/architecture.md
       - Editor highlighting: getting-started/highlighting.md

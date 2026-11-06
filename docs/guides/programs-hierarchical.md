@@ -3,12 +3,23 @@
 This page describes the program-composition features used to express
 hierarchical Bayesian models:
 parametric program templates that share structure across grouping
-factors, and the grouped marginalization construct for jointly
+factors, and the grouped [marginalization](dsl-programs-and-lets.md#scoped-marginalize) construct for jointly
 identifying a discrete class indicator by multiple heterogeneous
 response axes. The basic `MonadicProgram` API is described in the
 [programs guide](programs.md).
 
 ## Hierarchical models with parametric templates
+
+A hierarchical model gives related groups their own parameters while
+linking them through shared higher-level parameters. In this example,
+each subject has an offset, and their common scale `sigma` controls how
+much subjects tend to differ. Data for one subject can inform that scale
+and thus the inference for others. This is partial pooling.
+
+Crossed effects mean that every response belongs to both a subject and a
+verb. The two index arrays select the relevant offsets for each row;
+adding them to an intercept forms the response's linear predictor.
+
 
 A [parametric
 program](dsl-programs-and-lets.md#parametric-programs) declares a
@@ -22,8 +33,8 @@ the template's body, so call sites contribute distinct latents.
 object Subject : FinSet 200
 object Verb : FinSet 100
 object Resp : FinSet 5000
-program random_intercepts (G : FinSet, scale : Real) : G -> 1
-    sample sigma <- HalfNormal(scale=scale)
+program random_intercepts (G : FinSet, prior_scale : Real) : G -> Real 1
+    sample sigma <- HalfNormal(scale=prior_scale)
     sample v : G <- Normal(loc=0.0, scale=sigma)
     return v
 
@@ -33,7 +44,9 @@ program crossed : Resp -> Resp
     sample by_subject <- random_intercepts(Subject, 1.0)
     sample by_verb    <- random_intercepts(Verb,    1.0)
 
-    observe response : Resp <- Bernoulli(probs=intercept)
+    let eta = intercept + by_subject[subject_idx] + by_verb[verb_idx]
+    let probability = sigmoid(eta)
+    observe response : Resp <- Bernoulli(probs=probability)
     return intercept
 
 export crossed
@@ -41,7 +54,10 @@ export crossed
 
 Each `random_intercepts` call inlines an independent `sigma` and
 per-level plate; the observed response is the runtime tensor
-supplied via `observations={"response": response_tensor}`. Monotone
+supplied alongside the row-to-group indices via
+`observations={"response": response_tensor, "subject_idx": subject_idx,
+"verb_idx": verb_idx}`. `sigmoid` converts the unconstrained additive
+predictor to a probability in `(0,1)`. Monotone
 ordinal effects are expressed as `cumsum` of `HalfNormal`
 increments (positive support implies monotone partial sums);
 discrete latent classes are integrated out with a scoped
@@ -57,6 +73,22 @@ fresh per-level plate `v` under α-renamed names
 factors share *structure* but not *latents*.
 
 ## Grouped marginalization: fibred discrete latents
+
+Stan’s [vectorizing mixtures example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures) contrasts a separate mixture assignment per observation with one assignment shared by a collection. [@stanFiniteMixtures] That distinction determines where the sum over classes belongs in the grouped model below.
+
+Suppose two measurements belong to the same item, whose class is unknown.
+Conditional on class zero their likelihoods are `0.8` and `0.7`;
+conditional on class one they are `0.2` and `0.3`. With equal class
+probabilities the joint likelihood is
+`0.5 * (0.8 * 0.7) + 0.5 * (0.2 * 0.3) = 0.31`.
+Multiplying the two independently mixed likelihoods would instead give
+`0.25`, a different model with a separate class choice per measurement.
+
+The grouping map collects observations sharing a class draw. A *fiber* is the set of response
+rows mapped to one item. First combine their likelihoods conditional on
+one class, then sum over that shared class. The logarithms in the formula
+below turn products into sums and evaluate the final sum stably.
+
 
 A scoped `marginalize` block accepts an optional `over G` clause
 that declares a *grouping plate* `G`. Inside the body, every
@@ -80,12 +112,11 @@ $$
 \sum_{g \in G}\ \log\sum_{k=1}^{K}\exp\!\left[\log \pi(g, k) + \sum_{m}\sum_{n:\ \mathrm{idx}_m(n)=g}\ell_m(n, k)\right]
 $$
 
-to the program-level log-density. Categorically this is the
-[right Kan extension](https://ncatlab.org/nlab/show/Kan+extension)
-along the coproduct fibration $\coprod_m r_m : \coprod_m
-\mathrm{Resp}_m \to G$ in
-[`Kern`](../api/stochastic/categories.md), composed with the
-standard categorical-marginal log-sum-exp under the prior $\pi$.
+to the program-level log-density. The index maps collect each group's observations into a fiber. This is
+a finite aggregation along those maps, followed by marginalization of the
+shared class. A categorical formulation must specify the weight algebra
+and the relevant [Kan-extension](enriched.md#kan-extensions) hypotheses;
+the explicit log-density formula above is the operational contract here.
 
 ### Degenerate forms
 
@@ -116,6 +147,13 @@ num_groups)` and accepts either a single `(N, K)` tensor
 their per-axis fibrations (multi-observe case).
 
 ### Product fibrations
+
+Sometimes a group is identified by a pair, such as school and subject.
+A product grouping index retains both labels. The `via` arrays provide
+one coordinate per factor, and the implementation converts that tuple
+to one flat group index. The marginalization then collects the rows
+sharing that school–subject pair before summing over the class.
+
 
 Product fibrations are supported on each observe via
 `via product(idx_a, idx_b)`, paired with an `over G * H` product

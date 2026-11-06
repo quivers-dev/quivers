@@ -2,17 +2,17 @@
 
 Indexed families make an invariant part of a value's type. A value of
 `Measurement(Observed)` and one of `Measurement(Missing)` may share a family,
-but a checked computation cannot confuse them. This property is the
-**index-carrying invariant (ICI)**: the constructor determines the index, and
-case analysis refines it locally.
+but a checked computation cannot confuse them. The constructor determines the index, and [case analysis](#indexed-case-analysis) refines it locally.
 
 ## Kinds and binders
 
-QVR uses square and round telescopes for different phases:
+A *telescope* is an ordered parameter list whose later types may refer
+to earlier parameters. QVR uses square and round parameter lists for
+different phases:
 
 | Form | Meaning | Used by |
 | --- | --- | --- |
-| `[A : Type]` | static type binder | families, constructors, effects, handlers, computations |
+| `[A : Type]` | static type binder | families, constructors, effects, [handlers](effects-and-handlers.md#handler-declarations), computations |
 | `[n : Nat]` | static index binder | constructors, operations, computations |
 | `[E : Effect]` | static effect-interface binder | declarations that abstract over an effect |
 | `(n : Nat)` | refinable family index | family declarations and case motives |
@@ -24,8 +24,8 @@ Runtime values are supplied in parentheses. An integer literal may fill a
 `[n : Nat]`.
 
 The built-in value types are `Unit`, `Bool`, `Int`, `Real`, `String`,
-`LogWeight`, `Tensor[A]([d1, ...])`, `Sampleable[A]`, and `Site[A]`. A product
-type is written `A * B`; a tuple value is written `(a, b)` and projected as
+`LogWeight`, `Tensor[A]([d1, ...])`, `Sampleable[A]`, and `Site[A]`. A [product
+type](../../guides/core.md#productset-and-coproductset) is written `A * B`; a tuple value is written `(a, b)` and projected as
 `pair[0]` or `pair[1]`.
 
 ## Closed index sorts
@@ -44,6 +44,16 @@ static terms rather than runtime integers; use a `Nat` literal only when a
 declaration explicitly binds a `Nat`.
 
 ## Family declarations
+
+An ordinary list type says what its elements are. `Vec[A](n)` also
+records its length `n` in the type. `Nil` thus produces length
+zero, and `Cons` produces one more element than its tail. This extra
+information can rule out errors before execution: a function requiring
+a nonempty vector cannot receive `Nil`. The element type is a uniform
+parameter; the length is an index that changes with the constructor.
+
+The [computation declaration reference](computations.md#declaration-form) shows how a function receives static arguments. [Finite collection operations](collection-expressions.md#operation-reference) use those extents to determine their result shapes.
+
 
 A family may have uniform static parameters in brackets and refinable indices
 in parentheses:
@@ -85,6 +95,15 @@ family application and prevents an ambiguous constructor from acquiring a
 type from unrelated context.
 
 ## Indexed case analysis
+
+A constructor match provides evidence about the value's index. Matching
+`Cons` reveals that the vector has a head and a tail and that its
+length is one greater than the tail's. The **motive** states the
+result type for each possible index. Here it is `Int` for
+every length, but the explicit form also supports results whose
+types depend on the index. A branch-local index is available only
+where that constructor's evidence is in scope.
+
 
 A case expression states a motive, that is, the result type as a function of
 the scrutinee's indices:
@@ -128,7 +147,8 @@ define head[A : Type, n : Nat](xs : Vec[A](S(n))) : A !{} =
 ```
 
 `Vec[A](S(n))` cannot have been built by `Nil`, whose result index is `Z`.
-The omitted branch is thus impossible, rather than a partial match.
+This constructor equality rules out the omitted branch, so the match
+covers every inhabitant of the declared input type.
 
 ## Pure expressions
 

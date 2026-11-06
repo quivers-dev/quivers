@@ -1,5 +1,15 @@
 # Deduction Systems
 
+Weighted deduction builds conclusions from rules and scored premises. Fitting adjusts
+rule weights, Bayesian lifting introduces priors over them, and sampling draws from a
+normalized distribution over candidate results. The modules below implement these
+operations for shared deductive structures.
+
+See [the deduction framework](../../guides/deduction.md#the-framework) and
+[comparing inside scores for a parser](../../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores).
+
+For the deductive formulation, see [@shieber1995principles; @goodman1999semiring].
+
 The public API for weighted chart deductions consists of the model
 type, its abstract primitives, and operations for fitting, Bayesian
 lifting, and sampling. `quivers.stochastic.deduction` re-exports the

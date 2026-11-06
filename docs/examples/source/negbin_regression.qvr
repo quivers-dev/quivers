@@ -1,23 +1,11 @@
 # Multi-Output Negative Binomial Regression
 #
-# A multi-output negative-binomial regression for overdispersed
-# count data, using the mean / dispersion parameterisation that
-# follows the log link convention shared with Poisson regression.
-# Each output dimension carries its own coefficients and
-# dispersion; the response is the standard NB2 form, with
-# per-cell variance mu + mu^2 / dispersion, recovering Poisson
-# in the limit of infinite dispersion.
-#
-# Generative structure:
-#
-#   beta_0_d      ~ Normal(0, 5)                  per-output intercept
-#   beta_1_d      ~ Normal(0, 5)                  per-output slope
-#   dispersion_d  ~ Gamma(2, 0.5)                 per-output dispersion
-#   y_{n,d}       ~ NegativeBinomial(dispersion, dispersion / (dispersion + mu))
-#
-# The Gamma prior on the dispersion encodes a soft preference
-# for finite overdispersion; per-output coefficients permit
-# heterogeneous count regimes across the response axis.
+# Per-output coefficients and count parameters are gathered to response rows.
+# The inline family follows PyTorch's NegativeBinomial convention:
+# mean = total_count * probs / (1 - probs).
+# With probs = disp / (disp + mu), the actual mean is disp**2 / mu.
+# For the usual NB2 mean mu, use probs = mu / (disp + mu) instead.
+# This source preserves the former probability expression.
 
 object Item : FinSet 21
 object Out : FinSet 3

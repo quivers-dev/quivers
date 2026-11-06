@@ -1,10 +1,9 @@
 # Finite collection expressions
 
 QVR has two operations for applying a function across a tensor. A pure
-`map` builds a value; an effect-aware `traverse` sequences computations. We
-refer to this distinction as the **finite collection contract (FCC)**. The
-contract keeps tensor shape in the type while making the order of effects
-explicit.
+[`map`](#pure-map) builds a value; [`traverse`](#effect-aware-traverse) runs a [computation](computations.md#declaration-form) for each element in
+order. Both retain the collection’s shape in its type. For `traverse`,
+each computation completes before the next begins.
 
 ## Operation reference
 
@@ -38,6 +37,13 @@ reference machine and to targets with comprehension support.
 
 ## Effect-aware traverse
 
+Mapping a pure function over `[1,2,3]` can directly build a new tensor.
+Calling a computation for each item must also sequence any requests
+those calls make. `traverse` makes that order explicit. Even when
+`center` is pure, it is declared as a computation, so its calls use
+`traverse` and `<-`; a pure arithmetic lambda can instead use `map`.
+
+
 Use `traverse` when each item must be passed to a named computation. Its
 surface is a computation call and thus uses `<-`:
 
@@ -51,7 +57,7 @@ define center_all(xs : Tensor[Real]([3]), mean : Real) : Tensor[Real]([3]) !{} =
     return centered
 ```
 
-The lambda body must be one named computation call. The callee's effect row
+The lambda body must be one named computation call. The callee's [effect row](effects-and-handlers.md#effect-rows)
 joins the row of the enclosing computation. QIEC expands a fixed collection
 into calls and binds in source order, which gives each call its own stable
 structural path. This expansion also means that existing interpreters and
@@ -59,9 +65,18 @@ transpilers need no separate `traverse` runtime primitive.
 
 The current form does not pass static arguments to the lambda's callee. Wrap a
 specialized call in a monomorphic helper when a computation has a static
-telescope.
+[telescope](types-and-indexed-families.md#kinds-and-binders).
 
 ## Fold and derived reductions
+
+A left fold carries one running value through the collection. With
+`[2,3,4]`, initial total `0`, and addition, the intermediate totals
+are `2`, `5`, and `9`. The curried lambda `total -> value -> ...`
+means "first receive the current total, then the next item."
+`logsumexp_over` performs a different reduction: if log weights
+correspond to `0.2` and `0.3`, it returns `log(0.5)`. Subtracting
+that value and exponentiating normalizes them to `0.4` and `0.6`.
+
 
 `fold` is a left fold. The lambda is curried with the accumulator first and
 the current item second:
@@ -74,7 +89,7 @@ define weighted_total(values : Tensor[Real]([3]), weights : Tensor[Real]([3])) :
 ```
 
 `logsumexp_over(xs, f)` is the stable log-space reduction of `map(xs, f)`.
-It is useful for finite Bayesian normalization:
+It is useful for finite Bayesian [normalization](../../guides/stochastic.md#normalization):
 
 <!-- compile: qiec -->
 ```qvr
@@ -88,6 +103,14 @@ extent is an index term rather than a runtime integer, so it must be
 specialized before `length` or `fold` can use it.
 
 ## Dynamic filtering
+
+Filtering can change the length according to runtime values: three
+inputs might yield zero, one, two, or three outputs. A checked
+fixed-shape tensor cannot assign one known extent to all those cases.
+A mask keeps the original shape and marks which positions contribute,
+so reductions can ignore positions without creating a variable-length
+result.
+
 
 The eager PyTorch expression evaluator retains `filter(xs, predicate)` for
 host-only workflows. Checked QIEC tensors have fixed shape, so an unmasked
@@ -104,7 +127,7 @@ of the wrong type fails during `qvr check`. A program that cannot elaborate is
 reported as `qiec-program-gap`; it is not silently omitted from the checked
 module.
 
-The reference machine executes every FCC form. Dynamic targets lower the
+The reference machine executes every checked collection form. Dynamic targets lower the
 resulting comprehensions, gathers, calls, and binds through the common QIEC
 runtime. Stan, BUGS, and JAGS may reject those core capabilities. Run
 `qvr check --target TARGET` to test the selected backend before transpiling.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This stochastic recurrent cell borrows the gates of an [LSTM](https://doi.org/10.1162/neco.1997.9.8.1735), but it threads only `h_t`. Its local update uses `f_t * h_{t-1}` rather than a separately propagated `f_t * c_{t-1}`. It should thus be read as LSTM-shaped, not as the canonical architecture.
+This stochastic recurrent cell borrows the gates of an [LSTM](https://doi.org/10.1162/neco.1997.9.8.1735), but it threads only `h_t`. Its local update uses `f_t * h_{t-1}` rather than a separately propagated `f_t * c_{t-1}`. The equations below specify the resulting stochastic recurrence. [@hochreiter1997lstm]
 
 ## QVR source
 
@@ -69,6 +69,19 @@ program lstm_lm : Token -> Token
 export lstm_lm
 ```
 
+## Understanding the model
+
+The input gate determines how much candidate information enters the local
+update; the forget gate weights the previous hidden state; the output gate
+weights the transformed update sent onward. Each gate lies between zero and
+one, so multiplication acts as a learned proportion. Here those proportions
+are sampled from LogitNormal kernels rather than fixed by a sigmoid alone.
+
+A canonical LSTM carries both a cell state and a hidden state through time.
+This source passes only the hidden state to the next step: `c_new` contributes
+to the current output and is then discarded. Its terminal hidden state predicts
+one next token. Olah’s [diagram of the LSTM cell state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#the-core-idea-behind-lstms) shows the separate persistent state used by the canonical architecture [@olah2015lstm].
+
 ## Walkthrough
 
 ### Cell equations
@@ -77,10 +90,10 @@ The parametric program samples three gates and a candidate. `LogitNormal` constr
 
 | Step | DSL | Meaning |
 |---|---|---|
-| input gate | `i_gate <- gate_i(x_t, h_prev)` | $i_t = \sigma(W_i [x_t, h_{t-1}])$ |
+| input gate | `i_gate <- gate_i(x_t, h_prev)` | $i_t \sim \mathrm{LogitNormal}(\mu_i(x_t,h_{t-1}), \sigma_i(x_t,h_{t-1}))$ |
 | forget gate | `f_gate <- gate_f(x_t, h_prev)` | $f_t = \sigma(W_f [x_t, h_{t-1}])$ |
-| output gate | `o_gate <- gate_o(x_t, h_prev)` | $o_t = \sigma(W_o [x_t, h_{t-1}])$ |
-| candidate | `g_cand <- cell_cand(x_t, h_prev)` | $g_t = \phi(W_g [x_t, h_{t-1}])$ |
+| output gate | `o_gate <- gate_o(x_t, h_prev)` | $o_t \sim \mathrm{LogitNormal}(\mu_o(x_t,h_{t-1}), \sigma_o(x_t,h_{t-1}))$ |
+| candidate | `g_cand <- cell_cand(x_t, h_prev)` | $g_t \sim \mathcal{N}(\mu_g(x_t,h_{t-1}), \sigma_g(x_t,h_{t-1}))$ |
 | cell update | `let c_new = f_gate * h_prev + i_gate * g_cand` | $c_t = f_t \odot h_{t-1} + i_t \odot g_t$ |
 | hidden | `let h_new = o_gate * tanh_c` | $h_t = o_t \odot \tanh(c_t)$ |
 
@@ -227,10 +240,10 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The cell program denotes a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the Kleisli category of the [Giry monad](https://doi.org/10.1007/BFb0092872); `scan(lstm_cell)` is its iterated composition over the sequence. The Categorical head closes the composite with a finite-set codomain, and `observe next_token` accumulates per-batch categorical log-likelihood through a [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension).
+The cell program denotes a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the Kleisli category of the [Giry monad](https://doi.org/10.1007/BFb0092872); `scan(lstm_cell)` is its iterated composition over the sequence. The Categorical head closes the composite with a finite-set codomain, and `observe next_token` accumulates per-batch categorical log-likelihood through a [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension). [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
-- Sepp Hochreiter and Jürgen Schmidhuber. 1997. Long short-term memory. *Neural Computation*, 9(8):1735–1780.
+- *A categorical approach to probability theory* [@giry1982categorical].
+- *Long Short-Term Memory* [@hochreiter1997lstm].

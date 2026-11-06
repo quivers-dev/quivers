@@ -2,7 +2,7 @@
 
 ## Overview
 
-This program factors the one-step conditionals of the log-volatility return model of [Kim, Shephard, and Chib (1998)](https://doi.org/10.1111/1467-937X.00050). Each latent `h_t` is Normal around an [AR(1)](https://en.wikipedia.org/wiki/Autoregressive_model) mean, and each return is mean-zero Normal with scale `exp(h_t / 2)`. The lagged value `h_prev` is supplied as host data rather than connected to the preceding sampled `h`, so the program conditions on a trajectory of lags; it does not infer one recursively coupled latent chain.
+This program factors the one-step conditionals of the log-volatility return model of [@kim1998volatility]. Each latent `h_t` is Normal around an [AR(1)](https://en.wikipedia.org/wiki/Autoregressive_model) mean, and each return is mean-zero Normal with scale `exp(h_t / 2)`. The lagged value `h_prev` is supplied as host data rather than connected to the preceding sampled `h`, so the program conditions on a trajectory of lags; it does not infer one recursively coupled latent chain.
 
 ## QVR source
 
@@ -46,6 +46,19 @@ program stochastic_volatility : Step -> Val
 export stochastic_volatility
 ```
 
+## Understanding the model
+
+A volatile period has large fluctuations even when the expected return is
+zero. Here `h` represents log variance, so `exp(h / 2)` is the standard
+deviation used by the return likelihood. Raising `h` widens the predicted
+return distribution without changing its center.
+
+The supplied `h_prev` vector is known to the fit, though it was generated
+from a latent process in the simulation. [Conditional](../tutorials/python/02-stochastic-relations.md#observations-and-conditioning) on those lags, the program
+fits one-step volatility relations. This is easier than inferring the whole
+[hidden volatility path](continuous-hmm.md#understanding-the-model) from returns alone. Posterior summaries should state
+that conditioning information; it is part of the inferential question. The [Stan stochastic volatility model](https://mc-stan.org/docs/stan-users-guide/time-series.html#stochastic-volatility-models) shows a model that infers the coupled latent path [@stanTimeSeries].
+
 ## Walkthrough
 
 `mu`, `phi`, and `sigma_h` parameterize the AR(1) conditional for log volatility; `phi` is constrained to the [stationarity interval](https://en.wikipedia.org/wiki/Stationary_process) `(-1, 1)`. The identifier `h_prev` is exogenous host data: it is never declared inside the program, so the runtime resolves it from the observations dict at trace time. Conditional on that supplied lag vector, the `h` plate contains independent draws with mean `mu + phi * (h_prev - mu)`. The link `exp(0.5 * h)` then gives the per-step return scale.
@@ -83,7 +96,7 @@ observations = {"r": returns, "h_prev": h_prev}
 
 ### SVI fit
 
-Reinitialize the program and fit the AR(1) conditional parameters by maximizing the ELBO. The negative ELBO drops over the run; the reported oracle is the return likelihood at the simulated `h`, not the full latent-state joint.
+Reinitialize the program and fit the AR(1) conditional parameters by maximizing the ELBO. The reported oracle evaluates only the return likelihood at the simulated `h`; the ELBO also includes latent-state, prior, and guide terms, so these two values score different quantities.
 
 ```python
 import torch.distributions as D
@@ -133,7 +146,7 @@ print(f"sigma_h posterior mean: {result.samples['sigma_h'].mean().item():.3f}")
 
 ## Categorical perspective
 
-The model is a Kleisli morphism over the latent log-volatility plate, composed with a per-step Normal observation kernel whose scale depends on the latent. In the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category, `h_prev -> h -> r` is associative Kleisli composition at each row; the SVI guide approximates $p(\mu, \phi, \sigma_h, h \mid r, h_{\mathrm{prev}})$.
+The model is a Kleisli morphism over the latent log-volatility plate, composed with a per-step Normal observation kernel whose scale depends on the latent. In the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category, `h_prev -> h -> r` is associative Kleisli composition at each row; the SVI guide approximates $p(\mu, \phi, \sigma_h, h \mid r, h_{\mathrm{prev}})$. [@giry1982categorical]
 
 
 ## Model reference

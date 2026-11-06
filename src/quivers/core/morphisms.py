@@ -1,7 +1,7 @@
 """Morphism hierarchy: V-enriched relations between finite sets.
 
 A morphism from domain D to codomain C is represented as a tensor of
-shape (*D.shape, *C.shape) with entries in the lattice L of an algebra.
+shape (*D.shape, *C.shape) with entries in the carrier of an algebra.
 Composition uses the algebra's operations (join over tensor product).
 
 The hierarchy:
@@ -114,7 +114,7 @@ class Morphism(ABC):
     @property
     @abstractmethod
     def tensor(self) -> torch.Tensor:
-        """Materialize the morphism as a tensor with values in L."""
+        """Materialize the morphism as a tensor in the algebra's carrier."""
         ...
 
     @abstractmethod

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A canonical Bayesian [change-point model](https://doi.org/10.2307/2347570) in the rate of a [Poisson](https://en.wikipedia.org/wiki/Poisson_distribution) series, with a single switch at an unknown time `tau`. The classical application is the British coal-mining disaster series: the rate of accidents per year drops at an estimated change-point in the late nineteenth century. Two rates, one before and one after the switch, are tied together by a soft indicator parameterized as $s(t) = \sigma(k \cdot (t - \tau))$, which is the standard differentiable relaxation of the indicator $\mathbf{1}\{t > \tau\}$ and lets gradient-based variational inference fit the change-point location directly.
+A canonical Bayesian [change-point model](https://doi.org/10.2307/2347570) in the rate of a [Poisson](https://en.wikipedia.org/wiki/Poisson_distribution) series, with a single switch at an unknown time `tau`. The classical application is the British coal-mining disaster series: the rate of accidents per year drops at an estimated change-point in the late nineteenth century. Two rates, one before and one after the switch, are tied together by a soft indicator parameterized as $s(t) = \sigma(k \cdot (t - \tau))$, which is the standard differentiable relaxation of the indicator $\mathbf{1}\{t > \tau\}$ and lets gradient-based variational inference fit the change-point location directly. [@carlin1992changepoint]
 
 ## QVR source
 
@@ -46,6 +46,20 @@ program changepoint : Step -> Val
 export changepoint
 ```
 
+## Understanding the model
+
+Imagine counts that tend to be high early in a series and lower later.
+The unknown `tau` controls where the model changes between those regimes.
+The sigmoid gate makes a weighted transition between the two rates, so
+observations near `tau` can use an intermediate rate. This is a smooth-change
+model even when the synthetic series uses a hard switch.
+
+A [posterior interval](../tutorials/qvr/01-first-model.md#inspect-the-posterior) for `tau` describes uncertainty about the transition's
+location under this specification. It is not the same object as probabilities
+over finitely many hard switch points. In the latter model one switch is
+shared across the whole series: multiply all row likelihoods for each candidate
+switch before [summing over candidates](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping). The [Stan change point derivation](https://mc-stan.org/docs/stan-users-guide/latent-discrete.html#marginalizing-out-the-discrete-parameter) displays this discrete alternative explicitly [@stanLatentDiscrete].
+
 ## Walkthrough
 
 `tau` is the change-point time with a uniform prior over the 100-unit time window that the 64 steps of the `Step` plate fall inside. `rate_before` and `rate_after` are Gamma-prior intensities, each centered on a prior mean of 2 events per period. The identifier `t` is exogenous host-data: it is never declared inside the program, so the runtime resolves it from the observations dict at trace time, where the caller supplies the per-step vector of absolute observation epochs. The soft indicator $s = \sigma(20 (t - \tau))$ with steepness 20 gives a sharp but differentiable switch; the per-step rate is the convex combination of the two regime rates, and the observation `y : Step <- Poisson(rate)` is the per-step Poisson likelihood.
@@ -87,7 +101,7 @@ observations = {"y": y, "t": t_vec}
 
 ### SVI fit
 
-Re-initialise the program and fit `tau`, `rate_before`, and `rate_after` by maximising the ELBO. The oracle log-likelihood at the true rates (piecewise-constant indicator at `tau_true`) is reported for reference.
+Re-initialize the program and fit `tau`, `rate_before`, and `rate_after` by maximizing the ELBO. The oracle log-likelihood at the true rates (piecewise-constant indicator at `tau_true`) is reported for reference.
 
 ```python
 import torch.distributions as D
@@ -117,7 +131,7 @@ print(f"oracle -log p(y):  {-oracle_ll:.1f}")
 
 ### NUTS posterior
 
-The model declares explicit `sample` sites for `tau`, `rate_before`, and `rate_after`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small warmup and sample budgets keep the snippet inside tens of seconds while still producing a usable posterior summary.
+The model declares explicit `sample` sites for `tau`, `rate_before`, and `rate_after`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small warmup and sample budgets keep the snippet inside tens of seconds for an API demonstration; longer, diagnosed runs are needed for posterior interpretation.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -139,11 +153,11 @@ for name, samples in result.samples.items():
 
 ## Categorical perspective
 
-The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the joint $p(\tau, r_1, r_2) \prod_t \mathrm{Poisson}(y_t \mid r(t; \tau, r_1, r_2))$. The soft indicator is the [reparameterisation gradient](https://doi.org/10.48550/arXiv.1312.6114)-friendly relaxation of an indicator function; in the hard-change-point variant, the discrete `tau_idx` is integrated out by `marginalize`, realizing the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) along the trivial projection from the time axis to a singleton.
+The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the joint $p(\tau, r_1, r_2) \prod_t \mathrm{Poisson}(y_t \mid r(t; \tau, r_1, r_2))$. The soft indicator is the [reparameterization gradient](https://arxiv.org/abs/1312.6114)-friendly relaxation of an indicator function; in the hard-change-point variant, the discrete `tau_idx` is integrated out by `marginalize`, realizing the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) along the trivial projection from the time axis to a singleton. [@giry1982categorical] [@kingma2014autoencoding]
 
 
-## References
+## Sources and further reading
 
-- Bradley P. Carlin, Alan E. Gelfand, and Adrian F. M. Smith. 1992. Hierarchical Bayesian analysis of changepoint problems. *Journal of the Royal Statistical Society Series C: Applied Statistics*, 41(2):389–405.
-- Diederik P. Kingma and Max Welling. 2013. Auto-Encoding Variational Bayes. arXiv preprint arXiv:1312.6114.
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *Hierarchical Bayesian Analysis of Changepoint Problems* [@carlin1992changepoint].
+- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].
+- *A categorical approach to probability theory* [@giry1982categorical].

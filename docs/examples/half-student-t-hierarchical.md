@@ -66,11 +66,23 @@ program hierarchical_regression : Resp -> Val
 export hierarchical_regression
 ```
 
+## Understanding the model
+
+There are two kinds of spread to estimate. `sigma` describes responses
+varying around their group-adjusted mean; `tau` describes group offsets
+varying around zero. Sharing `tau` lets groups with limited data borrow
+information about the plausible size of an offset, which is [partial pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered).
+
+The half-Student-t prior puts more mass on large scale values than a
+half-Normal. All observations still share the residual scale `sigma`, so
+increasing it widens every conditional Normal distribution. A Student-t
+observation family would instead give the residual distribution heavier tails. Stan’s [robust noise examples](https://mc-stan.org/docs/stan-users-guide/regression.html#robust-noise-models) show this change to the observation likelihood [@stanRegression].
+
 ## Walkthrough
 
 `object Group : FinSet 6` and `object Resp : FinSet 60` are the two plates: six groups and sixty responses. `object Val : Real 1` is the value space of what the program returns, a real scalar, so the signature reads `Resp -> Val` rather than `Resp -> Resp`. The domain names the plate the responses are observed over; the codomain names the space the returned value lives in.
 
-`sample sigma <- HalfStudentT(3.0, 1.0)` draws the residual scale under a half-Student-t with $\nu = 3$ degrees of freedom and unit scale; the small $\nu$ admits occasional large scale draws that absorb data outliers without distorting the posterior on the regression coefficients. `sample tau <- HalfStudentT(3.0, 1.0)` gives the between-group scale the same treatment. `sample u : Group <- Normal(0.0, tau)` allocates one offset per group under that scale, and `let group_effect = u[group_idx]` gathers each row's offset through the exogenous `group_idx` design vector. `beta_0` and `beta_1` carry weakly-informative Normal priors; `let mu = ...` binds the linear predictor; the `observe` clause scores the response under a Normal likelihood. `return sigma` projects onto the residual-scale posterior, the diagnostic the analyst most commonly inspects.
+`sample sigma <- HalfStudentT(3.0, 1.0)` draws the residual scale under a half-Student-t with $\nu = 3$ degrees of freedom and unit scale; the small $\nu$ permits substantial prior mass on large scales. `sample tau <- HalfStudentT(3.0, 1.0)` gives the between-group scale the same treatment. `sample u : Group <- Normal(0.0, tau)` allocates one offset per group under that scale, and `let group_effect = u[group_idx]` gathers each row's offset through the exogenous `group_idx` design vector. `beta_0` and `beta_1` carry weakly-informative Normal priors; `let mu = ...` binds the linear predictor; the `observe` clause scores the response under a Normal likelihood. `return sigma` projects onto the residual-scale posterior, the diagnostic the analyst most commonly inspects.
 
 ## Try it
 
@@ -108,7 +120,7 @@ x_in = torch.zeros(n_resp, 1)
 
 ### SVI fit
 
-Fit the five latent sites by maximising the ELBO. The negative ELBO falls from its starting value toward the oracle negative log-likelihood at the ground-truth parameters.
+Fit the five latent sites by maximizing the ELBO. The negative ELBO measures the variational objective; the oracle negative log-likelihood is a separate comparison that excludes prior and guide terms.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -147,8 +159,8 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Use cases
 
-The half-Student-t is one option for a positive scale when a half-Normal tail is too light. `HalfCauchy` is the $\nu = 1$ special case, not a limit. The prior does not by itself make the likelihood robust to observation-level outliers; a heavy-tailed observation family would address that separately.
+The half-Student-t is one option for a positive scale when a half-Normal tail is too light. `HalfCauchy` is the $\nu = 1$ special case. Here the prior governs a shared scale; the observation likelihood remains Normal.
 
-## References
+## Sources and further reading
 
-- Andrew Gelman. 2006. Prior distributions for variance parameters in hierarchical models. *Bayesian Analysis*, 1(3):515-534.
+- *Prior distributions for variance parameters in hierarchical models* [@gelman2006variance].

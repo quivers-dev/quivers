@@ -2,7 +2,7 @@
 
 ## Overview
 
-A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) ([MacKay, 1992](https://doi.org/10.1162/neco.1992.4.3.448)) places priors over network weights. The QVR source below declares a conditional MLP kernel without those priors; the later `lift_from_log_prob` block adds them. The response is [Normal](https://en.wikipedia.org/wiki/Normal_distribution) about a learned function of the input,
+A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) [@mackay1992bayesian] places priors over network weights. The QVR source below declares a conditional MLP kernel without those priors; the later `lift_from_log_prob` block adds them. The response is [Normal](https://en.wikipedia.org/wiki/Normal_distribution) about a learned function of the input,
 
 $$
 \mu(x),\, \sigma(x) \;=\; \mathrm{MLP}(x), \qquad y_n \;\sim\; \mathcal{N}\!\bigl(\mu(x_n),\, \sigma(x_n)\bigr).
@@ -53,11 +53,26 @@ program bnn : Resp -> Target
 export bnn
 ```
 
+## Understanding the model
+
+There are two sources of uncertainty in a Bayesian neural network. Even if
+the weights were known, observations would vary around the network's mean;
+that is the Normal kernel's noise. With finite data, the weights themselves
+are also uncertain; a prior and posterior over weights represent this second
+source. The code below first fits one weight vector, then adds the priors
+needed to represent weight uncertainty. Pyro’s [Bayesian regression model](https://pyro.ai/examples/bayesian_regression.html#Model) demonstrates this change from fitted weights to weight distributions in a smaller linear network [@pyroBayesianRegression].
+
+A [posterior prediction](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) draws weights, computes a mean and scale for the new
+input, then draws an outcome. The initial maximum-likelihood block instead
+holds one fitted weight vector. Compare their predictions on inputs outside
+the training region, where uncertainty about the function can matter more
+than the fitted residual noise.
+
 ## Walkthrough
 
 `object Feature : Real 1` and `object Target : Real 1` declare the input and response as one-dimensional continuous spaces; `object Resp : FinSet 200` is the discrete plate indexing the rows. The plate is what the `observe` step reduces over, so it is the program's domain, and `Target` is the value space of the returned response, so it is the codomain.
 
-`morphism net : Feature -> Target [param_source=mlp, hidden_dim=64] ~ Normal` declares the network. The `~ Normal` clause makes `net` a conditional-Normal kernel rather than a tensor: applied to an input it returns a distribution over `Target`, parameterised by a mean and a log-scale. Those two numbers are what the parameter network emits, so the concrete module behind `net` is
+`morphism net : Feature -> Target [param_source=mlp, hidden_dim=64] ~ Normal` declares the network. The `~ Normal` clause makes `net` a conditional-Normal kernel rather than a tensor: applied to an input it returns a distribution over `Target`, parameterized by a mean and a log-scale. Those two numbers are what the parameter network emits, so the concrete module behind `net` is
 
 ```
 Linear(1, 64) -> Tanh -> Linear(64, 64) -> Tanh -> Linear(64, 2)
@@ -73,8 +88,8 @@ under `tanh` before constructing the Normal family. The reference machine runs
 that graph with the compiled PyTorch modules. Transpile targets refuse
 `param-source:mlp`, however, because these model-internal weights are neither
 declared sample sites nor portable data from which a host program could
-reconstruct the network. This distinction is reported in the [measured support
-matrix](../transpile-support.md), not hidden by emitting a linear substitute.
+reconstruct the network. The [measured support matrix](../transpile-support.md)
+records the resulting capability diagnostic for each target.
 
 ## Try it
 
@@ -98,7 +113,7 @@ x_in = torch.zeros(N, 1)
 observations = {"y": y, "x": x}
 ```
 
-The target is a sine wave in noise, which is the point: it is a function no linear model can represent. `y` carries the `Target` event axis, so it is shaped `(N, 1)` rather than `(N,)`. The dummy `x_in` supplies the program's batch axis; the real covariate enters through `observations["x"]`.
+The target is a sine wave in noise, so its mean bends across the input range. `y` carries the `Target` event axis, so it is shaped `(N, 1)` rather than `(N,)`. The dummy `x_in` supplies the program's batch axis; the real covariate enters through `observations["x"]`.
 
 ### Fitting the network
 
@@ -159,19 +174,18 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-`log_prob_fn` runs inside the lifted program's score step, after the sampled
-weights are substituted into the network's parameter slots, so it reads the
-current draw rather than the values the fit above left behind. Sampling 4418
-weights defines a genuine posterior over networks, but the budget here is far
-too small for convergence. This example demonstrates the API rather than a
-usable posterior fit.
+`log_prob_fn` evaluates the likelihood with the sampled weights installed in
+the network. The resulting posterior has 4,418 weight coordinates. Ten warmup
+steps and ten draws from one chain exercise the call, but provide little
+information about exploration of that space. For a posterior analysis, increase
+warmup and draws, run multiple chains, and compare predictive functions across
+them alongside divergence and effective sample size diagnostics.
 
 ## Categorical perspective
 
-`net : Feature -> Target` is a Kleisli arrow $\mathbb{R} \to \mathcal{G}(\mathbb{R})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872), sending an input to a Gaussian measure over the response. The MLP is not part of that arrow's type: it is the map from the domain into the family's parameter space, and composing it with the Gaussian's parameterisation is what makes the kernel's mean and scale depend nonlinearly on the input.
+`net : Feature -> Target` is a Kleisli arrow $\mathbb{R} \to \mathcal{G}(\mathbb{R})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872), sending an input to a Gaussian measure over the response. The MLP is not part of that arrow's type: it is the map from the domain into the family's parameter space, and composing it with the Gaussian's parameterization is what makes the kernel's mean and scale depend nonlinearly on the input. [@giry1982categorical]
 
-This distinction separates a nonlinearity in the parameter network from one
-between composed morphisms. Under a strictly linear algebra, a chain
+Under a strictly linear algebra, a chain
 `W_1 >> W_2 >> W_3` of tensor morphisms collapses to a single linear map; the
 intermediate objects impose only a rank bound. Placing the nonlinearity inside
 the kernel's parameter source avoids that collapse while retaining the V-Cat

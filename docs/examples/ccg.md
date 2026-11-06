@@ -66,9 +66,24 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
 
 Combinatory Categorial Grammar (CCG) is expressed as an agenda-based weighted deduction whose items are chart spans `span(I, J, X)` (token range `[I, J)` carrying category `X`). The structural combinators of CCG, forward and backward application, harmonic composition, and crossed composition, each become one sequent rule. The semiring is `LogProb`, so inside scores flow as differentiable tensors back to whatever axiom / rule weights the user marks `learnable`.
 
+## Understanding the model
+
+A category describes what an expression can combine with. Read `NP/N` as
+an expression that takes a noun on its right and returns a noun phrase:
+`the` with that category can combine with `dog : N` to form `the dog : NP`.
+A verb seeking a noun phrase on its left can then complete the sentence.
+The [chart](pcfg.md#understanding-the-model) stores these partial results by their token intervals.
+
+Rule weights score derivations; alternatives leading to the same goal are
+combined by the chosen [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine). Under `LogProb`, weights add along a
+single derivation and `logsumexp` combines alternatives. Learnable log weights
+are not automatically normalized production or sentence probabilities.
+The separate Poisson rule-count program illustrates a Bayesian model of
+counts and should not be confused with the chart's sentence-scoring path.
+
 ## Walkthrough
 
-`object Term : FinSet 16` declares a finite carrier for chart items; the concrete cardinality is irrelevant because the deduction reasons symbolically over constructor-tagged tuples, not over enumerated elements of `Term`. `object Rule : FinSet 16` plays a different part: it indexes the rule-weight vector, and the `ccg_prior` program draws one `Normal(0.0, 1.0)` coordinate per slot of that index. A `FinSet N` always names an index of `N` elements, never the values a site takes; those come from the family, here `Normal`. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` declares a finite carrier for chart items; the concrete cardinality is irrelevant because the deduction reasons symbolically over constructor-tagged tuples, not over enumerated elements of `Term`. `object Rule : FinSet 16` plays a different part: it indexes the rule-weight vector, and the `ccg_prior` program draws one `Normal(0.0, 1.0)` coordinate per slot of that index. Here `Rule` indexes the coordinates; the `Normal` family makes each coordinate real-valued. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 `atoms NAME, NAME, ...` lists every identifier the rules may match literally, category atoms (`NP`, `S`, `N`, `VP`, `PP`), slash constructors (`Fwd`, `Bwd`), and the chart-item constructor (`span`). Identifiers not listed here that appear in a rule pattern are bound as wildcards; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`).
 
@@ -151,10 +166,10 @@ print("dominant yield:", Counter(map(tuple, draws)).most_common(1)[0][0])
 # → ('the', 'cat', 'barks')
 ```
 
-`adam_fit_deduction` maximises the corpus log-marginal under an
+`adam_fit_deduction` maximizes the corpus log-marginal under an
 optional Normal prior on the parameters; `prior_scale=1.0` gives MAP
 under a unit Normal. `sample_corpus` enumerates yields of the chosen
-length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalises the
+length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalizes the
 derivation forest.
 
 ### NUTS (full Bayesian posterior)

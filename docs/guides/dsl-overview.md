@@ -1,7 +1,15 @@
 # The QVR DSL: Overview
 
+QVR is a domain-specific language: its declarations express models using
+objects, typed operations, random draws, and observations. Read `A -> B` as
+"takes an input of type A and produces an output of type B"; for a
+probability kernel, the output is random. The
+[concepts introduction](../getting-started/concepts.md) explains the
+distinction between relation scores, kernels, and fitted posteriors.
+
+
 `.qvr` is the file format you write probabilistic programs in. A
-`.qvr` file declares some types (objects and continuous spaces),
+`.qvr` file declares some types (objects and [continuous spaces](continuous-spaces.md#continuousspace-hierarchy)),
 some morphisms (parameters, kernels, observed data), and one or
 more `program` blocks that sample, observe, and return values.
 Compilation produces a trainable [PyTorch
@@ -26,8 +34,7 @@ optimizer = torch.optim.Adam(prog.parameters())
 
 `load("model.qvr")` reads the same syntax from a file path.
 
-The `program` block looks familiar if you've used Pyro,
-NumPyro, Stan, or PyMC: `sample x <- F(...)` draws a value,
+The main program keywords describe a generative model: `sample x <- F(...)` draws a value,
 `observe` scores data, `marginalize` integrates out a discrete latent,
 `let` is a deterministic binding, and `return` names the program's
 output.
@@ -39,11 +46,11 @@ A few features distinguish QVR from those alternatives:
   `[over=..., iid_over=...]` axis-role clause on each `sample` /
   `observe` / `marginalize` step.
   [Matrix-Normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution),
-  [LKJ](https://doi.org/10.1016/j.jmva.2009.04.008),
+  LKJ [@lewandowski2009lkj],
   [Gaussian-process](https://en.wikipedia.org/wiki/Gaussian_process),
-  and [Horseshoe](https://doi.org/10.1093/biomet/asq017) priors take
+  and Horseshoe [@carvalho2010horseshoe] priors take
   the form they take on paper.
-- **Marginalization as a control-flow construct.**
+- **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) as a control-flow construct.**
   `marginalize z : K <- F(...)` followed by an indented body is a
   syntactic block, not a runtime flag; the compiler emits the
   [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp).
@@ -53,14 +60,22 @@ A few features distinguish QVR from those alternatives:
   effects are `Pure`, `Sample`, `Score`, `Marginal`; the compiler
   rejects an effectful step inside a `[effects=[Pure]]` block
   before training starts.
-- **A typed categorical denotation.** Every well-typed phrase has a
-  meaning in a $\mathcal{V}$-enriched [symmetric monoidal closed
-  category](https://ncatlab.org/nlab/show/symmetric+monoidal+closed+category);
-  the compiler is proved adequate against the denotation
-  in the [semantics chapter](../semantics/index.md). You can
-  ignore this layer unless you want to extend the language.
+- **Explicit mathematical structure.** The [semantics chapter](../semantics/index.md)
+  states interpretations and their algebraic assumptions. Typed boundaries
+  catch incompatible compositions; stronger categorical laws require the
+  hypotheses of the selected structure. You can begin with the modeling
+  syntax and consult that layer when deriving laws or extending the language.
 
 ## Compilation pipeline
+
+Compilation first reads source syntax, then resolves names and checks
+types, then constructs executable representations. An **abstract syntax
+tree (AST)** is the structured representation of what was written.
+**Elaboration** expands convenient syntax into more explicit typed
+operations. The checked core provides a shared representation for
+execution and translation; a backend still has to support the operations
+that a particular model uses. The diagram gives the detailed paths.
+
 
 ```mermaid
 flowchart TB
@@ -135,7 +150,7 @@ computations enumerated under the prelude's enumeration handler. Quivers
 constructs the module's first-order projection through Didactic's `GADT` API,
 which checks indexed-family declarations and constructor refinements through
 Panproto; Didactic then negotiates the exact route `qvr-source/v0.20` to
-`qiec-core/v1alpha1`, and the QIEC checker validates effect rows, handler
+`qiec-core/v1alpha1`, and the QIEC checker validates [effect rows](../reference/qvr/effects-and-handlers.md#effect-rows), handler
 coverage, call graphs, and branch-local evidence over the whole module at
 once.
 
@@ -182,6 +197,12 @@ variants). This makes `panproto schema diff`,
 available on `.qvr` programs without further work.
 
 ## Grammar
+
+Use this table to look up how declarations and expressions fit together.
+In the EBNF notation below, `|` separates alternatives, `[...]` marks
+optional syntax, and `*` means zero or more repetitions. The declaration
+and program guides explain these forms through examples.
+
 
 The authoritative grammar is the tree-sitter source at
 `grammars/qvr/grammar.js` in the quivers repository and in the installed wheel.
@@ -247,7 +268,7 @@ morphism_init_family
                := IDENT '(' [draw_arg (',' draw_arg)*] ')'
 
 (* Option block. Keys depend on the surrounding form. For
-   morphisms / sample / observe / marginalize, the recognised keys
+   morphisms / sample / observe / marginalize, the recognized keys
    include `role`, `effects`, `over`, `iid_over`, `via`, `init`,
    `reduction`. `[]` is the empty option block. *)
 option_block   := '[' [option_entry (',' option_entry)*] ']'
@@ -416,7 +437,7 @@ errors raise `ParseError`.
 
 1. **Always declare objects before using them** in morphisms.
 2. **Algebra must come first** (if specified).
-3. **Use let to name complex compositions** for clarity.
+3. **Use `define` to name top-level compositions** and `let` for program-local values.
 4. **Programs are the main output**: use them for
    [inference](inference-foundations.md).
 5. **Type errors in composition** happen at compile time, not
@@ -436,8 +457,6 @@ errors raise `ParseError`.
   type-driven wiring inference, `share`, and the explicit `wiring`
   escape hatch.
 
+## Further reading
 
-## References
-
-- Carlos M. Carvalho, Nicholas G. Polson, and James G. Scott. 2010. The horseshoe estimator for sparse signals. *Biometrika*, 97(2):465–480.
-- Daniel Lewandowski, Dorota Kurowicka, and Harry Joe. 2009. Generating random correlation matrices based on vines and extended onion method. *Journal of Multivariate Analysis*, 100(9):1989–2001.
+- [@carvalho2010horseshoe]

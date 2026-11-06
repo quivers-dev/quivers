@@ -2,14 +2,21 @@
 
 ## The FinStoch Category
 
+A stochastic map assigns a probability distribution to each possible input.
+For instance, given today's weather, a row might assign probabilities to
+tomorrow's weather. An ordinary deterministic map is the special case with
+one `1` per row and zeros elsewhere. [Composition](morphisms.md#composition-the-operator) asks for the distribution
+after passing through an intermediate state whose value is not retained.
+
+
 **FinStoch** is the category of finite sets and stochastic maps (Markov kernels):
 
-- **Objects**: finite sets (as in the base category)
+- **Objects**: [finite sets](core.md#finset) (as in the base category)
 - **Morphisms** $A \to B$: stochastic matrices of shape $(|A|, |B|)$ with rows summing to 1
 - **Composition**: standard matrix multiplication
 - **Identity**: Kronecker delta
 
-FinStoch is the Kleisli category of the Giry monad, restricted to finite sets.
+FinStoch is the [Kleisli category](monadic.md#kleisli-category) of the Giry monad, restricted to finite sets.
 
 ```python
 from quivers.stochastic import StochasticMorphism, FinStoch
@@ -32,6 +39,17 @@ assert (h.tensor.sum(dim=-1) - 1.0).abs().max() < 1e-5
 ```
 
 ## MarkovAlgebra
+
+Using the two tables below, the chance of output zero from input zero is
+`0.7 * 0.5 + 0.3 * 0.8 = 0.59`. The two terms concern mutually exclusive
+intermediate states, so they add. Row sums remain one because each second
+stage row is a complete conditional distribution.
+
+Here the API operation `join` computes ordinary sums. For example,
+`join(0.7, 0.7)` is `1.4`, whereas their lattice supremum is `0.7`.
+The row-normalization constraints make composed kernels stay in `[0,1]`:
+each output entry is a weighted average of conditional probabilities.
+
 
 The enrichment for FinStoch uses the Markov algebra:
 
@@ -68,7 +86,7 @@ assert torch.allclose(composed, expected)
 
 ## Stochastic Morphisms
 
-A stochastic morphism is a learnable Markov kernel parameterized by an unconstrained weight matrix and a softmax normalization:
+A stochastic morphism is a learnable Markov kernel parameterized by an unconstrained weight matrix and a [softmax normalization](transformations.md#first-class-transformations):
 
 ```python
 from quivers.stochastic import StochasticMorphism
@@ -94,7 +112,7 @@ An alias `CategoricalMorphism` is provided with explicit categorical semantics.
 
 ## Discretized Distribution Families
 
-When the codomain is continuous (not a finite set), quivers provides discretized versions of standard distributions. These map a finite input set to a bucketed approximation of the distribution.
+For approximating continuous-valued distributions with finite tables, Quivers provides discretized distribution families. These map a finite input set to a bucketed approximation of the distribution.
 
 ```python
 from quivers.stochastic.families import (
@@ -121,6 +139,15 @@ beta = DiscretizedBeta(X, Bins15)
 ```
 
 ## Conditioning and Bayesian Updates
+
+Evidence reweights possibilities and then normalizes what remains. If a row
+is `[0.6, 0.4]` and evidence weights are `[0.2, 0.8]`, its weighted entries
+are `[0.12, 0.32]`, and its normalized posterior row is approximately
+`[0.273, 0.727]`. This operation updates outputs conditional on each input;
+recovering a distribution over inputs from observed outputs additionally
+requires a prior over those inputs. Zero total evidence has no ordinary
+Bayesian normalization and must be treated as a support problem.
+
 
 Bayesian conditioning via Bayes' rule. Given a joint distribution $p(x, y)$ and observation $\text{obs}(y)$, compute $p(x | \text{obs}(y))$:
 
@@ -237,6 +264,17 @@ expect = expectation(f, values)                      # shape (|X|,)
 
 ## The Giry Monad and FinStoch
 
+For the measure-theoretic construction see [@giry1982categorical]; for
+probability kernels in a broader categorical account see [@fritz2020synthetic].
+
+The unit sends an outcome to certainty at that outcome, called a point
+mass. Flattening a distribution of distributions forms their mixture.
+For instance, choosing equally between Bernoulli probabilities `0.2` and
+`0.8` gives success probability `0.5`. The Giry monad states these
+operations for probability measures on measurable spaces; finite tables
+represent its kernels without enumerating the whole space of measures.
+
+
 The Giry monad $\mathcal{G}$ sends a space $X$ to its space of probability measures. On finite sets, this becomes:
 
 $$\mathcal{G}(X) = \{\text{probability distributions on } X\}$$
@@ -265,4 +303,6 @@ fs = FinStoch()
 h2 = fs.compose(f, g)
 ```
 
-Stochastic morphisms are composed exactly as in FinStoch (matrix multiplication), not via Kleisli composition. They form a category in their own right.
+Matrix multiplication is precisely Kleisli composition for finite probability
+kernels: it multiplies probabilities along a route and sums over intermediate
+outcomes. These are two descriptions of the same operation.

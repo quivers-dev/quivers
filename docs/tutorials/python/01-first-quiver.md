@@ -1,10 +1,21 @@
 # Tutorial 1: Your First Quiver
 
-A quiver here is a directed graph whose edges carry values in a lattice ([algebra](https://ncatlab.org/nlab/show/algebra)). When the algebra is $[0, 1]$ with product t-norm and noisy-OR, its morphisms are fuzzy relations: functions from pairs of objects to truth values in $[0, 1]$. This chapter constructs these objects and morphisms as tensors, composes them, and exposes their parameters to PyTorch.
+Begin with two tables: one relates positions to colors, and another relates
+colors to outcomes. We want to connect them into a table from positions to
+outcomes. Quivers calls each [named set](../../getting-started/concepts.md#1-an-object-names-the-possible-values) an *object* and each typed relation a
+*morphism*. This chapter builds those relations as tensors and learns their
+entries with PyTorch. The default algebra combines [fuzzy membership values](04-fuzzy-factorization.md#background)
+using multiplication and noisy-OR; their meaning is developed below.
 
-If you're coming from Stan, PyMC, or Pyro: the Python API is the lower-level interface that the [QVR DSL](../qvr/01-first-model.md) compiles to. You write models as compositions of typed tensors instead of as `program` blocks. Use this track when you want to build new categorical constructs, write libraries on top of quivers, or read the type errors emitted by the DSL compiler. For day-to-day modelling, the DSL track is the right entry point.
+For the general idea of typed composition, Milewski begins with ordinary
+[function composition](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/)
+[@milewski2014composition]. The numerical composition used here needs its own
+algebraic assumptions, which the [conceptual introduction](../../getting-started/concepts.md)
+distinguishes from ordinary function composition.
 
-The setup in this chapter is deliberately tiny: three finite sets and one composed pipeline. The point is to see that *morphism* in this library is concretely a tensor with a typed signature, and that `>>` is concretely a (typed) tensor contraction. Everything else builds on these two ideas.
+If you're coming from Stan, PyMC, or Pyro: the Python API is the lower-level interface that the [QVR DSL](../qvr/01-first-model.md) compiles to. You write models as compositions of typed tensors instead of as `program` blocks. Use this track when you want to build new categorical constructs, write libraries on top of quivers, or read the type errors emitted by the DSL compiler. For day-to-day modeling, the DSL track is the right entry point.
+
+The example uses three finite sets and two tables. Their typed signatures identify the shared axis that `>>` contracts.
 
 ## Concepts
 
@@ -132,6 +143,18 @@ $$
 
 In PRODUCT_FUZZY, $\otimes$ is multiplication and $\bigvee$ is $1 - \prod_i (1 - x_i)$.
 
+To read the equation, fix one position `x` and outcome `z`. For each color
+`y`, multiply the strength of the position-to-color relation by the strength
+of the color-to-outcome relation. Then combine those alternatives. If two
+routes contribute `0.4` and `0.3`, noisy-OR gives `1 - 0.6 * 0.7 = 0.58`.
+A third route of strength zero changes nothing; a route of strength one makes
+the combined value one.
+
+Each outcome receives a fuzzy membership score independently, so a row can
+sum to more than one. Product with noisy-OR can also make bracketing affect
+the result. Keep the written order of composition when extending this example
+to three or more tables.
+
 ## Accessing tensor values
 
 Once composed, access the materialized tensor:
@@ -145,6 +168,8 @@ print(tensor_value.min(), tensor_value.max())  # check range
 For a relation in PRODUCT_FUZZY, values should lie in $[0, 1]$.
 
 ## Working as a Differentiable Module
+
+The [PyTorch autograd tutorial](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients) explains the `requires_grad`, `backward`, and `.grad` operations used by this training loop [@pytorchAutogradTutorial].
 
 Wrap a morphism in a [`Program`](../../api/program.md) to make it a differentiable `nn.Module`:
 

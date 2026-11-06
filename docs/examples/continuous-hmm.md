@@ -48,6 +48,20 @@ export generative_step
 export filter_and_reconstruct
 ```
 
+## Understanding the model
+
+A hidden state represents something evolving that is not directly measured,
+such as position; an emission represents a noisy measurement of it. The
+transition answers where the next state might be given the previous state.
+The emission answers what observation might be seen given that new state.
+A recognition model asks the reverse inferential question, but must be trained
+or derived to answer it.
+
+The fitting blocks supply synthetic `s_new` as well as `o`, teaching the
+kernels from known transitions and observations. To infer states from measurements,
+`s_new` would need to remain unobserved and the inference method would need
+to [approximate](../tutorials/python/05-variational-inference.md#creating-a-guide) its distribution conditional on `o`.
+
 ## Walkthrough
 
 `object State : Real 16` and `object Obs : Real 8` introduce the two Euclidean spaces: a 16-dimensional latent and an 8-dimensional observation.
@@ -56,7 +70,7 @@ export filter_and_reconstruct
 
 `program generative_step : State -> State` is a one-step monadic program: `sample s_new <- transition` draws the new latent state from the transition kernel, `observe o <- emission(s_new)` scores an observation against the emission kernel, and `return s_new` projects the program's joint kernel onto the new state. `repeat(generative_step, n)` can compose this endomorphism a fixed number of times. A `scan` cell instead needs a product domain `Input * State -> State`, as the separate `inference_cell` declaration shows.
 
-`morphism inference_cell : Obs * State -> State ~ Normal` is a learned recurrent cell that incorporates a new observation into a state representation. `define filter = scan(inference_cell)` threads it across a sequence; calling this path a filter describes its intended role, not an exact Bayesian filtering guarantee.
+`morphism inference_cell : Obs * State -> State ~ Normal` is a learned recurrent cell that incorporates a new observation into a state representation. `define filter = scan(inference_cell)` threads it across a sequence. Using it as an approximate Bayesian filter would require training its state distributions against a filtering objective.
 
 `morphism decoder : State -> Obs ~ Normal` decodes a state back to observation space; `define filter_and_reconstruct = scan(inference_cell) >> decoder` composes the scan with the decoder so the exported pipeline filters and reconstructs in one composite.
 
@@ -93,7 +107,7 @@ sites = {"s_new": s[1:T + 1], "o": o}
 
 ### SVI fit
 
-The exported program is a single-step [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) with no explicit priors on the kernel parameter networks; [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts each leaf parameter into a unit-Normal sample site so [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) can build a mean-field surrogate. With both `s_new` and `o` observed, the ELBO is the parameter-marginal log-likelihood of the full trajectory.
+The exported program is a single-step [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) with no explicit priors on the kernel parameter networks; [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts each leaf parameter into a unit-Normal sample site so [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) can build a mean-field surrogate. With both `s_new` and `o` observed, the ELBO bounds the log evidence for that supplied trajectory under the lifted parameter model; it is not the evidence itself.
 
 ```python
 from quivers.inference import bayesian_lift_parameters
@@ -144,6 +158,6 @@ print("divergences:", int(result.divergence_counts.sum()))
 
 ## Categorical perspective
 
-The `scan` combinator implements [Kleisli composition](https://en.wikipedia.org/wiki/Kleisli_category) threaded through time. Given a cell $f : O \times S \to S$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category), it consumes an observation sequence, threads the sampled state, and returns the terminal state. The current `inference_cell` is learned directly; the categorical construction alone does not make it the exact filtering posterior.
+The `scan` combinator implements [Kleisli composition](https://en.wikipedia.org/wiki/Kleisli_category) threaded through time. Given a cell $f : O \times S \to S$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category), it consumes an observation sequence, threads the sampled state, and returns the terminal state. The current `inference_cell` defines a learned conditional Normal update; an exact filtering posterior would require the Bayesian conditioning calculation for the transition and observation model. [@giry1982categorical]
 
 The generative program uses `transition` and `emission`; the recognition path uses distinct `inference_cell` and `decoder` morphisms. The source does not tie their parameters or call `bayes_invert`, so the two paths are not the same kernels run in opposite directions.

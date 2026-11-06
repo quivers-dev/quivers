@@ -1,13 +1,20 @@
 # Analysis: Fitting and Diagnostics
 
-This page covers the back-half of the analysis stack: the one-line
-`fit(...)` entry point, the
-[ArviZ](https://python.arviz.org/)-based diagnostics adapter,
-algebra-guided initialization and saturation diagnostics, and
-autograd-safe morphism transforms. [Data and Formulas](analysis-data-and-formulas.md)
+After specifying a model, use the
+`fit(...)` entry point to estimate its posterior. The sections below cover
+[ArviZ](https://python.arviz.org/) diagnostics, initialization for each
+algebra, and morphism transforms that preserve gradients. [Data and Formulas](analysis-data-and-formulas.md)
 covers data loading and the formula DSL.
 
 ## One-line fit
+
+A fit combines three choices: a model (formula, family, and priors),
+an inference method, and data. The returned object preserves the model
+source as well as the approximation to its posterior. Inspecting the
+source shows which parameters were introduced and which data columns
+they use. The diagnostics below assess chain exploration and compare
+replicated observations with the supplied data.
+
 
 <!-- python: skip -->
 ```python
@@ -59,6 +66,32 @@ Prior keys reference the latent name as it appears in the emitted
 QVR source; use `formula_to_qvr` to inspect names upfront.
 
 ## Diagnostics: `quivers.diagnostics`
+
+Chain diagnostics such as
+R-hat and effective sample size assess aspects of MCMC exploration.
+[Posterior predictive](inference-svi.md#predictive-sampling) checks ask whether simulated data reproduce chosen
+features of the observations. Predictive comparison estimates performance
+on held-out observations. For instance, chains may agree closely on a
+Normal model’s parameters while its replicated data miss the extreme
+values in the observations.
+
+Stan’s [choice of predictive statistics](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) explains how means, dispersion, and tail behavior probe different model assumptions. [@stanPredictiveChecks] The [MCMC guide](inference-mcmc.md#mcmc-hmc-and-nuts) describes the chains that supply posterior draws.
+
+**Leave-one-out (LOO)** comparison estimates prediction for each observation
+when it is left out of the fit. **Pareto-smoothed importance sampling
+(PSIS)** approximates that calculation by reweighting posterior draws.
+Large Pareto shape estimates indicate unstable reweighting. For those
+observations, refitting with the observation omitted can give a more
+reliable predictive comparison. Stacking chooses weights to improve the
+combined predictive distribution on held-out data.
+
+A posterior predictive p-value compares a statistic of replicated data
+with the same statistic of observed data. For instance, a mean-response
+check asks whether replicated means tend to fall above or below the
+observed mean. A value near one half can coexist with a poor fit to the
+variance: two distributions may have the same mean and very different
+spreads. Choose statistics that reflect the features your model should explain.
+
 
 The [diagnostics adapter](../api/diagnostics/index.md) connects
 between quivers' inference records and
@@ -114,7 +147,7 @@ tensors that
 delegates to
 [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html)
 with stacking weights
-([Yao et al. 2018](https://doi.org/10.1214/17-BA1091)).
+[@yao2018stacking].
 Its `round_to` parameter is ArviZ's rounding policy:
 `"auto"` is the display-oriented default, an integer selects decimal
 places, and `"none"` preserves full numeric precision. The
@@ -159,7 +192,7 @@ tag every program step (`latent`, `observe`, `marginalize`, or
   predecessor; a `let` before any stochastic step has depth `0`,
 - the governing `algebra_name` (read from the surrounding
   `composition <name> [level=<algebra>]` declaration),
-- the inferred `intermediate_size` after the step's contraction
+- the inferred `intermediate_size` after the step's [contraction](dsl-contractions.md#type-driven-wiring-inference)
   / activation.
 
 <!-- python: skip -->
@@ -182,9 +215,9 @@ layer-width checks through `ChainShape`.
 
 Each algebra exposes an algebra-specific init recipe via
 [`Algebra.init_spec(depth, intermediate_size) -> InitSpec`](../api/core/algebras.md).
-The recipes target the algebra's neutral element: a `K`-way product
-under `ProductFuzzy` should start near $p \approx \ln(2) / k$ so
-the partial product stays near $1/2$; Boolean / Gödel weights start
+The recipes target the algebra's neutral element: a `k`-way noisy-OR
+under `ProductFuzzy` starts near $p \approx \ln(2) / k$ so
+the aggregate stays near $1/2$; Boolean / Gödel weights start
 at $1/2$; probabilistic kernels start at $1 / k$ for a $k$-way
 output; Real algebras use the conventional Kaiming-style scale.
 
@@ -237,6 +270,16 @@ random init.
 
 ### saturation_warnings
 
+Saturation occurs when a numerical transformation becomes insensitive
+to its input: a sigmoid far into either tail has a small derivative.
+A long product can likewise drive scores toward zero, while repeated
+noisy-OR can drive them toward one. Initialization recipes aim to keep
+early calculations in a range with usable gradients. After a warning,
+inspect the affected scores and their gradients during training; scores
+clustered near zero or one with tiny gradients can motivate a different
+initialization or parameterization.
+
+
 `saturation_warnings(module)` returns
 source-keyed warnings about latents whose algebra-guided init
 recipe differs materially from the default `Normal(0, 1)` init. It
@@ -284,11 +327,11 @@ whose `.tensor` is recomputed from the source's tensor on each
 access, and whose `.module()` registers the source as a submodule
 so `.parameters()` walks reach the upstream learnable parameters.
 Every backward through a fresh `.tensor` access gets its own
-autograd graph, so multi-step optimisation propagates gradients
+autograd graph, so multi-step optimization propagates gradients
 through the V-Cat representation correctly.
 
 [`ObservedMorphism`](../api/core/morphisms.md#quivers.core.morphisms.ObservedMorphism)
-is the wrapper for genuinely frozen data tensors (the
+is the wrapper for fixed data tensors (the
 `from_data(...)` path); it does not double as the wrapper for
 derived-from-source morphisms. The categorical distinction "this
 morphism is a tensor function of another morphism" earns the
@@ -298,8 +341,16 @@ class.
 
 ### Multi-step optimization pattern
 
+Keeping the source in the module tree preserves parameter registration,
+but derivatives still depend on the transformation itself. A hard
+threshold returns discrete decisions and has no useful gradient through
+those decisions. The example uses a differentiable conversion; train
+with an appropriate smooth objective before applying a hard threshold
+for reporting or a later discrete calculation.
+
+
 The pattern below trains a latent `W` and uses
-`W.change_base(...).dagger` in the loss; both passes through the
+`W.change_base(...).dagger` with a differentiable identity conversion in the loss; both passes through the
 optimizer see the gradient flowing back through `W`'s underlying
 parameter.
 
@@ -307,7 +358,7 @@ parameter.
 ```python
 import torch
 from quivers.dsl import loads
-from quivers.core.algebra_morphisms import Threshold
+from quivers.core.algebra_morphisms import IdentityHom
 
 program = loads('''
 composition product_fuzzy [level=algebra]
@@ -317,7 +368,8 @@ morphism W : X -> Y [role=latent, init=auto]
 export W
 ''')
 W = program.morphism
-phi = Threshold(tau=0.5)  # ProductFuzzyAlgebra -> BooleanAlgebra
+phi = IdentityHom(W.algebra)
+target = torch.eye(8)
 
 opt = torch.optim.Adam(program.parameters(), lr=1e-2)
 for step in range(100):
@@ -394,7 +446,6 @@ program, the user edits the source, and feeds it back through
   the `[init=auto]` annotation that consumes
   `Algebra.init_spec` at compile time.
 
+## Further reading
 
-## References
-
-- Yuling Yao, Aki Vehtari, Daniel Simpson, and Andrew Gelman. 2018. Using stacking to average Bayesian predictive distributions (with discussion). *Bayesian Analysis*, 13(3):917–1007.
+- [@yao2018stacking]

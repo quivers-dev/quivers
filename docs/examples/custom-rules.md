@@ -59,9 +59,23 @@ deduction AB : Term -> Term [semiring=LogProb, start=S, depth=6]
 
 Every rule in a `deduction { … }` block is a sequent declared in the DSL itself; there are no built-in named rule schemas to import. This example defines an AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic composition over chart-spans `span(I, J, X)`. `Fwd(X, Y)` is the forward-slash constructor `X/Y`; `Bwd(X, Y)` is the backward-slash constructor `X\Y`.
 
+## Understanding the model
+
+A rule is a template for combining known facts. Suppose one chart entry is
+`span(0, 1, Fwd(NP, N))` and the next is `span(1, 2, N)`. The repeated position
+and category variables in forward application must agree, giving
+`span(0, 2, NP)`. This agreement is unification: different occurrences of one
+variable receive one value within that rule firing.
+
+An [agenda](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) records newly derived entries and tries rules that can use them.
+Weights say how to combine evidence along a derivation and across alternatives.
+Changing the rule changes what can be derived; changing the [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) changes
+what is accumulated about those derivations. Keep those two choices separate
+when interpreting the returned goal weight.
+
 ## Walkthrough
 
-`object Term : FinSet 16` is the index the deduction's domain and codomain range over; its cardinality is incidental, since rules match constructor-tagged tuples symbolically. `object Rule : FinSet 16` indexes the rule-weight vector instead, and the `custom_rules_prior` program puts an independent `Normal(0.0, 1.0)` on each of its coordinates. Both are indices: the values a site carries come from its family, not from the `FinSet`. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` is the index the deduction's domain and codomain range over; its cardinality is incidental, since rules match constructor-tagged tuples symbolically. `object Rule : FinSet 16` indexes the rule-weight vector instead, and the `custom_rules_prior` program puts an independent `Normal(0.0, 1.0)` on each of its coordinates. Here the `Normal` family makes each indexed coordinate real-valued. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 `atoms NAME, NAME, …` lists every identifier the rules may match literally. Category atoms (`S`, `NP`, `N`, `VP`, `PP`), slash constructors (`Fwd`, `Bwd`), and the chart-item constructor (`span`) are atoms. Identifiers that appear in a rule pattern but are *not* listed in `atoms` are pattern variables; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`).
 
@@ -159,10 +173,10 @@ print("dominant yield:", max(set(map(tuple, draws)), key=draws.count))
 # → ("the dog runs",)
 ```
 
-`adam_fit_deduction` maximises the corpus log-marginal under an
+`adam_fit_deduction` maximizes the corpus log-marginal under an
 optional Normal prior on the parameters; `prior_scale=1.0` gives MAP
 under a unit Normal. `sample_corpus` enumerates yields of the chosen
-length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalises the
+length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalizes the
 derivation forest.
 
 ### NUTS (full Bayesian posterior)
@@ -207,4 +221,4 @@ total in place of the Gaussian likelihood.
 
 ## Categorical perspective
 
-Sequent rules are hyperedges in the rule-system multicategory. A binary rule is a 2-input / 1-output hyperedge whose endpoints are pattern templates; firing the rule against the chart is the substitution along a pattern morphism into the category of concrete chart items. Variable unification across premises is exactly the pullback in the category of variable assignments: two premise patterns sharing a variable `Y` constrain the two assignments to agree on `Y`'s value. The agenda's least-pre-fixed-point computation in the `LogProb`-enriched lattice of charts is independent of firing order (Goodman 1999 §3); the runtime picks a default strategy from rule arities and semiring properties.
+Sequent rules are hyperedges in the rule-system multicategory. A binary rule is a 2-input / 1-output hyperedge whose endpoints are pattern templates; firing the rule against the chart is the substitution along a pattern morphism into the category of concrete chart items. Variable unification across premises is exactly the pullback in the category of variable assignments: two premise patterns sharing a variable `Y` constrain the two assignments to agree on `Y`'s value. The chart accumulates the weights of derivations, combining premises and alternatives with the semiring operations [@goodman1999semiring]. Agreement between evaluation orders requires an appropriate algorithm: repeated contributions must be handled correctly, and recursive systems need termination or convergence conditions. The runtime selects a default strategy from rule arities and semiring properties; an arbitrary firing order need not preserve the result.

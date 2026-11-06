@@ -2,7 +2,7 @@
 
 ## Overview
 
-The [deep Markov model](https://doi.org/10.1609/aaai.v31i1.10779) of Krishnan, Shalit, and Sontag (2017) is a state-space model with nonlinear, neural-network-parameterized transition and emission kernels:
+The [deep Markov model](https://doi.org/10.1609/aaai.v31i1.10779) of Krishnan, Shalit, and Sontag (2017) is a state-space model with nonlinear, neural-network-parameterized transition and emission kernels: [@krishnan2017structured]
 
 $$
 \begin{aligned}
@@ -74,11 +74,24 @@ program generative_step : Driver * State -> State
 export generative_step
 ```
 
+## Understanding the model
+
+A linear transition uses one affine map to predict the next state. Here a
+neural parameter network can bend that relationship: the same change in the
+previous state can have different consequences in different regions. The
+Normal kernel then adds uncertainty around its input-dependent mean. The
+emission uses the same idea to relate states to measurements.
+
+Executing the transition and emission draws an intermediate state and then
+an observation. Scoring only the observation requires integrating over that
+state. The fitting code below supplies the synthetic states, so it evaluates
+[conditional densities](../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram) at known transitions while learning the kernel parameters.
+
 ## Walkthrough
 
 The transition stack `trans_mlp_1 >> trans_mlp_2` maps `(u_t, s_{t-1})` through a hidden width of 32 to the 8-dimensional state; the emission stack returns to the 4-dimensional observation. Both stacks compose Gaussian kernels through sampled intermediate values. They support reparameterized draws, but the marginal composite is not generally Gaussian and does not provide the invertible density transformation required of a normalizing flow.
 
-`scan(transition_cell) >> emission` is the generative pipeline. The separate `scan(infer_cell)` declaration is a [variational autoencoder](https://doi.org/10.48550/arXiv.1312.6114)-style, recognition-shaped recurrence that threads the previous state and a new observation through `infer_cell`. It is not an implemented posterior until a guide connects it to the exported model and trains it against the full latent trajectory. The choice of `Driver` width controls the exogenous input; a non-driven model declares `object Driver : Real 1` and feeds a zero vector.
+`scan(transition_cell) >> emission` is the generative pipeline. The separate `scan(infer_cell)` declaration is a [variational autoencoder](https://arxiv.org/abs/1312.6114)-style, recognition-shaped recurrence that threads the previous state and a new observation through `infer_cell`. It is not an implemented posterior until a guide connects it to the exported model and trains it against the full latent trajectory. The choice of `Driver` width controls the exogenous input; a non-driven model declares `object Driver : Real 1` and feeds a zero vector. [@kingma2014autoencoding]
 
 ## Try it
 
@@ -190,7 +203,7 @@ flowchart LR
 ```
 
 
-## References
+## Sources and further reading
 
-- Diederik P. Kingma and Max Welling. 2013. Auto-Encoding Variational Bayes. arXiv preprint arXiv:1312.6114.
-- Rahul G. Krishnan, Uri Shalit, and David Sontag. 2017. Structured inference networks for nonlinear state space models. In *Proceedings of the Thirty-First AAAI Conference on Artificial Intelligence (AAAI '17)*, pages 2101–2109. AAAI Press.
+- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].
+- *Structured Inference Networks for Nonlinear State Space Models* [@krishnan2017structured].

@@ -1,5 +1,12 @@
 # CLI: `qvr`
 
+Use `check` to validate a source file, inspection commands to examine its declarations,
+`run` to execute a selected computation, and `transpile` to produce target source. To
+fit a posterior, configure an inference procedure such as SVI or MCMC through the
+inference API.
+
+See [the check-and-transpile walkthrough](../tutorials/qvr/13-release-workflow.md#1-check-the-source-and-one-target) and [runtime invocation options](../reference/qvr/execution-and-tooling.md#run-an-entry).
+
 The `qvr` console script ships with the package as a thin wrapper
 around the parser, constraint solver, and compiler. Subcommands:
 

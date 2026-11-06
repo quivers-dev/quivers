@@ -2,7 +2,7 @@
 
 ## Overview
 
-A learnable [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart parser assembled from pattern-polymorphic `schema` declarations rather than a `deduction` block. Two binary schemas give forward and backward application (the AB grammar core of the [Lambek calculus](https://doi.org/10.2307/2310058)); one unary schema adds the directional permutation of the commutative Lambek calculus LP. A `bundle` names the rule set, and `parser(...)` splices the bundle into a [`ChartParser`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser) whose lexical category assignments and per-rule weights are learnable log-weights.
+A learnable [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart parser assembled from pattern-polymorphic `schema` declarations rather than a `deduction` block. Two binary schemas give forward and backward application (the AB grammar core of the [Lambek calculus](https://doi.org/10.2307/2310058)); one unary schema adds the directional permutation of the commutative Lambek calculus LP. A `bundle` names the rule set, and `parser(...)` splices the bundle into a [`ChartParser`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser) whose lexical category assignments and per-rule weights are learnable log-weights. [@lambek1958mathematics]
 
 ## QVR source
 
@@ -46,6 +46,20 @@ define lp_parser = parser(rules=[lp_rules], terminal=Token, start=S, depth=1)
 
 export lp_parser
 ```
+
+## Understanding the model
+
+A schema is a reusable [rule template](custom-rules.md#understanding-the-model): “a phrase needing `Y` on the right,
+followed by a `Y`, yields `X`.” Instantiating it with `X = NP` and `Y = N`
+gives the familiar combination of `the : NP/N` with `dog : N`. A bundle
+is a named list of these templates, while the finite category inventory
+specifies which substitutions the compiler actually tries. The NLTK book’s [context-free grammar examples](https://www.nltk.org/book/ch08.html#context-free-grammar) introduce the phrase categories and production notation behind this template [@nltkSyntax2019].
+
+The parser returns one aggregate score for all derivations reaching the
+sentence goal. This tells you how the model weights those analyses; without
+additional normalization it is not a probability over sentences. Comparing
+the chart and [reference-search score](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) is useful because they calculate that
+same aggregate by different execution strategies.
 
 ## Walkthrough
 

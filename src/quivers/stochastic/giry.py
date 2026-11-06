@@ -1,7 +1,9 @@
-"""The Giry monad on finite sets (the probability monad).
+"""Finite stochastic-matrix operations inspired by the Giry monad.
 
-The Giry monad G on FinSet maps each finite set A to the set of
-probability distributions on A. In our representation:
+The mathematical Giry monad maps a measurable space to its space of
+probability measures. Even for a two-element space, that space of measures
+is infinite, so it is not an endofunctor on FinSet. This module instead
+keeps finite index objects and represents kernels as stochastic tensors:
 
     G(A) = A   (at the set level, since distributions are represented
                 as row-stochastic tensors, not as elements of a simplex)
@@ -14,8 +16,9 @@ instead of noisy-OR.
     μ_A: A → A: identity (flattening nested distributions)
     f >=> g = f >> g: Kleisli composition = matrix multiplication
 
-The Kleisli category of the Giry monad on FinSet is exactly FinStoch,
-the category of finite stochastic matrices.
+FinStoch is the finite-object subcategory of probability kernels, whose
+composition is matrix multiplication. The identity object map below is
+a representation convention, not equality of a set with its simplex.
 
 This module provides:
 
@@ -34,7 +37,7 @@ from quivers.core.algebras import MARKOV
 
 
 class GiryMonad(Monad):
-    """The Giry (probability) monad on finite sets.
+    """A finite tensor adapter for probability-kernel composition.
 
     At the finite-set level, G(A) = A because probability distributions
     over A are represented as tensors indexed by A (i.e., functions
@@ -44,9 +47,10 @@ class GiryMonad(Monad):
     The Kleisli composition uses the MarkovAlgebra (sum-product),
     yielding standard matrix multiplication of stochastic matrices.
 
-    This is the categorical foundation for all stochastic morphisms
-    in quivers: every Markov kernel A → B is a Kleisli morphism
-    A → G(B) = A → B in this monad.
+    Mathematically a kernel A → B corresponds to a measurable map
+    A → G(B), where G(B) is a space of distributions, not B itself.
+    This adapter retains B as the tensor's output index object rather
+    than constructing that distribution space.
 
     Examples
     --------
@@ -115,10 +119,11 @@ class GiryMonad(Monad):
         return identity(A, algebra=MARKOV)
 
     def join(self, A: SetObject) -> Morphism:
-        """``μ_A``: flatten nested distributions.
+        """Return the identity kernel used by this finite representation.
 
-        Since ``G(A) = A`` at the finite-set level, the flattening is
-        the identity.
+        This is not the general Giry multiplication on a space of
+        probability measures over probability measures. Averaging
+        finite kernel outputs is realized by sum-product composition.
 
         Parameters
         ----------

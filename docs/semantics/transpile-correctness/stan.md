@@ -1,61 +1,67 @@
 # Stan
 
-This page discharges the per-target obligations of
+This page records the per-target obligations and evidence for
 [Transpilation correctness](index.md) for $\mathsf{T} = \mathrm{Stan}$.
+
+Stan model code describes a log density to evaluate at candidate parameter
+values. With `z ~ normal(0, 1)`, a supplied value of `z` contributes its
+Normal log density to `target`. A QVR `sample` from that family contributes
+the same prior factor when its result is clamped to that value. The
+comparison below checks those factors in the coordinates used by Stan.
 
 ## Semantics
 
-Stan's denotational semantics is the factor-graph semantics of
-[Koller and Friedman (2009)](https://mitpress.mit.edu/9780262013192/probabilistic-graphical-models/)
-Chapter 4 instantiated by the Stan Reference Manual: a program
-declares a finite set of random variables and a finite set of
-factors, with `~` statements desugaring to `target += <lpdf>`
-contributions to the log-density accumulator (Stan Reference
-Manual §6.1, "Sampling Statements"). The log-density probe is
+Stan specifies a density through contributions to a log-density accumulator
+[@carpenter2017stan]. This can be understood as a product of factors
+[@koller2009probabilistic]. A `~` statement adds a distribution’s log-density
+contribution to `target`; parameter-independent constants may be omitted, as
+described in the [Stan reference manual](https://mc-stan.org/docs/reference-manual/statements.html). The log-density probe is
 [`cmdstanpy.CmdStanModel.log_prob`](https://mc-stan.org/cmdstanpy/api.html#cmdstanpy.CmdStanModel.log_prob),
 which evaluates the program's `target` at a parameter point on the
 unconstrained scale.
 
 The reference is Carpenter, Gelman, Hoffman, Lee, Goodrich,
 Betancourt, Brubaker, Guo, Li, and Riddell
-([2017](https://doi.org/10.18637/jss.v076.i01)).
+[@carpenter2017stan].
 
 ## Unconstrained-space change of variables
 
-Stan is the only target in the supported set that uses a
-non-identity $\Psi_{\mathsf{Stan}}$. Constrained-parameter
-declarations introduce the following changes of variables and
-Jacobians (Stan Reference Manual §10):
+Stan’s [worked change-of-variables section](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) derives the Jacobian contribution from a transformed variable. The [shared numerical criterion](index.md#2-correctness-criterion) explains why a remaining constant offset cancels on posterior normalization.
 
-| Declaration | $\Psi^{-1}_{\mathsf{Stan}}$ (constraint → unconstrained) | $\log\bigl\lvert\det J_{\Psi_{\mathsf{Stan}}}\bigr\rvert$ |
+Stan's density probe requires attention to unconstrained coordinates.
+Write $\theta=\Psi_{\mathsf{Stan}}(u)$, where $u$ is unconstrained and
+$\theta$ is a model parameter satisfying its declared support. For a
+positive scalar, $\theta=e^u$, so the density in $u$ includes the log
+Jacobian $u$. The [Stan transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)
+describes these corrections. Other targets may also transform coordinates
+inside inference; the relevant question is which coordinates a probe scores.
+
+| Declaration | $\Psi_{\mathsf{Stan}}$ (unconstrained → constrained) | $\log\bigl\lvert\det J_{\Psi_{\mathsf{Stan}}}\bigr\rvert$ |
 |---|---|---|
 | `real<lower=0>` | $\theta = \exp(\widetilde\theta)$ | $\widetilde\theta$ |
 | `real<lower=0, upper=1>` | $\theta = \mathrm{logit}^{-1}(\widetilde\theta)$ | $\widetilde\theta - 2\log(1 + e^{\widetilde\theta})$ |
 | `vector<lower=0>[K]` | per-element $\exp$ | $\sum_k \widetilde\theta_k$ |
-| `simplex[K]` | stick-breaking | per Stan Reference Manual §10.6 |
-| `cov_matrix[K]` | Cholesky factorization + log-Cholesky | per §10.9 |
-| `cholesky_factor_corr[K]` | hyperspherical | per §10.10 |
-| `corr_matrix[K]` | LKJ stick-breaking | per §10.10 |
+| `simplex[K]` | simplex transform used by the installed Stan version | see the Stan transform reference |
+| `cov_matrix[K]` | Cholesky factorization + log-Cholesky | see the transform reference |
+| `cholesky_factor_corr[K]` | correlation Cholesky transform | see the Stan transform reference |
+| `corr_matrix[K]` | correlation-matrix transform | see the Stan transform reference |
 
 The Stan renderer emits the constrained-space declaration; Stan's
 runtime adds $\log|\det J_{\Psi_{\mathsf{Stan}}}|$ to the `target`
-accumulator automatically (cf. Stan Reference Manual §10.1, "Built-in
-Transforms"). The renderer never emits the Jacobian term itself.
+accumulator automatically (see the [transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)). The renderer never emits the Jacobian term itself.
 
-By Theorem 6.1 of the [head page](index.md), the equality
+When a target's unconstrained density includes the Jacobian, the desired
+constrained-space comparison is
 
 $$
-\log p_{\mathsf{Stan}}(\Psi_{\mathsf{Stan}}(\theta), y \mid x)
-\;-\;
-\log\bigl|\det J_{\Psi_{\mathsf{Stan}}}(\theta)\bigr|
-\;=\;
-\log p_{\mathrm{QVR}}(\theta, y \mid x) + C_{\mathsf{Stan}}(M)
+\ell_{\mathsf{Stan},u}(u;y)
+-\log\left|\det D\Psi_{\mathsf{Stan}}(u)\right|
+=\ell_{\mathrm{QVR}}(\Psi_{\mathsf{Stan}}(u);y)+C.
 $$
 
-holds at every joint point: the left-hand side is exactly Stan's
-constrained-space log-density (Stan's `target` value minus the
-Jacobian Stan added), which equals the QVR log-density on the
-matching support.
+Here $C$ may depend on the fixed model and data but must not vary with $u$.
+If the probe disables Jacobian adjustment, compare its output directly with
+the constrained QVR density, omitting the subtraction above.
 
 ## Family parameterizations
 
@@ -67,15 +73,15 @@ canonical forms). The non-trivial cases:
 | QVR family | Stan call | $\pi_{F, \mathsf{Stan}}$ | $c_{F, \mathsf{Stan}}$ |
 |---|---|---|---|
 | `Normal(μ, σ)` | `normal(μ, σ)` | identity | 0 |
-| `HalfNormal(σ)` | `normal(0, σ)` with `<lower=0>` declaration | $\sigma \mapsto (0, \sigma)$ | $\log 2$ (the truncation normalizer) |
-| `HalfCauchy(γ)` | `cauchy(0, γ)` with `<lower=0>` | $\gamma \mapsto (0, \gamma)$ | $\log 2$ |
+| `HalfNormal(σ)` | `normal(0, σ)` with `<lower=0>` declaration | $\sigma \mapsto (0, \sigma)$ | $-\log 2$ (target minus normalized QVR density) |
+| `HalfCauchy(γ)` | `cauchy(0, γ)` with `<lower=0>` | $\gamma \mapsto (0, \gamma)$ | $-\log 2$ |
 | `MultivariateNormal(μ, Σ)` | `multi_normal(μ, Σ)` | identity | 0 |
 | `LKJCorrCholesky(η)` | `lkj_corr_cholesky(η)` | identity | 0 |
 | `Dirichlet(α)` | `dirichlet(α)` | identity (scalar broadcast via `rep_vector`) | 0 |
 | `Categorical(probs=p)` | `categorical(p)` | identity (1-indexed) | 0 |
 | `Bernoulli(p)` | `bernoulli(p)` | identity | 0 |
 | `LogitNormal(μ, σ)` | not supported (no native `logit_normal_lpdf`) | — | raises `family:LogitNormal` |
-| every other family in the registry | identical Stan name | identity | 0 |
+| other families | consult the target registry | family-specific mapping or refusal | check the emitted density |
 
 Stan's 1-indexed `categorical` adds 1 to QVR's 0-indexed support;
 the `IntegerInterval(1, K)` declaration on Stan's data side
@@ -83,8 +89,8 @@ reflects this. The renderer emits the index expression `k`
 inside the `for (k in 1:K)` loop directly; no offset is added at
 the call site.
 
-The half-distribution support truncation contributes $c_{F,
-\mathsf{Stan}} = \log 2$ per call site. This is collected into
+Omitting the half-distribution normalizer contributes target-minus-QVR
+$c_{F,\mathsf{Stan}}=-\log 2$ per call site. This is collected into
 the per-program constant $C_{\mathsf{Stan}}(M)$ and absorbed by
 Bayes-rule normalization.
 
@@ -104,7 +110,7 @@ statement in `model` contributing $\log f_{F, \mathsf{Stan}}(y \mid
 **`Plate` (Indexed Bind / Indexed Observe).** Nested
 `for (m_<axis> in 1:N_<axis>) { ... }` loops; the latent or
 observation is declared as `array[N_<axis>] <type>`. Per Stan
-Reference Manual §6.4, the for-loop's contribution to `target` is
+reference manual’s loop semantics, the for-loop's contribution to `target` is
 the additive sum of per-iteration `~` contributions. Soundness
 follows from [the plate discussion](index.md#5-plates-marginalization-and-via).
 
@@ -126,12 +132,12 @@ group axis $G$ and scope observe via fibration $g : R \to G$:
 }
 ```
 
-Soundness: the inner accumulation is exact arithmetic in
-log-space; the outer `log_sum_exp` is the documented
+The inner accumulation implements the required finite sum of log factors; the outer `log_sum_exp` is the documented
 `log_sum_exp` primitive that computes $\log \sum_k \exp(\cdot)$
 accurately. Under [the finite-enumeration strategy](index.md#5-plates-marginalization-and-via),
 the emitted log-density equals the marginalized joint up to the
-per-family constants of Lemma 5.1.1.
+parameter-independent normalizing constants discussed above, subject to
+floating-point error and the supported-family contract.
 
 The Stan renderer raises
 `UnsupportedConstruct(["marginalize:non-finite-support:<family>"])`

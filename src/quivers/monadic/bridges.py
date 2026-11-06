@@ -10,12 +10,15 @@ Three canonical conversions:
   ``ArrowMonad(a)(α) = a(1, α)``.
 - `cokleisli` — comonadic dual of `kleisli`.
 
-Each bridge is realised at the value level as concrete morphism
+Each bridge is realized at the value level as concrete morphism
 constructions: ``compose`` is Kleisli composition (fmap-then-join),
 ``first`` is the monad's strength applied to the second-factor
 input, ``app`` is the canonical evaluator over the function-space
-encoding ``[A → B]``. The bridge round-trip ``arrow_monad ∘ kleisli``
-is the identity on monad theories (Hughes 2000, Theorem 3.1).
+encoding ``[A → B]``. Hughes develops the relation between monads and
+arrows [Hughes (2000)](<https://www.sciencedirect.com/science/article/pii/S0167642399000234>). Recovering a monad from a suitable Kleisli arrow
+uses the identification of arrows out of the unit with monadic values; this
+is a correspondence under the required laws, not a claim that these runtime
+objects or theory records are literally identical.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ def _monad_strength(m, A: SetObject, B: SetObject) -> Morphism:
             →  m(A) × m(B)        via (pure_m × id)
             →  m(A × B)           via lift_a2(id)
 
-    Concretely realised here by direct tensor enumeration.
+    Concretely realized here by direct tensor enumeration.
     """
     mB = m.fmap_obj(B)
     AB = ProductSet(components=(A, B))
@@ -57,7 +60,7 @@ class Kleisli(dx.Model):
 
     Hom from ``A`` to ``B`` is the set of morphisms ``A → m(B)`` in
     V-Rel. Composition is Kleisli composition (fmap, then join);
-    identity is `Monad.pure`. ``first`` is realised via the
+    identity is `Monad.pure`. ``first`` is realized via the
     canonical monad strength; ``app`` evaluates a function-space
     embedding through the monad's `Monad.apply`.
 
@@ -116,7 +119,7 @@ class Kleisli(dx.Model):
     def first(self, f: Morphism, C: SetObject) -> Morphism:
         """``first(f) : (A × C) → m(B × C)`` via the monad's strength.
 
-        Realised as ``(f × id_C) ; strength_m(B, C)``.
+        Realized as ``(f × id_C) ; strength_m(B, C)``.
         """
         m = self.monad
         mB = f.codomain
@@ -203,9 +206,10 @@ def _recover_value_type(m, mB: SetObject) -> SetObject:
 class ArrowMonad(dx.Model):
     """The monad induced by an `ArrowApply` arrow.
 
-    Hughes 2000 §4: any ``ArrowApply`` arrow ``a`` gives a monad
-    ``ArrowMonad(a)(α) = a(1, α)``, where ``1`` is the monoidal unit.
-    Realised concretely:
+    For a lawful ``ArrowApply`` interface ``a``, the corresponding monadic
+    values have the form ``ArrowMonad(a)(α) = a(1, α)``, where ``1`` is the
+    monoidal unit [Hughes (2000)](<https://www.sciencedirect.com/science/article/pii/S0167642399000234>).
+    Realized concretely:
 
     - ``fmap_obj(A) = A`` (the underlying carrier coincides with the
       target type of the arrow's hom from the unit);
@@ -229,7 +233,7 @@ class ArrowMonad(dx.Model):
     def fmap(self, A: SetObject, B: SetObject, f: Morphism) -> Morphism:
         """``fmap(f) : ArrowMonad(a)(A) → ArrowMonad(a)(B)``.
 
-        Realised as ``arr(f)`` on the underlying arrow.
+        Realized as ``arr(f)`` on the underlying arrow.
         """
         return self.arrow.arr(A, B, f)
 

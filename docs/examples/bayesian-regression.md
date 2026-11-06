@@ -48,6 +48,19 @@ $$
 
 The predictor $x$ is exogenous host data supplied alongside the response at fit time; the runtime binds free identifiers in `let` expressions from undeclared keys in the observations dict.
 
+## Understanding the model
+
+Suppose `x` is study time and `y` is a test score. The intercept describes
+the expected score at zero study time, the slope describes its change per
+unit of study time, and `sigma` describes variation around the line. The
+model puts distributions on all three because finite data leave them uncertain.
+
+Each [posterior draw](../tutorials/python/05-variational-inference.md#posterior-inference) specifies a possible line and noise level. Comparing
+slopes across draws gives uncertainty about the association; generating a
+[new response](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) adds observation noise as well. An interval for a future score
+is thus different from an interval for the mean line. Neither calculation
+alone establishes a causal effect of study time.
+
 ## Walkthrough
 
 `object Resp : FinSet 64` declares the response index: a 64 element finite set that the observed response is indexed by, so `y` carries one row per element and has shape `(64,)`. A `FinSet` names the plate, not the values on it; the value type of `y` comes from the family it is observed under, and `Normal` makes those values real. `object Val : Real 1` names the value space the program returns: `return y` hands back a plate of real scalars, so the codomain is the per-row value space `Real 1`, not the index set `Resp`. The signature `program bayesian_regression : Resp -> Val` is thus a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) in the [probability monad](https://ncatlab.org/nlab/show/probability+monad) that scores observed responses under the model's joint kernel.
@@ -64,7 +77,7 @@ The three `sample` lines draw the prior parameters as global scalars: `sample si
 - **`<-` (bind)**: Samples a random variable from a distribution. Subsequent statements can depend on the sampled value.
 - **Distribution constructors**: `Normal`, `HalfCauchy`, `Exponential`, `Beta`, `Categorical`, etc.
 - **`let`**: Deterministic computation over random variables. The result is a derived random variable.
-- **`observe`**: Conditions the model on data. Multiplies posterior probability by the observation's likelihood.
+- **`observe`**: Scores supplied data, multiplying the unnormalized model weight by the observation likelihood. Inference approximates the normalized posterior.
 - **`return`**: Designates the program's output value.
 - **Arithmetic on random variables**: `+`, `-`, `*`, `/` are supported directly.
 
@@ -143,7 +156,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-A probabilistic program is a Kleisli morphism $A \to TB$ in the probability monad, where $T$ maps a set to its space of distributions. The `<-` bind operator is Kleisli composition: running $f : A \to TB$ and then $g : B \to TC$ yields $(g \circ_K f) : A \to TC$. In this example, the prior (sampling $\beta_0$, $\beta_1$, $\sigma$) composes with the likelihood ($\mathrm{Normal}(\mu, \sigma)$) via monadic bind, producing a joint distribution over parameters and observations. The `observe` statement then conditions this joint distribution, computing the posterior $P(\theta \mid y) \propto P(y \mid \theta) \cdot P(\theta)$ by Bayes' rule. Inference algorithms (VI, MCMC) are computational methods for evaluating the resulting integrals.
+A probabilistic program is a Kleisli morphism $A \to TB$ in the probability monad, where $T$ maps a set to its space of distributions. The `<-` bind operator is Kleisli composition: running $f : A \to TB$ and then $g : B \to TC$ yields $(g \circ_K f) : A \to TC$. In this example, the prior (sampling $\beta_0$, $\beta_1$, $\sigma$) composes with the likelihood ($\mathrm{Normal}(\mu, \sigma)$) via monadic bind, producing a joint distribution over parameters and observations. The `observe` statement weights this joint by the supplied observation density. Normalization defines the posterior $P(\theta \mid y) \propto P(y \mid \theta) \cdot P(\theta)$ by Bayes' rule; executing the statement alone does not compute that normalization. Scored computations are thus interpreted as weighted measures, not necessarily normalized probability kernels. Inference algorithms (VI, MCMC) are computational methods for evaluating the resulting integrals.
 
 ## Graphical-model view
 

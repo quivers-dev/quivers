@@ -28,6 +28,22 @@ print(type(loads(src)).__name__)   # Program
 
 If that prints `Program` without an error, you're set.
 
+## What inference will answer
+
+Imagine measuring a response at several predictor values. The intercept is
+the expected response when the predictor is zero; the slope is the change
+associated with increasing the predictor by one; the noise scale describes
+variation around that line. The data do not determine these quantities exactly.
+We thus describe uncertainty over them with distributions.
+
+A *[prior](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise)* describes plausible parameter values before seeing these responses.
+The *likelihood* scores the observed responses for a proposed set of values.
+The *posterior* combines the two, assigning more mass to parameter values that
+explain the data while respecting the prior. A `sample` line specifies part of
+this generative model; the fitting algorithm later approximates its posterior.
+The [conceptual introduction](../../getting-started/concepts.md) works through
+a finite version of the same update. Pyro’s [introduction to probabilistic models](https://pyro.ai/examples/intro_long.html#Background:-probabilistic-models) develops the generative view using a regression example [@pyroIntroduction].
+
 ## The model
 
 We model `n` real-valued observations $y_i$ as a noisy linear function of a scalar predictor $x_i$:
@@ -94,7 +110,7 @@ Reading the QVR line by line:
 | `program regression : Item -> Item` | A `program` block is the unit of compilation. The effect set is inferred from the body; you can pin it explicitly with `[effects=[Sample, Score]]` if you want a static check that the body uses only those effects. |
 | `sample sigma <- HalfNormal(scale=1.0)` | Draw a random variable. Same as PyMC's `pm.HalfNormal(...)` or NumPyro's `numpyro.sample(...)`. |
 | `let mu = beta_0 + beta_1 * x_design` | Deterministic let. The compiler records the free name `x_design` as a host-data parameter; the inference call supplies it in the observations mapping. |
-| `observe y : Item <- Normal(loc=mu, scale=sigma)` | Vectorised conditioned bind, one draw per element of `Item`. The runtime sets `y` to the observed value at inference time and scores the likelihood. |
+| `observe y : Item <- Normal(loc=mu, scale=sigma)` | Vectorized conditioned bind, one draw per element of `Item`. The runtime sets `y` to the observed value at inference time and scores the likelihood. |
 
 If you're coming from Pyro/NumPyro/Stan, the only feature without a direct analogue is the optional `[effects=[...]]` clause: an *effect signature*. By default the compiler infers which effects (`Sample`, `Score`, `Marginal`) the body uses. Pinning the set explicitly turns it into a static promise. If you write `[effects=[Pure]]` and the body contains a `sample` step, the compiler rejects the program at `loads` time.
 
@@ -126,7 +142,7 @@ the model can use that value, but it is not a source-compiler diagnostic.
 
 ## Compile and fit
 
-QVR programs compile to `nn.Module`. You can train them with the inference stack quivers ships (built around stochastic variational inference, [Hoffman, Blei, Wang & Paisley, 2013](https://www.jmlr.org/papers/v14/hoffman13a.html)), or with any PyTorch optimizer if you want to drop to raw gradients.
+QVR programs compile to `nn.Module`. You can train them with the inference stack quivers ships (built around stochastic variational inference, [@hoffman2013svi]), or with any PyTorch optimizer if you want to drop to raw gradients.
 
 ```python
 import torch
@@ -172,7 +188,15 @@ for step in range(50):                        # bump to ~2000 for real fits
 
 The pattern is identical to Pyro: a [`Guide`](../../api/inference/guide.md) carries the variational family, an [`Objective`](../../api/inference/elbo.md) is the loss, an [`SVI`](../../api/inference/svi.md) driver runs the loop.
 
-The default [`AutoNormalGuide`](../../api/inference/guide.md) is a diagonal-Gaussian variational posterior trained by a pathwise gradient estimator ([Kingma & Welling, 2013](https://doi.org/10.48550/arXiv.1312.6114)). Minibatching is available when the model and call site supply batches.
+The default [`AutoNormalGuide`](../../api/inference/guide.md) is a diagonal-Gaussian variational posterior trained by a pathwise gradient estimator [@kingma2014autoencoding]. Minibatching is available when the model and call site supply batches.
+
+In the fitting loop, the model defines what should be inferred. The guide
+stores an adjustable approximation to the unknown parameters' distribution;
+the objective scores that approximation; the optimizer changes its parameters.
+`AutoNormalGuide` represents the parameters as independent Normal coordinates
+on an unconstrained scale. If a higher intercept requires a lower slope to
+fit the same data, this guide cannot represent that posterior dependence;
+a [full-covariance guide](06-inference-zoo.md#step-2-which-variational-guide) can represent linear correlations.
 
 ## Inspect the posterior
 
@@ -213,6 +237,6 @@ Three things:
 [Chapter 2](02-glms.md) lifts this model to a generalized linear model: logistic and Poisson regression, with link functions and posterior-predictive calibration plots.
 
 
-## References
+## Sources and further reading
 
-- Diederik P. Kingma and Max Welling. 2013. Auto-Encoding Variational Bayes. arXiv preprint arXiv:1312.6114.
+- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].

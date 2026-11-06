@@ -34,7 +34,7 @@ def compare(
         Every fit must carry a log-likelihood group.
     method : "stacking", "BB-pseudo-BMA", or "pseudo-BMA"
         Model-weight estimator. Default "stacking" follows Yao,
-        Vehtari, Simpson, and Gelman (2018).
+        Vehtari, Simpson, and Gelman (2018) [Yao et al. (2018)](<https://doi.org/10.1214/17-BA1091>).
     var_name : str, optional
         Observed variable in the log-likelihood group; required
         when a fit carries multiple log-likelihood variables.
@@ -94,7 +94,10 @@ def loo(
     This thin wrapper delegates all computation to ArviZ. It
     preserves ArviZ's canonical log scale and, with pointwise=True,
     returns its per-observation elpd_i and pareto_k arrays unchanged,
-    including nonfinite Pareto estimates.
+    including nonfinite Pareto estimates. PSIS follows Vehtari, Simpson,
+    Gelman, Yao, and Gabry (2024) [Vehtari et al. (2024)](<https://www.jmlr.org/papers/v25/19-556.html>); its use for
+    leave-one-out evaluation follows Vehtari, Gelman, and Gabry (2017)
+    [Vehtari et al. (2017)](<https://link.springer.com/article/10.1007/s11222-016-9696-4>).
 
     Parameters
     ----------

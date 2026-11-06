@@ -3,11 +3,18 @@
 Per-target obligations of [Transpilation correctness](index.md)
 for $\mathsf{T} = \mathrm{Turing.jl}$.
 
+Turing turns a Julia model function into a record of random choices and
+log-density contributions. A variable supplied as observed data contributes
+its likelihood; an unknown variable is a latent choice. Evaluating
+`logjoint` fixes the choices and scores the model, while running an inference
+algorithm explores choices. The density tests call `logjoint` at the
+same fixed values used by the QVR reference.
+
 ## Semantics
 
 Turing.jl's denotational semantics is the trace semantics of Ge,
 Xu, and Ghahramani
-([2018](https://proceedings.mlr.press/v84/ge18b.html)) implemented
+[@ge2018turing] implemented
 via the `@model` macro that rewrites `~`-statements into joint
 log-density accumulator updates. The log-density probe is
 [`Turing.logjoint(model, θ)`](https://turinglang.org/Turing.jl/dev/api/Inference/#Turing.logjoint),
@@ -23,20 +30,26 @@ at the renderer level.
 
 ## Family parameterizations
 
+The Distributions.jl [truncated-distribution definition](https://juliastats.org/Distributions.jl/stable/truncate/#Truncated-Distributions) gives the normalizing denominator used by the half-family mappings. The [shared parameterization contract](index.md#4-distribution-parameterization) distinguishes these distribution parameters from a change in the sampled variable.
+
 Turing consumes
 [Distributions.jl](https://juliastats.org/Distributions.jl/) which
 uses the canonical parameterizations of
 [Wikipedia: List of probability distributions](https://en.wikipedia.org/wiki/List_of_probability_distributions).
-The QVR ↔ Turing mapping is identity for every family with a
-Distributions.jl counterpart. $\pi_{F, \mathsf{Turing}} =
-\mathrm{id}$ and $c_{F, \mathsf{Turing}} = 0$.
+Some families use the same parameters, but the renderer also translates
+conventions: Exponential and Gamma rates become scales by inversion,
+NegativeBinomial probabilities are complemented, and Weibull arguments are
+reordered. These are density-preserving parameter substitutions on the
+supported domains.
 
 The Turing renderer composes `HalfNormal` / `HalfCauchy` (which
 have no Distributions.jl primitive) as `truncated(Normal(0,
 sigma), 0, Inf)` via the documented
 [`truncated`](https://juliastats.org/Distributions.jl/stable/truncate/)
-wrapper, contributing $c_{\mathrm{HalfNormal}, \mathsf{Turing}} =
-\log 2$ to the per-program constant.
+wrapper. The [truncated-distribution definition](https://juliastats.org/Distributions.jl/stable/truncate/)
+divides by the retained probability mass. Thus the half-Normal's factor of
+two is already included, and normalized half-Normal densities agree without
+an additional $\log 2$ discrepancy.
 
 ## Per-construct emit
 
@@ -49,9 +62,11 @@ for index-independent batches; [`arraydist([D_i for i in 1:B])`](https://turingl
 for index-dependent batches. Both denote the documented product
 measure (Turing.jl documentation, "Composing distributions").
 
-**Marginalize.** The renderer may keep a finite latent explicit.
-Turing can use discrete-capable samplers or composed inference for
-such a model; HMC and NUTS do not directly update discrete states.
+**Marginalize.** The renderer enumerates the finite support, computes a
+numerically stable log-sum-exp of the weighted atom scores, and adds the
+result with `Turing.@addlogprob!`. Grouped scopes first accumulate row scores
+by group. The hidden discrete coordinate has been summed out, leaving
+the sampler to update the remaining latents.
 
 **Score / let / return.** [`Turing.@addlogprob!(expr)`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Turing.@addlogprob!)
 for score; native `<name> = <expr>` for let; native `return` for

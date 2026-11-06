@@ -2,6 +2,18 @@
 
 This page covers the grammar-supporting declarations `category`, `rule`, `schema`, and `bundle`, together with `object` bindings used by the deduction surface. The current grammar has no separate top-level `alias` or `type` declaration.
 
+These declarations describe reusable grammar patterns. A `category` names a
+basic grammatical type, a `rule` connects premise patterns to a conclusion,
+a `schema` supplies a parameterized morphism pattern, and a `bundle` collects
+rules or schemas for use together. Here *category* often means a grammatical
+type such as `NP` or `S`. In category theory, a category is the larger
+structure of objects and arrows equipped with composition laws.
+
+For instance, a rule with pattern `X / Y, Y |- X` says that something seeking
+a `Y` to its right can combine with that `Y` and produce an `X`. Substituting
+`S` for `X` and `NP` for `Y` yields one concrete instance. The formal
+variables let one rule describe many such applications.
+
 ## 1. Category atoms
 
 A `category` declaration introduces one or more atomic category names:
@@ -50,6 +62,15 @@ $$
 
 ### 3.1 Residuation slashes
 
+Milewski’s [“Adjunctions and Hom-Sets” explanation](https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets) motivates the correspondence between the two arrow types below [@milewski2016adjunctions]. The [residuation witnesses](expressions.md#210-residuation-witnesses) implement the corresponding rearrangement of arguments.
+
+Read `S / NP` as “produces `S` when an `NP` arrives on the right.” In QVR,
+`S \ NP` similarly produces `S` when an `NP` arrives on the left. Thus both
+forms put the result type first; the slash direction selects the side of
+the missing argument. The adjunctions below express that supplying the
+missing argument and treating it as a pending input are two equivalent ways
+to describe the same composition, under the residuated-category hypotheses.
+
 QVR uses a *biclosed* slash convention: in both $\tau_1 / \tau_2$ and $\tau_1 \backslash \tau_2$, the lexical-left operand $\tau_1$ is the *result* and the lexical-right operand $\tau_2$ is the *argument*. The direction indicates *where the argument is sought* in a chart firing: $/$ seeks the argument on the right, $\backslash$ seeks it on the left. This is opposite to the standard Lambek convention (where `A\B` reads "needs A on the left to give B"); see the runtime documentation of `SlashCategory` for confirmation.
 
 Under this convention, the right and left residuals are the unique objects characterized by the adjunctions
@@ -80,9 +101,9 @@ $$
 \Bigl\{\, \text{well-formed expressions over $\llbracket G \rrbracket$ using ops from $O$, of formation depth $\le d$}\,\Bigr\},
 $$
 
-where $\llbracket G \rrbracket$ is the underlying generator set (typically an `EnumSet` from a `category` declaration or an `object Atoms : {…}` form), and $O \subseteq \{\,/,\ \backslash,\ \otimes,\ \diamondsuit\,\}$ is the chosen operator pool. Formation depth is the height of the syntax tree. As a finite-set object this is a finite enumeration of category expressions; as a residuated-monoidal category it is the free such category on $\llbracket G \rrbracket$ truncated at depth $d$, subject to the universal property of the free construction on the chosen operator pool.
+where $\llbracket G \rrbracket$ is the underlying generator set (typically an `EnumSet` from a `category` declaration or an `object Atoms : {…}` form), and $O \subseteq \{\,/,\ \backslash,\ \otimes,\ \diamondsuit\,\}$ is the chosen operator pool. Formation depth is the height of the syntax tree. As a finite-set object this is a finite enumeration of category expressions. A depth bound limits further type formation: if $A/B$ already has the maximum depth, forming $(A/B)/C$ leaves the inventory. The universal property of the unbounded free residuated category applies to its full syntax; the finite enumeration contains only the terms within the chosen bound.
 
-When $O = \{/, \backslash\}$ this is the free *bi-closed* category of Lambek calculus ([Lambek, 1958](https://doi.org/10.2307/2310058)); when $O = \{/, \backslash, \otimes\}$ it adds the monoidal product, recovering associative Lambek calculus; the diamond modality $\diamondsuit$ adds the multimodal extension.
+The operator choice $O = \{/, \backslash\}$ supplies the slash syntax used in *bi-closed* presentations of Lambek calculus [@lambek1958mathematics]; when $O = \{/, \backslash, \otimes\}$ it also supplies product syntax; the selected rules determine the associated deductive behavior; the diamond modality $\diamondsuit$ adds the multimodal extension.
 
 ## 5. Rule declarations
 
@@ -111,6 +132,14 @@ Standard CCG / Lambek combinators are direct instances under QVR's biclosed slas
 | Forward composition | `fwd_comp(X, Y, Z) : X / Y, Y / Z |- X / Z` | $(X / Y) \otimes (Y / Z) \to X / Z$, composition of right residuals |
 
 ## 6. Schema declarations
+
+The [schema-lifting guide](../guides/effects.md#class-driven-schema-lifting) shows a concrete rule being lifted through an effect. Its [formal lifted denotation](effects.md#3-effect-typed-schema-denotations) states the typeclass laws assumed by that construction.
+
+A schema separates a structural pattern from its instantiation. Instead of
+writing a separate application morphism for every pair of grammatical types,
+the author writes one pattern and the matcher supplies the types at a firing
+site. The parameter space $\Theta$ below is the collection of all
+allowed assignments to those pattern variables.
 
 A `schema` declaration
 
@@ -167,8 +196,9 @@ signature Mol
         in_bond : Atom -> Bond
 ```
 
-These declarations are part of the signature's *theory*, not the QVR protocol $\mathsf{QVR}$. A `vertex_kind_decl` $K : k\,[\mathrm{dim}\,d]$ extends the signature's kind set with a typed vertex kind whose sort role is $k$ and whose declared embedding dimension is $d$; an `edge_kind_decl` $\varepsilon : K_s\,\mathrm{arrow}\,K_t$ extends the signature's edge set with a typed binary relation between vertex kinds, directed iff `arrow == '->'`. The denotation of a graph signature equipped with these declarations is the category $\mathbf{Graph}_\Sigma$ of finite typed graphs of the prescribed shape; see [Structural Compression §1.3](structural.md#13-graph-signatures) for the formal treatment and §2.4 of the same page for the message-passing encoder that consumes them.
+These declarations extend the signature's *theory*. The QVR protocol records the declaration syntax, while the signature theory records its vertex and edge kinds. A `vertex_kind_decl` $K : k\,[\mathrm{dim}\,d]$ extends the signature's kind set with a typed vertex kind whose sort role is $k$ and whose declared embedding dimension is $d$; an `edge_kind_decl` $\varepsilon : K_s\,\mathrm{arrow}\,K_t$ extends the signature's edge set with a typed binary relation between vertex kinds, directed iff `arrow == '->'`. The denotation of a graph signature equipped with these declarations is the category $\mathbf{Graph}_\Sigma$ of finite typed graphs of the prescribed shape; see [Structural Compression §1.3](structural.md#13-graph-signatures) for the formal treatment and §2.4 of the same page for the message-passing encoder that consumes them.
 
 ## References
 
-Joachim Lambek. 1958. [The mathematics of sentence structure](https://doi.org/10.2307/2310058). *The American Mathematical Monthly*, 65(3):154–170.
+
+The connection between grammatical composition and directed implication originates in Lambek calculus [@lambek1958mathematics]. QVR’s operand convention is stated in §3.1.

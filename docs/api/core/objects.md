@@ -1,5 +1,17 @@
 # Objects
 
+Use an object to say what each tensor axis ranges over. A set of three users and a set
+of three items have the same size but different meanings. Products contain tuples of
+values; coproducts contain tagged alternatives. These objects describe finite indexing;
+continuous supports have their own space types.
+
+Milewski's [products and coproducts examples](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/) explain how pairs and tagged alternatives organize values [@milewski2015products].
+
+See [finite sets and their constructors](../../guides/core.md#objects-finite-sets) and
+[how named axes represent possible values](../../getting-started/concepts.md#1-an-object-names-the-possible-values).
+
+For products, coproducts, and free constructions, see [@maclane1998categories].
+
 Categorical objects including finite and enumerated sets, products,
 coproducts, free monoids, and free residuated universes.
 

@@ -3,11 +3,17 @@
 Per-target obligations of [Transpilation correctness](index.md)
 for $\mathsf{T} = \mathrm{Edward2}$.
 
+Edward2 distribution constructors register random-variable objects. A tape
+records those objects so a probe can retrieve their distributions and values
+and add their log probabilities. For a mixture, the tape should contain one
+random variable with the mixture density. Registering its component
+distributions as additional variables would multiply extra factors into
+the joint density.
+
 ## Semantics
 
-Edward2's denotational semantics is the trace semantics of
-Tran, Hoffman, Saurous, Brevdo, Murphy, and Blei
-([2018](https://arxiv.org/abs/1810.03958)) instantiated on top of
+Edward2 represents distributions as random variables recorded by a tracing
+context [@tran2018simple]. The renderer instantiates this design on top of
 [TensorFlow Probability](https://www.tensorflow.org/probability)'s
 [`tfp.distributions`](https://www.tensorflow.org/probability/api_docs/python/tfp/distributions)
 hierarchy. A program is a Python function whose
@@ -26,7 +32,7 @@ returning the joint log-density of the trace.
 ## Unconstrained-space change of variables
 
 Identity at the renderer level. TFP handles bijector-based
-reparametrizations at inference time;
+reparameterizations at inference time;
 $\Psi_{\mathsf{Edward2}} = \mathrm{id}$ for the model-side
 denotation.
 
@@ -40,6 +46,8 @@ and $c_{F, \mathsf{Edward2}} = 0$.
 
 ## Per-construct emit
 
+TensorFlow Probability’s [shape basics](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#basics) distinguish sample, batch, and event dimensions. Compare QVR’s [indexed bind](../programs.md#24-indexed-bind-plate) and [event-axis declarations](../morphisms.md#6-axis-role-specifications) when reading `sample_shape` below.
+
 **Sample / observe.** `<name> = edward2.<Family>(<args>,
 sample_shape=[B0, B1, ...], name="<name>")` for latents and
 observed variables. The `sample_shape` argument carries the
@@ -49,8 +57,11 @@ batch-axis shape.
 broadcasting semantics, `sample_shape=[B]` produces a $B$-fold
 i.i.d. product (TFP user guide on "Shapes and Broadcasting").
 
-**Marginalize.** Explicit-latent rewrite (head
-[the marginalization discussion](index.md#5-plates-marginalization-and-via)).
+**Marginalize.** For supported mixture-shaped scopes, the renderer uses
+`edward2.MixtureSameFamily` with bare TFP component and mixing distributions.
+Supported grouped scopes instead accumulate atom scores by group and register
+a factor variable carrying the reduced log weight. Both routes remove the
+latent coordinate; unsupported scope/family combinations are rejected.
 
 **Score / let / return.** Edward2 has no native `factor`
 primitive; the renderer raises
@@ -71,8 +82,5 @@ assignments. The function returns the named random variables.
 
 ### References
 
-* Dustin Tran, Matthew Hoffman, Rif A. Saurous, Eugene Brevdo,
-  Kevin Murphy, and David M. Blei. 2018. Simple, distributed, and
-  accelerated probabilistic programming. In *Neural Information
-  Processing Systems*, 7598-7609.
-  [https://arxiv.org/abs/1810.03958](https://arxiv.org/abs/1810.03958)
+
+For the Edward2 design, see [@tran2018simple]. The target library and renderer determine which distribution constructors and marginalizations are supported.

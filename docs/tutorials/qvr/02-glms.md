@@ -1,6 +1,6 @@
 # 2. Generalized linear models
 
-Linear regression is the corner case of a generalized linear model ([Nelder & Wedderburn, 1972](https://doi.org/10.2307/2344614)) with an identity link and a normal likelihood. Loosening either gives you a much wider family: logistic regression for binary outcomes, Poisson regression for counts, ordinal regression for graded responses. This chapter does the first two end to end in QVR, with calibration checks on the posterior predictive.
+Linear regression is the corner case of a generalized linear model [@nelder1972glm] with an identity link and a normal likelihood. Loosening either gives you a much wider family: logistic regression for binary outcomes, Poisson regression for counts, ordinal regression for graded responses. This chapter does the first two end to end in QVR, with calibration checks on the [posterior predictive](../python/08-analysis-pipelines.md#posterior-predictive-checks).
 
 The model template is the same in every case:
 
@@ -9,6 +9,17 @@ $$
 $$
 
 where $g$ is the link function and $\mathcal{F}$ is the response family. We pick $(g^{-1}, \mathcal{F})$ together.
+
+The linear predictor can be any real number, while a probability must lie
+between zero and one and a Poisson rate must be positive. An [inverse link](../../examples/beta-regression.md#understanding-the-model)
+connects these requirements. At linear predictor zero, `sigmoid(0)` gives
+probability `0.5`, while `exp(0)` gives rate `1`. Increasing a logistic
+coefficient changes log-odds linearly, not probability linearly: the same
+increase has less effect on probability near zero or one. The [Stan logistic and probit examples](https://mc-stan.org/docs/stan-users-guide/regression.html#logistic-probit-regression.section) compare two inverse links for binary responses [@stanRegression].
+
+The response family describes remaining variation after that transformation.
+A Bernoulli draw is a binary outcome, even though its probability is continuous;
+a Poisson draw is a nonnegative count, even though its rate is continuous.
 
 ## Logistic regression
 
@@ -66,7 +77,7 @@ QVR's let-arithmetic exposes the standard nonlinearities so you can name the inv
 | `clamp(x, lo, hi)` | $\mathbb{R}$ | $[\text{lo}, \text{hi}]$ | constrain |
 | `sum(x)`, `prod(x)`, `cumsum(x)`, `logsumexp(x)` | tensor | scalar / tensor | reductions over an axis |
 
-(A *link function* is the deterministic map $g$ in $g(\theta_i) = \beta^\top x_i$. We compose with its inverse $g^{-1}$ to turn the linear predictor into the natural parameter of the response family.)
+(A *link function* is the deterministic map $g$ in $g(\theta_i) = \beta^\top x_i$. We compose with its inverse $g^{-1}$ to turn the linear predictor into the chosen response parameter, such as a probability or mean.)
 
 Fitting is the same as chapter 1:
 
@@ -172,7 +183,7 @@ Most "why does this fail at runtime" questions trace to one of three slips:
 Three observations from this chapter you may have already noticed:
 
 1. **No `pyro.plate` / `numpyro.plate` wrapping.** Plates are inferred from object cardinalities and the domain/codomain typing. If you need an explicit indexed family (say a per-group intercept), chapter 3 introduces the plate-draw syntax (`v : G <- Normal(loc=0, scale=sigma)`).
-2. **`let` is not sampling.** PyMC `pm.Deterministic`, NumPyro `numpyro.deterministic`, Pyro `pyro.deterministic`: every PPL has a different name for "this is a function of random variables, not itself random." QVR uses `let`. The compiler tracks the dependency for autograd.
+2. **`let` is not sampling.** PyMC `pm.Deterministic`, NumPyro `numpyro.deterministic`, Pyro `pyro.deterministic`: every PPL has a different name for "this is computed from existing variables without a new draw." QVR uses `let`. The compiler tracks the dependency for autograd.
 3. **Several entries, one module.** A `.qvr` file may declare several
    programs and computations. `Program.entry_points()` lists the checked
    entry points; `export` selects the classic compiled morphism exposed
@@ -189,6 +200,6 @@ Three observations from this chapter you may have already noticed:
 [Chapter 3](03-hierarchical.md) covers hierarchical models: the place where mean-field VI starts to misbehave and where NUTS earns its keep.
 
 
-## References
+## Sources and further reading
 
-- John A. Nelder and Robert W. M. Wedderburn. 1972. Generalized linear models. *Journal of the Royal Statistical Society Series A: General*, 135(3):370–384.
+- *Generalized Linear Models* [@nelder1972glm].

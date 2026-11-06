@@ -1,9 +1,9 @@
 # 6. First-class transformations
 
-A *change-of-base* transformation turns a $\mathcal{V}$-enriched morphism into a $\mathcal{W}$-enriched one. Two flavours coexist in the library:
+A *change-of-base* transformation turns a $\mathcal{V}$-enriched morphism into a $\mathcal{W}$-enriched one. Two variants coexist in the library:
 
-- [`AlgebraHomomorphism`](../../api/core/algebras.md) values (Rosenthal, 1990, *Quantales and Their Applications*, Pitman Research Notes in Mathematics 234, Longman; ISBN 978-0-582-06423-2) are lax monoidal [lattice](https://en.wikipedia.org/wiki/Lattice_(order)) maps $\varphi : \mathcal{V} \to \mathcal{W}$ that act pointwise: every entry of the morphism's tensor is sent through $\varphi$.
-- [`MorphismTransformation`](../../api/core/morphisms.md) values act on the whole tensor, not entry-by-entry. Softmax row-normalization, L1/L2 row-normalization, Bayes inversion under a prior; all consume axis information that pointwise actions don't see.
+- [`AlgebraHomomorphism`](../../api/core/algebras.md) values [@rosenthal1996quantaloids] record typed pointwise maps $\varphi : \mathcal{V} \to \mathcal{W}$: every entry of the morphism's tensor is sent through $\varphi$. A lax monoidal or lattice interpretation requires checking the appropriate laws for that particular map.
+- [`MorphismTransformation`](../../api/core/morphisms.md) values act on the whole tensor. Softmax and L1/L2 normalization use row totals or norms; Bayes inversion combines a prior with likelihood entries before normalizing over the input axis.
 
 Both inherit a common interface: a `.source` algebra, a `.target` algebra, and
 an `apply` method that accepts a tensor plus a morphism for shape resolution.
@@ -13,9 +13,28 @@ to local names, compose them with
 either kind to
 [`Morphism.change_base`](../../api/core/morphisms.md).
 
+## Read a transformation as a change in interpretation
+
+A row `[2, 1]` can be a pair of real scores, but it cannot be a probability
+row because its entries sum to three. [L1 normalization](02-stochastic-relations.md#creating-stochastic-morphisms) gives `[2/3, 1/3]` for
+this nonnegative row. Softmax instead exponentiates its inputs before
+normalizing, so it answers a different scoring convention. Both need to see
+the whole row; an entrywise map such as taking a logarithm does not.
+
+The type records which arithmetic later composition should use. Normalizing
+`[2, 1]` loses its total of three: `[4, 2]` produces the same normalized row.
+Changing the result's algebra tag back thus leaves `[2/3, 1/3]` in place.
+For a conversion to preserve composition, it must also satisfy the relevant
+preservation equations described below.
+
 ### Why typed transformations?
 
-In a PyTorch program you'd write `softmax(logits, dim=-1)` whenever you needed to normalise. That's fine for a one-shot call, but it has no record of *which algebra the result lives in* once normalised. If you then compose with another morphism that lives in a fuzzy algebra, nothing flags the mismatch and the result is mathematically incoherent (you've sum-product-composed a row-stochastic tensor with a noisy-OR one).
+In PyTorch, `softmax(logits, dim=-1)` normalizes each row. The returned tensor
+contains the values but carries no record of the operations used to interpret
+them. A probability calculation sums contributions from mutually exclusive
+paths; a fuzzy calculation may combine them with noisy-OR. Recording the
+algebra with the tensor lets Quivers check which operations a subsequent
+composition expects.
 
 A [`MorphismTransformation`](../../api/core/morphisms.md) is a typed function on morphisms. `softmax(B)` records `ProductFuzzyAlgebra` as its source and `Markov` as its target, so the compiler can check subsequent compositions. Applying it to a morphism `f` returns `f.change_base(softmax(B))` with the algebra tag `Markov`. A later `>>` accepts another Markov morphism and rejects a fuzzy one because the two operands carry different algebras.
 
@@ -136,6 +155,14 @@ f = observed(A, A, torch.rand(3, 3), algebra=MARKOV)
 g = f.change_base(bayes_invert(prior))
 print(g.tensor.sum(dim=-1))      # rows of g sum to 1 (Markov)
 ```
+
+For instance, suppose a condition has prior probability `0.1`, a test is
+positive with probability `0.8` when it holds, and with probability `0.2` when
+it does not. A positive test has joint weights `0.08` and `0.18` for the two
+possibilities. Dividing by their sum gives posterior probability
+`0.08 / 0.26`, about `0.308`, for the condition. Bayes inversion needs that
+prior and swaps the direction of the kernel; transposing a probability table
+alone does neither.
 
 ## From QVR
 

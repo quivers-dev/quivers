@@ -2,7 +2,7 @@
 
 ## Overview
 
-[Probabilistic PCA](https://en.wikipedia.org/wiki/Probabilistic_principal_component_analysis) ([Tipping & Bishop 1999](https://doi.org/10.1111/1467-9868.00196)) factors a data matrix through a low-rank loading matrix $W$ acting on a per-item latent code $z$:
+[Probabilistic PCA](https://en.wikipedia.org/wiki/Probabilistic_principal_component_analysis) [@tipping1999ppca] factors a data matrix through a low-rank loading matrix $W$ acting on a per-item latent code $z$:
 
 $$
 z_i \sim \mathcal{N}(0, I_K), \quad y_i \mid z_i \sim \mathcal{N}(W z_i, \sigma^2 I_D).
@@ -73,9 +73,35 @@ program ppca_program : Resp -> Val
 export ppca_program
 ```
 
+## Understanding the model
+
+PPCA describes many correlated measurements using a shorter latent code.
+The [loading matrix](factor-analysis.md#understanding-the-model) expands that code back to observation space, and one
+shared noise scale describes residual variation in every direction. With
+fewer latent than observed coordinates, the mean reconstruction lies in a
+lower-dimensional subspace.
+
+Rotating the latent coordinates and applying the inverse rotation to the
+loadings preserves the reconstructed covariance. Compare fits through their
+reconstructed means and `W.T @ W + sigma**2 * I`, using the row-oriented
+loading convention here. Equivalent fits can have different loading entries.
+
 ## Walkthrough
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; each position it can occupy gives it a different one, and this file uses four. In `morphism Z : Item -> LatentDim` the codomain is the arrow's own value space, which is what makes `Z` an `Item x LatentDim` real matrix. In `[over=LatentDim]` the object fixes the *event width* instead, the two coordinates a latent code or a loading row spans. In `observe y : Resp <- Normal(mu, sigma)` it fixes the *plate extent*, the 160 response rows, one per `(Item, ObsDim)` cell, which is why an object in that slot must be discrete; what a row holds is not `Resp`'s business but the family's, and `Normal` is what makes each response real. And in the program signature `Resp -> Val` the codomain names the *value space* of what the program returns: `return y` gives back one real response per row, so that space is `Real 1`, declared as `object Val : Real 1`. Reading that codomain as an index instead is the misstep to avoid: a signature `Resp -> Resp` would claim the program returns an element of the response index set, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain.
+The same object declaration can identify an axis in several roles. Read the
+position where it is used:
+
+| Use | Meaning in this model |
+|---|---|
+| `morphism Z : Item -> LatentDim` | A table with one row per item and one column per latent coordinate. |
+| `[over=LatentDim]` | The coordinates making up one vector-valued draw. |
+| `observe y : Resp <- Normal(...)` | One scored response per element of the flattened response index. |
+| `program ... : Resp -> Val` | A response-indexed program returning real values; `Val` is `Real 1`. |
+
+A row index tells you which observation is being scored; the Normal family
+tells you that its value is real. These are separate roles even if their
+sizes happen to coincide. Keep the return-space declaration consistent with
+the returned values rather than assuming an index name is also a value type.
 
 The two latent declarations introduce the per-item code and the loading matrix as first-class arrows. The composition `Z >> W` is real-algebra matmul: under `composition real [level=algebra]` the `(i, d)` entry of the resulting `Item x ObsDim` tensor is exactly $\sum_k Z_{i,k} W_{k,d}$, the PPCA model mean.
 
@@ -141,7 +167,7 @@ print(f"initial loss: {losses[0]:.2f}")
 print(f"final loss:   {losses[-1]:.2f}")
 ```
 
-The recovered factorisation `Z @ W` matches the data up to the $K \times K$ rotation invariance of PPCA.
+The recovered factorization `Z @ W` matches the data up to the $K \times K$ rotation invariance of PPCA.
 
 ### NUTS posterior
 
@@ -160,7 +186,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-PPCA is a pair of arrows in a real-algebra category: the per-item code $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the loading $W : \mathsf{LatentDim} \to \mathsf{ObsDim}$. Their composition $Z \mathbin{>>} W$ is the [`LatentMorphism`](../api/core/morphisms.md) $\mathsf{Item} \to \mathsf{ObsDim}$ whose tensor is the model mean. Marginalising the latent factor under an isotropic noise kernel recovers the closed-form covariance $W^\top W + \sigma^2 I$ on the observation side.
+PPCA is a pair of arrows in a real-algebra category: the per-item code $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the loading $W : \mathsf{LatentDim} \to \mathsf{ObsDim}$. Their composition $Z \mathbin{>>} W$ is a [`ComposedMorphism`](../api/core/morphisms.md) $\mathsf{Item} \to \mathsf{ObsDim}$ whose tensor is the model mean. Marginalizing the latent factor under an isotropic noise kernel recovers the closed-form covariance $W^\top W + \sigma^2 I$ on the observation side.
 
 The optional morphism-valued [`MatrixNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMatrixNormal) declaration shown above would place a measure on the hom-object $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{ObsDim})$. The loaded program instead uses indexed independent-Normal draws for the loading entries.
 
@@ -170,6 +196,6 @@ The optional morphism-valued [`MatrixNormal`](../api/continuous/families.md#quiv
 - [DSL Guide](../guides/dsl-overview.md) for the morphism-valued prior syntax.
 
 
-## References
+## Sources and further reading
 
-- Michael E. Tipping and Christopher M. Bishop. 1999. Probabilistic principal component analysis. *Journal of the Royal Statistical Society Series B: Statistical Methodology*, 61(3):611–622.
+- *Probabilistic Principal Component Analysis* [@tipping1999ppca].

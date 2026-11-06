@@ -36,7 +36,7 @@ The Logistic density is $f(y; \mu, s) = \frac{e^{-(y - \mu)/s}}{s \bigl(1 + e^{-
 #   beta_1  ~ Normal(0, 2)                  slope
 #   y_n     ~ Logistic(beta_0 + beta_1 * x_n, scale)
 #
-# Reference: [Balakrishnan 1991](https://doi.org/10.1201/9781482277098).
+# Reference: [Balakrishnan 1992](https://doi.org/10.1201/9781482277098).
 
 object Resp : FinSet 64
 object Val : Real 1
@@ -53,6 +53,18 @@ program logistic_noise_regression : Resp -> Val
 
 export logistic_noise_regression
 ```
+
+## Understanding the model
+
+Despite its name, this is a regression for a continuous response. [Binary logistic regression](../tutorials/qvr/02-glms.md#logistic-regression) uses a sigmoid-linked Bernoulli probability; this model
+instead adds a continuous Logistic-distributed error to a line. Its scale
+`s` is not its standard deviation: the latter is `s * pi / sqrt(3)`.
+
+The inverse-CDF data generator turns a uniform probability into a Logistic
+error. Posterior coefficient draws describe uncertainty about the mean line,
+while predictive draws add those errors. To compare it with Normal regression,
+inspect the distribution of residuals or [replicated extremes](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) as well as the
+mean fit; changing a noise family primarily changes the tail assumptions.
 
 ## Walkthrough
 
@@ -91,7 +103,7 @@ x_in = torch.zeros(N, 1)
 
 ### SVI fit
 
-The ELBO loss carries the prior and entropy terms alongside the likelihood, so it sits above the oracle negative log-likelihood even at convergence; what the fit demonstrates is the descent, not a match to the oracle.
+The ELBO loss includes prior and guide terms as well as the likelihood. The oracle negative log-likelihood evaluates only the observation model at the generating parameters. To compare fitted predictions with that oracle, evaluate the same observation likelihood using fitted parameter draws.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -141,8 +153,8 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Use cases
 
-Approximation to Normal regression when the analyst suspects modest excess mass at moderate residuals: the Logistic is roughly $1.6\times$ heavier at the shoulders than Normal for the same variance. Common surrogate for the logistic-noise discrete-choice family ($Y_n = \mathbb{1}[\mu_n + \varepsilon_n > 0]$ with $\varepsilon_n$ Logistic recovers binary logistic regression).
+Approximation to Normal regression when the analyst suspects modest excess mass at moderate residuals: the Logistic has heavier asymptotic tails than a Normal with the same variance. Common surrogate for the logistic-noise discrete-choice family ($Y_n = \mathbb{1}[\mu_n + \varepsilon_n > 0]$ with $\varepsilon_n$ Logistic recovers binary logistic regression).
 
-## References
+## Sources and further reading
 
-- N. Balakrishnan, editor. 1992. *Handbook of the Logistic Distribution*. Marcel Dekker.
+- *Handbook of the Logistic Distribution* [@balakrishnan1992logistic].

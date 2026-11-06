@@ -1,6 +1,6 @@
 # Tutorial 5: Variational Inference
 
-Variational inference fits a tractable guide to a program's posterior. This chapter defines and conditions a model, constructs a guide and ELBO objective, optimizes them with SVI, and draws posterior samples with `Predictive`.
+Variational inference fits a tractable guide to a program's [posterior](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise). This chapter defines and conditions a model, constructs a guide and ELBO objective, optimizes them with SVI, and uses `Predictive` to draw from the fitted approximation and simulate observations. Blei and colleagues provide a statistical introduction to variational inference [@blei2017variational]; Hoffman and colleagues develop stochastic variational inference [@hoffman2013svi]. These sources explain the objectives and approximations, while the code below demonstrates Quivers' interfaces.
 
 The pipeline:
 
@@ -27,6 +27,18 @@ sequenceDiagram
     User->>pred: Predictive(model, posterior=guide)
     pred-->>User: posterior + predictive draws
 ```
+
+Suppose `z` is an unknown temperature and `y` is a noisy reading. A prior
+assigns plausibility to temperatures before the reading; the likelihood
+assigns a score to the reading under each temperature. Their product,
+normalized over temperatures, is the posterior we want.
+
+The guide is an adjustable distribution used to approximate that posterior. Pyro’s [guide explanation](https://pyro.ai/examples/svi_part_i.html#Guide) develops the same model/guide distinction with a Bernoulli example [@pyroSVI].
+A [Normal guide](../qvr/06-inference-zoo.md#step-2-which-variational-guide) can move its center and widen or narrow its spread. SVI draws
+candidate temperatures from it, evaluates the model and guide scores, and
+adjusts those parameters. For instance, concentrating around 10 degrees would
+fit poorly if both the prior and a precise reading favor 20 degrees; the
+objective penalizes the guide for proposing temperatures with low model density.
 
 ## Concepts
 
@@ -256,6 +268,17 @@ $$
 
 When the joint factors as $p(\text{obs}\mid z)p(z)$, this is equivalently the expected log likelihood minus $\operatorname{KL}(q(z)\|p(z))$. `SVI.step` minimizes the negative ELBO.
 
+In the displayed objective, `log p(obs, z)` rewards values compatible with
+both prior and observations; subtracting `log q(z)` prevents the objective
+from merely rewarding a guide for concentrating on one point. The expectation
+averages over guide draws, commonly called particles. Increasing their number
+estimates the same expectation using a larger sample. The [ELBO derivation in Pyro’s tutorial](https://pyro.ai/examples/svi_part_i.html#ELBO) relates the bound to the KL divergence from the guide to the posterior [@pyroSVI].
+
+`SVI.step` returns a loss to minimize, the negative ELBO, so a downward loss
+trend is the expected direction. Neither a smooth curve nor a small loss proves
+the posterior approximation is adequate. Inspect uncertainty and predictive
+checks, and compare with an analytic or well-diagnosed reference when available.
+
 ## Posterior inference
 
 After training, use the guide to make predictions on new data:
@@ -289,7 +312,7 @@ print(f"95% CI: [{z_quantile_lower.item():.3f}, {z_quantile_upper.item():.3f}]")
 
 ## Inspecting guide and model draws
 
-A trace of a conditioned model is not a draw from the posterior over `z`: forward execution still draws `z` from its model distribution and then scores the fixed observation. It can nevertheless provide a useful model draw to compare with a guide draw:
+Tracing a conditioned model draws `z` from its model distribution and scores the fixed observation. Drawing from the fitted guide instead uses the approximate posterior learned from that observation. The two calls below expose these different distributions:
 
 ```python
 # Model draw from a trace that scores the observed y

@@ -1,10 +1,29 @@
 # Enriched Category Theory
 
-The `quivers.enriched` package implements constructions specific to $\mathcal{V}$-enriched categories: ends and coends, weighted limits, profunctors, Yoneda, Kan extensions, Day convolution, and optics. Every operation is parameterized by an algebra $\mathcal{V}$ (defaulting to [`PRODUCT_FUZZY`](../api/core/algebras.md)); the implementation contracts and joins/meets against the algebra's primitive operations.
+The `quivers.enriched` package provides finite tensor operations motivated by $\mathcal{V}$-enriched categories: ends and coends, weighted limits, profunctors, Yoneda, Kan extensions, Day convolution, and optics. Every operation is parameterized by an [algebra](core.md#algebras-enrichment-algebras) $\mathcal{V}$ (defaulting to [`PRODUCT_FUZZY`](../api/core/algebras.md)); the implementation contracts and joins/meets against the algebra's primitive operations.
 
 ## Ends and coends
 
-An [end](https://ncatlab.org/nlab/show/end) $\int_X F(X, X)$ is the equalizer of the components of a wedge over the diagonal of a bifunctor $F : \mathcal{C}^{\mathrm{op}} \times \mathcal{C} \to \mathcal{V}$. Dually, a [coend](https://ncatlab.org/nlab/show/coend) $\int^X F(X, X)$ is the coequalizer. In the finite tensor representation used by quivers, an end is computed by restricting a tensor to its diagonal in matched contravariant/covariant axes and reducing with the algebra's meet ($\bigwedge$); a coend reduces with the join ($\bigvee$).
+The general enriched constructions, beyond the finite reductions here,
+are treated in [@kelly1982basic].
+
+Milewski’s [enriched categories chapter](https://bartoszmilewski.com/2017/05/13/enriched-categories/) starts from function types and composition before giving the enriched definition. [@milewski2017enriched] The [contraction example](dsl-contractions.md#type-driven-wiring-inference) supplies the tensor operation used in the finite constructions below.
+
+Start with a square table whose two axes refer to the same choices. Matching
+those choices means keeping the diagonal. The finite `end` operation then
+combines the diagonal entries with `meet`; `coend` uses `join`. Under Boolean
+AND/OR these read as "all matched cases" and "some matched case."
+*Contravariant* and *covariant* mark the two argument directions;
+$\mathcal C^{\mathrm{op}}$ reverses the arrows of $\mathcal C$.
+
+For the matrix below the selected values are `0.9`, `0.8`, and `0.7`.
+The default product meet gives `0.504`; noisy-OR gives `0.994`.
+The implementation performs this diagonal reduction, without separately
+enforcing the dinaturality conditions of a general non-discrete category.
+Use the general terminology only under hypotheses that justify that reduction.
+
+
+An [end](https://ncatlab.org/nlab/show/end) $\int_X F(X, X)$ is the universal dinatural wedge for a bifunctor $F : \mathcal{C}^{\mathrm{op}} \times \mathcal{C} \to \mathcal{V}$. Dually, a [coend](https://ncatlab.org/nlab/show/coend) $\int^X F(X, X)$ is the universal dinatural cowedge. In a general category these constructions impose compatibility along morphisms, via an equalizer or coequalizer when the required products or coproducts exist. In the finite tensor representation used by quivers, an end is computed by restricting a tensor to its diagonal in matched contravariant/covariant axes and reducing with the algebra's meet ($\bigwedge$); a coend reduces with the join ($\bigvee$).
 
 The functions [`end`](../api/enriched/ends_coends.md) and [`coend`](../api/enriched/ends_coends.md) consume a tensor representing $F$ and the index tuples of its contravariant / covariant occurrences:
 
@@ -29,7 +48,23 @@ e = end(F, contra_dims=(0,), co_dims=(1,), algebra=PRODUCT_FUZZY)
 
 ## Yoneda
 
-For a $\mathcal{V}$-presheaf $F : \mathcal{C}^{\mathrm{op}} \to \mathcal{V}$ and an object $A \in \mathcal{C}$, the [Yoneda lemma](https://ncatlab.org/nlab/show/Yoneda+lemma) asserts $[\mathcal{C}^{\mathrm{op}}, \mathcal{V}](y_A, F) \cong F(A)$, where $y_A = \mathcal{C}(-, A)$ is the representable presheaf at $A$. [`yoneda_lemma`](../api/enriched/yoneda.md) computes the left side as an end and the test suite verifies the isomorphism numerically:
+The Yoneda idea is to describe an object by all the ways other objects can
+map into it. That collection is its *representable presheaf*
+$y_A = \mathcal C(-,A)$. A presheaf is a [functor](categorical.md#functors) that assigns information to objects and
+pulls it backward along arrows. A transformation from $y_A$ to `F` is
+determined by what it does to the identity arrow at `A`: all other
+components follow by [naturality](categorical.md#natural-transformations). Conversely, an element of `F(A)` supplies
+those components. This explains the correspondence in the theorem below.
+
+The worked derivation in Milewski’s [Yoneda lemma chapter](https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/) shows how evaluating at the identity determines the whole transformation. [@milewski2015yoneda]
+
+In the finite discrete case, the identity relation acts like a lookup
+selector: only the matching index contributes. With non-identity arrows,
+the presheaf’s action along those arrows and the transformation’s naturality
+equations ensure the same correspondence.
+
+
+For a $\mathcal{V}$-presheaf $F : \mathcal{C}^{\mathrm{op}} \to \mathcal{V}$ and an object $A \in \mathcal{C}$, the [Yoneda lemma](https://ncatlab.org/nlab/show/Yoneda+lemma) asserts $[\mathcal{C}^{\mathrm{op}}, \mathcal{V}](y_A, F) \cong F(A)$, where $y_A = \mathcal{C}(-, A)$ is the representable presheaf at $A$. [`yoneda_lemma`](../api/enriched/yoneda.md) computes a finite internal-hom/meet expression. Tests compare selected instances numerically; arbitrary tensors need not define a presheaf satisfying the theorem's hypotheses:
 
 ```python
 import torch
@@ -70,7 +105,19 @@ is_ff = verify_yoneda_fully_faithful(f, g, atol=1e-5)
 
 ## Kan extensions
 
-[Left and right Kan extensions](https://ncatlab.org/nlab/show/Kan+extension) extend a morphism along an [`ObjectMap`](../api/enriched/kan_extensions.md) between objects. `quivers.enriched.kan_extensions` provides two concrete `ObjectMap` subclasses, [`Projection`](../api/enriched/kan_extensions.md) (the canonical $A_1 + \ldots + A_n \to A_k$) and [`Inclusion`](../api/enriched/kan_extensions.md) (the canonical $A_k \hookrightarrow A_1 + \ldots + A_n$):
+A map of indices can merge several detailed cases into one coarser case.
+The *fiber* over a coarse index is the set of detailed indices sent there.
+For a map from observations to participants, a fiber contains one
+participant's observations. A left extension aggregates each fiber with
+`join`; a right extension uses `meet`. Under Boolean operations they answer
+"does any observation qualify?" and "do all observations qualify?"
+The example uses an inclusion instead: old entries retain their positions,
+and previously absent positions receive the relevant empty reduction.
+These fiber formulas describe the finite discrete/order-based setting;
+general Kan extensions involve the base category's morphisms as well.
+
+
+[Left and right Kan extensions](https://ncatlab.org/nlab/show/Kan+extension) extend a morphism along an [`ObjectMap`](../api/enriched/kan_extensions.md) between objects. `quivers.enriched.kan_extensions` provides two concrete `ObjectMap` subclasses, [`Projection`](../api/enriched/kan_extensions.md) (projection from a product onto selected factors) and [`Inclusion`](../api/enriched/kan_extensions.md) (the canonical $A_k \hookrightarrow A_1 + \ldots + A_n$):
 
 ```python
 import torch
@@ -94,6 +141,16 @@ RanR = right_kan(R, along=iota)        # Ran_iota R: S → B
 [`left_kan`](../api/enriched/kan_extensions.md) computes $(\mathrm{Lan}_p R)(a', b) = \bigvee\{R(a, b) : p(a) = a'\}$ (the algebra join over the fiber); [`right_kan`](../api/enriched/kan_extensions.md) is the meet-dual.
 
 ## Weighted limits
+
+A weight specifies how strongly each part of a diagram constrains an
+answer. For Boolean values, the internal hom `[w, d]` is implication:
+when a requirement `w` is true, `d` must hold; a false requirement imposes
+no constraint. Taking the meet combines all these requirements.
+In a residuated ordered algebra, the internal hom is defined by
+$a \otimes b \le c$ iff $b \le [a,c]$. This adjoint relation, together
+with the diagram’s action on morphisms, supplies the weighted-limit
+interpretation of the reduction.
+
 
 A [weighted limit](https://ncatlab.org/nlab/show/weighted+limit) $\{W, D\}$ pairs a [`Weight`](../api/enriched/weighted_limits.md) $W$ (a presheaf valued in $\mathcal{V}$) with a [`Diagram`](../api/enriched/weighted_limits.md) $D$ (a tuple of objects, possibly extended to a true functor in richer settings). For discrete diagrams the value is a meet over the residuated internal-hom of $W$ and $D$:
 
@@ -121,6 +178,16 @@ limit_tensor = weighted_limit(W, D)  # torch.Tensor
 
 ## Profunctors
 
+A profunctor is a relation-like object between two categories. In the
+finite discrete case it is a table with one input index and one output
+index, much like a morphism already encountered in [Morphisms](morphisms.md).
+Composing two tables aggregates over a hidden middle index, which is the
+coend formula below. For non-discrete categories, a profunctor also has
+compatible actions of the source and target morphisms. Those actions
+specify how changing either object along an arrow changes the profunctor
+value; the matrix representation covers the discrete case.
+
+
 A [profunctor](https://ncatlab.org/nlab/show/profunctor) (or distributor) $P : \mathcal{A} \nrightarrow \mathcal{B}$ is a $\mathcal{V}$-valued bimodule, represented in quivers as a [`Profunctor`](../api/enriched/profunctors.md) wrapping a tensor of shape `(*contra.shape, *co.shape)`:
 
 ```python
@@ -137,6 +204,15 @@ P = Profunctor(contra=A, co=B, tensor=data)
 A morphism in $\mathcal{V}\text{-}\mathbf{Rel}$ embeds as a profunctor via `Profunctor.from_morphism(f)`. Composition of profunctors uses the coend formula $(Q \circ P)(c, a) = \int^b P(b, a) \otimes Q(c, b)$ and is provided as `Profunctor.compose`.
 
 ## Day convolution
+
+Ordinary convolution combines contributions from every decomposition of an
+output index: for sequence lengths, an output length `n` can come from
+`i + j = n`. Day convolution replaces addition of lengths by the base
+category's monoidal product. For each `C`, enumerate pairs `A, B` whose
+product is `C`, combine their scores, and aggregate the alternatives.
+The chosen object inventory must contain the decompositions you want to
+represent; a truncated inventory omits the others.
+
 
 [Day convolution](https://ncatlab.org/nlab/show/Day+convolution) lifts the monoidal structure of a base category to its presheaves. For a finite discrete category and presheaf values $F, G$, [`day_convolution`](../api/enriched/day_convolution.md) computes
 
@@ -162,6 +238,15 @@ unit = day_unit(objects=objects, unit_index=0)
 ```
 
 ## Optics
+
+A lens focuses on one field of a record, such as the color in a
+(color, shape) pair. Reading extracts color; updating replaces color while
+retaining shape. A prism focuses on one alternative of a tagged union: it
+can match a color case, but a shape case does not contain a color to read.
+This explains why products and coproducts lead to different optics.
+An adapter changes representations in both directions; a grate packages a
+more general way to combine access through a family of contexts.
+
 
 Optics are bidirectional morphisms that decompose into a forward `get` / `match` and a backward `put` / `build`. The package provides four kinds, all subclassing [`Optic`](../api/enriched/optics.md):
 
@@ -207,4 +292,10 @@ Optics are composed via [`compose_optics`](../api/enriched/optics.md):
 combined = compose_optics(outer=lens, inner=adapter)
 ```
 
-Each optic exposes `.forward()` and `.backward()` returning `Morphism`s (typically `ObservedMorphism`); the laws (`backward(forward(s)) = s` etc.) are verified pointwise inside the test suite.
+Each optic exposes `.forward()` and `.backward()` returning `Morphism`s
+(typically `ObservedMorphism`). Laws depend on the optic: a lens must preserve
+the unfocused part when updating, while a prism distinguishes a successful
+match from another variant. For a lens into the color of `(color, shape)`,
+writing back the color just read must preserve the pair, and reading after
+writing a new color must return that new color. A prism needs laws about
+which variant matches and how a successful match is rebuilt.

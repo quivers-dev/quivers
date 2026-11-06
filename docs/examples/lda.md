@@ -1,49 +1,39 @@
-# Latent Dirichlet Allocation
+# Document-level topic mixture
 
 ## Overview
 
-[Latent Dirichlet allocation](https://en.wikipedia.org/wiki/Latent_Dirichlet_allocation) ([Blei, Ng & Jordan 2003](https://www.jmlr.org/papers/v3/blei03a.html)) is the canonical [topic model](https://en.wikipedia.org/wiki/Topic_model). Each document draws a topic mixture $\theta_d$ from a [Dirichlet](https://en.wikipedia.org/wiki/Dirichlet_distribution) prior; each topic draws a vocabulary distribution $\phi_k$ from a Dirichlet prior; each word in a document draws a topic $z_{d,n}$ from $\theta_d$ and then a token $w_{d,n}$ from $\phi_{z_{d,n}}$. The per-word topic assignment is integrated out by a scoped `marginalize` block, yielding the closed-form per-word [Categorical](https://en.wikipedia.org/wiki/Categorical_distribution) marginal
+The source implements a document-level topic mixture with Dirichlet priors
+on document topic weights and topic vocabulary distributions. It shares its
+building blocks with [latent Dirichlet allocation](https://www.jmlr.org/papers/v3/blei03a.html),
+but the grouped block selects one topic for all words in a document. Its
+likelihood is [@blei2003lda]
 
 $$
-p(w_{d,n} \mid \theta_d, \phi) \;=\; \sum_{k=1}^{K} \theta_d[k]\,\phi_k[w_{d,n}],
+p(w_d \mid \theta_d, \phi)
+= \sum_{k=1}^{K} \theta_d[k] \prod_{n:\,d[n]=d} \phi_k[w_n].
 $$
 
-computed via [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) over the $K$ topic atoms.
+Canonical LDA instead assigns a topic independently to each token conditional
+on the document mixture, giving a product of per-token mixture sums. The
+historical filename `lda.qvr` does not change the grouping written in source.
 
 ## QVR source
 
 ```qvr
-# Latent Dirichlet Allocation
+# Document-level topic mixture
 #
-# The Blei, Ng & Jordan (2003) topic model. Each document draws
-# a topic mixture from a Dirichlet prior; each topic draws a
-# word distribution from a Dirichlet prior; each word in a
-# document draws a topic from its document's mixture, then a
-# word from the chosen topic's distribution.
+# Each document draws topic weights, and each topic draws a vocabulary
+# distribution. The grouped marginalize block sums over one topic shared
+# by every observed token in that document:
 #
-# Generative structure:
+#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
 #
-#   theta_d  ~ Dirichlet(alpha)            per-document topic mixture
-#   phi_k    ~ Dirichlet(beta)             per-topic word distribution
-#   z_{d,n}  ~ Categorical(probs=theta_d)        per-word topic assignment
-#   w_{d,n}  ~ Categorical(probs=phi_{z_{d,n}})  per-word observed token
+# This differs from canonical LDA, whose independent per-token assignments
+# give product_n sum_k theta_d[k] * phi[k, w_d[n]].
+# Token indexes observed positions; Vocab indexes possible token values.
+# Mix is the real vector space containing the returned topic weights.
 #
-# The per-word topic z_{d,n} is integrated out of the per-word
-# likelihood. The closed-form marginal is
-#
-#   p(w_{d,n} | theta_d, phi) = sum_k theta_d[k] * phi[k, w_{d,n}],
-#
-# which the `marginalize` block computes via logsumexp over the
-# K topic atoms.
-#
-# Token is the corpus-wide plate of word positions and Vocab is
-# the vocabulary the tokens take values in; the two are distinct
-# sets, so they carry distinct objects even though a corpus can
-# happen to hold as many positions as types. Mix is the value
-# space of the returned per-document topic mixture, a point of
-# the Topic simplex embedded in R^K.
-#
-# Reference: [Blei, Ng & Jordan 2003](https://www.jmlr.org/papers/v3/blei03a.html).
+# Background: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation.
 
 composition log_prob [level=algebra]
 
@@ -64,6 +54,18 @@ program lda(alpha : Real, beta : Real) : Token -> Mix
 
 export lda
 ```
+
+## Understanding the model
+
+A document-level topic mixture asks which single topic best explains all
+words in a document. For a candidate topic, multiply its probabilities for
+those words; then sum these document likelihoods using the document's topic
+weights. One rare word can thus change how the entire document is assigned.
+
+Canonical LDA instead lets each word choose its own topic. Its likelihood is
+a product of per-word [mixture sums](mixture-model.md#understanding-the-model). The grouped block in this source uses
+[one assignment per document](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping), so it sums after multiplying the word likelihoods.
+The walkthrough follows that order of operations. Stan’s [vectorization example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures) writes out how moving a mixture sum outside a product changes which observations share an assignment [@stanFiniteMixtures].
 
 ## Walkthrough
 
@@ -140,7 +142,7 @@ observations = {"w": w, "word_idx": word_idx}
 x_in = torch.zeros(N, 1)
 ```
 
-The per-document topic mixture `theta` and per-topic vocabulary distribution `phi` remain unobserved continuous simplex sites; the per-word topic `z` is integrated out by the marginalize block.
+The per-document topic weights `theta` and per-topic vocabulary distributions `phi` remain continuous simplex sites. The shared document topic `z` is integrated out by the grouped block.
 
 ### SVI fit
 
@@ -176,13 +178,17 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The discrete per-word topic $z : \mathsf{Topic}$ is integrated out by the [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) along the projection $\Phi \times \mathsf{Topic} \to \Phi$. The grouped marginalize block scatter-sums per-topic per-row log-likelihoods into the `Doc`-indexed accumulator before the log-sum-exp reduction, so the per-document topic mixture is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) along the per-word document fibration $\mathsf{Token} \to \mathsf{Doc}$ in $\mathbf{Kern}$.
+Marginalization pushes the joint measure on topic assignments and words onto
+the word observations by forgetting the assignments. Here it forgets one
+topic per document: the observation-to-document map first groups row scores,
+then the finite sum eliminates the shared topic. This is a weighted-kernel
+calculation; the grouping map determines which observations share a latent.
 
 ## See also
 
 - [Bayesian Gaussian Mixture Model](mixture-model.md) for a per-row mixture whose component assignment is integrated out in closed form by the likelihood, carrying no discrete latent and no `marginalize` block.
 
 
-## References
+## Sources and further reading
 
-- David M. Blei, Andrew Y. Ng, and Michael I. Jordan. 2003. Latent Dirichlet allocation. *Journal of Machine Learning Research*, 3:993–1022.
+- *Latent Dirichlet Allocation* [@blei2003lda].

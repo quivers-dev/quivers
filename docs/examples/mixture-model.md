@@ -61,9 +61,23 @@ program gmm(alpha : Real) : Resp -> Weights
 export gmm
 ```
 
+## Understanding the model
+
+For one observed value, each component offers an explanation. If two
+components have weights `0.4` and `0.6` and give that value densities `0.1`
+and `0.5`, its [mixture density](../tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) is `0.4 * 0.1 + 0.6 * 0.5 = 0.34`.
+`MixtureNormal` evaluates this sum without choosing a random component label.
+This removes assignment-sampling noise, but means and scales remain uncertain. Stan works through the same [sum over component assignments](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) [@stanFiniteMixtures].
+
+Component names do not identify physical groups: swapping their labels leaves
+the mixture density unchanged. Compare predicted densities or use a stated
+labeling convention before averaging component-specific draws. In the fitting
+illustration the weights are supplied as observations, so it estimates the
+remaining parameters conditional on those weights.
+
 ## Walkthrough
 
-`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 100` declare the two discrete plates: $K = 3$ mixture components and $N = 100$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterises the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
+`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 100` declare the two discrete plates: $K = 3$ mixture components and $N = 100$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
 
 The three `sample` steps draw the shared per-component parameters:
 
@@ -103,7 +117,7 @@ observations = {"r": r, "probs": true_probs}
 x_in = torch.zeros(N, 1)
 ```
 
-The synthetic rows are drawn by sampling a component per row and then a value from that component's Gaussian, but the model never sees the component labels: only the rows `r` and the fixed mixing weights `probs` enter `observations`. The per-component locations `mu` and scales `sigma` remain unobserved latents and are recovered by SVI.
+The synthetic rows are drawn by sampling a component per row and then a value from that component's Gaussian, but the model never sees the component labels: only the rows `r` and the fixed mixing weights `probs` enter `observations`. The per-component locations `mu` and scales `sigma` remain unobserved latents; SVI approximates their posterior given these observations.
 
 ### SVI fit
 
@@ -125,7 +139,7 @@ print("recovered means: [" + ", ".join(f"{m:.2f}" for m in recovered) + "]")
 print("true means:      [-3.00, 0.00, 3.00]")
 ```
 
-The variational locations `guide.loc_mu` hold the recovered component means. Because the mixture ELBO is multimodal, the fit is sensitive to initialisation and to the mixing weights held fixed at `probs`; a sharper separation between components makes the locations easier to recover.
+The variational locations `guide.loc_mu`, printed as “recovered means,” estimate the component locations. Repeat the fit with several seeds to check for different local optima, and compare the resulting mixture densities. Sorting the means aligns labels for display; component-specific posterior summaries also need a consistent labeling convention when symmetric weights and priors permit label switching.
 
 ### NUTS posterior
 
@@ -144,8 +158,8 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The per-row likelihood `MixtureNormal(probs, mu, sigma)` is a [Kleisli arrow](https://en.wikipedia.org/wiki/Kleisli_category) $\mathsf{Resp} \to \mathsf{Resp}$ in the [Giry monad](https://doi.org/10.1007/BFb0092872). It is a finite convex combination of the $K$ Gaussian component measures, weighted by the categorical measure $\mathrm{probs}$ on `Component`: the Giry-monad mixture operation that draws a component from $\mathrm{Categorical}(\mathrm{probs})$, then a value from the chosen Gaussian, and keeps the marginal on the value. Equivalently, `MixtureNormal` is the [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) of the joint component-and-value measure along the projection $\mathsf{Component} \times \mathbb{R} \to \mathbb{R}$, which is exactly the closed-form marginal $\sum_k \mathrm{probs}[k]\,\mathcal{N}(\cdot;\,\mu[k],\,\sigma[k])$. Because the component index is integrated out inside the likelihood rather than sampled, the program carries no discrete latent to marginalise and every site it holds is continuous.
+The per-row likelihood `MixtureNormal(probs, mu, sigma)` is a conditional [Kleisli arrow](https://en.wikipedia.org/wiki/Kleisli_category) into the real-valued response space in the [Giry monad](https://doi.org/10.1007/BFb0092872). It is a finite convex combination of the $K$ Gaussian component measures, weighted by the categorical measure $\mathrm{probs}$ on `Component`: the Giry-monad mixture operation that draws a component from $\mathrm{Categorical}(\mathrm{probs})$, then a value from the chosen Gaussian, and keeps the marginal on the value. Equivalently, `MixtureNormal` is the [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) of the joint component-and-value measure along the projection $\mathsf{Component} \times \mathbb{R} \to \mathbb{R}$, which is exactly the closed-form marginal $\sum_k \mathrm{probs}[k]\,\mathcal{N}(\cdot;\,\mu[k],\,\sigma[k])$. Because the component index is integrated out inside the likelihood rather than sampled, the program carries no discrete latent to marginalize and every site it holds is continuous. [@giry1982categorical]
 
 ## See also
 
-- [Latent Dirichlet Allocation](lda.md), the grouped discrete-mixture generalisation whose per-word topic assignment is integrated out by a scoped `marginalize` block.
+- [Latent Dirichlet Allocation](lda.md), a document-level topic mixture whose shared document assignment is integrated out by a scoped `marginalize` block.

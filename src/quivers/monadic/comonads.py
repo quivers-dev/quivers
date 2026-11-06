@@ -171,14 +171,16 @@ class CoKleisliCategory:
 
 
 class DiagonalComonad(Comonad):
-    """The diagonal comonad W(A) = A × A with projection and diagonal.
+    """Pair operations W(A) = A × A with projection and diagonal.
 
     ε_A: A × A → A is the first projection.
     δ_A: A × A → (A × A) × (A × A) is the diagonal on pairs.
 
-    This comonad models "contexts" where each element has access to
-    a pair of values. It arises from the product adjunction
-    Δ ⊣ ×.
+    This historical interface name does not describe a lawful comonad
+    in general. With W(f) = f × f, W(ε) after δ sends (a, b) to
+    (a, a), which violates the right counit law when a differs from b.
+    The methods expose the stated pair operations, not a construction
+    of the comonad induced by the product adjunction.
 
     Parameters
     ----------

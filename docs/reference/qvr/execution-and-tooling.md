@@ -1,11 +1,19 @@
 # Execution and tooling
 
-Every executable QVR declaration crosses the same **entry boundary (EB)**.
-The command line, REPL, TUI, and Python API all list the checked entry, validate
+Every executable QVR declaration uses the same entry-point interface.
+The command line, [REPL](../../guides/repl-and-lsp.md#the-repl), TUI, and Python API all list the checked entry, validate
 static and value arguments, attach runtime providers, run the evaluator, and
 return stable `qiec-run-*` diagnostics through this boundary.
 
 ## Check before you run
+
+`check` validates a model's structure; `run` executes it on supplied
+inputs; inference fits a posterior; `transpile` writes a representation
+for another backend. Run `check` while editing to catch incompatible
+types, then `run` with representative inputs to inspect returned values.
+For posterior inference, use the [inference drivers](../../guides/inference-foundations.md)
+and their diagnostics.
+
 
 Parse, compile, and validate one or more files with:
 
@@ -18,12 +26,12 @@ qvr check --target stan model.qvr
 Without `--target`, checking reports parser, constraint, compiler, and QIEC
 diagnostics. With a target, it also analyzes the reachable QIEC computation
 graph and reports unsupported core capabilities as `qiec:capability:*` or a
-more specific QIEC code. This pass does not run the complete renderer, emit
-target source, or execute a target toolchain. A successful target check is
-thus an early diagnostic, not a guarantee that `qvr transpile` will
-accept every surface construct in the module.
+more specific QIEC code. Run `qvr transpile --target TARGET` next to
+exercise the renderer and produce target source; renderer-specific
+restrictions can appear at that stage. Executing the generated source
+then tests it with the target toolchain.
 
-Use the same target in the language server:
+Use the same target in the [language server](../../guides/repl-and-lsp.md#the-language-server):
 
 ```bash
 qvr lsp --target numpyro
@@ -91,7 +99,7 @@ qvr run model.qvr regression \
 ```
 
 Each invocation owns its data, observations, sites, generator state, parameter
-store, score accumulator, and trace. No handler or mutable provider state is
+store, score accumulator, and [trace](../../guides/inference-foundations.md#trace-and-sample-sites). No handler or mutable provider state is
 shared implicitly with the next invocation.
 
 The Python form uses the same names:
@@ -120,15 +128,22 @@ print(run.value, run.log_joint)
 | `--json` | emit result, type, runtime, diagnostics, trace, entry kind, and program log joint as JSON |
 | `--runtime FILE.json` | select an explicit provider configuration |
 
-Fuel is especially useful for a recursive `define` or generated deduction.
+Fuel is especially useful for a recursive `define` or generated [deduction](../../guides/deduction.md#the-framework).
 The default is appropriate for ordinary terminating entries; a failed bound
 uses `qiec-run-fuel`.
 
 ## Runtime providers
 
+A provider supplies executable behavior for a typed request, such as
+drawing from a distribution or calling an attached [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks). The
+serialized module records what is needed and under which stable
+identifier; the current process supplies the implementation. This
+separation permits inspection and exchange of typed modules without
+embedding arbitrary host-language objects in their serialized form.
+
+
 The stable core contains identifiers and typed attachment descriptors, never
-host callables or mutable objects. A **runtime provider configuration (RPC)**
-selects process-local implementations. A configuration has this shape:
+host callables or mutable objects. A runtime provider configuration selects process-local implementations. A configuration has this shape:
 
 ```json
 {
@@ -138,7 +153,7 @@ selects process-local implementations. A configuration has this shape:
 }
 ```
 
-`core` supplies the reference evaluator, distributions, standard handlers,
+`core` supplies the reference evaluator, distributions, standard [handlers](effects-and-handlers.md#handler-declarations),
 search, weights, and parameter lookup. Installed packages may expose another
 provider through the `quivers.qiec_runtime` entry-point group. Structural
 programs automatically compose the core provider with attachments for their

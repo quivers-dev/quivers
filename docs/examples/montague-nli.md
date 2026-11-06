@@ -38,7 +38,7 @@ The two halves share one term language, so the prover's items are literally the 
 # A deduction rule's conclusion is a constructor tree over the
 # rule's pattern variables, and the runtime instantiates it by
 # structural substitution alone. There is no beta-rule: nothing
-# reduces a redex, and the chart never normalises an item. So a
+# reduces a redex, and the chart never normalizes an item. So a
 # determiner cannot denote a continuation-form lambda term
 # ``Lam(P, Lam(Q, ...))`` that later beta-reduces against its
 # arguments; the chart would simply carry the unreduced redex
@@ -154,6 +154,19 @@ program fit_grammar : Term -> LogWeight
 export fit_grammar
 ```
 
+## Understanding the model
+
+Start with two sentences: “every dog is an animal” and “every animal barks.”
+The grammar builds `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)`; the prover
+can then derive `Every(DOG, BARK)`. Parsing supplies the [logical forms](term-autoencoder.md#understanding-the-model) that
+the prover uses as premises.
+
+The grammar's weight follows its logical form into the proof, so a derived
+claim can depend differentiably on lexical parameters. Derivability depends
+on the supplied rules and premises: deriving “some dog barks,” for instance,
+requires evidence that dogs exist as well as a universal statement about them.
+An absent derivation can reflect a missing premise or rule.
+
 ## Walkthrough
 
 The grammar half declares the categories (`S`, `N`, `VP`, `Nom`, `QNP`, and the closed-class categories `Art`, `Cop`, `Det`), the chart-item constructor `span(I, J, X, F)` that packages a derivation covering tokens `[I, J)` of category `X` with logical form `F`, the logical-form constructors `App`, `Var`, `Every`, and `Some`, and the predicate constants `dog_p`, `cat_p`, `animal_p`, `bark_p`, `walk_p`. The `binders Lam` block tells the compiler that `Lam`'s first argument is a binding site, so every bound variable is alpha-renamed to a fresh canonical symbol per lexicon entry and structural equality on the chart uses [alpha-equivalence](https://en.wikipedia.org/wiki/Lambda_calculus#Alpha_equivalence). This matters for the prover: because "dog" is compiled once, the predicate it denotes is one canonical term, and the prover's pattern variables bind it by structural equality wherever it occurs.
@@ -171,7 +184,7 @@ compile time.
 
 Thus a determiner cannot denote a continuation-form lambda term such as `Lam(P, Lam(Q, App(forall_t, ...)))` and rely on later beta-reduction against its arguments. Nothing would reduce the redex; the chart would carry `App(App(Lam(...), dog_LF), bark_LF)` forever, and no prover rule could pattern-match through the unreduced application to find the quantifier.
 
-The grammar thus builds the sentence logical form in normal form directly, in the [generalized quantifier](https://en.wikipedia.org/wiki/Generalized_quantifier) style of [Barwise and Cooper (1981)](https://doi.org/10.1007/BF00350139): a determiner denotes a relation between two sets, written here as the binary constructors `Every(P, Q)` and `Some(P, Q)`. Both determiners have category `Det`; their lexical constants distinguish their force. The shared `det_np` rule retains that constant in `App(D, P)`, and the `every_s` and `some_s` rules select the appropriate constructor by matching `every_q` or `some_q` inside that logical form. The restrictor and the scope remain genuine lambda terms, so the binder declaration matters at the predicate level: it makes `Lam(x, App(dog_p, Var(x)))` a single canonical object rather than a name-dependent one. See [Montague (1973)](https://doi.org/10.1007/978-94-010-2506-5_10) for the type-driven compositionality this fragment instantiates.
+The grammar thus builds the sentence logical form in normal form directly, in the [generalized quantifier](https://en.wikipedia.org/wiki/Generalized_quantifier) style of Barwise and Cooper [@barwise1981quantifiers]: a determiner denotes a relation between two sets, written here as the binary constructors `Every(P, Q)` and `Some(P, Q)`. Both determiners have category `Det`; their lexical constants distinguish their force. The shared `det_np` rule retains that constant in `App(D, P)`, and the `every_s` and `some_s` rules select the appropriate constructor by matching `every_q` or `some_q` inside that logical form. The restrictor and scope remain lambda terms. The binder declaration gives `Lam(x, App(dog_p, Var(x)))` a canonical representation shared by terms that differ only in the bound variable's name. See [@montague1973quantification] for the type-driven compositionality this fragment instantiates.
 
 Two consequences follow, and both are visible in the source. First, `every` and `some` make a semantic contribution through `every_q` and `some_q`; unlike a category split, this factorization keeps their shared syntax in one rule. Second, the article and the copula are semantically vacuous, so `art_n` and `cop_nom` pass the noun's predicate through unchanged, which is what makes `every dog is an animal` and `every animal barks` come out as `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)` over the *same* `ANIMAL` term.
 
@@ -183,7 +196,7 @@ $$\mathtt{Every}(P, Q) \;=\; \forall x.\, P(x) \to Q(x), \qquad \mathtt{Some}(P,
 
 All three rules are classically valid on that reading. `barbara` (every $P$ is $Q$, every $Q$ is $R$, thus every $P$ is $R$) needs no existence assumption. `darii` (some $P$ is $Q$, every $Q$ is $R$, thus some $P$ is $R$) is valid because the existential premise carries its own witness.
 
-`ex_import` is the one that needs care. `Every(P, Q)` alone does **not** entail `Some(P, Q)`: on the standard first-order reading a universal over an empty restrictor is vacuously true while the corresponding existential is false, so `every dog barks` does not by itself license `some dog barks`. The inference is valid only under [existential import](https://en.wikipedia.org/wiki/Square_of_opposition#Existential_import), that is, only when the restrictor is known to be non-empty. The rule thus takes `Nonempty(P)` as a second premise rather than smuggling the assumption into the rule's shape, and a caller that wants the inference has to supply that premise. The Python below supplies it explicitly, for exactly one noun, and says so.
+The `ex_import` rule takes both `Every(P, Q)` and `Nonempty(P)` as premises to derive `Some(P, Q)`. On the standard first-order reading, “every dog barks” is true even if there are no dogs, while “some dog barks” requires a dog. The second premise supplies this [existential import](https://en.wikipedia.org/wiki/Square_of_opposition#Existential_import). The Python example supplies it for `DOG`.
 
 ### The fit program, and what `Term` and `LogWeight` each name
 
@@ -282,7 +295,7 @@ def entailment_score(premises, nonempty_nouns, hypothesis):
     """Score Claim(hypothesis_lf) against the prover's chart.
 
     Returns the log-weight at the hypothesis claim together with the
-    log-normaliser over every claim the prover holds, so that their
+    log-normalizer over every claim the prover holds, so that their
     difference is log p(hypothesis | premises): a proper conditional
     distribution over the prover's conclusions. The log-weight is the
     LogProb semiring's zero (-inf) when the prover derives no such
@@ -302,7 +315,7 @@ def entailment_score(premises, nonempty_nouns, hypothesis):
 
 
 # Touch every prover chart once so its rule-weight ParameterDicts
-# allocate every binding tuple before the optimiser reads them.
+# allocate every binding tuple before the optimizer reads them.
 for premises, nonempty, hypothesis, label in nli:
     entailment_score(premises, nonempty, hypothesis)
 
@@ -354,7 +367,7 @@ for premises, nonempty, hypothesis, label in nli:
     print(f"p(entailed | {' '.join(hypothesis)}) = {p_entail:.3f}  (label {label})")
 ```
 
-The final loop reports a calibrated probability per pair. The non-entailment sits at exactly `0.000`, because the prover derives no claim for it at all rather than because it learned to score it low; the prover is sound on this fragment by construction, so the negative supplies no gradient. The three entailments are what the fit actually moves.
+The final loop reports a fitted probability per training pair. The non-entailment stays at `0.000`: no rule derives its claim, so its score supplies no gradient. Training changes the three entailment scores. Evaluating calibration would require held-out pairs with a broader range of constructions.
 
 ### NUTS posterior
 
@@ -394,7 +407,7 @@ ambiguities encoded by the
 [quantifier-scope example](quantifier-scope.md), would have to encode reduction
 in its rules or categories rather than rely on the runtime to normalize.
 
-## References
+## Sources and further reading
 
-- Jon Barwise and Robin Cooper. 1981. [Generalized quantifiers and natural language](https://doi.org/10.1007/BF00350139). *Linguistics and Philosophy*, 4(2):159–219.
-- Richard Montague. 1973. [The proper treatment of quantification in ordinary English](https://doi.org/10.1007/978-94-010-2506-5_10). In K. J. J. Hintikka, J. M. E. Moravcsik, and P. Suppes, editors, *Approaches to Natural Language*, pages 221–242. Springer, Dordrecht.
+- *Generalized quantifiers and natural language* [@barwise1981quantifiers].
+- *The Proper Treatment of Quantification in Ordinary English* [@montague1973quantification].

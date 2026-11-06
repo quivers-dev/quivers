@@ -12,6 +12,17 @@ QVR has three constructs for sequence-shaped problems such as time series, text,
 This chapter covers the first two, then distinguishes the finite-state path
 demonstration in the gallery from a normalized hidden Markov model (HMM).
 
+A repeated measurement axis and a recurrent state do different jobs. A plate
+repeats a distribution across indexed positions, conditionally independently
+given its parameters. A recurrence passes the realized state at one position
+into the next transition. A state might store the current temperature, while
+an emission describes the noisy sensor reading from that temperature.
+
+Read every sequence example by asking what is threaded, what is observed,
+and what is returned. In the current `scan` interface, the returned value is
+the terminal state. Following it with an emission scores or generates from
+that state; it does not automatically expose an entire observation trajectory.
+
 ## Plates revisited
 
 A *plate-draw* binds one value per index of a finite-set object:
@@ -29,7 +40,7 @@ is the QVR analogue of NumPyro's `with plate("schools", 8): theta = sample("thet
 observe y : School <- Normal(loc=theta, scale=sigma_j)
 ```
 
-Plates are good for IID structure: nothing about index `j+1` depends on what happened at `j`. For genuinely sequential data, you want `scan`.
+A plate represents [conditionally independent draws](03-hierarchical.md#eight-schools-centered) across an index. Use `scan` when step `j+1` takes the state produced at step `j` as an input.
 
 ## `scan` for left-to-right evaluation
 
@@ -55,7 +66,7 @@ If you've used Haskell's `mapAccumL` or NumPy's `np.cumsum`, this is the same id
 
 ## Finite-state path composition
 
-An HMM ([Rabiner, 1989](https://doi.org/10.1109/5.18626)) factors into an
+An HMM [@rabiner1989hmm] factors into an
 initial distribution, a row-stochastic transition kernel, and a row-stochastic
 emission kernel. The similarly named gallery file is deliberately narrower.
 Its first export demonstrates repeated composition of fuzzy relations:
@@ -95,16 +106,15 @@ Other useful combinations:
 | `~ Normal(loc=0, scale=1) iid over cod iid over dom` | full IID matrix of scalars |
 | `~ Dirichlet(concentration=0.1) over cod iid over dom` | sparse row-stochastic prior (concentration < 1) |
 
-If neither `over` nor `iid over` is given, the family is broadcast scalar-wise. The compiler synthesises the appropriate `PlateDraw` internally; you don't need to think about plates.
+If neither `over` nor `iid over` is given, the family is broadcast scalar-wise. The compiler synthesizes the appropriate `PlateDraw` internally; you don't need to think about plates.
 
 The separate `hmm_program` demonstrates the parameter shapes a probabilistic
 version would use: one Dirichlet initial row, one transition row per source
 state, and one emission row per state. Its checked likelihood marginalizes a
 single state shared by the observed emission sequence. `transition_rows` is a
-prior-only draw and does not enter that likelihood. Thus the program is a
-finite-state marginal mixture, not a multi-step HMM. The compiler therefore
-does not silently substitute this model for the recurrent HMM that
-the filename might suggest.
+prior-only draw. Consequently, the observation likelihood depends on one
+shared hidden state, and the data leave `transition_rows` at its prior.
+This program implements a finite-state marginal mixture.
 
 This boundary is structural. `scan` currently requires a vector-valued hidden
 state, so it cannot carry a categorical state index. Expressing the forward
@@ -136,7 +146,7 @@ sequence dimension and returns the final state. Composing with `emission`
 thus emits from that final state; it does not return the full latent
 trajectory. The export named `filter` similarly folds a separately learned
 Gaussian kernel. It is not the closed-form Kalman filter
-([Kalman, 1960](https://doi.org/10.1115/1.3662552)), and `ScanMorphism.log_prob`
+[@kalman1960filtering], and `ScanMorphism.log_prob`
 does not supply the marginal density of the final state. Use
 `log_joint(x, hidden_states)` when scoring a supplied full trajectory.
 
@@ -155,7 +165,7 @@ For a fully nonlinear (deep) variant where transition and emission are neural Ga
 [Chapter 6](06-inference-zoo.md) surveys the inference algorithms: eleven concrete guide classes, seven objectives, HMC and NUTS, and two hybrid approaches.
 
 
-## References
+## Sources and further reading
 
-- Lawrence R. Rabiner. 1989. A tutorial on hidden Markov models and selected applications in speech recognition. *Proceedings of the IEEE*, 77(2):257–286.
-- Rudolf E. Kalman. 1960. A new approach to linear filtering and prediction problems. *Journal of Basic Engineering*, 82(1):35–45.
+- *A tutorial on hidden Markov models and selected applications in speech recognition* [@rabiner1989hmm].
+- *A New Approach to Linear Filtering and Prediction Problems* [@kalman1960filtering].

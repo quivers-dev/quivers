@@ -25,7 +25,7 @@
 # is the value space of what lm_head draws and of what the
 # program returns.
 #
-# Reference: [Vaswani et al. 2017](https://doi.org/10.48550/arXiv.1706.03762).
+# Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
 object Token : FinSet 32
 object Resp : FinSet 32

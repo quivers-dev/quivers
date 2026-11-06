@@ -33,6 +33,20 @@ formula interface, eleven transpilers, and editor and notebook tooling. Its
 Python API also exposes categorical, deduction, and structural modeling
 primitives.
 
+A probabilistic program describes how unknown quantities could generate data.
+For a regression, it might first draw a slope and an intercept, then describe
+how measurements vary around the resulting line. [Fitting the program](docs/tutorials/qvr/01-first-model.md#compile-and-fit) asks
+which slopes and intercepts remain plausible after seeing the measurements.
+Quivers keeps that model separate from the algorithm used to fit it.
+
+The types describe what can connect to what. A table from people to activities
+can compose with a table from activities to outcomes when the intermediate
+activities agree. The [chosen algebra](docs/getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) determines how alternative routes combine:
+adding probabilities answers a different question from taking a best score.
+You can use the modeling interface before studying this mathematical structure.
+Start with [the conceptual introduction](https://quivers.dev/getting-started/concepts/)
+and [a first regression](https://quivers.dev/tutorials/qvr/01-first-model/).
+
 ## What Quivers includes
 
 | Area | What it provides |
@@ -67,7 +81,9 @@ covers editor setup and target-specific dependencies.
 
 ## Quick start
 
-This QVR file defines a stochastic GRU language model:
+The following QVR file is a larger language-model showcase. It defines a
+stochastic GRU-shaped recurrence; the regression tutorial above introduces
+`sample`, `observe`, and inference with a smaller model:
 
 <!-- GitHub Linguist fallback: QVR currently uses the R lexer. -->
 ```R

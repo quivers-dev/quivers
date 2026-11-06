@@ -2,7 +2,7 @@
 
 ## Overview
 
-This stochastic recurrent cell is shaped after a [GRU](https://doi.org/10.3115/v1/D14-1179): it samples update and reset gates and mixes a candidate with the previous hidden state. It is not the canonical GRU equation. In particular, the candidate is centered directly on `r * h_prev` and does not use `x_t` or a learned candidate transformation.
+This stochastic recurrent cell is shaped after a [GRU](https://doi.org/10.3115/v1/D14-1179): it samples update and reset gates and mixes a candidate with the previous hidden state. It is not the canonical GRU equation. In particular, the candidate is centered directly on `r * h_prev` and does not use `x_t` or a learned candidate transformation. [@cho2014encoder]
 
 ## QVR source
 
@@ -11,7 +11,7 @@ This stochastic recurrent cell is shaped after a [GRU](https://doi.org/10.3115/v
 #
 # A stochastic gated recurrence wrapped in scan and used as a
 # causal language model. It borrows the update and reset gates
-# of a GRU, but its candidate is centred directly on the
+# of a GRU, but its candidate is centered directly on the
 # reset-gated previous state rather than on a learned transform
 # of (x_t, r_t * h_{t-1}).
 #
@@ -66,14 +66,26 @@ program gru_lm : Token -> Token
 export gru_lm
 ```
 
+## Understanding the model
+
+A gate near zero retains little of the term it multiplies; a gate near one
+retains almost all of it. In the update equation, a small `z` keeps the [previous hidden state](vanilla-rnn-lm.md#understanding-the-model), while a large `z` favors the new candidate. The reset gate `r`
+controls how much previous state informs that candidate. Olah’s [GRU diagram](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#variants-on-long-short-term-memory) illustrates how reset and update gates combine in a standard deterministic cell [@olah2015lstm].
+
+Here the gates and candidate are [random draws](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample), so two executions with the
+same inputs can have different hidden states. The categorical head converts
+the terminal summary to probabilities over the next token. The table below
+should be read with that sampling interpretation: the gate means motivate
+the architecture, but a sampled LogitNormal gate is not a deterministic sigmoid.
+
 ## Walkthrough
 
 ### Cell equations
 
 | Step | DSL | Meaning |
 |---|---|---|
-| update gate | `z <- gate_z(x_t, h_prev)` | $z_t = \sigma(W_z [x_t, h_{t-1}])$ |
-| reset gate | `r <- gate_r(x_t, h_prev)` | $r_t = \sigma(W_r [x_t, h_{t-1}])$ |
+| update gate | `z <- gate_z(x_t, h_prev)` | $z_t \sim \mathrm{LogitNormal}(\mu_z(x_t,h_{t-1}), \sigma_z(x_t,h_{t-1}))$ |
+| reset gate | `r <- gate_r(x_t, h_prev)` | $r_t \sim \mathrm{LogitNormal}(\mu_r(x_t,h_{t-1}), \sigma_r(x_t,h_{t-1}))$ |
 | reset-gated state | `let reset_hidden = r * h_prev` | $r_t \odot h_{t-1}$ |
 | candidate | `h_cand <- Normal(reset_hidden, 0.5)` | $\tilde h_t \sim \mathcal{N}(r_t \odot h_{t-1}, 0.5)$ |
 | update | `let h_new = z_complement * h_prev + z * h_cand` | $h_t = (1 - z_t)\,h_{t-1} + z_t \,\tilde h_t$ |
@@ -217,10 +229,10 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The GRU cell is a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category; `scan(gru_cell)` is its iterated composition along the sequence. The Categorical head and `observe` step close the composite into the LM likelihood by accumulating per-batch categorical log-probabilities.
+The GRU cell is a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category; `scan(gru_cell)` is its iterated composition along the sequence. The Categorical head and `observe` step close the composite into the LM likelihood by accumulating per-batch categorical log-probabilities. [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Kyunghyun Cho, Bart van Merriënboer, Caglar Gulcehre, Dzmitry Bahdanau, Fethi Bougares, Holger Schwenk, and Yoshua Bengio. 2014. Learning phrase representations using RNN encoder–decoder for statistical machine translation. In *Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing (EMNLP)*, pages 1724–1734, Doha, Qatar. Association for Computational Linguistics.
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation* [@cho2014encoder].
+- *A categorical approach to probability theory* [@giry1982categorical].

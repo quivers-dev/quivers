@@ -1,8 +1,9 @@
 # Conceptual Guides
 
 These guides explain the mathematical and computational foundations of
-Quivers by feature area. They assume familiarity with basic category theory or
-a willingness to learn it alongside the material. For complete worked
+Quivers by feature area. Familiarity with Python values, arrays, and functions
+is enough to begin; categorical and probabilistic terms are introduced where
+they are used. For complete worked
 examples, see the [tutorials](../tutorials/index.md); for formal semantics, see
 [Semantics](../semantics/index.md).
 
@@ -11,11 +12,19 @@ For declaration-by-declaration syntax and operational behavior, use the
 feature exists and how it relates to the rest of Quivers; the reference states
 what source forms are accepted and how they run.
 
-The guides are organized in seven thematic sections; each
-section's pages stand alone, but reading them in order gives the
-clearest picture of how the pieces fit together.
+The sections below group guides by task and mathematical topic.
 
 ## Foundations
+
+If these subjects are new, start with [Concepts](../getting-started/concepts.md),
+then read Core Types and Morphisms before the more advanced categorical
+pages. If your immediate goal is a statistical analysis, start with
+[Data and Formulas](analysis-data-and-formulas.md) and
+[Inference Foundations](inference-foundations.md). Readers already familiar
+with the mathematics can use the formal definitions and API references
+on each page, with the [semantics](../semantics/index.md) for assumptions
+and derivations.
+
 
 These guides introduce the categorical primitives used throughout the library.
 
@@ -28,7 +37,7 @@ These guides introduce the categorical primitives used throughout the library.
    `CompositionRule → Semigroupoid → Algebra` hierarchy.
 3. [Morphisms & Composition](morphisms.md). What a morphism is as
    a tensor in $\mathcal{V}^{|A| \times |B|}$, the morphism
-   hierarchy, composition, tensor product, marginalization, and
+   hierarchy, composition, tensor product, [marginalization](morphisms.md#marginalization), and
    the compact-closed operations (`dagger`, `trace`, `cup`, `cap`).
 
 ## DSL
@@ -71,7 +80,7 @@ The runtime semantics of programs and distributions.
     structured priors (MatrixNormal, InverseWishart, GP,
     Horseshoe, LKJ) that use the axis-role syntax.
 12. [Stochastic Morphisms](stochastic.md). The FinStoch category:
-    Markov kernels, conditioning, queries, the Giry monad.
+    Markov kernels, [conditioning](inference-foundations.md#conditioning-on-observations), queries, the Giry monad.
 
 ## Inference
 
@@ -84,7 +93,7 @@ Fitting models to data.
     SVI](inference-svi.md). The `Auto*Guide` family, ELBO / IWAEBound /
     Rényi / VR-IWAE objectives, gradient estimators, SVI loop,
     predictive sampling.
-15. [Variational Inference: MCMC and Hybrid
+15. [MCMC and Hybrid
     Samplers](inference-mcmc.md). HMC and NUTS kernels, `AutoDAIS`,
     `WarmupThenHMC`, predictive sampling from MCMC chains.
 
@@ -93,13 +102,13 @@ Fitting models to data.
 These guides cover higher-order categorical constructions used elsewhere in
 the library.
 
-16. [Categorical Structures](categorical.md). Functors, natural
-    transformations, adjunctions, monoidal structures, base change.
+16. [Categorical Structures](categorical.md). [Functors](categorical.md#functors), natural
+    transformations, [adjunctions](categorical.md#adjunctions), [monoidal structures](categorical.md#monoidal-structures), base change.
 17. [Monads & Comonads](monadic.md). Monadic abstractions, Kleisli
     / coKleisli categories, algebras, coalgebras, distributive
     laws.
 18. [Enriched Category Theory](enriched.md). Ends, coends, Kan
-    extensions, weighted limits, profunctors, Yoneda, Day
+    extensions, weighted limits, [profunctors](enriched.md#profunctors), [Yoneda](enriched.md#yoneda), Day
     convolution, optics.
 19. [Compositional Effects](effects.md). Algebraic-effects
     framework over the residuated category universe.

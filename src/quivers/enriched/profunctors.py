@@ -1,8 +1,9 @@
 """Profunctors (bimodules) for V-enriched categories.
 
 A V-profunctor R: A ↛ B is a V-valued functor A^op ⊗ B → V,
-represented as a tensor of shape (*A.shape, *B.shape). Every
-morphism in a V-enriched category is canonically a profunctor.
+represented here by a tensor of shape (*A.shape, *B.shape).
+The implementation treats finite weighted relations as profunctor
+representations; it does not record arbitrary source and target actions.
 
 Profunctor composition uses the coend formula:
 
@@ -86,7 +87,7 @@ class Profunctor:
 
     @classmethod
     def from_morphism(cls, morph: Morphism) -> Profunctor:
-        """View a morphism as a profunctor (Yoneda embedding).
+        """Wrap a finite weighted morphism as a profunctor representation.
 
         Parameters
         ----------

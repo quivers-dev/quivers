@@ -5,9 +5,30 @@ axes, and family shapes to the categorical and probabilistic declarations a
 user writes. Elaboration then translates every executable declaration into
 the Quivers Indexed Effect Core (QIEC), whose checker assigns kinds, indexed
 types, and lexical effect rows to computations. This page states the current
-contract between those layers. It does not claim a mechanized soundness proof.
+contract between those layers.
+
+The checker asks two kinds of question. First, do the pieces connect: does
+a morphism return the input shape the next morphism expects, and does a
+family receive suitable arguments? Second, what may executing a computation
+request: random draws, scoring, state access, or another declared effect?
+The surface language emphasizes the first view; the core makes both views
+explicit so that execution and translation can inspect them.
+
+An inference rule is read from top to bottom: if its premises above the
+line hold, its conclusion below the line is justified. A context such as
+$\Gamma$ is the list of names and their types currently in scope. The symbols
+compress a check that can also be stated in ordinary language.
 
 ## 1. The two judgments
+
+The [notation key](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) explains how to read a judgment, and [semantic environments](setting.md#5-environments) specify which names its context contains.
+
+The first judgment below says that expression $e$ connects boundary $A$ to
+boundary $B$. In the second, $\Phi$ is the list of values available before a
+statement and $\Phi'$ is the list afterward: `sample x` extends that list,
+while `observe` scores a supplied value. In the third, $T$ is the returned
+value's type and $\epsilon$ records the effect instances the computation may
+request. The semicolon separates different collections of assumptions.
 
 The surface judgment has the schematic form
 
@@ -96,10 +117,9 @@ The surface checker classifies names in the body as follows:
 | `via` name | integer-valued fibration input |
 | otherwise-free expression name | host-data input |
 
-Thus `offset` is not an undeclared global. Elaboration records it as a typed
-entry parameter. The host must supply its value when the program runs. Tensor
-extents that come from host data are checked at that boundary; source
-compilation cannot prove them from an absent tensor.
+Elaboration records `offset` as a typed entry parameter. The host supplies
+its value when the program runs, and tensor extents supplied by host data
+are checked then.
 
 ### 3.1 Program steps
 
@@ -174,6 +194,18 @@ lexical instances.
 
 ## 4. QIEC kinds and types
 
+A *kind* classifies a static argument, just as a type classifies a runtime
+value. A *telescope* is an ordered list of binders in which later entries may
+refer to earlier ones. For instance, declaring an element type `A` before
+`xs : Vec[A](n)` makes `A` available when checking `xs`. “Static” means used
+in type specialization and checking; “runtime” means a value passed when
+the computation executes.
+
+An indexed family adds information to a type. `Vec[A](n)` records both the
+element type and a length index. The constructors below say that `Nil` has
+length zero, and putting a head in front of a length-`m` tail produces length
+`S(m)`, the successor of `m`.
+
 The core distinguishes static and runtime phases. Static binders use square
 brackets and range over `Type`, an index sort, `Nat`, or `Effect`. Runtime
 parameters use parentheses and carry value types.
@@ -206,6 +238,14 @@ application.
 
 ## 5. Indexed elimination
 
+Pattern matching can reveal facts about an index. A value known to have
+length zero cannot have been constructed by `Cons`, whose result has a
+successor length. The checker uses that incompatibility to justify omitting
+the branch. A *motive* specifies the result type as a function of the
+indices; in the example below it is always `Int`. “Rigid branch-local” means
+the branch's newly introduced static names cannot be freely chosen or leak
+out into the result.
+
 A `case` supplies a motive over the family's refinable indices. Matching a
 constructor introduces rigid branch-local static variables and equations
 between the scrutinee indices and the constructor result:
@@ -234,6 +274,15 @@ checker does not assume that an inconvenient branch is unreachable.
 
 ## 6. Computations and rows
 
+The [two-state-cell example](effects.md#8-qiec-rows-and-lexical-handlers) explains why rows track instance identities. The [QIEC guide](../guides/effects.md#qiec-effect-interfaces-and-rows) places those rows in executable declarations.
+
+An effect row records requests a computation may make. A trace records
+requests it actually made. A conditional can mention a request in only one
+branch and still require that request in its row. Two state instances, such
+as a counter and an accumulator, can both have interface `State[Int]` while
+remaining distinct. A handler for the counter handles only the counter's
+requests; requests to the accumulator continue to its own handler.
+
 A computation signature separates its static telescope, runtime parameters,
 result, and effect row:
 
@@ -248,7 +297,7 @@ right-hand computation, binds its result, and joins its row with the
 continuation. A `perform i.op[...]()` contributes the lexical instance `i` to
 the row after static substitution.
 
-Rows contain instances, not interface names. Two instances of `State[Int]`
+Rows identify individual instances. Two instances of `State[Int]`
 remain distinct. Open tails support effect polymorphism, while `lacks`
 constraints prevent a tail from silently reintroducing an instance that an
 abstraction handles or adds.
@@ -259,6 +308,15 @@ row. Recursive calls are checked against the declared signature, so recursion
 does not require unrolling during type checking.
 
 ## 7. Handlers and scoped instances
+
+DIPPL’s [continuation examples](https://dippl.org/chapters/03-enumeration.html#continuations) explain how the remainder of a computation can be passed as a function [@goodman2014design]. A handler’s resumption uses this idea; the grade below controls how often the function may be invoked.
+
+A handler supplies an interpretation for a request and may resume the
+computation that made it. The *resumption* is the remaining computation with
+the request's answer supplied. Grade `0` allows no resumption, `aff` at most
+one, `1` exactly one, and `omega` unrestricted use. An abort handler can use
+grade `0`; an enumeration handler that explores several answers needs
+`omega`.
 
 `with instance` introduces a fresh lexical identity. That identity may not
 escape its scope. `handle i with h in c` verifies that the handler is defined
@@ -274,6 +332,11 @@ Each operation clause declares a resumption grade: `0`, `aff`, `1`, or
 violations; the reference evaluator also enforces the dynamic number of
 resumptions. Branch-local indices, scoped instances, and their evidence may
 not occur in the result type or row that leaves their scope.
+
+Algebraic-effect handlers provide the general separation between operation
+requests and their interpretations [@plotkin2009handlers]. QIEC adds the
+specific lexical identities, indexed types, and resumption checks described
+on this page.
 
 ## 8. Program elaboration
 
@@ -306,7 +369,7 @@ would denote a different stochastic program for each support value.
 ## 9. Implementation correspondence
 
 The source protocol `qvr-source/v0.20` lowers to `qiec-core/v1alpha1`. These
-are protocol identifiers, not documentation release labels. The principal
+identify the serialization protocols. The principal
 implementation boundaries are:
 
 | Boundary | Implementation |
@@ -321,8 +384,8 @@ implementation boundaries are:
 
 `qvr check` runs parsing, surface constraints, classic compilation where
 applicable, and QIEC validation. `qvr check --target` adds core-capability
-analysis but does not run every renderer. Thus, a successful target check
-does not imply that full transpilation will accept every surface construct.
+analysis. Full transpilation runs the renderer as well, which can report
+additional unsupported surface constructs.
 
 ## 10. Guarantees and limits
 
@@ -332,10 +395,10 @@ track requests, handlers satisfy coverage, and generated computations validate
 as a module. The evaluator then checks provider attachments and resumption
 grades at the runtime boundary.
 
-This correspondence is not a mechanized normalization, progress, or semantic
-adequacy proof. In particular, host tensors carry dynamic shapes, foreign
-handlers depend on process-local providers, neural attachments are not part of
-the stable core, and target renderers support measured subsets of QIEC. See
+Further checks occur when concrete inputs and providers are available: host
+tensors supply dynamic shapes, foreign handlers require attached providers,
+and target renderers enforce their supported subsets of QIEC. Neural
+attachments also remain outside the stable core. See
 [Implementation correspondence and limits](adequacy.md) and the
 [transpilation-correctness contract](transpile-correctness/index.md) for those
 boundaries.

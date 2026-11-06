@@ -2,6 +2,18 @@
 
 This page gives the denotation of the syntactic categories `ObjectExpr` (finite-set types) and `SpaceExpr` (continuous spaces). Both are interpreted compositionally by structural recursion on the syntactic constructors of [`quivers.dsl.ast_nodes`](../api/dsl/ast_nodes.md), and both are realized by the unified resolution walk in [`quivers.dsl.compiler.resolution`](../api/dsl/resolution.md).
 
+An object describes possible values and the axes used to represent them.
+If `Color` has three values and `Shape` has two, `Color * Shape` describes
+six pairs. `Color + Shape` instead describes five tagged alternatives: a
+color or a shape, with the tag preserving which side it came from.
+`Real 3` describes vectors with three real coordinates; each coordinate can
+take infinitely many values. Cardinality and dimension determine how a
+morphism's inputs and outputs are represented.
+
+The unit object has one possible value. Pairing with it adds no information:
+$(a,*)$ carries exactly the information in $a$. The empty set has no possible
+values; it is a different object, used as the unit for tagged alternatives.
+
 ## 1. Syntactic categories
 
 We assume the following grammar fragment, whose constructors are realized one-to-one by the AST classes named in parentheses.
@@ -21,6 +33,15 @@ $$
 Here $n \in \mathbb{N}$ is an integer literal, $X$ ranges over object names, $S$ over space names, $T$ over declared effect identifiers, and $C \in \{\mathrm{Real}, \mathrm{Simplex}, \mathrm{Sphere}, \mathrm{Ball}, \mathrm{CholeskyFactor}, \mathrm{Covariance}, \mathrm{Correlation}, \mathrm{Orthogonal}, \mathrm{Stiefel}, \mathrm{LowerTriangular}, \mathrm{Diagonal}\}$ over constructor names. The notation $C(\bar a; \bar k)$ stands for a constructor invocation with positional arguments $\bar a$ and keyword arguments $\bar k$. The two slash directions (`/` and `\`) and the effect-apply form are residuated / effect-extended formers whose denotations live in a residuated-monoidal universe ([Schemas §3](schemas.md#3-residuated-type-formers)); they have no denotation in the bare $\mathbf{FinSet}$ stratum, and well-typedness restricts them to expressions whose every named atom resolves in a residuated universe such as `FreeResiduated`.
 
 ## 2. Denotation of types
+
+The [product and coproduct guide](../guides/core.md#productset-and-coproductset) constructs pairs and tagged alternatives in Python. Milewski’s [“Initial Object,” “Terminal Object,” “Products,” and “Coproduct” sections](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/) explain the universal properties used by these clauses [@milewski2015products].
+
+The function signature below says that interpreting a type expression takes
+its syntax and a table of declared objects, and returns an object.
+$\mathrm{Ob}(\mathbf{FinSet})$ means “the objects of the category of finite
+sets.” Each line then explains one syntax constructor: look up a name, form
+a pair, or form a tagged alternative. The final three lines require the
+richer grammar-specific universe described after the display.
 
 Type denotation is a function
 
@@ -63,6 +84,11 @@ The last three cases require the surrounding object universe to be residuated an
 Finite cardinalities use the explicit constructor `FinSet n`, as in `morphism f : FinSet 3 -> FinSet 4`. Bare integer type expressions are not part of the current grammar.
 
 The cartesian product $\times$ in $\mathbf{FinSet}$ is associative and commutative up to isomorphism. The implementation flattens nested `ProductSet` and `CoproductSet` values while preserving component order. Thus reassociated parses have the same structural representation, but `A * B` and `B * A` remain distinct values unless an explicit symmetry morphism swaps them.
+
+Products, coproducts, and their universal properties are treated in
+[@maclane1998categories]. The finite representations here choose concrete
+carriers for those constructions; they also retain labels and component
+order needed by the implementation.
 
 ## 2a. Object initializers
 
@@ -111,6 +137,8 @@ The `FreeResiduated(G, depth = d, ops = O)` initializer binds $X$ to a finite en
 
 ## 3. Free monoids
 
+Milewski’s [construction from the two generators `a` and `b`](https://bartoszmilewski.com/2015/07/21/free-monoids/) builds lists by concatenation before stating the universal property [@milewski2015free]. The [bounded `FreeMonoid` example](../guides/core.md#freemonoid) shows how QVR represents the finite inventory below.
+
 The runtime value layer exposes a `FreeMonoid` object class, which arises in the deduction fragment as the carrier of strings over an alphabet (see [Weighted Deduction Fragment](grammar.md)). At the surface, `FreeMonoid(X, max_length = n)` appears only as an *object initializer* (§2a.2 above), not as a `ObjectExpr` constructor: a free monoid must be bound to an `object` name via `object Words : FreeMonoid(...)` before it can be referenced as a type.
 
 The denotation of `FreeMonoid(generators = X, max_length = n)` is the bounded Kleene star
@@ -121,7 +149,16 @@ $$
 
 a finite set of size $\sum_{k=0}^{n} |\rho_{\mathrm{obj}}(X)|^{k}$. The bound $n$ is supplied by the grammar's depth parameter; the unbounded free monoid $\rho_{\mathrm{obj}}(X)^{*}$ is countably infinite and is not realized as a `SetObject`.
 
+For an alphabet $\{a,b\}$ and maximum length two, the bounded word set is
+$\{\epsilon,a,b,aa,ab,ba,bb\}$, with $\epsilon$ the empty word. Its seven
+members match $1+2+4$. This is a finite inventory drawn from the unbounded
+free monoid; it is not closed under arbitrary concatenation, since `aa`
+followed by `b` exceeds the bound. Claims about the unbounded universal
+property thus need an additional treatment of truncation.
+
 ## 4. Denotation of spaces
+
+The [continuous-space hierarchy](../guides/continuous-spaces.md#continuousspace-hierarchy) gives examples of Euclidean, simplex, and positive-real values. [Event and batch axes](morphisms.md#6-axis-role-specifications) explain how these spaces determine distribution shapes.
 
 The continuous-space sublanguage is the family-registry surface
 `Real d`, `Simplex d`, plus the matrix-manifold and submanifold
@@ -230,13 +267,20 @@ where $\iota : \mathbf{FinSet} \hookrightarrow \mathbf{SBor}$ is the canonical i
 
 ## 5. Coherence
 
+Coherence concerns changes of grouping that preserve the same components.
+The nested pair `((color, shape), size)` and ` (color, (shape, size))` can be
+converted without losing information. Swapping `color` and `shape` also has
+an inverse, but changes their positions. QVR flattens the grouping in its
+representation while retaining order; equal cardinalities alone do not
+make differently ordered axes interchangeable.
+
 The two type-formers $\times$ and $+$ on `ObjectExpr` are interpreted by cartesian product and disjoint union in $\mathbf{FinSet}$. Both are associative up to canonical isomorphism; their symmetries are isomorphisms, not structural equalities. Concretely:
 
 - The flattening converters on `ProductSet` and `CoproductSet` realize the *coherence isomorphisms* $((\tau_1 \times \tau_2) \times \tau_3) \cong (\tau_1 \times (\tau_2 \times \tau_3))$ as identities on the chosen representative.
 - Empty products denote $\mathbf{1}$ (a singleton; `EmptySet` for coproducts denotes $\emptyset$).
 - The `EmptySet` constructor in `categorical.monoidal` is the unit for $+$.
 
-Flattening makes reassociation literal in the runtime representation. It does not identify permutations of factors or summands.
+Flattening makes reassociation literal in the runtime representation. Factor and summand order remains part of that representation.
 
 ## 6. Resolution in code
 

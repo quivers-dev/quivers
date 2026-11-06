@@ -2,6 +2,19 @@
 
 The formula compiler turns a regression specification and a dataframe into a QVR program. This chapter inspects that program, fits hierarchical and Bernoulli regressions with SVI and NUTS, compares models with PSIS-LOO, and runs a posterior-predictive check on synthetic data.
 
+The formula `y ~ x` says that a response column `y` is modeled using predictor
+`x` and an intercept. Adding `(1 | g)` gives each group its own intercept
+offset, with a common population distribution controlling how much those
+offsets can vary. A group with little evidence can borrow information from
+that shared distribution; this is [partial pooling](../qvr/03-hierarchical.md#eight-schools-centered). Gelman and colleagues
+develop hierarchical modeling and posterior predictive checks
+[@gelman2013bayesian].
+
+A fit represents uncertainty over coefficients through a posterior.
+Drawing coefficients from it gives a collection of possible regression lines. Predicted responses add observation noise to those draws. The
+workflow below first inspects that uncertainty, then asks whether replicated
+data resemble observations and whether another model predicts them better.
+
 ## Concepts
 
 - **Formula**: A brms / lme4-style string like `"y ~ x + (1 | g)"` that names a response, predictors, and random-effect structure.
@@ -40,7 +53,7 @@ y = 1.0 + 2.0 * x + 0.5 * np.random.randn(N)
 df = pd.DataFrame({"y": y, "x": x})
 ```
 
-Fit `y ~ x` under a Gaussian family. SVI is the fastest inference method (it fits a variational [`Guide`](../../api/inference/guide.md) by optimization rather than running an MCMC chain) and is enough for a quick sanity check:
+Fit `y ~ x` under a Gaussian family using SVI to optimize a variational [`Guide`](../../api/inference/guide.md):
 
 ```python
 result = fit(
@@ -48,7 +61,7 @@ result = fit(
     data=df,
     family="gaussian",
     method="svi",
-    num_samples=2000,    # under SVI, num_samples is the number of optimisation steps
+    num_samples=2000,    # under SVI, num_samples is the number of optimization steps
     seed=0,
 )
 ```
@@ -109,7 +122,7 @@ intercept (true 1.0): 0.927 ± 0.036
 beta_x    (true 2.0): 2.023 ± 0.030
 ```
 
-These printed values record one seeded, short optimization run; they are not a convergence guarantee. Increase the optimization budget and inspect diagnostics, or use a diagnosed MCMC fit, before interpreting coefficient recovery.
+The printed `±` values are standard deviations of guide draws. They describe the fitted approximation's spread. To assess its accuracy on this synthetic problem, repeat the fit from different initial values and compare its coefficient intervals with a well-mixed NUTS fit.
 
 ## Random effects: hierarchical model under SVI
 
@@ -252,7 +265,7 @@ result = fit(
 The optimizer sees the parser parameters alongside the QVR program and
 guide parameters. The generated QVR names the parser output as the free
 host input `neural_eta`; the Python module itself remains a runtime
-attachment. Trainable predictors therefore use SVI. A frozen predictor
+attachment. Trainable predictors thus use SVI. A frozen predictor
 can also be used with NUTS or HMC.
 
 ## Unordered choices with varying effects
@@ -470,24 +483,6 @@ for col in result.formula.fixed_columns:
 ```
 
 The lens behind the scenes (`FormulaToQVRModule`) is a typed [`dx.Lens`](https://github.com/aaronstevenwhite/didactic) whose forward emits `(Module, FormulaData)`. `FormulaData` is the strict subset of the formula that isn't encoded in the QVR program: the per-row data arrays, the original (pre-`_qvr_name`) identifier names, presentation labels, the formula string itself. Calling `lens.backward(module, complement)` decodes the structural skeleton out of the Module and fuses it with the complement to reproduce the original `Formula` byte-for-byte. See the [formulas API reference](../../api/formulas/compile.md) for the full lens signature.
-
-## Summary
-
-You have:
-
-- Fitted a Gaussian regression with one line of code and recovered the true
-  coefficients via SVI.
-- Inspected the emitted `.qvr` source and saw how predictors enter through the
-  host-data channel rather than as latent draws.
-- Fitted a hierarchical model with `(1 | g)` random intercepts and saw where
-  SVI's mean-field approximation under-shrinks group-level variance.
-- Fitted identified unordered-categorical and finite Gaussian-mixture
-  regressions.
-- Ran NUTS on a Bernoulli regression and compared two models via PSIS-LOO with
-  stacking weights.
-- Wrapped MCMC results in an ArviZ `DataTree` and ran a posterior-predictive
-  check.
-- Inspected the lens that maps a `Formula` to a QVR `Module`.
 
 ## Next
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This program implements zero-inflated Poisson regression ([Lambert, 1992](https://doi.org/10.2307/1269547)). Each output dimension carries logits for a Poisson-active gate and coefficients for the Poisson rate. At a `marginalize` head, the reference compiler enumerates the two endpoints of a Bernoulli-family prior, so `ContinuousBernoulli(pi_z)` contributes weights `(1 - pi_z, pi_z)` for the `Poisson(0)` and `Poisson(rate)` branches. The per-row likelihood is thus the exact two-component ZIP marginal.
+This program implements zero-inflated Poisson regression [@lambert1992zip]. Each output dimension carries logits for a Poisson-active gate and coefficients for the Poisson rate. At a `marginalize` head, the reference compiler enumerates the two endpoints of a Bernoulli-family prior, so `ContinuousBernoulli(pi_z)` contributes weights `(1 - pi_z, pi_z)` for the `Poisson(0)` and `Poisson(rate)` branches. The per-row likelihood is thus the exact two-component ZIP marginal.
 
 ## QVR source
 
@@ -60,6 +60,20 @@ program zip_regression : Resp -> Val
 
 export zip_regression
 ```
+
+## Understanding the model
+
+There are two ways to observe zero: the row belongs to the always-zero branch,
+or it belongs to the Poisson-active branch and that Poisson draw happens to
+be zero. With active probability `pi` and rate `lambda`, the zero probability
+is `(1 - pi) + pi * exp(-lambda)`; for a positive count, only the active
+branch contributes. Thus the same zero count can arise from either branch. The [Stan zero-inflation example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#zero-inflation) derives the corresponding log likelihood [@stanFiniteMixtures].
+
+The gate probability here is the probability of being active, despite the
+`alpha_zero` and `beta_zero` names. The [reference marginalization](../tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) enumerates
+both endpoints exactly for scoring, even though a forward trace can contain
+a relaxed draw. The zero probability used to score observations is the
+integrated value `(1 - pi) + pi * exp(-lambda)` above.
 
 ## Walkthrough
 
@@ -145,6 +159,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 The marginalized gate is a two-object coproduct: one branch maps to `Poisson(0)`, the other to `Poisson(rate)`, and log-sum-exp computes their weighted pushforward to the count space. The `ContinuousBernoulli` name controls the live forward draw, while the marginalization contract fixes the scored support to the two endpoints.
 
 
-## References
+## Sources and further reading
 
-- Diane Lambert. 1992. Zero-inflated Poisson regression, with an application to defects in manufacturing. *Technometrics*, 34(1):1–14.
+- *Zero-Inflated Poisson Regression, With an Application to Defects in Manufacturing* [@lambert1992zip].

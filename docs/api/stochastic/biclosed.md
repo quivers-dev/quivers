@@ -1,5 +1,15 @@
 # Deductive Systems, Rule Schemas, and Span Components
 
+A chart parser stores partial conclusions and combines them using inference rules. For
+instance, an expression needing a noun phrase can combine with a noun phrase to produce
+a sentence. The interfaces below separate initial facts, inference steps, goals, and
+scheduling; the weights determine what is accumulated across derivations.
+
+See [rule schemas and their variables](../../semantics/schemas.md#6-schema-declarations) and
+[a parser built from schemas](../../examples/schema-chart-parser.md).
+
+For the grammatical motivation, see [@lambek1958mathematics]; for weighted deduction, see [@goodman1999semiring].
+
 The abstract framework for weighted deductive parsing, organized into three layers:
 
 ## Deductive Systems

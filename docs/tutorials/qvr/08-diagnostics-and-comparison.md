@@ -2,6 +2,20 @@
 
 Model assessment asks whether a fit converged, whether the fitted model reproduces the observed data, and how its predictive accuracy compares with another model's. Quivers exposes these checks through [ArviZ](https://python.arviz.org/) via [`quivers.diagnostics`](../../api/diagnostics/index.md). This chapter applies that diagnostic pipeline to the regression from chapter 1.
 
+A regression can have agreeing chains yet predict too few extreme responses.
+R-hat helps detect the first kind of problem, disagreement between chains;
+a [posterior predictive check](../python/08-analysis-pipelines.md#posterior-predictive-checks) can reveal the second by comparing observed and
+simulated extremes. Stan’s [discussion of which statistics to check](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) gives examples of discrepancies that a mean alone can miss [@stanPredictiveChecks]. Cross-validation then compares predictive performance on
+observations left out of fitting.
+
+A chain is one dependent sequence of posterior draws. Several chains provide
+independent attempts to explore the same target; R-hat detects some forms of
+disagreement between them. Effective sample size translates dependence into
+an approximate amount of independent information for a summary. Monte Carlo
+standard error measures how much that summary would fluctuate across repeated
+simulation runs. It can decrease with more draws while the posterior standard
+deviation remains large.
+
 ## The DataTree bridge
 
 The diagnostics adapter uses an [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html) with named groups such as `posterior`, `sample_stats`, `posterior_predictive`, `log_likelihood`, `observed_data`, and `constant_data`. [`to_datatree`](../../api/diagnostics/index.md) converts an [`MCMCResult`](../../api/inference/predictive.md) into that tree for compatible ArviZ entry points.
@@ -72,7 +86,7 @@ print(summary)
 
 The columns to watch:
 
-- `r_hat`: maximum of rank-normalised and folded split-R-hat. Should be < 1.01 for every site.
+- `r_hat`: maximum of rank-normalized and folded split-R-hat. Should be < 1.01 for every site.
 - `ess_bulk`, `ess_tail`: bulk and tail effective sample sizes. Judge them against the Monte Carlo precision needed for the estimand; this example runs two chains.
 - `mcse_mean`, `mcse_sd`: Monte Carlo standard error of the posterior mean and standard deviation. Should be small relative to the posterior `sd`.
 
@@ -88,7 +102,7 @@ A well-mixed `plot_trace` shows overlapping stationary traces across chains; a `
 
 ## Posterior-predictive checks
 
-A posterior-predictive check ([Gelman, Meng & Stern, 1996, *Statistica Sinica* 6:733-807](https://www3.stat.sinica.edu.tw/statistica/J6N4/J6N41/J6N41.htm)) asks whether replicate datasets drawn from the fitted model look like the observed data. The canonical plot:
+A posterior-predictive check [@gelman1996predictive] asks whether replicate datasets drawn from the fitted model look like the observed data. The canonical plot:
 
 <!-- python: skip -->
 ```python
@@ -127,14 +141,22 @@ table = compare(
 print(table)
 ```
 
-[`compare`](../../api/diagnostics/index.md) delegates to [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html), which runs PSIS-LOO ([Vehtari, Gelman & Gabry, 2017](https://doi.org/10.1007/s11222-016-9696-4)) on each fit and ranks them by expected log-pointwise predictive density (`elpd`). The `dse` column gives the standard error of the difference relative to the reference model. Quivers uses ArviZ's default stacking method unless `method=` selects another weighting scheme. Pass `round_to="none"` when model weights will be used numerically rather than displayed.
+[`compare`](../../api/diagnostics/index.md) delegates to [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html), which runs PSIS-LOO [@vehtari2017loo] on each fit and ranks them by expected log-pointwise predictive density (`elpd`). The `dse` column gives the standard error of the difference relative to the reference model. Quivers uses ArviZ's default stacking method unless `method=` selects another weighting scheme. Pass `round_to="none"` when model weights will be used numerically rather than displayed.
 
 Inspect `p` as an estimate of effective model complexity, but do not apply a
 fixed `p / N` cutoff: its interpretation depends on the model and data.
 The actionable PSIS diagnostic is the observation-level Pareto shape. A
 reported `k > 0.7` indicates that the importance-sampling approximation needs
-attention ([Vehtari, Simpson, Gelman, Yao & Gabry, 2024](https://doi.org/10.48550/arXiv.1507.02646)); follow ArviZ's warning and consider a moment-matching,
+attention [@vehtari2024psis]; follow ArviZ's warning and consider a moment-matching,
 K-fold, or exact leave-one-out analysis.
+
+A posterior predictive p-value reports how often a statistic of replicated
+data is at least as extreme as the observed statistic under the chosen check.
+Stacking weights answer a different question: which weighted combination of
+predictive distributions performs best under the comparison objective?
+For both, inspect the statistic or objective being summarized; neither number
+assigns a probability to the truth of a model. High Pareto diagnostics also
+call for checking the reliability of the leave-one-out approximation.
 
 ## Try this
 
@@ -151,7 +173,7 @@ the [semantics section](../../semantics/index.md) gives the denotational
 semantics of QVR.
 
 
-## References
+## Sources and further reading
 
-- Aki Vehtari, Andrew Gelman, and Jonah Gabry. 2017. Practical Bayesian model evaluation using leave-one-out cross-validation and WAIC. *Statistics and Computing*, 27(5):1413–1432.
-- Aki Vehtari, Daniel Simpson, Andrew Gelman, Yuling Yao, and Jonah Gabry. 2024. Pareto smoothed importance sampling. *Journal of Machine Learning Research*, 25(72):1–58. arXiv:1507.02646.
+- *Practical Bayesian model evaluation using leave-one-out cross-validation and WAIC* [@vehtari2017loo].
+- *Pareto smoothed importance sampling* [@vehtari2024psis].

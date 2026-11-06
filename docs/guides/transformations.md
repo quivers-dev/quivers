@@ -1,21 +1,36 @@
 # Transformations and Composition Rules
 
 This guide covers two related mechanisms: first-class *transformations* for
-change of base and the *composition-rule hierarchy* beneath `>>`. Together
+[change of base](categorical.md#base-change) and the *composition-rule hierarchy* beneath [`>>`](morphisms.md#composition-the-operator). Together
 they specify how morphisms cross enrichment algebras.
 
 ## First-class transformations
 
+Suppose a row contains scores `[0.2, 0.8]`. A threshold at `0.5` makes
+separate yes/no decisions `[0, 1]`. Softmax instead compares the entries
+and gives approximately `[0.354, 0.646]`, which sums to one. These solve
+different problems: thresholding produces a relation, while softmax creates
+a conditional probability row from scores. Its object argument identifies
+the output axes over which to normalize.
+
+Moving a conversion across composition requires it to preserve the
+combining operations. Thresholding at `0.5` fails for product: two scores
+of `0.6` each pass the threshold, while their product `0.36` fails.
+Applying the threshold before or after composition can thus give different
+relations. Row [normalization](stochastic.md#normalization) also uses neighboring entries: increasing
+one score lowers the normalized weights of the others.
+
+
 A *transformation* turns a morphism in one enrichment algebra into a morphism in another. Two kinds exist:
 
-- **Algebra homomorphisms** $\varphi : \mathcal{V} \to \mathcal{W}$ act pointwise: every entry of the morphism's tensor is sent through $\varphi$.
-- **Morphism transformations** act on the whole tensor, consuming axis information; softmax row-normalization, L1/L2 normalization, and Bayes inversion under a prior all live here.
+- **Entrywise maps**, exposed through the `AlgebraHomomorphism` API, act pointwise: $\varphi : \mathcal{V} \to \mathcal{W}$ sends each value to the target representation; every entry of the morphism's tensor is sent through $\varphi$.
+- **Morphism transformations** act on the whole tensor, consuming axis information; softmax row-normalization, L1/L2 normalization, and [Bayes inversion under a prior](stochastic.md#conditioning-and-bayesian-updates) all live here.
 
 The library treats both as first-class DSL values, living in a transformation namespace disjoint from the morphism namespace. You can let-bind them, compose them with `>>>`, and pass either kind to `change_base`.
 
 ### Singletons
 
-Bare-name transformations carry a fixed `(source, target)` pair. The shipped catalogue:
+Bare-name transformations carry a fixed `(source, target)` pair. The shipped catalog:
 
 | Name | `source` | `target` |
 |---|---|---|
@@ -43,6 +58,12 @@ Parametric transformations take one argument (an object or a morphism) and produ
 
 ### Let-binding and composition
 
+There are two different pipelines: `f >> g` connects model arrows through
+a shared object; `t1 >>> t2` applies one representation conversion after
+another. Their boundaries are checked against objects and algebras,
+respectively: `cod(f) = dom(g)` and `target(t1) = source(t2)`.
+
+
 Both forms can be let-bound and composed with `>>>`. The compiler checks their boundary: `t1 >>> t2` requires `target(t1) = source(t2)`.
 
 <!-- compile: false -->
@@ -58,7 +79,7 @@ define g    = f.change_base(pipe)
 export g
 ```
 
-`softmax(B)` produces a transformation $\mathcal{V}_\mathrm{pf} \to \mathcal{V}_\mathrm{M}$; `expectation` is $\mathcal{V}_\mathrm{M} \to \mathcal{V}_\mathrm{pf}$; their composition round-trips and gives a row-normalized morphism back in $\mathcal{V}_\mathrm{pf}$.
+`softmax(B)` produces a transformation $\mathcal{V}_\mathrm{pf} \to \mathcal{V}_\mathrm{M}$; `expectation` is $\mathcal{V}_\mathrm{M} \to \mathcal{V}_\mathrm{pf}$; their composition returns a row-normalized morphism in $\mathcal{V}_\mathrm{pf}$. For the row above, the final values remain approximately `[0.354, 0.646]`; `expectation` retains the normalized entries.
 
 The `change_base` postfix accepts any expression that denotes a transformation: a bare singleton, a let-bound name, a constructor call, or a `>>>` chain.
 
@@ -79,6 +100,16 @@ g    = f.change_base(pipe)
 The DSL and Python APIs use the same flat-sequence representation; the DSL's `>>>` desugars to `compose_trans`.
 
 ## The composition-rule hierarchy
+
+The level says which operations the API makes available. Associativity
+would permit regrouping `(f >> g) >> h` as `f >> (g >> h)`; an identity
+would permit inserting a do-nothing arrow. For matrix-style composition,
+associativity follows when the combining operations satisfy the relevant
+semiring laws, including distributivity. Product and noisy-OR fail
+distributivity, as the calculation in [Core Types](core.md#productfuzzyalgebra)
+shows. The construction checks exercise selected inputs; the algebraic
+equations specify the requirement across inputs.
+
 
 Underneath `>>` sits the *composition rule* of the enclosing module. The library's hierarchy:
 
@@ -150,6 +181,14 @@ Compact-closed operations are unavailable; the module otherwise behaves normally
 
 ## Operadic contractions
 
+A [contraction](dsl-contractions.md#type-driven-wiring-inference) extends the same hidden-index calculation to several tables
+at once. In `"sp,sq,pqo->so"`, `s` and `o` label the output, while `p`
+and `q` range over intermediate choices. Each `(p,q)` supplies a product
+of three entries, and the rule aggregates those contributions. *Operadic*
+means that these operations have multiple typed inputs and one typed output;
+you can use the wiring calculation without learning operad theory first.
+
+
 Binary composition `f >> g` contracts two morphisms along a single shared axis. Many tensor-network patterns contract three or more inputs at a shared reduction; the `contraction` declaration provides this syntax.
 
 ### Wiring spec
@@ -169,10 +208,8 @@ Each input lists its axes; the arrow's right-hand side names the surviving outpu
 contraction op_apply (
     arg1 : A -> B,
     arg2 : A -> C,
-    kernel : B -> D
-) : A -> D
-    rule product_fuzzy
-    wiring "sp, sq, pqd -> sd"
+    kernel : B * C -> D,
+) : A -> D [rule=product_fuzzy, wiring="sp,sq,pqd->sd"]
 ```
 
 The declared `op_apply` becomes callable from any expression site: `let combined = op_apply(arg1_morph, arg2_morph, kernel_morph)`. Each call checks the argument count against the declared input arity, and each argument's domain / codomain shape (by numel) against the declared per-input signature.
@@ -182,7 +219,9 @@ The declared `op_apply` becomes callable from any expression site: `let combined
 The wiring spec is validated at declaration time:
 
 - Each input must be non-empty.
-- No input may repeat a letter; diagonal / trace contractions are out of scope at this stratum.
+- The low-level `EinsumWiring` API requires distinct letters within each input.
+  The DSL's explicit wiring route additionally supports diagonal extraction;
+  see [DSL Contractions](dsl-contractions.md).
 - The output spec may not repeat a letter.
 - Every output letter must appear in at least one input.
 
@@ -200,7 +239,7 @@ wiring = einsum_wiring(PRODUCT_FUZZY, "sp, sq, pqo -> so")
 out    = contract(wiring, arg1, arg2, kernel)
 ```
 
-`EinsumWiring` works against any `CompositionRule` instance, not just algebras:
+`EinsumWiring` accepts any `CompositionRule` instance, including material implication:
 
 <!-- python: skip -->
 ```python

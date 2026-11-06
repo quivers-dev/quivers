@@ -1,5 +1,12 @@
 # Overview
 
+Transpilation translates a checked QVR computation into another probabilistic
+programming language. The target’s supported operations determine which models can be
+emitted. Validation then checks the generated syntax and compares scores at fixed latent
+values to assess whether the translation preserves the model.
+
+See [the shared translation pipeline](../../semantics/transpile-architecture.md#1-the-shared-pipeline) and [the score-preservation criterion](../../semantics/transpile-correctness/index.md#2-correctness-criterion).
+
 The pipeline from a compiled module to a target program, with the public
 entry points. Every public name of the transpile package is importable
 from `quivers.transpile`; the names its leaf modules define are

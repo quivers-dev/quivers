@@ -5,9 +5,20 @@ entry boundary as an ordinary QIEC computation. The source is the gallery's
 [`term_autoencoder.qvr`](../../examples/source/term_autoencoder.qvr), which
 declares a typed lambda-term signature, an encoder, a decoder, and a loss.
 
-The important boundary is the **typed attachment path (TAP)**: the stable
+The runtime attachment boundary separates two responsibilities: the stable
 module records `Compute` requests and their types, while `Program.run` attaches
 the compiled PyTorch modules and preserves their autograd graph.
+
+A term is a [tree with typed nodes](../../examples/term-autoencoder.md#understanding-the-model). The encoder replaces each subtree with a
+vector, combining child vectors until one vector describes the whole term.
+The decoder uses that vector to assign probabilities to choices of nodes and
+children. Reconstruction loss asks how much probability it assigns to the
+original tree; sampling a decoded tree need not reproduce the original exactly.
+
+The checked computation records which encoder and decoder should be called
+and the types they accept. The runtime supplies their trained PyTorch modules.
+Preserving the returned tensor's [gradient history](../python/01-first-quiver.md#working-as-a-differentiable-module) is what lets a reconstruction
+error update both modules through the same entry point. The [PyTorch autograd walkthrough](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html) shows how a loss retains its computation graph and how `backward()` accumulates parameter gradients [@pytorchAutogradTutorial].
 
 ## 1. Compile and inspect the entries
 

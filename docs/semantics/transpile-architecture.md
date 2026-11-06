@@ -12,6 +12,20 @@ The companion [transpilation-correctness contract](transpile-correctness/index.m
 states the evidence available for supported programs. This page
 describes how the pieces fit together.
 
+A transpiler translates a model description into another language. It must
+preserve the model's factors, shapes, and support, even when the destination
+uses different notation. For instance, a Normal family with `scale=2`
+may become a constructor with standard deviation 2 or one with precision
+$1/2^2=0.25$. Copying the number without translating its meaning would change
+the model.
+
+The intermediate representation (IR) is a structured common description of
+the model. Checking establishes its types and effects; planning identifies
+model operations; rendering expresses them in a target grammar; printing
+turns that structure into source text. Keeping these steps separate lets an
+axis or distribution argument retain its meaning while its spelling changes.
+The examples below expose each boundary before the larger LDA walkthrough.
+
 ## 1. The shared pipeline
 
 The transpile pipeline elaborates and checks the module first; the program's
@@ -76,7 +90,7 @@ the compiler environment and produced `Program`. Transpilation does not depend
 on that runtime compiler object: `transpile()` classifies the surface, and
 `Lower.forward()` elaborates and checks the source AST itself, so direct
 lowering is validated the same way. Target capability analysis remains inside
-the renderer because it acts on `IRQiecModule`, not on the source.
+the renderer, which consumes `IRQiecModule` after source processing.
 
 ## 2. The IR
 
@@ -103,7 +117,7 @@ runtime ABI. These implementations provide free computations, lexical
 handlers, stable request addresses, constructors, indexed case dispatch,
 attachments, and resumption-grade checks. Conformance tests reparse every
 target's emitted source and exercise the host ABI where its runtime is
-available; this evidence does not establish that the runtimes are equivalent.
+available, comparing request dispatch and returned values with the reference execution.
 
 Stan, BUGS, and JAGS emit the analyzer-approved static subset. Each computation
 must have a closed, empty effect row and an empty static telescope, return a
@@ -115,6 +129,15 @@ features receive precise capability diagnostics; no renderer may treat an
 executable term as ignorable metadata.
 
 ### 2.2 `Plate`: event versus batch axes
+
+The TensorFlow Probability tutorial’s [scalar log-probability examples](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#computing_log_prob_for_scalar_distributions) and [multivariate examples](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#multivariate_distributions) show which axes remain after scoring. QVR records these roles in its [axis specifications](morphisms.md#6-axis-role-specifications).
+
+Ten three-dimensional multivariate Normal draws have batch size ten and
+event size three. A target can express them as a vectorized distribution or
+ten loop iterations, but must preserve the joint three-coordinate event
+inside each draw. With non-diagonal covariance, the score includes cross
+terms relating coordinates; three independent scalar scores would omit
+those terms. The two fields below record the event dimensions and the batch dimensions.
 
 A draw's plate annotation decomposes into the event axes (the
 family's joint structure) and the batch axes (replication).
@@ -337,6 +360,13 @@ class IRProgram(dx.Model):
 
 ## 3. `FamilyMeta`: the registry for transpile-only facts
 
+Distribution metadata answers translation questions rather than inferring a
+model from a distribution name. A name such as `Normal` identifies a family;
+the argument mapping says whether a target calls its location `loc` or `mu`
+and whether its spread is a scale or precision. Shape and support remain
+part of the typed distribution contract. The renderer needs both kinds of
+information to produce the intended density.
+
 One registry, in
 `src/quivers/transpile/family_meta.py`:
 
@@ -370,7 +400,7 @@ class FamilyMeta(dx.Model):
   `FAMILY_META[family].target_names[backend]`; no per-renderer
   `_FAMILIES` dict exists.
 * `arg_aliases`: per-backend per-arg renames. Most families have
-  empty `arg_aliases`. Renderers that apply parameterisation-
+  empty `arg_aliases`. Renderers that apply parameterization-
   converting arithmetic (BUGS / JAGS Normal mean+scale to
   mean+precision; PyMC's `concentration → a` rename for
   Dirichlet) key the arithmetic on the alias's target name.
@@ -409,6 +439,8 @@ existing implementation. Adding a new family is one
 class plus one `FamilyMeta` entry; no renderer touches.
 
 ## 4. `Lower`: Module → IR
+
+[Program elaboration](typing.md#8-program-elaboration) describes the checked computation that lowering consumes. The [transpilation pipeline](transpile-correctness/index.md#1-pipeline) states the structural comparisons used to test this stage and the renderer that follows it.
 
 `Lower` is a single class in `src/quivers/transpile/plan.py`
 implementing `dx.Mapping[Module, IRProgram]`. Its `forward`:
@@ -571,6 +603,15 @@ another.
 
 ## 6. LDA end-to-end
 
+Latent Dirichlet Allocation (LDA) supplies several axes in one example:
+documents, topics, and words. `theta` assigns topic weights to documents;
+`phi` assigns word weights to topics. The finite latent `z` selects a topic,
+and `word_idx` maps observed rows to documents. Follow one observation
+through the pipeline: the target must use its mapped document, evaluate the
+possible topic contributions, and combine them with the grouping prescribed
+by the source. The axes and `via` map thus carry model meaning, not
+only array-layout information.
+
 The canonical Latent Dirichlet Allocation source:
 
 ```qvr
@@ -732,7 +773,7 @@ The architecture enforces five structural invariants:
    (event rank, support, argument constraints, per-target
    distribution name, argument aliases) lives in one place.
    Walkers query it; they never duplicate or override.
-2. **No `if family == "X"` in any renderer.** Renderer behaviour
+2. **No `if family == "X"` in any renderer.** Renderer behavior
    dispatches on the support predicates of §2.3 and on
    `FAMILY_META.target_names[backend]`.
 3. **No silent drops of AST fields.** Every `AxisSpec.over`,
@@ -759,58 +800,24 @@ rather than emitting wrong bytes.
 ## References
 
 * [Transpilation correctness](transpile-correctness/index.md). The
-  per-arrow lemma chain that lifts to the natural isomorphism
-  $\eta_{\mathsf{T}}: \mathsf{S}_{\mathrm{QVR}} \xRightarrow{\cong}
-  \mathsf{S}_{\mathsf{T}} \circ \mathsf{T}_{\mathsf{T}}$ in
-  $\mathbf{Kern}$.
+  supported-program contract and the structural, syntax, and numerical
+  evidence used to check it.
 * [QVR programs](programs.md). The source-language `Program`
   structure that `Lower` consumes.
 * [Continuous families](../guides/continuous-families.md). The
-  catalogue of
+  catalog of
   [`ContinuousMorphism`][quivers.continuous.morphisms.ContinuousMorphism]
   subclasses
   ([`ConditionalNormal`][quivers.continuous.families.ConditionalNormal],
   [`ConditionalDirichlet`][quivers.continuous.families.ConditionalDirichlet],
   [`ConditionalBetaBinomial`][quivers.continuous.families.ConditionalBetaBinomial],
   ...) the inference layer instantiates at run time.
-* Bob Carpenter, Andrew Gelman, Matthew D. Hoffman, Daniel Lee,
-  Ben Goodrich, Michael Betancourt, Marcus Brubaker, Jiqiang Guo,
-  Peter Li, and Allen Riddell. 2017. Stan: A probabilistic
-  programming language. *Journal of Statistical Software*,
-  76(1):1-32.
-  [https://doi.org/10.18637/jss.v076.i01](https://doi.org/10.18637/jss.v076.i01)
-* Du Phan, Neeraj Pradhan, and Martin Jankowiak. 2019.
-  Composable effects for flexible and accelerated probabilistic
-  programming in NumPyro. *arXiv preprint arXiv:1912.11554*.
-  [https://doi.org/10.48550/arXiv.1912.11554](https://doi.org/10.48550/arXiv.1912.11554)
-* Eli Bingham, Jonathan P. Chen, Martin Jankowiak, Fritz
-  Obermeyer, Neeraj Pradhan, Theofanis Karaletsos, Rohit Singh,
-  Paul Szerlip, Paul Horsfall, and Noah D. Goodman. 2019. Pyro:
-  Deep universal probabilistic programming. *Journal of Machine
-  Learning Research*, 20(28):1-6.
-  [http://jmlr.org/papers/v20/18-403.html](http://jmlr.org/papers/v20/18-403.html)
-* Hong Ge, Kai Xu, and Zoubin Ghahramani. 2018. Turing: A
-  language for flexible probabilistic inference. In
-  *International Conference on Artificial Intelligence and
-  Statistics*, pages 1682-1690.
-  [https://proceedings.mlr.press/v84/ge18b.html](https://proceedings.mlr.press/v84/ge18b.html)
-* Marco F. Cusumano-Towner, Feras A. Saad, Alexander K. Lew, and
-  Vikash K. Mansinghka. 2019. Gen: A general-purpose
-  probabilistic programming system with programmable inference.
-  In *Proceedings of the 40th ACM SIGPLAN Conference on
-  Programming Language Design and Implementation*, pages
-  221-236.
-  [https://doi.org/10.1145/3314221.3314642](https://doi.org/10.1145/3314221.3314642)
-* Noah D. Goodman, Vikash K. Mansinghka, Daniel M. Roy, Keith
-  Bonawitz, and Joshua B. Tenenbaum. 2008. Church: A language for
-  generative models. In *Proceedings of the Twenty-Fourth
-  Conference on Uncertainty in Artificial Intelligence (UAI)*,
-  pages 220-229.
-  [https://arxiv.org/abs/1206.3255](https://arxiv.org/abs/1206.3255)
-* Noah D. Goodman and Andreas Stuhlmüller. 2014. *The Design and
-  Implementation of Probabilistic Programming Languages*. Online
-  textbook. [http://dippl.org](http://dippl.org)
-* John K. Kruschke. 2014. *Doing Bayesian Data Analysis: A
-  Tutorial with R, JAGS, and Stan*. Second edition. Academic
-  Press.
-  [https://doi.org/10.1016/C2012-0-00477-2](https://doi.org/10.1016/C2012-0-00477-2)
+
+The backend papers explain the language designs that the renderers target:
+Stan [@carpenter2017stan], NumPyro [@phan2019numpyro], Pyro
+[@bingham2019pyro], Turing [@ge2018turing], Gen
+[@cusumanotowner2019gen], and Church [@goodman2008church]. For an
+implementation-oriented introduction to execution traces and inference, see
+the author-published textbook [@goodman2014design]. For worked Bayesian models
+using JAGS and Stan, see [@kruschke2014doing]. These sources supply background;
+current backend behavior is documented on each target’s correctness page.

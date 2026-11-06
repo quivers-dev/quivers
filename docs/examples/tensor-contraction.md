@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bilinear scoring composes two embeddings through a third-order interaction tensor, the core of the neural tensor layer of [Socher et al. (2013)](https://papers.nips.cc/paper/2013/hash/b337e84de8752b27eda3a12363109e80-Abstract.html). Here the model scores predicate-argument pairs: each item $i$ carries a predicate embedding $P_{i,:}$ and an argument embedding $A_{i,:}$, and a shared interaction tensor $W$ maps each embedding pair to a score for every point $g$ on a judgment scale:
+Bilinear scoring composes two embeddings through a third-order interaction tensor, the core of the neural tensor layer of Socher and colleagues [@socher2013tensor]. Here the model scores predicate-argument pairs: each item $i$ carries a predicate embedding $P_{i,:}$ and an argument embedding $A_{i,:}$, and a shared interaction tensor $W$ maps each embedding pair to a score for every point $g$ on a judgment scale:
 
 $$
 s_{i,g} \;=\; \sum_{b}\sum_{c} P_{i,b}\, A_{i,c}\, W_{b,c,g}.
@@ -58,6 +58,21 @@ define plausibility = bilinear_score(pred_embed, arg_embed, interaction)
 export plausibility
 ```
 
+## Understanding the model
+
+For each item and judgment, the score considers every pair of predicate
+and argument features. Multiplying their two coordinates by the matching
+interaction coefficient gives one contribution; summing all feature pairs
+gives the final score. A two-dimensional predicate and argument thus
+contribute four terms to each judgment score.
+
+The `Item` index survives because the calculation produces an answer for
+each item; `Judgment` survives because each item has several scores.
+`PredDim` and `ArgDim` disappear because they are summed out. This is the
+meaning of the [wiring specification](../tutorials/python/07-composition-rules.md#operadic-n-ary-contractions), independently of whether the resulting
+score later becomes a Gaussian mean, a classification logit, or another
+quantity in a larger model.
+
 ## Walkthrough
 
 The three latent declarations introduce the two embedding maps and the interaction tensor as first-class arrows: `pred_embed` and `arg_embed` have tensors of shape `(4, 2)`, and `interaction`, whose domain is the product `PredDim * ArgDim`, has a tensor of shape `(2, 2, 3)`.
@@ -81,7 +96,7 @@ The `define` binding invokes the contraction on the three declared arrows. Each 
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
 
-The exported arrow is a deterministic score tensor materialised from the current values of the three latents, so the module defines a mean tensor rather than a probability measure. The snippets below add priors and a likelihood: every entry of the two embeddings and of the interaction tensor carries an independent $\mathcal{N}(0, 1)$ prior, and each judgment is scored under $y_{i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$. The likelihood re-runs the wiring on every evaluation rather than reading the materialised tensor, so gradients and Hamiltonian trajectories reach all three arrows. The compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
+The exported arrow is a deterministic score tensor materialized from the current values of the three latents, so the module defines a mean tensor rather than a probability measure. The snippets below add priors and a likelihood: every entry of the two embeddings and of the interaction tensor carries an independent $\mathcal{N}(0, 1)$ prior, and each judgment is scored under $y_{i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$. The likelihood re-runs the wiring on every evaluation rather than reading the materialized tensor, so gradients and Hamiltonian trajectories reach all three arrows. The compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
 
 ### Generating synthetic data
 
@@ -188,7 +203,7 @@ The `mu` step is a deterministic `let`: it reads the three sampled tensors out o
 
 ### SVI fit
 
-Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). All three arrows are genuine `sample` sites, so the guide carries a mean-field Normal over each rather than degenerating to a point estimate.
+Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). All three arrows are `sample` sites. The guide places an independent Normal distribution on each unconstrained coordinate and samples them to estimate the ELBO.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -205,7 +220,7 @@ print(f"initial loss: {losses[0]:.2f}")
 print(f"final loss:   {losses[-1]:.2f}")
 ```
 
-The factorisation is identifiable only up to invertible reparameterisations of the two embedding spaces, so the fitted embeddings tend to differ from the truths even once the score tensor has converged.
+The factorization is identifiable only up to invertible reparameterizations of the two embedding spaces, so the fitted embeddings tend to differ from the truths even once the score tensor has converged.
 
 ### NUTS posterior
 
@@ -225,7 +240,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Binary composition `>>` is the 2-ary case of a wider operadic structure: a `contraction` denotes an n-ary morphism in the [multicategory](https://ncatlab.org/nlab/show/multicategory) of tensor spaces over the active composition rule, with the wiring specification fixing which axes are joined and which survive to the output (see [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the denotation). The bilinear score is the case $n = 3$: two argument tensors over a shared `Item` axis and a kernel over the two embedding axes, folded under $\otimes$ and joined under $\bigoplus$ of the sum-product semiring. Chains of binary `>>` can express only tree-shaped contractions of matrices; the third-order `interaction` tensor makes this join genuinely operadic.
+Binary composition `>>` is the 2-ary case of a wider operadic structure: a `contraction` denotes an n-ary morphism in the [multicategory](https://ncatlab.org/nlab/show/multicategory) of tensor spaces over the active composition rule, with the wiring specification fixing which axes are joined and which survive to the output (see [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the denotation). The bilinear score is the case $n = 3$: two argument tensors over a shared `Item` axis and a kernel over the two embedding axes, folded under $\otimes$ and joined under $\bigoplus$ of the sum-product semiring. Here the three inputs share two different feature axes, which the explicit wiring contracts in one operation.
 
 ## See also
 
@@ -233,6 +248,6 @@ Binary composition `>>` is the 2-ary case of a wider operadic structure: a `cont
 - [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the categorical semantics of operadic contractions.
 - [Probabilistic Matrix Factorization](pmf.md) for the 2-ary bilinear score expressed with `.dagger` and `>>`.
 
-## References
+## Sources and further reading
 
-- Richard Socher, Danqi Chen, Christopher D. Manning, and Andrew Y. Ng. 2013. [Reasoning With Neural Tensor Networks for Knowledge Base Completion](https://papers.nips.cc/paper/2013/hash/b337e84de8752b27eda3a12363109e80-Abstract.html). In *Advances in Neural Information Processing Systems 26*.
+- *Reasoning With Neural Tensor Networks for Knowledge Base Completion* [@socher2013tensor].

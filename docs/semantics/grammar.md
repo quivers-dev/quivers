@@ -8,6 +8,23 @@ parameter settings on the same agenda engine. See
 [Weighted Deduction Systems](../guides/deduction.md) for the user
 guide; this page defines the denotation.
 
+A weighted deduction system accumulates consequences of rules. Its *chart*
+is a table from established items to their weights, and its *agenda* is a
+work list of consequences still to process. Sharing a chart avoids
+recomputing the same subproblem every time it appears in a derivation.
+
+For a graph example, two known edges $a\to b$ and $b\to c$ support a path
+$a\to c$. If their costs are 2 and 3, that derivation costs 5. A direct
+edge of cost 4 gives another derivation of the same conclusion. A
+minimum-cost algebra keeps 4; a counting algebra would instead count the
+two derivations. Parsing uses the same pattern, with spans and grammatical
+categories in place of graph endpoints.
+
+The following definitions separate (i) what counts as an item, (ii) which
+rules connect items, and (iii) how derivation weights combine. The long
+grammar inventory in §10 is a syntax reference; the preceding sections
+explain what that syntax computes.
+
 ## 1. Item algebra
 
 A `deduction` block fixes a single item algebra `I` via the
@@ -22,6 +39,12 @@ Pattern variables (single-uppercase identifiers in a rule body)
 range over `I`; the unifier supplies first-order substitutions.
 
 ## 2. Rules
+
+A rule lists premises on the left and a conclusion on the right of `|-`.
+It can fire when chart items match all its premise patterns under one
+consistent substitution for their variables. A *hyperedge* is the graph
+analogue of this many-input connection: several premises jointly support
+one conclusion. It is not a set of independent one-premise implications.
 
 A rule declaration
 
@@ -109,7 +132,7 @@ from scratch.
 ### 2.3 Bounded rule weights (`bounded`)
 
 A learnable rule whose pragma additionally lists `bounded` is
-reparameterised to keep its surface log-weight strictly negative:
+reparameterized to keep its surface log-weight strictly negative:
 
 $$
 \theta_{r, \sigma} \;=\; -\mathrm{softplus}(\mathit{raw}_{r,\sigma})
@@ -133,7 +156,12 @@ suffice: interlocking cycles (e.g. an introduction / elimination
 pair over nested constructors) can diverge even when every
 individual cycle's log-weight is negative.
 
+The separation between a deduction structure and the semiring used to score
+it follows the semiring-parsing perspective [@goodman1999semiring].
+
 ## 3. Semiring
+
+The primer’s [reachability and shortest-path calculations](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) illustrate how changing two operations changes the answer computed by a shared recurrence. [Learnable rule weights](#21-learnable-rule-weights-learnable) explain where the scalar factors in a derivation come from.
 
 The semiring field selects the scoring algebra `K`:
 
@@ -242,6 +270,13 @@ input. The block admits three surface forms:
 
 ## 5. Goal, depth, and convergence
 
+A depth limit and a convergence criterion solve different problems. Bounding
+category-expression depth prevents ever-larger category terms from being
+introduced. A rule can still send an existing item back to itself at the
+same depth. Repeated traversal then contributes further weight, so the
+scheduling and convergence conditions below determine whether that sum
+reaches a finite value.
+
 `start s` declares the start atom; the goal predicate is
 "there exists a derivation whose conclusion is `c(s, …)` for
 some configured wrapper constructor (e.g. a `span(0, n, s)` over
@@ -275,6 +310,16 @@ raises on exceeding it. Default is $10^5$.
 
 ## 6. Chart denotation
 
+The NLTK book’s [well-formed substring table](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) builds a chart one span at a time [@bird2009natural]. The [QVR chart guide](../guides/deduction.md#charts-as-first-class-differentiable-values) shows how to inspect chart entries and their gradients.
+
+A chart entry aggregates all derivations of one item. Within a derivation,
+combine the premise contributions and rule weight using $\otimes$; across
+derivations, combine alternatives using $\oplus$. This is why switching a
+semiring can reuse the chart algorithm while changing its answer from
+“possible?” to “how many?” or “what total probability?”. For cyclic systems,
+“all derivations” can be an infinite collection, and the convergence
+conditions are part of the semantic claim.
+
 Fix the deduction `D = (I, Σ, K, ax, goal, s, d)` and an input
 `w`. The *chart* is the function
 
@@ -302,16 +347,22 @@ predicate `w ∈ L(D)`.
 
 ## 7. Strategy independence
 
-The chart is the least pre-fixed point of the rule-system functor
-in the `K`-enriched lattice (Tarski-Knaster). The agenda is the
-*operational realization* of the fixed-point computation; a
-strategy is a tuple `(Agenda, π, stop)` with `Agenda` a queue
-discipline (FIFO / LIFO / priority), `π` a priority function, and
-`stop` a termination predicate.
+For a complete lattice of chart values and a monotone rule operator, the
+Knaster–Tarski theorem gives a least fixed point. In an acyclic finite chart,
+the same values can be computed directly in dependency order. Cyclic weighted
+charts need additional assumptions that make their potentially infinite sums
+and fixed-point evaluation well defined.
 
-Goodman 1999 §3 (semiring parsing) establishes that for any
-`K` and any pair of well-formed strategies, the resulting chart
-value at every item is identical. The runtime picks a default
+The agenda implements a schedule for evaluating rule instances. A strategy is
+a tuple `(Agenda, π, stop)`, where `Agenda` supplies a queue discipline
+(FIFO / LIFO / priority), `π` a priority function, and `stop` a termination
+predicate. Strategy independence requires a correct schedule for the chosen
+algebra: necessary deductions must be reached, repeated deductions must be
+accounted for correctly, and termination must preserve the requested answer.
+Under these conditions, the semiring interpretation assigns the same chart
+values independently of scheduling [@goodman1999semiring]. Pruning removes
+derivations from the sum, and early stopping can leave their contributions
+unprocessed. The runtime picks a default
 strategy from rule arities and the semiring's algebraic properties
 (CKY-sweep for context-free + idempotent, A\* for weighted +
 idempotent + admissible heuristic, semi-naive for Datalog-shaped,
@@ -331,7 +382,7 @@ flowing from rule-weight parameters through the agenda's
   (`torch.linalg.solve` over `∂F/∂C^*`).
 - **Inside-outside-friendly** semirings (commutative + idempotent
   + with inverses, e.g. `LogProb`, `Viterbi`): the runtime emits
-  an analytic outside computation (Eisner & Goldlust 2005) as a
+  an analytic outside computation, related to weighted dynamic programming [@eisner2005compiling], as a
   second agenda pass that propagates outside weights from the
   goal back to all items.
 
@@ -715,11 +766,5 @@ complete grammar, worked examples, and implementation limits appear in the
 
 ## References
 
-- Shieber, Schabes & Pereira (1995). [*Principles and implementation of deductive parsing*](https://doi.org/10.1016/0743-1066(95)00035-I). Journal of Logic Programming 24(1–2):3–36.
-- Goodman (1999). [*Semiring parsing*](https://aclanthology.org/J99-4004/). Computational Linguistics 25(4):573–606.
-- Pereira & Warren (1983). [*Parsing as deduction*](https://doi.org/10.3115/981311.981338). In Proceedings of the 21st Annual Meeting of the Association for Computational Linguistics, pp. 137–144.
-- Klein & Manning (2001). [*Parsing and hypergraphs*](https://aclanthology.org/W01-1812/). In Proceedings of the Seventh International Workshop on Parsing Technologies (IWPT), pp. 123–134.
-- Knuth (1977). [*A generalization of Dijkstra's algorithm*](https://doi.org/10.1016/0020-0190(77)90002-3). Information Processing Letters 6(1):1–5.
-- Nederhof (2003). [*Weighted deductive parsing and Knuth's algorithm*](https://doi.org/10.1162/089120103321337467). Computational Linguistics 29(1):135–143.
-- Eisner, Goldlust & Smith (2005). [*Compiling Comp Ling: Practical weighted dynamic programming and the Dyna language*](https://aclanthology.org/H05-1036/). In Proceedings of HLT-EMNLP, pp. 281–290.
-- McAllester (2002). [*On the complexity analysis of static analyses*](https://doi.org/10.1145/581771.581774). Journal of the ACM 49(4):512–537.
+
+Parsing as deduction is developed in [@pereira1983parsing; @shieber1995principles], and weighted alternatives in [@goodman1999semiring]. The hypergraph view [@klein2001parsing] explains how deductions share intermediate results. For priority-based evaluation, see [@knuth1977generalization; @nederhof2003weighted]. For compiled weighted dynamic programs and complexity analysis, see [@eisner2005compiling; @mcallester2002complexity]. These references provide the algorithmic background; the restrictions and evaluation schedule of QVR are specified above.

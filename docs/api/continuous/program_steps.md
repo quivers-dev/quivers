@@ -1,5 +1,13 @@
 # Program Steps
 
+Each step answers one local question: draw a value, score an observation, compute a
+deterministic result, or combine an indexed collection. The program supplies the
+surrounding environment of named values. Inspect these records when constructing
+programs in Python or understanding how a QVR statement becomes an executable operation.
+
+See [the roles of individual program steps](../../guides/programs.md#program-structure) and
+[a complete program construction](../../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram).
+
 The records a [`MonadicProgram`](programs.md#quivers.continuous.programs.MonadicProgram)
 is built from: [`Draw`](#quivers.continuous.program_steps.Draw),
 [`Observe`](#quivers.continuous.program_steps.Observe),

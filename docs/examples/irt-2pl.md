@@ -2,7 +2,7 @@
 
 ## Overview
 
-The 2PL [item response theory](https://en.wikipedia.org/wiki/Item_response_theory) model (Birnbaum 1968, *Some latent trait models and their use in inferring an examinee's ability*, in Lord & Novick eds., *Statistical Theories of Mental Test Scores*, Addison-Wesley, pp. 397–479) for binary item responses `y_{ij}` of respondent i to item j. Each respondent carries a unidimensional ability `theta_i`, each item carries a difficulty `b_j` and a discrimination `a_j` (positive by construction via a [LogNormal](https://en.wikipedia.org/wiki/Log-normal_distribution) prior), and the probability of a correct response is `sigmoid(a_j * (theta_i - b_j))`.
+The 2PL [item response theory](https://en.wikipedia.org/wiki/Item_response_theory) model [@birnbaum1968traits] for binary item responses `y_{ij}` of respondent i to item j. Each respondent carries a unidimensional ability `theta_i`, each item carries a difficulty `b_j` and a discrimination `a_j` (positive by construction via a [LogNormal](https://en.wikipedia.org/wiki/Log-normal_distribution) prior), and the probability of a correct response is `sigmoid(a_j * (theta_i - b_j))`.
 
 ## QVR source
 
@@ -48,9 +48,28 @@ program irt_2pl : Resp -> Val
 export irt_2pl
 ```
 
+## Understanding the model
+
+When a person's ability equals an item's difficulty, the success probability
+is [`sigmoid(0) = 0.5`](../tutorials/qvr/02-glms.md#logistic-regression). Raising ability above difficulty increases it. A larger
+positive discrimination makes the transition from low to high success sharper,
+so the item distinguishes more strongly between nearby abilities.
+
+Each response row identifies both a person and an item. For row indices
+`person_idx[n] = 2` and `item_idx[n] = 5`, the likelihood uses ability 2,
+difficulty 5, and discrimination 5. Priors help anchor the latent ability
+scale; raw ability and difficulty numbers should be interpreted together on
+that scale. [Posterior predictive](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) response probabilities are often easier to
+compare than the latent coordinates themselves. Stan’s [multilevel 2PL example](https://mc-stan.org/docs/stan-users-guide/regression.html#multilevel-2pl-model) develops the ability, difficulty, and discrimination parameterization [@stanRegression].
+
 ## Walkthrough
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; what it means is decided by the position it occupies. `object Resp : FinSet 64` sits in the index slot of `observe y : Resp <- Bernoulli(p)`, so it fixes the *plate extent*: 64 scored rows, one per respondent-item pair, which is why the object in that slot has to be discrete. It says nothing about what a row holds. That comes from the family, and `Bernoulli` is what makes each response a binary outcome. `object Val : Real 1` sits in a different position and does a different job: the codomain of the program signature names the *value space* of what the program returns. `return p` hands back the per-row success probability, a real scalar, so that space is `Real 1`. Reading the codomain as an index instead is the misstep to avoid: a signature `Resp -> Resp` would claim the program returns an element of the response index set, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain.
+`Person` and `Item` index the respondent and question parameters. `Resp`
+indexes the observed respondent-item pairs; it need not enumerate every
+possible pair. The Bernoulli family supplies the binary value type of each
+response, while `return p` returns real-valued probabilities, reflected in
+`Val : Real 1`. Indexing a response and describing its value are different
+roles, which the program's annotations should keep distinct.
 
 `ability`, `difficulty`, and `discrim` are plate-bound on `Person` and `Item`; `discrim` carries a LogNormal prior so it's positive by construction. The runtime supplies `person_idx` and `item_idx` at fit time, and the gather idiom `ability[person_idx]` / `difficulty[item_idx]` / `discrim[item_idx]` realizes the standard cross-classified design. The Bernoulli link `sigmoid(a * (theta - b))` is the canonical [logistic](https://en.wikipedia.org/wiki/Logistic_function) form of the 2PL response function.
 
@@ -138,9 +157,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The 2PL is a Kleisli morphism over the Person + Item plate structure in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The plate-gather operations are pullbacks of indexed kernels along the response-row index maps `person_idx : Resp -> Person` and `item_idx : Resp -> Item`.
+The 2PL is a Kleisli morphism over the Person + Item plate structure in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The plate-gather operations are pullbacks of indexed kernels along the response-row index maps `person_idx : Resp -> Person` and `item_idx : Resp -> Item`. [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *A categorical approach to probability theory* [@giry1982categorical].

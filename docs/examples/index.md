@@ -12,6 +12,22 @@ QIEC case studies whose purpose is reference-machine execution live under
 `docs/examples/qiec/`, so adding one does not silently expand the promised
 backend matrix.
 
+## Choose a first example
+
+Start with [Bayesian regression](bayesian-regression.md) to connect unknown
+[coefficients, observations, and posterior draws](../tutorials/qvr/01-first-model.md#what-inference-will-answer). Then try the
+[Beta-Binomial example](beta-binomial-ab-test.md) for variation across batches,
+[partial pooling](parametric-pooling.md) for shared group structure, and a
+[mixture](mixture-model.md) for alternative explanations of an observation.
+The [conceptual introduction](../getting-started/concepts.md) defines the
+probability and composition vocabulary along that route.
+
+For structured language models, begin with [PCFG](pcfg.md) to learn chart
+items and weighted derivations, then move to [rule schemas](schema-chart-parser.md)
+or the [term autoencoder](term-autoencoder.md). Read each page's limitations:
+some sources illustrate a model's wiring or one conditional component rather
+than implementing every feature suggested by a historical filename.
+
 ## Language feature map
 
 Use this table when you want an example of a language feature rather than a
@@ -42,7 +58,7 @@ examples state both where they differ.
   computation with a contamination measure, authored robustification handler,
   and hierarchical model with grouped exact marginalization.
 - [Lexical-Uncertainty RSA](qiec/lexical-uncertainty-rsa.qvr): the specificity
-  model of [Bergen, Levy, and Goodman (2016)](https://doi.org/10.3765/sp.9.20),
+  model of [@bergen2016pragmatic],
   with a literal listener nested inside a pragmatic speaker and a listener
   that traverses and marginalizes over three lexica.
 
@@ -53,18 +69,18 @@ examples state both where they differ.
 - [Gamma Regression](gamma-regression.md): Gamma response with a log-shape predictor and unit rate.
 - [Horseshoe Regression](horseshoe-regression.md): sparse linear regression under the horseshoe prior.
 - [Negative Binomial Regression](negbin-regression.md): overdispersed count response.
-- [Continuous-gate Poisson Regression](zip-regression.md): differentiable relaxation of a zero-inflation gate.
-- [Item Response Theory (2PL)](irt-2pl.md): Rasch-style logistic IRT with item difficulty and discrimination.
+- [Zero-Inflated Poisson Regression](zip-regression.md): the scored likelihood exactly marginalizes the two gate endpoints.
+- [Item Response Theory (2PL)](irt-2pl.md): logistic IRT with item difficulty and item-specific discrimination.
 - [Weibull Survival](survival-weibull.md): uncensored Weibull event-time regression; censored rows require an explicit survival-score term.
 
 ## Latent-variable models
 
 - [Isotropic Bayesian Factor Model](factor-analysis.md): low-rank factors and loadings with one shared observation scale.
 - [Probabilistic PCA](ppca.md): the isotropic factor model interpreted through its principal-component solution.
-- [Latent Dirichlet Allocation](lda.md): topic model with Dirichlet priors on per-document and per-topic distributions.
+- [Document-Level Topic Mixture](lda.md): Dirichlet priors with one shared topic assignment per document; contrasted with token-level LDA.
 - [Gaussian Mixture Model](mixture-model.md): finite mixture with grouped marginalization over the cluster label.
 - [Latent Decoder and Encoder Paths](vae.md): prior-decoder program plus a separately exported encoder-decoder path; the current SVI block does not use the encoder as its guide.
-- [Bayesian Neural Network](bnn.md): nonlinear regression through an MLP-parameterised Normal kernel, made Bayesian after lifting priors over its weights.
+- [Bayesian Neural Network](bnn.md): nonlinear regression through an MLP-parameterized Normal kernel, made Bayesian after lifting priors over its weights.
 - [Parametric Partial Pooling](parametric-pooling.md): random effects from a parametric program template, with a labeled return tuple, a score-step sum-to-zero factor, and export selection.
 - [Probabilistic Matrix Factorization](pmf.md): low-rank Bayesian completion of a sparse rating matrix.
 - [Bilinear Tensor Contraction](tensor-contraction.md): neural-tensor-layer scoring of predicate-argument pairs via an operadic three-way contraction.
@@ -72,7 +88,7 @@ examples state both where they differ.
 ## State-space and time-series models
 
 - [AR(1)](ar1.md): first-order autoregressive Normal scalar series.
-- [Changepoint Model](changepoint.md): piecewise-constant means with a sampled change point.
+- [Changepoint Model](changepoint.md): a smooth transition between Poisson rates at a sampled change location.
 - [Conditionally Factorized Stochastic Volatility](stochastic-volatility.md): AR(1) log-volatility conditionals with externally supplied lag values.
 - [Gaussian-Kernel SSM](linear-gaussian-ssm.md): learned transition, emission, and filtering kernels; not a closed-form Kalman filter.
 - [Finite-State Path Composition](hmm.md): product-fuzzy transition and emission relations, plus a partial discrete-program sketch.

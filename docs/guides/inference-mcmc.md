@@ -1,16 +1,33 @@
-# Variational Inference: MCMC and Hybrid Samplers
+# MCMC and Hybrid Samplers
 
 This page covers gradient-based MCMC (HMC, NUTS), the hybrid
 samplers that combine a variational warm-up with HMC chains, and
-posterior predictive sampling from an
+[posterior predictive](inference-svi.md#predictive-sampling) sampling from an
 [`MCMCResult`](../api/inference/mcmc.md). The variational
-families and ELBO objectives live in
+families and [ELBO](inference-svi.md#elbo-evidence-lower-bound) objectives live in
 [the SVI guide](inference-svi.md).
 
 ## MCMC: HMC and NUTS
 
-When variational families underfit, fall back to gradient-based
-MCMC. The kernel runs on the registry's unconstrained vector;
+The algorithmic treatments are [@neal2011mcmc] for HMC and
+[@hoffman2014nuts] for NUTS.
+
+**Markov chain Monte Carlo (MCMC)** generates a sequence of dependent
+draws designed to have the posterior as its stationary distribution.
+The transition rule uses the model’s log density to propose and accept
+new latent values. **Hamiltonian Monte Carlo (HMC)**
+uses gradients of the log density and auxiliary momentum to propose
+moves through continuous latent space. The **No-U-Turn Sampler (NUTS)**
+adapts trajectory length to avoid continuing a path that turns back.
+
+*Warmup* tunes the sampler before the retained draws. Separate *chains*
+allow comparison of runs started from different initial values.
+Successive draws within each chain remain correlated. The registry's unconstrained coordinates accommodate positive
+or bounded continuous latents; these gradient-based kernels do not
+automatically sample arbitrary discrete latent sites.
+
+
+Gradient-based MCMC is an alternative to fitting a variational family. The kernel runs on the registry's unconstrained vector;
 gradients flow through
 [`torch.autograd.grad`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad.html).
 
@@ -42,7 +59,7 @@ samples = result.samples        # dict[str, Tensor] of shape (chains, draws, ...
 Both
 [`HMCKernel`](../api/inference/mcmc.md) and
 [`NUTSKernel`](../api/inference/mcmc.md) implement
-[Nesterov dual-averaging](https://doi.org/10.48550/arXiv.1111.4246)
+Nesterov dual-averaging [@hoffman2014nuts]
 step-size adaptation during warmup, and Welford-online mass-matrix
 adaptation when `mass_matrix` is set to `"diagonal"` or `"dense"`
 (the default `"identity"` disables mass-matrix adaptation). Chains
@@ -57,9 +74,8 @@ advance a caller-owned stream. `seed` and `generator` are mutually
 exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
-The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site
-[rank-normalized folded `R̂` and bulk effective sample size
-(Vehtari et al. 2021)](https://doi.org/10.1214/20-BA1221) via
+The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site convergence and effective sample size diagnostics
+[@vehtari2021rhat] via
 `r_hat` and `ess`. Each `r_hat` coordinate is the conservative
 maximum of the rank-normalized and folded split statistics, while
 `ess` is the rank-normalized cross-chain bulk ESS. The result also
@@ -69,10 +85,23 @@ densities per draw via `log_densities`.
 
 ## Hybrid samplers
 
+`r_hat` compares variation within chains with variation between chains.
+If chains stay in different regions, their means can differ enough to raise
+`r_hat`. Chains trapped in the same region can agree, so compare runs from
+dispersed initial values as well. `ess` accounts for autocorrelation: 8,000
+saved draws might provide precision comparable to only 500 independent
+draws. Divergences mark inaccurate numerical trajectories. Locate them in
+parameter plots, then assess whether a smaller step size or a different
+parameterization improves exploration.
+
+Hybrid methods use variational fitting to construct a proposal
+distribution or choose initial chain values, as specified below.
+
+
 ### AutoDAIS
 
-[Differentiable annealed importance
-sampling](https://doi.org/10.48550/arXiv.2107.10211) wraps a base
+Differentiable annealed importance
+sampling [@zhang2021dais] wraps a base
 guide with $K$ HMC trajectories along an annealing path between
 base and target. The base mean and scale, step size, and inverse
 temperatures are jointly trained via SVI.
@@ -96,7 +125,7 @@ guide = AutoDAIS(
 ### WarmupThenHMC
 
 Train a variational guide for a configured number of SVI steps, then
-initialise HMC chains from the guide's posterior mean. This provides
+initialize HMC chains from the guide's posterior mean. This provides
 an informed starting point; convergence still depends on the HMC
 warmup and diagnostics.
 
@@ -118,6 +147,16 @@ svi_losses, result = sampler.run(model, x, observations)
 
 ## Predictive with MCMC
 
+Stan’s [posterior predictive simulation example](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#simulating-from-the-posterior-predictive-distribution) separates posterior parameter draws from replicated observations. [@stanPredictiveChecks] The [diagnostics guide](analysis-fitting-and-diagnostics.md#diagnostics-quiversdiagnostics) uses the replicated observations to check features of the fitted model.
+
+Posterior draws represent uncertainty about latent quantities. Predictive
+draws add the outcome noise: take a posterior latent draw, then generate
+a new response from its likelihood. Thus an interval for new observations
+includes both uncertainty about the latent mean and variability of the
+response around it. The same calculation uses draws from either an MCMC
+result or a variational guide.
+
+
 [`Predictive`](../api/inference/predictive.md) consumes either a
 [`Guide`](../api/inference/guide.md) or an
 [`MCMCResult`](../api/inference/mcmc.md). With an
@@ -138,8 +177,8 @@ samples = predictive(x_new)
 
 ## See also
 
-- [Inference Foundations](inference-foundations.md): the trace,
-  conditioning, and `LatentRegistry` primitives every MCMC kernel
+- [Inference Foundations](inference-foundations.md): the [trace](inference-foundations.md#trace-and-sample-sites),
+  [conditioning](inference-foundations.md#conditioning-on-observations), and `LatentRegistry` primitives every MCMC kernel
   consumes.
 - [SVI guide](inference-svi.md): the variational counterpart, and
   the SVI driver wrapping the `AutoDAIS` hybrid sampler.
@@ -147,7 +186,6 @@ samples = predictive(x_new)
   the high-level `fit(...)` API that wraps the MCMC and SVI
   drivers under one entry point.
 
+## Further reading
 
-## References
-
-- Aki Vehtari, Andrew Gelman, Daniel Simpson, Bob Carpenter, and Paul-Christian Bürkner. 2021. [Rank-normalization, folding, and localization: An improved R̂ for assessing convergence of MCMC](https://doi.org/10.1214/20-BA1221). *Bayesian Analysis*, 16(2):667–718.
+- [@vehtari2021rhat]

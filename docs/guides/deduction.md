@@ -1,12 +1,29 @@
 # Weighted Deduction Systems
 
+A deduction system repeatedly applies rules to facts already established.
+For a parser, one fact might say that words 0 through 1 form a noun phrase,
+and another that words 1 through 3 form a verb phrase. A rule combines
+them into a sentence spanning 0 through 3. A **[chart](#charts-as-first-class-differentiable-values)** stores facts and
+their accumulated weights; an **agenda** schedules facts still to process.
+This separates what a valid derivation is from the order used to find it.
+
+
 QVR's `deduction` block declares a weighted deductive system: a
 hypergraph of inference rules over an item algebra, paired with a
-semiring for weight aggregation. A single agenda-driven runtime
+[semiring for weight aggregation](core.md#algebras-enrichment-algebras). A single agenda-driven runtime
 evaluates the system under strategies for CKY, Earley, Viterbi, A*,
 Knuth's algorithm, semi-naive Datalog, and proof search.
 
 ## The framework
+
+A rule with several premises is a hyperedge: one connection consumes
+several inputs to produce one conclusion. Its weight combines with the
+premise weights. If two different derivations reach the same conclusion,
+the semiring specifies how their contributions combine. Boolean weights
+ask whether any derivation exists; LogProb adds probabilities in log space;
+Viterbi retains the best-scoring derivation. The same rule shapes can
+thus answer different queries. [@goodman1999semiring]
+
 
 Categorically, a weighted deduction system is a tuple
 
@@ -14,9 +31,13 @@ $$\mathcal{D} = (I, R, K, \mathrm{ax}, \mathrm{goal})$$
 
 with $I$ an *item algebra* (an abstract data type of judgments / facts / sequents), $R$ a *hypergraph* of inference rules (each a premise multiset, a conclusion, and a weight in $K$, universally quantified over pattern variables), $K$ an *algebra* / semiring for weight aggregation, $\mathrm{ax}$ an *axiom injector* producing the input's lexical / boundary items, and $\mathrm{goal} \subseteq I$ a *termination predicate*.
 
-The chart is the $K$-presheaf $C : I^{\mathrm{op}} \to K$ that is the least pre-fixed point of the rule-system functor in the $K$-enriched lattice (Tarski-Knaster). The chart is *strategy-independent*; the agenda is the operational realization of the fixed-point computation.
+The chart assigns an accumulated weight to each item. In settings with an
+appropriate complete order and monotone rule operator, a least-fixed-point
+account describes closure under the rules. The existence of such a fixed
+point, convergence to it, and independence from the processing order require
+hypotheses on the algebra, cycles, and evaluation strategy.
 
-See [References](#references) below.
+See [Further reading](#further-reading) below.
 
 ## QVR syntax
 
@@ -33,6 +54,14 @@ deduction CG : Atom -> Atom [semiring=LogProb, start=S, depth=4]
 The unified option block carries the deduction-level configuration (semiring, start symbol, depth bound, optional `tolerance` for convergent-cycle LogProb, optional `max_iterations` cap). The indented body declares the atom set and rules; single-uppercase-letter identifiers in rule patterns (`X`, `Y`, `Z`) bind as wildcards, and non-wildcard names match literally. The declaration compiles to a `DeductionSystem` registered under the declared name (here `CG`).
 
 ## Charts as first-class differentiable values
+
+For log weights `-0.3` and `-0.4`, a unit-weight binary rule contributes
+`-0.7` to its conclusion. A second derivation contributes through
+log-sum-exp, not ordinary addition of the two log weights. Differentiating
+the final score can then update the lexical or rule parameters that
+supported those derivations. A score for the best derivation and a score
+summed over all derivations train different objectives.
+
 
 Running a deduction yields a `ChartView`, a $K$-presheaf value with query methods:
 
@@ -55,7 +84,13 @@ The weights are `torch.Tensor` values; autograd flows through the agenda's semir
 
 ## Strategy independence
 
-For idempotent semirings (Boolean, LogProb, Viterbi), the chart's value at any item is independent of the agenda strategy (Goodman 1999, §3). The `test_strategy_independence_idempotent` test runs the same deduction under CKY-sweep, semi-naive FIFO, depth-first LIFO, and Earley-FIFO agendas and asserts the chart's goal-item weights agree to within `1e-5`.
+Boolean OR and Viterbi max are idempotent: adding the same contribution
+twice changes nothing. LogProb addition is log-sum-exp and is not
+idempotent: two copies of a derivation of weight `p` contribute `2*p`.
+Strategy-independent accumulation must thus account correctly for
+duplicate work and cycles, as well as satisfy termination or convergence
+conditions. Semiring parsing makes these algebraic distinctions explicit
+[@goodman1999semiring], §3. The `test_strategy_independence_idempotent` test runs the same deduction under CKY-sweep, semi-naive FIFO, depth-first LIFO, and Earley-FIFO agendas and asserts the chart's goal-item weights agree to within `1e-5`.
 
 ## Pre-registered stdlib
 
@@ -82,9 +117,9 @@ The agenda module exposes canonical strategy factories that may be passed to the
 - `cky_agenda()`, `earley_agenda()`, FIFO (semi-naive).
 - `viterbi_agenda(priority_fn)`: priority-queue.
 - `astar_agenda(g_plus_h)`: priority-queue with an admissible heuristic.
-- `knuth_agenda()`: best-first hyperpath search (Knuth 1977; Nederhof 2003).
+- `knuth_agenda()`: best-first hyperpath search [@knuth1977generalization; @nederhof2003weighted].
 - `depth_first_agenda()`: LIFO (proof search).
-- `semi_naive_agenda()`: FIFO for Datalog-shaped systems (McAllester 2002).
+- `semi_naive_agenda()`: FIFO for Datalog-shaped systems [@mcallester2002complexity].
 
 ## panproto integration
 
@@ -102,6 +137,16 @@ schema = extract_deduction_schema(compiler)
 ```
 
 ## The deduction as a kernel computation
+
+The [generated computation reference](../reference/qvr/generated-computations.md#deduction-declarations) traces this expansion into choices, weights, and collecting handlers. The [effect interface reference](../reference/qvr/effects-and-handlers.md#prelude-interfaces) defines the requests those computations make.
+
+The chart engine reuses stored subresults. The generated computation
+expresses the same bounded problem by choosing rules and recursively
+deriving their premises. Thus the chart computes shared subproblems once,
+while the generated form expresses rule choices and accumulated weights
+as effects. Both calculations stop at the declared search bound; increasing
+that bound can add derivations.
+
 
 The same declaration elaborates to QIEC computations, which is how a
 `program` calls a deduction and how the reference machine scores one. The
@@ -141,17 +186,17 @@ For a worked comparison between the batched chart and the generated search
 computation, see [Parsing as an effectful
 computation](../tutorials/qvr/11-parsing-and-search.md). The
 [generated-computation reference](../reference/qvr/generated-computations.md)
-lists the families, effects, handlers, and entries a deduction or
+lists the families, effects, [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries a deduction or
 schema-backed parser adds.
 
-## References
+## Further reading
 
-- Dan Klein and Christopher D. Manning. 2001. Parsing and hypergraphs. In *Proceedings of the Seventh International Workshop on Parsing Technologies (IWPT)*, pages 123–134.
-- David McAllester. 2002. On the complexity analysis of static analyses. *Journal of the ACM*, 49(4):512–537.
-- Eisner & Blatz (2007). [*Program transformations for optimization of parsing algorithms and other weighted logic programs*](https://www.cs.jhu.edu/~jason/papers/eisner+blatz.fg06.pdf). In Proceedings of the 11th Conference on Formal Grammar.
-- Fernando C. N. Pereira and David H. D. Warren. 1983. Parsing as deduction. In *Proceedings of the 21st Annual Meeting of the Association for Computational Linguistics (ACL)*, pages 137–144.
-- Joshua Goodman. 1999. Semiring parsing. *Computational Linguistics*, 25(4):573–606.
-- Knuth (1977). [*A generalization of Dijkstra's algorithm*](https://doi.org/10.1016/0020-0190(77)90002-3). Information Processing Letters 6(1):1–5.
-- Liang Huang and David Chiang. 2005. Better k-best parsing. In *Proceedings of the Ninth International Workshop on Parsing Technologies (IWPT)*, pages 53–64.
-- Mark-Jan Nederhof. 2003. Weighted deductive parsing and Knuth's algorithm. *Computational Linguistics*, 29(1):135–143.
-- Shieber, Schabes & Pereira (1995). [*Principles and implementation of deductive parsing*](https://doi.org/10.1016/0743-1066(95)00035-I). Journal of Logic Programming 24(1–2):3–36.
+- [@klein2001parsing]
+- [@mcallester2002complexity]
+- [@eisner2007transformations]
+- [@pereira1983parsing]
+- [@goodman1999semiring]
+- [@knuth1977generalization]
+- [@huang2005kbest]
+- [@nederhof2003weighted]
+- [@shieber1995principles]

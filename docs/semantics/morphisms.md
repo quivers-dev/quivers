@@ -2,6 +2,21 @@
 
 This page assigns denotations to the three QVR morphism strata (discrete $\mathcal{V}$-enriched, stochastic, and continuous) and to the structural transitions between them. Throughout, we fix an algebra $\mathcal{V}$ as in [Setting and notation](setting.md). The implementation checks these classic morphism expressions during source compilation; the separate QIEC judgment and its guarantees are summarized in [Typing and checking](typing.md#10-guarantees-and-limits).
 
+A morphism has an input boundary and an output boundary. What crosses those
+boundaries depends on the kind of morphism:
+
+| Representation | What one input determines | How to read the result |
+|---|---|---|
+| Weighted relation | a row of weights | compatibility, cost, count, or another algebra-specific value |
+| Stochastic matrix | a row of nonnegative numbers summing to one | probabilities of the possible finite outputs |
+| Conditional family | a distribution with parameters computed from the input | samples and scores for outputs that need not be finitely enumerable |
+
+For instance, the row $(0.2,0.8)$ can be a distribution over two states.
+The row $(2,8)$ can be a valid nonnegative weighted relation, but it is not
+that distribution until a normalization is supplied. A Normal kernel needs
+no infinite table: it can compute a mean and scale from the input, draw an
+output, and evaluate a log density at a supplied output.
+
 ## 0. The unified `morphism` declaration
 
 Every morphism, kernel, latent, observed, embed, and discretize binding uses a single declaration form
@@ -23,7 +38,7 @@ with the *role* selected by the option block; `kernel` is the default, so a `mor
 
 Other option-block keys configure individual roles: `scale` and `init` set a `latent` lowering's initial parameter scale and named initialization regime; `bins` configures `discretize`; `param_source` and `hidden_dim` configure the `kernel` lowering's parameter map $\theta$ (§2.1); `replicate=N` allocates $N$ independently parameterized copies under names `f_0, …, f_{N-1}` and binds the group as $f$; and the axis-role keys (`over`, `iid`) configure the family priors in §6.
 
-A key outside the resolved role's set is rejected rather than ignored. The set is per role, not per declaration: `scale` is an initial value for a `latent`'s tensor and means nothing to a `kernel`, whose parameters are computed from its input by $\theta$ rather than held.
+A key outside the resolved role's set is rejected. For instance, `scale` initializes a `latent`'s tensor; a `kernel` obtains its distribution parameters from the input-dependent map $\theta$.
 
 The remainder of this page uses the legacy keyword form (`latent`, `kernel`, `embed`) when illustrating individual strata; every snippet desugars to the unified form by `morphism f : … [role=KIND, …]`.
 
@@ -42,13 +57,23 @@ $$
 \qquad \llbracket f \rrbracket \in V^{|{\llbracket \tau_1 \rrbracket}| \times |{\llbracket \tau_2 \rrbracket}|}.
 $$
 
-For `morphism f : τ₁ -> τ₂ [role=latent]`, the entries are free parameters. `LatentMorphism.tensor` currently applies `sigmoid` to the raw parameter for every algebra, so the realized entries lie in $(0,1)$. The runtime does not select an algebra-specific constraint map.
+For `morphism f : τ₁ -> τ₂ [role=latent]`, the entries are free parameters. `LatentMorphism.tensor` currently applies `sigmoid` to the raw parameter for every algebra, so the realized entries lie in $(0,1)$. This same constraint map applies across the algebra registry.
 
 For `morphism g : τ₁ -> τ₂ [role = observed] ~ data`, the entries are *fixed*: $\llbracket g \rrbracket(x, y) = \mathrm{data}[x, y]$.
 
-The implementation does not distinguish the two cases at the categorical level: both produce objects of $\mathcal{V}\text{-}\mathbf{Rel}$. The latent/observed distinction is operational, controlling the gradient-flow during training.
+Both cases denote arrows in $\mathcal{V}\text{-}\mathbf{Rel}$. Training updates the latent tensor's parameters while keeping the observed tensor fixed.
 
 ### 1.1 Composition, tensor, identity
+
+The primer computes [a complete two-table composition](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value). The [tensor-product guide](../guides/morphisms.md#tensor-product-the-operator) shows the axis order when two arrows run on separate inputs.
+
+Composition connects boundaries in sequence: $A\to B\to C$.
+Tensor product places two boundaries side by side:
+$(A\to B)\otimes(C\to D)$ has input $A\times C$ and output $B\times D$.
+The identity leaves the boundary value unchanged. In the discrete formulas,
+that means an identity table has the algebra's unit on the matching diagonal
+and its zero elsewhere. For the Markov algebra on a two-element object,
+this is the matrix $\left(\begin{smallmatrix}1&0\\0&1\end{smallmatrix}\right)$.
 
 Composition $;$, tensor $\boxtimes$, and identity $1_X$ in $\mathcal{V}\text{-}\mathbf{Rel}$ are defined as in [Setting and notation §2](setting.md#2-v-enriched-relations). The DSL operators correspond directly:
 
@@ -58,7 +83,7 @@ Composition $;$, tensor $\boxtimes$, and identity $1_X$ in $\mathcal{V}\text{-}\
 | `f @ g` | $\llbracket f \rrbracket \boxtimes \llbracket g \rrbracket$ | $(f \boxtimes g)((x_1, x_2), (y_1, y_2)) = f(x_1, y_1) \otimes g(x_2, y_2)$ |
 | `identity(X)` | $1_{\llbracket X \rrbracket}$ | $1_X(x, x') = \mathbf{1}$ if $x = x'$, $\bot$ otherwise |
 
-**Proposition (Categorical structure).** *Assume $\mathcal{V}$ is a strict quantale ([Setting §1](setting.md#1-algebras-as-enrichment-bases)): $\otimes$ distributes over arbitrary joins $\bigoplus$ on both sides. Then $\mathcal{V}\text{-}\mathbf{Rel}$ is a symmetric monoidal category, with $;$ as composition, $1_X$ as identities, $\boxtimes$ as monoidal product, $\mathbf{1}$ (the singleton) as monoidal unit, and the braid $\sigma_{X, Y}(x, y) = \mathbf{1}$ iff coordinates swap. Under the same hypothesis $\mathcal{V}\text{-}\mathbf{Rel}$ is also compact closed with every object self-dual. For the lax $\mathcal{V}_{\mathrm{pf}}$ / $\mathcal{V}_{\mathrm{L}}$ algebras (where distributivity is sub-equational, [Algebras §2.1](algebras.md#21-a-note-on-the-product-fuzzy-and-ukasiewicz-pairs)) the same diagrams commute laxly rather than strictly; the chart parser and SVI use the lax denotation but the equational claims of this chapter require the strict hypothesis.*
+**Proposition (Categorical structure).** *Assume $\mathcal{V}$ is a commutative unital quantale ([Setting §1](setting.md#1-algebras-as-enrichment-bases)): $\otimes$ distributes over arbitrary joins $\bigoplus$ on both sides. Then $\mathcal{V}\text{-}\mathbf{Rel}$ is a symmetric monoidal category, with $;$ as composition, $1_X$ as identities, $\boxtimes$ as monoidal product, $\mathbf{1}$ (the singleton) as monoidal unit, and the braid $\sigma_{X, Y}(x, y) = \mathbf{1}$ iff coordinates swap. Under the same hypothesis $\mathcal{V}\text{-}\mathbf{Rel}$ is also compact closed with every object self-dual. The product-fuzzy and Łukasiewicz operation pairs do not satisfy these hypotheses ([Algebras §2.1](algebras.md#21-a-note-on-the-product-fuzzy-and-ukasiewicz-pairs)). The cited counterexamples show the failed distributivity step.*
 
 *Proof.* Associativity of $;$ unfolds to
 
@@ -66,7 +91,7 @@ $$
 ((f; g); h)(x, w) \;=\; \bigoplus_z \Bigl( \bigoplus_y f(x, y) \otimes g(y, z) \Bigr) \otimes h(z, w).
 $$
 
-The strict-quantale distributivity law of [Setting §1](setting.md#1-algebras-as-enrichment-bases) commutes the outer $\otimes h(z, w)$ past the inner join over $y$, giving $\bigoplus_z \bigoplus_y f(x, y) \otimes g(y, z) \otimes h(z, w)$; the associativity of $\otimes$ (standing assumption on $\mathcal{V}$ as a commutative monoid, [Setting §1](setting.md#1-algebras-as-enrichment-bases)) means the bracketing of the threefold tensor is immaterial. The join's universal-colimit property collapses $\bigoplus_z \bigoplus_y = \bigoplus_{(y, z)}$ and the two-variable joins commute by the same property (a colimit cone is determined by its components in any order), so we can re-bracket as $\bigoplus_y f(x, y) \otimes \bigoplus_z g(y, z) \otimes h(z, w)$, applying distributivity once more to absorb $f(x, y)$ into the inner join. This is $(f; (g; h))(x, w)$. Without strict distributivity, the equation degrades to an inequality $((f; g); h) \le (f; (g; h))$, so the associativity isomorphism is lax. The identity laws use $1_X(x, x') = \mathbf{1}$ iff $x = x'$ and $\bot$ otherwise to collapse one join to a single term, using $\bot \otimes a = \bot$ (absorption) for the off-diagonal entries: this requires $\bot$ to be the bottom of the lattice, which holds in every strict quantale. Symmetry of $\boxtimes$ follows from commutativity of $\otimes$ (a standing assumption on $\mathcal{V}$, [Setting §1](setting.md#1-algebras-as-enrichment-bases)). Compact closure is established in [Expressions §2.9](expressions.md#29-compact-closed-structure) under the strict-quantale hypothesis. $\square$
+The quantale distributivity law of [Setting §1](setting.md#1-algebras-as-enrichment-bases) commutes the outer $\otimes h(z, w)$ past the inner join over $y$, giving $\bigoplus_z \bigoplus_y f(x, y) \otimes g(y, z) \otimes h(z, w)$; the associativity of $\otimes$ (standing assumption on $\mathcal{V}$ as a commutative monoid, [Setting §1](setting.md#1-algebras-as-enrichment-bases)) means the bracketing of the threefold tensor is immaterial. The join's universal-colimit property collapses $\bigoplus_z \bigoplus_y = \bigoplus_{(y, z)}$ and the two-variable joins commute by the same property (a colimit cone is determined by its components in any order), so we can re-bracket as $\bigoplus_y f(x, y) \otimes \bigoplus_z g(y, z) \otimes h(z, w)$, applying distributivity once more to absorb $f(x, y)$ into the inner join. This is $(f; (g; h))(x, w)$. This step is where the proof uses distributivity. The identity laws use $1_X(x, x') = \mathbf{1}$ iff $x = x'$ and $\bot$ otherwise to collapse one join to a single term, using $\bot \otimes a = \bot$ (absorption) for the off-diagonal entries: this requires $\bot$ to be the bottom of the lattice, which holds in every unital quantale. Symmetry of $\boxtimes$ follows from commutativity of $\otimes$ (a standing assumption on $\mathcal{V}$, [Setting §1](setting.md#1-algebras-as-enrichment-bases)). Compact closure is established in [Expressions §2.9](expressions.md#29-compact-closed-structure) under the quantale hypothesis. $\square$
 
 ### 1.2 Marginalization
 
@@ -129,11 +154,13 @@ $$
 \theta \longmapsto p_{\mathrm{Family}}(\,\cdot\;;\theta(-)),
 $$
 
-so `~ Normal` denotes a Gaussian kernel and nothing else. Because $\theta$ carries learnable weights $\varphi$, the declaration denotes not one kernel but the $\varphi$-indexed family $\varphi \mapsto p_{\mathrm{Family}}(\,\cdot\;;\theta_\varphi(-))$; fitting selects the point.
+For `~ Normal`, each input thus receives a Gaussian distribution. Learnable weights $\varphi$ in the parameter map give a family of kernels $\varphi \mapsto p_{\mathrm{Family}}(\,\cdot\;;\theta_\varphi(-))$. Fitting selects the weights and hence one kernel from this family.
 
-Note that $\theta$ is invisible to the typing judgment: `f : τ₁ -> σ ~ Family` types identically whichever parameter map it carries, so the choice moves $\llbracket f \rrbracket$ inside the hom-set while leaving the arrow fixed. Whether a model is linear in its input is thus a fact about $\theta$, not about the type, which is why the option states it in the source.
+The type `f : τ₁ -> σ ~ Family` fixes the input and output spaces. Changing $\theta$ changes the kernel within that hom-set. The `param_source` option records whether the parameter map is affine, an MLP, or a lookup table.
 
 #### The density is a product for most families
+
+Pyro’s [batch-shape and event-shape examples](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) show which dimensions `log_prob` reduces. The QVR [axis-role declarations](#6-axis-role-specifications) attach those roles to named domain and codomain factors.
 
 When $\llbracket \sigma \rrbracket$ has dimension $d > 1$, the display above hides a choice, because most names in the registry are *per-coordinate independent*: their density factors,
 
@@ -151,11 +178,21 @@ $$
 f_i(x) \;=\; p\bigl(\,\cdot\;;\theta_i(x)\bigr).
 $$
 
-So the registry splits $\mathbf{Kern}(\llbracket \tau_1 \rrbracket, \llbracket \sigma \rrbracket)$ into the kernels that factor through $\Delta$ and the kernels that do not. `Normal`, `Beta`, `Gamma` and their siblings denote the former; `MultivariateNormal`, `LowRankMVN`, and `MatrixNormal` denote the latter, and their $\Theta$ carries a [Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition), which enforces positive-definite covariance without a penalty. `~ Normal` on a $d$-dimensional codomain is thus $d$ independent scalar Gaussians, not a Gaussian with a general covariance: the name selects the factorization, and `~ MultivariateNormal` is how a declaration asks for correlation.
+`Normal`, `Beta`, `Gamma`, and the other scalar families use this independent product over coordinates. `MultivariateNormal`, `LowRankMVN`, and `MatrixNormal` additionally support covariance structures that couple coordinates. Their parameterizations enforce the relevant covariance constraints; a [Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition), for instance, represents a positive-definite covariance as $LL^\top$. Use `~ MultivariateNormal` when a Gaussian output needs residual correlation.
 
-Two readings of that default are worth separating. Parameter sharing is not dependence: every $\theta_i$ is a slice of one $\theta$, so the coordinates share all of the map's weights while remaining independent *given* $x$, since the factorization is through $\Delta$ on the domain. And the factorized family is the least committal one on its marginals, being the [maximum-entropy](https://en.wikipedia.org/wiki/Principle_of_maximum_entropy) distribution subject to per-coordinate first and second moments with no constraint on the cross-moments; a correlation is a further claim. What it cannot express is residual correlation, dependence between coordinates that survives conditioning on $x$, which no choice of $\theta$ recovers because $\theta$ acts before the tensor product.
+The coordinates can share a parameter map while remaining independent given $x$. For instance, let $y_1=x+\epsilon_1$ and $y_2=x+\epsilon_2$, with independent Normal noise terms. Averaging over a random $x$ makes the outputs correlated because both contain $x$. Holding $x$ fixed leaves independent residuals. To model correlation between those residuals, the output family must carry a joint covariance. For specified coordinate means and variances, the independent Gaussian also maximizes joint differential entropy; this Gaussian result does not apply unchanged to every scalar family.
 
 ## 3. Continuous morphisms
+
+The [sampled-composition guide](../guides/continuous-spaces.md#composition-sampledcomposition) exercises this operation in Python. [Implementation correspondence](adequacy.md#3-probabilistic-composition) explains how its Monte Carlo density estimator relates to the integral below.
+
+For a Normal kernel, think of two steps: compute $(\mu(x),\sigma(x))$ from
+$x$, then use the distribution $\mathcal N(\mu(x),\sigma(x)^2)$.
+The parameter map can be deterministic and learnable while the kernel's
+output remains random. Sampling and scoring answer different questions:
+`rsample(x)` produces an output, whereas `log_prob(x, y)` evaluates how the
+kernel weights a supplied output $y$. A continuous density can exceed one;
+probabilities are obtained by integrating it over a set of outputs.
 
 A family-initialized `morphism` whose source is itself a space, e.g.
 
@@ -186,6 +223,11 @@ $$
 $$
 
 again a Gaussian kernel with affine $\theta$. A chain of them is one kernel of the same family, and the intermediate spaces contribute only a rank bound on $BA$. A nonlinear $\theta$ breaks the closure, which is what makes a composite of `~ Normal` kernels deeper than its factors rather than equal to their product.
+
+The kernel interpretation follows the categorical account of probability
+[@giry1982categorical; @fritz2020synthetic]. For the statistical distinction
+between conditional distributions and joint models, see
+[@bishop2006pattern; @gelman2013bayesian].
 
 ## 4. Tensor product across strata
 
@@ -256,9 +298,17 @@ morphism e : n -> σ [role=embed] ~ Family(...)
 
 denotes a *section* of a discretization: a kernel $e : \iota(\{0, \dots, n-1\}) \to \llbracket \sigma \rrbracket$ such that the composite $e ; d = \mathrm{id}$. In the implementation this is typically realized by sampling from a per-cell *embedding family* $p_{\mathrm{Family}}(\cdot \,;\, \theta_i)$.
 
-The pair $(d, e)$ is a *retraction* in the categorical sense; it is not generally an isomorphism (information about the within-cell distribution is lost by $d$).
+Under the stated section condition, $(d,e)$ is a *retraction*. Discretization keeps the cell index and discards the original position within the cell. Embedding samples a new position from that cell's family, so the opposite composite generally changes the input.
 
 ## 6. Axis-role specifications
+
+An *event* is one outcome of a distribution; a *batch* is a collection of
+distributions. One three-coordinate multivariate Normal draw is one event
+whose coordinates may be correlated. Ten such draws have a batch axis of
+length ten and an event axis of length three. Their tensor has shape
+$(10,3)$, but `log_prob` first scores each three-coordinate event and leaves
+ten batch scores. Treating the event coordinates as ten-times-three
+independent scalar draws would describe a different model.
 
 Each registered family carries a declared *event rank* $r_F \in \mathbb{N}$.
 
@@ -308,4 +358,6 @@ where `rsample` is the reparameterized sample of the family at its declared even
 
 ## 8. Equivariance and naturality
 
-The constructions above dispatch through the chosen algebra or family registry. Replacing an algebra or family may change support, normalization, parameterization, or composition. Such a replacement preserves denotation only when those contracts are checked explicitly; registry membership alone does not establish naturality.
+Milewski’s [naturality square](https://bartoszmilewski.com/2015/04/07/natural-transformations/) compares the two orders of applying a function and changing a representation [@milewski2015natural]. The [natural-transformation guide](../guides/categorical.md#natural-transformations) constructs components and checks a square in QVR.
+
+Replacing an algebra changes how weights combine; replacing a family changes the available distributions. To preserve a denotation under replacement, check the corresponding operations, support, parameterization, and normalization. [Algebras](algebras.md#3-base-change) gives the preservation equations for discrete conversions.

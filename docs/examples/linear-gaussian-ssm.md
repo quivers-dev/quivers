@@ -2,7 +2,7 @@
 
 ## Overview
 
-The classical linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) has a closed-form [Kalman filter](https://doi.org/10.1115/1.3662552) and [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166):
+The classical linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) has a closed-form [Kalman filter](https://doi.org/10.1115/1.3662552) and [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166): [@kalman1960filtering] [@rauch1965smoothing]
 
 $$
 \begin{aligned}
@@ -13,7 +13,7 @@ o_t &= C s_t + v_t,
 \end{aligned}
 $$
 
-The QVR source below uses learned conditional-Normal kernels. Their means and diagonal scales are produced from each input, so the source does not guarantee constant covariance, and its separate `filter_cell` is not the analytic Kalman update. It demonstrates the state-space wiring used again in the [continuous-state](continuous-hmm.md) and [deep Markov](deep-markov.md) examples.
+The QVR source uses learned conditional-Normal kernels whose means and diagonal scales depend on their inputs. The separate `filter_cell` is another learned kernel; the Kalman update equations are absent. The [continuous-state](continuous-hmm.md) and [deep Markov](deep-markov.md) examples use the same state-space wiring.
 
 ## QVR source
 
@@ -63,6 +63,19 @@ program generative_step : Driver * State -> State
 
 export generative_step
 ```
+
+## Understanding the model
+
+A driver is an observed external input, a state is the evolving internal
+quantity, and an observation is a noisy readout of that state. A transition
+combines the driver with the previous state to predict the next one. Repeating
+that step builds a trajectory; the current [`scan`](../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation) interface returns its last
+state, so the following emission produces a terminal observation.
+
+The classic Kalman filter analytically updates a Gaussian state distribution
+under specific linear, Gaussian, constant-covariance assumptions. The learned
+kernels here are more general, and the separately declared `filter_cell` does
+not enforce that update. The synthetic fitting blocks condition on [known states](continuous-hmm.md#understanding-the-model), which illustrates parameter learning rather than hidden-state filtering.
 
 ## Walkthrough
 
@@ -149,7 +162,7 @@ print(f"oracle -log p(h):  {-oracle_ll:.1f}")
 
 ### NUTS posterior
 
-The lifted model is a [`MonadicProgram`](../api/monadic/monads.md) with one Normal sample site per leaf parameter; [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small budgets keep the snippet inside tens of seconds while still producing a usable posterior summary.
+The lifted model is a [`MonadicProgram`](../api/monadic/monads.md) with one Normal sample site per leaf parameter; [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small budgets keep the snippet inside tens of seconds for an API demonstration; longer, diagnosed runs are needed for posterior interpretation.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
@@ -190,7 +203,7 @@ flowchart LR
 ```
 
 
-## References
+## Sources and further reading
 
-- Herbert E. Rauch, F. Tung, and Charles T. Striebel. 1965. Maximum likelihood estimates of linear dynamic systems. *AIAA Journal*, 3(8):1445–1450.
-- Rudolf E. Kalman. 1960. A new approach to linear filtering and prediction problems. *Journal of Basic Engineering*, 82(1):35–45.
+- *Maximum likelihood estimates of linear dynamic systems* [@rauch1965smoothing].
+- *A New Approach to Linear Filtering and Prediction Problems* [@kalman1960filtering].

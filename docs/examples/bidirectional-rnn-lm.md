@@ -57,6 +57,20 @@ program bidirectional_rnn_lm : Token -> Token
 export bidirectional_rnn_lm
 ```
 
+## Understanding the model
+
+The data are a context of token IDs and one target token. An embedding turns
+each ID into a vector; each [recurrent branch](vanilla-rnn-lm.md#understanding-the-model) compresses the context into a
+running state; the merge turns the two summaries into the parameters of a
+distribution over target tokens. A high target probability lowers that row's
+negative log likelihood.
+
+Both branches read the supplied order, even though their variable names say
+forward and backward. Separate parameters allow different summaries, but do
+not create right-to-left information flow. The synthetic experiment also
+exposes hidden values for checking scores; distinguish a fit conditioned on
+those values from a prediction that must integrate uncertainty about them.
+
 ## Walkthrough
 
 ### Two independent scans
@@ -69,7 +83,7 @@ independent parameters and thus learn separate sequence summaries.
 
 ### Parallel composition
 
-`fan(forward_path, backward_path) >> combine` runs the two paths in parallel via the `fan` combinator, the Kleisli fan-out that feeds the same input to two morphisms and pairs their outputs in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The result lives in `FwdHidden * BwdHidden`, which by the type aliases above has total dimension 128, matching `Combined`. The `combine` Bayesian morphism is the merge that mixes the two streams into a single combined representation.
+`fan(forward_path, backward_path) >> combine` runs the two paths in parallel via the `fan` combinator, the Kleisli fan-out that feeds the same input to two morphisms and pairs their outputs in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The result lives in `FwdHidden * BwdHidden`, which by the type aliases above has total dimension 128, matching `Combined`. The `combine` Bayesian morphism is the merge that mixes the two streams into a single combined representation. [@giry1982categorical]
 
 ### Masked LM head
 
@@ -206,6 +220,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 The model denotes a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ assembled by `fan`-composing two independent scan-folds and following with a merge. The `fan` combinator is the diagonal-pair construction $(f \times g) \circ \Delta$ in the Kleisli category that delivers a common input to both branches, landing in $\mathrm{FwdHidden} \times \mathrm{BwdHidden}$. Because that product carries the same 128 dimensions as $\mathrm{Combined}$, the Normal-kernel morphism `combine` $: \mathrm{Combined} \to \mathcal{G}(\mathrm{Combined})$ consumes the paired streams directly and mixes them into a single object. The Categorical head closes with the masked-token likelihood as a sub-probability kernel.
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *A categorical approach to probability theory* [@giry1982categorical].

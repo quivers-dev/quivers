@@ -1,13 +1,22 @@
 # Indexed data and total functions
 
 This tutorial builds a length-indexed vector and uses its index to rule out
-invalid states. The statistical reason to care is familiar: shape, missingness,
-and support assumptions often begin as comments or runtime checks. An indexed
+invalid states. The statistical reason to care is familiar: [shape, missingness, and support assumptions](02-glms.md#common-mistakes) often begin as comments or runtime checks. An indexed
 family can make one of those assumptions part of the computation's type.
 
-We will build the **length-indexed summary (LIS)**: a function whose input type
-records the vector length and whose recursive branches preserve that length
-witness.
+We will build a summary function whose input type records the vector length
+and whose recursive branches preserve that information.
+
+An ordinary list says what its elements are; a length-indexed vector also
+states how many it contains. `Nil` constructs length zero. Adding a head to
+that vector with `Cons` constructs length one; adding another constructs
+length two. The length in the type is evidence supplied by the constructor,
+not a second, independently editable integer.
+
+When a function inspects a nonempty constructor, it learns that a tail exists
+and what its length is. The *case motive* states the result type expected
+from that inspection. This example always returns an integer or a real sum,
+so the result type does not itself need to vary with the learned length.
 
 ## 1. Declare the index
 
