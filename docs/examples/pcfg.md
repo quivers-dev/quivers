@@ -56,9 +56,22 @@ deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4]
         "runs"   : V   = runs    #[learnable]
 ```
 
+## Understanding the model
+
+For `the dog sleeps`, a parser can combine `the` and `dog` into a noun
+phrase, turn `sleeps` into a verb phrase, then combine those two phrases into
+a sentence. A [chart](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) saves each partial result together with its interval.
+If more than one tree produces the sentence, the inside computation sums
+their weights rather than selecting only one tree. The NLTK book’s [worked substring table](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) illustrates how partial analyses fill a chart before weights are added [@nltkSyntax2019].
+
+The source learns unconstrained log weights. A normalized PCFG would require
+production probabilities that sum to one for each left-hand side, plus conditions
+ensuring total probability one over finite derivations. The separate rule-count
+program fits [Poisson observations](../tutorials/qvr/02-glms.md#poisson-regression) on rule rates.
+
 ## Walkthrough
 
-`object Term : FinSet 16` declares the index set the deduction's domain and codomain range over; the cardinality is incidental, since the chart reasons symbolically over constructor-tagged tuples rather than over enumerated elements. `object Rule : FinSet 9` indexes the rule-weight vector instead: one coordinate per learnable weight, three rules plus six lexicon entries. The `pcfg_prior` program draws that vector from an independent `Normal(0.0, 1.0)` per coordinate, so `Rule` names the axis the weights live on, not the values they take; those come from the family. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` declares the index set the deduction's domain and codomain range over; the cardinality is incidental, since the chart reasons symbolically over constructor-tagged tuples rather than over enumerated elements. `object Rule : FinSet 9` indexes the rule-weight vector instead: one coordinate per learnable weight, three rules plus six lexicon entries. The `pcfg_prior` program draws that vector from an independent `Normal(0.0, 1.0)` per coordinate, so `Rule` names the axis the weights live on, not the values they take; those come from the family. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 The `atoms` block enumerates the constructor universe: nonterminals (`S`, `NP`, `VP`), preterminals (`Det`, `N`, `V`), the chart-item constructor `span`, and the closed-class terminal vocabulary (`the`, `a`, `cat`, `dog`, `sleeps`, `runs`).
 
@@ -103,7 +116,9 @@ x_in = torch.zeros(N_RULES, 1)
 
 ## Categorical perspective
 
-A PCFG is a weighted deduction in the `LogProb` semiring whose chart is a `K`-valued presheaf over the item algebra `I` of `span(I, J, N)` triples. Branching rules are binary hyperedges in the rule-system hypergraph; anchor rules are unary hyperedges. The least pre-fixed point of the rule-system functor in the `K`-enriched lattice of charts is the inside table; the strategy-independence theorem (Goodman 1999) says CKY-sweep, A\*, and Knuth's algorithm all compute the same chart value. The compiler picks a default strategy from the rule arities and the semiring's algebraic properties.
+A chart assigns a weight to each item, here a `span(I, J, N)` triple saying that nonterminal `N` covers a substring. A rule combines the weights of its premises; alternative derivations of the same item are combined by the semiring's addition. In `LogProb`, this means adding log weights along a derivation and using log-sum-exp across alternatives. Thus an inside weight accounts for all derivations, whereas a best-derivation weight requires a different semiring [@goodman1999semiring].
+
+Rules can be drawn as directed hyperedges: several premise items lead to one conclusion item. This representation separates the grammar from the algorithm that evaluates it. Equivalent evaluation schedules must still satisfy their algorithms' assumptions, including termination or convergence and correct treatment of repeated contributions. CKY, A\*, and Knuth's algorithm are not interchangeable for every semiring and rule system. The compiler selects a default strategy using the rule arities and semiring properties.
 
 ## Inside computation
 

@@ -1,5 +1,13 @@
 # Loss registry
 
+A loss attachment associates a scalar training objective with a declared component.
+Reconstruction loss, for instance, penalizes low probability assigned to an original
+tree. The registry records these objectives, their attachment sites, and their weights
+for use during training.
+
+See [attaching training losses](../../guides/structural-compression-decoders-and-losses.md#loss-declarations) and
+[evaluating a reconstruction loss](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss).
+
 Each compiled module has a `LossRegistry` that maps attachment sites to
 weighted scalar-loss callables. Attachment sites include program,
 deduction, encoder, decoder, and rule names, as well as chart and global

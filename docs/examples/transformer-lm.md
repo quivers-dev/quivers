@@ -2,7 +2,7 @@
 
 ## Overview
 
-This model borrows the parallel-head and stacked-block shape of a [Transformer](https://doi.org/10.48550/arXiv.1706.03762), then scores a token with a Categorical head. The `head` morphisms are independent MLP-parameterized Normal kernels. The source contains no query-key dot products, softmax over positions, causal mask, layer normalization, or additive residual connection. It is thus a wiring demonstration rather than a Transformer implementation or causal language model.
+This model borrows the parallel-head and stacked-block shape of a [Transformer](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html), then scores a token with a Categorical head. The `head` morphisms are independent MLP-parameterized Normal kernels. The source contains no query-key dot products, softmax over positions, causal mask, layer normalization, or additive residual connection. It is thus a wiring demonstration rather than a Transformer implementation or causal language model. [@vaswani2017attention]
 
 ## QVR source
 
@@ -34,7 +34,7 @@ This model borrows the parallel-head and stacked-block shape of a [Transformer](
 # is the value space of what lm_head draws and of what the
 # program returns.
 #
-# Reference: [Vaswani et al. 2017](https://doi.org/10.48550/arXiv.1706.03762).
+# Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
 object Token : FinSet 32
 object Resp : FinSet 32
@@ -61,6 +61,19 @@ program transformer_lm : Token -> Token
 
 export transformer_lm
 ```
+
+## Understanding the model
+
+Parallel branches answer several learned questions about the same input
+vector, and their outputs are combined before the next layer. Stacking makes
+that computation deeper, with new parameters at each layer. The final
+Categorical kernel assigns probabilities to vocabulary entries, from which
+the observed token receives a log-likelihood score.
+
+The branches process one token vector per row. Their combined representation
+parameterizes a distribution over the following token. Implementing attention
+across positions would require a sequence axis, [query-key scores](tensor-contraction.md#understanding-the-model), and a weighted
+sum over value vectors; those operations are absent from this source. Alammar’s [worked self-attention calculation](https://jalammar.github.io/illustrated-transformer/#self-attention-in-detail) shows those query, key, and value operations [@alammar2018transformer].
 
 ## Walkthrough
 
@@ -123,7 +136,7 @@ print("next_token:", tuple(next_token.shape))
 
 ### SVI fit
 
-Re-initialise the parameters and recover the next-token weights from the synthetic corpus with [`AutoNormalGuide`](../api/inference/guide.md) + [`ELBO`](../api/inference/elbo.md) + [`SVI`](../api/inference/svi.md). The transformer's per-particle Monte-Carlo log-density makes each step relatively expensive; a short run is enough to verify that the negative ELBO falls.
+Fit the illustrative model to synthetic observations with [`AutoNormalGuide`](../api/inference/guide.md), [`ELBO`](../api/inference/elbo.md), and [`SVI`](../api/inference/svi.md). Each step estimates the objective using random samples, so losses can fluctuate. Compare losses over several steps and evaluate the fitted next-token probabilities on a separate batch of synthetic contexts.
 
 ```python
 import torch
@@ -202,6 +215,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 The model composes replicated stochastic branches, a projection, and two-stage feed-forward kernels. [`stack`](../guides/dsl-declarations.md#stack-independent-multi-layer) makes independently parameterized layers, while [`fan`](../guides/dsl-declarations.md#fan-out-diagonal-morphism) copies the input across parallel branches. Neither combinator by itself implements self-attention.
 
 
-## References
+## Sources and further reading
 
-- Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. arXiv preprint arXiv:1706.03762.
+- *Attention is All you Need* [@vaswani2017attention].

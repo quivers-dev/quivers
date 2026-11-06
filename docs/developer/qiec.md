@@ -21,12 +21,43 @@ reference kernel's deterministic serialization contract.
 QIEC makes two boundaries explicit. First, the **stable core boundary** contains
 only typed, deterministic data: kinds, telescopes, indexed-family declarations,
 effect interfaces, rows, handler signatures, value and computation terms,
-source provenance, and equality evidence. Second, the **runtime attachment
+source provenance, and equality evidence. Second, the **[runtime attachment](../tutorials/qvr/10-effects-and-handlers.md#5-decide-between-authored-and-foreign-handlers)
 boundary** associates stable identifiers with process-local values and handler
 implementations. Host callables and mutable resources cannot cross the stable
 core boundary. This note first describes the static kernel; it then turns to
 serialization and evaluation, gives four complete examples, and closes
 with the typed IR and target-capability contract used by the transpilers.
+
+## Read the core through a small program
+
+A source program might draw `mu`, compute a Normal density for an observed
+`y`, and return `mu`. Its core representation spells out the requests:
+construct a distribution, ask `Random` for a draw, ask `Score` to accumulate
+a log weight, and return the value. A sampling runtime, a replaying runtime,
+and a target-language implementation can interpret those same requests in
+different operational contexts while retaining the checked structure.
+
+The stable core stores descriptions that can be serialized, such as an
+operation's identity and argument types. A runtime attachment supplies a
+process-local implementation, such as a sampler or neural module. Serializing
+the description retains the operation's identity and types. A process loading
+that module must obtain the implementation from a matching runtime provider.
+
+Several terms below describe how those checks remain precise:
+
+| Term | Role in the check |
+|---|---|
+| Telescope | An ordered list of typed binders; later entries may depend on earlier ones. |
+| Refinable index | Type-level information, such as a vector length, that a constructor branch can make more specific. |
+| Equality evidence | A checked justification for treating two index expressions as equal within a scope. |
+| Effect row | The effect instances a computation may still request. |
+| Continuation | The remaining computation after an operation request. |
+| Resumption grade | The permitted number of times a handler can continue that remaining computation. |
+| Stable identifier | A persistent identity used for dispatch, independent of a user-facing display name. |
+
+The [indexed-data](../tutorials/qvr/09-indexed-data.md) and
+[handler](../tutorials/qvr/10-effects-and-handlers.md) tutorials work these
+ideas through concrete values before the kernel details below.
 
 ## Static kernel
 
@@ -104,8 +135,8 @@ the following interfaces:
 - `Choose` for multi-shot nondeterminism; and
 - `Weight[K]` for caller-supplied accumulation operations.
 
-These handlers are executable specifications, not the optimized production
-implementations of a backend. Runtime samplers, observation tables, semiring
+These handlers specify the reference behavior in executable form; backends
+can implement that behavior with their own optimized routines. Runtime samplers, observation tables, semiring
 operations, state cells, and trace recorders remain process-local attachments.
 
 A distribution construction evaluates to a
@@ -704,13 +735,12 @@ Python and Julia expose this ABI through optional or keyword arguments.
 JavaScript uses trailing positional arguments, and Church accepts an optional
 rest list. The generated `model` or `build_model` entry point is unchanged.
 
-The renderer tests check the corresponding implementations rather than assume
-their equivalence. Every target's emitted QIEC source is reparsed, external
-syntax checks run when the target toolchain is available, and runtime-backed
-tests exercise Python, Julia, JavaScript, and Scheme entry points. These tests
-cover stable-ID dispatch, indexed cases, attachments, resumption grades, and
-handler lifecycle behavior. They do not constitute a backend-level adequacy
-proof against the reference evaluator.
+The renderer tests reparse every target's emitted QIEC source and run external
+syntax checks when the target toolchain is available. Runtime tests exercise
+Python, Julia, JavaScript, and Scheme entry points, covering stable-ID dispatch,
+indexed cases, attachments, resumption grades, and handler lifecycle behavior.
+The evidence covers those tested programs and operations; adequacy for all
+well-typed programs would require a separate proof against the reference evaluator.
 
 Attachment entries are keyed by their `qiec:attachment:*` identifier and must
 be typed binding descriptors. The runtime checks the descriptor's structural
@@ -759,13 +789,12 @@ probabilistic support boundary. A renderer may omit declarations that have no
 runtime effect, but it cannot drop a computation body or erase an unsupported
 effect to make the module fit.
 
-For current purposes, QIEC also has no source term for recursive calls, scoped
-instance allocation, or authored handler-clause bodies. Handler bodies remain
-runtime attachments, and `NamedComputation` values are checked entry points
-rather than mutually recursive functions. These limits leave two live
-possibilities: target runtimes may acquire native, optimized implementations of
-particular handlers, and the static target subset may expand when a
-semantics-preserving encoding exists for additional value or control forms.
+Recursive calls, scoped instances, and authored handler clauses are represented
+in the checked core and exercised by the examples above. Their presence in the
+core does not imply support on every target: the target-capability checks
+apply to the reachable computation graph. Optimized handler implementations
+and larger static-target subsets remain possible extensions, each requiring
+preservation of the relevant execution and scoring behavior.
 
 Panproto validates persisted objects written by earlier releases against
 the version they were written under. The migration gate reads the original QVR history without

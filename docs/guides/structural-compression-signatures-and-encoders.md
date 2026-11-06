@@ -1,5 +1,25 @@
 # Structural Compression: Signatures and Encoders
 
+An encoder turns a structured value, such as a syntax tree, into a
+fixed-length vector. A [decoder](structural-compression-decoders-and-losses.md#decoder-blocks) assigns probabilities to structures given
+such a vector. The structure determines the recursion; learnable functions
+determine how child representations combine. This lets a model reuse one
+function at every occurrence of a constructor, including occurrences in
+trees of different sizes.
+
+For instance, encode `App(Const("dog"), Const("cat"))` by first encoding
+the two constants, then applying the learned `App` function to their
+vectors. Formally,
+$C(\mathrm{App}(t,u)) = \widehat C_{\mathrm{App}}(C(t),C(u))$.
+This equation explains the algebra-homomorphism terminology below:
+constructing a term and then encoding agrees with encoding its children
+and combining them with the corresponding vector operation. Two terms
+can receive the same vector; the decoder models which reconstructions
+are likely from that vector.
+
+Milewski’s [F-algebras chapter](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Category%20of%20F-Algebras), in its “Category of F-Algebras” and “Catamorphisms” sections, constructs an evaluator by assigning an operation to each constructor. [@milewski2017falgebras] The [algebras and coalgebras guide](monadic.md#algebras-and-coalgebras) gives the corresponding equations.
+
+
 Quivers exposes a uniform algebraic interface for compressing
 arbitrary structured objects to fixed-length vectors and decoding
 them back under a learned distribution. The interface is built on
@@ -32,10 +52,17 @@ pipelines (binders with annotation sorts threading the type of each
 bound variable through a de-Bruijn context).
 
 This page covers signature and encoder declarations; the
-[decoder and loss declarations](structural-compression-decoders-and-losses.md)
-lives on its own page.
+[decoder and loss declarations](structural-compression-decoders-and-losses.md#decoder-blocks)
+are documented on a separate page.
 
 ## Signature blocks
+
+A **signature** lists the kinds of value, called sorts, and the
+constructors that build them. In the example, `Const` builds a term from
+a name, while `App` builds a term from two terms. `Term` and `Type`
+specify which constructors are allowed; they can have different
+constructors even when their embeddings have the same length. The `dim` fields specify representations used by the neural modules.
+
 
 A `signature` declares the sorts, constructors, binders, and (for
 graph signatures) vertex / edge kinds of an inductive (or
@@ -74,6 +101,15 @@ user-declared constructor / binder names.
 
 ### Binders, de-Bruijn context, and type annotations
 
+A binder makes a variable available only inside a particular body.
+De Bruijn indices identify bound variables by their distance from the
+innermost binder: in nested binders, index zero refers to the most
+recently introduced variable, and index one to the next outer variable.
+Renaming a bound variable thus does not change this representation.
+The context `Gamma` records the available variables together with their
+embeddings and annotations, so nested scopes remain distinct.
+
+
 A binder declaration introduces one or more typed scoped variables.
 `binds (x : Term : ty : Type) in (body : Term) -> Term` reads:
 "constructs a value of sort `Term`; in the scope of argument
@@ -82,11 +118,11 @@ A binder declaration introduces one or more typed scoped variables.
 
 The framework threads a de-Bruijn context $\Gamma$ through both the
 encoder's recursion and the decoder's corecursion. Each entry of
-$\Gamma$ is a triple `(var_sort, embedding, type_term)`, so the
-**type of every bound variable is structurally tracked**, not just
-the variable's existence. `BoundVar(i)` at any object-sorted
+$\Gamma$ is a triple `(var_sort, embedding, type_term)` that records
+the variable's sort, vector representation, and type annotation.
+`BoundVar(i)` at any object-sorted
 position reads $\Gamma$ at depth `i`. The encoder's `var_init`
-function (see below) mints the variable's vector embedding from
+function (see below) computes the variable's vector embedding from
 its type annotation.
 
 Strict declaration rules:
@@ -99,6 +135,15 @@ Strict declaration rules:
   if a sort's dim is unresolved.
 
 ## Encoder blocks
+
+The encoder replaces each constructor by a function on child vectors.
+A leaf embedding handles a value with no recursive children; a binary
+constructor consumes two already-computed vectors. This is a bottom-up
+fold over a tree. The framework supplies the traversal, while each
+`op` body supplies the local computation. The formal account uses
+algebras over a signature functor; the concrete recurrence above is the
+behavior a model author needs to implement.
+
 
 An encoder declares the carrier dim per sort plus one parametric
 function per constructor / binder. Bodies are optional; the
@@ -218,7 +263,7 @@ The factory signatures and what they produce:
 | `rnn_encoder(sig, dim)` | sequence signature | GRU-cell right-fold over the chain |
 | `transformer_encoder(sig, dim)` | sequence signature | Per-`Cons` head + tail-projection MLP over their concatenation |
 | `bow_encoder(sig, dim)` | sequence signature | Order-independent sum over chain elements |
-| `tree_lstm_encoder(sig, dim)` | tree signature | Child-sum binary-tree LSTM ([Tai et al. 2015](https://doi.org/10.48550/arXiv.1503.00075)) |
+| `tree_lstm_encoder(sig, dim)` | tree signature | Child-sum binary-tree LSTM [@tai2015treelstm] |
 | `gnn_encoder(sig, iterations, dim, readout)` | graph signature | Per-edge-kind message MLP, per-vertex-kind GRU update, mean / sum / max readout |
 
 All factories return an
@@ -254,6 +299,14 @@ encoder Tfm : Seq
   output.
 
 ### Graph-shaped sugar
+
+Trees have a direct parent-child evaluation order, but graphs can contain
+cycles. Message passing instead updates vertex representations for a
+fixed number of rounds. Each edge sends information from a source to a
+target; each target combines incoming messages with its current state;
+a readout aggregates the resulting vertex states. The iteration count
+controls how many rounds of local communication are available.
+
 
 Graph signatures declare `vertex_kinds` and `edge_kinds` (with
 typed endpoints), and the encoder body uses message-passing:
@@ -319,7 +372,6 @@ algebra-homomorphism / Kleisli coalgebra pattern, no special-casing.
 - [Structural autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
   checked entry invocation, autograd, and checkpoint registration.
 
+## Further reading
 
-## References
-
-- Kai Sheng Tai, Richard Socher, and Christopher D. Manning. 2015. Improved semantic representations from tree-structured Long Short-Term Memory networks. arXiv preprint arXiv:1503.00075.
+- [@tai2015treelstm]

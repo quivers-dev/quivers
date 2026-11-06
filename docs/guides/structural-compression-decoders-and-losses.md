@@ -1,12 +1,27 @@
 # Structural Compression: Decoders and Losses
 
-This page covers the decoder dual to the encoder (the Kleisli arrow back from
+This page covers the decoder dual to the [encoder](structural-compression-signatures-and-encoders.md#encoder-blocks) (the [Kleisli arrow](monadic.md#kleisli-category) back from
 vectors to terms), loss declarations, and integration with chart parsers and
 Bayesian programs. The signature and encoder side lives
 in
 [Signatures and Encoders](structural-compression-signatures-and-encoders.md).
 
 ## Decoder blocks
+
+Decoding grows a structure from the top down. Given a vector, first choose
+a constructor, such as a leaf or an application; then produce the values
+or child vectors that constructor needs; finally decode recursive
+children in the same way. Scoring an observed term follows its known
+constructor choices and adds their log probabilities. *Corecursion*
+names this repeated expansion of a structure.
+
+The same sampling and scoring distinction appears in [probabilistic programs](programs.md#rsample-and-log_joint). The [generated computation reference](../reference/qvr/generated-computations.md#structural-signatures-and-autoencoders) shows how a decoder becomes a callable entry.
+
+Several terms can have similar codes. The decoder represents this
+ambiguity by assigning probabilities to alternative reconstructions;
+repeated calls to `sample(vec)` can return different terms. The Kleisli
+arrow below has this distribution as its result.
+
 
 A decoder declares a [Kleisli
 arrow](https://ncatlab.org/nlab/show/Kleisli+category) $\mathrm{Vec}_D
@@ -34,6 +49,14 @@ raises with a precise diagnostic.
 
 ## Loss declarations
 
+A reconstruction loss asks the decoder to give the input term high
+probability after encoding it. If its probability is `0.2`, the negative
+log likelihood is about `1.609`; raising it to `0.8` lowers the loss
+to about `0.223`. At probability `0.8`, repeated decoding still assigns
+`0.2` probability to other terms. A loss weight sets the reconstruction
+term’s contribution relative to the other training criteria.
+
+
 Losses are first-class declarations attachable at any site in the
 training graph:
 
@@ -60,11 +83,19 @@ completed chart).
 
 `prog.losses.evaluate(env)` sums every loss;
 `evaluate_on(kind, target, env)` filters by attachment. Inside a
-deduction, the runtime accumulates rule-attached and chart-attached
+[deduction](deduction.md#the-framework), the runtime accumulates rule-attached and chart-attached
 losses into `ChartView.attached_loss` for the training driver to
 read.
 
 ## Deduction integration
+
+A chart item can carry both a symbolic identity and a learned vector.
+The symbolic part determines which rules apply and how derivation
+weights combine; the encoder computes features of that item for
+learnable scoring or prediction. For instance, an encoder can turn a
+partial parse into a vector used to score its next rule application; the
+chart then aggregates the resulting derivation weights with its semiring.
+
 
 A `deduction` block may attach an item signature and an encoder;
 the chart's `embedding(item)` operation then returns a
@@ -94,24 +125,32 @@ the semiring abstraction is not broken.
 ## Bayesian integration
 
 A decoder is a Kleisli arrow into a structured type: a distribution
-over terms. Thus everything that programs and posterior approximations do
-with distributions over scalars and vectors extends, with no
-special-casing, to distributions over structured objects:
+over terms. This gives the same sampling/scoring interface as other distributions,
+though actual inference and target support depend on the operations
+implemented for structured values. The intended modeling patterns are:
 
 - **Structured latents.** `latent_term <- D(prior_vec)` inside a
   program body draws a random term from the decoder.
 - **Observations of structured data.**
   `observe known_term <- D(some_vec)` scores under the decoder's
   log-prob.
-- **Marginalization over structured latents.**
+- **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) over structured latents.**
   `marginalize t : Term <- D(v)` with an indented body
-  `observe y <- ...` integrates `t` out via the decoder's
-  depth-bounded categorical recursion.
+  `observe y <- ...`   expresses a sum over terms when a finite enumeration is available.
+  This requires an execution route that enumerates the finite term set;
+  a route exposing only `sample` and `log_prob` needs a sampling approximation.
 - **Variational decoders.**
   `program q : Sentence -> Term`
   defines a variational decoder over LFs given a sentence.
 
 ## Stdlib decoders
+
+The depth bound is part of the represented model. At the limit, only
+constructors that can finish without another object-valued child are
+eligible. Increasing the bound admits more structures and changes the
+support. For instance, a term requiring nine recursive expansions is
+excluded by a bound of eight and can become eligible with a larger bound.
+
 
 The same `quivers.structural.shapes` registry that ships the
 canonical encoders also ships matching decoders:

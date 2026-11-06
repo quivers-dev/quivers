@@ -1,6 +1,23 @@
 # Compositional Effects
 
-QVR provides two parallel typeclass towers, Haskell-style monads and
+An **effect** is an operation a computation requests from its execution
+context, such as drawing a random value, reading state, or adding a score.
+A **handler** decides how that request is interpreted. The same random
+request can draw a fresh value during simulation or replay a supplied
+value during scoring. A [resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) continues the computation after the
+request has received its answer.
+
+Pyro’s [example of conditioning and tracing](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) demonstrates two interpretations of a sample request. [@pyroEffects] The QVR [handler declarations](../reference/qvr/effects-and-handlers.md#handler-declarations) give an example that follows a request through its resumption.
+
+In linguistic semantics, an expression can likewise carry more than its
+ordinary denotation: several alternatives, a discourse update, or a
+scope-taking operation. The monad and arrow interfaces below describe how
+to compose that extra structure. The later QIEC section describes how
+source programs declare requests and [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations). These related presentations
+serve different levels of the implementation.
+
+
+QVR provides two parallel typeclass towers, Haskell-style [monads](monadic.md#monads) and
 Hughes-style arrows, together with a class-driven schema-lifting system.
 These components let linguistic effects (scope-taking, anaphora, focus and
 alternatives, presupposition, supplements, plurality) compose with the
@@ -12,24 +29,39 @@ denotations are in [Denotational Semantics](../semantics/effects.md).
 
 ## Typeclass hierarchy
 
+For arrows as a generalization of monadic interfaces, see [@hughes2000arrows].
+
+A *typeclass* specifies operations an implementation supports. `fmap`
+applies an ordinary function while retaining its surrounding effect;
+`pure` introduces an ordinary value into that effect. `apply` combines
+effectful arguments, while `bind` lets the next computation depend on a
+value obtained from the previous one. *Lifting* a grammar rule means
+extending it to inputs that carry such extra structure.
+
+For instance, if an adjective has two possible meanings and a noun has
+three, lifting their combination over alternatives considers six pairs.
+The base adjective-noun rule remains the operation applied to each pair;
+the effect interface supplies the branching and aggregation.
+
+
 Both towers live as Python ABCs in `quivers.monadic.typeclasses` and
 `quivers.arrows.typeclasses`. Effects (instances) implement the
 operations a typeclass requires; the lifting system dispatches on
 which classes an effect inhabits, never on the effect's identity.
 
-The monad-side hierarchy:
+The monadic hierarchy:
 
 | Class | Adds | Linguistic use |
 |-------|------|----------------|
 | `Functor` | `fmap` | structure-preserving lifts |
 | `Applicative` | `pure`, `apply` | uniform-lift of base rules through an effect |
-| `Monad` | `join` (and derived `bind`) | scope-extruding lifts (Bumford & Charlow 2026) |
+| `Monad` | `join` (and derived `bind`) | scope-extruding lifts [@bumford2026effect] |
 | `Alternative` | `empty`, `alt` | non-deterministic / Hamblin-style branches |
 | `MonadPlus` | combines `Monad` and `Alternative` | branching effects with substitution |
 | `Foldable` / `Traversable` | `foldr`, `traverse` | distribute Applicative actions through a structure |
 | `MonadTrans` | `lift` | stack one monad on top of another |
 
-The arrow-side hierarchy (Hughes 2000, *Generalising monads to arrows*, [doi:10.1016/S0167-6423(99)00023-4](https://doi.org/10.1016/S0167-6423(99)00023-4)):
+The arrow hierarchy [@hughes2000arrows]:
 
 | Class | Adds | Use |
 |-------|------|-----|
@@ -115,6 +147,14 @@ alt_lifts = class_directed_lifts(forward_app, Alternative_())
 
 ## Algebraic effects + handlers
 
+An operation signature describes what may be requested without choosing
+how requests run. A free monad records those requests and the remaining
+computation as syntax; a handler interprets that syntax. For a `Choose`
+request, one handler might select an alternative and another might explore
+all alternatives. The operation's type stays fixed while the handling
+policy changes.
+
+
 For effects that don't fit a closed-form typeclass instance,
 `quivers.monadic.algebraic` provides a free-monad-over-signature
 construction:
@@ -134,6 +174,16 @@ that interpret their effect-typed denotation through registered
 handlers, ending in an effect-pure target.
 
 ## QIEC effect interfaces and rows
+
+Read an [effect row](../reference/qvr/effects-and-handlers.md#effect-rows) as a list of named services a computation may still
+request. `!{random, score}` permits random draws and scoring through
+those two instances; `!{}` leaves no unhandled requests. Two state
+instances are like two distinct cells even if both hold integers.
+Handling one cell does not handle the other. A total handler removes its
+instance from the row because it accounts for every request on that
+instance; a partial handler leaves an obligation for the surrounding
+context.
+
 
 QVR's **QIEC effect calculus** is the source-level interface every
 computation of a module is checked under, a probabilistic `program` included:
@@ -159,8 +209,8 @@ process-local attachments; the effect handlers of `quivers.effects` are
 themselves lexical handlers of the kernel's `Random`, `Score`, `Compute`, and
 `Param` interfaces. Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and
 Church run the same computation graph through corresponding implementations
-of the stable-ID runtime ABI, tested against the reference machine at clamped
-points; this test evidence is not an equivalence proof. Stan lowers a
+of the stable-ID runtime ABI. Tests compare their scores with the
+reference machine at specified clamped values. Stan lowers a
 computation with a closed empty effect row, an empty static telescope, and a
 scalar result as a user-defined function; BUGS and JAGS refuse every call.
 These targets reject unsupported control or value features explicitly, under
@@ -182,6 +232,15 @@ The pair gives a free choice of presentation: write effects as monads
 or as arrows; the framework treats them uniformly.
 
 ## Joint type-and-effect dispatch in the parser
+
+A chart cell records what a span can mean and which effects that meaning
+still carries. An ordinary rule combines plain denotations. A lifted rule
+combines denotations inside an effect. A handler interprets an effect, and
+a registered distributive law permits a particular change in effect order.
+The parser searches these choices alongside the syntactic category
+choices. Swapping two effects requires a registered distributive law
+for that pair and direction.
+
 
 When the chart parser fires at span `(i, j)`, each cell carries a
 distribution over `(Cat, EffectStack)` pairs (the residuated universe
@@ -206,7 +265,7 @@ the joint search space.
 ## Worked example: scope-taking via Continuation
 
 The example file `docs/examples/source/quantifier_scope.qvr`
-illustrates a Bumford & Charlow-style scope-taking grammar:
+illustrates a grammar that composes expressions with scope-taking effects [@bumford2026effect]:
 
 ```text
 object Term : FinSet 16
@@ -244,11 +303,11 @@ In production code, the lifted schemas (`apply_Cont_fwd`,
 explicit declaration above demonstrates what a user would write to enumerate
 the lifts manually.
 
-## References
+## Further reading
 
-- Andrej Bauer and Matija Pretnar. 2015. Programming with algebraic effects and handlers. *Journal of Logical and Algebraic Methods in Programming*, 84(1):108–123.
-- Charlow, S. (2025). [*Static and dynamic exceptional scope*](https://doi.org/10.1093/jos/ffad012). Journal of Semantics, 42(4), 353–398.
-- Dylan Bumford and Simon Charlow. Forthcoming, 2026. *Effect-Driven Interpretation: Functors for Natural Language Composition*. Cambridge Elements in Semantics. Cambridge University Press.
-- Gordon D. Plotkin and John Power. 2003. Algebraic operations and generic effects. *Applied Categorical Structures*, 11(1):69–94.
-- Hughes, J. (2000). [*Generalising monads to arrows*](https://doi.org/10.1016/S0167-6423(99)00023-4). Science of Computer Programming, 37(1–3), 67–111.
-- McBride, C. and Paterson, R. (2008). [*Applicative programming with effects*](https://doi.org/10.1017/S0956796807006326). Journal of Functional Programming, 18(1), 1–13.
+- [@bauer2015programming]
+- [@charlow2025scope]
+- [@bumford2026effect]
+- [@plotkin2003algebraic]
+- [@hughes2000arrows]
+- [@mcbride2008applicative]

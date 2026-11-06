@@ -3,12 +3,17 @@
 Per-target obligations of [Transpilation correctness](index.md)
 for $\mathsf{T} = \mathrm{JAGS}$.
 
+JAGS uses BUGS-style model declarations and supplied data to distinguish
+unknown variables from observations. A QVR `marginalize` block requests the
+finite sum $\sum_z p(z)p(y\mid z)$. The renderer computes that sum and
+contributes its logarithm to the joint density.
+
 ## Semantics
 
 JAGS's denotational semantics is the directed graphical model
 semantics of Plummer
-([2003](https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf)),
-inheriting BUGS's `model { ... }` block syntax (Lunn et al. 2009
+[@plummer2003jags],
+inheriting BUGS's `model { ... }` block syntax ([@lunn2009bugs]
 [BUGS](bugs.md)) with extensions. The runtime is JAGS itself or
 the [`pyjags`](https://github.com/michaelnowotny/pyjags) Python
 binding; the log-density probe is JAGS's Gibbs sampler log-joint
@@ -40,21 +45,25 @@ JAGS family-name differences are:
 
 JAGS also exposes
 [`dgen.gamma`](https://justinribarski.github.io/JAGS/), `pow`,
-and `inprod` primitives that the BUGS renderer does not target.
-The QVR renderer does not depend on these but they remain
-available to user-provided extensions.
+and `inprod` primitives for use in extensions.
 
 ## Per-construct emit
 
-Same as BUGS. The renderer differs from `BUGSRenderer` only in
-the `FAMILY_META.target_names["jags"]` lookup (returning
-`ddirich` instead of `ddirch` for Dirichlet, for instance) and in
-applying `FAMILY_META.arg_aliases["jags"]` separately from
-`arg_aliases["bugs"]` (the entries are identical in current
-practice but the registry pattern admits divergence).
+The [BUGS emit rules](bugs.md#per-construct-emit) work through the Poisson zero trick used to add a log score. The [finite marginalization definition](../programs.md#26-marginalize) specifies the weighted sum that the JAGS factor must contain.
 
-**Sample / observe / plate / marginalize / score / let.** Same
-shape as BUGS; the only difference is the distribution name.
+Sample, observe, and plate declarations follow the BUGS-style model syntax,
+with JAGS-specific distribution names and argument mappings.
+
+**Marginalize.** The renderer constructs the weighted sum over finite support
+values and scores its logarithm using the zero trick. Grouped cases accumulate
+the rows that share a latent before reducing it. Supported scope shapes and
+families are checked explicitly; this path is broader than BUGS's
+categorical-mixture collapse.
+
+**Score / let.** The score path uses the documented zero-trick convention;
+deterministic bindings use `<-`. A Poisson rate used by the zero trick must
+be nonnegative, so any additive carrier constant has to satisfy the relevant
+bound throughout the intended parameter domain.
 
 ## Acceptance
 
@@ -67,8 +76,5 @@ shape as BUGS; the only difference is the distribution name.
 
 ### References
 
-* Martyn Plummer. 2003. JAGS: A program for analysis of Bayesian
-  graphical models using Gibbs sampling. In *Proceedings of the
-  3rd International Workshop on Distributed Statistical Computing
-  (DSC)*, 124-125.
-  [https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf](https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf)
+
+For JAGS’s design and relation to BUGS, see [@plummer2003jags]. A tutorial with worked Bayesian models is [@kruschke2014doing].

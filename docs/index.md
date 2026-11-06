@@ -72,6 +72,20 @@ Trace the implementation from enriched relations through compilation and inferen
 </article>
 </nav>
 
+## Start with the modeling question
+
+Suppose repeated measurements vary around a line. You know the measurements
+and their predictors, but not the line's slope or the amount of noise.
+A probabilistic program describes plausible slopes and noise levels and how
+they generate measurements. Inference uses the observed measurements to update
+that uncertainty; prediction uses the fitted model to generate new measurements.
+
+The [conceptual introduction](getting-started/concepts.md) explains this workflow
+and the typed composition behind it using small examples. No previous
+probabilistic programming or category theory is required. The tutorials then
+connect those examples to executable QVR and Python, while the semantics gives
+the precise assumptions and equations.
+
 ## One language, three levels
 
 The documentation presents each construct at three levels: QVR syntax, mathematical interpretation, and executable implementation. Links between those levels show how a source phrase is parsed, what it denotes, and how it runs.
@@ -108,11 +122,11 @@ The compiler lowers checked QVR to the indexed effect core, Python runtimes, and
 
 ## What composes
 
-First, a program has a domain, codomain, algebra, and effect signature. The compiler checks these components before execution. Programs sequentially compose with `>>`, parallel-compose with `@`, change base across algebras, and scope finite marginalization over a typed body.
+A program has a domain, codomain, algebra, and effect signature. The compiler checks these components before execution. Programs [sequentially compose](tutorials/python/01-first-quiver.md#composition) with `>>`, parallel-compose with `@`, change base across algebras, and scope [finite marginalization](tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) over a typed body.
 
-Second, inference, deduction, and structural compression all compile to the same typed core. The compiler can thus combine a Bayesian regression, a CKY parser declared as a `deduction`, and a transformer attached to a `signature` while preserving their distinct types.
+Inference, deduction, and structural compression compile to the same typed core. The compiler can thus combine a [Bayesian regression](tutorials/qvr/01-first-model.md#what-inference-will-answer), a CKY parser declared as a `deduction`, and a transformer attached to a `signature` while preserving their distinct types.
 
-Third, the same checked representation supports inspection as well as execution. Quivers provides more than forty distribution families, automatic variational guides, HMC and NUTS, ArviZ integration, mixed-effect formulas, static program analysis, a REPL, a language server, and transpilers for eleven probabilistic programming systems. Each transpiler either emits the reachable computation graph or reports which indexed-core capability it cannot represent.
+The checked representation also supports inspection. Quivers provides more than forty distribution families, automatic variational guides, HMC and NUTS, ArviZ integration, mixed-effect formulas, static program analysis, a REPL, a language server, and transpilers for eleven probabilistic programming systems. Each transpiler either emits the reachable computation graph or reports which indexed-core capability it cannot represent.
 
 ## Architecture
 
@@ -155,10 +169,10 @@ flowchart LR
     class FOUNDATION qv-foundation
 ```
 
-The central abstraction is a morphism between finite sets, parameterized by a composition algebra. A morphism `f : A -> B` is a PyTorch tensor of shape `(|A|, |B|)` whose entries take values in that algebra. Composition `f >> g` contracts along the shared dimension under the algebra's tensor and join operations. Different algebras satisfy different laws; the documentation states those assumptions instead of treating them as properties of every runtime `Algebra`.
+The finite-tensor layer uses morphisms between finite sets, parameterized by a composition algebra. Continuous kernels and effectful programs extend this layer with distributions and computations. A morphism `f : A -> B` is a PyTorch tensor of shape `(|A|, |B|)` whose entries take values in that algebra. Composition `f >> g` contracts along the shared dimension under the algebra's tensor and join operations. Different algebras satisfy different laws; the documentation states those assumptions instead of treating them as properties of every runtime `Algebra`.
 
 ## Foundations
 
-The [denotational semantics](semantics/index.md) interprets each well-typed QVR phrase in a $\mathcal{V}$-enriched symmetric monoidal closed category. The implementation draws on enriched category theory ([Kelly, 1982](http://www.tac.mta.ca/tac/reprints/articles/10/tr10abs.html)), categorical approaches to probability ([Giry, 1982](https://doi.org/10.1007/BFb0092872); [Fritz, 2020](https://doi.org/10.1016/j.aim.2020.107239)), and standard methods for SVI and HMC ([Hoffman et al., 2013](https://www.jmlr.org/papers/v14/hoffman13a.html); [Neal, 2011](https://doi.org/10.1201/b10905-6); [Hoffman and Gelman, 2014](https://www.jmlr.org/papers/v15/hoffman14a.html)).
+The [denotational semantics](semantics/index.md) interprets each well-typed QVR phrase in a $\mathcal{V}$-enriched symmetric monoidal closed category. The implementation draws on enriched category theory [@kelly1982basic], categorical approaches to probability ([@giry1982categorical]; [@fritz2020synthetic]), and standard methods for SVI and HMC ([@hoffman2013svi]; [@neal2011mcmc]; [@hoffman2014nuts]).
 
 </div>

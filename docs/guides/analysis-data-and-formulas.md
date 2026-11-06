@@ -1,11 +1,10 @@
 # Analysis: Data and Formulas
 
-This page covers the front-half of the analysis stack: feeding
-dataframes into models, declaring a model with a brms-style
-formula, and inspecting / emitting the QVR source the formula
-compiles to. The back-half (fitting, diagnostics, algebra-guided
-training tooling) lives in
-[Fitting and Diagnostics](analysis-fitting-and-diagnostics.md).
+The analysis stack turns a dataframe and a brms-style formula into a
+QVR model. You can inspect the generated source to see the response
+family, predictors, group effects, and priors.
+[Fitting and Diagnostics](analysis-fitting-and-diagnostics.md) covers
+posterior inference and checks on the fitted model.
 
 ## Architecture
 
@@ -32,6 +31,15 @@ ArviZ, or formula dependencies. Install the full stack with
 `pip install "quivers[formulas]"`.
 
 ## Dataframes: `quivers.data`
+
+A model needs both values and a consistent interpretation of their
+indices. If a subject column contains `s1, s2, s1`, the corresponding
+index array might be `0, 1, 0`. The repeated zero makes both rows use
+the same subject-level parameter. `DatasetSchema` creates that mapping,
+the finite object describing the subjects, and the tensors supplied at
+runtime. Category ordering is thus part of the model/data interface,
+not merely a display choice.
+
 
 [`DatasetSchema`](../api/data/schema.md) is a typed
 [`didactic.api.Model`](https://didactic.dev/api/Model) that maps
@@ -91,6 +99,20 @@ Missing-data handling is configurable per schema via
 
 ## Formulas: `quivers.formulas`
 
+Read `y ~ x + (1 | g)` as: predict response `y` from predictor `x`,
+with an intercept that may differ by group `g`. The intercept is the
+baseline; the slope multiplies `x`; the grouped offsets come from a
+shared distribution, enabling partial pooling. The formula chooses the
+structure of the predictor, while the family chooses the distribution
+of responses and priors describe unknown coefficients. [@gelman2013bayesian]
+
+The **link function** connects a response distribution's parameter to
+the predictor. For Bernoulli outcomes the inverse logit, or sigmoid,
+turns any real predictor into a valid probability. The formula's `~`
+introduces a response model; it is not the same operation as drawing
+a value with `sample` inside QVR.
+
+
 The [formula frontend](../api/formulas/index.md) compiles a
 [brms](https://paul-buerkner.github.io/brms/) /
 [`lme4`](https://cran.r-project.org/package=lme4)-style formula
@@ -127,7 +149,7 @@ formula in the test suite.
 ### R / brms conventions
 
 - **Orthogonal polynomials by default.** `poly(x, k)` produces $k$
-  orthonormal centred columns, matching R's
+  orthonormal centered columns, matching R's
   [`stats::poly`](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/poly.html).
   Raw monomials remain available via `I(x**k)`.
 - **One coefficient per design-matrix column** (matches brms
@@ -205,9 +227,17 @@ Poisson models interpret `zi` as the structural-zero probability and
 
 ### Unordered categorical mixed models
 
+Adding the same constant to every logit leaves softmax unchanged.
+Without a constraint, many coefficient settings would describe exactly
+the same probabilities. Fixing category zero's logit to zero removes
+that redundant direction; the other logits describe comparisons with
+that reference category. With logits `[0, 0, 0]`, for instance, each
+category has probability `1/3`, including the reference category.
+
+
 The categorical family infers `K` from contiguous integer labels
 `0, ..., K-1` and uses category zero as the reference. Every fixed-effect
-coefficient and random effect is therefore a vector of `K - 1` logits.
+coefficient and random effect is thus a vector of `K - 1` logits.
 The compiler prepends the reference logit of zero and applies softmax to
 the resulting per-row `K`-vector. This parameterization removes the
 unidentified common shift in an unconstrained set of `K` logits.
@@ -235,6 +265,15 @@ predictor may also return shape `(N,)`.
 
 ### Gaussian mixture regressions
 
+A mixture says that each response could have come from one of several
+component distributions. Its likelihood sums their weighted densities,
+so fitting need not select a component for every observation. Swapping
+component labels leaves the same distribution; centering component
+offsets solves a different ambiguity, separating overall location from
+relative component locations. Interpret component summaries with both
+symmetries in mind.
+
+
 The mixture family represents each response as a finite Gaussian mixture.
 `mixture_components` sets the number of components, while the formula's
 linear predictor shifts every component location for a row. Component
@@ -261,13 +300,20 @@ mixture_fit = fit(
 )
 ```
 
-The likelihood integrates component assignments with `MixtureNormal`; it
-does not add a discrete latent site. Centering distinguishes the shared
-regression location from component offsets, but it does not label the
-components. Posterior summaries must still account for the usual
-label-switching symmetry of finite mixtures.
+`MixtureNormal` sums over component assignments in the likelihood.
+Centering separates the shared regression location from component
+offsets. Permuting the component labels leaves the likelihood unchanged,
+so summarize permutation-invariant quantities or align labels before
+comparing component-specific posterior draws.
 
 ### Ordinal mixed models and neural predictors
+
+For ordered ratings, imagine a continuous latent response divided by
+ordered cutpoints. Moving the predictor changes which intervals are
+likely; changing the spacings changes how broadly particular rating
+categories are used. Group-specific spacings can represent differences
+in scale use without changing the order of the categories.
+
 
 The cumulative family infers the number of categories from contiguous
 integer response labels `0, ..., K-1`. Shared cutpoints are represented
@@ -313,7 +359,7 @@ The runtime recomputes `parser(sentence_features)` on every SVI step
 and places the result in the emitted program's `neural_eta` host-data
 slot. The SVI optimizer includes the predictor parameters, so gradients
 flow through the ordinal likelihood into the parser. A trainable external
-predictor is restricted to SVI; NUTS and HMC accept it only after its
+predictor is restricted to SVI; NUTS and [HMC](inference-mcmc.md#mcmc-hmc-and-nuts) accept it only after its
 parameters have been frozen.
 
 Every [`ParamSource`](../api/continuous/param_source.md) is an
@@ -323,12 +369,14 @@ value per response row, with shape `(N,)` or `(N, 1)`, except for the
 categorical shapes described above.
 
 An arbitrary Python module is a runtime attachment and cannot be encoded
-inside portable QVR source. `joint_fit.qvr_source` therefore names the
+inside portable QVR source. `joint_fit.qvr_source` thus names the
 `neural_eta` input explicitly. To emit the same interface without fitting,
 use `formula_to_qvr(..., predictor_name="neural_eta")` and supply that
 tensor from the host runtime.
 
 ### Coefficient priors are autoscaled
+
+Use [prior predictive checks](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#prior-predictive-checks) to examine the observations implied by a coefficient prior before fitting. [@stanPredictiveChecks] Inspecting the [generated QVR](#inspect-or-dump-the-generated-qvr) shows the scales that autoscaling selects.
 
 A column enters the linear predictor as `beta * column`, so a prior on
 the coefficient alone is really a statement about the coefficient's

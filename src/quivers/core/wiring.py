@@ -1,30 +1,25 @@
-"""Operadic n-ary tensor contractions for V-enriched categories.
+"""N-ary tensor contractions specified by shared axis names.
 
-A `CompositionRule` defines **binary** composition:
-``(f >> g)[i, k] = ⋁_j f[i, j] ⊗ g[j, k]``. That covers the
-2-cells of a 2-category. Useful but narrow — many models combine
-three or more tensors at a shared reduction (e.g. two argument
-tensors plus a kernel folded at a single contraction):
+A `CompositionRule` defines binary composition:
+``(f >> g)[i, k] = ⋁_j f[i, j] ⊗ g[j, k]``. A wiring rule can instead
+combine several tensors in one contraction, for instance:
 
     out[s, c] = ⋁_{p, q} (
         arg1[s, p] ⊗ arg2[s, q] ⊗ kernel[p, q, c]
     )
 
-This isn't expressible as a chain of binary ``>>``: it's an
-n-input wiring diagram whose centre contracts two axes at once
-under a fixed tensor_op and join. The general framework is
-**operads** / **wiring diagrams** (Spivak 2014); this module
-exposes a Python surface for them.
+Here ``s`` remains shared by both arguments, while ``p`` and ``q`` are
+eliminated. Expressing this through binary composition would also require
+operations that arrange, copy, or pair the interfaces; plain chaining alone
+does not describe that wiring.
 
-The unifying construct is `WiringRule`: an n-ary
-generalization of binary composition that pairs a
-`CompositionRule` (supplying ``tensor_op`` and ``join``)
-with an einsum-style wiring spec naming which input axes are
-contracted vs preserved.
-
-Categorically a ``WiringRule`` is a single operation of a
-colored operad whose colors are the V-Cat object types; the
-`CompositionRule` supplies the operad's enriching algebra.
+`WiringRule` pairs a `CompositionRule`, which supplies ``tensor_op`` and
+``join``, with an einsum-style specification of the axes to retain or reduce.
+Wiring diagrams and operads provide a mathematical account of how compatible
+interfaces connect [Vagner et al. (2015)](<https://www.tac.mta.ca/tac/volumes/30/51/30-51abs.html>). Interpreting these contractions as
+operations of an operad requires the relevant composition laws, including
+the compatibility of tensor products and reductions. A runtime wiring
+specification alone does not establish those laws.
 """
 
 from __future__ import annotations

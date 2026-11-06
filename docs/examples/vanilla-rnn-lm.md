@@ -2,7 +2,7 @@
 
 ## Overview
 
-This recurrent language model uses a [`rnn_cell`](../guides/dsl-programs-and-lets.md) program to update the hidden state from the current embedded token and the previous state. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) threads that state across a sequence, and a `Categorical` [`lm_head`](../api/continuous/families.md) maps each hidden state to the vocabulary for the next-token observation.
+This recurrent language model uses a [`rnn_cell`](../guides/dsl-programs-and-lets.md) program to update the hidden state from the current embedded token and the previous state. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) threads that state across a sequence, and a `Categorical` [`lm_head`](../api/continuous/families.md) maps the terminal hidden state to a distribution over the vocabulary for one next-token observation.
 
 ## QVR source
 
@@ -62,6 +62,19 @@ program vanilla_rnn_lm : Token -> Token
 
 export vanilla_rnn_lm
 ```
+
+## Understanding the model
+
+A recurrent state is a running summary of a context. Each new token updates
+that summary, so the same token can lead to different predictions depending
+on what preceded it. The terminal state summarizes the whole supplied prefix;
+the head turns it into probabilities for one following token. The [unrolled recurrence diagrams](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#recurrent-neural-networks) show how a state passes between successive steps [@olah2015lstm].
+
+This cell includes random hidden draws. Forward executions can thus differ
+even at fixed parameters, unlike a deterministic RNN. Scoring an explicit
+trajectory and scoring only the final output are different operations: the
+latter generally requires [integrating hidden draws](../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram). The [trajectory addresses](../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation)
+below keep repeated sites distinguishable when replaying and checking a run.
 
 ## Walkthrough
 
@@ -205,9 +218,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The model is a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the recursive [fold](https://ncatlab.org/nlab/show/fold) along the sequence in the Kleisli category: each step composes the previous step's output kernel with the new cell. The closing Categorical head observes the next-token label as a sub-probability kernel in $\mathcal{G}_{\le 1}$.
+The model is a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the recursive [fold](https://ncatlab.org/nlab/show/fold) along the sequence in the Kleisli category: each step composes the previous step's output kernel with the new cell. The closing Categorical head observes the next-token label as a sub-probability kernel in $\mathcal{G}_{\le 1}$. [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *A categorical approach to probability theory* [@giry1982categorical].

@@ -3,18 +3,27 @@
 Per-target obligations of [Transpilation correctness](index.md)
 for $\mathsf{T} = \mathrm{PyMC}$.
 
+PyMC first builds a graph of random variables and deterministic expressions;
+a compiled log-density function then evaluates that graph at supplied values.
+The renderer must preserve which variables are observed, which remain
+unknown, and which coordinates belong to one joint event. Axis names help
+identify dimensions, but the distribution's batch structure determines the
+independence assumptions.
+
 ## Semantics
 
-PyMC's denotational semantics is the factor-graph semantics of
-[Koller and Friedman 2009](https://mitpress.mit.edu/9780262013192/probabilistic-graphical-models/)
-Chapter 4 implemented via the
+PyMC’s [linear-regression model specification](https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html#model-specification) shows how priors, deterministic expressions, and observed variables enter a model context. The [first QVR model](../../tutorials/qvr/01-first-model.md#qvr-vs-pymc-vs-numpyro) presents the same regression in QVR, PyMC, and NumPyro.
+
+PyMC assembles a joint density from distributions and additional log-density
+factors, using the graphical-model perspective [@koller2009probabilistic].
+The implementation uses the
 [`pymc.Model`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html)
 context: each `pymc.<Distribution>(name, ..., dims=..., observed=...)`
 constructor inside the `with pymc.Model()` scope registers a
 random variable; the joint log-density is computed by
 [`pymc.Model.compile_logp`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html#pymc.Model.compile_logp).
 The reference is Salvatier, Wiecki, and Fonnesbeck
-([2016](https://doi.org/10.7717/peerj-cs.55)) for PyMC3 and the
+[@salvatier2016pymc3] for PyMC3 and the
 [PyMC v5 documentation](https://www.pymc.io/projects/docs/en/stable/)
 for the current API.
 
@@ -50,7 +59,7 @@ mapping requires non-trivial aliases:
 
 These live in
 `FAMILY_META[F].arg_aliases["pymc"]`
-per the SSoT rule. The renamings are syntactic; the density
+as the shared source of target argument names. The renamings are syntactic; the density
 $f_{\mathsf{PyMC}}(v \mid \text{renamed args})$ equals
 $f_{\mathrm{QVR}}(v \mid \text{original args})$ term-by-term, so
 $c_{F, \mathsf{PyMC}} = 0$ for every family with native PyMC
@@ -67,18 +76,18 @@ size.
 
 **Plate.** `dims=` names axes and `coords` supplies their labels or
 sizes. Independence comes from the distribution's batch shape and
-parameter broadcasting, not from the dimension label by itself.
+parameter broadcasting. For instance, a scalar Normal with batch size ten
+represents ten independent scalar events, while an MvNormal with event size
+ten represents one joint event whose covariance determines dependence.
 
-**Marginalize.** Explicit-latent rewrite. PyMC's
-[`pm.Mixture`](https://www.pymc.io/projects/docs/en/stable/api/distributions/generated/pymc.Mixture.html)
-also supports analytic marginalization for finite mixtures; the
-QVR renderer chooses the explicit rewrite for uniformity across
-backends.
+**Marginalize.** Supported finite blocks are enumerated and their integrated
+log density is added through a `pymc.Potential`. Grouped row contributions
+are accumulated before the latent-axis reduction, eliminating the
+marginalized coordinate.
 
 **Score / let / return.**
 [`pymc.Potential("name", expr)`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Potential.html)
-for score (Plummer 2003 zero-trick is not needed; PyMC has
-`Potential` as a first-class log-density contribution);
+adds a score directly to the joint log density;
 deterministic assignment for let; the function returns the
 `pymc.Model` instance.
 

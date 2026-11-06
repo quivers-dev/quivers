@@ -2,14 +2,27 @@
 
 By default, Quivers composes morphisms through its [`Algebra`](../../api/core/algebras.md) interface. This interface defines the operations that `f >> g` needs: a binary tensor operation, a reduction over the shared dimension, unit and zero elements, meet, and negation. Some built-in instances have additional lattice or quantale structure, but the Python interface itself does not verify all of those laws.
 
+A composition law tells you which changes to a computation preserve its
+meaning. [Associativity](../../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value) permits replacing `(f >> g) >> h` with
+`f >> (g >> h)`; an identity permits inserting a do-nothing arrow. If an
+operation lacks those properties, the same rewrite can change the result.
+The hierarchy below records which operations an interface makes available.
+Its numerical tests check selected inputs; a custom operation needs an
+algebraic argument for any law used to rewrite it.
+
+Keep the mathematical term *bilinear form* distinct from the library's broader
+`BilinearForm` interface. A mathematical bilinear form is linear in each input
+separately. An attention-style rule with softmax is generally nonlinear, even
+when the runtime permits it through that interface.
+
 ## Why weaker rules at all?
 
 Most probabilistic models use one algebra: Markov for probability kernels, LogProb for numerical stability, or ProductFuzzy for fuzzy logic. Quivers also provides weaker rules because two important families of constructs do not satisfy the full algebra contract and would otherwise be unrepresentable in the type system:
 
-1. **Fuzzy-logic implication.** Reichenbach's implication, $a \to b = 1 - a + a \cdot b$, has no element $e$ such that $e \to b = b$ for every $b$. Quivers represents it through the semigroupoid-level interface, but this particular operation is not associative; the constructor thus skips the associativity check. Do not reassociate chains that use it.
+1. **Fuzzy-logic implication.** [Reichenbach](../../semantics/composition-rules.md#2-the-denotation-of-at-each-level)'s implication, $a \to b = 1 - a + a \cdot b$, has left identity $1$ because $1 \to b=b$, but has no two-sided identity. Quivers represents it through the semigroupoid-level interface, but this particular operation is not associative; the constructor thus skips the associativity check. Do not reassociate chains that use it.
 2. **Tensor-network contractions and attention.** A signed dot product `<u, v> = sum_i u_i * v_i` is neither associative as a composition (the product nests but the inner contractions don't commute with rebracketing) nor identity-bearing. Attention scores in transformer-style models behave the same way: softmax-then-multiply is a perfectly good per-row operation but is not an algebra. These live at the [bilinear form](https://en.wikipedia.org/wiki/Bilinear_form) level.
 
-The takeaway: pick the weakest level that your construct satisfies. Library code that needs `identity` or `dagger` reaches for `Algebra`; code that only needs associative composition uses `Semigroupoid`; code that does an arbitrary n-ary tensor contraction uses `CompositionRule`. The compiler rejects calls that require a level above what your rule provides.
+Choose the interface whose operations your construct supports. Library code that needs `identity` or `dagger` reaches for `Algebra`; code that only needs associative composition uses `Semigroupoid`; code that does an arbitrary n-ary tensor contraction uses `CompositionRule`. The compiler rejects calls that require a level above what your rule provides.
 
 Two strictly weaker settings come up regularly enough that the library gives them their own types:
 
@@ -163,7 +176,7 @@ out    = wiring.apply(arg1, arg2, kernel)
 print(out.shape)                # torch.Size([4, 2])
 ```
 
-The wiring spec uses einsum syntax: each comma-separated input lists its axis letters, the arrow's right-hand side names the surviving output letters, and any letter appearing in an input but not in the output is contracted under the rule's `join`. If you've used `torch.einsum`, the syntax is the same; the only difference is that `torch.einsum` hardcodes multiply-and-sum, while `EinsumWiring` parameterises both operations: the `tensor_op` replaces multiply, and `join` replaces sum. So `torch.einsum("sp, sq, pqo -> so", a, b, c)` is the special case of `einsum_wiring(REAL, "sp, sq, pqo -> so").apply(a, b, c)`. For the standard binary case, you would still write `f >> g`, never `einsum_wiring(rule, "ab, bc -> ac").apply(f.tensor, g.tensor)`; the latter only earns its keep when arity is three or more. The fold-then-reduce semantics:
+The wiring spec uses einsum syntax: each comma-separated input lists its axis letters, the arrow's right-hand side names the surviving output letters, and any letter appearing in an input but not in the output is contracted under the rule's `join`. If you've used `torch.einsum`, the syntax is the same; the only difference is that `torch.einsum` hardcodes multiply-and-sum, while `EinsumWiring` parameterizes both operations: the `tensor_op` replaces multiply, and `join` replaces sum. So `torch.einsum("sp, sq, pqo -> so", a, b, c)` is the special case of `einsum_wiring(REAL, "sp, sq, pqo -> so").apply(a, b, c)`. For the standard binary case, you would still write `f >> g`, never `einsum_wiring(rule, "ab, bc -> ac").apply(f.tensor, g.tensor)`; the latter only earns its keep when arity is three or more. The fold-then-reduce semantics:
 
 1. Broadcast each input to the universe of axis letters (singleton dims for missing letters).
 2. Fold all inputs left-to-right under the rule's `tensor_op`.
@@ -241,6 +254,6 @@ define combined = op_apply(arg1_morph, arg2_morph, kernel_morph)
 ## Further reading
 
 - Use the [QVR tutorial](../qvr/01-first-model.md) if you want to write models in the DSL.
-- Read the [guides](../../guides/index.md) for feature-area-specific deep dives.
+- The [guides](../../guides/index.md) explain individual features with worked examples.
 - The [denotational semantics](../../semantics/index.md) covers the full categorical setting and defines every construct in this chapter.
 - The [API reference](../../api/index.md) documents the complete typed API.

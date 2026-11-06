@@ -57,6 +57,7 @@ docs = [
     "mkdocstrings[python]",
     "pymdown-extensions",
     "pygments",
+    "pybtex>=0.25,<0.27",
 ]
 data = [
     "narwhals>=2.21",

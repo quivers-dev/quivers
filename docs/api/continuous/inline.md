@@ -1,5 +1,13 @@
 # Inline Distribution Builders
 
+An inline family call gives distribution parameters directly in a program. Literal
+arguments can describe a fixed distribution; expressions such as `loc=beta * x` must be
+evaluated using the current program values. These builders preserve that distinction so
+a later draw can depend on an earlier one.
+
+See [inline distribution syntax](../../guides/dsl-programs-and-lets.md#inline-distributions) and
+[the sampling and observation statements](../../reference/qvr/probabilistic-programs.md#step-reference).
+
 The morphisms the DSL compiler emits for an inline family call such as
 `sample x <- Normal(loc=mu, scale=1.0)`. A call whose arguments are all
 literals becomes a [`FixedDistribution`](#quivers.continuous.inline.FixedDistribution),

@@ -9,49 +9,25 @@ arity-n `InferenceRule` hyperedges, a `ChartSemiring`,
 an `Agenda` data structure, a priority function, and a
 goal predicate.
 
-Categorical denotation: the chart is the least pre-fixed point of
-the rule-system functor
+The chart maps each item to its accumulated weight. A rule combines premise
+weights and contributes to its conclusion. On a complete lattice with a
+monotone rule operator, this has a least fixed-point interpretation. A finite
+acyclic system can be evaluated in dependency order; cyclic systems need
+additional convergence or termination assumptions.
 
-.. math::
-
-    F : \\mathbf{Set}^{I^{\\mathrm{op}}}_{K} \\to \\mathbf{Set}^{I^{\\mathrm{op}}}_{K}
-
-in the :math:`K`-enriched lattice of charts (Tarski-Knaster). The
-chart is the :math:`K`-presheaf :math:`I^{\\mathrm{op}} \\to K`
-assigning the aggregate inside weight to each item. The agenda is
-an operational realisation of the fixed-point computation; the
-strategy-independence theorem (Goodman 1999 §3) guarantees that
-the chart's final value is independent of the agenda discipline
-when the semiring is idempotent.
+The agenda chooses which pending deduction to examine next. Idempotent
+addition makes repeated identical contributions harmless, but does not alone
+prove termination or strategy independence. Correct scheduling must reach the
+required deductions and respect the selected aggregation and stopping rule.
 
 References
 ----------
-- Shieber, Schabes & Pereira (1995) "Principles and Implementation
-  of Deductive Parsing." Journal of Logic Programming 24(1-2):3-36.
-  doi:10.1016/0743-1066(95)00035-I
-- Pereira & Warren (1983) "Parsing as Deduction." Proceedings of
-  the 21st Annual Meeting of the ACL, pp. 137-144.
-  doi:10.3115/981311.981338
-- Knuth (1977) "A Generalization of Dijkstra's Algorithm."
-  Information Processing Letters 6(1):1-5.
-  doi:10.1016/0020-0190(77)90002-3
-- Goodman (1999) "Semiring Parsing." Computational Linguistics
-  25(4):573-605. https://aclanthology.org/J99-4004/
-- Klein & Manning (2001) "Parsing and Hypergraphs." Proceedings
-  of IWPT, pp. 123-134. doi:10.1007/1-4020-2295-6_18
-- McAllester (2002) "On the Complexity Analysis of Static
-  Analyses." Journal of the ACM 49(4):512-537.
-  doi:10.1145/581771.581774
-- Nederhof (2003) "Weighted Deductive Parsing and Knuth's
-  Algorithm." Computational Linguistics 29(1):135-143.
-  doi:10.1162/089120103321337467
-- Eisner, Goldlust & Smith (2005) "Compiling Comp Ling: Practical
-  Weighted Dynamic Programming and the Dyna Language."
-  Proceedings of HLT-EMNLP, pp. 281-290.
-  https://aclanthology.org/H05-1036/
-- Eisner & Blatz (2007) "Program Transformations for Optimization
-  of Parsing Algorithms and other Weighted Logic Programs."
-  Proceedings of the 11th Conference on Formal Grammar.
+Parsing as deduction is developed in [Pereira and Warren (1983)](<https://aclanthology.org/P83-1021/>); [Shieber et al. (1995)](<https://www.sciencedirect.com/science/article/pii/074310669500035I>). Weighted interpretations are developed in
+[Goodman (1999)](<https://aclanthology.org/J99-4004/>), and the hypergraph perspective in
+[Klein and Manning (2001)](<https://aclanthology.org/W01-1812/>). Priority methods are treated in
+[Knuth (1977)](<https://www.sciencedirect.com/science/article/abs/pii/0020019077900023>); [Nederhof (2003)](<https://aclanthology.org/J03-1006/>); [Klein and Manning (2003)](<https://aclanthology.org/N03-1016/>). For
+weighted dynamic programs, complexity analysis, and program transformations,
+see [Eisner et al. (2005)](<https://aclanthology.org/H05-1036/>); [McAllester (2002)](<https://doi.org/10.1145/581771.581774>); [Eisner and Blatz (2007)](<https://web.stanford.edu/group/cslipublications/cslipublications/FG/2006/FG.pdf>).
 """
 
 from __future__ import annotations
@@ -717,10 +693,11 @@ class ChartView:
 class Agenda(ABC):
     """A queue of items pending further inference.
 
-    The agenda discipline (FIFO / LIFO / priority) determines the
-    evaluation order; correctness is independent of discipline
-    for idempotent semirings (Goodman 1999 §3) but efficiency
-    depends on it (McAllester 2002).
+    The agenda discipline (FIFO / LIFO / priority) determines evaluation
+    order. Correctness requires an appropriate schedule and stopping rule;
+    idempotent aggregation alone does not establish it. Semiring parsing
+    [Goodman (1999)](<https://aclanthology.org/J99-4004/>) and bottom-up complexity analysis
+    [McAllester (2002)](<https://doi.org/10.1145/581771.581774>) explain the relevant background.
     """
 
     @abstractmethod
@@ -1008,14 +985,15 @@ def run_agenda(
 ) -> AgendaResult:
     """Run the agenda-driven deduction engine to fixed point.
 
-    Categorical denotation: returns the least pre-fixed point of
-    the rule-system functor on the input axioms. The
-    strategy-independence theorem (Goodman 1999) guarantees that
-    the chart's final value is independent of the ``agenda``
-    discipline when ``semiring`` is idempotent.
+    The intended result is the closure of the input axioms under the
+    weighted rules. A least fixed-point interpretation requires an ordered
+    setting in which the rule operator and its iteration are well defined.
+    The iteration bound may raise before closure is reached; idempotence
+    alone does not guarantee convergence or independence from scheduling.
 
-    Algorithm (Shieber-Schabes-Pereira 1995, Fig. 2 with
-    semiring-weighted aggregation per Goodman 1999):
+    The algorithm follows the parsing-as-deduction pattern
+    [Shieber et al. (1995)](<https://www.sciencedirect.com/science/article/pii/074310669500035I>), with semiring aggregation
+    [Goodman (1999)](<https://aclanthology.org/J99-4004/>):
 
     1. Push every axiom onto the agenda.
     2. While the agenda is non-empty:
@@ -1606,12 +1584,13 @@ def viterbi_agenda(priority_fn: Callable[[Item, torch.Tensor], float]) -> Agenda
 def astar_agenda(
     g_plus_h: Callable[[Item, torch.Tensor], float],
 ) -> Agenda:
-    """A* parsing agenda (Klein & Manning 2003).
+    """Priority agenda for an A* parsing strategy [Klein and Manning (2003)](<https://aclanthology.org/N03-1016/>).
 
-    Priority is :math:`g + h` where :math:`g` is the current
-    accumulated cost and :math:`h` is an admissible heuristic on
-    the remaining cost. With an admissible :math:`h`, the agenda
-    enumerates items in optimal order (Knuth 1977).
+    The queue pops the highest numeric priority first. If ``g`` and ``h``
+    are costs to minimize, pass a priority such as ``-(g + h)``. A valid
+    A* algorithm also needs an appropriate heuristic, update policy, and
+    termination condition; constructing this queue alone does not prove
+    optimality or enumerate every item in increasing true cost.
 
     Parameters
     ----------

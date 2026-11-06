@@ -2,7 +2,7 @@
 
 ## Overview
 
-A [variational autoencoder](https://en.wikipedia.org/wiki/Variational_autoencoder) ([Kingma & Welling, 2013](https://arxiv.org/abs/1312.6114)) trains a decoder with an observation-dependent encoder used as the variational guide. This source declares both an encoder-decoder composition and a prior-decoder composition, but exports only `vae_program`, whose latent `z` is sampled from `prior`. The runnable SVI block uses `AutoNormalGuide`; it does not use the declared `encoder` as an amortized guide. Thus this page demonstrates the two paths needed for a VAE without implementing joint VAE training.
+A [variational autoencoder](https://en.wikipedia.org/wiki/Variational_autoencoder) [@kingma2014autoencoding] trains a decoder with an observation-dependent encoder used as the variational guide. This source declares both an encoder-decoder composition and a prior-decoder composition, but exports only `vae_program`, whose latent `z` is sampled from `prior`. The runnable SVI block uses `AutoNormalGuide`; it does not use the declared `encoder` as an amortized guide. Thus this page demonstrates the two paths needed for a VAE without implementing joint VAE training.
 
 ## QVR source
 
@@ -28,7 +28,7 @@ A [variational autoencoder](https://en.wikipedia.org/wiki/Variational_autoencode
 # A complete VAE must use the encoder as an observation-dependent
 # guide and add the corresponding KL term.
 #
-# Reference: [Kingma and Welling 2013](https://doi.org/10.48550/arXiv.1312.6114).
+# Reference: [Kingma and Welling 2014](https://arxiv.org/abs/1312.6114).
 
 object Pixel : FinSet 8
 object Latent : Real 4
@@ -66,6 +66,18 @@ program vae_program : UnitSpace -> ObsSpace
 
 export vae_program
 ```
+
+## Understanding the model
+
+Generation starts from a prior draw of a latent code and asks what observation
+the decoder would produce. Reconstruction starts from an observation and asks
+which code its encoder proposes before decoding. A trained VAE uses that
+observation-dependent encoder as its guide, sharing the inference mapping
+across observations; this is [amortized inference](../tutorials/python/05-variational-inference.md#creating-a-guide).
+
+The runnable fit below optimizes an `AutoNormalGuide` for `z`. To train the
+declared encoder as a VAE guide, the guide would need to call it on each
+observation and pass its parameters to the optimizer alongside the decoder's. The [Pyro VAE implementation](https://pyro.ai/examples/vae.html#VAE-in-Pyro) connects the encoder and decoder through `guide` and `model` methods [@pyroVAE].
 
 ## Walkthrough
 
@@ -162,7 +174,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 The two compositions `prior >> decoder` and `encoder >> decoder` share the decoder but differ in which morphism produces the latent code. `stack(f, N)` creates independently parameterized copies, unlike a weight-sharing repetition. Only the prior-decoder program participates in the runnable inference block on this page.
 
-The [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) decomposes categorically into a reconstruction term, the faithfulness of `encoder >> decoder`, and a KL term, the distance from the prior in the enriched hom-space $\mathbf{Kern}(\mathsf{Pixel}, \mathsf{Latent})$.
+For a complete VAE with guide $q(z \mid y)$, the ELBO is the expected decoder log likelihood minus $\operatorname{KL}(q(z \mid y) \| p(z))$. The first term rewards reconstruction and the second compares the guide with the latent prior. That interpretation requires connecting and training an observation-dependent guide, which the declared `encoder` does not do in the runnable fit here.
 
 ## See also
 
@@ -170,6 +182,6 @@ The [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) decomposes catego
 - [DSL Guide](../guides/dsl-overview.md) for morphism composition (`>>`, `stack`, `embed`).
 
 
-## References
+## Sources and further reading
 
-- Diederik P. Kingma and Max Welling. 2013. Auto-Encoding Variational Bayes. arXiv preprint arXiv:1312.6114.
+- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].

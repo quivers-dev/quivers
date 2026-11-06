@@ -63,9 +63,21 @@ deduction Lambek : Term -> Term [semiring=LogProb, start=S, depth=6]
 
 This deduction is inspired by the non-commutative Lambek calculus and preserves span order. It also includes `tensor_left` and `tensor_right`, which discard one component of a tensor item. Those projection rules amount to weakening and are not product elimination rules of the strict resource-sensitive Lambek calculus.
 
+## Understanding the model
+
+Read a slash category as an instruction to look for an argument on one
+side. `A/B` needs a `B` on the right to produce an `A`; in this source's
+convention `A\B` needs it on the left. The [span indices](custom-rules.md#understanding-the-model) ensure that the
+pieces are adjacent and occur in that order.
+
+A tensor category keeps two resources together. The two projection rules here
+can discard either resource, permitting weakening. The strict Lambek calculus
+requires both resources to be used, so these projections enlarge the set of
+derivations beyond that calculus.
+
 ## Walkthrough
 
-`object Term : FinSet 16` indexes the deduction's domain and codomain; the chart reasons symbolically over constructor-tagged tuples, so the cardinality is incidental. `object Rule : FinSet 16` indexes the rule-weight vector, which the `type_logical_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` indexes the deduction's domain and codomain; the chart reasons symbolically over constructor-tagged tuples, so the cardinality is incidental. `object Rule : FinSet 16` indexes the rule-weight vector, which the `type_logical_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 `atoms NAME, NAME, ...` declares the constructor vocabulary. Category atoms are `S`, `NP`, `N`, `VP`, `PP`; structural constructors are `Fwd(A, B) ≡ A/B`, `Bwd(A, B) ≡ A\B`, `Tns(A, B) ≡ A⊗B`. The chart-item constructor `span(I, J, X)` packages a derivation covering tokens `[I, J)` carrying category `X`. Single-uppercase identifiers (`A`, `B`, `I`, `J`, `K`) appearing in rule patterns bind as wildcards.
 
@@ -151,10 +163,10 @@ print("dominant yield:", max(set(map(tuple, draws)), key=draws.count))
 # → ("every dog barks",)
 ```
 
-`adam_fit_deduction` maximises the corpus log-marginal under an
+`adam_fit_deduction` maximizes the corpus log-marginal under an
 optional Normal prior on the parameters; `prior_scale=1.0` gives MAP
 under a unit Normal. `sample_corpus` enumerates yields of the chosen
-length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalises the
+length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalizes the
 derivation forest.
 
 ### NUTS (full Bayesian posterior)

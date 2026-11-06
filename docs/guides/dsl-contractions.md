@@ -1,6 +1,6 @@
 # DSL Contractions
 
-A `contraction` block declares an operadic n-ary morphism under a
+A `contraction` block combines several typed input tensors under a
 named composition rule. The declaration gives explicit syntax
 for "combine these typed morphisms by joining shared axes," with
 the einsum wiring either inferred from the typed signature or
@@ -15,16 +15,28 @@ this page covers the QVR syntax.
 contraction op_apply (
     arg1 : A -> B,
     arg2 : A -> C,
-    kernel : B -> D
+    kernel : B * C -> D,
 ) : A -> D [rule=product_fuzzy]
 ```
 
 The declared name is callable from any expression site as
 `op_apply(arg1_morph, arg2_morph, kernel_morph)`. Each call checks
 argument count and per-argument shape (by numel) against the
-declared signature, then runs the contraction under the named rule.
+declared signature, then runs the contraction under the named [rule](transformations.md#the-composition-rule-hierarchy).
 
 ## Type-driven wiring inference
+
+For [ordinary matrix multiplication](stochastic.md#markovalgebra), `"ij,jk->ik"` says: keep the row
+`i` and final column `k`, and sum over the middle index `j`. Thus
+`out[i,k] = sum_j f[i,j] * g[j,k]` under the `real` rule. If the
+matching entries are `[2,3]` and `[5,7]`, that output cell is
+`2*5 + 3*7 = 31`. Another [algebra](core.md#algebras-enrichment-algebras) retains the wiring but replaces
+the product and sum.
+
+Axis names identify which operands share an index. Two feature axes may both
+have length 64 and still need distinct names if the contraction must
+range over them independently.
+
 
 The compiler infers the einsum wiring from the typed signature
 using three rules:
@@ -47,6 +59,13 @@ output axes that simply propagate) without requiring the user to
 spell out an einsum string for every contraction.
 
 ## Shared axes in the output
+
+An axis that appears in the output is not summed out. In `"ij,ij->ij"`,
+each output cell combines only the corresponding cells of the two
+inputs. In `"ij,ij->i"`, by contrast, the column index disappears and
+its contributions are reduced. The arrow's right side is what decides
+which information remains in the result.
+
 
 An axis named in the declared output is kept element-wise even when
 it appears in more than one input:
@@ -106,8 +125,9 @@ operations used to contract shared axes:
 - **`log_prob`**: log-sum-exp / sum on the log-probability
   semiring. Right for marginalizing discrete latents in a Bayesian
   composition.
-- **`tropical`** / **`max_plus`**: max / sum, the [Viterbi
-  semiring](https://ncatlab.org/nlab/show/tropical+semiring).
+- **`tropical`**: minimum / addition, for shortest-path costs.
+- **`max_plus`**: maximum / addition, for best-path log scores.
+  Both are tropical-style rules, with opposite optimization directions.
 - **`boolean`** / **`godel`** / **`lukasiewicz`** /
   **`probability`**: the other built-in truth algebras and
   probability semirings.
@@ -125,30 +145,31 @@ weight matrix and a target embedding:
 
 <!-- compile: false -->
 ```qvr
+composition real [level=algebra]
 object Item : FinSet 1024
-object Embed : Real 64
-object Score : Real 1
+object Scalar : FinSet 1
+object LeftFeature : FinSet 64
+object RightFeature : FinSet 64
 
-morphism E : Item -> Embed [role=latent]
-morphism W : Embed -> Embed [role=latent]
-morphism T : Item -> Embed [role=latent]
+morphism embedding : Item -> LeftFeature [role=latent]
+morphism weights : LeftFeature -> RightFeature [role=latent]
+morphism target : RightFeature -> Scalar [role=latent]
 
-# Score = sum_d sum_e E[i, d] * W[d, e] * T[i, e]
-# Two shared axes: d (between E and W) and e (between W and T)
-# get contracted; axis i is shared between E and T and the output,
-# so it is kept element-wise in the per-item score.
-contraction score (
-    e : Item -> Embed,
-    w : Embed -> Embed,
-    t : Item -> Embed
-) : Item -> Score [rule=real]
+# Score[i, 0] = sum_d sum_e E[i, d] * W[d, e] * T[e, 0]
+# LeftFeature and RightFeature are reduced; Item and Scalar remain.
+contraction bilinear_score (
+    e : Item -> LeftFeature,
+    w : LeftFeature -> RightFeature,
+    t : RightFeature -> Scalar,
+) : Item -> Scalar [rule=real]
 
-define final = score(E, W, T)
+define final = bilinear_score(embedding, weights, target)
 export final
 ```
 
-Because `Item` is present in the flattened output signature
-`Item, Score`, the inferred contraction returns a per-item score.
+The inferred wiring is `id,de,es->is`: both feature axes are reduced,
+and the singleton `Scalar` axis remains. The result has shape `(1024, 1)`,
+one bilinear score per item against the shared target vector.
 
 ## See also
 

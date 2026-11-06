@@ -9,6 +9,14 @@ parameterized distribution families lives in
 
 ## ContinuousSpace hierarchy
 
+A finite object lists possible indices. A continuous space specifies
+possible numerical values: a point in `Real 3` has three real coordinates,
+such as `(0.2, -1.0, 4.5)`. The space also records constraints. A simplex
+contains probability vectors whose entries sum to one; positive reals
+can represent a scale that must stay above zero. These constraints define
+the *support* on which a distribution may place mass.
+
+
 Continuous morphisms act between continuous measurable spaces.
 quivers provides a hierarchy of standard spaces:
 
@@ -75,12 +83,24 @@ P = ProductSpace(components=(R3, U))   # R^3 x (0, 1); also R3 * U
 
 ## ContinuousMorphism
 
+Given an input `x`, a kernel supplies a distribution over outputs `y`.
+A probability density describes mass per unit volume. A uniform density
+on an interval of width `0.1`, for instance, is `10`; integrating over
+the interval gives `10 * 0.1 = 1`. Its `log_prob` is `log(10)`, a
+positive observation score.
+
+For a Normal sample, reparameterization writes `y = mu + sigma * epsilon`
+with `epsilon` drawn from a standard Normal. Gradients then pass through
+`mu` and `sigma` for the realized noise. Discrete sampling does not generally
+admit the same pathwise derivative.
+
+
 A continuous morphism $f : X \to Y$ between spaces $X$ and $Y$
 defines a conditional distribution $p(y \mid x)$ via two operations:
 
 - `log_prob(x, y)`: evaluate $\log p(y \mid x)$.
-- `rsample(x)`: generate reparameterized samples from $p(\cdot \mid
-  x)$.
+- `rsample(x)`: generate samples from $p(\cdot \mid x)$, with a
+  pathwise differentiable representation when the family supports one.
 
 ```python
 from quivers.continuous.morphisms import ContinuousMorphism
@@ -104,6 +124,14 @@ Morphisms are
 subclasses, so they are trainable.
 
 ## Composition: SampledComposition
+
+The composite distribution is
+$p(z\mid x)=\int p(z\mid y)p(y\mid x)\,dy$. Drawing `y` and then
+`z` produces a draw from this distribution. Evaluating its density at a
+specified `z` requires integrating over the possible values of `y`, using
+an analytic formula or an approximation. A finite intermediate allows
+this calculation to use a finite sum.
+
 
 When composing continuous morphisms, the intermediate is
 continuous. The result is computed via ancestral sampling:
@@ -132,7 +160,7 @@ z_samples = composed.rsample(x, sample_shape=torch.Size((50,)))  # (50, 2, 5)
 
 When an intermediate is discrete (a
 [`FinSet`](../api/core/objects.md)), composition uses exact
-marginalization:
+[marginalization](morphisms.md#marginalization):
 
 $$p(z \mid x) = \sum_y p(y \mid x) \, p(z \mid y)$$
 
@@ -149,7 +177,8 @@ X = Euclidean(name="X", dim=3)
 f = ConditionalNormal(X, Euclidean(name="Y1", dim=2))
 g = ConditionalBeta(X, UnitInterval(name="Y2"))
 
-# Product: (f @ g)(x) ~ p(y_1, y_2 | x) = p(y_1 | x) . p(y_2 | x)
+# Product takes two inputs: p(y_1, y_2 | x_1, x_2)
+# = p_f(y_1 | x_1) * p_g(y_2 | x_2).
 fg = f @ g
 
 # Domain and codomain are products
@@ -224,6 +253,19 @@ composed = discrete_f >> cont_g  # exact marginalization over Y
 
 ## Normalizing flows
 
+Stan’s [multivariate change-of-variables explanation](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#multivariate-changes-of-variables) gives the determinant correction needed when transforming a density. [@stanReparameterization] A flow uses a sequence of such transformations; [variational guides](inference-svi.md#guides-variational-families) can learn them as a posterior approximation.
+
+Normalizing flows combine invertible transformations with density
+corrections [@rezende2015flows].
+
+An invertible transformation can stretch or compress regions of a simple
+distribution. If `y = 2*z` in one dimension, the transformed density at
+`y` is half the original density at `y/2`, because the same mass now
+occupies twice the width. The log-determinant Jacobian records this volume
+change. Invertibility lets the model find the corresponding base value
+and score it by including the Jacobian term below.
+
+
 A [normalizing
 flow](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 transforms a simple base distribution via a chain of invertible
@@ -231,8 +273,7 @@ transformations.
 
 ### AffineCouplingLayer
 
-An [affine coupling
-layer](https://doi.org/10.48550/arXiv.1605.08803) partitions the
+An affine coupling layer [@dinh2017realnvp] partitions the
 input and applies an invertible affine transformation to each
 partition:
 
@@ -301,10 +342,9 @@ a stack of coupling layers wrapped as a `ContinuousMorphism`.
   counterpart and the
   [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) construction.
 
+## Further reading
 
-## References
-
-- Conor Durkan, Artur Bekasov, Iain Murray, and George Papamakarios. 2019. Neural spline flows. arXiv preprint arXiv:1906.04032.
-- Diederik P. Kingma, Tim Salimans, Rafal Jozefowicz, Xi Chen, Ilya Sutskever, and Max Welling. 2016. Improving variational inference with inverse autoregressive flow. arXiv preprint arXiv:1606.04934.
-- George Papamakarios, Theo Pavlakou, and Iain Murray. 2017. Masked autoregressive flow for density estimation. arXiv preprint arXiv:1705.07057.
-- Laurent Dinh, Jascha Sohl-Dickstein, and Samy Bengio. 2016. Density estimation using Real NVP. arXiv preprint arXiv:1605.08803.
+- [@durkan2019splines]
+- [@kingma2016iaf]
+- [@papamakarios2017maf]
+- [@dinh2017realnvp]

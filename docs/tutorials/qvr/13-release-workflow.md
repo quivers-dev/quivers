@@ -1,13 +1,20 @@
 # Check, inspect, and transpile a module
 
 This tutorial turns the QVR tooling into a short pre-release workflow. The
-goal is a **checked deployment claim (CDC)**: every public entry is exercised
+goal is to check a deployment claim: every public entry is exercised
 on the reference machine, and every advertised target is checked against the
 reachable computation graph before artifacts are emitted.
 
-We will use the authored handler from the previous tutorial because it
+We will use the authored handler from [tutorial 10](10-effects-and-handlers.md) because it
 contains a custom effect, a handler, a resumption, an open row, and one pure
 public wrapper.
+
+A successful source check says the declared computation is well formed.
+A successful target check says its required features pass that target's
+capability checks. Emission then produces source in the target language, whose
+own parser and runtime provide further checks. Matching [numerical scores](../../developer/contributing.md#test-tiers)
+requires a separate comparison with the original model. Each step answers a
+different question, which is why the workflow retains all of them.
 
 ## 1. Check the source and one target
 
@@ -75,11 +82,10 @@ qvr transpile --to-all docs/tutorials/qvr/source/authored-handler.qvr \
   --out-dir generated
 ```
 
-`--to-all` is a discovery tool, not a claim that every target can represent
-the module. A backend may refuse a construct with a stable diagnostic. The
-generated [support matrix](../../transpile-support.md) shows the measured
-boundary for the release corpus, but your module's reachable calls remain the
-decisive check.
+`--to-all` tries each target and reports its result. A target that cannot
+represent a reachable construct returns a capability diagnostic. Use the
+[support matrix](../../transpile-support.md) to inspect release-corpus results,
+then run the command on your own module to check the operations it uses.
 
 ## 6. Verify editor grammar provenance
 
@@ -101,7 +107,7 @@ qvr check old-model.qvr
 The v0.18-to-current hop is validating and byte-preserving because that
 grammar extension was additive.
 
-## 7. Automate the CDC
+## 7. Automate the checks
 
 A release job should, in order:
 

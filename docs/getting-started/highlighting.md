@@ -11,6 +11,16 @@
 
 This page documents how to wire each one up.
 
+Syntax highlighting identifies words and punctuation; semantic checking
+asks whether the declarations and computations fit together. A colorful
+`Normal(...)` call can still have an invalid argument or a missing runtime
+input. The language server adds type-aware feedback, while [`qvr check`](../tutorials/qvr/13-release-workflow.md#1-check-the-source-and-one-target) gives
+the corresponding explicit check from a terminal.
+
+Choose the setup for the editor or notebook you use. The parser provenance
+details below matter when those tools disagree about valid syntax; they are
+not additional mathematical prerequisites for writing a model.
+
 ## Pygments (Python doc and notebook tools)
 
 Quivers ships a Pygments lexer registered as an entry point. After

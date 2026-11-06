@@ -4,8 +4,11 @@ The coend ∫^X F(X,X) computes the join (existential) over the diagonal of
 matched contravariant/covariant dimensions. The end ∫_X F(X,X) computes
 the meet (universal) over the diagonal.
 
-These generalize composition (coend over shared object) and the hom in
-the functor category (end over all objects).
+These routines implement finite diagonal reductions. General categorical
+ends and coends also require compatibility with the indexing category's
+morphisms; this API does not construct arbitrary such compatibility data.
+The selected algebra determines whether the reductions have the laws
+needed for an enriched interpretation.
 """
 
 from __future__ import annotations

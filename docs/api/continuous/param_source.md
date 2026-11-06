@@ -1,5 +1,13 @@
 # Parameter Sources
 
+A conditional family needs a rule that turns its input into distribution parameters. For
+a Normal response this means obtaining a location and a positive scale for each input. A
+parameter source supplies that rule, which may be a table or a learned network; it is
+separate from the random draw made using those parameters.
+
+See [parameters of conditional families](../../guides/continuous-families.md#hand-written-core-families) and
+[constructing conditional families in Python](../../tutorials/python/03-probabilistic-programs.md#conditional-distribution-families).
+
 `quivers.continuous.param_source` maps a conditional family's input to
 its distribution parameters. For a morphism declared `~ Family` over a
 continuous domain, a `ParamSource` computes the parameters of the

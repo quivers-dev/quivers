@@ -1,6 +1,28 @@
 # Categorical Structures
 
+Category theory studies which ways of assembling typed operations agree.
+Functors transform whole pipelines, natural transformations compare
+functors, and monoidal and traced structures describe parallel wiring
+and feedback. [Core Types](core.md)
+and [Morphisms](morphisms.md) supply the finite table interpretation.
+For each construction, the equations specify the properties required of
+the underlying operations.
+
+
 ## Functors
+
+The standard definitions and laws are developed in [@maclane1998categories].
+For a programmer-oriented introduction to composition, see [@milewski2014composition].
+
+A functor transforms an entire typed system consistently. As an ordinary
+set-theoretic example, send a set of letters to lists of letters and a
+letter-renaming function to the function that renames every letter in a list.
+Renaming letters with `f` and then `g` gives the same list as renaming once
+with their composite: `map(g, map(f, xs)) = map(g ∘ f, xs)`.
+Mapping the identity similarly leaves the list unchanged.
+
+Milewski’s [functors chapter](https://bartoszmilewski.com/2015/01/20/functors/#:~:text=Functors%20in%20Programming) develops the `Maybe`, list, and reader examples in its “Functors in Programming” section. [@milewski2015functors] Quivers uses the same preservation laws when lifting [typed morphisms](morphisms.md#composition-the-operator).
+
 
 A functor $F: \mathcal{C} \to \mathcal{D}$ between $\mathcal{V}$-enriched categories maps objects to objects and morphisms to morphisms, preserving composition and identity.
 
@@ -40,6 +62,17 @@ To define your own functor, subclass `Functor` and implement the three abstract 
 
 ## Natural Transformations
 
+A natural transformation changes representations uniformly across types.
+For instance, place a value in a singleton list. Renaming the value and then
+making its singleton list agrees with making the list and renaming its
+element. The diagram below expresses that two-route agreement:
+$G(f) \circ \alpha_X = \alpha_Y \circ F(f)$. A component $\alpha_X$
+is the conversion at type `X`; naturality requires all such conversions to
+satisfy the displayed equation for every eligible `f`.
+
+The opening diagrams in Milewski’s [natural transformations chapter](https://bartoszmilewski.com/2015/04/07/natural-transformations/) follow each path through this square; its “Polymorphic Functions” section relates the components to generic functions. [@milewski2015natural]
+
+
 A natural transformation $\alpha: F \Rightarrow G$ between functors $F, G: \mathcal{C} \to \mathcal{D}$ is a family of morphisms $\{\alpha_X: F(X) \to G(X)\}$ indexed by objects of $\mathcal{C}$, such that the naturality square commutes:
 
 $$
@@ -77,6 +110,22 @@ assert eta.verify_naturality(f)
 
 ## Adjunctions
 
+An adjunction relates two ways of specifying the same map. In the ordinary
+free-monoid example, assigning each letter an element of a monoid uniquely
+determines a concatenation-preserving map on all words: evaluate the letters
+and multiply their values. Thus maps from a free monoid correspond to maps
+from its generators into the underlying set. Formally,
+$\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$, naturally in `A` and `B`.
+The unit and counit encode this correspondence; they need not be inverses.
+
+Milewski’s [adjunctions chapter](https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets) develops the correspondence in its “Adjunctions and Hom-Sets” section. [@milewski2016adjunctions] The unit and counit determine the operations used in the [monad laws](monadic.md#monads).
+
+Quivers stores words only up to a chosen length. Concatenations exceeding
+that bound are dropped, which changes the maps used in the unbounded
+free-monoid adjunction. Triangle-identity checks must thus use the
+actual bounded operations and specify which input lengths they cover.
+
+
 An adjunction $F \dashv G$ is a pair of functors with morphisms $\eta: \text{id}_\mathcal{C} \Rightarrow GF$ (unit) and $\varepsilon: FG \Rightarrow \text{id}_\mathcal{D}$ (counit) satisfying triangle identities.
 
 The free-forgetful adjunction $\text{Free} \dashv \text{Forget}$ is shipped as [`FreeForgetfulAdjunction`](../api/categorical/adjunctions.md):
@@ -106,6 +155,14 @@ assert adjunction.verify_triangle_right(A)
 ```
 
 ## Monoidal Structures
+
+A monoidal product describes doing two things side by side. With pairs,
+`(a, (b, c))` and `((a, b), c)` contain the same information; the associator
+converts between their groupings. A unitor removes a redundant singleton
+component. A braiding swaps the two components. Coherence requires that
+different routes through these regroupings agree, so wiring a larger
+pipeline does not depend on arbitrary parentheses.
+
 
 A monoidal category $(\mathcal{C}, \otimes, I)$ has:
 
@@ -168,6 +225,14 @@ The unit here is the initial object (empty set), exposed as `EMPTY` from `quiver
 
 ## Base Change
 
+A threshold turns a soft score into a yes/no decision. The table keeps its
+row and column types, but subsequent composition uses Boolean operations.
+Thresholding can discard a weak link before another operation uses its
+score. Thus thresholding a composite need not agree with composing the
+thresholded tables; consult [Transformations](transformations.md) before
+using a preservation law.
+
+
 Change the enriching algebra without changing the structure of morphisms. [`BaseChange`](../api/categorical/base_change.md) is an ABC; concrete instances are `BoolToFuzzy` and `FuzzyToBool`:
 
 <!-- python: skip -->
@@ -196,13 +261,20 @@ fuzzy_again = to_fuzzy.apply_to_morphism(bool_morph)
 
 ## Traced Monoidal Structure
 
+For `f : Y * X -> Z * X`, fix an external input `y` and output `z`,
+match the two `X` indices, and aggregate `f[y, x, z, x]` over `x`.
+The matching condition is the feedback wire; the remaining axes are `Y`
+and `Z`, leaving exactly the axes shown in the displayed type.
+
+
 A traced monoidal category adds a trace operator:
 
 $$
 \text{tr}^X_{Y,Z}: \mathcal{C}(Y \otimes X, Z \otimes X) \to \mathcal{C}(Y, Z)
 $$
 
-This is useful for feedback and recursive definitions. The free function [`trace`](../api/categorical/traced.md) wraps a [`CartesianTrace`](../api/categorical/traced.md):
+The finite tensor trace matches an input index with an output index and
+reduces over their shared value, just as a matrix trace sums diagonal entries. The free function [`trace`](../api/categorical/traced.md) wraps a [`CartesianTrace`](../api/categorical/traced.md):
 
 <!-- python: skip -->
 ```python
@@ -231,7 +303,7 @@ The trace contracts the matching $X$ wire, leaving the external domain $Y$ and c
 |-----------|---------|--------|
 | Functor | Object and morphism map | `F: C → D` |
 | Natural Transform | Family of morphisms | `α: F ⇒ G` |
-| Adjunction | Inverse functors up to natural isos | `F ⊣ G` |
+| Adjunction | Natural correspondence between two kinds of morphism | `F ⊣ G` |
 | Monoidal | Product with coherence | `(C, ⊗, I)` |
 | Base Change | Enrichment transformation | `FuzzyToBool().apply_to_morphism(f)` |
 | Traced | Feedback/iteration | `trace(f, feedback=X, domain=Y, codomain=Z)` |

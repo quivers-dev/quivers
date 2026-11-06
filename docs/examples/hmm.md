@@ -68,6 +68,21 @@ export hmm
 export hmm_program
 ```
 
+## Understanding the model
+
+A state-to-state relation assigns a number to each possible step. Repeating
+it combines routes with intermediate states; following it by an emission
+relation connects starting states to observations. The arithmetic matters:
+HMM probabilities sum mutually exclusive paths, whereas product-fuzzy
+composition combines route strengths with [noisy-OR](../tutorials/python/01-first-quiver.md#composition).
+
+Read the two constructions in this source separately. The exported relation
+demonstrates repeated composition. The probabilistic `hmm_program` gives one
+shared hidden state an emission sequence and leaves its [transition draw](../tutorials/qvr/05-time-series.md#finite-state-path-composition)
+unused. It thus cannot learn transitions from that likelihood. Inspecting
+which sampled values actually reach an observation is as important as
+inspecting their shapes.
+
 ## Walkthrough
 
 `composition product_fuzzy [level=algebra]` selects product and noisy-OR aggregation for fuzzy relations. It is not the sum-product semiring used by the HMM forward algorithm. A Viterbi implementation would also require log weights and max aggregation; changing this declaration alone is not a validated conversion of the current parameters.

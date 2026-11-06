@@ -1,6 +1,16 @@
 # The Program-Shape Protocol
 
-`quivers.dsl.program_theory` provides a schema-level view of a compiled QVR environment. The word *theory* here names a panproto protocol, not a proof that schema equality captures program behavior.
+`quivers.dsl.program_theory` provides a schema-level view of a compiled QVR environment. The protocol specifies the vertices, edges, and constraints used to describe that environment.
+
+Think of the extracted schema as an inspectable graph of a module. An object
+is a vertex, a morphism's input and output are edges to object vertices, and
+a call links the caller to the callee. A protocol specifies which kinds of
+vertices, edges, and metadata this graph may contain. This supports
+structural inspection without executing the model.
+
+For instance, two transition tables may have identical input and output
+objects but different learned weights. Their extracted shape can agree even
+though they assign different probabilities. The schema records their common domain, codomain, and declaration structure.
 
 ## 1. `QVR_PROGRAM_PROTOCOL`
 
@@ -33,19 +43,17 @@ Extraction is deterministic for the cases covered by `tests/test_program_theory.
 
 ## 3. What a schema records
 
-The schema records static shape, selected declaration metadata, and the call, request, and handler structure of every checked body. It does not contain learned tensors, observations, optimizer state, distribution objects, or the term-level bodies needed to reconstruct a kernel; those live in the checked module's serialization.
+[Semantic environments](setting.md#5-environments) describe the compiled bindings being inspected. The [typing implementation map](typing.md#9-implementation-correspondence) locates the checker structures that supply the extracted metadata.
 
-Thus two practical implications follow.
+The schema records static shape, selected declaration metadata, and the call, request, and handler structure of each checked body. Learned tensors, observations, optimizer state, distribution objects, and executable bodies belong to the compiled model and its serialization.
 
-First, a nonempty `panproto.diff_schemas(a, b)` identifies a structural difference between extracted environments. The test suite checks this on distinct example programs.
-
-Second, equal extracted schemas do not imply equal program behavior. Two compilations may share all recorded vertices, edges, and constraints while carrying different parameter values or executable functions.
+Use `panproto.diff_schemas(a, b)` to locate structural changes. Changing a Normal site to a Gamma site changes the extracted family metadata. Updating only the learned location of a Normal site preserves the schema while changing the model's predictions.
 
 ## 4. Migration scope
 
-Panproto schema operations may consume the extracted shape, but this module does not itself define `auto_lens`, prove lens laws, migrate `.qvr` source, or implement an evaluator from `(Schema, parameters)` back to a QVR kernel. Those are separate operations and require their own validation.
+The migration guide distinguishes [the source transformations performed by `qvr migrate`](../guides/migration.md#what-qvr-migrate-does) from [state that survives migration](../guides/migration.md#what-survives-migration). Those concrete operations determine how an extracted structural change reaches a usable model.
 
-In particular, renaming a schema vertex does not by itself rename every reference in source text or preserve learned state. Source migration is handled by the grammar migration tooling, while parameter migration needs an explicit value-level policy.
+Panproto schema operations can consume the extracted shape. To migrate `.qvr` source, use the grammar migration tooling so declaration changes are propagated to their references. To migrate learned parameters, specify how old tensors map to the new declarations, including any changes in axis order or dimension.
 
 ## 5. Evidence
 
@@ -59,5 +67,3 @@ In particular, renaming a schema vertex does not by itself rename every referenc
 6. a module holding only a `program` yields its computation, entry point, sites, and canonical instances;
 7. computations and programs calling one another form a single call graph;
 8. changing one site's family changes the extracted schema.
-
-These checks establish the extractor's current shape contract. They do not establish functoriality, naturality, or behavioral equivalence.

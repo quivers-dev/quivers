@@ -2,8 +2,7 @@
 
 This tutorial runs a schema-backed chart parser in two ways: as a batched
 PyTorch `ChartParser` and as a checked search computation. Both views use the
-same instantiated grammar and learned weights. We will call this pairing the
-**dual parser view (DPV)**.
+same instantiated grammar and learned weights.
 
 The source is the gallery's
 [`schema_chart_parser.qvr`](../../examples/source/schema_chart_parser.qvr).
@@ -14,6 +13,18 @@ application schemas, a permutation schema, one bundle, and:
 ```qvr
 define lp_parser = parser(rules=[lp_rules], terminal=Token, start=S, depth=1)
 ```
+
+[A chart](../../examples/custom-rules.md#understanding-the-model) stores possible analyses for intervals of a sentence. In `the dog
+sleeps`, one cell can say that `the dog` forms a noun phrase, and another that
+`sleeps` expects that phrase on its left. A rule combines them into a sentence
+analysis. Several derivations may reach the same full-sentence goal. For a chart filled one cell at a time, see the NLTK book’s [substring-table calculation](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) [@nltkSyntax2019].
+
+An *inside weight* aggregates those derivations. Rule weights multiply along
+a derivation, and alternative derivations add; in log space these become
+addition and [`logsumexp`](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine). A chart can compute the shared subproblems once,
+while reference search enumerates alternatives explicitly. Agreement between
+the two checks the computation; a raw inside weight is not automatically a
+normalized probability over all possible sentences.
 
 ## 1. Compile the schema parser
 
@@ -135,10 +146,9 @@ An unsupported target reports `qiec:capability:search:<entry>` and preserves
 the source range that introduced the parser. It does not emit an empty parser
 or drop the score.
 
-A potential worry is that the reference search will replace the optimized
-chart implementation. It does not. The classic view remains the fitted batched
-module; the checked view supplies a semantic oracle, composition point, and
-portable failure boundary. Which view runs is explicit at the call site.
+The classic view executes the fitted batched chart module. The checked view
+exposes the search computation for reference evaluation and composition, and
+reports unsupported target operations. The call site selects which view executes.
 
 Continue with [Structural autoencoders](12-structural-autoencoders.md), or see
 the [generated-computation reference](../../reference/qvr/generated-computations.md)

@@ -7,6 +7,17 @@ import-time rules on every test run, and
 `tools/check_api_reference.py` checks the rendered API reference after
 `mkdocs build` in the docs job. A change that breaks a rule fails CI.
 
+For a user, this policy identifies imports that should survive internal file
+reorganization. For a contributor, it identifies the objects that must remain
+constructible, documented, and testable. If a [step record](../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram) appears in a compiled
+program, a Python user should be able to import that record and inspect it
+without reaching into an internal module.
+
+A re-export makes one object available through another module name; it does
+not create a second implementation. Thus `from quivers.continuous import
+PlateDraw` stays supported if the defining leaf module moves within that
+package. The rules below make this practical promise mechanically checkable.
+
 ## Terms
 
 A module is *public* when no component of its dotted path begins with
@@ -39,7 +50,7 @@ appears in one of them.
    `M.__all__` is in `P.__all__` and is bound to the same object. A
    subpackage is a package in its own right, so `P` may re-export a
    subpackage's names but need not. Two leaf modules of one package
-   therefore cannot export different objects under one name. A package
+   thus cannot export different objects under one name. A package
    may bind a re-export lazily through a module-level `__getattr__`
    when an eager import would create a cycle.
 
@@ -60,7 +71,7 @@ appears in one of them.
    subclass the DSL compiler places in a compiled program is public,
    as are the step records a
    [`MonadicProgram`][quivers.continuous.MonadicProgram] is built
-   from. Python code can therefore assemble any program the compiler
+   from. Python code can thus assemble any program the compiler
    produces, and the objects the compiler produces are a contract
    rather than an implementation detail. The test compiles every
    gallery example and checks the classes of the morphisms it finds.

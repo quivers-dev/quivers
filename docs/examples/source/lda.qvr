@@ -1,34 +1,17 @@
-# Latent Dirichlet Allocation
+# Document-level topic mixture
 #
-# The Blei, Ng & Jordan (2003) topic model. Each document draws
-# a topic mixture from a Dirichlet prior; each topic draws a
-# word distribution from a Dirichlet prior; each word in a
-# document draws a topic from its document's mixture, then a
-# word from the chosen topic's distribution.
+# Each document draws topic weights, and each topic draws a vocabulary
+# distribution. The grouped marginalize block sums over one topic shared
+# by every observed token in that document:
 #
-# Generative structure:
+#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
 #
-#   theta_d  ~ Dirichlet(alpha)            per-document topic mixture
-#   phi_k    ~ Dirichlet(beta)             per-topic word distribution
-#   z_{d,n}  ~ Categorical(probs=theta_d)        per-word topic assignment
-#   w_{d,n}  ~ Categorical(probs=phi_{z_{d,n}})  per-word observed token
+# This differs from canonical LDA, whose independent per-token assignments
+# give product_n sum_k theta_d[k] * phi[k, w_d[n]].
+# Token indexes observed positions; Vocab indexes possible token values.
+# Mix is the real vector space containing the returned topic weights.
 #
-# The per-word topic z_{d,n} is integrated out of the per-word
-# likelihood. The closed-form marginal is
-#
-#   p(w_{d,n} | theta_d, phi) = sum_k theta_d[k] * phi[k, w_{d,n}],
-#
-# which the `marginalize` block computes via logsumexp over the
-# K topic atoms.
-#
-# Token is the corpus-wide plate of word positions and Vocab is
-# the vocabulary the tokens take values in; the two are distinct
-# sets, so they carry distinct objects even though a corpus can
-# happen to hold as many positions as types. Mix is the value
-# space of the returned per-document topic mixture, a point of
-# the Topic simplex embedded in R^K.
-#
-# Reference: [Blei, Ng & Jordan 2003](https://www.jmlr.org/papers/v3/blei03a.html).
+# Background: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation.
 
 composition log_prob [level=algebra]
 

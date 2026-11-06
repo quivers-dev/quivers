@@ -1,5 +1,32 @@
 # Programs
 
+A probabilistic program specifies random choices and the factors used to
+score them. Consider this body fragment, with an observed value `y` supplied
+by the caller:
+
+```text
+sample location <- Normal(loc=0.0, scale=1.0)
+observe y <- Normal(loc=location, scale=0.5)
+return location
+```
+
+Writing the sampled location as $z$, its unnormalized weight at data $y$ is
+
+$$
+p(z)\,p(y\mid z)
+=\mathcal N(z;0,1)\,\mathcal N(y;z,0.5^2).
+$$
+
+`sample` introduces $z$; `observe` evaluates the likelihood of the supplied
+$y$ at that $z$. The supplied $y$ stays fixed while candidate values of $z$ receive different scores. `return`
+selects the reported value without discarding the likelihood factor. The
+posterior is this weight divided by its integral over $z$, provided that
+integral is finite and positive. A forward execution and posterior inference
+are thus different operations on the same program.
+
+The following sections make this account compositional: each statement has
+a meaning, and the meaning of a block follows from how statements compose.
+
 The `program` block is the monadic sublanguage of QVR. A `program` declaration
 
 ```
@@ -30,13 +57,36 @@ and `return` enter through the probability-kernel embedding; `observe` and
 `score` multiply the current measure by a nonnegative factor; and finite
 `marginalize` pushes that measure forward along a projection.
 
+For the statistical reading of prior, likelihood, and posterior, see
+[@gelman2013bayesian]. For a programming-oriented explanation of monadic
+sequencing, see [@wadler1992essence], and for its semantic formulation,
+[@moggi1991notions].
+
 ## 1. The Giry monad
+
+The primer introduces [pure, bind, and Kleisli composition](../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue) using distributions. Milewski’s [“The Kleisli Category” section](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/) derives the same sequencing pattern for functions that return a value together with a log [@milewski2016monads].
+
+The Giry monad packages two familiar operations on probability distributions.
+First, a certain value $s$ can be treated as a distribution that puts all its
+mass at $s$; this is the Dirac distribution $\delta_s$, written as the unit
+$\eta(s)$. Second, a distribution over distributions can be averaged into
+one distribution; this is multiplication $\mu$. For instance, choosing a
+coin with probabilities $0.25$ and $0.75$, whose head probabilities are
+$0.2$ and $0.8$, gives head probability $0.25(0.2)+0.75(0.8)=0.65$.
+
+A *Kleisli arrow* is a function whose result is a distribution. Composing two
+such arrows means passing each possible first result into the second and
+averaging its distribution with the first result's weight. The integral
+below is the continuous version of the coin calculation. It describes all
+possible executions together, even though one runtime execution draws just
+one sequence of values.
 
 Let $\mathcal{G}$ denote the Giry monad on $\mathbf{SBor}$, with unit $\eta_S : S \to \mathcal{G}(S)$ given by $s \mapsto \delta_s$ (Dirac at $s$) and multiplication $\mu_S : \mathcal{G}(\mathcal{G}(S)) \to \mathcal{G}(S)$ given by integration. The Kleisli category $\mathbf{Kern}$ of $\mathcal{G}$ has the same objects as $\mathbf{SBor}$ and morphisms $S \to T$ given by Markov kernels $S \to \mathcal{G}(T)$.
 
 Sampling stays in $\mathcal G$. Observation and explicit scoring instead use
-the finite nonnegative-measure monad $\mathcal M_+$, under the implementation's
-finite-log-weight contract. This larger space is necessary because a
+nonnegative weighted measures, written $\mathcal M_+$ here. Statements about
+finite measures require the relevant integrability conditions in addition
+to finite log weights at individual executions. This larger space is necessary because a
 continuous density, or an explicit factor $\exp(w)$, may exceed one. Calling
 the scored result a sub-probability measure would thus be incorrect.
 Probability kernels embed into $\mathcal M_+$, and normalization remains an
@@ -67,6 +117,10 @@ The body-level denotation function is
 $$
 \mathcal{B}\llbracket s_1 \,;\, \cdots \,;\, s_n \,;\, \mathsf{return}\ e \rrbracket : \Gamma \to \mathcal{M}_+(\llbracket \tau_2 \rrbracket).
 $$
+
+The probability-measure construction originates with Giry
+[@giry1982categorical]. The use of monadic structure to interpret computations
+compositionally is developed by Moggi [@moggi1991notions].
 
 ## 2. Statements
 
@@ -104,7 +158,7 @@ $$
 \mathbf{1}_B(\phi) \cdot \int_C p_F\bigl( y \,;\, \theta_F(\bar a, \phi) \bigr)\, \mathrm{d}y,
 $$
 
-where $\theta_F$ is the family's parameter map (which may depend on previously-bound variables in $\phi$). In short: keep the current trace $\phi$ and append a fresh sample from $F$ conditioned on it. The induced action on measures over $\Phi$ is $\mu_{\Phi \times \mathsf{cod}(F)} \circ \mathcal{G}\bigl(\mathcal{S}\llbracket \mathsf{bind} \rrbracket\bigr)$.
+where $\theta_F$ is the family's parameter map (which may depend on previously-bound variables in $\phi$). The operation keeps the current trace $\phi$ and appends a fresh sample from $F$ conditioned on it. The induced action on measures over $\Phi$ is $\mu_{\Phi \times \mathsf{cod}(F)} \circ \mathcal{G}\bigl(\mathcal{S}\llbracket \mathsf{bind} \rrbracket\bigr)$.
 
 A family application supplies one complete keyword schema for $\theta_F$.
 Thus `Normal(loc=m, scale=s)` fixes both normal coordinates explicitly, while
@@ -125,6 +179,14 @@ sample (v_1, …, v_m) <- F(args)
 with denotation identical to the scalar bind above except that the codomain $\llbracket \mathsf{cod}(F) \rrbracket = K_1 \times \cdots \times K_m$ must be an $m$-fold product and the trace is extended with $m$ named coordinates rather than a single one. Subsequent statements may reference each $v_i$ as if it had been bound separately by $v_i \leftarrow \pi_i \circ F(\bar a)$. The two forms have the same denotation when the family's codomain is a product type; the destructuring form gives the components names.
 
 ### 2.2 Observe
+
+The [rain posterior](../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise) calculates the likelihood update numerically. The [observation-binding guide](../guides/programs.md#the-observations-dict) shows how to supply the fixed values used by QVR.
+
+An observation changes the weight attached to the current choices while
+leaving those choices and the supplied observation fixed. In the preceding
+Normal example, locations near `y` receive a larger likelihood than distant
+locations. Multiplying by this likelihood is what the formula below records;
+an inference procedure can use this function to sample or approximate the posterior location.
 
 An observe statement
 
@@ -284,19 +346,29 @@ site. The result is `call to 'L' failed: ...` rather than a bare PyTorch trace.
 
 ### 2.4 Indexed Bind (Plate)
 
+Pyro’s [independent plate dimensions](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate) tutorial illustrates the conditional independence represented by a plate. QVR’s [plate and fibration typing rules](typing.md#32-plates-events-and-fibrations) additionally track the named axes.
+
+A plate repeats a draw over a named finite axis. If `Group` has eight
+members, an indexed scalar Normal draw produces eight values, one per group.
+They are independent conditional on the parameters passed to the family.
+A shared random scale can still make the eight values dependent in the
+joint model: a large shared scale makes large magnitudes more likely in
+all eight draws. Conditioning on the scale removes that source of dependence.
+
 An indexed bind
 
 ```
 v : A <- F(args)
 ```
 
-declares $v$ as an $A$-indexed plate of independent $F$-draws. The per-fiber codomain $K = \mathsf{cod}(F)$ is taken from the family. The natural isomorphism
+declares $v$ as an $A$-indexed plate of independent $F$-draws. The per-fiber codomain $K = \mathsf{cod}(F)$ is taken from the family. For a fixed context, the family of coordinate distributions determines the independent product
 
 $$
-\mathbf{Kern}(\mathbf{1}, K^A) \;\cong\; \mathbf{Kern}(A, K)
+\mathbf{Kern}(A,K)\longrightarrow\mathbf{Kern}(\mathbf{1},K^A),
+\qquad (p_a)_{a\in A}\longmapsto\bigotimes_{a\in A}p_a.
 $$
 
-identifies a single $\mathcal{G}(K^A)$-valued draw with an $A$-indexed family of $\mathcal{G}(K)$-valued draws. The statement thus denotes the context-extending Kleisli arrow
+Taking coordinate marginals recovers the $p_a$. Arbitrary joint distributions can have these same marginals with different dependence: two fair bits may be independent or always equal. The plate selects the independent product. The statement thus denotes the context-extending Kleisli arrow
 
 $$
 \mathcal{S}\llbracket v : A \leftarrow F(\bar a) \rrbracket : \Phi \to \mathcal{G}\bigl(\Phi \times K^A\bigr),
@@ -326,6 +398,18 @@ The optional `via = idx` entry in the unified option block names a fibration int
 
 ### 2.6 Marginalize
 
+Stan’s [two-component mixture calculation](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) works through the weighted sum and its log-sum-exp implementation. Pyro’s [mechanics of enumeration](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) shows the alternatives represented along a tensor axis.
+
+Finite marginalization evaluates every possible value of a hidden choice
+and adds its weighted contribution. If $c\in\{0,1\}$ has prior weights
+$(0.3,0.7)$ and an observed event has likelihoods $(0.2,0.8)$ under those
+choices, its marginal likelihood is $0.3(0.2)+0.7(0.8)=0.62$.
+The log contribution is
+$\operatorname{logsumexp}(\log0.3+\log0.2,\log0.7+\log0.8)=\log0.62$.
+The result no longer contains a value for $c$: both possibilities have
+contributed. This is the probability interpretation of the default
+`logsumexp` reduction; other reductions select different aggregations.
+
 A scoped marginalize statement
 
 ```
@@ -351,13 +435,36 @@ Operationally, QVR implements this pushforward exactly for enumerable families
 such as `Categorical` and Bernoulli-family supports. It combines prior and
 scope weights across the support with the requested reduction. For a family
 without finite support, the current elaborator samples once and runs the
-scope with that value; this is ordinary Monte Carlo sampling, not continuous
-marginal integration. Such a block may not specify `logsumexp`, `sum`, or
-`mean`. After the scope closes, $c$ falls out of scope in either path.
+scope with that value. This path contributes the score of one sampled
+configuration. Computing a continuous marginal would require integrating
+these weighted scores across the hidden variable. The elaborator rejects
+`logsumexp`, `sum`, and `mean` on this path. After the scope closes, $c$ falls out of scope in either path.
 
 The four bind variants, scalar, indexed, scored, marginalized, are uniformly a single underlying step with a `mode ∈ {sample, score, marginal}` tag and an optional index `A`. The scalar/plate axis is orthogonal to the probability/weighted-measure distinction.
 
+The statistical operation is summing out a discrete latent variable, as in
+mixture models [@bishop2006pattern]. The grouping below specifies which
+likelihood factors must be combined before that sum.
+
 ### 2.7 Grouped marginalize with multi-observe fibration
+
+The [grouped transpilation contract](transpile-correctness/index.md#5-plates-marginalization-and-via) explains why rows sharing one latent must accumulate before that latent is summed out. Pyro’s [dependencies among plates](https://pyro.ai/examples/enumeration.html#Dependencies-among-plates) gives related examples of shared discrete choices.
+
+Grouping determines **which observations share a hidden choice**. Suppose
+three rows map to groups through `idx = [0, 0, 1]`. The first two rows share
+one latent class, while the third has its own group's class. For group zero,
+the required likelihood is
+
+$$
+\sum_k \pi_{0k}\,p(y_0\mid k)\,p(y_1\mid k).
+$$
+
+Marginalizing each row separately would instead give
+$(\sum_k\pi_{0k}p(y_0\mid k))(\sum_k\pi_{0k}p(y_1\mid k))$,
+which allows different classes for the two rows. The `via` map prevents that
+change of model: first add row log likelihoods within each group and class,
+then apply `logsumexp` over classes. A *fiber* of the map is the set of
+rows assigned to one group.
 
 The marginalize step admits a *grouping clause* that turns the body into a fibered scoring problem over a shared plate. The clause lives in the marginalize step's option block, alongside an optional reduction selector; the body's observe steps each carry their own `via = idx` fibration in their option blocks:
 
@@ -370,7 +477,7 @@ marginalize c : K <- F(args) [over = G, reduction = R]
 
 with a single `over = G` entry on the marginalize step (or `over = product(G_1, G_2, …)` / `over = [G_1, G_2, …]` for a product grouping plate) and a `via = idx_m` entry on each observe naming a fibration $\iota_m : N_m \to G$ from that observe's response plate into the shared grouping plate.
 
-Categorically: the body declares a coproduct fibration $\coprod_m r_m : \coprod_m N_m \to G \times K$, and the marginalize step is the right Kan extension along $\pi_G : G \times K \to G$ followed by an aggregation $R$ over the $K$ axis:
+The row maps $\iota_m:N_m\to G$ determine which likelihoods share a group. After accumulating those likelihoods for each pair $(g,k)$, the operation reduces the class coordinate. In particular, the default log-sum-exp reduction implements the finite pushforward that sums weighted alternatives. Its log-scale contribution is:
 
 $$
 \Sigma_g \;\mathrm{aggr}_R\!\!\bigl[\log \pi(g, k) + \textstyle\sum_m \sum_{n \,:\, \iota_m(n) = g} \ell_m(n, k)\bigr],
@@ -378,7 +485,7 @@ $$
 
 where $\ell_m(n, k) = \log p_{F_m}\bigl(r^{\mathrm{obs}}_m(n);\, \theta_m(n, k, \phi)\bigr)$ is the per-row per-class log-likelihood of observe $m$, $\pi$ is the per-group per-class prior weight, and $\mathrm{aggr}_R \in \{\mathrm{logsumexp}, \mathrm{sum}, \mathrm{mean}\}$ is the reduction selected by the optional `reduction = R` annotation (default `logsumexp`, the canonical mixture-marginalization form).
 
-The product-grouping case `over G_1 * G_2 * …` paired with `via product(idx_1, idx_2, …)` on each observe extends the right-Kan-extension target to a flat plate of cardinality $\prod_i |G_i|$; the source arity must match. The flat position of a row is the row-major combination of its factor indices, $\iota(n) = \sum_i \iota_i(n) \prod_{j > i} |G_j|$, so the last factor varies fastest.
+The product-grouping case `over G_1 * G_2 * …` paired with `via product(idx_1, idx_2, …)` on each observe extends the grouping target to a flat plate of cardinality $\prod_i |G_i|$; the source arity must match. The flat position of a row is the row-major combination of its factor indices, $\iota(n) = \sum_i \iota_i(n) \prod_{j > i} |G_j|$, so the last factor varies fastest.
 
 A grouped block may nest inside another. The inner block then contributes one aggregate per position of its own group to the outer group's accumulator rather than a single number, and its group must stand in one of two relations to the outer group $G$: it is an axis of the same extent, identified with $G$ position by position, or it is a product $G \times H$ with $G$ as a factor, in which case the inner per-position aggregates are summed along the projection $G \times H \to G$ and any inner argument indexed by $G$ (a prior `theta[z]` selected by the outer latent) is pulled back along that projection. A `sample` inside a block that reads nothing the block binds is drawn once before the block, since every value of the latent shares it; a draw whose arguments read the latent would be a draw per class and is rejected.
 
@@ -417,12 +524,17 @@ Categorically, the summary distinguishes deterministic maps, probability
 kernels, weighted kernels in $\mathcal M_+$, and finite-support pushforwards.
 The elaborated QIEC row is the precise effect type: it records the lexical
 `Random` and `Score` instances and any effects of reachable calls. The
-four-name effect summary is a checked convenience, not a replacement for
-that row.
+four-name effect summary provides a coarser check on the program body.
 
 The `over = <model>` entry in a program's option block marks the program as consuming the named model's latents: the consumed coordinates appear as data parameters and the body is restricted to $\mathsf{Pure}$ (a *posterior consumer*, the deterministic Kleisli arrow $\Theta \to \tau_2$ that lifts to $\mathrm{Data} \to \mathcal{G}(\tau_2)$ by post-composition with the model's posterior kernel).
 
 ### 2.9 Indexed Gather (Let-Pullback)
+
+A gather uses an index array to reuse already-bound values. If group effects
+are `v = [10, 20]` and row-to-group indices are `[0, 0, 1]`, then `v[idx]`
+is `[10, 10, 20]`. The first two rows share the same realized group effect;
+they retrieve its already realized value. The pullback notation
+below describes this reindexing of the shared random quantity.
 
 A `let` right-hand side of the form `arr[idx]` is the *Kleisli pullback*. For a plate variable $v : A \to \mathcal{G}(B)$ bound earlier in the body, and a finite fibration $\iota : N \to A$ named in the context, the gather $\iota^* v$ is the composite
 
@@ -439,6 +551,14 @@ $$
 $$
 
 ### 2.10 Score (factor)
+
+WebPPL’s [`factor` definition](https://docs.webppl.org/en/master/inference/conditioning.html#factor) illustrates the direct addition of a score to an execution’s log weight. The [deduction-to-program example](grammar.md#9-chart-access-from-program-bodies) uses this operation to add a chart’s goal weight.
+
+A score is supplied on the log scale. Adding $w$ to the log joint multiplies
+the ordinary weight by $\exp(w)$; a score of zero leaves it unchanged.
+This permits factors that do not arrive through a named observation family.
+It also means an arbitrary score need not define a normalized probability
+distribution, or even one with a finite normalizing integral.
 
 A score statement
 
@@ -494,14 +614,14 @@ program P (q₁, …, qₖ) : τ₁ -> τ₂
     body
 ```
 
-names the components of the domain $\tau_1$: when $\tau_1 = \sigma_1 \times \cdots \times \sigma_k$ is a $k$-fold product, each $q_i$ binds to the projection $\pi_i$ of the input. The denotation is unchanged from the unparameterised form,
+names the components of the domain $\tau_1$: when $\tau_1 = \sigma_1 \times \cdots \times \sigma_k$ is a $k$-fold product, each $q_i$ binds to the projection $\pi_i$ of the input. The denotation is unchanged from the unparameterized form,
 
 $$
 \llbracket P \rrbracket : \llbracket \tau_1 \rrbracket \to \mathcal{M}_+(\llbracket \tau_2 \rrbracket),
 $$
 
-that is, a single weighted kernel; the $q_i$ are syntactic conveniences in
-the body, not additional dependent parameters. Typed parameters, covered in
+that is, a single weighted kernel whose input components can be referenced
+by the names $q_i$. Typed parameters, covered in
 §3a below, extend this to dependent kernel families.
 
 ## 3a. Parametric programs
@@ -526,7 +646,7 @@ an object of the indexed family of Kleisli arrows over the parameter category. T
 
 A call site `v <- P(a₁, …, aₖ)` inside another program is interpreted by *substitution* on the dependent denotation: the actual arguments $a_i$ are substituted for the formal parameters $p_i$ in the body of $P$, yielding a closed Kleisli arrow which is then inlined as a sequence of statements into the caller's body. Internal latents are α-renamed under a fresh prefix $v\$$, and the return-variable is renamed to $v$ directly; the result is a well-typed sequence of caller-level Kleisli arrows.
 
-This is sound by a standard substitution lemma: because each formal parameter is bound at the top of the body and the body interprets to a Kleisli arrow built compositionally from its statements, substitution commutes with the body's denotation function $\mathcal{B}\llbracket \cdot \rrbracket$. The α-renaming step is sound because the body's denotation depends only on the multiset of bound-variable types, not on the names. Two call sites of the same template thus contribute *distinct* factors to the caller's joint kernel, fresh latents per use, recovering the standard "plate-of-plates" semantics for hierarchical models.
+This is sound by a standard substitution lemma: because each formal parameter is bound at the top of the body and the body interprets to a Kleisli arrow built compositionally from its statements, substitution commutes with the body's denotation function $\mathcal{B}\llbracket \cdot \rrbracket$. Consistent α-renaming preserves the body's binding structure, so references continue to denote the same bound values. Two call sites of the same template thus contribute *distinct* factors to the caller's joint kernel, fresh latents per use, giving each call its own latent variables in a hierarchical model.
 
 ## 4. Composition of programs
 
@@ -550,7 +670,7 @@ $$
 \llbracket M \rrbracket_{\mathrm{exports}} \;=\; \bigl(\llbracket E_1 \rrbracket,\, \dots,\, \llbracket E_k \rrbracket\bigr),
 $$
 
-a tuple of compiled morphisms / posteriors / deductions. The expression $E_i$ may be any value-level expression: a top-level morphism name, a program name, a deduction name, an encoder / decoder name, or a `define`-bound composite. The denotation of each export is the denotation of the underlying expression; `export` itself is a marker for the module-output protocol, not a categorical operation.
+a tuple of compiled morphisms / posteriors / deductions. The expression $E_i$ may be any value-level expression: a top-level morphism name, a program name, a deduction name, an encoder / decoder name, or a `define`-bound composite. The denotation of each export is the denotation of the underlying expression; `export` adds that value to the module output.
 
 
 ## 5. Algebraic laws and their scope
@@ -562,12 +682,12 @@ The interpretations above satisfy the standard monadic equations:
 | Left unit | $\eta \diamond k = k$ |
 | Right unit | $k \diamond \eta = k$ |
 | Associativity | $(k_1 \diamond k_2) \diamond k_3 = k_1 \diamond (k_2 \diamond k_3)$ |
-| Strength coherence | $\mathrm{str} \circ \mathcal{G}(\sigma) = \sigma' \circ \mathrm{str}$ |
+| Strength and symmetry | $\mathcal G(\sigma_{S,T})\circ\mathrm{str}_{S,T}=\mathrm{str}\prime_{T,S}\circ\sigma_{S,\mathcal G(T)}$ |
 
 These equations apply directly to the unscored fragment interpreted in
 $\mathcal G$. The corresponding equations for scored programs apply to
-well-defined weighted-kernel composites. They do not assert that every score
-is normalizable or that every program has finite evidence. In particular, the
+well-defined weighted-kernel composites. Normalization additionally requires
+finite, positive total mass. The
 order of independent draws is irrelevant to the denotation by symmetry of the
 product measure; dependent statements and effectful calls remain ordered.
 
@@ -577,12 +697,12 @@ on the probability kernels produced by `sample`, `let`, and `return` satisfies
 the four equations above. Finite marginalization is ordinary pushforward and
 thus respects equality of measures.*
 
-**Proof.** The four equations are the standard monad laws for the Giry monad $\mathcal{G}$, established by [Giry 1982, Theorem 5](https://doi.org/10.1007/BFb0092872): $\mathcal{G}$ is a monad on $\mathbf{SBor}$ with unit $\eta_S(s) = \delta_s$ (the Dirac at $s$) and multiplication $\mu_S(M)(B) = \int_{\mathcal{G}(S)} m(B)\, M(\mathrm{d}m)$ (integration of measures over measures). Kleisli composition $k_1 \diamond k_2 = \mu \circ \mathcal{G}(k_2) \circ k_1$ inherits the monad's universal property. Concretely:
+**Proof.** The first three equations are the Kleisli laws of the Giry monad; the fourth relates its strength to the symmetry of products [@giry1982categorical; @kock1972strong]. $\mathcal{G}$ is a monad on $\mathbf{SBor}$ with unit $\eta_S(s) = \delta_s$ (the Dirac at $s$) and multiplication $\mu_S(M)(B) = \int_{\mathcal{G}(S)} m(B)\, M(\mathrm{d}m)$ (integration of measures over measures). Kleisli composition $k_1 \diamond k_2 = \mu \circ \mathcal{G}(k_2) \circ k_1$ satisfies the unit and associativity equations induced by the monad laws. Concretely:
 
 * **Left unit.** $\eta_S \diamond k = \mu_T \circ \mathcal{G}(k) \circ \eta_S = \mu_T \circ \eta_{\mathcal{G}(T)} \circ k = k$, where the second equality is the naturality of $\eta$ and the third is the monad's left-unit law $\mu \circ \eta_{\mathcal{G}} = \mathrm{id}$.
 * **Right unit.** $k \diamond \eta_T = \mu_T \circ \mathcal{G}(\eta_T) \circ k = \mathrm{id}_{\mathcal{G}(T)} \circ k = k$, by the monad's right-unit law $\mu \circ \mathcal{G}(\eta) = \mathrm{id}$.
 * **Associativity.** A direct calculation: $((k_1 \diamond k_2) \diamond k_3)(s) = \mu \circ \mathcal{G}(k_3) \circ (\mu \circ \mathcal{G}(k_2) \circ k_1)(s)$. Naturality of $\mu$ rewrites this as $\mu \circ \mu_{\mathcal{G}} \circ \mathcal{G}(\mathcal{G}(k_3)) \circ \mathcal{G}(k_2) \circ k_1$, and the monad's associativity law $\mu \circ \mu_{\mathcal{G}} = \mu \circ \mathcal{G}(\mu)$ rewrites it to $\mu \circ \mathcal{G}(\mu) \circ \mathcal{G}(\mathcal{G}(k_3)) \circ \mathcal{G}(k_2) \circ k_1 = \mu \circ \mathcal{G}(\mu \circ \mathcal{G}(k_3) \circ k_2) \circ k_1 = k_1 \diamond (k_2 \diamond k_3)(s)$.
-* **Strength coherence.** $\mathcal{G}$ is a *commutative strong* monad on $\mathbf{SBor}$. The right strength $\mathrm{str}_{S, T} : S \times \mathcal{G}(T) \to \mathcal{G}(S \times T)$ is given on rectangles by $(s, m) \mapsto \delta_s \otimes m$, and the left strength $\mathrm{str}'_{S, T} : \mathcal{G}(S) \times T \to \mathcal{G}(S \times T)$ symmetrically by $(m, t) \mapsto m \otimes \delta_t$; both are measurable and satisfy the four Kock-Linton strength axioms (associativity with the monoidal product, unit / pentagon coherence with $\eta$ and $\mu$, and naturality in $S, T$; see [Fritz 2020, §4](https://doi.org/10.1016/j.aim.2020.107239)). The strength-coherence row of the table refers to the naturality of $\mathrm{str}$ with respect to the symmetric-monoidal swap, which is the second Kock-Linton axiom and holds for every strong monad by a standard diagram chase. The deeper *commutativity* property of $\mathcal{G}$ — the equality, as maps $\mathcal{G}(S) \times \mathcal{G}(T) \to \mathcal{G}(S \times T)$, of the two double-strength composites
+* **Strength coherence.** $\mathcal{G}$ is a *commutative strong* monad on $\mathbf{SBor}$. The right strength $\mathrm{str}_{S, T} : S \times \mathcal{G}(T) \to \mathcal{G}(S \times T)$ is given on rectangles by $(s, m) \mapsto \delta_s \otimes m$, and the left strength $\mathrm{str}'_{S, T} : \mathcal{G}(S) \times T \to \mathcal{G}(S \times T)$ symmetrically by $(m, t) \mapsto m \otimes \delta_t$; both are measurable. Here $\sigma_{S,T}$ swaps the two coordinates. Pushing $\delta_s\otimes m$ forward along this swap gives $m\otimes\delta_s$, which proves the row relating strength and symmetry directly. The deeper *commutativity* property of $\mathcal{G}$ — the equality, as maps $\mathcal{G}(S) \times \mathcal{G}(T) \to \mathcal{G}(S \times T)$, of the two double-strength composites
 
 $$
 \mathrm{dst}_1 \;=\; \mu_{S \times T} \,\circ\, \mathcal{G}(\mathrm{str}_{S, T}) \,\circ\, \mathrm{str}'_{S, \mathcal{G}(T)}
@@ -590,21 +710,26 @@ $$
 \mathrm{dst}_2 \;=\; \mu_{S \times T} \,\circ\, \mathcal{G}(\mathrm{str}'_{S, T}) \,\circ\, \mathrm{str}_{\mathcal{G}(S), T}
 $$
 
-— is what licenses reordering of independent draws in a QVR program body without changing the denotation. For $\mathcal{G}$ on $\mathbf{SBor}$, $\mathrm{dst}_1 = \mathrm{dst}_2$ reduces exactly to Fubini–Tonelli on the product $\sigma$-algebra ([Kock 1972](https://doi.org/10.1007/BF01304852)).
+— is what licenses reordering of independent draws in a QVR program body without changing the denotation. For $\mathcal{G}$ on $\mathbf{SBor}$, $\mathrm{dst}_1 = \mathrm{dst}_2$ reduces exactly to Fubini–Tonelli on the product $\sigma$-algebra. Kock [@kock1972strong] provides the general categorical background for this notion of commutativity.
 
-The QIEC checker establishes kind, type, row, and handler consistency. It does
-not prove normalization or integrability of arbitrary user scores. Thus the
-theorem applies to the generative fragment, and to a scored program only under
-the stated weighted-kernel side conditions. $\square$
+$\square$
 
 ## 6. Inference and conditioning
 
-The denotation of a scored program is a *weighted kernel*, not yet a
-posterior. Conditioning on observed data, normalization, and approximate
-posterior inference are external operations supplied by the
-[`quivers.inference`](../api/inference/svi.md) module. The implementation uses
-trace-based scoring and stochastic inference; it does not construct a
-symbolic disintegration of an arbitrary program.
+In the opening example, fixing `y` defines a function of the unknown
+location $z$. Inference uses that function to characterize the distribution
+of $z$ after observing `y`. Exact integration, finite enumeration, MCMC,
+and variational approximation are different ways of answering this question.
+A scored program supplies an unnormalized weight for each candidate latent
+configuration. If these weights have finite, positive total mass, dividing
+by that mass defines the posterior. The
+[`quivers.inference`](../api/inference/svi.md) module uses trace scores to
+approximate posterior expectations or fit a variational distribution.
+
+For variational approximation and stochastic optimization of its objective,
+see [@blei2017variational; @hoffman2013svi]. For Hamiltonian Monte Carlo and
+its adaptive No-U-Turn variant, see [@neal2011mcmc; @hoffman2014nuts]. These
+methods operate on the model density described above.
 
 ## 7. Bayesian lifts
 
@@ -818,23 +943,29 @@ $\log \mathbb{E}_{\mathbf{z}}[p(y \mid \mathbf{z})] \ge \mathbb{E}_{\mathbf{z}}[
 families ([`Normal`](https://docs.pytorch.org/docs/stable/distributions.html#normal), [`MultivariateNormal`](https://docs.pytorch.org/docs/stable/distributions.html#multivariatenormal),
 [`LowRankMultivariateNormal`](https://docs.pytorch.org/docs/stable/distributions.html#lowrankmultivariatenormal), etc.) yield a pathwise-
 differentiable $\mathbf{z}_{*}(\xi; x, \theta)$ in an auxiliary
-noise $\xi$. For SVI, the [unbiased reparameterization gradient identity](https://doi.org/10.48550/arXiv.1312.6114)
-$\nabla_{\theta} \mathbb{E}_{\mathbf{z}}[\log p(y \mid \mathbf{z}, \theta)] = \mathbb{E}_{\xi}[\nabla_{\theta} \log p(y \mid \mathbf{z}_{*}(\xi; \theta), \theta)]$
-holds, and a single MC draw at each SVI step is an unbiased
-stochastic gradient of the wrapper's expected objective; under
-standard step-size assumptions [SGD on this estimator](https://doi.org/10.1214/aoms/1177729586) converges to a stationary point
-of $\theta \mapsto \mathbb{E}_{\mathbf{z}}[\log p(y \mid \mathbf{z}, \theta)]$, a lower bound on the marginal log-likelihood by Jensen.
+noise $\xi$. If differentiation can be interchanged with expectation, the
+reparameterization identity [@kingma2014autoencoding] gives
+
+$$
+\nabla_{\theta} \mathbb{E}_{\mathbf{z}}[\log p(y \mid \mathbf{z}, \theta)]
+= \mathbb{E}_{\xi}[\nabla_{\theta} \log p(y \mid \mathbf{z}_{*}(\xi; \theta), \theta)].
+$$
+
+Under these regularity conditions, one independent Monte Carlo draw supplies
+an unbiased gradient of the wrapper’s expected objective. This objective is
+a lower bound on the marginal log likelihood by Jensen’s inequality. A
+convergence argument additionally needs a specified optimization schedule
+and assumptions controlling the objective and gradient noise
+[@robbins1951stochastic].
 
 For NUTS, the wrapper is unsuitable: re-drawing
 $\mathbf{z}_{*}$ on every leapfrog evaluation makes the
-Hamiltonian energy stochastic, breaks the [symplectic
-integrator's energy-preservation guarantee](https://en.wikipedia.org/wiki/Symplectic_integrator), and biases the
-chain away from the intended target. The rigorous route for
-NUTS is to enrol $\mathbf{z}$ as an additional NUTS latent via
+Hamiltonian energy stochastic, invalidates the usual deterministic Hamiltonian proposal and its acceptance calculation [@hoffman2014nuts; @neal2011mcmc]. For
+NUTS, enroll $\mathbf{z}$ as an additional NUTS latent via
 [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters)
 with `additional_latents={'<name>': <shape>}` (§7.1), so that
-$(\theta, \mathbf{z})$ are jointly sampled from the exact
-posterior under a deterministic per-evaluation log-density.
+$(\theta, \mathbf{z})$ are jointly sampled from a joint target with a deterministic
+log density at each evaluation.
 
 ### 7.5 Bayesian lift for weighted deduction systems
 
@@ -878,18 +1009,10 @@ The denotational claim of §7.1 (that the lifted program's
 log-density equals the parameter prior plus the wrapped
 log-joint, pointwise and with exact placeholder cancellation)
 applies unchanged to [`nuts_program_from_deduction`](../api/stochastic/deduction/bayes.md#quivers.stochastic.deduction.bayes.nuts_program_from_deduction);
-the choice of reading enters only when interpreting that
-log-density as a posterior. The implementation guarantees the stated target
-log density, not the normalization assumptions of a particular grammar.
+the grammar's parameterization determines whether that density has the
+normalized likelihood required by the intended Bayesian model.
 
 ## References
 
-Tobias Fritz. 2020. [A synthetic approach to Markov kernels, conditional independence and theorems on sufficient statistics](https://doi.org/10.1016/j.aim.2020.107239). *Advances in Mathematics*, 370:107239.
 
-Michèle Giry. 1982. [A categorical approach to probability theory](https://doi.org/10.1007/BFb0092872). In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
-
-Diederik P. Kingma and Max Welling. 2013. [Auto-Encoding Variational Bayes](https://doi.org/10.48550/arXiv.1312.6114). arXiv preprint arXiv:1312.6114.
-
-Anders Kock. 1972. [Strong functors and monoidal monads](https://doi.org/10.1007/BF01304852). *Archiv der Mathematik*, 23(1):113–120.
-
-Herbert Robbins and Sutton Monro. 1951. [A stochastic approximation method](https://doi.org/10.1214/aoms/1177729586). *The Annals of Mathematical Statistics*, 22(3):400–407.
+For probability kernels and categorical composition, see [@giry1982categorical; @fritz2020synthetic]; for strong monads, see [@kock1972strong]. Reparameterization estimators are developed in [@kingma2014autoencoding]. For convergence conditions on stochastic updates, see [@robbins1951stochastic].

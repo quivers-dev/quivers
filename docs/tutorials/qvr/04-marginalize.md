@@ -6,10 +6,23 @@ QVR makes finite marginalization a first-class block. The body runs once per
 value in an enumerable support; the runtime combines the resulting scope
 weights with the prior by `logsumexp`. This operation exactly sums out a
 finite discrete latent and is the categorical-prior form of
-Rao–Blackwellization ([Casella & Robert, 1996](https://doi.org/10.1093/biomet/83.1.81)).
+Rao–Blackwellization [@casella1996rao].
 It does not numerically integrate a continuous latent: a `marginalize` whose
 family has no finite support follows the ordinary sampling path, and an
 explicit reduction on such a family is rejected.
+
+A mixture gives several possible explanations for one observation. If the
+components have [prior probabilities](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise) `0.3` and `0.7`, and assign likelihood
+values `0.2` and `0.5` to the observation, its marginal likelihood is
+`0.3 * 0.2 + 0.7 * 0.5 = 0.41`. Both explanations contribute; neither needs
+to be chosen in a random draw. Density values for continuous observations
+need not lie below one, but the [mixture weights](../../examples/mixture-model.md#understanding-the-model) still sum to one. The [Stan mixture derivation](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) takes this calculation from latent component labels to a sum of weighted densities [@stanFiniteMixtures].
+
+The implementation works with logarithms to avoid multiplying many tiny
+numbers. Adding log likelihoods represents multiplication; `logsumexp`
+represents adding the underlying positive weights. This finite sum is exact
+for the eliminated assignment. Uncertainty about component means and scales
+still requires inference.
 
 ## A two-component Gaussian mixture
 
@@ -165,7 +178,15 @@ $$
 \sum_{g \in G}\ \log\!\sum_{k=1}^{K}\exp\!\left[\log \pi_{g,k} + \sum_{n:\ \mathrm{group\_idx}(n)=g}\ \log f(y_n \mid \mu_k, \sigma_k)\right]
 $$
 
-to the log-density, which is the right Kan extension along the fibration `Item -> G` and matches Stan's `target += log_mix(probs[g], ll_item[i])` accumulation. A grouped block can contain multiple observes, each with its own `[via=<idx>]` entry, when several heterogeneous response axes share the same per-group class indicator; the per-axis log-likelihoods scatter-sum into the same `(|G|, K)` accumulator before the log-sum-exp.
+to the log-density, which is the right Kan extension along the fibration `Item -> G` and requires aggregating the component-specific row log likelihoods within each group before applying a mixture reduction. A grouped block can contain multiple observes, each with its own `[via=<idx>]` entry, when several heterogeneous response axes share the same per-group class indicator; the per-axis log-likelihoods scatter-sum into the same `(|G|, K)` accumulator before the log-sum-exp.
+
+Grouping changes the statistical question. With one component per row,
+each row can choose a different explanation, giving a product of mixture
+likelihoods. With one component shared by a group, all rows must be explained
+by the same component, so their likelihoods multiply before the component
+sum. A group with two rows thus contributes
+`sum_k pi[k] * f(y1 | k) * f(y2 | k)`, not
+`(sum_k pi[k] * f(y1 | k)) * (sum_k pi[k] * f(y2 | k))`.
 
 ## When to marginalize vs sample
 
@@ -174,7 +195,7 @@ The decision is a straight cost-benefit:
 - `marginalize` costs roughly `K × (body cost)` per evaluation. The reward is exact gradients with respect to the discrete-prior parameters and zero Monte Carlo variance on the discrete latent.
 - Sampling the discrete latent with `ScoreFunction` (REINFORCE) evaluates one sampled branch but introduces Monte Carlo variance. The variance depends on the prior, the component likelihoods, and any control variate.
 
-There is no repository-wide support-size threshold at which one method wins. Profile the full model. For larger supports, possible alternatives include score-function estimators with baselines or a relaxed proxy such as the Concrete distribution ([Maddison, Mnih & Teh, 2017](https://doi.org/10.48550/arXiv.1611.00712)); each changes the computational or statistical tradeoff.
+There is no repository-wide support-size threshold at which one method wins. Profile the full model. For larger supports, possible alternatives include score-function estimators with baselines or a relaxed proxy such as the Concrete distribution [@maddison2017concrete]; each changes the computational or statistical tradeoff.
 
 | Discrete support per row | Recommendation |
 |---|---|
@@ -200,7 +221,7 @@ flowchart LR
 
 - Change the model to four components and inspect the recovered means.
   Mixture models have a label-switching symmetry
-  ([Stephens, 2000](https://doi.org/10.1111/1467-9868.00265)); sorting draws
+  [@stephens2000labels]; sorting draws
   after inference can summarize exchangeable components, but a deterministic
   `sort(mu_k)` inside the likelihood is not the same as an ordered prior.
 - Convert the grouped mixture to a `marginalize` without the `over` / `via` clauses and observe the difference: per-row marginalization versus per-group.
@@ -212,8 +233,8 @@ flowchart LR
 state-space models, and chart-based weighted deduction.
 
 
-## References
+## Sources and further reading
 
-- Chris J. Maddison, Andriy Mnih, and Yee Whye Teh. 2017. The Concrete distribution: A continuous relaxation of discrete random variables. arXiv preprint arXiv:1611.00712.
-- George Casella and Christian P. Robert. 1996. Rao-Blackwellisation of sampling schemes. *Biometrika*, 83(1):81–94.
-- Matthew Stephens. 2000. Dealing with label switching in mixture models. *Journal of the Royal Statistical Society Series B: Statistical Methodology*, 62(4):795–809.
+- *The Concrete Distribution: A Continuous Relaxation of Discrete Random Variables* [@maddison2017concrete].
+- *Rao-Blackwellisation of sampling schemes* [@casella1996rao].
+- *Dealing with label switching in mixture models* [@stephens2000labels].

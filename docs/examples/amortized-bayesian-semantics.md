@@ -9,13 +9,25 @@ separates observed from missing outcomes under a contamination measure; and a
 hierarchical response-time program marginalizes an item-level analysis while
 partially pooling participant and item effects.
 
-The resulting **amortized Bayesian semantics model (ABSM)** is intentionally a
-mixed module. Its point is not that one inference algorithm should fit every
+The resulting module combines these semantic and statistical components. Its point is not that one inference algorithm should fit every
 component at once. Its point is that each component has a typed entry, their
 calls form one inspected graph, and an unsupported deployment target must name
 the exact boundary it cannot preserve.
 
 [Open the complete QVR source](qiec/amortized-bayesian-semantics.qvr).
+
+## Understanding the model
+
+Read the response model one trial at a time. The trial belongs to one
+participant and one item, so [two index lookups](../tutorials/qvr/09-indexed-data.md#5-transfer-the-pattern-to-statistical-data) select the corresponding
+random effects. An item can have two analyses; all trials for that item
+share its analysis, so their evidence is combined before [summing over the two possibilities](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping). The parser contributes a different source of evidence,
+a weight for the sentence's possible derivations.
+
+The [structural encoder and decoder](../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss) supply representations of logical forms,
+while the response program describes experimental measurements. Inspecting
+the called entries shows which representations feed the response likelihood
+and which parameters receive its gradients.
 
 ## Statistical structure
 
@@ -85,7 +97,8 @@ define complete[s : Availability](measurement : Measurement(s), location : Real,
 ```
 
 The observed branch scores a supplied value. The missing branch draws a
-posterior predictive value. `contamination` uses the measure algebra to mix a
+predictive value under the parameters supplied to it; posterior prediction
+requires those parameters to come from a posterior. `contamination` uses the measure algebra to mix a
 95% Normal component with a 5% heavy-tailed Student-t component without
 introducing a sampled mixture label. A caller cannot construct `Present` at
 the `Missing` index or reach the wrong branch through a runtime flag.

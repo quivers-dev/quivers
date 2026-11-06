@@ -22,7 +22,7 @@
 # A deduction rule's conclusion is a constructor tree over the
 # rule's pattern variables, and the runtime instantiates it by
 # structural substitution alone. There is no beta-rule: nothing
-# reduces a redex, and the chart never normalises an item. So a
+# reduces a redex, and the chart never normalizes an item. So a
 # determiner cannot denote a continuation-form lambda term
 # ``Lam(P, Lam(Q, ...))`` that later beta-reduces against its
 # arguments; the chart would simply carry the unreduced redex

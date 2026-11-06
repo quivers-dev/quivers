@@ -2,7 +2,7 @@
 #
 # A stochastic gated recurrence wrapped in scan and used as a
 # causal language model. It borrows the update and reset gates
-# of a GRU, but its candidate is centred directly on the
+# of a GRU, but its candidate is centered directly on the
 # reset-gated previous state rather than on a learned transform
 # of (x_t, r_t * h_{t-1}).
 #

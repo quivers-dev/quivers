@@ -5,7 +5,9 @@ object A in C:
 
     ∫_X [C(X, A), F(X)] ≅ F(A)
 
-In our finite V-enriched setting, this becomes a computable end.
+The routines below implement finite tensor analogues of this end.
+The theorem requires lawful category and presheaf data; arbitrary input
+tensors and an ``Algebra`` instance do not establish those hypotheses.
 
 The Yoneda embedding y: C → Prof(C) sends each object A to the
 representable profunctor C(-, A): C^op → V. The embedding is
@@ -182,7 +184,9 @@ def yoneda_lemma(
     hom tensors C(X_i, A) provided for each object X_i, computes
     the end ∫_X [C(X, A), F(X)].
 
-    The result should be isomorphic to F(A) (the Yoneda lemma).
+    The mathematical Yoneda lemma identifies this end with F(A) under
+    its hypotheses. The routine does not check all of those hypotheses
+    or construct a general categorical isomorphism.
 
     Parameters
     ----------
@@ -199,7 +203,7 @@ def yoneda_lemma(
     Returns
     -------
     torch.Tensor
-        The Yoneda end, which should be ≅ F(A).
+        The finite internal-hom reduction described above.
     """
     q = algebra if algebra is not None else PRODUCT_FUZZY
 
@@ -291,10 +295,11 @@ def verify_yoneda_fully_faithful(
     g: Morphism,
     atol: float = 1e-5,
 ) -> bool:
-    """Verify that the Yoneda embedding is full and faithful.
+    """Check preservation of one supplied composite numerically.
 
     Check that the profunctor morphism y(f) composed with y(g)
-    equals y(f >> g), i.e., the embedding preserves composition.
+    equals y(f >> g). Despite the historical function name, this
+    tests one composition equation, not fullness or faithfulness.
 
     Parameters
     ----------

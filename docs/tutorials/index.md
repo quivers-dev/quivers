@@ -2,11 +2,17 @@
 
 Quivers provides two ways to work with a model: a `.qvr` language for writing probabilistic programs and a typed Python API for building on the category-theoretic core. The tutorials follow these two tracks. Choose the one that matches your task.
 
+For a short route, read the [conceptual introduction](../getting-started/concepts.md),
+QVR chapters 1–3, and the diagnostics chapter after fitting a model. Read
+Python chapters 1–2 when you want to understand composition as table operations.
+Indexed families, handlers, and structural models can wait until your task
+needs them; their tutorials introduce their own vocabulary.
+
 ## QVR DSL track
 
-If you have written a model in Pyro, NumPyro, Stan, or PyMC and want to express it in Quivers, start here. QVR is the primary user-facing language: you declare types, write a `program` block whose steps look like `v <- Normal(loc=0, scale=1)` or `observe y <- Bernoulli(probs=p)`, and fit it with SVI or NUTS. The categorical structure informs the implementation but need not appear in the model.
+Start here to write a statistical model, whether or not you have used another probabilistic programming language. QVR is the primary user-facing language: you declare types, write a `program` block whose steps look like `v <- Normal(loc=0, scale=1)` or `observe y <- Bernoulli(probs=p)`, and [fit it with SVI or NUTS](qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid). The categorical structure informs the implementation but need not appear in the model.
 
-Each chapter shows the QVR version of a familiar model alongside its Pyro / NumPyro / Stan equivalent, then explains what's different and why.
+The early chapters include comparisons with Pyro, NumPyro, Stan, or PyMC. Those tabs are optional: the QVR explanation stands on its own.
 
 1. **[Your first model](qvr/01-first-model.md)**. Linear regression. Side-by-side with PyMC. SVI fit, posterior predictive check, point summaries.
 2. **[Generalized linear models](qvr/02-glms.md)**. Logistic and Poisson regression. Link functions. Posterior calibration plots.
@@ -44,13 +50,13 @@ The Python API gives you direct access to the typed categorical layer: `FinSet`,
 For the QVR track:
 
 - Python 3.14+, PyTorch 2.0+, quivers installed ([Installation](../getting-started/installation.md)).
-- Comfort with one of the popular probabilistic-programming languages (Pyro, NumPyro, Stan, PyMC). You don't need to know category theory.
+- Basic Python and familiarity with arrays. The [conceptual introduction](../getting-started/concepts.md) explains prior, likelihood, posterior, sampling, and composition; no previous PPL or category theory is required.
 - For chapters 9–13, install Quivers from one source and keep the package, QVR grammar, reference machine, and language server at the same release.
 
 For the Python API track:
 
 - Python and PyTorch as above.
-- Working knowledge of category theory: objects, morphisms, composition, and functors. The [semantics](../semantics/index.md) section assumes enriched category theory at Kelly's level. The tutorials do not, though [Core Types & Algebras](../guides/core.md) is useful preparation for chapter 4.
+- Familiarity with tensor shapes and functions. Chapter 1 introduces objects, morphisms, and composition through tables. The [conceptual introduction](../getting-started/concepts.md) gives additional preparation; the [semantics](../semantics/index.md) retains the formal account for readers who want its assumptions and proofs.
 
 ## How to read
 

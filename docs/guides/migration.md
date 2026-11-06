@@ -12,6 +12,14 @@ what's still pending.
 
 ## What `qvr migrate` does
 
+A grammar revision specifies which source spellings the parser accepts.
+Migration updates those spellings, such as moving a role keyword into
+an option block. Parsing the result checks its syntactic structure;
+checking and running the migrated model test additional type and runtime
+properties. Start with `--dry-run` or `--output` when inspecting a
+revision change, then run `qvr check` and representative model invocations.
+
+
 The pipeline runs per source file:
 
 ```mermaid
@@ -88,7 +96,7 @@ qvr migrate --check
 ```
 
 `--from` is required because QVR source files do not carry their grammar
-revision. This **explicit-origin rule** prevents the migrator from guessing a
+revision. This prevents the migrator from guessing a
 source grammar and reinterpreting accepted tokens. `--to` defaults to `HEAD`,
 the chain's current grammar.
 
@@ -134,6 +142,12 @@ What's intentionally dropped or transformed:
 
 ## The migration chain
 
+A long version jump is performed as a sequence of adjacent conversions.
+An identity hop validates the source against the next grammar and retains
+its bytes. The table lists which adjacent grammar revisions support this
+operation and which require a rewrite.
+
+
 The chain is declared in
 [`src/quivers/cli/migrations/__init__.py`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/migrations/__init__.py)
 as the tuple `CHAIN`:
@@ -163,7 +177,7 @@ converts through
 
 The v0.18 to v0.19 hop adds the indexed-family and algebraic-effect grammar
 without removing a previous production. Thus migration does not invent
-indices, effect rows, or handlers in v0.18 input. The final hop accepts
+indices, [effect rows](../reference/qvr/effects-and-handlers.md#effect-rows), or handlers in v0.18 input. The final hop accepts
 hanging-indented delimiters while retaining every v0.19 layout. Both hops
 validate unchanged bytes with their pinned source and target parsers.
 

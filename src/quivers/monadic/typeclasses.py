@@ -23,22 +23,16 @@ inhabits, never on the effect's identity, so user-defined effects
 extend the framework automatically.
 
 Each typeclass is also mirrored by a `panproto.Theory` in
-[`quivers.monadic.theories`][quivers.monadic.theories]; class-extension is realised there as
-theory inclusion via `panproto.colimit`, making every instance
-a verifiable theory morphism.
+[`quivers.monadic.theories`][quivers.monadic.theories]; class-extension is realized there as
+theory inclusion via `panproto.colimit`, recording the equations an instance is expected to satisfy. Registration
+alone does not prove that its operations satisfy those equations.
 
 References
 ----------
-- Bumford, D. and Charlow, S. (2026). *Effect-Driven Interpretation:
-  Functors for Natural Language Composition*. Cambridge Elements in
-  Semantics. Cambridge University Press. Online ISBN 9781009285377;
-  preprint arXiv:2504.00316.
-- Hughes, J. (2000). *Generalising monads to arrows*. Science of
-  Computer Programming, 37(1–3), 67–111.
-  doi:10.1016/S0167-6423(99)00023-4.
-- Bauer, A. and Pretnar, M. (2015). *Programming with algebraic
-  effects and handlers*. Journal of Logical and Algebraic Methods in
-  Programming, 84(1), 108–123. doi:10.1016/j.jlamp.2014.02.001.
+For applicative programming, see [McBride and Paterson (2008)](<https://www.cambridge.org/core/journals/journal-of-functional-programming/article/applicative-programming-with-effects/C80616ACD5687ABDC86D2B341E83D298>); for arrows,
+see [Hughes (2000)](<https://www.sciencedirect.com/science/article/pii/S0167642399000234>). Algebraic effects and handlers are illustrated in
+[Bauer and Pretnar (2015)](<https://www.sciencedirect.com/science/article/pii/S2352220814000194>). Their use in natural-language composition is
+developed in the forthcoming book [Bumford and Charlow (forthcoming)](<https://www.cambridge.org/core/elements/abs/effectdriven-interpretation/56671E539160AAA1DACF8555B82A2FE4>).
 """
 
 from __future__ import annotations
@@ -85,7 +79,7 @@ class Applicative(Functor, ABC):
     - `apply` — the application combinator
       ``F(A → B) ⊗ F(A) → F(B)``.
 
-    Applicative laws (Hughes 2000 §3.1, after McBride and Paterson):
+    Applicative laws [McBride and Paterson (2008)](<https://www.cambridge.org/core/journals/journal-of-functional-programming/article/applicative-programming-with-effects/C80616ACD5687ABDC86D2B341E83D298>):
 
     - identity:       ``apply(pure(id), v) = v``
     - homomorphism:   ``apply(pure(f), pure(x)) = pure(f x)``
@@ -218,10 +212,11 @@ class Traversable(Functor, Foldable, ABC):
     """Traversable: distribute an Applicative action through a structure.
 
     Adds `traverse`: given an Applicative ``G`` and a morphism
-    ``f : A → G(B)``, produces ``F(A) → G(F(B))``. This is Charlow's
-    central tool for distributing scope through alternatives.
+    ``f : A → G(B)``, produces ``F(A) → G(F(B))``. This supports distributing an effectful computation through a
+    traversable structure, including applications to scope and alternatives
+    [Bumford and Charlow (forthcoming)](<https://www.cambridge.org/core/elements/abs/effectdriven-interpretation/56671E539160AAA1DACF8555B82A2FE4>).
 
-    Traversable laws (after McBride and Paterson 2008):
+    The traversal interface is required to satisfy the following laws:
 
     - naturality:   ``t ∘ traverse(f) = traverse(t ∘ f)``
                     for any applicative natural transformation t.

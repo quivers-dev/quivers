@@ -16,8 +16,8 @@ the leapfrog primitive and step-size/mass adaptation but differ
 in trajectory selection:
 
 * `HMCKernel` runs a fixed number of leapfrog steps per
-  proposal (Neal 2011, `doi:10.1201/b10905-7
-  <https://doi.org/10.1201/b10905-7>`_).
+  proposal (Neal 2011, `doi:10.1201/b10905-6
+  <https://doi.org/10.1201/b10905-6>`_).
 * `NUTSKernel` builds a tree of leapfrog steps and uses
   the No-U-Turn termination criterion to set the trajectory
   length adaptively (Hoffman-Gelman 2014,
@@ -199,8 +199,9 @@ class HMCKernel(MCMCKernel):
         warmup from the empirical covariance of warmup samples.
     target_accept : float
         Target Metropolis acceptance for dual averaging. Default
-        ``0.65`` (Beskos et al.'s HMC-optimal acceptance for
-        product-form targets).
+        ``0.65``, near the asymptotic optimum derived for specified
+        high-dimensional product targets [Beskos et al. (2013)](<https://doi.org/10.3150/12-BEJ414>). This
+        is a tuning default, not a universal optimum.
     divergence_threshold : float
         Energy-error threshold for marking a proposal as divergent.
         Divergent steps still respect Metropolis correctness but

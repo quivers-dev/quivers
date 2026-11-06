@@ -1,7 +1,7 @@
 # Computations
 
 A `define` declaration introduces a named checked computation. Its signature
-separates static binders, runtime parameters, result type, and effect row:
+separates [static binders](types-and-indexed-families.md#kinds-and-binders), runtime parameters, result type, and [effect row](effects-and-handlers.md#effect-rows):
 
 <!-- compile: qiec -->
 ```qvr
@@ -15,11 +15,18 @@ define clamp(x : Real, low : Real, high : Real) : Real !{} =
             return x
 ```
 
-This four-part signature is the **computation contract (CC)**. Calls are
-checked only against the contract; the body is then checked to ensure that it
+Calls are checked against this four-part signature; the body is then checked to ensure that it
 returns the declared type and performs no effects outside the row.
 
 ## Declaration form
+
+Read the signature from left to right: brackets supply information
+needed for specialization, parentheses supply runtime values, the type
+after `:` describes the returned value, and `!{...}` lists unhandled
+effect instances. In `clamp`, all arguments and the result are real
+values and `!{}` permits no unhandled effects. With `x=8`, `low=0`,
+and `high=5`, only the second condition succeeds and the result is `5`.
+
 
 ```text
 define NAME[STATIC_BINDERS](VALUE_PARAMETERS) : RESULT !{EFFECT_ROW} =
@@ -42,12 +49,19 @@ define four() : Int !{} =
 
 ## Pure and effectful binding
 
+`=` names a value expression. `<-` sequences a computation and names
+what it returns. This syntax tracks the distinction even when that
+computation currently has no effects; the caller uses its declared
+computation interface. Thus changing a helper's implementation does not
+require pretending a computation call was an ordinary value expression.
+
+
 QVR deliberately distinguishes two forms:
 
 | Form | Right-hand side | Meaning |
 | --- | --- | --- |
 | `let x = value` | pure expression | bind a value without sequencing an effect |
-| `let x <- computation` | call, request, or resumption | run a computation, then bind its result |
+| `let x <- computation` | call, request, or [resumption](effects-and-handlers.md#resumption-grades) | run a computation, then bind its result |
 
 An inline computation may appear without a binding when its result is `Unit`:
 
@@ -65,13 +79,21 @@ There is no implicit coercion from a call to a value expression. If `helper`
 is declared with `define`, write `let result <- helper(args)`, even when its
 row is empty.
 
-The same distinction governs collections. `map(xs, x -> value)` is pure and
+The same distinction governs [collections](collection-expressions.md#effect-aware-traverse). `map(xs, x -> value)` is pure and
 uses `=`, while `traverse(xs, x -> helper(x))` sequences computation calls and
 uses `<-`. The latter joins `helper`'s effects into the caller's row. See
 [Finite collection expressions](collection-expressions.md) for folds,
-normalization, and shape restrictions.
+[normalization](../../guides/stochastic.md#normalization), and shape restrictions.
 
 ## Calls and row propagation
+
+A **residual row** lists effects still unhandled after local [handlers](effects-and-handlers.md#handler-declarations)
+have run. If a helper may request `random`, a caller must also account
+for `random`, either by exposing it in its own row or handling it.
+The row lists the requests a computation may make. A row containing
+`random` permits repeated random requests; their number and order are
+determined by the computation body.
+
 
 One call syntax covers ordinary application and recursion:
 
@@ -144,7 +166,7 @@ and resumption grades.
 ## Conditionals and indexed cases
 
 `if` branches at computation level and evaluates only the selected branch.
-Both branches must return the same type; their effect rows are joined.
+Both branches must return the same type; their [effect rows](effects-and-handlers.md#effect-rows) are joined.
 
 `case` eliminates a family value and carries an explicit motive. Constructor
 patterns may bind static indices and runtime fields. The result of every

@@ -1,10 +1,10 @@
 # Tutorial 4: Fuzzy Logic Factorization
 
-Fuzzy factorization approximates an observed relation by composing learnable morphisms under the product-fuzzy [algebra](https://ncatlab.org/nlab/show/algebra). It replaces ordinary matrix multiplication with probabilistic [fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic): product is fuzzy AND and noisy-OR is fuzzy OR.
+Fuzzy factorization approximates an observed relation by composing learnable morphisms under the product-fuzzy [algebra](https://ncatlab.org/nlab/show/algebra). It replaces ordinary matrix multiplication with probabilistic [fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic): product is fuzzy AND and [noisy-OR](01-first-quiver.md#composition) is fuzzy OR.
 
 ## Background
 
-In standard matrix factorization, we approximate a matrix $R \approx F \cdot G$ using real-valued multiplication and addition. In **fuzzy logic factorization**, we replace these with operations from an algebra:
+In standard [matrix factorization](../../examples/pmf.md#understanding-the-model), we approximate a matrix $R \approx F \cdot G$ using real-valued multiplication and addition. In **fuzzy logic factorization**, we replace these with operations from an algebra:
 
 - **Fuzzy AND** (product t-norm): $a \otimes b = a \cdot b$
 - **Fuzzy OR** (probabilistic sum / noisy-OR): $\bigvee_i x_i = 1 - \prod_i (1 - x_i)$
@@ -16,6 +16,18 @@ $$
 $$
 
 Each entry of the composed relation asks: "is there *some* intermediate $y$ through which $x$ relates to $z$?" The "some" is the noisy-OR and the "through" is the product. The latent set $Y$ acts as a bottleneck of fuzzy features.
+
+For a concrete reading, let `X` be users, `Z` be items, and the three elements
+of `Y` be learned preferences. A high value of `f(x, y)` says user `x` has
+preference `y`; a high value of `g(y, z)` says item `z` matches it. Several
+preferences can support the same user-item relation. The bottleneck makes
+these patterns reusable across rows and columns.
+
+The training loss compares the reconstructed membership table with the observed
+table. Swapping two hidden features in both factors leaves that reconstruction
+unchanged, so several parameter settings represent the same preferences.
+Noisy-OR also has a probability interpretation for independent causes: the
+product of their failure probabilities is the probability that all fail.
 
 ## Setup
 

@@ -53,6 +53,19 @@ loss reconstruct [weight=1.0, on=decoder(Dec)]
     -Dec.log_prob(term, Enc(term))
 ```
 
+## Understanding the model
+
+Consider an application tree `App(function, argument)`. The encoder first
+encodes the function and argument subtrees, then combines those vectors into
+one representation. A decoder runs in the generative direction: it chooses
+a node kind and then predicts children. It thus defines a distribution
+over possible trees rather than an exact inverse of compression.
+
+[Reconstruction negative log likelihood](../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss) rewards assigning high probability
+to the original tree. It can train without sampling the correct tree on every
+iteration. Binder scope is an additional structural constraint: a [de Bruijn index](../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data) `0` refers to the nearest enclosing binder, so changing a variable's
+printed name does not change which binder it denotes.
+
 ## Walkthrough
 
 ### The signature

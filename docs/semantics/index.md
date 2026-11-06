@@ -1,8 +1,26 @@
 # Denotational Semantics of the QVR DSL
 
-This section gives a mathematical interpretation of the QVR DSL and records how that interpretation relates to the current implementation. Some results are conditional on algebraic laws that the runtime interface does not verify; the chapters mark those assumptions and distinguish them from tested behavior.
+This section gives a mathematical interpretation of the QVR DSL and records how that interpretation relates to the current implementation. Each categorical result states its algebraic hypotheses; the implementation sections identify the operations and tests that realize it.
 
-The development is organized as follows.
+A *denotation* is what an expression means mathematically. For instance, a
+finite transition table denotes a rule assigning a probability distribution
+to each input state. Composing two such tables means averaging over the
+intermediate state. The notation records this calculation so that we can
+ask which program transformations preserve it.
+
+There are two useful routes through these pages:
+
+- **From programming to the mathematics:** read the
+  [conceptual introduction](../getting-started/concepts.md), then
+  [types and spaces](types-and-spaces.md), [morphisms](morphisms.md), and
+  [programs](programs.md). Their examples explain what the formal objects do.
+- **From the mathematics to implementation:** begin with
+  [setting and notation](setting.md) and [algebras](algebras.md), then use
+  [typing](typing.md), [implementation correspondence](adequacy.md), and
+  [transpilation correctness](transpile-correctness/index.md) to locate the
+  assumptions, executable checks, and limits of each claim.
+
+The following pages develop the definitions and connect them to the implementation.
 
 1. **[Setting and notation](setting.md).** The semantic universe: $\mathcal{V}$-enriched symmetric monoidal closed categories, finite sets, standard Borel spaces, and the global parameters that distinguish discrete, stochastic, and continuous fragments.
 2. **[Algebras and base change](algebras.md).** The algebraic structure underlying $\mathcal{V}$-enriched composition, the eleven built-in algebras, and the base-change functors that mediate between them.
@@ -21,6 +39,10 @@ The development is organized as follows.
 15. **[Transpilation architecture](transpile-architecture.md).** The `Module -> IRProgram -> panproto.Schema -> bytes` pipeline, its shared family metadata, and backend renderers.
 16. **[Transpilation correctness](transpile-correctness/index.md).** Structural, re-emission, external-syntax, and numeric-equivalence evidence, with per-target support notes: [Stan](transpile-correctness/stan.md), [NumPyro](transpile-correctness/numpyro.md), [Pyro](transpile-correctness/pyro.md), [PyMC](transpile-correctness/pymc.md), [Edward2](transpile-correctness/edward2.md), [Turing.jl](transpile-correctness/turing.md), [Gen.jl](transpile-correctness/gen.md), [Church](transpile-correctness/church.md), [WebPPL](transpile-correctness/webppl.md), [BUGS](transpile-correctness/bugs.md), and [JAGS](transpile-correctness/jags.md).
 
+For the categorical background, see [@maclane1998categories; @kelly1982basic].
+For probability kernels and their compositional interpretation, see
+[@giry1982categorical; @fritz2020synthetic].
+
 ## Declaration syntax
 
 The categorical and probabilistic declarations use a shared option-block and
@@ -30,8 +52,7 @@ initializer vocabulary. Their common schematic shape is:
 KIND NAME : SIGNATURE [k = v, ...] [~ INIT] [BODY]
 ```
 
-This is not a production for every declaration. QIEC declarations have their
-own checked forms: `index`, `family` and `constructor`, `effect` and
+QIEC declarations have separate checked forms: `index`, `family` and `constructor`, `effect` and
 operations, `instance`, `handler`, and computation-valued `define`. Their
 static telescopes, runtime telescopes, indexed results, and effect rows are
 described in [Typing and checking](typing.md) and summarized in the
@@ -41,7 +62,7 @@ For the categorical/probabilistic shape above:
 
 * `KIND` is one of `composition`, `category`, `object`, `morphism`, `bundle`, `program`, `contraction`, `export`, `deduction`, `signature`, `encoder`, `decoder`, `loss`, `schema`, or `rule`. A `define` may instead introduce a QIEC computation or one of the established expression aliases such as a parser or composed morphism. `let` is reserved for deterministic bindings inside computations and program bodies.
 * `SIGNATURE` is a colon-prefixed phrase (an object value for `object`, a `dom -> cod` arrow for everything that denotes a morphism, an `inputs / codomain` shape for `contraction`, etc.).
-* `[k = v, ...]` is the shared option block. Each declaration or step accepts a closed set of keys and rejects ignored or misspelled entries. Options select a role, shape, family, reduction, or elaboration policy; they are not an untyped metadata bag.
+* `[k = v, ...]` is the shared option block. Each declaration or step accepts a closed set of keys and rejects ignored or misspelled entries. Options select a role, shape, family, reduction, or elaboration policy.
 * `~ INIT` is the optional *initializer*: either a `Family(args)` clause (sampled stochastic kernel, evaluated through the family registry) or an arbitrary `expr` (deterministic morphism, evaluated through the expression denotation). On a `morphism` declaration the initializer interacts with `role` in the option block: `role=latent` admits only `~ Family(...)`; `role=let` / `role=observed` admits only `~ expr`; `role=kernel` admits both.
 * `[BODY]` is an optional indented block: a rule list for `composition`, `deduction`, or `signature`; a step list for `program`; or the declaration-specific body defined by the grammar.
 
@@ -57,11 +78,11 @@ Throughout, we use the following conventions.
 |--------|---------|
 | $\mathcal{V}$ | A QVR algebra (see [Algebras §1](algebras.md)). |
 | $\otimes,\ \mathbf{1}$ | Monoidal product and unit of $\mathcal{V}$. |
-| $\bigoplus$ | The join of $\mathcal{V}$ (the costructure used to marginalize). |
+| $\bigoplus$ | The reduction combining alternatives; a lattice join only where the algebra supplies one. |
 | $\mathbf{FinSet}$ | The category of finite sets. |
 | $\mathbf{SBor}$ | The category of standard Borel spaces with measurable maps. |
 | $\mathcal{V}\text{-}\mathbf{Rel}$ | The $\mathcal{V}$-enriched category of $\mathcal{V}$-relations on finite sets. |
-| $\mathbf{Stoch}$ | The Kleisli category of the (discrete) Giry monad. |
+| $\mathbf{Stoch}$ | Finite sets and stochastic matrices, viewed as a subcategory of kernels. |
 | $\mathbf{Kern}$ | The category of standard Borel spaces and Markov kernels. |
 | $\mathcal{G}$ | The Giry monad (discrete or continuous, disambiguated by context). |
 | $\llbracket \phi \rrbracket$ | The denotation of phrase $\phi$. |
@@ -77,11 +98,12 @@ dimension of a continuous space $S$.
 
 ## Audience
 
-This document is written for users who wish to reason formally about QVR programs: to verify that two `.qvr` files denote the same morphism, to prove that an optimization pass preserves meaning, or to understand the precise relationship between the syntactic AST, the `dx.Model` value-type layer, and the underlying tensor computations. Familiarity with enriched category theory at the level of Kelly's [*Basic Concepts of Enriched Category Theory*](http://www.tac.mta.ca/tac/reprints/articles/10/tr10abs.html) and with the categorical foundations of probability ([Giry, 1982](https://doi.org/10.1007/BFb0092872); [Fritz, 2020](https://doi.org/10.1016/j.aim.2020.107239)) is assumed.
+The [notation table](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) decodes the symbols used across these pages. For additional background, Milewski’s [functor example using optional values](https://bartoszmilewski.com/2015/01/20/functors/) [@milewski2015functors] and DIPPL’s [coin-flip program](https://dippl.org/chapters/02-webppl.html#and-inference) [@goodman2014design] connect the categorical and probabilistic vocabulary to executable calculations.
+
+This document is written for users who wish to reason formally about QVR programs: to verify that two `.qvr` files denote the same morphism, to prove that an optimization pass preserves meaning, or to understand the precise relationship between the syntactic AST, the `dx.Model` value-type layer, and the underlying tensor computations. The examples and notation explanations provide an entry point without prior category-theory or probabilistic-programming training. Enriched categories [@kelly1982basic] and probability kernels [@giry1982categorical; @fritz2020synthetic] provide the mathematical background.
 
 
 ## References
 
-- Tobias Fritz. 2020. A synthetic approach to Markov kernels, conditional independence and theorems on sufficient statistics. *Advances in Mathematics*, 370:107239.
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
-- Gregory M. Kelly. 1982. *Basic Concepts of Enriched Category Theory*. Cambridge University Press; reprinted as *Reprints in Theory and Applications of Categories* 10 (2005):1–136.
+
+For enriched categories, see [@kelly1982basic]. For probability measures and kernels, see [@giry1982categorical; @fritz2020synthetic]. The [concepts primer](../getting-started/concepts.md) introduces the notation used here.

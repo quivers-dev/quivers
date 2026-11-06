@@ -58,11 +58,25 @@ deduction MMTLG : Term -> Term [semiring=LogProb, start=S, depth=3, tolerance=1e
 
 ## Overview
 
-Multimodal type-logical grammar (Moortgat, 1997) motivates unary modal type constructors such as `Dia` (`◇`) and `Box` (`□`). This deduction declares both names but supplies rules only for `Dia`, in both directions `A -> Dia(A)` and `Dia(A) -> A`. It thus makes `Dia(A)` interderivable with `A` within the depth bound; it does not implement a `Dia ⊣ Box` residuated pair or modal structural postulates.
+Multimodal type-logical grammar [@moortgat1997types] motivates unary modal type constructors such as `Dia` (`◇`) and `Box` (`□`). This deduction declares both names but supplies rules only for `Dia`, in both directions `A -> Dia(A)` and `Dia(A) -> A`. It thus makes `Dia(A)` interderivable with `A` within the depth bound; it does not implement a `Dia ⊣ Box` residuated pair or modal structural postulates.
+
+## Understanding the model
+
+A modal constructor wraps a category so that additional [rules](custom-rules.md#understanding-the-model) can control
+where or how it combines. In a richer grammar, that wrapper might license
+movement through a particular context. The present rules simply introduce
+and remove `Dia`, so within the bound they let the wrapped and unwrapped
+categories derive one another.
+
+This small fragment demonstrates how to declare such rules. It does not
+supply the restrictions required for the linguistic applications listed later.
+Repeated wrapping can create many derivations, making the depth and weight
+conditions relevant both to termination and to how much [inside mass](pcfg.md#inside-computation) the
+chart accumulates.
 
 ## Walkthrough
 
-`object Term : FinSet 16` indexes the deduction's domain and codomain; `object Rule : FinSet 16` indexes the rule-weight vector, which the `multimodal_tlg_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` indexes the deduction's domain and codomain; `object Rule : FinSet 16` indexes the rule-weight vector, which the `multimodal_tlg_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 `atoms NAME, NAME, …` declares category atoms (`S`, `NP`, `N`, `VP`, `PP`), slash constructors (`Fwd`, `Bwd`), and modal constructors (`Dia`, `Box`). Chart items are `span(I, J, X)` triples.
 
@@ -144,10 +158,10 @@ print("dominant yield:", max(set(map(tuple, draws)), key=draws.count))
 # → ("the dog barks",)
 ```
 
-`adam_fit_deduction` maximises the corpus log-marginal under an
+`adam_fit_deduction` maximizes the corpus log-marginal under an
 optional Normal prior on the parameters; `prior_scale=1.0` gives MAP
 under a unit Normal. `sample_corpus` enumerates yields of the chosen
-length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalises the
+length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalizes the
 derivation forest.
 
 ### NUTS (full Bayesian posterior)

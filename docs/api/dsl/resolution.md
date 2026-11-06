@@ -1,5 +1,13 @@
 # Resolution
 
+Resolution turns a symbolic object expression into a runtime object or space. A product
+expression must retain the distinction between a finite index and a real-valued
+component even when both appear in one signature. These adapters implement that
+interpretation for the compiler.
+
+See [resolution of type and space expressions](../../semantics/types-and-spaces.md#6-resolution-in-code) and
+[constructing product and coproduct objects](../../guides/core.md#productset-and-coproductset).
+
 The compiler mixin that resolves QVR `ObjectExpr` ASTs to runtime
 `SetObject` and `ContinuousSpace` values. A single walk handles both
 strata, so a mixed-domain product such as `Real 3 * Token` resolves to

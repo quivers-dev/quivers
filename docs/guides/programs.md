@@ -2,10 +2,19 @@
 
 ## What is a MonadicProgram?
 
+A probabilistic program describes a procedure for generating data. For
+instance, draw a latent mean `mu`, draw a response around that mean, and
+return the response. The same description can score actual responses by
+using their observed values instead of drawing them. Inference is the
+additional task of finding plausible latent values given those observations.
+The [inference guides](inference-foundations.md) explain how SVI and MCMC
+use the program’s scores to fit or sample the latent mean.
+
+
 A
 [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram)
-is a probabilistic program specified as a sequence of bind and let
-steps. It defines a
+is a probabilistic program specified as a sequence of sampling, observation,
+and deterministic steps. It defines a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
 from a domain to a codomain via [monadic
 composition](https://ncatlab.org/nlab/show/Kleisli+category)
@@ -44,8 +53,8 @@ import torch
 Unit = FinSet(name="Unit", cardinality=1)
 R1 = Euclidean(name="R1", dim=1)
 
-prior      = ConditionalNormal(Unit, R1)            # x ~ Normal(0, 1)
-likelihood = ConditionalNormal(R1, R1)              # y ~ Normal(x, 1)
+prior      = ConditionalNormal(Unit, R1)  # learned, input-independent parameters
+likelihood = ConditionalNormal(R1, R1)    # learned parameters conditional on x
 
 program = MonadicProgram(
     Unit,
@@ -72,6 +81,16 @@ log_joint = program.log_joint(
 ```
 
 ## Bind steps
+
+Pyro’s [explanation of sample sites](https://pyro.ai/examples/intro_long.html#Background:-the-pyro.sample-primitive) follows a random variable from a draw to an observed value. [@pyroIntroduction] The QVR [step reference](../reference/qvr/probabilistic-programs.md#step-reference) gives the corresponding source forms.
+
+A *binding* gives a value a name for subsequent steps. A stochastic bind
+first draws the value, then makes it available. Thus `sample y <- f(x)`
+uses the particular value of `x` drawn earlier in this execution. Repeating
+the program produces a new set of draws. The monadic account expresses
+this sequencing without treating random computations as ordinary functions
+returning fixed values.
+
 
 A bind step `sample x <- f` or `sample x <- f(y, z)` samples from a morphism,
 optionally conditioned on previous variables.
@@ -117,6 +136,13 @@ let-expression primitives; see
 for the full primitive list.
 
 ## Observe keyword
+
+An observation says: "use this measured value here, and score how well
+the current latent values predict it." If `mu` changes, the observed
+response remains fixed but its likelihood changes. SVI uses the resulting
+score to update a guide; MCMC uses it when proposing and accepting changes
+to `mu`.
+
 
 Condition the program on an observation:
 
@@ -181,6 +207,14 @@ optional `dict[str, torch.Tensor]` clamping observed sites to
 runtime data.
 
 ### log_joint(x, intermediates)
+
+A joint score combines all the modeled choices in one execution. For
+`mu ~ Normal(0,1)` and `y ~ Normal(mu,1)`, it is
+$\log p(\mu,y)=\log p(\mu)+\log p(y\mid\mu)$. The first term
+is the prior score; the second is the likelihood. Supplying a candidate
+`mu` and an observed `y` lets inference compare candidates. The
+normalizing constant of the posterior is not required for this comparison.
+
 
 Compute $\log p(z_1, \ldots, z_k \mid x) = \sum_i \log p(z_i \mid
 \mathrm{pa}(z_i))$ given all bound-variable values:
@@ -339,6 +373,14 @@ is reshaped to match.
 
 ## Building programs in Python
 
+The step-record interface is useful when a model is assembled by Python
+code or generated from another representation. It describes the same
+dependencies as QVR source. `Draw` and `Observe` introduce random and
+measured values; `Let` computes from values already available. The example
+below compares the joint scores of two constructions of the same model,
+which is stronger evidence of agreement than merely comparing their shapes.
+
+
 Every program the DSL compiles is assembled from objects the
 [`quivers.continuous`](../api/continuous/programs.md) package exports, so
 a program can be built in Python without writing QVR source. The step
@@ -489,7 +531,7 @@ syntax for programs is documented in
 
 - [Hierarchical Programs](programs-hierarchical.md): parametric
   templates for crossed random intercepts, monotone-spline
-  coefficients, and the grouped marginalization construct for
+  coefficients, and the grouped [marginalization](dsl-programs-and-lets.md#scoped-marginalize) construct for
   fibred discrete latents.
 - [Variational Inference](inference-foundations.md): how programs
   feed into the variational training loop.

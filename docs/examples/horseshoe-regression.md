@@ -2,7 +2,7 @@
 
 ## Overview
 
-A coefficient-indexed regression with the horseshoe prior ([Carvalho, Polson, and Scott 2010](https://doi.org/10.1093/biomet/asq017)). The horseshoe is a [global-local scale mixture of Normals](https://en.wikipedia.org/wiki/Sparsity-inducing_prior): a single global scale `tau` and per-coordinate local scales `lambda_p` jointly define the coefficient prior, inducing a spike-near-zero / heavy-tail mixture that adaptively shrinks small effects toward zero while leaving large effects nearly unbiased. Each response row selects one coefficient through `coef_idx`; this program does not sum a full predictor vector against all coefficients.
+A coefficient-indexed regression with the horseshoe prior [@carvalho2010horseshoe]. The horseshoe is a [global-local scale mixture of Normals](https://en.wikipedia.org/wiki/Sparsity-inducing_prior): a single global scale `tau` and per-coordinate local scales `lambda_p` jointly define the coefficient prior, inducing a spike-near-zero / heavy-tail mixture that adaptively shrinks small effects toward zero while leaving large effects nearly unbiased. Each response row selects one coefficient through `coef_idx`; this program does not sum a full predictor vector against all coefficients.
 
 ## QVR source
 
@@ -54,6 +54,19 @@ program horseshoe_regression : Resp -> Val
 
 export horseshoe_regression
 ```
+
+## Understanding the model
+
+The coefficient is built as `tau * lambda * z`. A small [global `tau`](../tutorials/qvr/03-hierarchical.md#non-centered-parameterization) pulls
+all coefficients toward zero, while a sufficiently large local `lambda` lets
+one coefficient remain large. This lets the model represent many weak effects
+alongside a few stronger ones without setting coefficients exactly to zero.
+
+The row index chooses one coefficient in this demonstration. It does not
+form a dot product with a full vector of predictors. Interpret the posterior
+through that row-specific mean and its predictions; individual global and
+local scales can trade off even when their product is well constrained.
+The heavy-tailed scales can also make inference more demanding.
 
 ## Walkthrough
 
@@ -153,7 +166,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The model factors as the Kleisli composite of a global-local hyperprior kernel, a deterministic Hadamard product `tau * lambda * z` lifted into the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category as a Dirac kernel, and the per-row Normal likelihood. The plate-draws `lambda_local` and `z_raw` are Kleisli sections of the `Coef`-indexed plate, and `lambda_local[coef_idx]` is the [Kleisli pullback](https://ncatlab.org/nlab/show/Kleisli+category) along the fibration `Resp -> Coef` carried by the runtime index.
+The model factors as the Kleisli composite of a global-local hyperprior kernel, a deterministic Hadamard product `tau * lambda * z` lifted into the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category as a Dirac kernel, and the per-row Normal likelihood. The plate-draws `lambda_local` and `z_raw` are Kleisli sections of the `Coef`-indexed plate, and `lambda_local[coef_idx]` is the [Kleisli pullback](https://ncatlab.org/nlab/show/Kleisli+category) along the fibration `Resp -> Coef` carried by the runtime index. [@giry1982categorical]
 
 
 ## Model reference

@@ -49,6 +49,19 @@ program ar1 : Step -> Val
 export ar1
 ```
 
+## Understanding the model
+
+If `phi = 0.8`, a one-unit deviation in the previous observation shifts the
+next conditional mean by `0.8` units. Repeated effects decay when `abs(phi) < 1`;
+the stationary mean is `alpha / (1 - phi)`, not generally `alpha` itself.
+`sigma` controls the new variation added at each step.
+
+The fit receives both the current series and its [lagged values](../tutorials/qvr/05-time-series.md#plates-revisited). This makes
+the model a regression conditional on those lags, including the chosen first-row
+boundary. [Posterior draws](../tutorials/qvr/01-first-model.md#inspect-the-posterior) of `phi` describe uncertainty in persistence; to
+forecast several future steps, each generated observation must become the
+next step's lag. Stan’s [AR(1) example](https://mc-stan.org/docs/stan-users-guide/time-series.html#ar1-models) also explains how the first observation can serve as a conditioning value. Reusing one fixed lag vector would answer a different question [@stanTimeSeries].
+
 ## Walkthrough
 
 `alpha` is the intercept of the AR(1) recurrence, `phi` is the autoregressive coefficient constrained to the [stationarity interval](https://en.wikipedia.org/wiki/Stationary_process) `(-1, 1)` via a `Uniform` prior, and `sigma` is the per-step Normal scale with a [half-Cauchy](https://en.wikipedia.org/wiki/Cauchy_distribution#Related_distributions) prior. The identifier `y_prev` is exogenous host-data: it is never declared inside the program, so the runtime resolves it from the observations dict at trace time, where the caller supplies the lagged response series. The mean `mu = alpha + phi * y_prev` is then the per-step recurrence and the observed series `y` is Normal noise around it.
@@ -85,7 +98,7 @@ observations = {"y": y, "y_prev": y_prev}
 
 ### SVI fit
 
-Re-initialise the model so the optimiser starts from the prior, then fit `alpha`, `phi`, and `sigma` by maximising the ELBO. The negative ELBO falls from its starting value down toward the oracle log-likelihood at the true parameters.
+Re-initialize the model so the optimizer starts from the prior, then fit `alpha`, `phi`, and `sigma` by maximizing the ELBO. Compare the negative ELBO across optimization steps. The oracle likelihood is a separate reference score; prior and guide terms prevent treating it as the loss target.
 
 ```python
 import torch.distributions as D
@@ -114,7 +127,7 @@ print(f"oracle -log p(y):  {-oracle_ll:.1f}")
 
 ### NUTS posterior
 
-The model declares explicit `sample` sites for `alpha`, `phi`, and `sigma`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small budgets keep the snippet inside tens of seconds while still producing a usable posterior summary.
+The model declares explicit `sample` sites for `alpha`, `phi`, and `sigma`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small budgets keep the snippet inside tens of seconds for an API demonstration; longer, diagnosed runs are needed for posterior interpretation.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -136,9 +149,9 @@ for name, samples in result.samples.items():
 
 ## Categorical perspective
 
-The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the standard AR(1) joint $p(\alpha, \phi, \sigma) \prod_t \mathcal{N}(y_t \mid \alpha + \phi y_{t-1}, \sigma)$. The `Step`-indexed plate is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) of the per-step Normal kernel along the trivial projection $\mathrm{Step} \to \mathbf{1}$.
+The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the standard AR(1) joint $p(\alpha, \phi, \sigma) \prod_t \mathcal{N}(y_t \mid \alpha + \phi y_{t-1}, \sigma)$. The `Step`-indexed plate is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) of the per-step Normal kernel along the trivial projection $\mathrm{Step} \to \mathbf{1}$. [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *A categorical approach to probability theory* [@giry1982categorical].

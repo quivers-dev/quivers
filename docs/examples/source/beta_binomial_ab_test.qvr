@@ -26,7 +26,7 @@
 # is the value space of the returned per-row success
 # concentration.
 #
-# Reference: [Skellam 1948](https://www.jstor.org/stable/2983694).
+# Reference: [Skellam 1948](https://doi.org/10.1111/j.2517-6161.1948.tb00014.x).
 
 object Arm : FinSet 2
 object Batch : FinSet 12

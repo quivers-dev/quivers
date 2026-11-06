@@ -2,6 +2,18 @@
 
 This page gives a denotational semantics for the four declarations that constitute the *structural compression* layer of QVR: `signature`, `encoder`, `decoder`, and `loss`. The user guide is [Structural compression](../guides/structural-compression-signatures-and-encoders.md); this page is the formal companion.
 
+Structural compression connects symbolic structure to numerical learning.
+A signature says which trees or graphs are well formed. An encoder maps a
+structure to a vector by combining representations of its parts. A decoder
+uses a vector to define a distribution over structures. A loss assigns a
+scalar training objective to the resulting computation.
+
+For a list with constructors `Nil` and `Cons`, encoding `Cons(a, Nil)` means
+encoding `a`, obtaining the vector for `Nil`, then applying the `Cons`
+combiner to those two vectors. The recursion follows the list's shape; the
+learnable functions decide how its parts are represented. The formal term
+*catamorphism* below names this kind of fold.
+
 ## 1. Signatures
 
 A `signature` declaration
@@ -31,6 +43,13 @@ The sort declarations partition the sorts into three kinds:
 Let $S = S_{\mathrm{obj}} \sqcup S_{\mathrm{dat}} \sqcup S_{\mathrm{idx}}$ be the disjoint union. The `dim d` annotation attaches a target dimension $d_s \in \mathbb{N}$ to a sort; encoders / decoders may override it.
 
 ### 1.2 Contexts and terms
+
+A context records the variables currently in scope. Under a binder, that
+context is extended before its body is processed. De Bruijn indices identify
+variables by their position in this scope structure rather than by their
+spelling. This makes renaming a bound variable irrelevant to the represented
+term, while still distinguishing an inner variable from an outer one with
+the same written name.
 
 A *syntactic de Bruijn context* is a finite list
 
@@ -123,6 +142,15 @@ minting the bound variable's embedding from the embedding of its annotation. Una
 
 ### 2.2 Denotation: structural recursion
 
+Milewski’s [“Catamorphisms” section](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Catamorphisms) derives a fold from an initial algebra [@milewski2017falgebras]. The [encoder-block example](../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) chooses the local functions whose recursive extension appears below.
+
+The equations below follow four cases of the tree. A data leaf is embedded;
+a variable retrieves its context vector; a constructor combines its encoded
+children; and a binder extends the context for its scoped children. Once
+these local functions are fixed, recursion determines the encoder on every
+finite well-formed term. Changing a local function or its learned parameters
+changes the induced map; fixing them determines it uniquely.
+
 The encoder denotes the *unique* $\Sigma$-algebra homomorphism
 
 $$
@@ -156,7 +184,7 @@ so the scoped arguments $\beta_k$ are encoded with the bound variables' freshly-
 
 The map $\mathrm{embed}_s : \mathrm{Vocab}_s \to \mathbb{R}^{d_s}$ is supplied at encoder construction. The compiler scaffolds a default for each data sort: a per-key learnable parameter dict that lazily allocates a fresh $\mathbb{R}^{d_s}$ vector the first time each leaf value is seen, which suffices for both closed and open vocabularies.
 
-This is the standard *catamorphism* (initial-algebra fold) of an $F$-algebra (Lambek's lemma); the existence and uniqueness of $\llbracket C \rrbracket$ are by induction on the term structure.
+This is the standard *catamorphism*, or initial-algebra fold. Initiality supplies the unique map $\llbracket C \rrbracket$ compatible with the constructors; for finite terms, structural recursion constructs this map. Lambek’s lemma identifies the structure map of an initial algebra as an isomorphism [@lambek1968fixpoint].
 
 ### 2.3 Sequence-shaped sugar
 
@@ -193,9 +221,18 @@ v_\kappa^{(t+1)} & = & \mathrm{update}_\kappa\bigl(v_\kappa^{(t)},\, \mathrm{agg
 \end{array}
 $$
 
-Undirected edges (`--`) emit messages in both directions; directed edges (`->`) only in the declared direction. The denotation is invariant under graph isomorphism and equivariant under the permutation action on vertices ([Battaglia et al., 2018](https://arxiv.org/abs/1806.01261), §4); the readout aggregates the final vertex-state field into a graph-level vector.
+Undirected edges (`--`) emit messages in both directions; directed edges (`->`) only in the declared direction. When local maps share parameters across vertices and neighborhood aggregation is permutation invariant, the vertex-state computation is permutation equivariant. An invariant readout then produces the same graph-level vector under vertex relabeling. These are the graph-network conditions discussed in the author preprint [@battaglia2018relational]; an arbitrary order-sensitive callback need not satisfy them.
 
 ## 3. Decoders
+
+Decoding reverses the direction of construction, but need not invert the
+encoder. At a list position, a decoder can choose `Nil` or `Cons`; choosing
+`Cons` requires generating a head and continuing with a tail. The choices
+are stochastic, so the output is a distribution over lists. The term
+*coalgebra* describes the local rule that exposes the next layer, and
+*corecursion* describes repeatedly applying it to build the whole structure.
+A depth bound limits this generation and requires terminating choices at the
+boundary.
 
 A `decoder D : Σ [depth=d]` declaration denotes, for each object sort $s \in S_{\mathrm{obj}}$ and each syntactic de Bruijn context $\Gamma$ (§1.2), a *Markov kernel*
 
@@ -226,6 +263,8 @@ The required `body |-> recursive` clause selects the framework's structural core
 
 ### 3.2 Denotation: structural corecursion
 
+The [decoder-block guide](../guides/structural-compression-decoders-and-losses.md#decoder-blocks) supplies a concrete distribution over constructor choices. Compare the [program bind rule](programs.md#21-bind): a sampled constructor determines which subterms the decoder must produce next.
+
 For carrier vector $v \in \mathbb{R}^{d_s}$, context $\Gamma$, and depth budget $d$, the kernel $\llbracket D \rrbracket(v, \Gamma, d)$ samples a term $t \in T_\Sigma(\Gamma, s)$ by the procedure:
 
 1. If $s \in S_{\mathrm{dat}}$, sample $d^\star \sim \mathrm{primitive}(v)$ and return $\mathrm{Data}_s(d^\star)$.
@@ -253,9 +292,16 @@ $$
 \llbracket D \rrbracket \circ \llbracket C \rrbracket \;:\; T_\Sigma \to \mathcal{G}(T_\Sigma)
 $$
 
-is the *reconstruction kernel*. The reconstruction loss (§4.2 below) trains $C$ and $D$ jointly so that $\llbracket D \rrbracket(\llbracket C \rrbracket(t))$ concentrates near $\delta_t$. There is no general round-trip law: the pair $(C, D)$ does *not* form a section / retraction in $\mathbf{Kern}$ unless the encoder is invertible, which finite-dim encoders generically are not.
+is the *reconstruction kernel*. The reconstruction loss (§4.2 below) trains $C$ and $D$ jointly so that $\llbracket D \rrbracket(\llbracket C \rrbracket(t))$ concentrates near $\delta_t$. An exact reconstruction law would require $D(C(t))=\delta_t$ for each term. If two distinct terms receive the same encoding, the decoder receives identical inputs for both and cannot reconstruct each with probability one.
 
 ## 4. Losses
+
+A representation is useful only relative to an objective. A reconstruction
+loss asks the decoder to assign high probability to the encoded input;
+a supervised loss can instead ask an attached computation to predict a
+label. The attachment metadata says where the scalar penalty is evaluated.
+The inference driver chooses the optimizer and uses this penalty to update
+the attached parameters.
 
 A loss declaration has an option block followed by one indented let-expression:
 
@@ -300,9 +346,9 @@ Loss bodies are arbitrary let-expressions over the trace; canonical shapes inclu
 
 ### 4.3 Composition with the inference layer
 
-The total loss is the objective passed to the optimizer by the inference driver. It is not part of the kernel-denotation of any program: a `program P : τ_in → τ_out` denotes a Markov kernel, and losses attached to $P$ are functionals on its trace, not on its denotation. See [Programs §6](programs.md#6-inference-and-conditioning) for the role of conditioning and the inference layer.
+The inference driver passes the total loss to the optimizer. Attached losses are evaluated on the program's execution trace and guide parameter updates. The program's semantic clauses specify its kernel or weighted measure at fixed parameter values. See [Programs §6](programs.md#6-inference-and-conditioning) for the role of conditioning and the inference layer.
 
 ## 5. References
 
-- Lambek, J. (1968). *A fixpoint theorem for complete categories*. Mathematische Zeitschrift 103(2), 151–161.
-- Battaglia, P. W. et al. (2018). [*Relational inductive biases, deep learning, and graph networks*](https://arxiv.org/abs/1806.01261). arXiv:1806.01261.
+
+For the fixed-point property of initial algebras, see [@lambek1968fixpoint]. For graph-network components and their permutation properties, see the author preprint [@battaglia2018relational].

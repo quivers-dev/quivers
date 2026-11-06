@@ -1,5 +1,13 @@
 # Forward Sampling
 
+Sampling a sentence of a fixed length requires normalizing over the candidate yields of
+that length. This routine enumerates that finite set and uses each yield’s chart weight.
+The distribution is conditional on length, and enumeration can grow rapidly with
+vocabulary size and sentence length.
+
+See [the weights represented by a chart](../../../semantics/grammar.md#6-chart-denotation) and
+[a probabilistic context-free grammar](../../../examples/pcfg.md).
+
 `sample_corpus` draws length-fixed yields from the chart's
 length-conditional distribution
 $p(s \mid \text{length} = L, \mathbf{w}) =

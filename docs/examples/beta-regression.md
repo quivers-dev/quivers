@@ -2,7 +2,7 @@
 
 ## Overview
 
-A multi-output beta regression ([Ferrari and Cribari-Neto 2004](https://doi.org/10.1080/0266476042000214501)) for response variables on the open unit interval. Each output dimension carries its own logit-link coefficients and precision; the per-cell mean is mapped through the [sigmoid](https://en.wikipedia.org/wiki/Logistic_function) link to the unit interval, and the [Beta](https://en.wikipedia.org/wiki/Beta_distribution) likelihood is reparameterised in mean / precision form.
+A multi-output beta regression [@ferrari2004beta] for response variables on the open unit interval. Each output dimension carries its own logit-link coefficients and precision; the per-cell mean is mapped through the [sigmoid](https://en.wikipedia.org/wiki/Logistic_function) link to the unit interval, and the [Beta](https://en.wikipedia.org/wiki/Beta_distribution) likelihood is reparameterized in mean / precision form.
 
 ## QVR source
 
@@ -51,6 +51,20 @@ program beta_regression : Resp -> Val
 
 export beta_regression
 ```
+
+## Understanding the model
+
+A fraction such as time spent on a task must stay between zero and one.
+A [linear predictor](../tutorials/qvr/02-glms.md#logistic-regression) cannot ensure this, so `sigmoid` converts it to a valid
+mean. With `mu = 0.5`, increasing `phi` concentrates outcomes near one-half;
+with the same `phi`, changing `mu` moves their center. Exact zeros and ones
+need a different observation model or an explicit boundary treatment.
+
+For multiple outputs, [`out_idx`](../tutorials/qvr/09-indexed-data.md#5-transfer-the-pattern-to-statistical-data) tells each flattened response row which
+coefficient and precision to use. If a row belongs to output 2, it gathers
+`beta_0[2]`, `beta_1[2]`, and `phi[2]`. Posterior slopes describe changes on
+the log-odds scale of the mean, so compare predicted fractions when the
+scientific question is about differences on the original response scale.
 
 ## Walkthrough
 
@@ -140,9 +154,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The model is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category whose codomain factors through the [unit interval](https://en.wikipedia.org/wiki/Unit_interval); the per-cell Beta likelihood factors through the link `sigmoid` as a `1 -> G((0, 1))` kernel. The plate-gather `beta_1[out_idx]` is the Kleisli pullback of the `Out`-indexed plate along the fibration `Resp -> Out` carried by the runtime index.
+The model is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category whose codomain factors through the [unit interval](https://en.wikipedia.org/wiki/Unit_interval); the per-cell Beta likelihood factors through the link `sigmoid` as a `1 -> G((0, 1))` kernel. The plate-gather `beta_1[out_idx]` is the Kleisli pullback of the `Out`-indexed plate along the fibration `Resp -> Out` carried by the runtime index. [@giry1982categorical]
 
 
 ## Model reference
 
-- Silvia Ferrari and Francisco Cribari-Neto. 2004. Beta regression for modelling rates and proportions. *Journal of Applied Statistics*, 31(7):799–815.
+- Silvia Ferrari and Francisco Cribari-Neto. 2004. Beta regression for modeling rates and proportions. *Journal of Applied Statistics*, 31(7):799–815.

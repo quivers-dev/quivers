@@ -3,7 +3,19 @@
 This tutorial defines a robustification request separately from the policy
 that interprets it. The separation is useful when a model should expose an
 operation in its checked graph while allowing a caller to choose the policy.
-We will call this split the **request-policy separation (RPS)**.
+The caller states the requested operation; the handler supplies its interpretation.
+
+Read `perform robust.shrink(8.0)` as asking a named service for an adjusted
+value. The calling computation pauses at that request. A handler can answer
+`4.0`, and `resume(4.0)` makes that value the result of `perform`, allowing
+the remaining computation to continue. The remaining work is called the
+*[continuation](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)*. Pyro’s [effect-handler introduction](https://pyro.ai/examples/effect_handlers.html#Introduction) shows how tracing and conditioning can change the interpretation of sampling statements [@pyroEffects].
+
+An effect interface lists the requests available; an instance identifies
+which service receives them; a handler decides how to answer. Two instances
+of one interface can have different handlers. An effect row records requests
+that a computation may still make, so handling an instance completely removes
+that obligation from the row.
 
 ## 1. Declare the request
 
@@ -113,9 +125,9 @@ provider. Use a foreign handler for a sampler, tensor module, database, or
 other process-local resource. Write `[implementation=foreign]` and omit clause
 bodies; omission without that option is rejected.
 
-This distinction limits what a serialized module can execute by itself, but it
-also keeps host callables out of the stable format. The runtime configuration
-can select a provider; it cannot inject code.
+A process loading the serialized module must supply the implementation through
+an installed provider. The runtime configuration selects that provider by name;
+host callables remain outside the serialized format.
 
 Next, [Parsing as an effectful computation](11-parsing-and-search.md) shows why
 multi-shot handlers matter for statistical search. The [effect

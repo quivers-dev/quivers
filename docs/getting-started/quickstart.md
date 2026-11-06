@@ -2,11 +2,29 @@
 
 This guide walks through the core concepts of quivers with concrete examples: creating objects, building morphisms, composing them, and running them as differentiable programs.
 
+If you want to fit a statistical model first, begin with the
+[first regression tutorial](../tutorials/qvr/01-first-model.md). This quickstart
+instead introduces the Python building blocks. The
+[conceptual introduction](concepts.md) supplies the probability and composition
+background used by both routes.
+
+Read a finite morphism as a table with named row and column sets. A table from
+positions to colors says how each position relates to each color. Composing
+it with a table from colors to outcomes produces a table from positions to
+outcomes by combining the routes through each possible color. The names
+identify compatible connections; the algebra specifies the arithmetic.
+
+Milewski offers [an accessible introduction to composition through functions](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/)
+[@milewski2014composition]. Kelly gives the mathematical account of enriched
+categories [@kelly1982basic]. The examples here use the library
+interfaces; whether a chosen composition has all the laws of an enriched
+category depends on its algebra.
+
 ## 1. Basic Morphisms
 
 A **morphism** is a $\mathcal{V}$-enriched relation represented by a tensor.
 The selected composition algebra determines how its entries combine and how a
-shared axis is reduced.
+[shared axis is reduced](../tutorials/python/01-first-quiver.md#composition).
 
 Create finite sets:
 
@@ -61,6 +79,12 @@ print(composed.tensor.shape)  # torch.Size([3, 2])
 
 Composition is **lazy**: it builds a computation graph. The final tensor is only materialized on evaluation.
 
+For one position and one outcome, suppose two color routes contribute
+`0.4` and `0.3`. The default product-fuzzy rule combines them as
+`1 - (1 - 0.4) * (1 - 0.3) = 0.58`. Ordinary matrix multiplication would
+instead add them to `0.7`. Thus matching tensor shapes is only part of
+composition: you also need to know what the entries mean.
+
 ## 3. Programs
 
 Wrap a morphism as a differentiable `nn.Module` with `Program`:
@@ -94,6 +118,11 @@ for epoch in range(10):
     optimizer.step()
 ```
 
+Here `latent` identifies tensor entries that the optimizer can adjust.
+The displayed loss, `output.sum()`, pushes that sum downward; a fitting task
+would replace it with a discrepancy between predictions and observations.
+The next section adds probability distributions and observation likelihoods.
+
 ## 4. Monadic Programs (Continuous)
 
 For probabilistic computations with continuous and discrete variables, use [**monadic programs**](../api/continuous/programs.md). A program is a tuple `(domain, codomain, steps, return_vars)` where each step binds a sample, observation, or let-expression into a named variable; the final `return_vars` names the variables returned in the program's output tuple.
@@ -123,6 +152,12 @@ program = MonadicProgram(
 x = torch.tensor([0, 1, 2])
 output = program.rsample(x)        # reparameterized samples, shape (3, 2)
 ```
+
+A sampling step produces one realized value, and a later step can use that
+value as an input to its distribution. This is the operational meaning of
+monadic sequencing here. An observation step instead evaluates how well a
+supplied value fits its distribution. Running these steps forward produces a
+draw and a score; recovering a posterior requires inference in addition.
 
 ## 5. The DSL
 
@@ -208,7 +243,9 @@ print(conditioned.tensor.shape)  # [3, 4]
 
 ## 7. Enriched Structures
 
-Work with more abstract categorical structures:
+This optional section points to advanced categorical structures. You can skip
+it while learning to build and fit models. These constructions describe how
+whole families of typed relations interact:
 
 ```python
 from quivers import (

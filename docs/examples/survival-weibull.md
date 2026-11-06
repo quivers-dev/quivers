@@ -2,7 +2,7 @@
 
 ## Overview
 
-A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analysis) with a [Weibull](https://en.wikipedia.org/wiki/Weibull_distribution) baseline ([Klein and Moeschberger 2003](https://doi.org/10.1007/b97377)). Each item carries a covariate `x_i` whose linear contribution scales the Weibull rate; the shape parameter `k` governs whether the hazard is decreasing (k < 1), constant (k = 1, exponential), or increasing (k > 1).
+A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analysis) with a [Weibull](https://en.wikipedia.org/wiki/Weibull_distribution) baseline [@klein2003survival]. Each item carries a covariate `x_i` whose linear contribution scales the Weibull rate; the shape parameter `k` governs whether the hazard is decreasing (k < 1), constant (k = 1, exponential), or increasing (k > 1).
 
 ## QVR source
 
@@ -23,7 +23,7 @@ A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analys
 #   k       ~ Gamma(2, 1)                         Weibull shape
 #   t_i     ~ Weibull(exp(-(alpha + beta * x_i) / k), k)
 #
-# The scale reparameterisation exp(-eta / k) is the Weibull
+# The scale reparameterization exp(-eta / k) is the Weibull
 # proportional-hazards convention so that increasing eta
 # increases the hazard. The model produces uncensored event
 # times; right-censoring is handled at the inference layer by
@@ -47,9 +47,23 @@ program survival_weibull : Item -> Val
 export survival_weibull
 ```
 
+## Understanding the model
+
+Survival time is the elapsed time until an event. The hazard describes the
+instantaneous event rate conditional on no earlier event. A Weibull shape
+below one makes that rate decrease with elapsed time; a shape above one
+makes it increase. The predictor shifts the rate, so a positive coefficient
+in this parameterization tends to shorten event times.
+
+An exact event time and a right-censored record provide different information.
+An exact time contributes a [density](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample) at that time. A record saying the event
+has not occurred by time `c` contributes `P(T > c)`. The current example
+contains only exact times; treating censored limits as event times would
+change the likelihood and bias the interpretation. Stan’s [Weibull survival example](https://mc-stan.org/docs/stan-users-guide/survival.html#weibull-survival-model) shows how observed event times and censored records enter that likelihood [@stanSurvival].
+
 ## Walkthrough
 
-The identifier `x` is the exogenous covariate: it is never declared inside the program, so the runtime resolves it from the observations dict at trace time. The reparameterisation `scale = exp(-eta / k)` is the Weibull [proportional-hazards](https://en.wikipedia.org/wiki/Proportional_hazards_model) convention: positive shifts in `eta = alpha + beta * x` increase the hazard and shorten survival times. The observed event times `t` are uncensored Weibull draws. The current program does not handle right censoring automatically; a censored model must add the log survival function as an explicit score for censored rows.
+The identifier `x` is the exogenous covariate: it is never declared inside the program, so the runtime resolves it from the observations dict at trace time. The reparameterization `scale = exp(-eta / k)` is the Weibull [proportional-hazards](https://en.wikipedia.org/wiki/Proportional_hazards_model) convention: positive shifts in `eta = alpha + beta * x` increase the hazard and shorten survival times. The observed event times `t` are uncensored Weibull draws. The current program does not handle right censoring automatically; a censored model must add the log survival function as an explicit score for censored rows.
 
 The program returns `beta`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back. `Item` names the plate extent of the event times and appears in the signature only as the domain.
 
@@ -133,6 +147,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 The model denotes a conditional kernel into the positive reals. At `k = 1`, the Weibull likelihood reduces to an exponential likelihood; other shape values allow increasing or decreasing hazards.
 
 
-## References
+## Sources and further reading
 
-- John P. Klein and Melvin L. Moeschberger. 2003. *Survival Analysis: Techniques for Censored and Truncated Data*, 2nd edition. Springer.
+- *Survival Analysis: Techniques for Censored and Truncated Data* [@klein2003survival].

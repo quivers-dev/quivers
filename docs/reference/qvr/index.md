@@ -10,22 +10,29 @@ QVR has one compilation model: every executable declaration lowers to a
 checked computation in the **Quivers Indexed Effect Core (QIEC)**. A `define`
 declaration writes such a computation directly. A probabilistic `program`, a
 `deduction`, a schema-backed `parser(...)`, and a structural
-`encoder`/`decoder`/`loss` graph elaborate to the same core. This common target
-is the **one-core model (OCM)**. It is why `qvr run`, `Program.run`, the REPL,
-the language server, and the transpilers report the same types, effect rows,
+`encoder`/`decoder`/`loss` graph elaborate to the same core. This common target is why `qvr run`, `Program.run`, the REPL,
+the language server, and the transpilers report the same types, [effect rows](effects-and-handlers.md#effect-rows),
 and diagnostic codes.
 
 ## Choose a page
 
+For a first reading, a **computation** is a typed procedure that can
+return a value and request effects such as sampling. An **effect row**
+lists which named requests remain available to it. **Elaboration**
+translates higher-level declarations into those explicit operations.
+The [concepts introduction](../../getting-started/concepts.md) works
+through these operations on a small model.
+
+
 | If you need to… | Read |
 | --- | --- |
-| declare closed indices, indexed families, constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
+| declare closed indices, [indexed families](types-and-indexed-families.md#family-declarations), constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
 | declare an effect, create lexical instances, write rows, or handle requests | [Effects and handlers](effects-and-handlers.md) |
 | write `define`, call a computation, recurse, branch, or distinguish pure and effectful binding | [Computations](computations.md) |
 | map, traverse, fold, or normalize a fixed tensor | [Finite collection expressions](collection-expressions.md) |
-| write a model with samples, observations, calls, marginalization, groups, or scans | [Probabilistic programs](probabilistic-programs.md) |
+| write a model with samples, observations, calls, [marginalization](probabilistic-programs.md#exact-marginalization), groups, or scans | [Probabilistic programs](probabilistic-programs.md) |
 | understand what parsers, deductions, and structural models generate | [Generated computation graphs](generated-computations.md) |
-| list and run entries, attach providers, inspect traces, use the LSP, or check a target | [Execution and tooling](execution-and-tooling.md) |
+| list and run entries, attach providers, inspect [traces](../../guides/inference-foundations.md#trace-and-sample-sites), use the LSP, or check a target | [Execution and tooling](execution-and-tooling.md) |
 
 The [compressed grammar](../../semantics/grammar.md#11-qiec-fragment) is the
 production-level syntax summary. The pages here add typing rules, operational
@@ -33,8 +40,16 @@ behavior, examples, and failure modes.
 
 ## A minimal mixed module
 
+The module below exercises several language features together.
+`Measurement` distinguishes present and missing values in their types.
+`half_weight` interprets a request to shrink a value. `robustify`
+uses that handler, and `observations` calls the computation while
+defining a probabilistic model. You can read or write an ordinary
+regression before needing all four features.
+
+
 The following module contains an indexed family, an authored handler, a pure
-computation, and a probabilistic program. It illustrates the OCM without
+computation, and a probabilistic program. It illustrates the shared representation without
 requiring a custom runtime provider.
 
 <!-- compile: qiec -->
@@ -74,7 +89,7 @@ export observations
 ```
 
 The surface declarations differ, but `robustify` and `observations` are both
-entry points. `observations` performs through the module's canonical
+[entry points](execution-and-tooling.md#list-entry-points). `observations` performs through the module's canonical
 `Random` and `Score` instances; an invocation installs handlers for both. The
 call to `robustify` is pure because `half_weight` removes the only effect from
 its body.
@@ -130,7 +145,7 @@ should test the first.
 
 The reference machine executes the kernel and all distribution families.
 Some computations also need a process-local provider, such as the neural
-attachments created for a structural encoder. A transpile target either emits
+attachments created for a structural [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks). A transpile target either emits
 the complete reachable computation graph or refuses it with a stable
 `qiec:capability:*` diagnostic. It never treats an unsupported body as inert
 metadata.

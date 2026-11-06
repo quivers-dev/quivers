@@ -1,14 +1,28 @@
 # Inference Foundations
 
 This page introduces the inference stack's architecture, the trace
-and sample-site interface, and the conditioning API used to
-clamp observations. The variational-family layer (guides,
-objectives, SVI) lives in
-[Variational Inference: SVI](inference-svi.md); the
-gradient-based-MCMC layer lives in
-[Variational Inference: MCMC](inference-mcmc.md).
+and sample site interface, and the conditioning API used to
+clamp observations. Variational inference (guides,
+objectives, SVI) is covered in
+[Variational Inference: SVI](inference-svi.md); gradient-based MCMC is covered in
+[MCMC and Hybrid Samplers](inference-mcmc.md).
 
 ## Architecture
+
+Inference asks which unobserved values are plausible after seeing data.
+Write `z` for latent values, `y` for observations, and `x` for known
+inputs. A model supplies the prior and likelihood, hence
+$p(z\mid x,y) \propto p(y,z\mid x)$. Evaluating a candidate `z` gives its joint density
+$p(y,z\mid x)$. Inference uses these evaluations to approximate how
+posterior mass is distributed across possible values of `z`.
+
+For a first model, list its named sample sites, identify which are
+observed, and choose an inference driver.
+[SVI](inference-svi.md) fits an adjustable approximation to the posterior;
+[MCMC](inference-mcmc.md) constructs a sequence of posterior draws.
+The registry records the remaining latent sites; the driver updates or
+samples their values.
+
 
 The inference subpackage is a six-layer stack, each layer consumable
 independently and re-exported from
@@ -36,6 +50,16 @@ unconstrained vector and routes every per-site bijector through
 
 ## The variational pipeline
 
+The latent registry gives algorithms a consistent numerical representation.
+A positive scale and a real-valued mean have different supports, but an
+optimizer or Hamiltonian sampler can operate on one unconstrained real
+vector. Per-site bijections map its pieces back to valid values. Density
+calculations include Jacobian corrections for this coordinate change;
+otherwise the algorithm would target the wrong distribution.
+
+Stan’s [change-of-variables example](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) derives the density correction for a log transform. [@stanReparameterization] The same correction appears in [continuous flows](continuous-spaces.md#normalizing-flows) and [constrained guides](inference-svi.md#autonormalguide).
+
+
 ```mermaid
 flowchart TB
     M["Model<br/><small>MonadicProgram</small>"] -->|execute once| T["Trace<br/><small>record sample sites</small>"]
@@ -51,6 +75,16 @@ flowchart TB
 ```
 
 ## Trace and sample sites
+
+A trace is a record of one execution. For a model with latent `mu` and
+observed `y`, it records a candidate `mu`, the supplied `y`, and both
+local log densities. A *site* is the named point where a value is drawn
+or scored. Repeated executions give that same site different values. The joint log density adds the sites' contributions.
+A deterministic `let` records a computed value with zero additional
+log density, because it introduces no independent random choice.
+
+Pyro’s [first effect handler example](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) builds a log joint evaluator by combining tracing with conditioning. [@pyroEffects] In QVR, [running and scoring](../reference/qvr/probabilistic-programs.md#running-and-scoring) expose these execution records.
+
 
 A trace records all stochastic operations in a program. Each sample
 point is a
@@ -82,6 +116,14 @@ A `SampleSite` records:
 - `is_deterministic`: whether the site is a deterministic `let` binding
 
 ## Conditioning on observations
+
+To *clamp* a site is to reuse a supplied value whenever execution reaches
+that site. This makes its likelihood available to inference. It does
+not replace prior draws at other sites with posterior draws: that
+requires the inference algorithm. Also distinguish a random latent
+site from an `nn.Parameter`; the latter is an optimized model or guide
+parameter unless the model explicitly puts a prior on it.
+
 
 The
 [`condition()`](../api/inference/conditioning.md#quivers.inference.conditioning.condition)
@@ -116,8 +158,8 @@ constraints.
 Keys in the `condition` data dict that don't match any declared
 sample / observe site are exposed to the program's runtime
 environment as deterministic values, visible to `let`-expression
-evaluation. This is the canonical hook for per-row covariate or
-index arrays used in hierarchical regression:
+evaluation. Supply per-row covariates or group indices this way when
+fitting a hierarchical regression:
 
 <!-- python: skip -->
 ```python
@@ -166,7 +208,7 @@ for name, site in tr.sites.items():
     print(f"{name}: log_prob={site.log_prob.item():.4f}")
 ```
 
-Monitor the ELBO during training to detect divergence or poor guide
+Monitor the [ELBO](inference-svi.md#elbo-evidence-lower-bound) during training to detect divergence or poor guide
 fit (see [SVI](inference-svi.md#svi-stochastic-variational-inference)).
 
 ## Where to next
@@ -174,7 +216,7 @@ fit (see [SVI](inference-svi.md#svi-stochastic-variational-inference)).
 - [Variational Inference: SVI](inference-svi.md): guides,
   objectives, gradient estimators, the SVI training loop, and
   predictive sampling.
-- [Variational Inference: MCMC](inference-mcmc.md): HMC, NUTS,
+- [MCMC and Hybrid Samplers](inference-mcmc.md): [HMC](inference-mcmc.md#mcmc-hmc-and-nuts), NUTS,
   hybrid samplers, and predictive sampling from MCMC chains.
 - [Analysis Pipelines: Fitting and Diagnostics](analysis-fitting-and-diagnostics.md):
   the higher-level fit / compare / posterior-predictive-check

@@ -1,14 +1,25 @@
 # Exact Bayes with finite collection expressions
 
 This tutorial computes a posterior over three candidate means for four
-Gaussian observations. We call this model the **finite-grid posterior (FGP)**.
+Gaussian observations.
 The grid is small enough to enumerate, so the model can expose the collection
 operations without introducing an approximation or a sampling algorithm.
 
-We will build the FGP in three stages. First, a pointwise computation turns a
+We will compute the posterior in three stages. First, a pointwise computation turns a
 distribution's log density into a real score. Second, `traverse` applies that
 computation across observations and candidate parameter values. Third, `map`
-and `logsumexp_over` normalize the resulting log joint.
+and `logsumexp_over` [normalize](../python/06-first-class-trans.md#read-a-transformation-as-a-change-in-interpretation) the resulting log joint.
+
+Each candidate mean is one complete explanation of the data. To compare
+candidates, multiply its [prior probability](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise) by the likelihoods of the four
+observations, then divide by the sum of these weights across candidates.
+For illustration, unnormalized weights `[1, 6, 3]` would give probabilities
+`[0.1, 0.6, 0.3]`. The code performs this same normalization in log space.
+
+The candidate set is the entire parameter space of this particular model.
+Thus enumerating it gives exact finite Bayesian inference; using those three
+points to approximate a continuous parameter would be a different claim.
+Here collection operations make the repeated scoring explicit.
 
 ## 1. Score one observation
 

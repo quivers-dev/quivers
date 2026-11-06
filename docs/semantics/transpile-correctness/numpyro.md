@@ -3,15 +3,24 @@
 This page discharges the per-target obligations of
 [Transpilation correctness](index.md) for $\mathsf{T} = \mathrm{NumPyro}$.
 
+A NumPyro model is a Python function with named random-choice sites. A
+trace records which sites were reached and the values used there. For a
+density comparison, the probe supplies values for the latent sites and the
+observations, then sums their log-density contributions. Repeating this
+evaluation at the test grid points checks how the emitted model weights
+different latent configurations.
+
 ## Semantics
 
+NumPyro’s [eight-schools example](https://num.pyro.ai/en/stable/getting_started.html#a-simple-example-8-schools) shows named samples and observations in a complete model. The [QVR observation contract](../programs.md#22-observe) specifies the likelihood contribution that the renderer preserves.
+
 NumPyro's denotational semantics is the trace semantics of
-Goodman et al. ([2008](https://arxiv.org/abs/1206.3255)) /
+Goodman et al. [@goodman2008church] /
 Wingate, Stuhlmüller, Goodman
-([2011](http://proceedings.mlr.press/v15/wingate11a.html))
+[@wingate2011lightweight]
 implemented via the effect-handler architecture of Phan, Pradhan,
 and Jankowiak
-([2019](https://doi.org/10.48550/arXiv.1912.11554)). A program
+[@phan2019numpyro]. A program
 is a JAX-traced Python function whose `numpyro.sample` invocations
 register sites in a trace. The log-density probe is
 [`numpyro.infer.util.log_density`](https://num.pyro.ai/en/stable/utilities.html#log-density);
@@ -20,22 +29,22 @@ NumPyro returns the joint log-density of the trace.
 ## Unconstrained-space change of variables
 
 NumPyro applies the same change-of-variables principle as Stan but
-with reparametrization handled by per-site
+with reparameterization handled by per-site
 [`TransformReparam`](https://num.pyro.ai/en/stable/_modules/numpyro/infer/reparam.html)
 or auto-transformations registered in
 [`AutoNormal`](https://num.pyro.ai/en/stable/autoguide.html#autonormal).
 For QVR-emitted code at the level the renderer produces, no
-explicit reparametrization is requested: $\Psi_{\mathsf{NumPyro}}
+explicit reparameterization is requested: $\Psi_{\mathsf{NumPyro}}
 = \mathrm{id}$ and $\log|\det J| \equiv 0$. The inference layer
-may add reparametrizations at runtime, but those are guide-side
-and do not affect the model-side denotation Theorem 6.1 quantifies
-over.
+may add reparameterizations at runtime, but those transformations must be accounted for only when a probe uses
+transformed coordinates. The comparison here uses the model-side density
+at the supplied constrained values.
 
 ## Family parameterizations
 
-NumPyro families track PyTorch / Pyro's
-[`Distribution`](https://pytorch.org/docs/stable/distributions.html)
-hierarchy. The mapping is identity for every QVR family that has
+NumPyro provides a JAX implementation whose distribution interface
+follows the design of `torch.distributions`, as described in its
+[distribution reference](https://num.pyro.ai/en/stable/distributions.html). The mapping is identity for every QVR family that has
 a corresponding [`numpyro.distributions.*`](https://num.pyro.ai/en/stable/distributions.html)
 class:
 
@@ -58,18 +67,14 @@ probe.
 
 **Plate.** Nested `with numpyro.plate(name, B):` contexts per the
 documented [`plate`](https://num.pyro.ai/en/stable/primitives.html#numpyro.primitives.plate)
-primitive (Phan, Pradhan, Jankowiak 2019 §3.2). The semantics is
+primitive. The semantics is
 exactly the conditionally-independent product measure of $B$
 i.i.d. draws ([plate discussion](index.md#5-plates-marginalization-and-via)).
 
-**Marginalize.** The NumPyro renderer lowers `IRMarginalize` to
-`IRSample(latent) + scope body` inline (head
-[the marginalization discussion](index.md#5-plates-marginalization-and-via)). The
-latent contributes a normal sample site; the scope's observe site
-runs with the same trace. Soundness for inference targets that
-estimate the $\theta$-posterior is the projection property of
-[Fritz 2020](https://doi.org/10.1016/j.aim.2020.107239)
-Proposition 5.4.
+**Marginalize.** The renderer enumerates the finite support, accumulates each
+atom's prior and scoped log likelihood, and adds the `logsumexp` reduction
+through `numpyro.factor`. Grouped scopes accumulate rows by `via` before
+reducing the latent axis. No sample site remains for the marginalized value.
 
 **Score / let / return.** `numpyro.factor("name", expr)` for
 score; deterministic assignment for let; native `return` for the

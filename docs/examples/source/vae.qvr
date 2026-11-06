@@ -19,7 +19,7 @@
 # A complete VAE must use the encoder as an observation-dependent
 # guide and add the corresponding KL term.
 #
-# Reference: [Kingma and Welling 2013](https://doi.org/10.48550/arXiv.1312.6114).
+# Reference: [Kingma and Welling 2014](https://arxiv.org/abs/1312.6114).
 
 object Pixel : FinSet 8
 object Latent : Real 4

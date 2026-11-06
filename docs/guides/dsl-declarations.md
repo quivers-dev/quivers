@@ -8,6 +8,14 @@ the [Overview](dsl-overview.md#grammar).
 
 ## Algebra
 
+Choose the rule by the meaning of the entries you want to combine.
+Boolean asks whether a path exists, `real` performs ordinary numeric
+sum-product [contraction](dsl-contractions.md#type-driven-wiring-inference), and `markov` combines conditional probabilities.
+The default fuzzy rule combines soft relation scores and does not
+normalize probability rows. See [Core Types](core.md) for examples and
+for the distinction between the API's levels and mathematical lawfulness.
+
+
 Choose the enriching algebra (optional, defaults to `product_fuzzy`):
 
 <!-- compile: false -->
@@ -55,7 +63,7 @@ with each entry a `let`-expression:
 
 <!-- compile: false -->
 ```qvr
-composition my_godel [level=algebra]
+composition my_sum_product [level=algebra]
     tensor_op(a, b) = a * b
     join(t)         = sum(t)
     unit            = 1.0
@@ -100,6 +108,20 @@ underlying object, so `morphism f : Pair -> X [role=latent]` is well-formed when
 `Pair = X * Y`.
 
 ## Morphism
+
+The role determines what is stored and learned:
+
+| Role | What the declaration supplies | Typical use |
+| --- | --- | --- |
+| `latent` without a prior | a table of optimizable parameters | a learned soft relation or weight table |
+| `latent` with `~ Family(...)` | a random representing tensor | Bayesian uncertainty about weights |
+| `observed` | fixed data | a supplied relation |
+| `kernel` or omitted role | an input-dependent distribution | random outputs given inputs |
+
+A kernel's learned parameters and a sample drawn from that kernel are
+different objects. Changing a parameter changes the distribution; drawing
+a sample uses the current distribution.
+
 
 Declare a learnable or fixed morphism:
 
@@ -190,7 +212,7 @@ hierarchy and constraints.
 ### Named composites
 
 `object` is the only top-level type-introduction keyword: discrete
-sets, continuous spaces, and any composite (products, coproducts,
+sets, [continuous spaces](continuous-spaces.md#continuousspace-hierarchy), and any composite (products, coproducts,
 residuated patterns) all enter the environment as `object`
 declarations whose RHS is an object expression.
 
@@ -225,7 +247,7 @@ Two shapes:
   factors.
 
 An explicit all-literal family call fixes the family instead:
-`morphism prior : A -> R ~ Normal(0.0, 1.0)` ignores its input and draws
+`morphism prior : A -> R ~ Normal(loc=0.0, scale=1.0)` ignores its input and draws
 from that Normal for every element of `A`. It has no learned parameter
 table. Leave the arguments off, as in `~ Normal`, when the input should
 select parameters through the kernel's parameter source.
@@ -286,7 +308,7 @@ The runtime realization is
 ## Deduction
 
 A `deduction NAME : Domain -> Codomain [options]` declaration with
-an indented body declares an agenda-based weighted deduction. See the
+an indented body declares an agenda-based weighted [deduction](deduction.md#the-framework). See the
 [weighted deduction systems guide](deduction.md) for the framework
 and the [semiring layer](../api/stochastic/semiring.md) for the
 scoring algebra. The seven irreducible parameters of an
@@ -366,7 +388,7 @@ The three alternatives:
 
 Marking a lexicon entry `#[learnable]` allocates an
 [`nn.Parameter`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Parameter.html)
-log-weight initialised to `0.0`.
+log-weight initialized to `0.0`.
 
 ### Chart-query expressions
 
@@ -421,6 +443,12 @@ outside `program` blocks.
 
 ### Fan-out (diagonal morphism)
 
+Use fan-out when several operations should see the same input. `f @ g`
+expects two inputs as a pair; `fan(f, g)` explicitly supplies one input
+to both. The outputs are paired, so a later operation can use them
+together. Both calls retain their existing learned parameters.
+
+
 Copy a single input to N morphisms and concatenate their outputs.
 Accepts explicit morphism names or a group name from a replicated
 declaration:
@@ -444,6 +472,13 @@ All component morphisms must have the same domain. The output
 dimension is the sum of all component codomain dimensions.
 
 ### Repeat (iterated composition)
+
+Repeating a transition asks what happens after several steps governed
+by the same rule. Its parameters are shared across those steps. Stacking
+uses a separate copy at each layer; scanning additionally receives a
+new sequence element at each step. These are distinct assumptions about
+where a model shares information.
+
 
 Compose a morphism (or composed expression) with itself N times.
 Two forms are available.
@@ -591,6 +626,14 @@ insert an explicit `.change_base` between segments.
 
 ### Curry combinators (residuation witnesses)
 
+Currying changes how arguments are supplied. A function of a pair
+`(x, y)` can be viewed as a function that takes `x` now and leaves a
+place for `y` later. The slash types below record which argument remains
+unsupplied and on which side it combines. In this tensor representation
+the operation retains the tensor’s entries and reassigns its axes between
+the domain and codomain.
+
+
 The `.curry_right` and `.curry_left` postfix combinators witness
 the right- and left-[residuation](https://ncatlab.org/nlab/show/residuated+category)
 isomorphisms. For an inner morphism `f : X * Y -> Z`:
@@ -618,7 +661,7 @@ The [Lambek calculus](https://ncatlab.org/nlab/show/Lambek+calculus)
 inference rules (forward / backward application) become *theorems*
 derivable from `identity` + `curry`.
 
-## Top-level `let` declarations
+## Top-level `define` declarations
 
 Compose morphisms and bind:
 
@@ -651,11 +694,20 @@ to the parent `define` binding.
 
 ## Indexed families and effect declarations
 
+These forms describe stronger contracts than a plain tensor shape.
+An indexed family can record that a list is nonempty, permitting a
+checked `head` operation. An [effect row](../reference/qvr/effects-and-handlers.md#effect-rows) records requests a computation
+may make, such as random sampling or state access. A handler supplies
+the interpretation of those requests. The detailed references explain
+the notation; ordinary model authors can introduce these forms as
+their models need them.
+
+
 QVR has six QIEC declaration forms. An `index` introduces a closed
 index sort and its constructors; a `family` separates type parameters in square
 brackets from refinable indices in parentheses; an `effect` declares a
 parameterized operation interface; an `instance` gives an applied interface a
-lexical identity; a `handler` records coverage and resumption contracts and
+lexical identity; a `handler` records coverage and [resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) contracts and
 may author its clauses; and a `define` names a typed computation over a row
 of instances, which a `program` or another computation calls.
 

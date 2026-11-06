@@ -1,8 +1,19 @@
 # Composition Rules
 
-An algebra (in the sense of [§ Algebras](algebras.md)) gives the strongest setting for $\mathcal{V}$-enriched composition: it provides a tensor, a join, an identity, and (in the strict-quantale case) the distributive law that makes $\mathcal{V}\text{-}\mathbf{Rel}$ a $\mathcal{V}$-enriched symmetric monoidal closed category. Two strictly weaker settings are useful: one drops the identity (giving a *semigroupoid*); the other drops the associativity promise entirely (giving a *bilinear form*). This page records their denotational structure and the operadic generalization to n-ary contractions.
+A composition rule specifies how to combine stages and alternatives in a
+weighted-table calculation. The implementation offers several interfaces for
+these operations. Associativity permits regrouping a chain of stages;
+distributivity permits moving a multiplication across a reduction. This page
+explains which interfaces supply the operations and which equations require
+these laws.
 
 ## 1. The hierarchy
+
+In the formula below, $i$ names an input, $k$ an output, and $j$ a possible
+intermediate value. For each $j$, combine $f[i,j]$ with $g[j,k]$ using
+$\otimes$; then reduce those contributions using $\bigoplus$. Ordinary
+matrix multiplication uses multiplication and addition. Other rules can
+answer reachability or minimum-cost questions with the same index pattern.
 
 A *composition rule* is the minimal algebraic data required to evaluate the composition kernel
 
@@ -18,9 +29,21 @@ We organize composition rules into a hierarchy of progressively stronger structu
 
 **Definition (bilinear form).** A *bilinear form* is a composition rule. The name records that no associativity or unit law is promised: the surface caller is responsible for fixing an association order when chaining compositions.
 
-**Definition (semigroupoid).** A *[semigroupoid](https://en.wikipedia.org/wiki/Semigroupoid)* is a composition rule whose inner tensor is associative, $a \otimes (b \otimes c) = (a \otimes b) \otimes c$. The associativity of $\otimes$ is precisely what makes the induced composition operation $\mathbin{>\!>}$ associative as a partial operation on hom-objects.
+**Mathematical requirement (semigroupoid).** A *semigroupoid* has associative
+composition of compatible arrows, without requiring identity arrows. For the
+matrix formula here, a standard sufficient condition is an associative
+$\otimes$, an associative and commutative finite reduction with a zero, and
+distributivity of $\otimes$ over that reduction on both sides. Reassociating
+three matrices uses both laws: associativity regroups scalar products, and
+distributivity moves those products through the inner reductions.
 
-**Definition (algebra).** An *algebra* is a semigroupoid additionally equipped with an identity element $\mathbf{1} \in V$ for $\otimes$, a meet $\bigwedge$ paired with the join under a complete-lattice structure, and the distributive law $a \otimes \bigoplus_i b_i = \bigoplus_i (a \otimes b_i)$.
+**Implementation interface (`Algebra`).** An `Algebra` supplies the
+composition operations, `unit`, `zero`, `meet`, and `negate`. A unital
+quantale additionally has the complete-lattice and distributivity laws
+stated in [Setting](setting.md). Finite semirings supply a different
+sufficient setting for associative matrix composition, without requiring a
+complete lattice. The interface admits both, as well as operations that
+satisfy neither full set of laws.
 
 The implementation reflects this hierarchy as a class lattice in which `BilinearForm` and `Semigroupoid` are siblings under `CompositionRule` and `Algebra` extends `Semigroupoid`:
 
@@ -37,7 +60,11 @@ graph TD
   class BF,SG qv-checked
   class Q qv-output
 ```
- The eleven shipped algebras of [§ Algebras](algebras.md#1-the-eleven-algebras) are at the strongest level.
+The eleven shipped algebras implement the `Algebra` interface. Their actual laws differ; see [Algebraic scope](algebras.md#2-algebraic-scope).
+
+Associativity and identity are the defining composition laws in the
+categorical account [@maclane1998categories]. Their usefulness here is
+operational: they say which regroupings can preserve a result.
 
 ## 2. The denotation of `>>` at each level
 
@@ -47,15 +74,15 @@ $$
 \llbracket f \mathbin{>\!>} g \rrbracket_{\mathcal{R}}\ [a, c] \;=\; \bigoplus_{b \in B}\ f[a, b]\, \otimes\, g[b, c].
 $$
 
-This denotation does not require associativity, an identity, or distributivity: it depends only on the existence of $\otimes$ and $\bigoplus$. Consequently `>>` is well-defined at every level of the hierarchy. The algebraic levels manifest as *equational guarantees* on `>>`, not as preconditions for its evaluation:
+This formula evaluates whenever $\otimes$ and $\bigoplus$ are available, so `>>` runs at every level of the hierarchy. Rewriting a composition uses stronger assumptions:
 
 | Level | Guarantee on `>>` |
 |---|---|
 | `BilinearForm` | None beyond well-definedness. |
-| `Semigroupoid` | Associativity: $f \mathbin{>\!>} (g \mathbin{>\!>} h) = (f \mathbin{>\!>} g) \mathbin{>\!>} h$. |
-| `Algebra` | Associativity, identity ($\mathrm{id}_A \mathbin{>\!>} f = f = f \mathbin{>\!>} \mathrm{id}_B$), and distributivity. |
+| Lawful semigroupoid composition | Associativity: $f \mathbin{>\!>} (g \mathbin{>\!>} h) = (f \mathbin{>\!>} g) \mathbin{>\!>} h$. |
+| Suitable unital, distributive algebra | Associativity, identity ($\mathrm{id}_A \mathbin{>\!>} f = f = f \mathbin{>\!>} \mathrm{id}_B$), and distributivity. |
 
-The compact-closed operations of $\mathcal{V}\text{-}\mathbf{Rel}$ (`identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, `f.trace(A)`) require both an identity element and the meet / negation pair; their denotations consequently exist only at the `Algebra` level. The compiler enforces this statically: in a module declared with `composition X [level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]`, the operations above raise a typed `CompileError`.
+The implementation gates `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` at the `Algebra` level. This API gate requires the full interface, including meet and negation. The mathematical hypotheses used by each construction are stated in [Expressions](expressions.md). The compiler enforces this statically: in a module declared with `composition X [level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]`, the operations above raise a typed `CompileError`.
 
 ## 3. User-defined composition rules
 
@@ -103,6 +130,16 @@ The well-typedness of the declaration is independent of any algebraic law; wheth
 
 ## 4. Operadic contractions
 
+The [bilinear scoring example](../guides/dsl-contractions.md#worked-example-bilinear-scoring) gives a concrete contraction with three inputs. [Type-driven wiring inference](../guides/dsl-contractions.md#type-driven-wiring-inference) explains how named boundaries determine which axes are contracted.
+
+A contraction generalizes matrix multiplication to several tables at once.
+For the wiring `ab,bc,cd->ad`, the letters name axes: $b$ and $c$ are
+internal and disappear after reduction; $a$ and $d$ remain visible.
+The result combines every route $a\to b\to c\to d$. The term *operadic*
+refers to assembling many-input operations by plugging outputs into inputs.
+For a rule without the required associativity and distributivity laws, the
+specified fold and reduction order remains part of the computation.
+
 The binary composition `>>` is the 2-ary case of a wider operadic structure. An *n-ary contraction* under a composition rule $\mathcal{R} = (V, \otimes, \bigoplus)$ is a morphism
 
 $$
@@ -144,9 +181,11 @@ contraction NAME (input_1 : A_1 -> B_1, ..., input_n : A_n -> B_n) : DOM -> COD 
 
 where `R` names a `CompositionRule` and `SPEC` is an optional einsum-style flat wiring string. The compiler may infer the wiring from the typed signature when `wiring=` is absent. The declared `NAME` is callable from an expression site as `NAME(arg_1, ..., arg_n)`.
 
-**Categorical content.** The contraction surface is the action of a *colored operad* whose colors are the V-Cat objects and whose operations are flat wirings. The composition rule $\mathcal{R}$ is the enriching algebra: the operad's operation $w$ is realized as the multi-input morphism above. When $w$ is a binary wiring with a single contracted letter, the operadic action reduces to the binary composition of $\mathcal{V}\text{-}\mathbf{Rel}$.
+**Categorical content.** Under laws that make substitution of wirings agree with composition of their evaluations, the contraction surface admits a *colored-operad* interpretation. The required equality says that substituting one wiring into another and then evaluating gives the same result as evaluating the inner wiring first. The composition rule $\mathcal{R}$ is the enriching algebra: the operad's operation $w$ is realized as the multi-input morphism above. When $w$ is a binary wiring with a single contracted letter, the operadic action reduces to the binary composition of $\mathcal{V}\text{-}\mathbf{Rel}$.
 
 ## 5. First-class transformations
+
+The [base-change equations](algebras.md#3-base-change) state the preservation conditions for these transformations. For the general idea of a map that respects composition, see Milewski’s [functor definition](https://bartoszmilewski.com/2015/01/20/functors/) [@milewski2015functors].
 
 A *transformation* is either a [algebra homomorphism](algebras.md#3-base-change) $\varphi : \mathcal{V} \to \mathcal{W}$ (pointwise lax monoidal map) or a *morphism transformation* $\psi$ (shape-aware action that may consult axis information). Both expose a *source* and a *target* algebra and an action on tensors. The DSL surface treats transformations as values in a dedicated *transformation namespace* (disjoint from the morphism namespace) that can be let-bound, composed, and passed to `change_base`.
 
@@ -219,7 +258,7 @@ The composition-rule hierarchy and the operadic contraction surface are stratifi
 
 - A module declared with `composition X [level=algebra]` denotes a morphism in $X\text{-}\mathbf{Rel}$ exactly as in [§ Morphisms](morphisms.md). The new strata add no new morphisms at this level.
 - A module declared with `composition X [level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]` denotes a morphism in the corresponding weaker enriched category, with the compact-closed surface restricted as described in § 2 above.
-- The operadic contraction operation `op_apply(a_1, ..., a_n)` denotes the wiring's action on the supplied morphisms; the result lives in the same enriched category and is composable with the rest of the program under `>>` (subject to the surrounding rule's algebraic guarantees).
+- The operadic contraction operation `op_apply(a_1, ..., a_n)` denotes the wiring's action on the supplied morphisms; the result lives in the same enriched category and is composable with the rest of the program under `>>` (under the algebraic hypotheses stated above).
 - First-class transformations refine the existing [§ Algebras § 3](algebras.md#3-base-change) base-change surface: every named singleton there is now a let-bindable value, every parametric constructor produces a let-bindable value, and `>>>` composes them.
 
 The conservativity claim is the formal content of the implementation's class hierarchy: changing a composition's `[level=semigroupoid]` or `[level=bilinear_form]` to `[level=algebra]` for the same rule (when the named rule is in fact at algebra level) gives a strictly stronger module that admits every operation the original did, plus the compact-closed surface.

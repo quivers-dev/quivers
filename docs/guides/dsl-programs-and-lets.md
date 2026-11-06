@@ -13,13 +13,22 @@ morphisms, kernels, and combinators are detailed in
 
 ## Program declarations
 
+Read a program as a sequence of questions. `sample` asks for a random
+value; `let` computes from values already available; `observe` scores
+a measured value under the current distribution; `return` selects what
+the caller receives. `marginalize` asks the model to account for every
+value of a finite unknown rather than select one. These steps define
+the model; a separate inference procedure estimates its posterior.
+
+
 A `program` block defines a probabilistic program. The body is a
 sequence of *steps* (bind, observe, let, marginalize) followed by
-`return`. Each step is a [Kleisli
-arrow](https://ncatlab.org/nlab/show/Kleisli+category) on the
-accumulated random-variable context $\Phi$; the program denotes the
-composite $\Gamma \to \mathcal{G}(\tau_2)$ in
-[`Kern`](../api/stochastic/categories.md).
+`return`. Sampling steps compose probability kernels over the accumulated variable
+context $\Phi$. Observation and score steps additionally reweight executions;
+they generally produce an unnormalized measure until normalized. Thus a
+purely generative program admits the usual [Kleisli](monadic.md#kleisli-category)
+interpretation in [`Kern`](../api/stochastic/categories.md), while a scored
+program requires the corresponding measure/weight semantics.
 
 <!-- compile: false -->
 ```qvr
@@ -97,7 +106,7 @@ connected component at a time, so mutually recursive computations need no
 forward declaration; a recursive computation must reach a `case` branch or an
 `if` arm that does not call again, which is what lets it stop. A scoped
 instance may not survive in its body's row: the checker reports
-`qiec-instance-escape` for a body that still performs on it. A handler's
+`qiec-instance-escape` for a body that still performs on it. A [handler](../reference/qvr/effects-and-handlers.md#handler-declarations)'s
 clauses may be authored in the source with `=>` bodies, each resuming as often
 as its grade admits (`0`, `aff`, `1`, or `omega`), and a foreign handler's
 clauses are process-local attachments. A `program` elaborates to such a
@@ -132,12 +141,21 @@ keywords.
 
 ### Indexed bind (plate)
 
+A **plate** repeats a conditional distribution across an index set.
+If `Subject` contains four people, `sample by_subject : Subject` creates
+four subject values. They may be independent conditional on a shared
+scale `sigma`, while becoming dependent after uncertainty about that
+scale is integrated out. An unusually large effect for one subject can
+raise the inferred shared scale and thereby widen the plausible effects
+for the others.
+
+
 `sample v : A <- Family(args)` declares `v` as an $A$-indexed family of
-independent $F$-distributed draws. Categorically `v : A \to
-\mathcal{G}(K)` where `K` is the per-fiber codomain taken from the
-family; equivalently a single arrow $\mathbf{1} \to
-\mathcal{G}(K^A)$ via the natural isomorphism
-$\mathbf{Kern}(\mathbf{1}, K^A) \cong \mathbf{Kern}(A, K)$.
+independent $F$-distributed draws. The per-index kernel assigns a distribution on `K` to each index in `A`.
+Taking their independent product produces a distribution on `K^A`.
+This product factorization specifies conditional independence across
+indices. To introduce dependence, pass a shared random parameter or
+choose a family with a joint event over the desired axes.
 
 <!-- compile: false -->
 ```qvr
@@ -148,9 +166,16 @@ sample by_subject    : Subject <- Normal(loc=0.0, scale=sigma)
 
 ### Indexed observe
 
+For independent observations conditional on the model's latents, multiply
+their likelihoods, or equivalently add their log likelihoods. A Normal
+density may exceed one. For a uniform density on an interval of width
+`0.1`, the density is `10` and an observation contributes `log(10)`.
+Such scores are likelihood weights; a sub-probability kernel would
+additionally require total mass at most one.
+
+
 `observe r : N <- Family(args)` accumulates a batched
-log-likelihood: a sub-probability kernel $\Phi \to
-\mathcal{G}_{\le 1}(\Phi)$ with score $\prod_{n \in N} p_F(r_{\mathrm{obs}}(n);
+log-likelihood, reweighting the current execution by $\prod_{n \in N} p_F(r_{\mathrm{obs}}(n);
 \theta(n, \phi))$. The response buffer `r` is supplied at runtime
 via the `observations` dict passed to
 [`MonadicProgram.rsample`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.rsample),
@@ -171,8 +196,8 @@ optionally `A`-indexed, with the indented block as its
 integration scope. At the end of the scope the coordinate is
 pushed forward through the projection $\pi : \Phi \times C \to
 \Phi$, integrating it out by
-[log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) on the
-log-likelihood (discrete) or fibrewise integration (continuous);
+[log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) for the supported
+finite discrete enumeration;
 `c` then falls out of scope.
 
 <!-- compile: false -->
@@ -182,14 +207,20 @@ marginalize class : Item <- Categorical(logits=class_logits)
 ```
 
 The grouped form with `[over=G]` and per-observe `[via=<idx>]`
-options is the fibred marginalization construct; see
+options is the fibred [marginalization](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) construct; see
 [hierarchical programs](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents).
 
 ### Indexed gather in `let`
 
-A `let`-expression of the form `arr[idx]` denotes the [Kleisli
-pullback](https://ncatlab.org/nlab/show/pullback) of a plate
-variable along a finite fibration. For a plate `v : A -> B` and an
+If `by_verb = [0.2, -0.1, 0.5]` and `verb_of_item = [2, 0, 2]`,
+the gather returns `[0.5, 0.2, 0.5]`. Items zero and two share the
+same realized verb effect. Sampling again per item would define a
+different model. The index map is what preserves the intended sharing.
+
+
+A `let` expression of the form `arr[idx]` gathers values by their indices.
+Once a plate has been sampled, this is deterministic reindexing of its
+realized values. For a plate `v : A -> B` and an
 index morphism $\iota : N \to A$, the gather $\iota^* v = v \circ
 \iota$ is itself a [`Kern`](../api/stochastic/categories.md)-morphism
 $N \to B$.
@@ -239,8 +270,8 @@ fresh latents per use, no inadvertent tying.
 # Parametric random-intercepts template: one HalfNormal scale and
 # a per-level Normal(loc=0, scale=sigma) plate, polymorphic over the grouping
 # object G and the half-normal hyperparameter scale.
-program random_intercepts (G : FinSet, scale : Real) : G -> 1
-    sample sigma <- HalfNormal(scale=scale)
+program random_intercepts (G : FinSet, prior_scale : Real) : G -> Real 1
+    sample sigma <- HalfNormal(scale=prior_scale)
     sample v : G <- Normal(loc=0.0, scale=sigma)
     return v
 ```
@@ -252,13 +283,13 @@ marginalization over discrete classes) live in the
 ### Posterior blocks
 
 A `program name(latents) : domain -> codomain`
-declaration denotes a deterministic post-conditioning kernel. The
+declaration denotes a deterministic post-[conditioning](inference-foundations.md#conditioning-on-observations) kernel. The
 `over = model` entry in its option block marks the program as
 consuming the named model's latents; the consumed latents appear
 as data parameters in the parameter list. The
 `effects=[Pure]` signature rejects any sample, score, or
-marginal binds; the body is restricted to `let` (and `marginalize`
-over its own scope). Categorically it is a
+marginal binds; the body must remain pure; a marginalization that performs scoring is
+not allowed by this signature. Categorically it is a
 [`Kern`](../api/stochastic/categories.md)-morphism $\text{Latents}
 \to \tau_{\mathrm{out}}$ that lifts to $\text{Data} \to
 \mathcal{G}(\tau_{\mathrm{out}})$ by post-composition with the
@@ -279,9 +310,21 @@ program class_probs(raw_logits) : Item -> Logits4 [effects=[Pure], over=scored]
 
 The data parameter `raw_logits` names the model latent the body
 consumes; the runtime supplies a per-sample snapshot of the model's
-trace.
+[trace](inference-foundations.md#trace-and-sample-sites).
 
 ## Axis-role clause: `over` and `iid_over`
+
+For a numerical comparison of dependent event coordinates and conditionally independent repetitions, see Pyro’s [distribution shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) and [plate examples](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate). [@pyroTensorShapes] Quivers’ [family catalog](continuous-families.md#event-rank-and-axis-role-syntax) lists the event ranks used by this syntax.
+
+Ask what counts as one outcome before choosing the axes. A probability
+vector over three topics is one Dirichlet outcome; ten documents can
+each have such a vector. The topic axis is an event axis and the
+document axis is a batch/plate axis, producing ten jointly constrained
+three-component vectors. `over=Topic` records the former; `: Doc` or
+`iid_over=Doc` records the latter. This declaration constrains the three
+topic probabilities within each document to sum to one and treats the
+documents as conditionally independent draws.
+
 
 Every distribution-bearing form (kernel and latent-prior morphism
 declarations, `sample` / `observe` / `marginalize` steps) accepts
@@ -406,7 +449,7 @@ let centered = map(xs, x -> x - mean)
 ```
 
 Each `let`-builtin denotes a deterministic measurable map, lifted
-into the Kleisli category as a [Dirac
+into the [Kleisli category](monadic.md#kleisli-category) as a [Dirac
 kernel](https://en.wikipedia.org/wiki/Dirac_delta_function).
 
 ### Checked primitive reference
@@ -414,7 +457,7 @@ kernel](https://en.wikipedia.org/wiki/Dirac_delta_function).
 The checked registry defines the portable QIEC expression set. Operators and calls are
 resolved by argument type before execution or transpilation. Reductions act on
 the entire supplied tensor; rowwise operations act on its last axis. For a
-contraction over a named axis, use a typed
+[contraction](dsl-contractions.md#type-driven-wiring-inference) over a named axis, use a typed
 [contraction declaration](dsl-contractions.md).
 
 **Conversions and weights**: `real`, `int`, `weight`, `weight_value`.
@@ -438,7 +481,7 @@ contraction over a named axis, use a typed
 `normalize`.
 
 **Finite collections**: `map`, `fold`, `length`, and `logsumexp_over` are pure.
-`traverse` sequences a named computation and therefore appears on the right
+`traverse` sequences a named computation and thus appears on the right
 side of `<-`. See the [collection reference](../reference/qvr/collection-expressions.md)
 for their typing and shape rules.
 
@@ -459,6 +502,13 @@ derived from it. Calls resolve against this registry before module-scope
 callables. User-defined callable arity is checked at compile time.
 
 ### Factor expressions: assembling indexed tensors
+
+A factor expression is a typed comprehension: enumerate a finite set
+of index tuples and compute a value at every tuple. Indexing reads one
+cell of a table; a factor expression constructs the whole table. For
+two verbs and three classes, the body runs at six `(verb, class)`
+pairs and produces a table with those two leading axes.
+
 
 The `factor` expression in a `let` body builds a
 finite-domain-indexed tensor by evaluating a body once per tuple of
@@ -594,9 +644,9 @@ object Obs : Real 5
 
 morphism prior : Cond -> Latent ~ Normal
 morphism likelihood : Latent -> Obs ~ Normal
-define posterior = prior >> likelihood
+define predictive = prior >> likelihood
 
-export posterior
+export predictive
 ```
 
 ### Probabilistic program with observations
@@ -623,7 +673,7 @@ object D : FinSet 1
 object In : Real 8
 object Out : Real 4
 
-# Default: weights initialised from a small-scale randn.
+# Default: weights initialized from a small-scale randn.
 morphism W_default : In -> Out [role=latent, scale=0.1]
 
 # Algebra-guided: init pulled from Algebra.init_spec, applied

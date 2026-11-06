@@ -123,7 +123,7 @@ class ModalCategory(Category):
     """A modal category: a unary type constructor applied to a category.
 
     Represents modalities like ◇A (diamond) and □A (box) used in
-    multimodal type-logical grammar (Moortgat 1997). Arbitrary
+    multimodal type-logical grammar [Moortgat (1997)](<https://www.sciencedirect.com/book/9780444817143/handbook-of-logic-and-language>). Arbitrary
     named modalities are supported.
     """
 

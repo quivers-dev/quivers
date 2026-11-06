@@ -3,23 +3,30 @@
 Per-target obligations of [Transpilation correctness](index.md)
 for $\mathsf{T} = \mathrm{BUGS}$.
 
+A BUGS model states relationships among variables. Whether a variable is
+observed depends on the supplied data, so the same `~` syntax can introduce
+an unknown quantity or score a known one. Parameter conventions need care:
+a Normal standard deviation of 2 corresponds to precision $1/4$.
+The sections below track such conversions before considering test evidence.
+
 ## Semantics
 
 BUGS's denotational semantics is the directed graphical model
 semantics of Lunn, Spiegelhalter, Thomas, and Best
-([2009](https://doi.org/10.1002/sim.3680)). A `model { ... }`
+[@lunn2009bugs]. A `model { ... }`
 block declares a set of stochastic nodes (`~`) and deterministic
 nodes (`<-`) over which the joint distribution factors. The
 shared repository probe compiles and evaluates BUGS-syntax output
-through JAGS and `pyjags`. This checks the supported common subset;
-it does not establish compatibility with every BUGS dialect.
+through JAGS and `pyjags`, testing the subset shared by the renderer and JAGS.
 
 ## Unconstrained-space change of variables
 
 BUGS works on the constrained parameter space directly; no
-automatic reparametrization. $\Psi_{\mathsf{BUGS}} = \mathrm{id}$.
+automatic reparameterization. $\Psi_{\mathsf{BUGS}} = \mathrm{id}$.
 
 ## Family parameterizations
+
+The [shared parameterization discussion](index.md#4-distribution-parameterization) separates changing a constructor’s scale argument from transforming its random variable. The [JAGS mapping table](jags.md#family-parameterizations) identifies the closely related target’s naming differences.
 
 BUGS uses precision-parameterized normal-family distributions:
 `dnorm(μ, τ)` where $\tau = 1/\sigma^2$. This is the canonical
@@ -75,17 +82,20 @@ their data as a separate `list(...)` block, and variables not in
 the data block are stochastic latents.
 
 **Plate.** `for (m_<axis> in 1:N_<axis>) { <name>[m_<axis>] ~
-d<family>(<args>) }`. Per Lunn et al. 2009, the for-loop's
+d<family>(<args>) }`. Under BUGS’s graphical-model interpretation [@lunn2009bugs], the for-loop's
 contribution to the joint is the product of per-iteration
 factors. Each row's args may index into other plate-shaped nodes
 (LDA's `theta[doc[n], 1:K]` form).
 
-**Marginalize.** Explicit-latent rewrite. BUGS Gibbs sampling
-natively handles discrete latents.
+**Marginalize.** A categorical-mixture scope can be collapsed into a `dcat`
+distribution whose probabilities already sum over the hidden class. Other
+marginalization blocks are refused. The collapsed probabilities represent
+$\sum_z p(z)p(y\mid z)$; a model retaining $z$ instead evaluates the joint
+$p(z)p(y\mid z)$ at one value of that coordinate.
 
 **Score / let / return.** BUGS has no native `factor` primitive.
 The renderer uses the
-[zero trick of Plummer 2003](https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf):
+zero trick:
 with host-supplied `zero_name = 0`, the relation
 `zero_name ~ dpois(C - expr)` contributes `expr - C` because
 `log P(0 | λ) = -λ`. The positive carrier constant $C$ is
@@ -103,12 +113,5 @@ return is a QVR-level selection rather than a BUGS statement.
 
 ### References
 
-* David Lunn, David Spiegelhalter, Andrew Thomas, and Nicky Best.
-  2009. The BUGS project: Evolution, critique and future
-  directions. *Statistics in Medicine*, 28(25):3049-3067.
-  [https://doi.org/10.1002/sim.3680](https://doi.org/10.1002/sim.3680)
-* Martyn Plummer. 2003. JAGS: A program for analysis of Bayesian
-  graphical models using Gibbs sampling. In *Proceedings of the
-  3rd International Workshop on Distributed Statistical Computing
-  (DSC)*, 124-125.
-  [https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf](https://www.r-project.org/conferences/DSC-2003/Proceedings/Plummer.pdf)
+
+For the BUGS project and its modeling language, see [@lunn2009bugs]. For the related JAGS system, see [@plummer2003jags]. The zero trick used above follows directly from the Poisson probability at zero.

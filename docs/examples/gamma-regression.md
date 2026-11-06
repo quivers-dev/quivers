@@ -2,14 +2,14 @@
 
 ## Overview
 
-A Bayesian regression for non-negative component totals, fit with a [Gamma](https://en.wikipedia.org/wiki/Gamma_distribution) likelihood and a per-category log-shape predictor. The model uses K = 3 categories: each category's log-shape is a linear function of the predictor, and the response is the raw per-cell Gamma tally rather than its simplex projection. This is the unnormalized layer of a Dirichlet regression ([Maier 2014](https://epub.wu.ac.at/4077/)): independent Gamma draws with shapes `(alpha_1, ..., alpha_K)` and unit rate normalize to a sample on the [K-simplex](https://en.wikipedia.org/wiki/Simplex) via the [Gamma / Dirichlet relationship](https://en.wikipedia.org/wiki/Dirichlet_distribution#Gamma_distribution), but here the program observes the Gamma layer directly and leaves the deterministic normalization to downstream code.
+A Bayesian regression for strictly positive component totals, fit with a [Gamma](https://en.wikipedia.org/wiki/Gamma_distribution) likelihood and a per-category log-shape predictor. The model uses K = 3 categories: each category's log-shape is a linear function of the predictor, and the response is the raw per-cell Gamma tally rather than its simplex projection. This is the unnormalized layer of a Dirichlet regression [@maier2014dirichletreg]: independent Gamma draws with shapes `(alpha_1, ..., alpha_K)` and unit rate normalize to a sample on the [K-simplex](https://en.wikipedia.org/wiki/Simplex) via the [Gamma / Dirichlet relationship](https://en.wikipedia.org/wiki/Dirichlet_distribution#Gamma_distribution), but here the program observes the Gamma layer directly and leaves the deterministic normalization to downstream code.
 
 ## QVR source
 
 ```qvr
 # Gamma Regression for Component Totals
 #
-# A Bayesian regression for non-negative component totals, fit
+# A Bayesian regression for strictly positive component totals, fit
 # with a Gamma likelihood and a per-category log-shape predictor.
 # This is the unnormalized layer of a Dirichlet regression:
 # independent Gamma draws with shapes (alpha_1, ..., alpha_K)
@@ -48,6 +48,19 @@ program gamma_regression : Resp -> Val
 
 export gamma_regression
 ```
+
+## Understanding the model
+
+A Gamma observation is a strictly positive amount, such as a duration or
+component total. With unit rate, its shape `alpha` is both its mean and its
+variance; exponentiating the [predictor](../tutorials/qvr/02-glms.md#poisson-regression) keeps `alpha` positive. The category
+lookup selects which coefficients govern each flattened response cell.
+
+Dividing a set of independent unit-rate Gamma draws by their sum produces a
+Dirichlet-distributed vector of proportions. But observing the totals and
+observing only their normalized proportions are different experiments. The
+current likelihood scores the totals. Data containing only proportions would
+instead need the Dirichlet density, which integrates out the unobserved total.
 
 ## Walkthrough
 
@@ -136,9 +149,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The model factors as a K-fold tensor product of [`Gamma(alpha_k, 1)`](https://en.wikipedia.org/wiki/Gamma_distribution) kernels, one per category, with shape parameters driven by a per-category linear predictor through the exponential link. Pushing the joint Gamma kernel through the deterministic normalizing map `t |-> t / sum t` lands on the K-simplex as the [Dirichlet](https://en.wikipedia.org/wiki/Dirichlet_distribution) kernel, recovering Dirichlet regression as a post-composition. Working in the unnormalized Gamma layer keeps the per-category log-shapes linear in the predictor; the simplex projection is left as a deterministic adjunct that the runtime applies on demand.
+The model factors as a K-fold tensor product of [`Gamma(alpha_k, 1)`](https://en.wikipedia.org/wiki/Gamma_distribution) kernels, one per category, with shape parameters driven by a per-category linear predictor through the exponential link. Pushing the joint Gamma kernel through the deterministic normalizing map `t |-> t / sum t` lands on the K-simplex as the [Dirichlet](https://en.wikipedia.org/wiki/Dirichlet_distribution) kernel, recovering Dirichlet regression as a post-composition. Working in the unnormalized Gamma layer keeps the per-category log-shapes linear in the predictor; the simplex projection would be a separate deterministic transformation supplied by the caller.
 
 
-## References
+## Sources and further reading
 
-- Marco J. Maier. 2014. [*DirichletReg: Dirichlet Regression for Compositional Data in R*](https://epub.wu.ac.at/4077/). Research Report Series 125, Department of Statistics and Mathematics, WU Vienna University of Economics and Business.
+- *DirichletReg: Dirichlet Regression for Compositional Data in R* [@maier2014dirichletreg].

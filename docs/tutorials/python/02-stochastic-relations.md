@@ -1,6 +1,22 @@
 # Tutorial 2: Stochastic Relations
 
-The [FinStoch](https://ncatlab.org/nlab/show/FinStoch) category has finite sets as objects and [Markov kernels](https://en.wikipedia.org/wiki/Markov_kernel) as morphisms. Their entries are conditional probabilities. This chapter constructs and composes kernels, conditions them on observations, and queries probabilities and expectations.
+The [FinStoch](https://ncatlab.org/nlab/show/FinStoch) category has finite sets as objects and [Markov kernels](https://en.wikipedia.org/wiki/Markov_kernel) as morphisms. Their entries are [conditional probabilities](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise). This chapter constructs and composes kernels, conditions them on observations, and queries probabilities and expectations.
+
+Think of `X` as weather, `Y` as a travel choice, and `Z` as arrival status.
+A row of the first table gives the probabilities of travel choices for one
+weather condition. If a sunny day leads to walking with probability `0.25`
+and taking a bus with probability `0.75`, and their on-time probabilities are
+`0.8` and `0.6`, then the composed on-time probability is
+`0.25 * 0.8 + 0.75 * 0.6 = 0.65`.
+
+The sum accounts for all intermediate choices. Unlike the fuzzy scores in
+chapter 1, each kernel row allocates total probability one across its possible
+outputs. This is the concrete content of the term *Markov kernel* on finite sets.
+
+Bishop develops conditional probability and marginalization from the
+statistical side [@bishop2006pattern]. Fritz gives a categorical treatment
+of stochastic maps, including finite stochastic matrices [@fritz2020synthetic].
+The calculation above is the finite sum that connects those two accounts.
 
 ## Concepts
 
@@ -121,7 +137,10 @@ print(disc_normal.tensor.shape)        # [1, 10]
 print(disc_normal.tensor.sum(dim=-1))  # ~[1.0]
 ```
 
-This is a stochastic morphism from the terminal object to a discretized space. Each entry is the probability mass in a bin.
+This is a stochastic morphism from the one-element input object to a finite
+grid. Each entry is a normalized weight at a bin center, used as the mass of
+that discrete outcome. It is not the exact integral of the continuous density
+over the corresponding interval.
 
 Similarly, create a [`DiscretizedBeta`](../../api/stochastic/families.md):
 
@@ -166,7 +185,16 @@ hard[2] = 1.0
 posterior_kernel = condition(kern, hard)
 ```
 
-The result is still a kernel `X -> Y` (every row a distribution), now concentrated on the evidence support. To recover a posterior over X you push a prior through it and marginalize, as shown next.
+For every row with positive evidence mass, the result is a distribution on
+`Y` concentrated on the evidence support. A row whose evidence mass is zero
+remains all zeros under the implementation's clamped denominator; no conditional
+distribution is defined by Bayes' rule in that case.
+
+This operation does not infer `X`. Given a prior `p(x)`, the [input posterior](06-first-class-trans.md#bayes-inversion) is
+proportional to `p(x) * sum_y f(x, y) * e(y)`, normalized over `x` when that
+total is positive. The row normalization above discards precisely those
+row-specific evidence totals. Use the original kernel and prior for Bayes
+inversion; chapter 6 develops that separate operation.
 
 ## Probabilities and Expectations
 

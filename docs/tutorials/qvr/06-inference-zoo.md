@@ -1,16 +1,31 @@
 # 6. Choosing an inference algorithm
 
-Quivers exports eleven concrete [guide](../../api/inference/guide.md) classes, seven [objectives](../../api/inference/elbo.md), two MCMC kernels (HMC, [Neal, 2011](https://doi.org/10.1201/b10905-6); NUTS, [Hoffman & Gelman, 2014](https://www.jmlr.org/papers/v15/hoffman14a.html)), two hybrid approaches, and four gradient [estimators](../../api/inference/estimators.md). The appropriate combination depends on posterior geometry, computational budget, and the quantities the analysis needs.
+Quivers exports eleven concrete [guide](../../api/inference/guide.md) classes, seven [objectives](../../api/inference/elbo.md), two MCMC kernels (HMC, [@neal2011mcmc]; NUTS, [@hoffman2014nuts]), two hybrid approaches, and four gradient [estimators](../../api/inference/estimators.md). The appropriate combination depends on [posterior geometry](03-hierarchical.md#centered-or-non-centered), computational budget, and the quantities the analysis needs.
 
-The mental model: you pick (a) a *family* (variational, MCMC, hybrid), then (b) a *configuration* within that family, then (c) gradient-estimator and tightness knobs. The choices roughly factor; we'll walk down the tree.
+First choose VI, MCMC, or a hybrid. For VI, then choose a guide, objective,
+and gradient estimator. The sections below explain how these choices affect
+the approximation and its computational cost.
+
+Start with two ways of representing an answer. Variational inference keeps
+an adjustable distribution, such as a Normal with a learned mean and scale.
+MCMC keeps a sequence of parameter draws whose long-run distribution targets
+the posterior. The first has approximation restrictions from its chosen family;
+the second has [dependence between draws](08-diagnostics-and-comparison.md#convergence-diagnostics) and finite-run sampling error.
+
+Within VI, the guide determines which distribution shapes are expressible,
+the objective determines what is optimized, and the gradient estimator
+determines how a noisy derivative is computed. A richer guide may represent
+correlation that a diagonal guide cannot, but it also has more parameters to
+fit. These choices affect different parts of the approximation.
 
 ## Step 1: VI, MCMC, or hybrid?
 
 | Posterior shape | First-pass choice |
 |---|---|
 | Smooth, broadly unimodal, < 1000 latents | Variational inference. |
-| Multimodal or pathologically curved | MCMC (NUTS). |
-| Hierarchical with funnel-shaped posteriors | NUTS, or VI on the non-centered reparameterisation. |
+| Strongly correlated or curved | Try NUTS and inspect diagnostics; reparameterization may still be necessary. |
+| Well-separated modes | Run several initializations and compare the regions reached. Separate modes may require a mixture guide or a sampling method designed to move between modes. |
+| Hierarchical with funnel-shaped posteriors | NUTS, or VI on the non-centered reparameterization. |
 | High-dim (>1000 latents) and continuous | VI, unless you have a lot of compute. |
 | Mixed discrete-continuous with small discrete support | VI with a `marginalize` block (chapter 4); HMC over the continuous remainder. |
 | You don't know yet | Start with `AutoNormalGuide` + ELBO. It's cheap; the failure modes are diagnostic. |
@@ -44,7 +59,7 @@ The shipped guides:
 | `AutoNormalGuide` | Diagonal Normal | Default. Cheap, scales, often good enough. |
 | `AutoDeltaGuide` | Dirac at MAP | Quick MAP; no posterior uncertainty. |
 | `AutoMultivariateNormalGuide` | Full-rank Normal (Cholesky) | Strong posterior correlations and total latent dimension small enough for a dense Cholesky to fit in memory. Memory and per-step cost both scale as $O(D^2)$. |
-| `AutoLowRankMultivariateNormalGuide` | Low-rank + diagonal | Hierarchical models with localised correlations; specify `rank` (typically 5-20). |
+| `AutoLowRankMultivariateNormalGuide` | Low-rank + diagonal | Hierarchical models with localized correlations; specify `rank` (typically 5-20). |
 | `AutoLaplaceApproximation` | Gaussian centered at MAP with Hessian inverse | Post-hoc quadratic-around-MAP; cheap upgrade from `AutoDeltaGuide`. |
 | `AutoNormalizingFlow` | Composed bijector over Normal base | Multimodal or heavy-tailed posteriors; you supply the flow stack. |
 | `AutoIAFGuide` | Inverse autoregressive flow | Flagship NF default; good general-purpose non-Gaussian guide. |
@@ -53,7 +68,7 @@ The shipped guides:
 | `AutoGuideList` | Composition of guides | Assign different guide families to different latent subsets. |
 | `AutoStructured` | Structured Gaussian approximation | Preserve selected posterior dependencies. |
 
-The benchmark grid in `tests/benchmarks/` walks these against synthetic posteriors with known answers; the report at `docs/developer/inference-benchmarks.md` is the empirical truth-table for which guide passes which kind of problem.
+The benchmark grid in `tests/benchmarks/` walks these against synthetic posteriors with known answers; the report at `docs/developer/inference-benchmarks.md` reports recovery checks for the algorithms, budgets, and problems actually listed.
 
 ## Step 3: Which objective?
 
@@ -170,7 +185,7 @@ posterior_predictive = pred(x_test)           # dict of (num_samples, ...) tenso
 ## Reading the benchmark grid
 
 Whenever you're unsure which guide handles a model shape, look at
-`docs/developer/inference-benchmarks.md`. The benchmark grid runs every shipped guide against synthetic posteriors with known answers (conjugate models, hierarchical structures, pathological geometries, multimodal mixtures, latent-variable models, constrained supports), reports the metrics, and gives you an empirical answer. If a guide is missing for your model shape, the failing-cell pattern often suggests the right reparameterisation or a different guide.
+`docs/developer/inference-benchmarks.md`. The benchmark grid runs its listed algorithms against synthetic posteriors with reference answers (conjugate models, hierarchical structures, pathological geometries, multimodal mixtures, latent-variable models, constrained supports), reports the metrics, and gives you an empirical answer. If a guide is missing for your model shape, the failing-cell pattern often suggests the right reparameterization or a different guide.
 
 ## Try this
 
@@ -186,6 +201,6 @@ indexed families, authored handlers, checked search, and structural
 attachments; chapter 13 collects the release checks for a QVR module.
 
 
-## References
+## Sources and further reading
 
-- Radford M. Neal. 2011. MCMC using Hamiltonian dynamics. In Steve Brooks, Andrew Gelman, Galin L. Jones, and Xiao-Li Meng, editors, *Handbook of Markov Chain Monte Carlo*, chapter 5. Chapman & Hall/CRC.
+- *MCMC Using Hamiltonian Dynamics* [@neal2011mcmc].

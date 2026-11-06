@@ -213,18 +213,25 @@ class MixtureNormal(Distribution):
 
 
 class ZeroOneInflatedBeta(Distribution):
-    """Zero-one inflated beta (Ospina & Ferrari 2010 / brms ZOIB).
+    """Zero-one inflated beta distribution.
 
     Mixture of point masses at 0 and 1 with a continuous Beta on (0, 1):
 
     * ``P(y = 0) = zoi * (1 - coi)``
     * ``P(y = 1) = zoi * coi``
-    * ``P(y ∈ (0, 1)) = (1 - zoi) · Beta(μ·φ, (1-μ)·φ)``
+    * ``P(0 < y < 1) = 1 - zoi``
+    * On the open interval, the density is ``(1 - zoi)`` times
+      the density of ``Beta(mu * phi, (1 - mu) * phi)``.
 
-    Parameters follow the mean-precision Beta reparameterisation and the
+    Parameters follow the mean-precision Beta reparameterization and the
     brms ``zoi`` / ``coi`` inflation probabilities (all on the unit
     interval). Formula frontend emits
     ``ZeroOneInflatedBeta(mu, phi, zoi, coi)``.
+
+    For the distributional background, see [Ospina and Ferrari
+    (2010)](https://doi.org/10.1007/s00362-008-0125-4). The parameter
+    convention follows the [brms family
+    documentation](https://paulbuerkner.com/brms/articles/brms_families.html).
     """
 
     arg_constraints = {

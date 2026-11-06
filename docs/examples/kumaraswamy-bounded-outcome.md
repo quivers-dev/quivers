@@ -66,11 +66,25 @@ program kumaraswamy_regression : Resp -> Val
 export kumaraswamy_regression
 ```
 
+## Understanding the model
+
+The response must lie strictly between zero and one. The two positive shape
+parameters determine where mass lies inside that interval; at `a = b = 1`
+the distribution is uniform. The predictor changes `a` through an exponential,
+so a coefficient describes a change in log shape rather than a direct change
+in the response mean.
+
+A quantile function converts a probability level into a response value.
+Applying it to a uniform random number generates a draw, which explains the
+synthetic-data code below. After fitting, comparing posterior quantiles at
+different predictor values can be more interpretable than comparing the raw
+[shape parameters](beta-regression.md#understanding-the-model). Exact endpoint observations require separate treatment.
+
 ## Walkthrough
 
 `object Resp : FinSet 64` is the plate the responses are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Resp -> Val`. The domain names the plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
-`sample b <- HalfNormal(2.0)` gives the global second shape parameter a weakly-informative positive prior. The uniform Kumaraswamy occurs at $a = b = 1$; a half-Normal is not centred specifically on that value. The two coefficients carry unit-Normal priors, `let eta = gamma_0 + gamma_1 * x` binds the linear predictor over the exogenous covariate `x`, and `let a = exp(eta)` maps it into the positive first shape parameter. `return a` exposes the per-row fitted shape. The implied mean is $E[Y_n] = b\,B(1 + 1/a_n, b)$; this parameterization has no standard one-number concentration equal to `1 / (1 + 1 / b)`.
+`sample b <- HalfNormal(2.0)` gives the global second shape parameter a weakly-informative positive prior. The uniform Kumaraswamy occurs at $a = b = 1$; a half-Normal is not centered specifically on that value. The two coefficients carry unit-Normal priors, `let eta = gamma_0 + gamma_1 * x` binds the linear predictor over the exogenous covariate `x`, and `let a = exp(eta)` maps it into the positive first shape parameter. `return a` exposes the per-row fitted shape. The implied mean is $E[Y_n] = b\,B(1 + 1/a_n, b)$; this parameterization has no standard one-number concentration equal to `1 / (1 + 1 / b)`.
 
 ## Try it
 
@@ -140,8 +154,8 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Use cases
 
-Any bounded-outcome regression where the analyst needs efficient quantile evaluation: financial fraction-of-volume forecasting, biology fraction-of-population modelling, fraction-positive A/B testing where the closed-form quantile speeds Bayesian decision-making. Drop-in alternative to Beta regression when downstream operations are quantile-based rather than moment-based.
+Any bounded-outcome regression where the analyst needs efficient quantile evaluation: financial fraction-of-volume forecasting, biology fraction-of-population modeling, fraction-positive A/B testing where the closed-form quantile speeds Bayesian decision-making. Drop-in alternative to Beta regression when downstream operations are quantile-based rather than moment-based.
 
-## References
+## Sources and further reading
 
-- Ponnambalam Kumaraswamy. 1980. A generalized probability density function for double-bounded random processes. *Journal of Hydrology*, 46(1-2):79-88.
+- *A generalized probability density function for double-bounded random processes* [@kumaraswamy1980bounded].

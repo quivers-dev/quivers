@@ -2,7 +2,7 @@
 
 ## Overview
 
-A one-way random-effects model ([Rubin 1981](https://doi.org/10.3102/10769986006004377)) whose group-level effects come from a [parametric program template](../guides/dsl-programs-and-lets.md#parametric-programs). The template `school_effects` declares the [non-centered parametrization](https://doi.org/10.1214/088342307000000014) of a set of partially pooled effects once, typed over a scalar `spread : Real` and a plate `K : FinSet`; the two host programs instantiate it at a tight (`0.6`) and a loose (`2.5`) between-group spread. A `score` step adds a soft sum-to-zero factor on the effects ([Morris et al. 2019](https://doi.org/10.1016/j.sste.2019.100301)), and a labeled return tuple names the program's outputs.
+A one-way random-effects model [@rubin1981parallel] whose group-level effects come from a [parametric program template](../guides/dsl-programs-and-lets.md#parametric-programs). The template `school_effects` declares the [non-centered parametrization](https://doi.org/10.1214/088342307000000014) of a set of partially pooled effects once, typed over a scalar `spread : Real` and a plate `K : FinSet`; the two host programs instantiate it at a tight (`0.6`) and a loose (`2.5`) between-group spread. A `score` step adds a soft sum-to-zero factor on the effects [@morris2019spatial], and a labeled return tuple names the program's outputs. [@papaspiliopoulos2007parametrization]
 
 ## QVR source
 
@@ -65,6 +65,20 @@ program pooled_loose : School -> Effect * Scale
 
 export pooled_tight
 ```
+
+## Understanding the model
+
+A program template is a reusable local model. Calling it twice creates two
+sets of random draws with distinct [site names](../tutorials/python/05-variational-inference.md#tracing-the-model), just as calling a function
+twice creates separate local bindings. The `spread` argument determines how
+far each group's effect can lie from zero; a smaller spread imposes stronger
+[pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered) toward the common baseline.
+
+The centering score favors effects whose sum is near zero. Because it adds
+a finite penalty, it is a soft preference rather than an exact sum-to-zero
+constraint. Stan’s [soft-centering discussion](https://mc-stan.org/docs/stan-users-guide/regression.html#soft-centering) compares such a penalty with an exact sum-to-zero parameterization [@stanRegression]. The returned labels make it possible to inspect group effects
+and the residual scale separately, even when their internal site names differ
+between template instantiations.
 
 ## Walkthrough
 
@@ -156,12 +170,12 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-A parametric program denotes a dependent kernel $\Pi (p_1 : P_1) \ldots \Pi (p_n : P_n).\ \mathbf{Kern}(\mathrm{dom}(p), \mathrm{cod}(p))$ in the indexed family of [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) arrows of the [Giry monad](https://doi.org/10.1007/BFb0092872) over the parameter category; each call site realizes a section of the family at the supplied arguments. The `score` step is multiplication by a density factor in the subprobability monad $\mathcal{G}_{\le 1}$, and the labeled return tuple names the projections out of the program's product codomain.
+A parametric program denotes a dependent kernel $\Pi (p_1 : P_1) \ldots \Pi (p_n : P_n).\ \mathbf{Kern}(\mathrm{dom}(p), \mathrm{cod}(p))$ in the indexed family of [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) arrows of the [Giry monad](https://doi.org/10.1007/BFb0092872) over the parameter category; each call site realizes a section of the family at the supplied arguments. The `score` step multiplies the weighted measure by a density factor. This particular nonpositive score gives a factor at most one, but arbitrary scoring does not generally preserve a subprobability bound; and the labeled return tuple names the projections out of the program's product codomain. [@giry1982categorical]
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
-- Mitzi Morris, Katherine Wheeler-Martin, Dan Simpson, Stephen J. Mooney, Andrew Gelman, and Charles DiMaggio. 2019. [Bayesian hierarchical spatial models: Implementing the Besag York Mollié model in Stan](https://doi.org/10.1016/j.sste.2019.100301). *Spatial and Spatio-temporal Epidemiology*, 31:100301.
-- Omiros Papaspiliopoulos, Gareth O. Roberts, and Martin Sköld. 2007. [A general framework for the parametrization of hierarchical models](https://doi.org/10.1214/088342307000000014). *Statistical Science*, 22(1):59–73.
-- Donald B. Rubin. 1981. [Estimation in parallel randomized experiments](https://doi.org/10.3102/10769986006004377). *Journal of Educational Statistics*, 6(4):377–401.
+- *A categorical approach to probability theory* [@giry1982categorical].
+- *A General Framework for the Parametrization of Hierarchical Models* [@papaspiliopoulos2007parametrization].
+- *Estimation in Parallel Randomized Experiments* [@rubin1981parallel].
+- *Bayesian hierarchical spatial models: Implementing the Besag York Mollié model in stan* [@morris2019spatial].

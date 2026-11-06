@@ -64,11 +64,28 @@ program tree_categorical : Resp -> Val
 export tree_categorical
 ```
 
+## Understanding the model
+
+A binary tree assigns a probability to a leaf by multiplying the branch
+probabilities along its path. Taking logs turns that product into a sum.
+The first `factor` expression writes out these different paths; the second
+builds one score for every verb/class pair by combining the relevant entries.
+
+Here `factor` assembles a tensor deterministically. The [observation likelihood](../tutorials/qvr/01-first-model.md#the-model)
+reads only `cell_score[0, 0]`, so changing other cells while preserving that
+entry leaves the likelihood unchanged. Learning those cells would require
+observations that select them.
+
 ## Walkthrough
 
 ### What the four objects name
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; the position it occupies is what gives it one. `Verb : FinSet 12` and `Class : FinSet 4` appear as `factor` binder domains and as plate indices, so they are index sets: twelve verbs, four classes. `Resp : FinSet 200` appears in the index slot of `observe y : Resp <- Normal(cell0, 0.5)`, so it fixes the *plate extent*, the 200 scored rows, which is why an object in that slot must be discrete. None of the three says what a row holds. That comes from the family, and `Normal` is what makes each response real. `Val : Real 1` occupies the remaining position, the codomain of the program signature, which names the *value space* of what the program returns. `return delta` hands back the per-verb effect vector, whose rows are single real numbers, so that space is `Real 1`. Reading the codomain as an index instead is the misstep to avoid: a signature `Resp -> Resp` would claim the program returns an element of the response index set, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain.
+`Verb` and `Class` index the two axes of the constructed score tensor.
+`Resp` indexes the rows scored by the Normal likelihood. The family makes
+each observed value real; the response index does not determine its value
+type. `Val : Real 1` describes the real entries of the returned `delta`
+vector. Keeping these roles separate makes the declared shapes readable
+without treating every finite set as a response space.
 
 ### Pattern-match factor: tree-shaped leaf probabilities
 
@@ -104,12 +121,10 @@ The binder variables `v` and `cls` are integer-valued and visible only inside th
 
 A plate-bound draw `delta : Verb <- Normal(0.0, sigma_v)` and a factor expression `factor v : Verb in <body>` are not interchangeable. The plate draws an `|Verb|`-shape tensor of *independent* samples from the same kernel; the factor evaluates a *deterministic body* once per index and assembles the results into a tensor. The plate's family is exchangeable in its index; the factor's body is allowed to depend on the index in arbitrary structurally-different ways.
 
-This is why no other example in the gallery uses `factor`: existing models all
-use exchangeable priors, such as symmetric Dirichlet and plate-bound Normal
-priors, for which plate parameterization is appropriate. `factor` becomes the
-right tool when the index axis is structured, as in a binary tree, a directed
-acyclic group structure, or a heterogeneous mixture of distinct sub-priors,
-and the cells of that index are different functions of upstream latents.
+Use `factor` when cells need different expressions in upstream latents.
+Here each leaf uses a different product of branch probabilities. A plate draw
+instead applies one distribution family across an index, as in the gallery's
+Normal and Dirichlet priors.
 
 ## Try it
 

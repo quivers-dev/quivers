@@ -2,7 +2,7 @@
 
 ## Overview
 
-[Probabilistic matrix factorization](https://en.wikipedia.org/wiki/Probabilistic_matrix_factorization) ([Salakhutdinov & Mnih 2007](https://papers.nips.cc/paper/2007/hash/d7322ed717dedf1eb4e6e52a37ea7bcd-Abstract.html)) is the standard latent-factor recommender model: each user and each item has a $K$-dimensional latent vector, the expected rating is their inner product, and observed ratings are Normal noise around that inner product:
+[Probabilistic matrix factorization](https://en.wikipedia.org/wiki/Probabilistic_matrix_factorization) [@salakhutdinov2007pmf] is the standard latent-factor recommender model: each user and each item has a $K$-dimensional latent vector, the expected rating is their inner product, and observed ratings are Normal noise around that inner product:
 
 $$
 r_{u, m} \mid U_{:, u}, V_{:, m} \sim \mathcal{N}(\langle U_{:, u}, V_{:, m} \rangle, \sigma_{\text{obs}}^2).
@@ -46,6 +46,20 @@ define pmf = U.dagger >> V
 
 export pmf
 ```
+
+## Understanding the model
+
+A user vector describes preferences and an item vector describes features.
+Their [dot product](../tutorials/python/07-composition-rules.md#operadic-n-ary-contractions) is a predicted rating: matching coordinates reinforce
+one another, and opposite signs can lower it. The latent coordinates are
+learned jointly, so their interpretation need not be fixed in advance.
+
+`U.dagger` transposes the table to put users on the input side and latent
+features on the shared axis. Its entries stay the same under this transpose.
+Different factor coordinates can produce the same rating matrix, so compare
+predicted ratings when evaluating the fit. The code below scores a dense
+synthetic matrix. With missing ratings, score only the observed cells: filling
+missing cells with zero would treat those zeros as observed ratings.
 
 ## Walkthrough
 
@@ -171,7 +185,7 @@ The program input `x_in` carries no coordinate of the model: every site is eithe
 
 ### SVI fit
 
-Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). Both factor matrices are genuine `sample` sites, so the guide carries a mean-field Normal over each and the ELBO is a real variational bound rather than a point-estimate surrogate.
+Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). Both factor matrices are `sample` sites. The guide places an independent Normal distribution on each unconstrained coordinate and optimizes the ELBO using draws of both matrices.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -188,7 +202,7 @@ print(f"initial loss: {losses[0]:.2f}")
 print(f"final loss:   {losses[-1]:.2f}")
 ```
 
-The factorisation is identifiable only up to a $K \times K$ invertible reparameterisation, so the fitted $U$, $V$ tend to differ from the truths even once the score matrix has converged.
+The factorization is identifiable only up to a $K \times K$ invertible reparameterization, so the fitted $U$, $V$ tend to differ from the truths even once the score matrix has converged.
 
 ### NUTS posterior
 
@@ -208,7 +222,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The two factor matrices $U : \mathsf{LatentDim} \to \mathsf{User}$ and $V : \mathsf{LatentDim} \to \mathsf{Movie}$ are arrows in the discrete-object category whose priors live on the hom-objects $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{User})$ and $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{Movie})$. The rating likelihood couples them through the bilinear pairing realised as the composition
+The two factor matrices $U : \mathsf{LatentDim} \to \mathsf{User}$ and $V : \mathsf{LatentDim} \to \mathsf{Movie}$ are arrows in the discrete-object category whose priors live on the hom-objects $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{User})$ and $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{Movie})$. The rating likelihood couples them through the bilinear pairing realized as the composition
 
 $$
 \mathsf{User} \xrightarrow{U^\dagger} \mathsf{LatentDim} \xrightarrow{V} \mathsf{Movie}

@@ -47,7 +47,7 @@ The Beta-Binomial integrates the latent per-batch conversion rate $p_n$ analytic
 # is the value space of the returned per-row success
 # concentration.
 #
-# Reference: [Skellam 1948](https://www.jstor.org/stable/2983694).
+# Reference: [Skellam 1948](https://doi.org/10.1111/j.2517-6161.1948.tb00014.x).
 
 object Arm : FinSet 2
 object Batch : FinSet 12
@@ -65,6 +65,19 @@ program ab_test : Batch -> Val
 
 export ab_test
 ```
+
+## Understanding the model
+
+Think of each batch as a day of trials. One arm can have a higher average
+conversion rate while still varying substantially from day to day. The ratio
+`conc1 / (conc1 + conc0)` is its mean rate, while the sum of concentrations
+controls how tightly batch rates cluster around that mean. A Binomial with
+one fixed rate would omit this extra batch variation.
+
+After fitting, compute the mean-rate difference between arms in each [posterior draw](../tutorials/qvr/01-first-model.md#inspect-the-posterior). Its distribution answers how uncertain the comparison remains; the
+returned success concentration alone is not a conversion probability. Since
+the arm priors are independent, any shared behavior must come from the
+observations rather than a population-level pooling term.
 
 ## Walkthrough
 
@@ -142,6 +155,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 This model is useful when binary successes are summarized per measurement batch and an explicit per-trial latent rate is unnecessary. The arms have independent concentration priors: there is no shared population-level hyperprior, so the specification does not shrink one arm toward the other.
 
-## References
+## Sources and further reading
 
-- John G. Skellam. 1948. A probability distribution derived from the binomial distribution by regarding the probability of success as variable between the sets of trials. *Journal of the Royal Statistical Society. Series B (Methodological)*, 10(2):257-261.
+- *A Probability Distribution Derived from the Binomial Distribution by Regarding the Probability of Success as Variable between the Sets of Trials* [@skellam1948binomial].

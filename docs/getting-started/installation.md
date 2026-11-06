@@ -1,5 +1,12 @@
 # Installation
 
+For a first model, install the base package from PyPI and verify the import.
+The additional packages listed below are installed automatically; you do not
+need to learn their APIs. Add `formulas` for dataframe regressions,
+`diagnostics` for posterior assessment, or `repl,lsp` for interactive editing.
+A development checkout is needed only when changing Quivers itself or running
+its repository tests.
+
 ## Prerequisites
 
 - **Python** >= 3.14
@@ -120,7 +127,7 @@ pytest tests/
 
 Quivers depends on:
 
-- **torch** (>= 2.0): differentiable tensors and automatic differentiation
+- **torch** (>= 2.0): differentiable tensors and [automatic differentiation](../tutorials/python/01-first-quiver.md#working-as-a-differentiable-module)
 - **didactic** (>= 0.17.1): typed-data, indexed-family checking, and exact extension-lowering boundary used by QVR-to-QIEC checking
 - **panproto** (>= 0.74.4): schema and theory operations used to check indexed declarations and extract a `Schema` from each `.qvr` program for diff/migrate workflows
 - **panproto-grammars-all** (>= 0.74.4): supplies the eleven target-language grammars used by the transpiler pipeline; it does not define QVR syntax

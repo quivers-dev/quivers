@@ -2,6 +2,18 @@
 
 This guide covers setting up a development environment, understanding the project structure, and contributing code to the quivers library.
 
+A contribution usually changes one of three things: what source programs can
+express, what those programs compute, or how their results reach users.
+For syntax work, follow the parser and compiler tests. For distribution or
+inference work, compare numerical scores and [posterior behavior](../tutorials/qvr/08-diagnostics-and-comparison.md#convergence-diagnostics). For a
+transpiler, test both emitted syntax and agreement with the source model's
+[joint score](../tutorials/python/05-variational-inference.md#tracing-the-model) at the same supplied values, since valid target syntax can still
+encode the wrong distribution.
+
+The [architecture guide](../getting-started/architecture.md) maps these tasks
+to packages. The [conceptual introduction](../getting-started/concepts.md)
+explains the modeling and categorical vocabulary used in those packages.
+
 ## Development Environment Setup
 
 ### Prerequisites
@@ -62,14 +74,13 @@ that calls `run_probe` without appearing there fails
 the cheap tier by omission.
 
 Probe cells need Docker. The session fixture starts the daemon and
-builds any missing images rather than skipping, since a skipped check
-is a silent gap. Set `QUIVERS_SKIP_DOCKER=1` to opt out, which is
+builds any missing images so the requested checks run. Set `QUIVERS_SKIP_DOCKER=1` to opt out, which is
 appropriate when running only `-m "not slow and not probe"`.
 
 ### Running tests in parallel
 
 Both tiers are parallel-safe: probe scratch directories are unique per
-call, containers are anonymous, and the image build is serialised
+call, containers are anonymous, and the image build is serialized
 across workers by a file lock.
 
 ```bash
@@ -89,11 +100,10 @@ python -m pytest tests/ -m "not slow and probe" --splits 4 --group 1
 
 ### Caching probe measurements
 
-A probe pays for a language runtime rather than for the container.
-Loading Turing into a fresh Julia session costs seconds, while the
-container itself starts in a fraction of one, and many cells measure
-the same density and then assert different things about it. Point
-`QUIVERS_PROBE_CACHE` at a directory to memoise those measurements:
+Loading Turing into a fresh Julia session costs seconds, while the container
+starts in a fraction of one. Several cells measure the same density before
+checking different properties of it. Point `QUIVERS_PROBE_CACHE` at a directory
+to memoize those measurements and avoid repeating the runtime startup:
 
 ```bash
 QUIVERS_PROBE_CACHE=.probe-cache python -m pytest tests/ -m "not slow and probe"
@@ -101,9 +111,8 @@ QUIVERS_PROBE_CACHE=.probe-cache python -m pytest tests/ -m "not slow and probe"
 
 The key covers the image ID, the emitted source, the points, the shape
 and dtype tables, and the probe script together with its reshape
-helpers, all hashed by content. Keying on the image ID rather than the
-tag is what makes a rebuilt image miss instead of answering from
-before it changed.
+helpers, all hashed by content. Rebuilding an image changes its ID and
+invalidates the cached result even when its tag stays the same.
 
 Caching is off unless the variable is set. A memoised measurement is
 only as sound as its key, so a run that gates a release should execute
@@ -246,6 +255,18 @@ only public types, and every public name renders in the API reference.
 ## The DSL Pipeline
 
 The QVR DSL processes `.qvr` files through these stages:
+
+Read the stages as progressively answering more specific questions. Parsing
+asks whether the text has a valid grammatical structure and builds an abstract
+syntax tree (AST), a record of that structure. Resolution asks what each name
+refers to. Checking asks whether the resolved pieces have compatible types and
+effects. Elaboration makes implicit source operations explicit in the core,
+and compilation attaches the runtime objects needed to execute them.
+
+For instance, `observe y <- Normal(mu, sigma)` mentions a distribution and an
+observation in source. Its core computation explicitly evaluates that density
+and requests that its log weight be accumulated. This makes the same scoring
+operation inspectable by the runtime and by target-language generation.
 
 ### 1. Parsing
 

@@ -1,5 +1,16 @@
 # Signatures
 
+A signature declares the shapes of valid structured values. An expression tree might
+allow a constant constructor and an application constructor with two expression
+children. Sorts distinguish kinds of child values; binders introduce variables with a
+defined scope. The signature specifies valid structure before an encoder assigns
+numerical vectors.
+
+Milewski's [F-algebras chapter](https://bartoszmilewski.com/2017/02/28/f-algebras/) builds recursive datatypes from their constructors before introducing folds [@milewski2017falgebras].
+
+See [constructors, sorts, and signatures](../../guides/structural-compression-signatures-and-encoders.md#signature-blocks) and
+[constructing values for an autoencoder](../../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data).
+
 Multi-sorted algebra signatures with constructors, typed binders, and
 optional vertex and edge kinds for graph-shaped signatures. These
 objects are the runtime carriers of `signature { … }` DSL declarations.

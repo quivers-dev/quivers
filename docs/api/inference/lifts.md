@@ -1,5 +1,15 @@
 # Bayesian Lifts
 
+Bayesian lifting assigns priors to selected trainable parameters and exposes them as
+latent variables in an inference program. Choose priors that express the intended scale
+and dependence of those parameters. The lifted program then supports fitting an
+approximation to their posterior.
+
+See [how a Bayesian lift introduces latent parameters](../../semantics/programs.md#7-bayesian-lifts) and
+[lifting a weighted deduction system](../stochastic/deduction/bayes.md).
+
+For the distinction between a model and posterior inference, see [@gelman2013bayesian].
+
 These functions convert non-Bayesian models to `MonadicProgram`
 instances for inference. They cover four model interfaces:
 

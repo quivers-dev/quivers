@@ -2,6 +2,17 @@
 
 When a fit doesn't converge or a compile fails, you need to know what to look at. This chapter walks the tools for inspecting a quivers program: reading `CompileError` messages, dumping a compiled `Program`, tracing intermediate tensors, and watching per-site log-densities during SVI.
 
+First locate the failed boundary. A syntax error means the source cannot be
+read. A type or algebra error means its declared pieces cannot connect as
+written. A runtime error can concern supplied data or a distribution's support.
+A model can pass all of these checks and still fit poorly because its [posterior](../qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid)
+is hard to approximate or its assumptions do not describe the data.
+
+Start with the reported failure: inspect the source position for a compile
+error, the [supplied tensor](../qvr/02-glms.md#common-mistakes) and its support for a runtime error, or the loss
+and sampling diagnostics for a poor fit. The sections below show the tools
+for each step.
+
 ## Reading `CompileError`
 
 Every DSL compile failure raises a [`CompileError`](../../api/dsl/compiler.md) with a `line` and `col` field pointing at the offending source position. Common error categories:
@@ -29,10 +40,10 @@ The five error classes you'll see most often:
 | Category | Example trigger | Where to look |
 |---|---|---|
 | Effect mismatch | `[effects=[Pure]]` body contains `<-` or `observe` | Loosen the effect tag or remove the offending step |
-| Free-name error | A name in the body is neither bound, declared, nor in host-data scope | Add to `observed_names` or to a `<-` / `let` |
+| Name or input error | A declaration is unknown, or an expected host input is missing at execution | Check spelling and scope; supply recorded host inputs in the observations mapping |
 | Algebra mismatch | The two operands of `>>` carry different algebras | Insert a `change_base` on one operand so both share an algebra |
 | Shape mismatch | Tensor argument has the wrong cardinality for an object | Check object declarations against the data |
-| Unknown identifier | A family name (`Norma`, typo) isn't in the prelude | Check the [family catalogue](../../api/continuous/families.md) |
+| Unknown identifier | A family name (`Norma`, typo) isn't in the prelude | Check the [family catalog](../../api/continuous/families.md) |
 
 ## Inspecting a compiled `Program`
 
@@ -70,6 +81,8 @@ y_data = 1.5 + 2.7 * x_data + 0.3 * torch.randn(100)
 Each step has a `name`, an `inputs` tuple (names it depends on), and a `family` or `transform` it dispatches to. Reading this list is the fastest way to see what the compiler actually built.
 
 ## Tracing intermediate values
+
+Pyro’s [effect-handler example](https://pyro.ai/examples/effect_handlers.html#Introduction) builds a joint log density by recording distributions and values at named sites; the Quivers trace below exposes the same ingredients [@pyroEffects].
 
 [`trace`](../../api/inference/trace.md) runs the program forward once and records the value and log-density at every sample site:
 <!-- python: skip -->
@@ -119,7 +132,7 @@ for step in range(20):                # bump to ~2000 for a real fit
         print(f"step {step:4d}  ELBO={-loss:.3f}  grad_norm={total_grad:.3f}")
 ```
 
-A healthy SVI run often shows an upward ELBO trend and decreasing gradient norms, but minibatch and Monte Carlo noise make neither trajectory monotonic. Failure modes:
+A healthy SVI run often improves the ELBO, but `SVI.step` returns its negative, so the reported loss should tend downward. Gradient norms and loss can both fluctuate because of Monte Carlo or minibatch noise. Failure modes:
 
 - ELBO plateaus while posterior checks remain poor: the guide or optimizer may be inadequate. Try a richer guide ([`AutoMultivariateNormalGuide`](../../api/inference/guide.md), [`AutoIAFGuide`](../../api/inference/guide.md)) and check the learning rate.
 - ELBO going to `nan`: a sample-site log-density blew up. Drop in a `trace` call at the same step and find the offending site.
@@ -129,8 +142,8 @@ A healthy SVI run often shows an upward ELBO trend and decreasing gradient norms
 
 [`MCMCResult`](../../api/inference/predictive.md) carries three first-class diagnostic fields:
 
-- `result.r_hat[site]`: maximum of rank-normalised and folded split-R-hat per site.
-- `result.ess[site]`: rank-normalised cross-chain bulk effective sample size per site.
+- `result.r_hat[site]`: maximum of rank-normalized and folded split-R-hat per site.
+- `result.ess[site]`: rank-normalized cross-chain bulk effective sample size per site.
 - `result.total_divergences`: integer count of divergent transitions across all chains.
 
 The mapping from observation to fix:
@@ -139,7 +152,7 @@ The mapping from observation to fix:
 |---|---|---|
 | R-hat > 1.01 on one site | Chain hasn't mixed | More warmup, longer chains |
 | ESS < 100 on one site | Highly correlated samples | More samples, or richer step adaptation |
-| Divergences > 0 | Integrator missed posterior curvature | Raise `target_accept` to 0.99, or reparameterise |
+| Divergences > 0 | Integrator missed posterior curvature | Raise `target_accept` to 0.99, or reparameterize |
 | All chains stuck at init | Initial point in a bad region | Switch `init_strategy` to `"prior"` or supply a `"value"` dict |
 
 The full diagnostic semantics live in the [inference guide](../../guides/inference-foundations.md).
@@ -152,7 +165,7 @@ When a fit is misbehaving, follow this order:
 2. Print `program.morphism.steps` and verify the compiled steps match what you wrote.
 3. Run a short SVI for 100 steps with prints every 10 steps; the ELBO trajectory tells you whether the guide can fit at all.
 4. If SVI looks reasonable but the posterior means are off, switch to NUTS and check `result.r_hat` and `result.total_divergences`.
-5. If NUTS reports divergences on a hierarchical model, reparameterise centered to non-centered ([QVR chapter 3](../qvr/03-hierarchical.md)).
+5. If NUTS reports divergences on a hierarchical model, reparameterize centered to non-centered ([QVR chapter 3](../qvr/03-hierarchical.md)).
 
 ## Next
 

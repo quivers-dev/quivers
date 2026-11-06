@@ -14,7 +14,7 @@
 #   beta_1  ~ Normal(0, 2)                  slope
 #   y_n     ~ Logistic(beta_0 + beta_1 * x_n, scale)
 #
-# Reference: [Balakrishnan 1991](https://doi.org/10.1201/9781482277098).
+# Reference: [Balakrishnan 1992](https://doi.org/10.1201/9781482277098).
 
 object Resp : FinSet 64
 object Val : Real 1

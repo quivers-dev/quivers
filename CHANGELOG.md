@@ -4,6 +4,19 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- A concepts primer with worked examples of table composition, Bayesian conditioning, continuous densities, monads, and handlers.
+- A shared BibTeX bibliography with author-year citations, references on each page, and checks for unresolved citations.
+
+### Changed
+
+- Expanded intuition throughout the guides, tutorials, examples, semantics, and API reference while stating the assumptions behind formal claims.
+- Added links between conceptual explanations, worked examples, and API definitions, together with direct links to external tutorial sections.
+- Corrected mathematical claims, model descriptions, and source attributions in documentation and docstrings; recorded citation verification and its remaining limitations.
+
 ## [0.25.2] - 2026-10-11
 
 ### Added

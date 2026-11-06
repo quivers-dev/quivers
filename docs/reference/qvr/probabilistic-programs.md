@@ -3,10 +3,18 @@
 A `program` is domain-specific notation for a checked computation over the
 module's canonical `random : Random` and `score : Score` instances. Data,
 observations, fibrations, and scalar parameters become value parameters;
-sample sites and score terms become effect requests. This elaboration is the
-**program-as-computation contract (PCC)**.
+sample sites and score terms become effect requests. The checked representation makes these requests explicit.
 
 ## Program declaration
+
+In the regression below, `intercept`, `slope`, and `sigma` are unknown
+random quantities. Their distributions before observing data are their
+**priors**. For each known predictor `x`, the Normal response distribution
+supplies the **likelihood** of `y`. [Conditioning](../../guides/inference-foundations.md#conditioning-on-observations) combines prior and
+likelihood into a **posterior** over the unknowns; an inference algorithm
+is needed to approximate or sample that posterior. Merely executing
+`observe` scores data under current latent values. [@gelman2013bayesian]
+
 
 <!-- compile: qiec -->
 ```qvr
@@ -147,6 +155,18 @@ its remaining inputs into the caller as parameters.
 
 ## Exact marginalization
 
+Pyro’s [mechanics of enumeration](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) shows a discrete site producing all possible values so inference can sum their contributions. [@pyroEnumeration] The QVR [grouped example](../../guides/programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) explains how this changes when several observations share one latent choice.
+
+For a two-component mixture, evaluate the observations under each
+component and weight by its prior probability. Adding these terms
+accounts for both possible assignments without selecting one. The
+`logsumexp` reduction evaluates that sum in log space, where products
+of many small likelihoods are more stable. Grouped observations share
+one assignment, so their likelihoods combine within a component before
+the sum over components. The [hierarchical guide](../../guides/programs-hierarchical.md)
+works through numerical values.
+
+
 `marginalize` enumerates a finite latent and adds the reduced scope weight to
 the enclosing program:
 
@@ -217,10 +237,17 @@ reports this as `param-source:mlp`.
 
 ## Running and scoring
 
+Replay fixes named random choices so a particular execution can be
+scored or reproduced. The runtime [handler](effects-and-handlers.md#handler-declarations) draws unspecified choices from
+their model distributions. To estimate their distribution given observed
+data, pass the model and observations to an
+[inference driver](../../guides/inference-foundations.md).
+
+
 An invocation installs a draw-and-score handler for `random` and an
 accumulator for `score`. Given `--site name=value`, that site is replayed and
 scored; every unspecified site is drawn and scored. The result includes the
-program value, log joint, and trace. `run_program` is the stricter replay form
+program value, log joint, and [trace](../../guides/inference-foundations.md#trace-and-sample-sites). `run_program` is the stricter replay form
 used when every site must be supplied.
 
 See [Execution and tooling](execution-and-tooling.md#run-an-entry) for CLI and

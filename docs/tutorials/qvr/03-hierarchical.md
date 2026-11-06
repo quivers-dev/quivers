@@ -1,12 +1,24 @@
 # 3. Hierarchical models
 
-The eight-schools dataset ([Rubin, 1981](https://doi.org/10.3102/10769986006004377)) is a common stress test for hierarchical Bayesian inference: eight schools, one observed treatment effect and standard error per school, and the question of how much each school's effect borrows strength from the global mean. The model is small, but its centered parameterization can produce funnel-shaped posterior geometry that is difficult for mean-field VI and Hamiltonian Monte Carlo.
+The eight-schools dataset [@rubin1981parallel] is a common stress test for hierarchical Bayesian inference: eight schools, one observed treatment effect and standard error per school, and the question of how much each school's effect borrows strength from the global mean. The model is small, but its centered parameterization can produce funnel-shaped posterior geometry that is difficult for mean-field VI and Hamiltonian Monte Carlo.
 
 This chapter covers:
 
 - The plate-draw syntax (`v : G <- Normal(loc=0, scale=sigma)`) for per-group random effects.
 - Centered vs non-centered parameterizations and how to write each in QVR.
 - Running NUTS with R-hat, ESS, and divergence diagnostics.
+
+Partial pooling expresses a compromise between estimating every school
+separately and assuming all schools have one effect. The population mean
+`mu` describes their shared location; `tau` describes between-school
+variation; each known `sigma_j` describes uncertainty in that school's measured
+effect. A noisy school estimate provides less evidence for a distinct effect
+and tends to be pulled more strongly toward the population mean.
+
+When `tau` is near zero, all `theta_j` must lie very close to `mu`; when `tau`
+is large, they can spread out. This changing width produces the funnel geometry
+mentioned above. Noncentering expresses each school as a standardized deviation
+before scaling it, which can make weakly informed models easier to fit.
 
 ## Eight schools, centered
 
@@ -53,7 +65,7 @@ The compiler synthesizes a `PlateDraw` morphism whose codomain is the product sp
 The centered parameterization draws each `theta_j` directly around `mu` with
 scale `tau`. When `tau` approaches zero, the conditional distribution of the
 group effects becomes narrow, coupling `theta`, `mu`, and `tau` into a
-funnel-shaped posterior ([Neal, 2003](https://doi.org/10.1214/aos/1056562461),
+funnel-shaped posterior ([@neal2003slice],
 §8). A diagonal variational family cannot represent that dependence and may
 put too much mass near `tau = 0`:
 
@@ -93,11 +105,11 @@ for _ in range(50):                              # bump to ~3000 for real fits
     svi.step(x_tensor, observations)
 ```
 
-This short fit may place too much mass near `tau = 0`, a known failure mode for a diagonal guide on funnel geometry. Compare parameterizations with a longer optimization and a diagnosed MCMC reference rather than treating a particular printed value as expected output.
+A [diagonal guide](../python/05-variational-inference.md#creating-a-guide) can concentrate near `tau = 0` because the funnel couples the group effects to their shared scale. Compare the distribution of `tau` under centered and non-centered fits, using multiple initializations and a well-mixed MCMC fit as a reference.
 
-## Non-centered fixes it
+## Non-centered parameterization
 
-The standard fix is to reparameterise ([Papaspiliopoulos, Roberts & Sköld, 2007](https://doi.org/10.1214/088342307000000014)): draw $\eta_j \sim \mathrm{Normal}(0, 1)$ and define $\theta_j = \mu + \tau \cdot \eta_j$ deterministically.
+The standard fix is to reparameterize [@papaspiliopoulos2007parametrization]: draw $\eta_j \sim \mathrm{Normal}(0, 1)$ and define $\theta_j = \mu + \tau \cdot \eta_j$ deterministically.
 
 ```qvr
 object School : FinSet 8
@@ -116,7 +128,7 @@ Re-running with the non-centered parameterization can improve the diagonal guide
 
 ## NUTS
 
-For the centered parameterization (or when you want to trust the posterior mass exactly), reach for the No-U-Turn Sampler ([Hoffman & Gelman, 2014](https://www.jmlr.org/papers/v15/hoffman14a.html)):
+To approximate the posterior with sampling rather than a fixed variational family, use the No-U-Turn Sampler [@hoffman2014nuts]:
 
 ```python
 from quivers.inference import NUTSKernel, MCMC
@@ -141,13 +153,13 @@ print("ESS tau:", result.ess["tau"].item())
 print("divergences:", result.total_divergences)
 ```
 
-A sufficiently long, well-mixed run should have R-hat near 1 for every site (rank-normalized split-R-hat; [Vehtari et al., 2021](https://doi.org/10.1214/20-BA1221)), adequate effective sample sizes, and few or no divergences. The short documentation budget above cannot establish convergence; inspect the values produced by your run.
+Inspect rank-normalized split-R-hat [@vehtari2021rhat] for disagreement between chains and effective sample sizes for the precision of each posterior summary. The following adjustments address high R-hat, divergences, and low effective sample sizes separately.
 
 If R-hat is above 1.01 anywhere, give NUTS more warmup steps (`num_warmup=2000`). If divergences are nonzero, raise `target_accept` to 0.99 or reparameterize to non-centered. If ESS is small (<100 per chain), the chain is mixing slowly: either run longer or reparameterize.
 
 ### Centered or non-centered?
 
-A useful rule of thumb from [Betancourt & Girolami (2013)](https://doi.org/10.48550/arXiv.1312.0906): the centered parameterization is good when the data is informative about $\theta_j$ relative to the prior, that is when the per-group likelihood scale $\sigma_j$ is small relative to the population scale $\tau$. The non-centered parameterization is good in the opposite regime: weak per-group likelihoods, where the posterior pinches toward the prior funnel. Eight schools sits in the weak-likelihood regime ($\sigma_j$ ranges 9-18 against a prior $\tau$ in single digits), so non-centered is the right call.
+A useful rule of thumb from Betancourt and Girolami [@betancourt2015hierarchical]: the centered parameterization is good when the data is informative about $\theta_j$ relative to the prior, that is when the per-group likelihood scale $\sigma_j$ is small relative to the population scale $\tau$. The non-centered parameterization is good in the opposite regime: weak per-group likelihoods, where the posterior pinches toward the prior funnel. Eight schools sits in the weak-likelihood regime ($\sigma_j$ ranges 9-18 against a prior $\tau$ in single digits), so a non-centered form is often useful. Compare divergences and effective sample sizes under both parameterizations for the data you use. Stan’s [hierarchical reparameterization discussion](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html#hierarchical-models-and-the-non-centered-parameterization) follows the same choice from centered parameters to standard Normal offsets [@stanEfficiency].
 
 ### Init strategy and mass matrix
 
@@ -171,8 +183,8 @@ print("predictive school 1:", y_hat[..., 0].mean().item(),
 ## What you've seen
 
 - **Plate-draws.** `v : G <- F(...)` declares one draw per index of object `G`, producing a vector-valued latent.
-- **Non-centered parameterization.** A small-but-essential trick for hierarchical models; QVR doesn't automate it (yet), but writing it explicitly is two lines.
-- **Diagnostics on `MCMCResult`.** R-hat, ESS, divergences are first-class fields, not strings in a log.
+- **Non-centered parameterization.** Draw a standard Normal variable and multiply it by the group scale; the model below writes these as separate steps.
+- **Diagnostics on `MCMCResult`.** R-hat, ESS, and divergences are available as fields for inspecting the fit.
 
 ## Try this
 
@@ -186,10 +198,10 @@ print("predictive school 1:", y_hat[..., 0].mean().item(),
 discrete latents and mixtures a typed scope.
 
 
-## References
+## Sources and further reading
 
-- [Rubin, 1981](https://doi.org/10.3102/10769986006004377).
-- Aki Vehtari, Andrew Gelman, Daniel Simpson, Bob Carpenter, and Paul-Christian Bürkner. 2021. Rank-normalization, folding, and localization: An improved $\hat R$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2):667–718.
-- Michael Betancourt and Mark Girolami. 2013. Hamiltonian Monte Carlo for hierarchical models. arXiv preprint arXiv:1312.0906.
-- Omiros Papaspiliopoulos, Gareth O. Roberts, and Martin Sköld. 2007. A general framework for the parametrization of hierarchical models. *Statistical Science*, 22(1):59–73.
-- Radford M. Neal. 2003. Slice sampling. *The Annals of Statistics*, 31(3):705–767.
+- *Estimation in Parallel Randomized Experiments* [@rubin1981parallel].
+- *Rank-normalization, folding, and localization: An improved R-hat for assessing convergence of MCMC* [@vehtari2021rhat].
+- *Hamiltonian Monte Carlo for Hierarchical Models* [@betancourt2015hierarchical].
+- *A General Framework for the Parametrization of Hierarchical Models* [@papaspiliopoulos2007parametrization].
+- *Slice sampling* [@neal2003slice].

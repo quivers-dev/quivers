@@ -2,11 +2,19 @@
 
 ## What is a Morphism?
 
-A morphism from domain $A$ to codomain $B$ in a $\mathcal{V}$-enriched category is a tensor $M \in \mathcal{V}^{|A| \times |B|}$, where $\mathcal{V}$ is the selected composition algebra. Concretely, it is a multi-dimensional tensor with shape `(*A.shape, *B.shape)` whose entries combine through that algebra's operations.
+In the finite relation representation, `f : A -> B` is a typed table: the domain `A` names its input
+choices and the codomain `B` its output choices. An entry `f[a, b]` answers
+a question about that pair, such as whether a relation holds, how compatible
+it is, or how likely `b` is given `a`. The selected [algebra](core.md#algebras-enrichment-algebras) determines which
+question the numbers answer. A Boolean row can relate one input to several
+outputs; a probability row assigns those outputs weights that sum to one.
 
-For a simple `FinSet` morphism $f: X \to Y$ with $|X| = m$ and $|Y| = n$, the tensor is an $m \times n$ matrix.
 
-For a product domain like $X \times Y$, the tensor has shape `(|X|, |Y|, |Z|)`.
+In Quivers' finite relation representation, a morphism from domain $A$ to codomain $B$ is a tensor $M \in \mathcal{V}^{|A| \times |B|}$, where $\mathcal{V}$ is the selected composition algebra. Concretely, it is a multi-dimensional tensor with shape `(*A.shape, *B.shape)` whose entries combine through that algebra's operations.
+
+For a simple [`FinSet`](core.md#finset) morphism $f: X \to Y$ with $|X| = m$ and $|Y| = n$, the tensor is an $m \times n$ matrix.
+
+For a [product domain](core.md#productset-and-coproductset) like $X \times Y$, the tensor has shape `(|X|, |Y|, |Z|)`.
 
 ## The Morphism Hierarchy
 
@@ -49,6 +57,13 @@ assert list(f.module().parameters()) == []  # no learnable params
 
 ### LatentMorphism
 
+Here *latent* means a learnable table whose entries are optimized.
+A sigmoid bounds each entry separately: three zero raw weights become
+`[0.5, 0.5, 0.5]`, whose sum is `1.5`.
+For random draws, use [program sample sites](programs.md#bind-steps); for normalized
+finite kernels, use [stochastic morphisms](stochastic.md#stochastic-morphisms).
+
+
 A learnable morphism parameterized by a weight matrix, with sigmoid output to ensure values in $(0, 1)$. Construct with `morphism()`:
 
 ```python
@@ -81,6 +96,20 @@ with torch.no_grad():
 ```
 
 ## Composition: The >>  Operator
+
+To connect `A -> B` to `B -> C`, consider every possible middle value `b`.
+Combine the two link scores for that value, then aggregate the alternatives.
+The middle axis disappears because the result reports only the external
+input `a` and output `c`. Source syntax reads left to right (`f >> g`);
+mathematical composition reads right to left ($g \circ f$).
+
+For one output entry, suppose the two path scores are `0.8 * 0.5 = 0.4`
+and `0.2 * 0.5 = 0.1`. Under the default noisy-OR rule the entry is
+`1 - (1 - 0.4) * (1 - 0.1) = 0.46`. Under Markov sum-product it is
+`0.4 + 0.1 = 0.5`. Ordinary matrix multiplication is thus correct only
+for rules that use sum and product. See [Core Types](core.md) for the
+law assumptions and the default rule's associativity limitation.
+
 
 Composition of two morphisms uses the algebra's operations. If $f: A \to B$ and $g: B \to C$, then $g \circ f: A \to C$ is computed as:
 
@@ -138,6 +167,14 @@ except TypeError as e:
 
 ## Tensor Product: The @ Operator
 
+Sequential composition feeds an output into the next operation. Parallel
+composition takes two inputs, runs the two operations, and returns both
+outputs. Thus `f @ g` expects a pair `(a, c)`, even when `A` and `C` have
+the same type; sharing one input requires an explicit copying/fan operation.
+The symbol $\otimes$ names both this operation on morphisms and the
+entrywise combining operation of the algebra; their types distinguish them.
+
+
 The tensor (or parallel) product $f \otimes g$ combines two morphisms $f: A \to B$ and $g: C \to D$ into a morphism $f \otimes g: A \times C \to B \times D$. The tensor is the outer product via the algebra's $\otimes$:
 
 ```python
@@ -167,6 +204,15 @@ f_prod = morphism(P, Q)  # (A × B) → (C × D)
 ```
 
 ## Marginalization
+
+If a result tracks both color and shape but only color matters to the
+query, aggregate over shape. A color-by-shape table becomes one value
+per color.
+For a probability table the aggregation is a sum; for a Boolean relation
+it asks whether any shape works; for fuzzy scores it uses the selected
+soft aggregation. Thus the same axis reduction answers a different
+question for each algebra.
+
 
 Join-reduce the codomain over specified components:
 

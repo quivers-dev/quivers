@@ -10,6 +10,29 @@ analysis utilities (`structural/`, `analysis/`), effect handlers
 (`cli/`, `kernel/`, `lsp/`). This document describes the
 package hierarchy, dependencies, and key abstractions in each module.
 
+## Follow one model through the library
+
+A regression begins as source text or Python objects. The compiler resolves
+names and checks the declared structure, then represents sampling and scoring
+as explicit computations in QIEC. A runtime supplies data and executes those
+computations. Inference repeatedly evaluates their [joint score](../tutorials/python/05-variational-inference.md#tracing-the-model) while adjusting
+a guide or moving a sampling chain. The model specifies the target; the
+inference algorithm specifies how to approximate it.
+
+For ordinary model fitting, start in `dsl/` or `formulas/` and follow results
+into `inference/` and `diagnostics/`. To add a distribution, follow
+`continuous/`. To change typed tensor composition, follow `core/`. To understand
+an [effect request](../tutorials/qvr/10-effects-and-handlers.md#1-declare-the-request) or a [deployment refusal](../tutorials/qvr/13-release-workflow.md#4-use-target-diagnostics-while-editing), follow `qiec/`, `effects/`, and
+`transpile/`. The [conceptual introduction](concepts.md) explains the objects,
+arrows, distributions, and handlers these packages manipulate.
+
+Two representations recur in the inventory. A finite relation is a tensor
+whose entries connect named input and output elements. A conditional kernel
+instead maps an input to a distribution over outputs. Both compose, but only
+the first is generally a finite table you can inspect directly. A handler
+supplies an interpretation for a computation's requests; an attachment is a
+runtime value, such as a PyTorch module, associated with a checked identifier.
+
 ## Package Structure
 
 ```
@@ -85,7 +108,7 @@ First-party editor assets are synchronized with the in-tree source.
 Foundational categorical types and operations. Defines the objects and morphisms that all other modules build on.
 
 - **`objects.py`:** Categorical objects as `dx.TaggedUnion` variants: `SetObject` (root), `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`, `EnumSet`, `FreeResiduated`, plus the module-level `Unit: FinSet = FinSet(name="1", cardinality=1)` singleton.
-- **`algebras.py`:** Composition rules organised as a three-level hierarchy: `CompositionRule` (abstract) → `Semigroupoid` (composition only) → `Algebra` (composition + tensor unit + bilinear pair). `BilinearForm` sits beside `Semigroupoid` for the tensor-product side. Concrete variants: `ProductFuzzyAlgebra`, `BooleanAlgebra`, `LukasiewiczAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `ProbabilityAlgebra`, `CountingAlgebra`, `MarkovAlgebra`, plus `DualAlgebra`, `CustomAlgebra`, `CustomSemigroupoid`, `CustomBilinearForm`. Module-level singletons: `PRODUCT_FUZZY`, `BOOLEAN`, `LUKASIEWICZ`, `GODEL`, `TROPICAL`, `MAX_PLUS`, `LOG_PROB`, `REAL`, `PROBABILITY`, `COUNTING`, `MARKOV`, `REICHENBACH`, `BOOLEAN_DUAL`, `DUAL_LUKASIEWICZ`, `DUAL_GODEL`.
+- **`algebras.py`:** Composition rules organized as a three-level hierarchy: `CompositionRule` (abstract) → `Semigroupoid` (composition only) → `Algebra` (composition + tensor unit + bilinear pair). `BilinearForm` sits beside `Semigroupoid` for the tensor-product side. Concrete variants: `ProductFuzzyAlgebra`, `BooleanAlgebra`, `LukasiewiczAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `ProbabilityAlgebra`, `CountingAlgebra`, `MarkovAlgebra`, plus `DualAlgebra`, `CustomAlgebra`, `CustomSemigroupoid`, `CustomBilinearForm`. Module-level singletons: `PRODUCT_FUZZY`, `BOOLEAN`, `LUKASIEWICZ`, `GODEL`, `TROPICAL`, `MAX_PLUS`, `LOG_PROB`, `REAL`, `PROBABILITY`, `COUNTING`, `MARKOV`, `REICHENBACH`, `BOOLEAN_DUAL`, `DUAL_LUKASIEWICZ`, `DUAL_GODEL`.
 - **`algebra_morphisms.py`:** `AlgebraHomomorphism` (abstract) and its concrete variants (`IdentityHom`, `Embedding`, `Expectation`, `LogProb`, `MaxPlus`, `Threshold`, `MaterialImplication`, `ProbabilityClamp`, `CountingFromReal`, `ProbabilityToReal`, `CountingToReal`), plus the `threshold()`, `embedding()`, and `lookup_homomorphism()` helpers.
 - **`morphism_transformations.py`:** `MorphismTransformation` (abstract step type) plus the `Softmax`, `L1Normalize`, `L2Normalize`, and `BayesInvert` concrete steps and their `softmax()`/`l1_normalize()`/`l2_normalize()` factory wrappers. These steps drive `Morphism.change_base` and the `TransformedMorphism` carrier.
 - **`morphisms.py`:** $\mathcal{V}$-enriched relations as tensors: `Morphism` (abstract), `ObservedMorphism` (fixed tensor data), `LatentMorphism` (learnable), `TransformedMorphism`, `ComposedMorphism`, `ProductMorphism`, `MarginalizedMorphism`, `FunctorMorphism`, `RepeatMorphism`, `CurriedMorphism`, plus the factory functions `morphism()`, `observed()`, `identity()`, `cup()`, `cap()`, and helpers `as_torch_module()`, `extract_morphism()`.
@@ -169,7 +192,7 @@ Continuous and hybrid discrete-continuous morphisms and monadic programs.
 - **`families.py`:** Conditional distribution families, defined either as explicit subclasses (e.g. `ConditionalNormal`, `ConditionalBeta`, `ConditionalDirichlet`, `ConditionalMultivariateNormal`, `ConditionalLowRankMVN`, `ConditionalWishart`, `ConditionalInverseWishart`, `ConditionalMatrixNormal`, `ConditionalRelaxedBernoulli`, `ConditionalRelaxedOneHotCategorical`, `ConditionalLKJCholesky`, `ConditionalGaussianProcess`, `ConditionalHorseshoe`, `ConditionalMixture`, `ConditionalIndependent`, `ConditionalTransformed`, `ConditionalBernoulli`, `ConditionalCategorical`, `ConditionalBinomial`, `ConditionalLogisticNormal`, `ConditionalOneHotCategorical`) or generated by the `_make_family` factory (e.g. `ConditionalCauchy`, `ConditionalLaplace`, `ConditionalGumbel`, `ConditionalLogNormal`, `ConditionalStudentT`, `ConditionalExponential`, `ConditionalGamma`, `ConditionalChi2`, `ConditionalHalfCauchy`, `ConditionalHalfNormal`, `ConditionalInverseGamma`, `ConditionalWeibull`, `ConditionalPareto`, `ConditionalKumaraswamy`, `ConditionalContinuousBernoulli`, `ConditionalFisherSnedecor`, `ConditionalPoisson`, `ConditionalGeometric`). Also exports the `LKJCorrelationFactor` and `Truncated` helpers.
 - **`family_spec.py`:** Declarative specification objects backing `_make_family`.
 - **`programs.py`:** Monadic programs: `MonadicProgram` (compositional probabilistic computations) plus the internal `_StepSpec` / `_LetSpec` / `_ScoreSpec` step records.
-- **`plate.py`, `scan.py`:** `plate(...)` and `scan(...)` constructs for vectorised and sequential program fragments.
+- **`plate.py`, `scan.py`:** `plate(...)` and `scan(...)` constructs for vectorized and sequential program fragments.
 - **`inline.py`:** inline-composition helpers used by the DSL compiler.
 - **`deterministic.py`:** deterministic continuous morphisms (pure functions on continuous spaces).
 - **`boundaries.py`:** Boundaries between discrete and continuous: `Discretize`, `Embed`.
@@ -234,7 +257,7 @@ Inference primitives for monadic probabilistic programs: tracing, observation co
 
 ### `analysis/`
 
-Static analysis of compiled programs: `scope.py` (scope-path traversal), `chain_shape.py` (chain-rule shape inference), `plate_graph.py` and `plate_render.py` (plate-diagram extraction and rendering), `init_spec.py` (initialiser specifications), `saturation.py` (saturation checks for the type/effect system).
+Static analysis of compiled programs: `scope.py` (scope-path traversal), `chain_shape.py` (chain-rule shape inference), `plate_graph.py` and `plate_render.py` (plate-diagram extraction and rendering), `init_spec.py` (initializer specifications), `saturation.py` (saturation checks for the type/effect system).
 
 ### `data/`
 
@@ -329,7 +352,7 @@ analysis-then-dsl ordering bends at that one call site.
 4. **`stochastic/`:** builds on `core/`, `categorical/`, `monadic/`.
 5. **`continuous/`:** builds on `core/`, `categorical/`, `monadic/`, `stochastic/`.
 6. **`analysis/`:** builds on `core/` and `dsl.ast_nodes` / `dsl.compiler._prelude` (uses AST types and the compiler's algebra registry for static analysis).
-7. **`dsl/`:** synthesises `core/`, `categorical/`, `monadic/`, `enriched/`, `stochastic/`, `continuous/`, plus `analysis.init_spec` for one initialiser-checking helper.
+7. **`dsl/`:** synthesizes `core/`, `categorical/`, `monadic/`, `enriched/`, `stochastic/`, `continuous/`, plus `analysis.init_spec` for one initializer-checking helper.
 8. **`inference/`:** builds on `core/`, `categorical/`, `stochastic/`, `continuous/`, and `program.py`.
 9. **`data/`:** builds on `dsl/`. **`diagnostics/`:** builds on `inference/`.
 10. **`formulas/`:** builds on `continuous/`, `dsl/`, and `inference/`.
@@ -349,7 +372,7 @@ categorical structures, probabilistic computations, or the full DSL.
 - **Value types are didactic Models**: every record-shaped value (AST nodes, `SetObject` variants, `ContinuousSpace` variants, deduction categories, `RuleSystem`, `Kleisli` / `ArrowMonad` / `CoKleisli` bridges, `VRel` / `Function` / `Stochastic` arrows) is a frozen `dx.Model`. This buys uniform construction, structural equality, JSON round-trips via `model_dump_json` / `model_validate_json`, and cross-field axioms via `__axioms__`. Recursive sums are `dx.TaggedUnion` roots with a `kind: Literal[...]` discriminator.
 - **Tensor-bearing classes stay mutable**: `Presheaf`, `Weight`, `SampleSite`, and `Trace` accumulate `torch.Tensor` fields and are mutated in place during inference; they remain `@dataclass`.
 - **Lazy composition**: morphism composition creates a DAG; the final tensor is materialized only on evaluation.
-- **Type safety**: categorical constraints (domain/codomain compatibility) are enforced statically in Python.
+- **Type safety**: constructors and compilation check declared domain/codomain compatibility before tensor evaluation; constraints that depend on runtime data are checked at that boundary.
 - **Module transparency**: all morphisms expose a `.module()` method returning an `nn.Module`, enabling integration with PyTorch training loops.
 - **Algebra flexibility**: the same morphism structure works with any algebra; swapping algebras changes semantics (fuzzy, Boolean, tropical, etc.) without code duplication.
 - **DSL pipeline as a panproto theory morphism**: parsing is delegated to panproto's tree-sitter–driven AST registry; resolution is a compiler mixin that walks `ObjectExpr` trees into `SetObject` or `ContinuousSpace` values; each compiled program extracts to a panproto `Schema` against `QVR_PROGRAM_PROTOCOL`. The diff, migration, and lens-generation tools operate directly on `.qvr` programs.

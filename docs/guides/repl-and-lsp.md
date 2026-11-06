@@ -1,10 +1,18 @@
 # Interactive tools: REPL, kernel, and language server
 
+The **read-eval-print loop (REPL)** lets you inspect and execute QVR
+without starting a new process for each command. The **terminal user
+interface (TUI)** adds panes around that session. The **Language Server
+Protocol (LSP)** connects the same language checks to an editor, and
+the Jupyter kernel provides a notebook interface. Choose the interface
+that suits how you work; the model syntax remains the same.
+
+
 quivers ships an interactive type-explorer and a matching language
 server. Both share the same bundled QVR tree-sitter parser, installed into
 [Panproto](https://github.com/panproto/panproto)'s registry, the same elaborator
 ([`quivers.dsl.Compiler`](../api/dsl/compiler.md)), and the same highlight
-table, so the colour you see in the TUI matches the colour your
+table, so the color you see in the TUI matches the color your
 editor shows over LSP, which matches what gets emitted as Jupyter
 output. The REPL, plain prompt, kernel, and language server use these
 shared components.
@@ -90,6 +98,18 @@ qvr repl --help                              # confirm the TUI is reachable
 
 ## The REPL
 
+For a first session, load a small model, use `:run` to list executable
+entries, and use `:info NAME` to read an entry's declaration. `:graph NAME`
+shows its step dependencies and `:plate NAME` shows repeated random
+variables. Then invoke it with explicit data as described under `:run`.
+These commands load the model, show its [entry points](../reference/qvr/execution-and-tooling.md#list-entry-points), and run one entry.
+
+Executing a program draws its random values or replays supplied ones
+and scores them. To fit a posterior, pass the program and observations
+to an [inference driver](inference-foundations.md). `:trace EXPR` displays
+type elaboration; use execution tracing to inspect sampled and observed sites.
+
+
 ### Starting it
 
 ```bash
@@ -172,8 +192,8 @@ are passed through the shared
 [`tokenize`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py)
 pipeline and rendered with the
 [`STYLE_TABLE`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py)
-colours. Identifiers known to the env are upgraded to their semantic
-colour even when the surrounding line wasn't a parseable QVR
+colors. Identifiers known to the env are upgraded to their semantic
+color even when the surrounding line wasn't a parseable QVR
 declaration; the same identifier always reads the same way.
 
 Identifiers rendered as type / function / namespace are also
@@ -185,7 +205,7 @@ is also clickable; it opens that file at that line in `$EDITOR`
 ### Input editor
 
 The input pane is a multi-line `TextArea` with three quality-of-life
-behaviours layered on:
+behaviors layered on:
 
 1. **Bracket pairing.** Typing `(`, `[`, or `{` inserts the matching
    closer and parks the cursor between them.
@@ -307,11 +327,11 @@ object Doc : FinSet 20
 family Vec[A : Type](n : Nat) : Type
 ```
 
-Index sorts, indexed families, and effect interfaces participate in the
+Index sorts, [indexed families](../reference/qvr/types-and-indexed-families.md#family-declarations), and effect interfaces participate in the
 same kind lookup, the prelude's interfaces included: `:kind Random` prints
 `effect Random` without a declaration in the module. `:type` likewise renders
 signatures for effect instances,
-handlers, constructors, operations, and typed computations.
+[handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), constructors, operations, and typed computations.
 
 #### `:transpile TARGET`
 
@@ -332,7 +352,7 @@ modules and emit named `qiec_*` functions through their corresponding
 target-language ABI implementations. They accept mixed modules when the
 probabilistic portion is already supported by that target. Stan, BUGS, and JAGS
 accept executable QIEC-only or mixed modules only when the same probabilistic
-condition holds and every computation is in their static subset: its effect row
+condition holds and every computation is in their static subset: its [effect row](../reference/qvr/effects-and-handlers.md#effect-rows)
 is closed and empty, its static telescope is empty, its result is scalar, and
 its body contains only scalar `Return` and `Bind` forms. Stan additionally
 permits named `Bool`, `Int`, and `Real` value parameters; BUGS and JAGS require
@@ -363,7 +383,7 @@ configuration accepted by `qvr run --runtime`:
 
 Provider names are resolved only when explicitly selected. The source handler
 declaration continues to determine its types, coverage, forwarding policy, and
-resumption grades; the runtime configuration supplies process-local behavior.
+[resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) grades; the runtime configuration supplies process-local behavior.
 
 #### `:run [NAME [JSON ...] [--data NAME=JSON] [--site NAME=JSON] [--static NAME=TERM] [--fuel STEPS] [--seed N]]`
 
@@ -403,7 +423,7 @@ number of evaluation steps. A run that exhausts its budget fails with the
 
 The command validates value arguments and the result against the specialized
 types, creates fresh runtime attachments for the invocation, and records a
-stable execution trace. Failures retain `qiec-run-*` diagnostic codes in both
+stable execution [trace](inference-foundations.md#trace-and-sample-sites). Failures retain `qiec-run-*` diagnostic codes in both
 the plain and TUI frontends.
 
 #### `:detach`
@@ -936,9 +956,9 @@ The strip is hidden when there are no diagnostics.
 Two frontends are click-aware:
 
 - **Identifiers in rendered output.** Clicking a type-, function-,
-  or namespace-coloured identifier fires `:info NAME` in the eval
+  or namespace-colored identifier fires `:info NAME` in the eval
   log. Works on any text the renderer painted with one of those
-  semantic colours: env-known names, grammar-classified types,
+  semantic colors: env-known names, grammar-classified types,
   built-in functions, algebras.
 - **`PATH:LINE:COL` footers.** The `-- declared at ...` line under
   every `:info` body is a clickable link that launches
@@ -955,7 +975,7 @@ are rendered through `rich.syntax.Syntax`. Useful values:
 - `nord`, `gruvbox-dark`, `github-dark`
 - any other [Pygments style](https://pygments.org/styles/) shipped with your install
 
-The Textual app itself follows your terminal's colour scheme; the
+The Textual app itself follows your terminal's color scheme; the
 theme option only affects fenced QVR / JSON blocks in `:info` and
 `:dump` output.
 
@@ -1019,7 +1039,7 @@ Cell semantics:
 - Blank lines separate independent chunks within a cell, so you can
   mix meta-commands and declarations freely.
 
-Notebook-side features:
+Notebook features:
 
 - **Tab completion** routes through the same completer as the TUI
   and LSP.
@@ -1120,7 +1140,7 @@ Every capability advertised by `qvr-lsp`:
 | `textDocument/prepareRename` / `textDocument/rename` | Rename a declaration the document makes (a computation, an operation, a handler, an instance, or a lexical binder) at every reference; a prelude name or a keyword is refused |
 | `textDocument/documentSymbol` | All top-level declarations plus their nested symbols: a computation's parameters, locals, scoped instances, branch binders, and call sites (a recursive call marked as such); a handler's clauses, each with its binders and calls; a program's steps, a call step detailed by its callee, a marginalize block's scope nested beneath it |
 | `textDocument/completion` | Env names, members and qualified instance operations (the prelude's `random.sample` included), grammar keywords, builtins, and paths, from the same source as the REPL completer |
-| `textDocument/semanticTokens/full` | Env-aware semantic token stream classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key colour the same everywhere |
+| `textDocument/semanticTokens/full` | Env-aware semantic token stream classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key color the same everywhere |
 | `textDocument/formatting` | Canonical re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md); a document whose checked module fails to lower is left unformatted |
 | `textDocument/didOpen` / `didChange` / `didSave` / `didClose` | Incremental sync, full re-analysis per change |
 | `workspace/didChangeConfiguration` | Update the selected transpile target and republish diagnostics for every open document, re-running only the capability pass over the already checked module |

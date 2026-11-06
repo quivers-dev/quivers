@@ -11,6 +11,19 @@ interface live in [continuous spaces](continuous-spaces.md).
 
 ## Family registry
 
+Choose a family by what one outcome represents and which values it may
+take. A Normal can model an unconstrained measurement; a Gamma can model
+a positive duration; a Bernoulli models a binary outcome; a Dirichlet
+models a whole probability vector. Among families with the same support,
+tail behavior can guide the choice: a Student-t places more probability
+on extreme deviations than a Normal.
+
+`ConditionalNormal(domain, codomain)` learns a function from inputs to
+Normal parameters, including a learned mean `mu(x)`. To specify a mean
+exactly, write QVR `Normal(loc=mu, scale=sigma)`: the runtime uses the
+values of `mu` and `sigma` supplied at that point in the program.
+
+
 ### Hand-written core families
 
 ```python
@@ -129,6 +142,23 @@ from quivers.continuous.families import (
 
 ## Event rank and axis-role syntax
 
+Pyro’s [examples of distribution shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) compare scalar batches with vector events and show which axes `log_prob` removes. [@pyroTensorShapes] The QVR [axis-role clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) specifies these roles in source.
+
+Three axes can appear in a sampled tensor. A **sample axis** counts repeated
+Monte Carlo draws. A **batch axis** counts separate distribution instances.
+An **event axis** holds components scored jointly as one outcome. In the
+example above, `(100, 8, 3)` means 100 draws for eight inputs with three
+output coordinates; `log_prob` reduces the output coordinates and retains
+one score per input.
+
+Event *rank* is the number of event axes, not their length. A
+100-dimensional multivariate Normal has event rank one; a matrix-valued
+family has rank two. Scalar Normal draws across three coordinates can be
+independent even when stored together, whereas a multivariate Normal can
+correlate those coordinates. The `over` and `iid_over` declarations make
+that modeling choice visible.
+
+
 `event_rank` per family controls the
 [axis-role syntax](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over):
 
@@ -144,12 +174,20 @@ error. In particular, a flat MVN over $\dim(A) \cdot \dim(B)$
 (dense covariance, event_rank 1 with a single named axis whose dim
 equals the product) is categorically distinct from a `MatrixNormal`
 over `(A, B)` (Kronecker structure $V \otimes U$, event_rank 2);
-the syntax keeps the two distinguishable rather than
-auto-substituting.
+the declaration thus records both the event axes and the covariance
+structure.
 
 ## Structured priors over weight matrices
 
 ### MatrixNormal: Kronecker-covariance matrix prior
+
+A weight matrix can have two kinds of similarity: rows may covary because
+their inputs are related, and columns may covary because their outputs are
+related. A matrix-Normal separates those patterns into two covariance
+matrices. This reduces parameters but also restricts the correlations
+available; it is not equivalent to an arbitrary covariance over every
+flattened entry.
+
 
 ```python
 from quivers.continuous.families import ConditionalMatrixNormal
@@ -190,12 +228,18 @@ iw = ConditionalInverseWishart(domain, Euclidean(name="Sigma", dim=d))
 ```
 
 Conjugate prior for the covariance of a multivariate normal
-([Gelman, Carlin, Stern, Dunson, Vehtari, Rubin 2013](https://doi.org/10.1201/b16018), §3.6).
+([@gelman2013bayesian], §3.6).
 The change-of-variables Jacobian for inverting a positive-definite
 symmetric matrix contributes a `-(d + 1) log det(Sigma)` term to
 the log-density.
 
 ### LKJCholesky: correlation-matrix prior
+
+A correlation matrix describes association independently of each variable's scale. A Cholesky factor is a triangular representation used to build
+a valid matrix and compute with it efficiently. Modeling a factor avoids
+proposing an arbitrary array that might fail to be a correlation matrix;
+separate scale parameters can then supply marginal variability.
+
 
 ```python
 from quivers.continuous.families import ConditionalLKJCholesky
@@ -209,7 +253,7 @@ lkj = ConditionalLKJCholesky(
 )
 ```
 
-[LKJ-distributed](https://doi.org/10.1016/j.jmva.2009.04.008)
+LKJ-distributed [@lewandowski2009lkj]
 Cholesky factors on the manifold of correlation matrices. The
 matrix dimension comes from `codomain.dim`; the concentration
 parameter is learned from the input by the family's parameter
@@ -234,15 +278,22 @@ wishart = ConditionalWishart(
 
 ### ConditionalGaussianProcess
 
+A Gaussian process assigns a joint distribution to function values at
+chosen inputs. Its covariance kernel determines which inputs should have
+similar outputs. With an RBF kernel, nearby inputs tend to receive more
+strongly correlated values; the length scale controls how quickly this
+relationship decays. One draw is a collection of function values, not a
+separate unrelated regression coefficient at every location.
+
+
 A [Gaussian
 process](https://en.wikipedia.org/wiki/Gaussian_process) on
 $\mathbb{R}^D$ is a Markov kernel $X^N \to \mathcal{G}(\mathbb{R}^N)$
 whose value at any finite collection of input locations
 $x_1, \dots, x_N \in \mathbb{R}^D$ is a joint multivariate Normal
-with covariance $K(x_i, x_j)$. Categorically, the family departs
-from the other parametric families: its "parameters" at each
-evaluation are the input locations themselves, not a small
-neural-net summary of them.
+with covariance $K(x_i, x_j)$. Each evaluation uses the entire collection
+of input locations to construct this covariance matrix. Changing one
+location changes its covariance with the other locations.
 [`ConditionalGaussianProcess`](../api/continuous/families.md#quivers.continuous.families.ConditionalGaussianProcess)
 exposes three covariance kernels (RBF, Matern 5/2, linear) with
 learnable length scale and amplitude.
@@ -267,11 +318,18 @@ log_p = gp.log_prob(x, f)        # MVN(0, K(x, x) + jitter * I) density
 
 The DSL registers the family as `GP` with event rank 1; one named
 axis (the input-location count $N$) carries the joint distribution.
-Reference: [Rasmussen and Williams (2006)](http://www.gaussianprocess.org/gpml/).
+For the statistical foundations and worked examples, see [@rasmussen2006gp]. The [open-access edition](https://www.gaussianprocess.org/gpml/) is available from the authors.
 
 ### ConditionalHorseshoe
 
-The [horseshoe prior](https://doi.org/10.1093/biomet/asq017) is a
+Shrinkage priors express a preference for small coefficients while allowing
+some large effects. In the hierarchy below, the global scale `tau` controls
+overall shrinkage, while each local scale `lambda_d` can let its coefficient
+escape that shrinkage. The heavy tails of the scale priors distinguish this
+behavior from choosing a small Normal variance for every coefficient.
+
+
+The horseshoe prior [@carvalho2010horseshoe] is a
 sparse-signal prior whose hierarchical form is
 
 $$
@@ -331,8 +389,7 @@ one named axis carries the per-coordinate marginal product.
 - [Examples Gallery: Horseshoe Regression](../examples/horseshoe-regression.md):
   end-to-end use of `ConditionalHorseshoe` in a regression.
 
+## Further reading
 
-## References
-
-- Andrew Gelman, John B. Carlin, Hal S. Stern, David B. Dunson, Aki Vehtari, and Donald B. Rubin. 2013. *Bayesian Data Analysis*, 3rd edition. Chapman & Hall/CRC.
-- Carlos M. Carvalho, Nicholas G. Polson, and James G. Scott. 2010. The horseshoe estimator for sparse signals. *Biometrika*, 97(2):465–480.
+- [@gelman2013bayesian]
+- [@carvalho2010horseshoe]

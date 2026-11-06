@@ -3,19 +3,35 @@
 This page covers the variational layer: the `Auto*Guide` family,
 seven objectives and four gradient estimators, the SVI training
 loop, and predictive sampling from a trained guide. The MCMC layer
-(HMC, NUTS, hybrid samplers) lives in [the MCMC
-guide](inference-mcmc.md); the trace / conditioning / registry
+([HMC](inference-mcmc.md#mcmc-hmc-and-nuts), NUTS, hybrid samplers) lives in [the MCMC
+guide](inference-mcmc.md); the [trace](inference-foundations.md#trace-and-sample-sites) / [conditioning](inference-foundations.md#conditioning-on-observations) / registry
 primitives that every guide consumes live in
 [Inference Foundations](inference-foundations.md).
 
 ## Guides: variational families
 
+A **guide** is a distribution with adjustable parameters used to
+approximate the posterior. If `z` is an unknown mean, a simple guide
+might learn a center and spread for `z`. The model still supplies the
+prior and likelihood; the guide supplies candidate latent values and
+their density under the approximation. Observed sites remain fixed to the
+supplied data throughout fitting.
+
+Pyro’s [guide tutorial](https://pyro.ai/examples/svi_part_i.html#Guide) spells out how model and guide sample sites correspond. [@pyroSVI] The [trace explanation](inference-foundations.md#trace-and-sample-sites) describes the site names and density terms Quivers records.
+
+A diagonal, or *mean-field*, Normal treats latent coordinates as
+independent in its unconstrained representation. A full-covariance Normal
+can represent linear correlations but costs more parameters. Flows can bend the density, and mixtures can place mass around several
+separated modes. To compare these families, fit each from several
+initializations and compare their ELBOs and posterior predictive draws.
+
+
 A guide $q_\phi(z \mid x, y)$ is a variational family approximating
 the posterior. Eleven concrete `Auto*` guide classes cover the
-standard zoo, all documented under [Variational
+available families, all documented under [Variational
 Guides](../api/inference/guide.md); each is constructed from the
 model and a set of observed site names. The nine single-family
-guides are summarised in the table below; two combinators,
+guides are summarized in the table below; two combinators,
 [`AutoGuideList`](../api/inference/guide.md#quivers.inference.guides.AutoGuideList)
 and
 [`AutoStructured`](../api/inference/guide.md#quivers.inference.guides.AutoStructured),
@@ -25,11 +41,11 @@ compose per-site guides into a joint variational family.
 |---|---|---|
 | [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) | Diagonal Normal (mean-field) | Default; identifiable posterior, weak correlation |
 | [`AutoMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoMultivariateNormalGuide) | Full-rank Normal (Cholesky) | Strong posterior correlations; $D \lesssim 1000$ |
-| [`AutoLowRankMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoLowRankMultivariateNormalGuide) | Low-rank + diagonal | Hierarchical models with localized correlations |
-| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centered at MAP with covariance $-H^{-1}$ (negative inverse Hessian of the log-joint) | Post-hoc; cheap quadratic-around-MAP |
-| [`AutoNormalizingFlow`](../api/inference/guide.md#quivers.inference.guides.AutoNormalizingFlow) | Composed bijector over Normal base | Multimodal / heavy-tailed posteriors |
-| [`AutoIAFGuide`](../api/inference/guide.md#quivers.inference.guides.AutoIAFGuide) | [Inverse autoregressive flow](https://doi.org/10.48550/arXiv.1606.04934) | Flagship NF default |
-| [`AutoNeuralSplineGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNeuralSplineGuide) | Rational-quadratic spline coupling ([Durkan et al. 2019](https://doi.org/10.48550/arXiv.1906.04032)) | Sharper than IAF for bounded support |
+| [`AutoLowRankMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoLowRankMultivariateNormalGuide) | Low-rank + diagonal | [Hierarchical models](programs-hierarchical.md#hierarchical-models-with-parametric-templates) with localized correlations |
+| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centered at MAP with covariance $-H^{-1}$ (negative inverse Hessian of the log-joint) | Local Gaussian approximation after finding a mode |
+| [`AutoNormalizingFlow`](../api/inference/guide.md#quivers.inference.guides.AutoNormalizingFlow) | Composed bijector over Normal base | Skewed or curved posterior densities |
+| [`AutoIAFGuide`](../api/inference/guide.md#quivers.inference.guides.AutoIAFGuide) | Inverse autoregressive flow [@kingma2016iaf] | Autoregressive transformed approximation |
+| [`AutoNeuralSplineGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNeuralSplineGuide) | Rational-quadratic spline coupling [@durkan2019splines] | Flexible spline transformations |
 | [`AutoMixtureGuide`](../api/inference/guide.md#quivers.inference.guides.AutoMixtureGuide) | K-component mixture of guides | Multimodal posteriors |
 | [`AutoDeltaGuide`](../api/inference/guide.md#quivers.inference.guides.AutoDeltaGuide) | Dirac at MAP | Quick MAP; no uncertainty |
 
@@ -77,6 +93,12 @@ log_q = guide.log_prob(x, latents)
 
 ### AutoDeltaGuide
 
+A delta guide puts all its mass at one fitted value, so repeated draws
+return that value. Its scoring convention optimizes a MAP estimate.
+The ELBO/KL identity below assumes a density with respect to the model
+measure; a point mass in a continuous space violates that assumption.
+
+
 A delta (point mass) approximation, i.e. a single best estimate.
 The point lives in the unconstrained space and is pushed through
 `biject_to(support)` at evaluation time, so it always lies inside
@@ -102,20 +124,34 @@ log_q = guide.log_prob(x, z_map)
 
 ## Objectives and gradient estimators
 
+The **objective** says what numerical quantity the fit optimizes. The
+**gradient estimator** says how to estimate its derivatives using random
+draws. These are separate choices: two estimators can target the same
+objective but differ in variance and applicability. A *particle* is one
+set of latent draws used in a Monte Carlo estimate; increasing particles
+reduces some sampling noise at additional computational cost.
+
+The pathwise estimator differentiates through a sample such as
+`mu + sigma * epsilon`. A score-function estimator instead uses
+derivatives of the sampling log probability, which is useful when the
+sample itself is not differentiable. The table records the advanced
+choices; ordinary ELBO with a supported estimator is a simpler starting
+point for understanding the loop.
+
+
 [`SVI`](../api/inference/svi.md) accepts any
-[`Objective`](../api/inference/elbo.md) subclass, not just
-[`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO).
-Seven are shipped:
+[`Objective`](../api/inference/elbo.md) subclass. The seven shipped
+objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO):
 
 | Objective | Bound | Use case |
 |---|---|---|
 | `ELBO(num_particles=K)` | $\mathbb{E}_q[\log p - \log q]$ | Default |
-| `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ ([Burda et al. 2016](https://doi.org/10.48550/arXiv.1509.00519)) |
-| `RenyiBound(alpha, K)` | $\alpha$-divergence bound ([Li-Turner 2016](https://doi.org/10.48550/arXiv.1602.02311)) | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
-| `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE ([Daudel et al. 2023](https://doi.org/10.48550/arXiv.2210.06226)) | Interpolates cheap-vs-tight regimes |
-| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [Dieng et al. 2017](https://doi.org/10.48550/arXiv.1611.00328)) | Over-covering approximation; pair with ELBO for lower/upper estimates |
-| `RWS(K)` | Reweighted wake-sleep ([Bornschein and Bengio 2015](https://doi.org/10.48550/arXiv.1406.2751)) | Discrete latents and importance-weighted wake updates |
-| `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient ([Tucker et al. 2019](https://doi.org/10.48550/arXiv.1810.04152)) | Switch the IWAE bound and DReG estimator together |
+| `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ [@burda2016iwae] |
+| `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
+| `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE [@daudel2023vriwae] | Controls the tradeoff between computation and approximation |
+| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [@dieng2017chi]) | Over-covering approximation; pair with ELBO for lower/upper estimates |
+| `RWS(K)` | Reweighted wake-sleep [@bornschein2015rws] | Discrete latents and importance-weighted wake updates |
+| `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient [@tucker2019dreg] | Switch the IWAE bound and DReG estimator together |
 
 The first six accept an `estimator=` strategy. `DReGsBound` fixes the
 strategy to `DoublyReparameterized` by definition:
@@ -123,8 +159,8 @@ strategy to `DoublyReparameterized` by definition:
 | Estimator | What it does |
 |---|---|
 | [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Standard pathwise gradient (default) |
-| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches variational params in `log_q` ([Roeder et al. 2017](https://doi.org/10.48550/arXiv.1703.09194)); variance to 0 as $q \to p^*$ |
-| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG for IWAE ([Tucker et al. 2019](https://doi.org/10.48550/arXiv.1810.04152)); kills the K-growing score term |
+| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
+| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG for IWAE [@tucker2019dreg]; removes the score-function term that can worsen signal-to-noise as $K$ grows |
 | [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE; for non-reparameterizable sites |
 
 <!-- python: skip -->
@@ -143,6 +179,26 @@ runtime are not vectorized over a Monte Carlo dimension, so `K > 1`
 scales linearly in the particle count.
 
 ## ELBO: evidence lower bound
+
+Pyro’s [ELBO derivation](https://pyro.ai/examples/svi_part_i.html#ELBO) connects the optimization objective to the posterior approximation, then its [coin bias example](https://pyro.ai/examples/svi_part_i.html#A-simple-example) fits a Beta guide to Bernoulli observations. [@pyroSVI]
+
+The **evidence lower bound (ELBO)** balances two terms. `log p` rewards
+latent values that the prior and observed data support. The expected
+negative `log q` is the guide’s entropy, which rewards spreading mass
+across the values supported by the model. For a fixed model and an
+absolutely continuous guide with the required finite expectations,
+
+$$
+\log p(y\mid x)-\mathcal L(\phi)
+=\mathrm{KL}\bigl(q_\phi(z\mid x,y)\,\|\,p(z\mid x,y)\bigr)\ge 0.
+$$
+
+Thus maximizing the ELBO minimizes this divergence to the posterior.
+The optimizer below minimizes the *negative* ELBO. A diagonal guide, for
+instance, can reach its best ELBO while missing a correlation between two
+latent variables. Fit a full-covariance guide to assess that correlation,
+and compare replicated observations with the data to assess predictive fit.
+
 
 The [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) is
 the variational objective:
@@ -190,6 +246,10 @@ Internally, the ELBO:
 
 ## SVI: stochastic variational inference
 
+For variational inference and stochastic optimization of variational
+objectives, see [@blei2017variational; @hoffman2013svi].
+
+
 The
 [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) training
 loop optimizes both model and guide parameters:
@@ -225,6 +285,13 @@ and steps the optimizer.
 
 ## Predictive sampling
 
+The posterior predictive has two sources of variation: uncertainty about
+`z`, and response noise conditional on `z`. Drawing from both produces
+replicated or future observations. With a guide, replace the exact
+posterior in the integral below by the fitted approximation `q`; the
+result inherits that approximation's limitations.
+
+
 After training, sample from the posterior predictive:
 
 $$p(y_\text{new} \mid x_\text{new}, \text{observations}) = \int p(y_\text{new} \mid z, x_\text{new}) \, p(z \mid x, y_\text{obs}) \, dz$$
@@ -258,68 +325,48 @@ The [`Predictive`](../api/inference/predictive.md) driver:
 
 ## Full example: Bayesian linear regression
 
+The slope is a global random variable. Each response uses that same slope
+and its own known predictor: $y_n \sim \mathcal N(w x_n, 0.1^2)$.
+The QVR binding `let mu = w * predictor` computes the mean for every
+response before the observation is scored.
+
 <!-- python: skip -->
 ```python
-from quivers.continuous import Draw, MonadicProgram
-from quivers.continuous.families import ConditionalNormal
-from quivers.continuous.spaces import Euclidean
-from quivers.core.objects import FinSet
-from quivers.inference import (
-    condition, AutoNormalGuide, ELBO, SVI, Predictive
-)
 import torch
-import torch.optim as optim
+from quivers.dsl import loads
+from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-# Model: y = w.x + noise
-Unit = FinSet(name="Unit", cardinality=1)
-R1 = Euclidean(name="R1", dim=1)
+program = loads("""
+object Row : FinSet 100
+object Value : Real 1
+program regression : Row -> Value
+    sample w <- Normal(loc=0.0, scale=1.0)
+    let mu = w * predictor
+    observe y : Row <- Normal(loc=mu, scale=0.1)
+    return y
+export regression
+""").morphism
 
-prior_w    = ConditionalNormal(Unit, R1)
-likelihood = ConditionalNormal(R1, R1)
-
-program = MonadicProgram(
-    R1,
-    R1,
-    steps=[
-        Draw(names=("w",), morphism=prior_w),
-        Draw(names=("y",), morphism=likelihood, args=("w",)),
-    ],
-    return_vars=("y",),
-)
-
-# Observed data
-x_obs = torch.randn(100, 1)
-y_obs = 2.0 * x_obs + torch.randn(100, 1) * 0.1
-observations = {"y": y_obs}
-
-# Variational guide built against the unconditioned program
+x_obs = torch.linspace(-1.0, 1.0, 100)
+y_obs = 2.0 * x_obs + 0.1 * torch.randn(100)
+observations = {"predictor": x_obs, "y": y_obs}
+domain_input = torch.arange(100)
 guide = AutoNormalGuide(program, observed_names={"y"})
-elbo  = ELBO(num_particles=10)
-
-# Optimization
-optimizer = optim.Adam(
-    list(program.parameters()) + list(guide.parameters()),
-    lr=1e-2,
+optimizer = torch.optim.Adam(
+    list(program.parameters()) + list(guide.parameters()), lr=1e-2
 )
-svi = SVI(program, guide, optimizer, elbo)
+svi = SVI(program, guide, optimizer, ELBO(num_particles=5))
+for _ in range(500):
+    loss = svi.step(domain_input, observations)
 
-for epoch in range(100):
-    loss = svi.step(x_obs, observations)
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}: loss={loss:.4f}")
-
-# Posterior predictive on new data
-x_new = torch.linspace(-3, 3, 50).view(-1, 1)
-predictive = Predictive(model=program, posterior=guide, num_samples=500)
-samples = predictive(x_new)
-y_pred = samples["y"]
-
-# Summarize
-y_mean = y_pred.mean(dim=0)
-y_std = y_pred.std(dim=0)
-
-print(f"Posterior mean of w: {y_mean[0, 0]:.2f} +/- {y_std[0, 0]:.2f}")
+# Summarize the slope site itself, not the returned response.
+w_draws = torch.stack([guide.rsample(domain_input)["w"] for _ in range(500)])
+print(w_draws.mean(), w_draws.quantile(0.025), w_draws.quantile(0.975))
 ```
+
+`predictor` supplies known inputs; `y` supplies observed responses. Only `w`
+is an unobserved sample site here. The intervals summarize the fitted guide,
+so inspect fit quality before interpreting them as posterior uncertainty.
 
 ## Custom guides
 
@@ -353,14 +400,13 @@ class MyGuide(Guide):
         raise NotImplementedError()
 ```
 
+## Further reading
 
-## References
-
-- Conor Durkan, Artur Bekasov, Iain Murray, and George Papamakarios. 2019. Neural spline flows. arXiv preprint arXiv:1906.04032.
-- Geoffrey Roeder, Yuhuai Wu, and David Duvenaud. 2017. Sticking the landing: Simple, lower-variance gradient estimators for variational inference. arXiv preprint arXiv:1703.09194.
-- George Tucker, Dieterich Lawson, Shixiang Gu, and Chris J. Maddison. 2018. Doubly reparameterized gradient estimators for Monte Carlo objectives. arXiv preprint arXiv:1810.04152.
-- Kamélia Daudel, Joe Benton, Yuyang Shi, and Arnaud Doucet. 2022. Alpha-divergence variational inference meets importance weighted auto-encoders: Methodology and asymptotics. arXiv preprint arXiv:2210.06226.
-- Adji B. Dieng, Dustin Tran, Rajesh Ranganath, John Paisley, and David M. Blei. 2016. Variational inference via chi upper bound minimization. arXiv preprint arXiv:1611.00328.
-- Jörg Bornschein and Yoshua Bengio. 2014. Reweighted wake-sleep. arXiv preprint arXiv:1406.2751.
-- Yingzhen Li and Richard E. Turner. 2016. Rényi divergence variational inference. arXiv preprint arXiv:1602.02311.
-- Yuri Burda, Roger Grosse, and Ruslan Salakhutdinov. 2015. Importance weighted autoencoders. arXiv preprint arXiv:1509.00519.
+- [@durkan2019splines]
+- [@roeder2017sticking]
+- [@tucker2019dreg]
+- [@daudel2023vriwae]
+- [@dieng2017chi]
+- [@bornschein2015rws]
+- [@li2016renyi]
+- [@burda2016iwae]

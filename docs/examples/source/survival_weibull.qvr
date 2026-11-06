@@ -14,7 +14,7 @@
 #   k       ~ Gamma(2, 1)                         Weibull shape
 #   t_i     ~ Weibull(exp(-(alpha + beta * x_i) / k), k)
 #
-# The scale reparameterisation exp(-eta / k) is the Weibull
+# The scale reparameterization exp(-eta / k) is the Weibull
 # proportional-hazards convention so that increasing eta
 # increases the hazard. The model produces uncensored event
 # times; right-censoring is handled at the inference layer by

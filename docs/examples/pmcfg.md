@@ -104,9 +104,9 @@ deduction PMCFG : Term -> Term [semiring=LogProb, start=NP, depth=4]
 
 ## Overview
 
-A Probabilistic Multiple Context-Free Grammar (PMCFG) is a Multiple Context-Free Grammar (MCFG; Seki, Matsumura, Fujii, Kasami 1991) with a probability (or, more generally, a semiring weight) attached to every production. PMCFG is to MCFG what PCFG is to CFG: the same rule set, decorated with learnable weights, fitted to data via the chart's inside marginal $\log Z(s) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$.
+A Probabilistic Multiple Context-Free Grammar (PMCFG) is a Multiple Context-Free Grammar (MCFG) [@seki1991mcfg] with a probability (or, more generally, a semiring weight) attached to every production. PMCFG is to MCFG what PCFG is to CFG: the same rule set, decorated with learnable weights, fitted to data via the chart's inside marginal $\log Z(s) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$.
 
-The defining feature of MCFG, and thus PMCFG, is that each non-terminal $A$ has a fixed rank $k(A) \ge 1$ and generates *tuples of strings*, not just single strings. A production rewrites a non-terminal as a linear combination of its premises' tuple components. The rank-1 case is CFG; ranks $\ge 2$ provide a direct representation of discontinuous constituents.
+The defining feature of MCFG, and thus PMCFG, is that each non-terminal $A$ has a fixed rank $k(A) \ge 1$ and generates a *tuple of strings* with $k(A)$ components. A production rewrites a non-terminal as a linear combination of its premises' tuple components. The rank-1 case is CFG; ranks $\ge 2$ provide a direct representation of discontinuous constituents.
 
 This example uses MCFG to model English **WH-movement in relative clauses**, a textbook motivation for the formalism. In a noun phrase like
 
@@ -114,9 +114,22 @@ This example uses MCFG to model English **WH-movement in relative clauses**, a t
 
 the relative pronoun *who* appears at the left edge of the embedded clause, but its grammatical role is the *object* of *saw*. A CFG can generate the surface string, but a flat single-yield non-terminal does not directly represent the two separated pieces of the gapped constituent. MCFG represents that structure with a **rank-2 non-terminal** whose components straddle the gap site.
 
+## Understanding the model
+
+A [context-free chart item](pcfg.md#understanding-the-model) normally covers one continuous interval. An MCFG
+item can hold several intervals that belong to one constituent with a gap.
+For `Mary saw _`, the two pieces lie before and after the missing object;
+a relative-clause rule can combine those pieces with `who` while preserving
+their required order.
+
+Rank counts the pieces belonging to one constituent. A rank-2 item thus
+stores two spans, even if a rule producing it has three premises. The weighted
+chart adds log weights along each derivation and uses [log-sum-exp](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) to combine
+alternative derivations of the same item.
+
 ## Walkthrough
 
-`object Term : FinSet 16` indexes the deduction's domain and codomain, and `object Rule : FinSet 16` indexes the rule-weight vector that the `pmcfg_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. Neither `FinSet` names a value type: it names an axis, and the values live in whatever family the site is drawn from. The program's codomain is `object Weight : Real 1`, the value space of the single real number one weight is, not the index that enumerates the rules. Exponentiating a weight gives that rule's firing rate, so the `rule_counts` plate over `Rule` observes one Poisson count per rule.
+`object Term : FinSet 16` indexes the deduction's domain and codomain, and `object Rule : FinSet 16` indexes the rule-weight vector that the `pmcfg_prior` program draws from an independent `Normal(0.0, 1.0)` per coordinate. The `Normal` family makes each coordinate of the indexed weight vector real-valued. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
 
 `sg(I1, J1, I2, J2)` is the rank-2 item for an *S with an NP gap*. Its first yield component spans `[I1, J1)` (the prefix before the gap) and its second component spans `[I2, J2)` (the suffix after the gap). For the input `[the, man, who, Mary, saw]` parsed as `the man who Mary saw`, the gapped clause is `Mary saw _` with the gap at the very end, giving
 
@@ -226,6 +239,6 @@ print("divergences:", int(result.divergence_counts.sum()))
 
 ## Categorical perspective
 
-An MCFG production with $k$-component non-terminals is a hyperedge in a multi-coloured directed hypergraph whose nodes are tuple-positioned chart items. The chart's least pre-fixed point on the LogProb-enriched lattice is the sum over every derivation (Goodman 1999); each derivation contributes the product of the log-weights of its rule firings, lifted through the bindings-keyed parameter dictionary. The PMCFG inside algorithm is the agenda-driven evaluation of that fixed point; WH-movement is recovered as the linear yield function that interleaves a filler with the components of a higher-rank non-terminal.
+An MCFG production with $k$-component non-terminals is a hyperedge in a multi-colored directed hypergraph whose nodes are tuple-positioned chart items. When the derivation sum converges and the evaluation computes it correctly, the chart represents the total weight of derivations [@goodman1999semiring]; each derivation contributes the sum of the log-weights of its rule firings, lifted through the bindings-keyed parameter dictionary. The PMCFG inside algorithm is the agenda-driven evaluation of that fixed point; WH-movement is recovered as the linear yield function that interleaves a filler with the components of a higher-rank non-terminal.
 
 The framework imposes no built-in commitment to rank-1 (CFG) items. Higher-rank PMCFG, MCFG, LCFRS, and PLCFRS all share the same chart implementation: only the rule patterns and their conclusion arities change.

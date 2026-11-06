@@ -4,6 +4,23 @@ Four categorical constructs appear directly in QVR's type system: *objects*, *mo
 
 This is optional reading. Skip it if the DSL is doing what you need.
 
+## Begin with composable tables
+
+Consider a table from people to activities and a table from activities to
+outcomes. To find how a person relates to an outcome, inspect all routes
+through an intermediate activity. The common activity set tells us which
+entries connect. In `A -> B -> C`, both tables must use that same activity
+set `B`; matching the number of rows and columns alone would also permit
+accidentally connecting activities to an unrelated set of the same size.
+
+The arithmetic determines the question being asked. [Boolean AND/OR](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) asks
+whether any route exists. Multiply/sum combines probabilities over mutually
+exclusive intermediate choices. Add/min finds the cheapest route from costs.
+The shared pattern is composition through an intermediate object; the algebra
+supplies its interpretation. A category additionally requires identity and
+associativity laws. Check those laws for the chosen operations before using
+identity insertion or reassociation to simplify a computation.
+
 ## Why have types and algebras at all?
 
 A typed signature like `program f : A -> B` exists so the compiler can reject programs that don't make sense before they hit a tensor. Two examples:
@@ -31,11 +48,11 @@ Without the effect and algebra tags, the same programs would either run and sile
 
 ## The setting in one paragraph
 
-A QVR program denotes a morphism in a [$\mathcal{V}$-enriched category](https://ncatlab.org/nlab/show/enriched+category) in the sense of [Kelly (1982)](http://www.tac.mta.ca/tac/reprints/articles/10/tr10abs.html). *Enriched* means the hom-sets aren't sets, they're objects of a fixed algebra $\mathcal{V}$ called the *enrichment* or *base*. For QVR's category $\mathcal{V}\text{-}\mathbf{Rel}$ of $\mathcal{V}$-valued relations on finite sets, a morphism `f : A -> B` is concretely a tensor of shape `(|A|, |B|)` whose entries live in $\mathcal{V}$. The choice of $\mathcal{V}$ determines what those entries mean: probabilities, log-probabilities, real numbers, fuzzy truth values, Booleans, etc. Composition `f >> g` is parameterized by $\mathcal{V}$ via two operations: a binary tensor product (`a ⊗ b`) that combines entries pointwise, and a join (`⋁_i x_i`) that aggregates over the shared dimension. Different choices of $(\otimes, \bigvee)$ give different composition semantics.
+A QVR program denotes a morphism in a [$\mathcal{V}$-enriched category](https://ncatlab.org/nlab/show/enriched+category) in the sense developed by Kelly [@kelly1982basic]. *Enriched* means the hom-sets aren't sets, they're objects of a fixed algebra $\mathcal{V}$ called the *enrichment* or *base*. For QVR's category $\mathcal{V}\text{-}\mathbf{Rel}$ of $\mathcal{V}$-valued relations on finite sets, a morphism `f : A -> B` is concretely a tensor of shape `(|A|, |B|)` whose entries live in $\mathcal{V}$. The choice of $\mathcal{V}$ determines what those entries mean: probabilities, log-probabilities, real numbers, fuzzy truth values, Booleans, etc. Composition `f >> g` is parameterized by $\mathcal{V}$ via two operations: a binary tensor product (`a ⊗ b`) that combines entries pointwise, and a join (`⋁_i x_i`) that aggregates over the shared dimension. Different choices of $(\otimes, \bigvee)$ give different composition semantics.
 
 ## Algebras: the enrichment algebra
 
-Quivers' [`Algebra`](../../api/core/algebras.md) interface supplies tensor, reduction, unit, zero, meet, and negation operations. Some instances admit additional lattice or quantale interpretations, but the implementation does not establish those laws for every entry below.
+Quivers' [`Algebra`](../../api/core/algebras.md) interface supplies tensor, reduction, unit, zero, meet, and negation operations. The entries below provide different subsets of the lattice or quantale laws; consult the stated assumptions when choosing an interpretation.
 
 | Name | $\otimes$ | $\bigvee$ | Identity | Reading |
 |---|---|---|---|---|
@@ -74,6 +91,13 @@ The two composition operators both defer to the operands' own algebra, fixed by 
 | `<<` | The same composite written right to left: `g << f` is `f >> g` |
 
 So `f >> g` composes in whatever enrichment both operands carry, and errors on a mismatch. There is no operator that silently pins a different enrichment; to cross enrichments, you [`change_base`](../../api/core/morphisms.md) one operand into the other's algebra before composing.
+
+For the probability reading, let the two intermediate choices have weights
+`0.25` and `0.75`, with onward probabilities `0.8` and `0.6`. The composite
+entry is `0.25 * 0.8 + 0.75 * 0.6 = 0.65`. A fuzzy interpretation would use
+its own reduction on the route contributions `0.2` and `0.45`; noisy-OR gives
+`1 - (1 - 0.2) * (1 - 0.45) = 0.56`. The type checker prevents silently
+mixing these two interpretations in one composition.
 
 ## Change of base
 
@@ -145,6 +169,6 @@ generated computation graphs, and release checks. Suggested next stops:
 - The [inference benchmark report](../../developer/inference-benchmarks.md) for the empirical truth-table of which algorithm fits which problem.
 
 
-## References
+## Sources and further reading
 
-- Michèle Giry. 1982. A categorical approach to probability theory. In Bernhard Banaschewski, editor, *Categorical Aspects of Topology and Analysis*, volume 915 of *Lecture Notes in Mathematics*, pages 68–85. Springer, Berlin, Heidelberg.
+- *A categorical approach to probability theory* [@giry1982categorical].
