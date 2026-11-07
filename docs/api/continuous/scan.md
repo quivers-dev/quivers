@@ -1,12 +1,9 @@
 # Scan Morphism
 
-A scan carries a state from one sequence step to the next. For a time series, the
+A [scan carries a state](../../reference/qvr/probabilistic-programs.md#scans) from one sequence step to the next. For a [time series](../../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation), the
 transition draws the next state conditional on the previous one. The sampling interface
 returns the final state. Scoring a supplied trajectory evaluates its joint density;
 obtaining the final state’s marginal density requires integrating over earlier states.
-
-See [scan syntax and state passing](../../reference/qvr/probabilistic-programs.md#scans) and
-[a temporal scan example](../../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation).
 
 `ScanMorphism(cell)` realizes the iterated Kleisli composition of a
 per-step cell over a sequence. `ScanMorphism.rsample(x)` applies the

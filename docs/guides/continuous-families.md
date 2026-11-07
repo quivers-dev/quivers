@@ -23,7 +23,6 @@ Normal parameters, including a learned mean `mu(x)`. To specify a mean
 exactly, write QVR `Normal(loc=mu, scale=sigma)`: the runtime uses the
 values of `mu` and `sigma` supplied at that point in the program.
 
-
 ### Hand-written core families
 
 ```python
@@ -142,14 +141,13 @@ from quivers.continuous.families import (
 
 ## Event rank and axis-role syntax
 
-Pyro’s [examples of distribution shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) compare scalar batches with vector events and show which axes `log_prob` removes. [@pyroTensorShapes] The QVR [axis-role clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) specifies these roles in source.
-
-Three axes can appear in a sampled tensor. A **sample axis** counts repeated
+[Three axes can appear in a sampled tensor](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) [@pyroTensorShapes]. A **sample axis** counts repeated
 Monte Carlo draws. A **batch axis** counts separate distribution instances.
 An **event axis** holds components scored jointly as one outcome. In the
 example above, `(100, 8, 3)` means 100 draws for eight inputs with three
 output coordinates; `log_prob` reduces the output coordinates and retains
-one score per input.
+one score per input. The [axis-role clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over)
+assigns these roles to named QVR axes.
 
 Event *rank* is the number of event axes, not their length. A
 100-dimensional multivariate Normal has event rank one; a matrix-valued
@@ -157,7 +155,6 @@ family has rank two. Scalar Normal draws across three coordinates can be
 independent even when stored together, whereas a multivariate Normal can
 correlate those coordinates. The `over` and `iid_over` declarations make
 that modeling choice visible.
-
 
 `event_rank` per family controls the
 [axis-role syntax](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over):
@@ -187,7 +184,6 @@ related. A matrix-Normal separates those patterns into two covariance
 matrices. This reduces parameters but also restricts the correlations
 available; it is not equivalent to an arbitrary covariance over every
 flattened entry.
-
 
 ```python
 from quivers.continuous.families import ConditionalMatrixNormal
@@ -240,7 +236,6 @@ a valid matrix and compute with it efficiently. Modeling a factor avoids
 proposing an arbitrary array that might fail to be a correlation matrix;
 separate scale parameters can then supply marginal variability.
 
-
 ```python
 from quivers.continuous.families import ConditionalLKJCholesky
 from quivers.continuous.spaces import Euclidean
@@ -285,7 +280,6 @@ strongly correlated values; the length scale controls how quickly this
 relationship decays. One draw is a collection of function values, not a
 separate unrelated regression coefficient at every location.
 
-
 A [Gaussian
 process](https://en.wikipedia.org/wiki/Gaussian_process) on
 $\mathbb{R}^D$ is a Markov kernel $X^N \to \mathcal{G}(\mathbb{R}^N)$
@@ -327,7 +321,6 @@ some large effects. In the hierarchy below, the global scale `tau` controls
 overall shrinkage, while each local scale `lambda_d` can let its coefficient
 escape that shrinkage. The heavy tails of the scale priors distinguish this
 behavior from choosing a small Normal variance for every coefficient.
-
 
 The horseshoe prior [@carvalho2010horseshoe] is a
 sparse-signal prior whose hierarchical form is

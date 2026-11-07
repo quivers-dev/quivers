@@ -1,12 +1,9 @@
 # Rule Systems
 
-A rule specifies how recognized constituents combine into another constituent. Rule
+A [rule specifies how recognized constituents combine](../../semantics/schemas.md#5-rule-declarations) into another constituent. Rule
 indices record the allowed combinations, and optional weights score their applications.
-Merging systems makes their rules jointly available. A probabilistic grammar
+Merging systems makes their rules jointly available. A [probabilistic grammar](../../examples/schema-chart-parser.md)
 additionally requires the appropriate normalization of its rule weights.
-
-See [declaring combinatory rules](../../semantics/schemas.md#5-rule-declarations) and
-[a parser built from schemas](../../examples/schema-chart-parser.md).
 
 Composable structural rule systems for chart parsing. A `RuleSystem`
 stores binary and unary inference rules as index tensors. The `+`

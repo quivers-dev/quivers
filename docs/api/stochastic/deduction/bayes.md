@@ -1,12 +1,9 @@
 # Bayesian Wrap
 
-Bayesian lifting assigns priors to rule weights and exposes chart scores to an inference
-program. The target combines the prior with those scores. A posterior exists when the
+[Bayesian lifting](../../../semantics/programs.md#7-bayesian-lifts) assigns priors to rule weights and exposes chart scores to an [inference
+program](../../../guides/inference-svi.md#guides-variational-families). The target combines the prior with those scores. A posterior exists when the
 resulting measure has finite, positive total mass; this condition depends on the chosen
 priors and scoring model.
-
-See [Bayesian parameter lifting](../../../semantics/programs.md#7-bayesian-lifts) and
-[choosing an approximation to the resulting posterior](../../../guides/inference-svi.md#guides-variational-families).
 
 `nuts_program_from_deduction` lifts a deduction's learnable log weights
 into a `MonadicProgram` with joint log density

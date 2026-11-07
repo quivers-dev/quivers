@@ -144,12 +144,10 @@ sourcing $(\otimes, \bigoplus)$ from the module's declared algebra. The reverse 
 
 ### 2.9 Compact-closed structure
 
-The [trace guide](../guides/categorical.md#traced-monoidal-structure) labels the input and output axes of a contraction. For the surrounding tensor structure, Milewski’s [“Monoidal Category” section](https://bartoszmilewski.com/2017/05/13/enriched-categories/) explains associators, unitors, and symmetry [@milewski2017enriched].
-
 These operations contract matching wires; `scan` steps through
 time. A cup introduces a pair constrained to agree; a cap tests that a pair
-agrees. A trace connects a designated output wire back to a matching input
-wire and reduces over the shared value. For a finite table this is a
+agrees. A [trace](../guides/categorical.md#traced-monoidal-structure) connects a designated
+output wire back to a matching input wire and reduces over the shared value. For a finite table this is a
 specified diagonal contraction. It is distinct from an execution trace,
 which records sampled values, and from `scan`, which iterates a recurrent
 cell over a sequence. The compact-closed equations require the hypotheses
@@ -210,8 +208,6 @@ $$
 up to the canonical reassociation of $A \otimes (A \otimes X) \cong (A \otimes A) \otimes X$. This is the categorical trace [@joyal1996traced] instantiated at the compact-closed structure; the trace axioms (yanking, sliding, vanishing) follow from the snake equations.
 
 ### 2.10 Residuation witnesses
-
-[Residuation slashes](schemas.md#31-residuation-slashes) give the typing equations for these witnesses. Milewski’s [“Adjunctions and Hom-Sets” section](https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets) explains how one operation can have two equivalent descriptions as maps between hom-sets [@milewski2016adjunctions].
 
 For $f : X \otimes Y \to Z$ in $\mathcal{V}\text{-}\mathbf{Rel}$ where $Z$ is an object of a residuated universe ([Schemas §3.1](schemas.md#31-residuation-slashes)) and under QVR's biclosed slash convention (the lexical-left operand of each slash is the *result*),
 
@@ -428,6 +424,5 @@ These are standard symmetric monoidal equations. Under the compact closed hypoth
 The compiler evaluates the expression in its written association order. To justify a rewrite, apply the equations with the hypotheses stated above. [Correspondence and limitations](adequacy.md) describes the tests of these operations.
 
 ## References
-
 
 The categorical trace axioms are developed in [@joyal1996traced]. A categorical trace closes an input/output connection; an execution trace records events during a program run.

@@ -69,8 +69,12 @@ export gru_lm
 ## Understanding the model
 
 A gate near zero retains little of the term it multiplies; a gate near one
-retains almost all of it. In the update equation, a small `z` keeps the [previous hidden state](vanilla-rnn-lm.md#understanding-the-model), while a large `z` favors the new candidate. The reset gate `r`
-controls how much previous state informs that candidate. Olah’s [GRU diagram](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#variants-on-long-short-term-memory) illustrates how reset and update gates combine in a standard deterministic cell [@olah2015lstm].
+retains almost all of it. In the update equation, a small `z` keeps the
+[previous hidden state](vanilla-rnn-lm.md#understanding-the-model), while a
+large `z` favors the new candidate. The reset gate `r` controls how much
+previous state informs that candidate. In a [standard GRU cell](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#variants-on-long-short-term-memory),
+the candidate also depends on the current input through a learned
+transformation [@olah2015lstm].
 
 Here the gates and candidate are [random draws](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample), so two executions with the
 same inputs can have different hidden states. The categorical head converts
@@ -120,7 +124,6 @@ flowchart LR
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -226,11 +229,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The GRU cell is a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category; `scan(gru_cell)` is its iterated composition along the sequence. The Categorical head and `observe` step close the composite into the LM likelihood by accumulating per-batch categorical log-probabilities. [@giry1982categorical]
-
 
 ## Sources and further reading
 

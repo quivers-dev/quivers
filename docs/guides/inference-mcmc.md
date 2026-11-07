@@ -26,7 +26,6 @@ Successive draws within each chain remain correlated. The registry's unconstrain
 or bounded continuous latents; these gradient-based kernels do not
 automatically sample arbitrary discrete latent sites.
 
-
 Gradient-based MCMC is an alternative to fitting a variational family. The kernel runs on the registry's unconstrained vector;
 gradients flow through
 [`torch.autograd.grad`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad.html).
@@ -97,7 +96,6 @@ parameterization improves exploration.
 Hybrid methods use variational fitting to construct a proposal
 distribution or choose initial chain values, as specified below.
 
-
 ### AutoDAIS
 
 Differentiable annealed importance
@@ -147,15 +145,13 @@ svi_losses, result = sampler.run(model, x, observations)
 
 ## Predictive with MCMC
 
-Stan’s [posterior predictive simulation example](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#simulating-from-the-posterior-predictive-distribution) separates posterior parameter draws from replicated observations. [@stanPredictiveChecks] The [diagnostics guide](analysis-fitting-and-diagnostics.md#diagnostics-quiversdiagnostics) uses the replicated observations to check features of the fitted model.
-
 Posterior draws represent uncertainty about latent quantities. Predictive
-draws add the outcome noise: take a posterior latent draw, then generate
-a new response from its likelihood. Thus an interval for new observations
+draws add the outcome noise: [take a posterior latent draw, then generate
+a new response from its likelihood](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#simulating-from-the-posterior-predictive-distribution) [@stanPredictiveChecks]. Thus an interval for new observations
 includes both uncertainty about the latent mean and variability of the
 response around it. The same calculation uses draws from either an MCMC
-result or a variational guide.
-
+result or a variational guide. Comparing these replicated responses with
+the observations gives a [posterior predictive check](analysis-fitting-and-diagnostics.md#diagnostics-quiversdiagnostics).
 
 [`Predictive`](../api/inference/predictive.md) consumes either a
 [`Guide`](../api/inference/guide.md) or an

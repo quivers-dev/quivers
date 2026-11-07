@@ -37,8 +37,6 @@ account describes closure under the rules. The existence of such a fixed
 point, convergence to it, and independence from the processing order require
 hypotheses on the algebra, cycles, and evaluation strategy.
 
-See [Further reading](#further-reading) below.
-
 ## QVR syntax
 
 ```text

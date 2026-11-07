@@ -159,7 +159,16 @@ If R-hat is above 1.01 anywhere, give NUTS more warmup steps (`num_warmup=2000`)
 
 ### Centered or non-centered?
 
-A useful rule of thumb from Betancourt and Girolami [@betancourt2015hierarchical]: the centered parameterization is good when the data is informative about $\theta_j$ relative to the prior, that is when the per-group likelihood scale $\sigma_j$ is small relative to the population scale $\tau$. The non-centered parameterization is good in the opposite regime: weak per-group likelihoods, where the posterior pinches toward the prior funnel. Eight schools sits in the weak-likelihood regime ($\sigma_j$ ranges 9-18 against a prior $\tau$ in single digits), so a non-centered form is often useful. Compare divergences and effective sample sizes under both parameterizations for the data you use. Stan’s [hierarchical reparameterization discussion](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html#hierarchical-models-and-the-non-centered-parameterization) follows the same choice from centered parameters to standard Normal offsets [@stanEfficiency].
+The choice of [centered or non-centered parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html#hierarchical-models-and-the-non-centered-parameterization)
+depends partly on how much the data tell us about each group effect
+[@betancourt2015hierarchical; @stanEfficiency]. A centered form tends to work
+well when the per-group likelihood scale $\sigma_j$ is small relative to
+the population scale $\tau$. A non-centered form often helps with weak
+per-group likelihoods, where the posterior narrows sharply as $\tau$
+approaches zero. Eight schools has relatively weak group likelihoods:
+$\sigma_j$ ranges from 9 to 18, while the prior puts substantial mass on
+single-digit values of $\tau$. Compare divergences and effective sample
+sizes under both parameterizations for the data you use.
 
 ### Init strategy and mass matrix
 
@@ -196,7 +205,6 @@ print("predictive school 1:", y_hat[..., 0].mean().item(),
 
 [Chapter 4](04-marginalize.md) introduces the `marginalize` block, which gives
 discrete latents and mixtures a typed scope.
-
 
 ## Sources and further reading
 

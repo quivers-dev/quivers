@@ -64,9 +64,8 @@ sequencing, see [@wadler1992essence], and for its semantic formulation,
 
 ## 1. The Giry monad
 
-The primer introduces [pure, bind, and Kleisli composition](../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue) using distributions. Milewski’s [“The Kleisli Category” section](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/) derives the same sequencing pattern for functions that return a value together with a log [@milewski2016monads].
-
-The Giry monad packages two familiar operations on probability distributions.
+The Giry monad packages two familiar operations on probability distributions,
+[concentrating mass at a value and averaging distributions](../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue).
 First, a certain value $s$ can be treated as a distribution that puts all its
 mass at $s$; this is the Dirac distribution $\delta_s$, written as the unit
 $\eta(s)$. Second, a distribution over distributions can be averaged into
@@ -346,11 +345,9 @@ site. The result is `call to 'L' failed: ...` rather than a bare PyTorch trace.
 
 ### 2.4 Indexed Bind (Plate)
 
-Pyro’s [independent plate dimensions](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate) tutorial illustrates the conditional independence represented by a plate. QVR’s [plate and fibration typing rules](typing.md#32-plates-events-and-fibrations) additionally track the named axes.
-
-A plate repeats a draw over a named finite axis. If `Group` has eight
+A plate repeats a draw over a [named finite axis](typing.md#32-plates-events-and-fibrations). If `Group` has eight
 members, an indexed scalar Normal draw produces eight values, one per group.
-They are independent conditional on the parameters passed to the family.
+They are [independent conditional on the parameters passed to the family](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate).
 A shared random scale can still make the eight values dependent in the
 joint model: a large shared scale makes large magnitudes more likely in
 all eight draws. Conditioning on the scale removes that source of dependence.
@@ -398,10 +395,8 @@ The optional `via = idx` entry in the unified option block names a fibration int
 
 ### 2.6 Marginalize
 
-Stan’s [two-component mixture calculation](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) works through the weighted sum and its log-sum-exp implementation. Pyro’s [mechanics of enumeration](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) shows the alternatives represented along a tensor axis.
-
-Finite marginalization evaluates every possible value of a hidden choice
-and adds its weighted contribution. If $c\in\{0,1\}$ has prior weights
+Finite marginalization [evaluates every possible value of a hidden choice](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) [@pyroEnumeration]
+and [adds its weighted contribution](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) [@stanFiniteMixtures]. If $c\in\{0,1\}$ has prior weights
 $(0.3,0.7)$ and an observed event has likelihoods $(0.2,0.8)$ under those
 choices, its marginal likelihood is $0.3(0.2)+0.7(0.8)=0.62$.
 The log contribution is
@@ -448,9 +443,8 @@ likelihood factors must be combined before that sum.
 
 ### 2.7 Grouped marginalize with multi-observe fibration
 
-The [grouped transpilation contract](transpile-correctness/index.md#5-plates-marginalization-and-via) explains why rows sharing one latent must accumulate before that latent is summed out. Pyro’s [dependencies among plates](https://pyro.ai/examples/enumeration.html#Dependencies-among-plates) gives related examples of shared discrete choices.
-
-Grouping determines **which observations share a hidden choice**. Suppose
+Grouping determines [which observations share a hidden choice](https://pyro.ai/examples/enumeration.html#Dependencies-among-plates) [@pyroEnumeration].
+[Transpilation must preserve this grouping](transpile-correctness/index.md#5-plates-marginalization-and-via). Suppose
 three rows map to groups through `idx = [0, 0, 1]`. The first two rows share
 one latent class, while the third has its own group's class. For group zero,
 the required likelihood is
@@ -552,11 +546,10 @@ $$
 
 ### 2.10 Score (factor)
 
-WebPPL’s [`factor` definition](https://docs.webppl.org/en/master/inference/conditioning.html#factor) illustrates the direct addition of a score to an execution’s log weight. The [deduction-to-program example](grammar.md#9-chart-access-from-program-bodies) uses this operation to add a chart’s goal weight.
-
-A score is supplied on the log scale. Adding $w$ to the log joint multiplies
+A score is supplied on the log scale. [Adding $w$ to the log joint](https://docs.webppl.org/en/master/inference/conditioning.html#factor) multiplies
 the ordinary weight by $\exp(w)$; a score of zero leaves it unchanged.
-This permits factors that do not arrive through a named observation family.
+This permits factors that do not arrive through a named observation family,
+including [a chart’s goal weight](grammar.md#9-chart-access-from-program-bodies).
 It also means an arbitrary score need not define a normalized probability
 distribution, or even one with a finite normalizing integral.
 
@@ -671,7 +664,6 @@ $$
 $$
 
 a tuple of compiled morphisms / posteriors / deductions. The expression $E_i$ may be any value-level expression: a top-level morphism name, a program name, a deduction name, an encoder / decoder name, or a `define`-bound composite. The denotation of each export is the denotation of the underlying expression; `export` adds that value to the module output.
-
 
 ## 5. Algebraic laws and their scope
 
@@ -1013,6 +1005,5 @@ the grammar's parameterization determines whether that density has the
 normalized likelihood required by the intended Bayesian model.
 
 ## References
-
 
 For probability kernels and categorical composition, see [@giry1982categorical; @fritz2020synthetic]; for strong monads, see [@kock1972strong]. Reparameterization estimators are developed in [@kingma2014autoencoding]. For convergence conditions on stochastic updates, see [@robbins1951stochastic].

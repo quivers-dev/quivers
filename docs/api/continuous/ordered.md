@@ -1,14 +1,9 @@
 # Ordered and Zero-Inflated Families
 
-Ordered families model ranked outcomes, such as low, medium, and high, through
-thresholds on a predictor. The zero-inflated and hurdle families in this module model
-extra zero outcomes. Their parameters specify the probability of taking the zero branch
+[Ordered families](../../guides/analysis-data-and-formulas.md#ordinal-mixed-models-and-neural-predictors) model ranked outcomes, such as low, medium, and high, through
+thresholds on a predictor [@mccullagh1980regression]. The zero-inflated and hurdle families in this module model
+[extra zero outcomes](../../examples/zip-regression.md) [@mullahy1986specification; @mclachlan2000finite]. Their parameters specify the probability of taking the zero branch
 and the distribution used on the other branch.
-
-See [ordinal response models](../../guides/analysis-data-and-formulas.md#ordinal-mixed-models-and-neural-predictors) and
-[a regression with extra zeros](../../examples/zip-regression.md).
-
-For ordinal regression, see [@mccullagh1980regression]; for hurdle models and finite mixtures, see [@mullahy1986specification; @mclachlan2000finite].
 
 The stable computation of log probabilities uses the numerical methods
 explained in [@maechler2012log1mexp].

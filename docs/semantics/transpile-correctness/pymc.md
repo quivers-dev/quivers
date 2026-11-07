@@ -12,10 +12,8 @@ independence assumptions.
 
 ## Semantics
 
-PyMC’s [linear-regression model specification](https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html#model-specification) shows how priors, deterministic expressions, and observed variables enter a model context. The [first QVR model](../../tutorials/qvr/01-first-model.md#qvr-vs-pymc-vs-numpyro) presents the same regression in QVR, PyMC, and NumPyro.
-
-PyMC assembles a joint density from distributions and additional log-density
-factors, using the graphical-model perspective [@koller2009probabilistic].
+PyMC assembles a joint density from [distributions and additional log-density
+factors](https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html#model-specification), using the graphical-model perspective [@koller2009probabilistic].
 The implementation uses the
 [`pymc.Model`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html)
 context: each `pymc.<Distribution>(name, ..., dims=..., observed=...)`

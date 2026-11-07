@@ -81,9 +81,11 @@ before the output distribution predicts a token. This explains why both input
 columns are needed and why their types must match the two branch domains.
 
 The runnable input supplies aligned token pairs as batch rows. Each prediction
-thus conditions on that supplied pair and any hidden values fixed during
-scoring. Generating a target sequence would require an additional loop that
-feeds previous target tokens back into the decoder and chooses its source context. Alammar illustrates [the Transformer decoder’s access to source and target positions](https://jalammar.github.io/illustrated-transformer/#the-decoder-side) [@alammar2018transformer].
+conditions on that pair and any hidden values fixed during scoring.
+Generating a target sequence requires a loop that feeds previous target
+tokens back into the decoder. The decoder must also select information from
+the source; a [Transformer decoder](https://jalammar.github.io/illustrated-transformer/#the-decoder-side)
+does this with attention to the encoder's outputs [@alammar2018transformer].
 
 ## Walkthrough
 
@@ -123,7 +125,6 @@ flowchart LR
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 The program's domain is the product object `Source * Target`, so the runtime input is a `(batch, 2)` tensor whose two columns are the source and target token indices. The encoder reads the source column, the decoder reads the target column, and the model returns one predicted next-target-token per batch element. A pair of length-`L` source / target sequences becomes a `(L, 2)` batch by flattening the position axis into the batch dimension; a corpus of `B` such pairs becomes `(B * L, 2)`.
 
@@ -229,11 +230,9 @@ print("acceptance:", float(result.acceptance_rates.mean()))
 print("divergences:", int(result.divergence_counts.sum()))
 ```
 
-
 ## Categorical perspective
 
 The seq2seq model denotes a Kleisli morphism $\mathrm{Source} \times \mathrm{Target} \to \mathcal{G}(\mathrm{Target})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The encoder and decoder are independent Kleisli morphisms over distinct objects; the [tensor product](https://ncatlab.org/nlab/show/tensor+product) `@` is their strong-monoidal product, and `cross` is the merge that closes the bilinear pairing into a single combined latent. The Categorical head puts a finite-set codomain on the composite, and `observe` is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) closing the LM likelihood. [@giry1982categorical]
-
 
 ## Model reference
 

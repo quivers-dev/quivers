@@ -1,14 +1,9 @@
 # Deductive Systems, Rule Schemas, and Span Components
 
-A chart parser stores partial conclusions and combines them using inference rules. For
+A [chart parser](../../examples/schema-chart-parser.md) stores partial conclusions and combines them using [inference rules](../../semantics/schemas.md#6-schema-declarations). For
 instance, an expression needing a noun phrase can combine with a noun phrase to produce
-a sentence. The interfaces below separate initial facts, inference steps, goals, and
-scheduling; the weights determine what is accumulated across derivations.
-
-See [rule schemas and their variables](../../semantics/schemas.md#6-schema-declarations) and
-[a parser built from schemas](../../examples/schema-chart-parser.md).
-
-For the grammatical motivation, see [@lambek1958mathematics]; for weighted deduction, see [@goodman1999semiring].
+a sentence [@lambek1958mathematics]. The interfaces below separate initial facts, inference steps, goals, and
+scheduling; the weights determine what is accumulated across derivations [@goodman1999semiring].
 
 The abstract framework for weighted deductive parsing, organized into three layers:
 
@@ -25,7 +20,8 @@ package are instances of this framework.
 - **`Schedule`:** Evaluation strategy (CKY bottom-up, Earley, agenda-based).
 - **`DeductiveSystem`:** Ties axiom, deductions, goal, schedule, and semiring into a single `nn.Module`.
 
-For the full surface, see [`api/stochastic/deduction`](deduction.md). The primitives themselves are documented at [`api/stochastic/deduction/primitives`](deduction/primitives.md).
+The [deduction package](deduction.md) exposes these [primitives](deduction/primitives.md)
+alongside fitting and sampling operations.
 
 ## Rule Schemas
 

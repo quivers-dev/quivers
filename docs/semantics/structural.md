@@ -142,12 +142,10 @@ minting the bound variable's embedding from the embedding of its annotation. Una
 
 ### 2.2 Denotation: structural recursion
 
-Milewski’s [“Catamorphisms” section](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Catamorphisms) derives a fold from an initial algebra [@milewski2017falgebras]. The [encoder-block example](../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) chooses the local functions whose recursive extension appears below.
-
 The equations below follow four cases of the tree. A data leaf is embedded;
 a variable retrieves its context vector; a constructor combines its encoded
 children; and a binder extends the context for its scoped children. Once
-these local functions are fixed, recursion determines the encoder on every
+these [local functions](../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) are fixed, recursion determines the encoder on every
 finite well-formed term. Changing a local function or its learned parameters
 changes the induced map; fixing them determines it uniquely.
 
@@ -349,6 +347,5 @@ Loss bodies are arbitrary let-expressions over the trace; canonical shapes inclu
 The inference driver passes the total loss to the optimizer. Attached losses are evaluated on the program's execution trace and guide parameter updates. The program's semantic clauses specify its kernel or weighted measure at fixed parameter values. See [Programs §6](programs.md#6-inference-and-conditioning) for the role of conditioning and the inference layer.
 
 ## 5. References
-
 
 For the fixed-point property of initial algebras, see [@lambek1968fixpoint]. For graph-network components and their permutation properties, see the author preprint [@battaglia2018relational].

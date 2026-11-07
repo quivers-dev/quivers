@@ -36,13 +36,13 @@ associated with increasing the predictor by one; the noise scale describes
 variation around that line. The data do not determine these quantities exactly.
 We thus describe uncertainty over them with distributions.
 
-A *[prior](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise)* describes plausible parameter values before seeing these responses.
-The *likelihood* scores the observed responses for a proposed set of values.
-The *posterior* combines the two, assigning more mass to parameter values that
-explain the data while respecting the prior. A `sample` line specifies part of
-this generative model; the fitting algorithm later approximates its posterior.
-The [conceptual introduction](../../getting-started/concepts.md) works through
-a finite version of the same update. Pyro’s [introduction to probabilistic models](https://pyro.ai/examples/intro_long.html#Background:-probabilistic-models) develops the generative view using a regression example [@pyroIntroduction].
+A *[prior](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise)*
+describes plausible parameter values before seeing these responses. The
+*likelihood* scores the responses for a proposed set of values. The
+*posterior* combines the two, assigning more mass to parameter values that
+explain the data while respecting the prior. A `sample` line specifies part
+of this [generative model](https://pyro.ai/examples/intro_long.html#Background:-probabilistic-models)
+[@pyroIntroduction]; the fitting algorithm approximates its posterior.
 
 ## The model
 
@@ -235,7 +235,6 @@ Three things:
 ## Next
 
 [Chapter 2](02-glms.md) lifts this model to a generalized linear model: logistic and Poisson regression, with link functions and posterior-predictive calibration plots.
-
 
 ## Sources and further reading
 

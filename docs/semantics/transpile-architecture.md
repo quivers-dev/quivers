@@ -130,14 +130,12 @@ executable term as ignorable metadata.
 
 ### 2.2 `Plate`: event versus batch axes
 
-The TensorFlow Probability tutorial’s [scalar log-probability examples](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#computing_log_prob_for_scalar_distributions) and [multivariate examples](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#multivariate_distributions) show which axes remain after scoring. QVR records these roles in its [axis specifications](morphisms.md#6-axis-role-specifications).
-
-Ten three-dimensional multivariate Normal draws have batch size ten and
-event size three. A target can express them as a vectorized distribution or
+Ten three-dimensional multivariate Normal draws have [batch size ten and
+event size three](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#multivariate_distributions). A target can express them as a vectorized distribution or
 ten loop iterations, but must preserve the joint three-coordinate event
 inside each draw. With non-diagonal covariance, the score includes cross
 terms relating coordinates; three independent scalar scores would omit
-those terms. The two fields below record the event dimensions and the batch dimensions.
+those terms. The two fields below record the [event dimensions and the batch dimensions](morphisms.md#6-axis-role-specifications).
 
 A draw's plate annotation decomposes into the event axes (the
 family's joint structure) and the batch axes (replication).
@@ -625,7 +623,6 @@ program lda(alpha : Real, beta : Real) : Word -> Word
         observe w : Word <- Categorical(probs=phi[z]) [via=word_idx]
     return theta
 ```
-
 
 After `Lower`, the IR carries:
 

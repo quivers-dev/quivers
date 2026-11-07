@@ -7,7 +7,6 @@ mean and how to combine them. This guide builds those ingredients in that
 order. The [concepts introduction](../getting-started/concepts.md) connects
 them to probabilistic programs.
 
-
 ## Objects: Finite Sets
 
 The finite tensor layer uses named finite sets to label tensor axes. Continuous
@@ -27,7 +26,6 @@ SetObject (abstract)
 A finite set specifies how many distinct possibilities an axis has.
 `FinSet("phoneme", 40)` labels forty choices. An index from `0` through
 `39` selects one of them; a tensor axis stores a value for each choice.
-
 
 A `FinSet` is the most basic object:
 
@@ -54,10 +52,7 @@ pairs. `X + Y` has seven alternatives: a color tagged as a color or a shape
 tagged as a shape. The tag prevents two equal-looking component values from
 being confused.
 
-Milewski’s [products and coproducts chapter](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/), especially its sections on product and sum types, develops these constructions from pairs and tagged alternatives. [@milewski2015products] The [monoidal structures guide](categorical.md#monoidal-structures) explains how maps act on these combined objects.
-
-
-Products and coproducts are formed with the `*` and `+` operators, which automatically flatten nesting:
+[Products and coproducts](categorical.md#monoidal-structures) are formed with the `*` and `+` operators, which automatically flatten nesting:
 
 ```python
 X = FinSet(name="X", cardinality=3)
@@ -82,7 +77,6 @@ empty word changes nothing. The class stores only words up to `max_length`,
 so concatenating two stored words can exceed the bound. The associated
 [monad interface](monadic.md) drops results longer than `max_length`.
 
-
 A free monoid on a generator set $G$ (truncated by length) represents all strings of length 0 through $n$:
 
 ```python
@@ -101,8 +95,6 @@ word = FM.decode(idx)          # back to tuple
 
 ## Algebras: Enrichment Algebras
 
-For enriched categories and their algebraic assumptions, see [@kelly1982basic].
-
 Suppose a route from `a` to `c` passes through an intermediate `b`. There are
 two questions: how should the scores on successive links combine, and how
 should we combine alternative routes? `tensor_op` answers the first; `join`
@@ -110,8 +102,7 @@ answers the second. Boolean relations use AND then OR; shortest paths use
 addition then minimum; probability kernels use multiplication then sum.
 The wiring is the same, but the meaning of a resulting number changes.
 
-
-An [`Algebra`](../api/core/algebras.md) $(\mathcal{L}, \otimes, \bigvee, \bigwedge, \neg, I, \perp)$ specifies allowed entry values and operations for combining them. It defines the structure in which morphism values live and how morphisms compose. A quantale requires a complete lattice and an associative multiplication that preserves arbitrary joins in each argument. Ordinary sum-product and log-sum-exp aggregation are not lattice joins, though distributivity can still support associative matrix composition. See [Algebras §2](../semantics/algebras.md#2-algebraic-scope) for the assumptions each case needs.
+An [`Algebra`](../api/core/algebras.md) $(\mathcal{L}, \otimes, \bigvee, \bigwedge, \neg, I, \perp)$ specifies allowed entry values and operations for combining them. It defines the structure in which morphism values live and how morphisms compose. A [quantale](../semantics/algebras.md#2-algebraic-scope) requires a complete lattice and an associative multiplication that preserves arbitrary joins in each argument [@kelly1982basic]. Ordinary sum-product and log-sum-exp aggregation are not lattice joins, though distributivity can still support associative matrix composition.
 
 The six primitive operations:
 
@@ -204,7 +195,6 @@ Here a smaller number is a better route. If two routes cost `2 + 5 = 7` and
 `4 + 1 = 5`, composition returns `5`. The no-route value must be infinity,
 while a link that changes nothing costs zero. This explains why this
 algebra's identity differs from an ordinary matrix identity.
-
 
 The tropical semiring enrichment for generalized metric spaces:
 

@@ -1,172 +1,6 @@
 {
-  "checked": "2026-11-06",
+  "checked": "2026-11-07",
   "destinations": [
-    {
-      "url": "https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/core/morphisms.md",
-        "docs/getting-started/quickstart.md",
-        "docs/tutorials/python/01-first-quiver.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2014/12/23/kleisli-categories/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/monadic/bridges.md",
-        "docs/api/stochastic/giry.md",
-        "docs/tutorials/python/03-probabilistic-programs.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/01/07/products-and-coproducts/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/categorical/monoidal.md",
-        "docs/api/core/objects.md",
-        "docs/getting-started/concepts.md",
-        "docs/guides/core.md",
-        "docs/semantics/types-and-spaces.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/01/20/functors/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/monadic/typeclasses.md",
-        "docs/semantics/algebras.md",
-        "docs/semantics/composition-rules.md",
-        "docs/semantics/effects.md",
-        "docs/semantics/index.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/01/20/functors/#:~:text=Functors%20in%20Programming",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/guides/categorical.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/01/20/functors/#:~:text=The%20List%20Functor",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/api/categorical/functors.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/04/07/natural-transformations/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/categorical/natural_transformations.md",
-        "docs/guides/categorical.md",
-        "docs/semantics/morphisms.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/07/21/free-monoids/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/monadic/algebras.md",
-        "docs/semantics/types-and-spaces.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/enriched/yoneda.md",
-        "docs/guides/enriched.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/api/categorical/adjunctions.md",
-        "docs/guides/categorical.md",
-        "docs/semantics/expressions.md",
-        "docs/semantics/schemas.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/monadic/laws.md",
-        "docs/api/monadic/monads.md",
-        "docs/api/monadic/typeclasses.md",
-        "docs/guides/monadic.md",
-        "docs/semantics/effects.md",
-        "docs/semantics/programs.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/#:~:text=Fish%20Anatomy",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/getting-started/concepts.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2017/02/28/f-algebras/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/structural/signature.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Catamorphisms",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/api/structural/encoder.md",
-        "docs/semantics/effects.md",
-        "docs/semantics/structural.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Category%20of%20F-Algebras",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/guides/structural-compression-signatures-and-encoders.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Recursion",
-      "verification": "Verified exact heading text; browser text fragment",
-      "verified": true,
-      "pages": [
-        "docs/semantics/effects.md"
-      ]
-    },
-    {
-      "url": "https://bartoszmilewski.com/2017/05/13/enriched-categories/",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/api/core/algebras.md",
-        "docs/api/enriched/profunctors.md",
-        "docs/guides/enriched.md",
-        "docs/semantics/expressions.md",
-        "docs/semantics/setting.md"
-      ]
-    },
     {
       "url": "https://colah.github.io/posts/2015-08-Understanding-LSTMs/#recurrent-neural-networks",
       "verification": "Verified native HTML ID",
@@ -196,8 +30,7 @@
       "verification": "Verified native HTML ID",
       "verified": true,
       "pages": [
-        "docs/getting-started/concepts.md",
-        "docs/semantics/index.md"
+        "docs/getting-started/concepts.md"
       ]
     },
     {
@@ -228,20 +61,13 @@
       ]
     },
     {
-      "url": "https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html",
-      "verification": "Verified concept-specific article or chapter",
-      "verified": true,
-      "pages": [
-        "docs/tutorials/qvr/12-structural-autoencoders.md"
-      ]
-    },
-    {
       "url": "https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients",
       "verification": "Verified native HTML ID",
       "verified": true,
       "pages": [
         "docs/api/core/util.md",
-        "docs/tutorials/python/01-first-quiver.md"
+        "docs/tutorials/python/01-first-quiver.md",
+        "docs/tutorials/qvr/12-structural-autoencoders.md"
       ]
     },
     {
@@ -291,7 +117,6 @@
       "pages": [
         "docs/examples/mixture-model.md",
         "docs/semantics/programs.md",
-        "docs/semantics/transpile-correctness/index.md",
         "docs/tutorials/qvr/04-marginalize.md"
       ]
     },
@@ -445,19 +270,10 @@
       ]
     },
     {
-      "url": "https://pyro.ai/examples/effect_handlers.html#Implementing-new-effect-handlers-with-the-Messenger-API",
-      "verification": "Verified native HTML ID",
-      "verified": true,
-      "pages": [
-        "docs/reference/qvr/effects-and-handlers.md"
-      ]
-    },
-    {
       "url": "https://pyro.ai/examples/effect_handlers.html#Introduction",
       "verification": "Verified native HTML ID",
       "verified": true,
       "pages": [
-        "docs/semantics/effects.md",
         "docs/semantics/transpile-correctness/pyro.md",
         "docs/tutorials/python/09-debugging.md",
         "docs/tutorials/qvr/10-effects-and-handlers.md"
@@ -501,8 +317,7 @@
       "verification": "Verified native HTML ID",
       "verified": true,
       "pages": [
-        "docs/api/inference/svi.md",
-        "docs/guides/inference-svi.md"
+        "docs/api/inference/svi.md"
       ]
     },
     {
@@ -549,14 +364,6 @@
       ]
     },
     {
-      "url": "https://pyro.ai/examples/tensor_shapes.html#Examples",
-      "verification": "Verified native HTML ID",
-      "verified": true,
-      "pages": [
-        "docs/api/core/tensor_ops.md"
-      ]
-    },
-    {
       "url": "https://pyro.ai/examples/vae.html#VAE-in-Pyro",
       "verification": "Verified native HTML ID",
       "verified": true,
@@ -596,14 +403,6 @@
       "verified": true,
       "pages": [
         "docs/semantics/transpile-correctness/edward2.md"
-      ]
-    },
-    {
-      "url": "https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#computing_log_prob_for_scalar_distributions",
-      "verification": "Verified native HTML ID",
-      "verified": true,
-      "pages": [
-        "docs/semantics/transpile-architecture.md"
       ]
     },
     {

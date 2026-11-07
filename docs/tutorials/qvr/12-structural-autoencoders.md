@@ -17,8 +17,11 @@ original tree; sampling a decoded tree need not reproduce the original exactly.
 
 The checked computation records which encoder and decoder should be called
 and the types they accept. The runtime supplies their trained PyTorch modules.
-Preserving the returned tensor's [gradient history](../python/01-first-quiver.md#working-as-a-differentiable-module) is what lets a reconstruction
-error update both modules through the same entry point. The [PyTorch autograd walkthrough](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html) shows how a loss retains its computation graph and how `backward()` accumulates parameter gradients [@pytorchAutogradTutorial].
+The returned tensor retains its [gradient history](../python/01-first-quiver.md#working-as-a-differentiable-module),
+so [`.backward()`](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients)
+on the reconstruction loss accumulates gradients in both modules
+[@pytorchAutogradTutorial]. An optimizer can then update them through the
+same entry point.
 
 ## 1. Compile and inspect the entries
 

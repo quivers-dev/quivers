@@ -15,11 +15,10 @@ The third source of names is *[host data](../qvr/01-first-model.md#the-observati
 
 Consider `z` as a true temperature and `y` as a noisy measurement. First draw
 one temperature, then use that realized temperature as the mean of the
-measurement distribution. Sequencing passes a value forward, even though each
-step describes a distribution. The word *monadic* refers to the composition
-that makes this sequence possible. Milewski explains this pattern through
-[functions that return computations](https://bartoszmilewski.com/2014/12/23/kleisli-categories/) [@milewski2014kleisli]; Moggi develops
-the underlying semantics of computational effects [@moggi1991notions].
+measurement distribution. Each step describes a distribution; executing the
+step supplies a value to the next one. This form of sequencing is
+[monadic composition](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)
+[@moggi1991notions].
 
 A full trace contains both `z` and `y`, so its [joint density](05-variational-inference.md#tracing-the-model) is
 `p(z) * p(y | z)`. If you keep only `y`, scoring that output generally requires

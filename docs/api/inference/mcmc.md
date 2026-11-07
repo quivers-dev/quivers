@@ -1,15 +1,10 @@
 # MCMC
 
 Markov chain Monte Carlo (MCMC) generates correlated draws targeting a posterior.
-Hamiltonian Monte Carlo (HMC) uses gradients and simulated momentum; the No-U-Turn
-Sampler (NUTS) adapts the trajectory length. Warmup tunes the algorithm before draws are
-retained. Compare chains for unexplored regions and inspect effective sample sizes to
+[Hamiltonian Monte Carlo (HMC)](../../guides/inference-mcmc.md#mcmc-hmc-and-nuts) uses gradients and simulated momentum; the No-U-Turn
+Sampler (NUTS) adapts the trajectory length [@neal2011mcmc; @hoffman2014nuts]. Warmup tunes the algorithm before draws are
+retained. Compare chains for unexplored regions and inspect [effective sample sizes](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes) to
 assess the precision of posterior summaries.
-
-See [HMC, NUTS, and their settings](../../guides/inference-mcmc.md#mcmc-hmc-and-nuts) and
-[interpreting sampler diagnostics](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes).
-
-For HMC and NUTS, see [@neal2011mcmc; @hoffman2014nuts].
 
 The acceptance rate discussed below comes from an asymptotic analysis of
 high-dimensional product targets [@beskos2013optimal]. Its assumptions determine

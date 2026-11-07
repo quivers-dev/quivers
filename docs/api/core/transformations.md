@@ -1,14 +1,9 @@
 # Transformations
 
-Transformations change a table’s entries or their interpretation. A logarithm acts on
+[Transformations change a table’s entries or their interpretation](../../guides/transformations.md#first-class-transformations). A logarithm acts on
 each entry; softmax uses an entire row to produce normalized weights. The source and
 target algebras specify the available operations before and after conversion. Preserving
-composition imposes additional equations on the transformation.
-
-See [applying transformations](../../guides/transformations.md#first-class-transformations) and
-[a Bayesian inversion example](../../tutorials/python/06-first-class-trans.md#bayes-inversion).
-
-For change of enrichment and its preservation requirements, see [@kelly1982basic].
+composition imposes additional equations on the transformation [@kelly1982basic].
 
 Change-of-base transformations between algebras: pointwise algebra
 homomorphisms, shape-aware morphism transformations, and the sequences

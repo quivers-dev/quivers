@@ -20,7 +20,6 @@ Crossed effects mean that every response belongs to both a subject and a
 verb. The two index arrays select the relevant offsets for each row;
 adding them to an intercept forms the response's linear predictor.
 
-
 A [parametric
 program](dsl-programs-and-lets.md#parametric-programs) declares a
 reusable kernel template polymorphic over typed parameters
@@ -74,21 +73,18 @@ factors share *structure* but not *latents*.
 
 ## Grouped marginalization: fibred discrete latents
 
-Stan’s [vectorizing mixtures example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures) contrasts a separate mixture assignment per observation with one assignment shared by a collection. [@stanFiniteMixtures] That distinction determines where the sum over classes belongs in the grouped model below.
-
 Suppose two measurements belong to the same item, whose class is unknown.
 Conditional on class zero their likelihoods are `0.8` and `0.7`;
 conditional on class one they are `0.2` and `0.3`. With equal class
 probabilities the joint likelihood is
 `0.5 * (0.8 * 0.7) + 0.5 * (0.2 * 0.3) = 0.31`.
 Multiplying the two independently mixed likelihoods would instead give
-`0.25`, a different model with a separate class choice per measurement.
+`0.25`, a different model with [a separate class choice per measurement](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures) [@stanFiniteMixtures].
 
 The grouping map collects observations sharing a class draw. A *fiber* is the set of response
 rows mapped to one item. First combine their likelihoods conditional on
 one class, then sum over that shared class. The logarithms in the formula
 below turn products into sums and evaluate the final sum stably.
-
 
 A scoped `marginalize` block accepts an optional `over G` clause
 that declares a *grouping plate* `G`. Inside the body, every
@@ -153,7 +149,6 @@ A product grouping index retains both labels. The `via` arrays provide
 one coordinate per factor, and the implementation converts that tuple
 to one flat group index. The marginalization then collects the rows
 sharing that school–subject pair before summing over the class.
-
 
 Product fibrations are supported on each observe via
 `via product(idx_a, idx_b)`, paired with an `over G * H` product

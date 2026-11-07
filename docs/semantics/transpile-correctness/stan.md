@@ -26,13 +26,11 @@ Betancourt, Brubaker, Guo, Li, and Riddell
 
 ## Unconstrained-space change of variables
 
-Stan’s [worked change-of-variables section](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) derives the Jacobian contribution from a transformed variable. The [shared numerical criterion](index.md#2-correctness-criterion) explains why a remaining constant offset cancels on posterior normalization.
-
 Stan's density probe requires attention to unconstrained coordinates.
 Write $\theta=\Psi_{\mathsf{Stan}}(u)$, where $u$ is unconstrained and
 $\theta$ is a model parameter satisfying its declared support. For a
-positive scalar, $\theta=e^u$, so the density in $u$ includes the log
-Jacobian $u$. The [Stan transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)
+positive scalar, $\theta=e^u$, so the density in $u$ includes the [log
+Jacobian $u$](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables). The [Stan transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)
 describes these corrections. Other targets may also transform coordinates
 inside inference; the relevant question is which coordinates a probe scores.
 

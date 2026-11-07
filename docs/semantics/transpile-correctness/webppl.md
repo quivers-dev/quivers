@@ -12,13 +12,11 @@ parameter point.
 
 ## Semantics
 
-DIPPL’s [continuation examples](https://dippl.org/chapters/03-enumeration.html#continuations) and [CPS transform in action](https://dippl.org/chapters/03-enumeration.html#cps-transform-in-action) explain the control transformation used by WebPPL [@goodman2014design]. The [QVR handler account](../effects.md#8-qiec-rows-and-lexical-handlers) states how a suspended request is resumed.
-
-WebPPL's denotational semantics is the continuation-passing-style
+WebPPL's denotational semantics is the [continuation-passing-style](https://dippl.org/chapters/03-enumeration.html#continuations)
 trace semantics of Goodman and Stuhlmüller
 [@goodman2014design]. A program is a JavaScript-syntax
 WebPPL function whose `sample` and `observe` calls are reified by
-the WebPPL compiler into CPS-transformed continuations; the trace
+the WebPPL compiler into [CPS-transformed continuations](https://dippl.org/chapters/03-enumeration.html#cps-transform-in-action); the trace
 is the sequence of `(address, distribution, value)` triples
 visited. The repository's numeric probe rewrites rendered `sample`
 and `observe` sites into calls to each distribution object's

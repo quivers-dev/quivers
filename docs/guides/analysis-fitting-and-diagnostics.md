@@ -15,7 +15,6 @@ source shows which parameters were introduced and which data columns
 they use. The diagnostics below assess chain exploration and compare
 replicated observations with the supplied data.
 
-
 <!-- python: skip -->
 ```python
 from quivers.formulas import fit
@@ -68,14 +67,12 @@ QVR source; use `formula_to_qvr` to inspect names upfront.
 ## Diagnostics: `quivers.diagnostics`
 
 Chain diagnostics such as
-R-hat and effective sample size assess aspects of MCMC exploration.
+R-hat and effective sample size assess aspects of [MCMC exploration](inference-mcmc.md#mcmc-hmc-and-nuts).
 [Posterior predictive](inference-svi.md#predictive-sampling) checks ask whether simulated data reproduce chosen
-features of the observations. Predictive comparison estimates performance
+[features of the observations](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) [@stanPredictiveChecks]. Predictive comparison estimates performance
 on held-out observations. For instance, chains may agree closely on a
 Normal model’s parameters while its replicated data miss the extreme
 values in the observations.
-
-Stan’s [choice of predictive statistics](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) explains how means, dispersion, and tail behavior probe different model assumptions. [@stanPredictiveChecks] The [MCMC guide](inference-mcmc.md#mcmc-hmc-and-nuts) describes the chains that supply posterior draws.
 
 **Leave-one-out (LOO)** comparison estimates prediction for each observation
 when it is left out of the fit. **Pareto-smoothed importance sampling
@@ -91,7 +88,6 @@ check asks whether replicated means tend to fall above or below the
 observed mean. A value near one half can coexist with a poor fit to the
 variance: two distributions may have the same mean and very different
 spreads. Choose statistics that reflect the features your model should explain.
-
 
 The [diagnostics adapter](../api/diagnostics/index.md) connects
 between quivers' inference records and
@@ -279,7 +275,6 @@ inspect the affected scores and their gradients during training; scores
 clustered near zero or one with tiny gradients can motivate a different
 initialization or parameterization.
 
-
 `saturation_warnings(module)` returns
 source-keyed warnings about latents whose algebra-guided init
 recipe differs materially from the default `Normal(0, 1)` init. It
@@ -347,7 +342,6 @@ threshold returns discrete decisions and has no useful gradient through
 those decisions. The example uses a differentiable conversion; train
 with an appropriate smooth objective before applying a hard threshold
 for reporting or a later discrete calculation.
-
 
 The pattern below trains a latent `W` and uses
 `W.change_base(...).dagger` with a differentiable identity conversion in the loss; both passes through the

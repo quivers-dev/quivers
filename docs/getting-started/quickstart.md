@@ -12,13 +12,10 @@ Read a finite morphism as a table with named row and column sets. A table from
 positions to colors says how each position relates to each color. Composing
 it with a table from colors to outcomes produces a table from positions to
 outcomes by combining the routes through each possible color. The names
-identify compatible connections; the algebra specifies the arithmetic.
-
-Milewski offers [an accessible introduction to composition through functions](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/)
-[@milewski2014composition]. Kelly gives the mathematical account of enriched
-categories [@kelly1982basic]. The examples here use the library
-interfaces; whether a chosen composition has all the laws of an enriched
-category depends on its algebra.
+identify compatible connections; the [algebra](../guides/core.md#algebras-enrichment-algebras) specifies the arithmetic.
+For this composition to satisfy the laws of an enriched category, its algebra
+must satisfy the corresponding preservation and associativity requirements
+[@kelly1982basic].
 
 ## 1. Basic Morphisms
 

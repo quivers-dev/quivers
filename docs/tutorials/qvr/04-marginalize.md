@@ -12,11 +12,13 @@ family has no finite support follows the ordinary sampling path, and an
 explicit reduction on such a family is rejected.
 
 A mixture gives several possible explanations for one observation. If the
-components have [prior probabilities](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise) `0.3` and `0.7`, and assign likelihood
-values `0.2` and `0.5` to the observation, its marginal likelihood is
-`0.3 * 0.2 + 0.7 * 0.5 = 0.41`. Both explanations contribute; neither needs
-to be chosen in a random draw. Density values for continuous observations
-need not lie below one, but the [mixture weights](../../examples/mixture-model.md#understanding-the-model) still sum to one. The [Stan mixture derivation](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) takes this calculation from latent component labels to a sum of weighted densities [@stanFiniteMixtures].
+components have [prior probabilities](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise)
+`0.3` and `0.7`, and assign likelihoods `0.2` and `0.5` to the observation,
+its [marginal likelihood](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter)
+is `0.3 * 0.2 + 0.7 * 0.5 = 0.41` [@stanFiniteMixtures]. Each possible
+assignment contributes to the sum. For continuous observations, component
+densities may exceed one; the [mixture weights](../../examples/mixture-model.md#understanding-the-model)
+are probabilities and sum to one.
 
 The implementation works with logarithms to avoid multiplying many tiny
 numbers. Adding log likelihoods represents multiplication; `logsumexp`
@@ -231,7 +233,6 @@ flowchart LR
 
 [Chapter 5](05-time-series.md) examines sequence-shaped models: HMMs,
 state-space models, and chart-based weighted deduction.
-
 
 ## Sources and further reading
 

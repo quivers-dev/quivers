@@ -5,13 +5,9 @@ colors to outcomes. We want to connect them into a table from positions to
 outcomes. Quivers calls each [named set](../../getting-started/concepts.md#1-an-object-names-the-possible-values) an *object* and each typed relation a
 *morphism*. This chapter builds those relations as tensors and learns their
 entries with PyTorch. The default algebra combines [fuzzy membership values](04-fuzzy-factorization.md#background)
-using multiplication and noisy-OR; their meaning is developed below.
-
-For the general idea of typed composition, Milewski begins with ordinary
-[function composition](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/)
-[@milewski2014composition]. The numerical composition used here needs its own
-algebraic assumptions, which the [conceptual introduction](../../getting-started/concepts.md)
-distinguishes from ordinary function composition.
+using multiplication and noisy-OR. These operations have different
+[algebraic properties](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine)
+from ordinary matrix multiplication, as the numerical example below shows.
 
 If you're coming from Stan, PyMC, or Pyro: the Python API is the lower-level interface that the [QVR DSL](../qvr/01-first-model.md) compiles to. You write models as compositions of typed tensors instead of as `program` blocks. Use this track when you want to build new categorical constructs, write libraries on top of quivers, or read the type errors emitted by the DSL compiler. For day-to-day modeling, the DSL track is the right entry point.
 
@@ -169,7 +165,11 @@ For a relation in PRODUCT_FUZZY, values should lie in $[0, 1]$.
 
 ## Working as a Differentiable Module
 
-The [PyTorch autograd tutorial](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients) explains the `requires_grad`, `backward`, and `.grad` operations used by this training loop [@pytorchAutogradTutorial].
+PyTorch records the operations on parameters with `requires_grad=True`.
+Calling [`.backward()`](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients)
+on the loss accumulates its derivatives in each parameter's `.grad` field
+[@pytorchAutogradTutorial]. The optimizer uses those derivatives to update
+the morphism entries.
 
 Wrap a morphism in a [`Program`](../../api/program.md) to make it a differentiable `nn.Module`:
 

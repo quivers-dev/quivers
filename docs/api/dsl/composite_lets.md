@@ -1,12 +1,9 @@
 # Composite lets
 
 Normalization rewrites supported composite expressions into forms the next compilation
-stage expects. This makes implicit dependencies explicit without asking downstream code
+stage expects. This [makes implicit dependencies explicit](../../guides/dsl-overview.md#one-checked-core) without asking downstream code
 to handle every source spelling separately. These helpers are internal; ordinary model
 authors should express the computation in QVR.
-
-See [how elaboration makes implicit operations explicit](../../guides/dsl-overview.md#one-checked-core) and
-[the correspondence between syntax and runtime objects](../../semantics/adequacy.md#2-direct-correspondences).
 
 Normalizing program ASTs before lowering.
 

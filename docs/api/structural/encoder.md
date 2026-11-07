@@ -1,14 +1,9 @@
 # Encoders
 
-An encoder recursively combines children’s vectors into a vector for their parent. The
+An encoder [recursively combines children’s vectors into a vector for their parent](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks). The
 learned combination functions determine which distinctions survive in that
 representation. Reconstruction training can encourage an encoder to retain information
-that its decoder needs to reproduce the input structure.
-
-Milewski's [F-algebras chapter, especially “Catamorphisms”](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Catamorphisms), explains how a fold supplies the recursion while an algebra supplies the combination operations [@milewski2017falgebras].
-
-See [recursive encoding](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) and
-[constructing values for an autoencoder](../../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data).
+that its decoder needs to reproduce the [input structure](../../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data).
 
 `Encoder` is a `torch.nn.Module` that realizes an F-algebra
 homomorphism `T_Σ → Vec_D` from terms over a signature to
