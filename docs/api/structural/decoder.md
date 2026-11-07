@@ -1,13 +1,10 @@
 # Decoders
 
 A decoder uses a vector to define a distribution over structured values. It chooses a
-root constructor, generates its fields, and continues through its children. Sampling
+root constructor, generates its fields, and continues through its children. [Sampling
 produces a reconstruction; scoring evaluates the probability or density assigned to a
-supplied structure. Reconstruction training increases the score of the original
+supplied structure](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks). [Reconstruction training](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss) increases the score of the original
 structure.
-
-See [sampling and scoring a reconstruction](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks) and
-[evaluating a reconstruction loss](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss).
 
 `Decoder` is a `torch.nn.Module` that realizes the Kleisli coalgebra
 `Vec_D → Kern(T_Σ)`. Given an input vector, it defines a distribution

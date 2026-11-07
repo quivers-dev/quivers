@@ -8,21 +8,16 @@ and [Morphisms](morphisms.md) supply the finite table interpretation.
 For each construction, the equations specify the properties required of
 the underlying operations.
 
-
 ## Functors
-
-The standard definitions and laws are developed in [@maclane1998categories].
-For a programmer-oriented introduction to composition, see [@milewski2014composition].
 
 A functor transforms an entire typed system consistently. As an ordinary
 set-theoretic example, send a set of letters to lists of letters and a
 letter-renaming function to the function that renames every letter in a list.
 Renaming letters with `f` and then `g` gives the same list as renaming once
 with their composite: `map(g, map(f, xs)) = map(g ∘ f, xs)`.
-Mapping the identity similarly leaves the list unchanged.
-
-Milewski’s [functors chapter](https://bartoszmilewski.com/2015/01/20/functors/#:~:text=Functors%20in%20Programming) develops the `Maybe`, list, and reader examples in its “Functors in Programming” section. [@milewski2015functors] Quivers uses the same preservation laws when lifting [typed morphisms](morphisms.md#composition-the-operator).
-
+Mapping the identity similarly leaves the list unchanged. These are the
+identity and composition laws that also govern functors on Quivers’
+[typed morphisms](morphisms.md#composition-the-operator) [@maclane1998categories].
 
 A functor $F: \mathcal{C} \to \mathcal{D}$ between $\mathcal{V}$-enriched categories maps objects to objects and morphisms to morphisms, preserving composition and identity.
 
@@ -70,9 +65,6 @@ $G(f) \circ \alpha_X = \alpha_Y \circ F(f)$. A component $\alpha_X$
 is the conversion at type `X`; naturality requires all such conversions to
 satisfy the displayed equation for every eligible `f`.
 
-The opening diagrams in Milewski’s [natural transformations chapter](https://bartoszmilewski.com/2015/04/07/natural-transformations/) follow each path through this square; its “Polymorphic Functions” section relates the components to generic functions. [@milewski2015natural]
-
-
 A natural transformation $\alpha: F \Rightarrow G$ between functors $F, G: \mathcal{C} \to \mathcal{D}$ is a family of morphisms $\{\alpha_X: F(X) \to G(X)\}$ indexed by objects of $\mathcal{C}$, such that the naturality square commutes:
 
 $$
@@ -117,14 +109,14 @@ and multiply their values. Thus maps from a free monoid correspond to maps
 from its generators into the underlying set. Formally,
 $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$, naturally in `A` and `B`.
 The unit and counit encode this correspondence; they need not be inverses.
-
-Milewski’s [adjunctions chapter](https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets) develops the correspondence in its “Adjunctions and Hom-Sets” section. [@milewski2016adjunctions] The unit and counit determine the operations used in the [monad laws](monadic.md#monads).
+An adjunction also determines a [monad](monadic.md#monads): its unit inserts
+a value into the composite functor, and its counit supplies the map used to
+flatten two applications of that functor [@maclane1998categories].
 
 Quivers stores words only up to a chosen length. Concatenations exceeding
 that bound are dropped, which changes the maps used in the unbounded
 free-monoid adjunction. Triangle-identity checks must thus use the
 actual bounded operations and specify which input lengths they cover.
-
 
 An adjunction $F \dashv G$ is a pair of functors with morphisms $\eta: \text{id}_\mathcal{C} \Rightarrow GF$ (unit) and $\varepsilon: FG \Rightarrow \text{id}_\mathcal{D}$ (counit) satisfying triangle identities.
 
@@ -162,7 +154,6 @@ converts between their groupings. A unitor removes a redundant singleton
 component. A braiding swaps the two components. Coherence requires that
 different routes through these regroupings agree, so wiring a larger
 pipeline does not depend on arbitrary parentheses.
-
 
 A monoidal category $(\mathcal{C}, \otimes, I)$ has:
 
@@ -232,7 +223,6 @@ score. Thus thresholding a composite need not agree with composing the
 thresholded tables; consult [Transformations](transformations.md) before
 using a preservation law.
 
-
 Change the enriching algebra without changing the structure of morphisms. [`BaseChange`](../api/categorical/base_change.md) is an ABC; concrete instances are `BoolToFuzzy` and `FuzzyToBool`:
 
 <!-- python: skip -->
@@ -265,7 +255,6 @@ For `f : Y * X -> Z * X`, fix an external input `y` and output `z`,
 match the two `X` indices, and aggregate `f[y, x, z, x]` over `x`.
 The matching condition is the feedback wire; the remaining axes are `Y`
 and `Z`, leaving exactly the axes shown in the displayed type.
-
 
 A traced monoidal category adds a trace operator:
 

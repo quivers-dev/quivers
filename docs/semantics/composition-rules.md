@@ -185,9 +185,7 @@ where `R` names a `CompositionRule` and `SPEC` is an optional einsum-style flat 
 
 ## 5. First-class transformations
 
-The [base-change equations](algebras.md#3-base-change) state the preservation conditions for these transformations. For the general idea of a map that respects composition, see Milewski’s [functor definition](https://bartoszmilewski.com/2015/01/20/functors/) [@milewski2015functors].
-
-A *transformation* is either a [algebra homomorphism](algebras.md#3-base-change) $\varphi : \mathcal{V} \to \mathcal{W}$ (pointwise lax monoidal map) or a *morphism transformation* $\psi$ (shape-aware action that may consult axis information). Both expose a *source* and a *target* algebra and an action on tensors. The DSL surface treats transformations as values in a dedicated *transformation namespace* (disjoint from the morphism namespace) that can be let-bound, composed, and passed to `change_base`.
+A *transformation* is either an [algebra homomorphism](algebras.md#3-base-change) $\varphi : \mathcal{V} \to \mathcal{W}$ (pointwise lax monoidal map) or a *morphism transformation* $\psi$ (shape-aware action that may consult axis information). Both expose a *source* and a *target* algebra and an action on tensors. The DSL surface treats transformations as values in a dedicated *transformation namespace* (disjoint from the morphism namespace) that can be let-bound, composed, and passed to `change_base`.
 
 ### 5.1 The transformation sort
 

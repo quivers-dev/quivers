@@ -13,9 +13,9 @@ where $g$ is the link function and $\mathcal{F}$ is the response family. We pick
 The linear predictor can be any real number, while a probability must lie
 between zero and one and a Poisson rate must be positive. An [inverse link](../../examples/beta-regression.md#understanding-the-model)
 connects these requirements. At linear predictor zero, `sigmoid(0)` gives
-probability `0.5`, while `exp(0)` gives rate `1`. Increasing a logistic
-coefficient changes log-odds linearly, not probability linearly: the same
-increase has less effect on probability near zero or one. The [Stan logistic and probit examples](https://mc-stan.org/docs/stan-users-guide/regression.html#logistic-probit-regression.section) compare two inverse links for binary responses [@stanRegression].
+probability `0.5`, while `exp(0)` gives rate `1`. Under a [logistic link](https://mc-stan.org/docs/stan-users-guide/regression.html#logistic-probit-regression.section),
+a coefficient increase changes log-odds by a fixed amount [@stanRegression].
+Its effect on probability is smaller near zero or one than near the midpoint.
 
 The response family describes remaining variation after that transformation.
 A Bernoulli draw is a binary outcome, even though its probability is continuous;
@@ -198,7 +198,6 @@ Three observations from this chapter you may have already noticed:
 ## Next
 
 [Chapter 3](03-hierarchical.md) covers hierarchical models: the place where mean-field VI starts to misbehave and where NUTS earns its keep.
-
 
 ## Sources and further reading
 

@@ -60,9 +60,10 @@ deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4]
 
 For `the dog sleeps`, a parser can combine `the` and `dog` into a noun
 phrase, turn `sleeps` into a verb phrase, then combine those two phrases into
-a sentence. A [chart](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) saves each partial result together with its interval.
-If more than one tree produces the sentence, the inside computation sums
-their weights rather than selecting only one tree. The NLTK book’s [worked substring table](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) illustrates how partial analyses fill a chart before weights are added [@nltkSyntax2019].
+a sentence. A [chart](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores)
+saves each partial result at the corresponding [substring interval](https://www.nltk.org/book/ch08.html#well-formed-substring-tables)
+[@nltkSyntax2019]. If several trees produce the sentence, the inside
+computation sums their weights.
 
 The source learns unconstrained log weights. A normalized PCFG would require
 production probabilities that sum to one for each left-hand side, plus conditions

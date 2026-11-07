@@ -14,7 +14,6 @@ hold distinct identities. Qualifying `left.get()` makes it clear which
 cell the computation asks about. An effect row naming both cells thus
 records two separate state dependencies.
 
-
 <!-- compile: qiec -->
 ```qvr
 effect State[S : Type]
@@ -88,7 +87,6 @@ The program returns `4.0`, and the handler's return clause passes it
 through. *Deep* handling means later requests in that resumed computation
 are handled by the same handler. [@plotkin2009handlers]
 
-
 A handler declares the interface it handles, an input and answer type, options,
 one return clause, and operation clauses:
 
@@ -133,15 +131,12 @@ implicit outer request.
 
 ### Resumption grades
 
-The [compositional effects guide](../../guides/effects.md#typeclass-hierarchy) relates sequencing to `bind`; the [computation reference](computations.md#handling-and-scoped-instances) shows where a handler enters the execution. Pyro’s [handler implementation walkthrough](https://pyro.ai/examples/effect_handlers.html#Implementing-new-effect-handlers-with-the-Messenger-API) provides a Python implementation to compare with QVR’s explicit resumption clauses. [@pyroEffects]
-
-A handler can stop the computation, continue it once, or explore
+A [handler](computations.md#handling-and-scoped-instances) can stop the computation, continue it once, or explore
 several possible continuations. The grade records which behavior the
 clause promises. An abort has no continuation; a normal state read
 continues once; exhaustive search can continue once per alternative.
 Duplicating a continuation requires the corresponding permission because
 it may also duplicate subsequent requests.
-
 
 | Grade | Contract |
 | --- | --- |
@@ -160,7 +155,6 @@ The following handler always answers `get` with `7` and ignores the
 value passed to `put`, so `local_read()` returns `7` even after `put(3)`.
 To implement a mutable cell, the `put` clause would instead pass its new
 value into the resumed computation for subsequent `get` requests.
-
 
 `with instance` creates a fresh lexical identity inside a computation:
 

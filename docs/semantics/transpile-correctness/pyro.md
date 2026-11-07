@@ -11,14 +11,12 @@ scores at the same supplied latent values.
 
 ## Semantics
 
-Pyro’s [effect-handler tutorial](https://pyro.ai/examples/effect_handlers.html#Introduction) explains how tracing and conditioning compose. The [QVR trace guide](../../guides/inference-foundations.md#trace-and-sample-sites) identifies the site values and scores used by the reference evaluation.
-
 Pyro's denotational semantics is the trace semantics of Bingham,
 Chen, Jankowiak, Obermeyer, Pradhan, Karaletsos, Singh, Szerlip,
 Horsfall, and Goodman
 [@bingham2019pyro] implemented via
 [`pyro.poutine`](https://docs.pyro.ai/en/stable/poutine.html)
-handlers. The log-density probe is
+[handlers](https://pyro.ai/examples/effect_handlers.html#Introduction). The log-density probe is
 
 ```python
 trace = pyro.poutine.trace(pyro.condition(model, data={**θ, **y})).get_trace(x)

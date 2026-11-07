@@ -14,10 +14,12 @@ application schemas, a permutation schema, one bundle, and:
 define lp_parser = parser(rules=[lp_rules], terminal=Token, start=S, depth=1)
 ```
 
-[A chart](../../examples/custom-rules.md#understanding-the-model) stores possible analyses for intervals of a sentence. In `the dog
-sleeps`, one cell can say that `the dog` forms a noun phrase, and another that
-`sleeps` expects that phrase on its left. A rule combines them into a sentence
-analysis. Several derivations may reach the same full-sentence goal. For a chart filled one cell at a time, see the NLTK book’s [substring-table calculation](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) [@nltkSyntax2019].
+[A chart](../../examples/custom-rules.md#understanding-the-model) stores
+possible analyses for [intervals of a sentence](https://www.nltk.org/book/ch08.html#well-formed-substring-tables)
+[@nltkSyntax2019]. In `the dog sleeps`, one cell can say that `the dog` forms
+a noun phrase, and another that `sleeps` expects that phrase on its left.
+A rule combines them into a sentence analysis. Several derivations may reach
+the same full-sentence goal, so its score must aggregate their contributions.
 
 An *inside weight* aggregates those derivations. Rule weights multiply along
 a derivation, and alternative derivations add; in log space these become

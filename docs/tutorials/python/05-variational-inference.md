@@ -33,12 +33,13 @@ assigns plausibility to temperatures before the reading; the likelihood
 assigns a score to the reading under each temperature. Their product,
 normalized over temperatures, is the posterior we want.
 
-The guide is an adjustable distribution used to approximate that posterior. Pyro’s [guide explanation](https://pyro.ai/examples/svi_part_i.html#Guide) develops the same model/guide distinction with a Bernoulli example [@pyroSVI].
-A [Normal guide](../qvr/06-inference-zoo.md#step-2-which-variational-guide) can move its center and widen or narrow its spread. SVI draws
-candidate temperatures from it, evaluates the model and guide scores, and
-adjusts those parameters. For instance, concentrating around 10 degrees would
-fit poorly if both the prior and a precise reading favor 20 degrees; the
-objective penalizes the guide for proposing temperatures with low model density.
+The [guide](https://pyro.ai/examples/svi_part_i.html#Guide) is an adjustable
+distribution used to approximate that posterior [@pyroSVI]. A [Normal guide](../qvr/06-inference-zoo.md#step-2-which-variational-guide)
+can move its center and widen or narrow its spread. SVI draws candidate
+temperatures from it, evaluates the model and guide scores, and adjusts those
+parameters. For instance, concentrating around 10 degrees would fit poorly
+if both the prior and a precise reading favor 20 degrees; the objective
+penalizes the guide for proposing temperatures with low model density.
 
 ## Concepts
 
@@ -268,11 +269,13 @@ $$
 
 When the joint factors as $p(\text{obs}\mid z)p(z)$, this is equivalently the expected log likelihood minus $\operatorname{KL}(q(z)\|p(z))$. `SVI.step` minimizes the negative ELBO.
 
-In the displayed objective, `log p(obs, z)` rewards values compatible with
-both prior and observations; subtracting `log q(z)` prevents the objective
-from merely rewarding a guide for concentrating on one point. The expectation
-averages over guide draws, commonly called particles. Increasing their number
-estimates the same expectation using a larger sample. The [ELBO derivation in Pyro’s tutorial](https://pyro.ai/examples/svi_part_i.html#ELBO) relates the bound to the KL divergence from the guide to the posterior [@pyroSVI].
+In the [ELBO](https://pyro.ai/examples/svi_part_i.html#ELBO), `log p(obs, z)`
+rewards values compatible with the prior and observations; the expected
+negative `log q(z)` is the guide's entropy [@pyroSVI]. Maximizing their sum
+equivalently minimizes the KL divergence from the guide to the posterior,
+when the relevant expectations are finite. The expectation is estimated
+using guide draws, commonly called particles. Increasing their number
+estimates the same expectation with a larger sample.
 
 `SVI.step` returns a loss to minimize, the negative ELBO, so a downward loss
 trend is the expected direction. Neither a smooth curve nor a small loss proves

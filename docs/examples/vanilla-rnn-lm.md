@@ -65,10 +65,11 @@ export vanilla_rnn_lm
 
 ## Understanding the model
 
-A recurrent state is a running summary of a context. Each new token updates
+A [recurrent state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#recurrent-neural-networks)
+summarizes the preceding context [@olah2015lstm]. Each new token updates
 that summary, so the same token can lead to different predictions depending
-on what preceded it. The terminal state summarizes the whole supplied prefix;
-the head turns it into probabilities for one following token. The [unrolled recurrence diagrams](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#recurrent-neural-networks) show how a state passes between successive steps [@olah2015lstm].
+on what preceded it. The terminal state summarizes the supplied prefix;
+the head turns it into probabilities for one following token.
 
 This cell includes random hidden draws. Forward executions can thus differ
 even at fixed parameters, unlike a deterministic RNN. Scoring an explicit
@@ -106,7 +107,6 @@ flowchart LR
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -215,11 +215,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The model is a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the recursive [fold](https://ncatlab.org/nlab/show/fold) along the sequence in the Kleisli category: each step composes the previous step's output kernel with the new cell. The closing Categorical head observes the next-token label as a sub-probability kernel in $\mathcal{G}_{\le 1}$. [@giry1982categorical]
-
 
 ## Sources and further reading
 

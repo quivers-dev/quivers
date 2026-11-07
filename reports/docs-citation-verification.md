@@ -1,6 +1,6 @@
 # Documentation citation verification
 
-Checked November 6, 2026.
+Checked November 6, 2026; editorial follow-up November 7, 2026.
 
 Publisher verification was attempted for every scholarly reference in the revised documentation. The records below identify the publisher metadata, publication artifact, or original resource that was inspected. A check that could not reach the publisher is recorded as incomplete. Publisher-indexed text, publisher-hosted pages, and institutional copies of the published article are distinguished below. Bibliographic checks establish identity and metadata; implementation claims require separate evidence.
 
@@ -54,8 +54,6 @@ Checked 2026-11-06. “Publisher-indexed” means search returned the publisher 
 | `kingma2014autoencoding` | [Official ICLR retrospective, author manuscript and institution conference metadata read](https://arxiv.org/abs/1312.6114) | author, title, year, booktitle, note, url | ICLR2014 accepted status/year verified at https://dare.uva.nl/id/cf65ba0f-d88f-4a49-8ebd-3a7fce86edd7; institution says conference submissions on arXiv. Official conference retrospective https://blog.iclr.cc/2024/05/07/iclr-2024-test-of-time-award/ confirms the conference paper and links to this manuscript; no arXiv DOI misrepresented as conference DOI. |
 | `robbins1951stochastic` | [Authorized publisher archive indexed issue metadata and published PDF read; main publisher iframe only](https://doi.org/10.1214/aoms/1177729586) | author, title, year, journal, volume, number, pages, doi, url | IMS-authorized archive https://www.jstor.org/stable/i312767 verifies author/title/year/volume/issue/pages; published PDF read at https://www.columbia.edu/~ww2040/8100F16/RM51.pdf. DOI corroborated by registry-derived record, not publisher page. Generic nonconvex SGD convergence attribution removed; cite only stochastic approximation background. |
 | `rosenthal1990quantales` | [Publisher-source verification incomplete; library catalog and scanned book metadata agree](https://search.worldcat.org/title/Quantales-and-their-applications/oclc/1504394167) | author, title, year, publisher, isbn, url | No publisher record retrieved after title/publisher searches. Removed from the final bibliography; replaced by publisher-verified `rosenthal1996quantaloids` below. |
-| `milewski2014composition` | [Original author tutorial read](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/) | author, title, year, howpublished, note, url | Intuitive tutorial, not a scholarly proof source. |
-| `milewski2014kleisli` | [Original author tutorial read](https://bartoszmilewski.com/2014/12/23/kleisli-categories/) | author, title, year, howpublished, note, url | Writer-monad example for intuition; probability-specific facts use Giry. |
 
 | `rosenthal1996quantaloids` | [Publisher-indexed title/author/year/edition/publisher and description read; direct fetch cache miss](https://www.routledge.com/The-Theory-of-Quantaloids/Rosenthal/p/book/9780429157028) | author, title, year, edition, publisher, URL | Verified replacement for1990 source in broad quantale/enrichment reading recommendations. This is a distinct book. Publisher describes quantaloids as a generalization of quantales and identifies enrichment as a central topic. The unverified1990 entry above records a removed citation, not an active bibliography entry. |
 
@@ -417,20 +415,10 @@ The former unsupported reference to Welsh et al. (1996) in `Mixture.restrict_to`
 
 ## Additional resources in the cross-linking pass
 
-Checked November 6, 2026 by the section editors and an independent citation agent. All 29 additional resources were verified on the original publisher, author, or official project site. Undated tutorials retain their documented version and access date; no publication year was inferred from the access date. The duplicate PyTorch tutorial record was consolidated into `pytorchAutogradTutorial`.
+Checked November 6, 2026 by the section editors and an independent citation agent. The additional resources were verified on the original publisher, author, or official project site. The table retains the 19 resources still cited after the editorial follow-up. Undated tutorials retain their documented version and access date; no publication year was inferred from the access date. The duplicate PyTorch tutorial record was consolidated into `pytorchAutogradTutorial`.
 
 | Key | Verified original source | Status |
 |---|---|---|
-| `milewski2015products` | [Products and Coproducts](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2015functors` | [Functors](https://bartoszmilewski.com/2015/01/20/functors/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2015natural` | [Natural Transformations](https://bartoszmilewski.com/2015/04/07/natural-transformations/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2016monads` | [Monads: Programmer’s Definition](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2017falgebras` | [F-Algebras](https://bartoszmilewski.com/2017/02/28/f-algebras/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2016adjunctions` | [Adjunctions](https://bartoszmilewski.com/2016/04/18/adjunctions/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2015yoneda` | [The Yoneda Lemma](https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2017enriched` | [Enriched Categories](https://bartoszmilewski.com/2017/05/13/enriched-categories/) | Author-published tutorial: author, title, and publication date. |
-| `milewski2015free` | [Free Monoids](https://bartoszmilewski.com/2015/07/21/free-monoids/) | Author-published tutorial: author, title, and publication date. |
-| `bird2009natural` | [Natural Language Processing with Python](https://www.oreilly.com/library/view/natural-language-processing/9780596803346/) | O’Reilly publisher catalog: title, author order, publisher, June 2009. |
 | `pyroIntroduction` | [Introduction to Pyro](https://pyro.ai/examples/intro_long.html) | Pyro Tutorials, version 1.9.1; title, maintainer attribution, and relevant explanation checked. Publication date unspecified. |
 | `pyroSVI` | [SVI Part I: An Introduction to Stochastic Variational Inference in Pyro](https://pyro.ai/examples/svi_part_i.html) | Pyro Tutorials, version 1.9.1; title, maintainer attribution, and relevant explanation checked. Publication date unspecified. |
 | `pyroTensorShapes` | [Tensor Shapes in Pyro](https://pyro.ai/examples/tensor_shapes.html) | Pyro Tutorials, version 1.9.1; title, maintainer attribution, and relevant explanation checked. Publication date unspecified. |
@@ -451,6 +439,12 @@ Checked November 6, 2026 by the section editors and an independent citation agen
 | `nltkSyntax2019` | [Analyzing Sentence Structure](https://www.nltk.org/book/ch08.html) | Author-maintained online chapter: authors, copyright 2019, build date September 4, 2019; distinct from the print edition. |
 | `pytorchAutogradTutorial` | [Automatic Differentiation with torch.autograd](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html) | Official tutorial: created February 10, 2021; updated January 16, 2024. |
 
-Links to tutorial subsections were checked against the original HTML IDs. Twelve Milewski links use text fragments matched to verified headings because those headings have no native IDs. Browsers that do not support text fragments open the article; the link labels identify the intended explanation. Concept-wide links point to the corresponding chapter rather than a book homepage.
+Links to tutorial subsections were checked against the original HTML IDs. The editorial follow-up removed repeated reading recommendations and their unused BibTeX entries, including all Milewski entries. It uses the existing verified resources within the explanations; it introduces no new bibliographic source.
 
 The independent review found no unverifiable new reference, unsupported quotation, or unsupported conceptual attribution. The earlier Neal and Rauch publisher-access limitations remain as documented above. The [link audit](docs-link-audit.md) records coverage and final build checks.
+
+## Editorial follow-up: November 7, 2026
+
+The bibliography now contains 152 entries, all cited. There are 528 citation occurrences across 184 pages. Thirteen uncited entries were removed after references were integrated into the claims they support. Earlier verification records for removed entries remain historical evidence, rather than a claim that those entries are still in the bibliography.
+
+Direct publisher access was retried for Neal (2011) at Taylor & Francis and Rauch, Tung, and Striebel (1965) at AIAA. Both returned HTTP 403. Their publisher-verification limitations remain unresolved; the earlier corroborating records are unchanged.

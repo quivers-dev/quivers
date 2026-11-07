@@ -16,7 +16,6 @@ contains probability vectors whose entries sum to one; positive reals
 can represent a scale that must stay above zero. These constraints define
 the *support* on which a distribution may place mass.
 
-
 Continuous morphisms act between continuous measurable spaces.
 quivers provides a hierarchy of standard spaces:
 
@@ -94,7 +93,6 @@ with `epsilon` drawn from a standard Normal. Gradients then pass through
 `mu` and `sigma` for the realized noise. Discrete sampling does not generally
 admit the same pathwise derivative.
 
-
 A continuous morphism $f : X \to Y$ between spaces $X$ and $Y$
 defines a conditional distribution $p(y \mid x)$ via two operations:
 
@@ -131,7 +129,6 @@ $p(z\mid x)=\int p(z\mid y)p(y\mid x)\,dy$. Drawing `y` and then
 specified `z` requires integrating over the possible values of `y`, using
 an analytic formula or an approximation. A finite intermediate allows
 this calculation to use a finite sum.
-
 
 When composing continuous morphisms, the intermediate is
 continuous. The result is computed via ancestral sampling:
@@ -253,10 +250,10 @@ composed = discrete_f >> cont_g  # exact marginalization over Y
 
 ## Normalizing flows
 
-Stan’s [multivariate change-of-variables explanation](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#multivariate-changes-of-variables) gives the determinant correction needed when transforming a density. [@stanReparameterization] A flow uses a sequence of such transformations; [variational guides](inference-svi.md#guides-variational-families) can learn them as a posterior approximation.
-
-Normalizing flows combine invertible transformations with density
-corrections [@rezende2015flows].
+Normalizing flows combine invertible transformations with [density
+corrections](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#multivariate-changes-of-variables)
+[@stanReparameterization; @rezende2015flows]. A [variational flow guide](inference-svi.md#guides-variational-families)
+learns the transformations to approximate a posterior.
 
 An invertible transformation can stretch or compress regions of a simple
 distribution. If `y = 2*z` in one dimension, the transformed density at
@@ -264,7 +261,6 @@ distribution. If `y = 2*z` in one dimension, the transformed density at
 occupies twice the width. The log-determinant Jacobian records this volume
 change. Invertibility lets the model find the corresponding base value
 and score it by including the Jacobian term below.
-
 
 A [normalizing
 flow](https://en.wikipedia.org/wiki/Flow-based_generative_model)

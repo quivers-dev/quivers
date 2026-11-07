@@ -7,10 +7,9 @@ The `quivers.enriched` package provides finite tensor operations motivated by $\
 The general enriched constructions, beyond the finite reductions here,
 are treated in [@kelly1982basic].
 
-Milewski’s [enriched categories chapter](https://bartoszmilewski.com/2017/05/13/enriched-categories/) starts from function types and composition before giving the enriched definition. [@milewski2017enriched] The [contraction example](dsl-contractions.md#type-driven-wiring-inference) supplies the tensor operation used in the finite constructions below.
-
 Start with a square table whose two axes refer to the same choices. Matching
-those choices means keeping the diagonal. The finite `end` operation then
+those choices means keeping the diagonal, a special case of
+[tensor contraction](dsl-contractions.md#type-driven-wiring-inference). The finite `end` operation then
 combines the diagonal entries with `meet`; `coend` uses `join`. Under Boolean
 AND/OR these read as "all matched cases" and "some matched case."
 *Contravariant* and *covariant* mark the two argument directions;
@@ -21,7 +20,6 @@ The default product meet gives `0.504`; noisy-OR gives `0.994`.
 The implementation performs this diagonal reduction, without separately
 enforcing the dinaturality conditions of a general non-discrete category.
 Use the general terminology only under hypotheses that justify that reduction.
-
 
 An [end](https://ncatlab.org/nlab/show/end) $\int_X F(X, X)$ is the universal dinatural wedge for a bifunctor $F : \mathcal{C}^{\mathrm{op}} \times \mathcal{C} \to \mathcal{V}$. Dually, a [coend](https://ncatlab.org/nlab/show/coend) $\int^X F(X, X)$ is the universal dinatural cowedge. In a general category these constructions impose compatibility along morphisms, via an equalizer or coequalizer when the required products or coproducts exist. In the finite tensor representation used by quivers, an end is computed by restricting a tensor to its diagonal in matched contravariant/covariant axes and reducing with the algebra's meet ($\bigwedge$); a coend reduces with the join ($\bigvee$).
 
@@ -54,15 +52,12 @@ $y_A = \mathcal C(-,A)$. A presheaf is a [functor](categorical.md#functors) that
 pulls it backward along arrows. A transformation from $y_A$ to `F` is
 determined by what it does to the identity arrow at `A`: all other
 components follow by [naturality](categorical.md#natural-transformations). Conversely, an element of `F(A)` supplies
-those components. This explains the correspondence in the theorem below.
-
-The worked derivation in Milewski’s [Yoneda lemma chapter](https://bartoszmilewski.com/2015/09/01/the-yoneda-lemma/) shows how evaluating at the identity determines the whole transformation. [@milewski2015yoneda]
+those components. This explains the correspondence in the theorem below [@kelly1982basic].
 
 In the finite discrete case, the identity relation acts like a lookup
 selector: only the matching index contributes. With non-identity arrows,
 the presheaf’s action along those arrows and the transformation’s naturality
 equations ensure the same correspondence.
-
 
 For a $\mathcal{V}$-presheaf $F : \mathcal{C}^{\mathrm{op}} \to \mathcal{V}$ and an object $A \in \mathcal{C}$, the [Yoneda lemma](https://ncatlab.org/nlab/show/Yoneda+lemma) asserts $[\mathcal{C}^{\mathrm{op}}, \mathcal{V}](y_A, F) \cong F(A)$, where $y_A = \mathcal{C}(-, A)$ is the representable presheaf at $A$. [`yoneda_lemma`](../api/enriched/yoneda.md) computes a finite internal-hom/meet expression. Tests compare selected instances numerically; arbitrary tensors need not define a presheaf satisfying the theorem's hypotheses:
 
@@ -116,7 +111,6 @@ and previously absent positions receive the relevant empty reduction.
 These fiber formulas describe the finite discrete/order-based setting;
 general Kan extensions involve the base category's morphisms as well.
 
-
 [Left and right Kan extensions](https://ncatlab.org/nlab/show/Kan+extension) extend a morphism along an [`ObjectMap`](../api/enriched/kan_extensions.md) between objects. `quivers.enriched.kan_extensions` provides two concrete `ObjectMap` subclasses, [`Projection`](../api/enriched/kan_extensions.md) (projection from a product onto selected factors) and [`Inclusion`](../api/enriched/kan_extensions.md) (the canonical $A_k \hookrightarrow A_1 + \ldots + A_n$):
 
 ```python
@@ -150,7 +144,6 @@ In a residuated ordered algebra, the internal hom is defined by
 $a \otimes b \le c$ iff $b \le [a,c]$. This adjoint relation, together
 with the diagram’s action on morphisms, supplies the weighted-limit
 interpretation of the reduction.
-
 
 A [weighted limit](https://ncatlab.org/nlab/show/weighted+limit) $\{W, D\}$ pairs a [`Weight`](../api/enriched/weighted_limits.md) $W$ (a presheaf valued in $\mathcal{V}$) with a [`Diagram`](../api/enriched/weighted_limits.md) $D$ (a tuple of objects, possibly extended to a true functor in richer settings). For discrete diagrams the value is a meet over the residuated internal-hom of $W$ and $D$:
 
@@ -187,7 +180,6 @@ compatible actions of the source and target morphisms. Those actions
 specify how changing either object along an arrow changes the profunctor
 value; the matrix representation covers the discrete case.
 
-
 A [profunctor](https://ncatlab.org/nlab/show/profunctor) (or distributor) $P : \mathcal{A} \nrightarrow \mathcal{B}$ is a $\mathcal{V}$-valued bimodule, represented in quivers as a [`Profunctor`](../api/enriched/profunctors.md) wrapping a tensor of shape `(*contra.shape, *co.shape)`:
 
 ```python
@@ -212,7 +204,6 @@ category's monoidal product. For each `C`, enumerate pairs `A, B` whose
 product is `C`, combine their scores, and aggregate the alternatives.
 The chosen object inventory must contain the decompositions you want to
 represent; a truncated inventory omits the others.
-
 
 [Day convolution](https://ncatlab.org/nlab/show/Day+convolution) lifts the monoidal structure of a base category to its presheaves. For a finite discrete category and presheaf values $F, G$, [`day_convolution`](../api/enriched/day_convolution.md) computes
 
@@ -246,7 +237,6 @@ can match a color case, but a shape case does not contain a color to read.
 This explains why products and coproducts lead to different optics.
 An adapter changes representations in both directions; a grate packages a
 more general way to combine access through a family of contexts.
-
 
 Optics are bidirectional morphisms that decompose into a forward `get` / `match` and a backward `put` / `build`. The package provides four kinds, all subclassing [`Optic`](../api/enriched/optics.md):
 

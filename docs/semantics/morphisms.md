@@ -160,9 +160,7 @@ The type `f : τ₁ -> σ ~ Family` fixes the input and output spaces. Changing 
 
 #### The density is a product for most families
 
-Pyro’s [batch-shape and event-shape examples](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) show which dimensions `log_prob` reduces. The QVR [axis-role declarations](#6-axis-role-specifications) attach those roles to named domain and codomain factors.
-
-When $\llbracket \sigma \rrbracket$ has dimension $d > 1$, the display above hides a choice, because most names in the registry are *per-coordinate independent*: their density factors,
+When $\llbracket \sigma \rrbracket$ has dimension $d > 1$, the display above hides a choice, because most names in the registry have [independent coordinates](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) [@pyroTensorShapes]: their density factors,
 
 $$
 p_{\mathrm{Family}}\bigl(y \,;\, \theta(x)\bigr) \;=\; \prod_{i=1}^{d} p\bigl(y_i \,;\, \theta_i(x)\bigr),
@@ -358,6 +356,4 @@ where `rsample` is the reparameterized sample of the family at its declared even
 
 ## 8. Equivariance and naturality
 
-Milewski’s [naturality square](https://bartoszmilewski.com/2015/04/07/natural-transformations/) compares the two orders of applying a function and changing a representation [@milewski2015natural]. The [natural-transformation guide](../guides/categorical.md#natural-transformations) constructs components and checks a square in QVR.
-
-Replacing an algebra changes how weights combine; replacing a family changes the available distributions. To preserve a denotation under replacement, check the corresponding operations, support, parameterization, and normalization. [Algebras](algebras.md#3-base-change) gives the preservation equations for discrete conversions.
+Replacing an algebra changes how weights combine; replacing a family changes the available distributions. [Naturality](../guides/categorical.md#natural-transformations) requires agreement between applying an arrow and converting its representation, in either order. To preserve a denotation under replacement, check the corresponding operations, support, parameterization, and normalization. [Algebras](algebras.md#3-base-change) gives the preservation equations for discrete conversions.

@@ -63,11 +63,13 @@ export gmm
 
 ## Understanding the model
 
-For one observed value, each component offers an explanation. If two
-components have weights `0.4` and `0.6` and give that value densities `0.1`
-and `0.5`, its [mixture density](../tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) is `0.4 * 0.1 + 0.6 * 0.5 = 0.34`.
-`MixtureNormal` evaluates this sum without choosing a random component label.
-This removes assignment-sampling noise, but means and scales remain uncertain. Stan works through the same [sum over component assignments](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) [@stanFiniteMixtures].
+For one observed value, each component contributes its density weighted by
+its probability. If two components have weights `0.4` and `0.6` and give
+that value densities `0.1` and `0.5`, its [mixture density](../tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture)
+is `0.4 * 0.1 + 0.6 * 0.5 = 0.34`. `MixtureNormal` [sums over component
+assignments](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter)
+[@stanFiniteMixtures], eliminating the need to sample a label when scoring
+an observation. Inference still estimates the uncertain component means and scales.
 
 Component names do not identify physical groups: swapping their labels leaves
 the mixture density unchanged. Compare predicted densities or use a stated
@@ -92,7 +94,6 @@ The three `sample` steps draw the shared per-component parameters:
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -154,7 +155,6 @@ result = mc.run(model, x_in, observations)
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
-
 
 ## Categorical perspective
 

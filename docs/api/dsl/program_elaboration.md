@@ -1,11 +1,8 @@
-# Program elaboration
+# [Program elaboration](../../semantics/typing.md#8-program-elaboration)
 
 Program elaboration turns a parsed program body into executable steps, resolving its
 names and dependencies along the way. Extend this implementation when adding syntax
-whose meaning affects how draws, observations, or deterministic bindings execute.
-
-See [the source statements elaboration translates](../../reference/qvr/probabilistic-programs.md#step-reference) and
-[program elaboration in the type system](../../semantics/typing.md#8-program-elaboration).
+whose meaning affects how [draws, observations, or deterministic bindings](../../reference/qvr/probabilistic-programs.md#step-reference) execute.
 
 Elaboration of `program` declarations into QIEC computations.
 

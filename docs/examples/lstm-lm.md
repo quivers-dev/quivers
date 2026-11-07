@@ -77,10 +77,10 @@ weights the transformed update sent onward. Each gate lies between zero and
 one, so multiplication acts as a learned proportion. Here those proportions
 are sampled from LogitNormal kernels rather than fixed by a sigmoid alone.
 
-A canonical LSTM carries both a cell state and a hidden state through time.
-This source passes only the hidden state to the next step: `c_new` contributes
-to the current output and is then discarded. Its terminal hidden state predicts
-one next token. Olah’s [diagram of the LSTM cell state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#the-core-idea-behind-lstms) shows the separate persistent state used by the canonical architecture [@olah2015lstm].
+A canonical LSTM carries both a [cell state and a hidden state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#the-core-idea-behind-lstms)
+through time [@olah2015lstm]. This source passes only the hidden state to the
+next step: `c_new` contributes to the current output and is then discarded.
+Its terminal hidden state predicts one next token.
 
 ## Walkthrough
 
@@ -131,7 +131,6 @@ flowchart LR
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -237,11 +236,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The cell program denotes a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the Kleisli category of the [Giry monad](https://doi.org/10.1007/BFb0092872); `scan(lstm_cell)` is its iterated composition over the sequence. The Categorical head closes the composite with a finite-set codomain, and `observe next_token` accumulates per-batch categorical log-likelihood through a [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension). [@giry1982categorical]
-
 
 ## Sources and further reading
 

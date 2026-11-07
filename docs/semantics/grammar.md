@@ -310,15 +310,17 @@ raises on exceeding it. Default is $10^5$.
 
 ## 6. Chart denotation
 
-The NLTK book’s [well-formed substring table](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) builds a chart one span at a time [@bird2009natural]. The [QVR chart guide](../guides/deduction.md#charts-as-first-class-differentiable-values) shows how to inspect chart entries and their gradients.
-
-A chart entry aggregates all derivations of one item. Within a derivation,
+A [chart](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) stores
+partial analyses for reuse in larger analyses [@nltkSyntax2019]. In a weighted
+chart, each entry aggregates the derivations of one item [@goodman1999semiring].
+Within a derivation,
 combine the premise contributions and rule weight using $\otimes$; across
 derivations, combine alternatives using $\oplus$. This is why switching a
 semiring can reuse the chart algorithm while changing its answer from
 “possible?” to “how many?” or “what total probability?”. For cyclic systems,
 “all derivations” can be an infinite collection, and the convergence
-conditions are part of the semantic claim.
+conditions are part of the semantic claim. In a finite computation, [chart entries and their gradients](../guides/deduction.md#charts-as-first-class-differentiable-values)
+can be inspected to identify which rules contribute to a result.
 
 Fix the deduction `D = (I, Σ, K, ax, goal, s, d)` and an input
 `w`. The *chart* is the function
@@ -765,6 +767,5 @@ complete grammar, worked examples, and implementation limits appear in the
 [QIEC developer note](../developer/qiec.md).
 
 ## References
-
 
 Parsing as deduction is developed in [@pereira1983parsing; @shieber1995principles], and weighted alternatives in [@goodman1999semiring]. The hypergraph view [@klein2001parsing] explains how deductions share intermediate results. For priority-based evaluation, see [@knuth1977generalization; @nederhof2003weighted]. For compiled weighted dynamic programs and complexity analysis, see [@eisner2005compiling; @mcallester2002complexity]. These references provide the algorithmic background; the restrictions and evaluation schedule of QVR are specified above.

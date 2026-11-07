@@ -15,7 +15,6 @@ likelihood into a **posterior** over the unknowns; an inference algorithm
 is needed to approximate or sample that posterior. Merely executing
 `observe` scores data under current latent values. [@gelman2013bayesian]
 
-
 <!-- compile: qiec -->
 ```qvr
 object Row : FinSet 100
@@ -155,17 +154,13 @@ its remaining inputs into the caller as parameters.
 
 ## Exact marginalization
 
-Pyro’s [mechanics of enumeration](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) shows a discrete site producing all possible values so inference can sum their contributions. [@pyroEnumeration] The QVR [grouped example](../../guides/programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) explains how this changes when several observations share one latent choice.
-
 For a two-component mixture, evaluate the observations under each
-component and weight by its prior probability. Adding these terms
+component and weight by its prior probability. [Adding these terms](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) [@pyroEnumeration]
 accounts for both possible assignments without selecting one. The
 `logsumexp` reduction evaluates that sum in log space, where products
-of many small likelihoods are more stable. Grouped observations share
+of many small likelihoods are more stable. [Grouped observations](../../guides/programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) share
 one assignment, so their likelihoods combine within a component before
-the sum over components. The [hierarchical guide](../../guides/programs-hierarchical.md)
-works through numerical values.
-
+the sum over components.
 
 `marginalize` enumerates a finite latent and adds the reduced scope weight to
 the enclosing program:
@@ -242,7 +237,6 @@ scored or reproduced. The runtime [handler](effects-and-handlers.md#handler-decl
 their model distributions. To estimate their distribution given observed
 data, pass the model and observations to an
 [inference driver](../../guides/inference-foundations.md).
-
 
 An invocation installs a draw-and-score handler for `random` and an
 accumulator for `score`. Given `--site name=value`, that site is replayed and

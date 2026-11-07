@@ -62,10 +62,12 @@ words in a document. For a candidate topic, multiply its probabilities for
 those words; then sum these document likelihoods using the document's topic
 weights. One rare word can thus change how the entire document is assigned.
 
-Canonical LDA instead lets each word choose its own topic. Its likelihood is
-a product of per-word [mixture sums](mixture-model.md#understanding-the-model). The grouped block in this source uses
-[one assignment per document](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping), so it sums after multiplying the word likelihoods.
-The walkthrough follows that order of operations. Stan’s [vectorization example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures) writes out how moving a mixture sum outside a product changes which observations share an assignment [@stanFiniteMixtures].
+Canonical LDA lets each word choose its own topic. Its likelihood is a
+product of per-word [mixture sums](mixture-model.md#understanding-the-model).
+The grouped block in this source uses [one assignment per document](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping),
+so it [sums after multiplying the word likelihoods](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures)
+[@stanFiniteMixtures]. This order makes all words in the document contribute
+to the evidence for a single topic.
 
 ## Walkthrough
 
@@ -107,7 +109,6 @@ Finally `return theta` projects the program's joint kernel onto the document-top
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -175,7 +176,6 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 Marginalization pushes the joint measure on topic assignments and words onto
@@ -187,7 +187,6 @@ calculation; the grouping map determines which observations share a latent.
 ## See also
 
 - [Bayesian Gaussian Mixture Model](mixture-model.md) for a per-row mixture whose component assignment is integrated out in closed form by the likelihood, carrying no discrete latent and no `marginalize` block.
-
 
 ## Sources and further reading
 

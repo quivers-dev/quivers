@@ -10,21 +10,18 @@ primitives that every guide consumes live in
 
 ## Guides: variational families
 
-A **guide** is a distribution with adjustable parameters used to
-approximate the posterior. If `z` is an unknown mean, a simple guide
+A **guide** is a [distribution with adjustable parameters](https://pyro.ai/examples/svi_part_i.html#Guide) used to
+approximate the posterior [@pyroSVI]. If `z` is an unknown mean, a simple guide
 might learn a center and spread for `z`. The model still supplies the
 prior and likelihood; the guide supplies candidate latent values and
-their density under the approximation. Observed sites remain fixed to the
+their density under the approximation. [Observed sites](inference-foundations.md#trace-and-sample-sites) remain fixed to the
 supplied data throughout fitting.
-
-Pyro’s [guide tutorial](https://pyro.ai/examples/svi_part_i.html#Guide) spells out how model and guide sample sites correspond. [@pyroSVI] The [trace explanation](inference-foundations.md#trace-and-sample-sites) describes the site names and density terms Quivers records.
 
 A diagonal, or *mean-field*, Normal treats latent coordinates as
 independent in its unconstrained representation. A full-covariance Normal
 can represent linear correlations but costs more parameters. Flows can bend the density, and mixtures can place mass around several
 separated modes. To compare these families, fit each from several
 initializations and compare their ELBOs and posterior predictive draws.
-
 
 A guide $q_\phi(z \mid x, y)$ is a variational family approximating
 the posterior. Eleven concrete `Auto*` guide classes cover the
@@ -98,7 +95,6 @@ return that value. Its scoring convention optimizes a MAP estimate.
 The ELBO/KL identity below assumes a density with respect to the model
 measure; a point mass in a continuous space violates that assumption.
 
-
 A delta (point mass) approximation, i.e. a single best estimate.
 The point lives in the unconstrained space and is pushed through
 `biject_to(support)` at evaluation time, so it always lies inside
@@ -137,7 +133,6 @@ derivatives of the sampling log probability, which is useful when the
 sample itself is not differentiable. The table records the advanced
 choices; ordinary ELBO with a supported estimator is a simpler starting
 point for understanding the loop.
-
 
 [`SVI`](../api/inference/svi.md) accepts any
 [`Objective`](../api/inference/elbo.md) subclass. The seven shipped
@@ -180,9 +175,7 @@ scales linearly in the particle count.
 
 ## ELBO: evidence lower bound
 
-Pyro’s [ELBO derivation](https://pyro.ai/examples/svi_part_i.html#ELBO) connects the optimization objective to the posterior approximation, then its [coin bias example](https://pyro.ai/examples/svi_part_i.html#A-simple-example) fits a Beta guide to Bernoulli observations. [@pyroSVI]
-
-The **evidence lower bound (ELBO)** balances two terms. `log p` rewards
+The **[evidence lower bound (ELBO)](https://pyro.ai/examples/svi_part_i.html#ELBO)** balances two terms [@pyroSVI]. `log p` rewards
 latent values that the prior and observed data support. The expected
 negative `log q` is the guide’s entropy, which rewards spreading mass
 across the values supported by the model. For a fixed model and an
@@ -198,7 +191,6 @@ The optimizer below minimizes the *negative* ELBO. A diagonal guide, for
 instance, can reach its best ELBO while missing a correlation between two
 latent variables. Fit a full-covariance guide to assess that correlation,
 and compare replicated observations with the data to assess predictive fit.
-
 
 The [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) is
 the variational objective:
@@ -246,9 +238,10 @@ Internally, the ELBO:
 
 ## SVI: stochastic variational inference
 
-For variational inference and stochastic optimization of variational
-objectives, see [@blei2017variational; @hoffman2013svi].
-
+Variational inference chooses a tractable family of distributions and
+optimizes its parameters to approximate the posterior. Stochastic
+optimization estimates the objective or its gradient from samples
+[@blei2017variational; @hoffman2013svi].
 
 The
 [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) training
@@ -290,7 +283,6 @@ The posterior predictive has two sources of variation: uncertainty about
 replicated or future observations. With a guide, replace the exact
 posterior in the integral below by the fitted approximation `q`; the
 result inherits that approximation's limitations.
-
 
 After training, sample from the posterior predictive:
 

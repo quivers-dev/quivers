@@ -74,9 +74,11 @@ varying around zero. Sharing `tau` lets groups with limited data borrow
 information about the plausible size of an offset, which is [partial pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered).
 
 The half-Student-t prior puts more mass on large scale values than a
-half-Normal. All observations still share the residual scale `sigma`, so
-increasing it widens every conditional Normal distribution. A Student-t
-observation family would instead give the residual distribution heavier tails. Stan’s [robust noise examples](https://mc-stan.org/docs/stan-users-guide/regression.html#robust-noise-models) show this change to the observation likelihood [@stanRegression].
+half-Normal. All observations share the residual scale `sigma`, so
+increasing it widens every conditional Normal distribution. A [Student-t
+observation family](https://mc-stan.org/docs/stan-users-guide/regression.html#robust-noise-models)
+gives the residual distribution heavier tails even at a fixed scale
+[@stanRegression].
 
 ## Walkthrough
 
@@ -87,7 +89,6 @@ observation family would instead give the residual distribution heavier tails. S
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 

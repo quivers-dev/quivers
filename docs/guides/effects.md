@@ -2,20 +2,17 @@
 
 An **effect** is an operation a computation requests from its execution
 context, such as drawing a random value, reading state, or adding a score.
-A **handler** decides how that request is interpreted. The same random
+A **handler** decides how that [request is interpreted](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) [@pyroEffects]. The same random
 request can draw a fresh value during simulation or replay a supplied
 value during scoring. A [resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) continues the computation after the
 request has received its answer.
 
-Pyro’s [example of conditioning and tracing](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) demonstrates two interpretations of a sample request. [@pyroEffects] The QVR [handler declarations](../reference/qvr/effects-and-handlers.md#handler-declarations) give an example that follows a request through its resumption.
-
 In linguistic semantics, an expression can likewise carry more than its
 ordinary denotation: several alternatives, a discourse update, or a
 scope-taking operation. The monad and arrow interfaces below describe how
-to compose that extra structure. The later QIEC section describes how
+to compose that extra structure [@hughes2000arrows]. The later QIEC section describes how
 source programs declare requests and [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations). These related presentations
 serve different levels of the implementation.
-
 
 QVR provides two parallel typeclass towers, Haskell-style [monads](monadic.md#monads) and
 Hughes-style arrows, together with a class-driven schema-lifting system.
@@ -29,8 +26,6 @@ denotations are in [Denotational Semantics](../semantics/effects.md).
 
 ## Typeclass hierarchy
 
-For arrows as a generalization of monadic interfaces, see [@hughes2000arrows].
-
 A *typeclass* specifies operations an implementation supports. `fmap`
 applies an ordinary function while retaining its surrounding effect;
 `pure` introduces an ordinary value into that effect. `apply` combines
@@ -42,7 +37,6 @@ For instance, if an adjective has two possible meanings and a noun has
 three, lifting their combination over alternatives considers six pairs.
 The base adjective-noun rule remains the operation applied to each pair;
 the effect interface supplies the branching and aggregation.
-
 
 Both towers live as Python ABCs in `quivers.monadic.typeclasses` and
 `quivers.arrows.typeclasses`. Effects (instances) implement the
@@ -154,7 +148,6 @@ request, one handler might select an alternative and another might explore
 all alternatives. The operation's type stays fixed while the handling
 policy changes.
 
-
 For effects that don't fit a closed-form typeclass instance,
 `quivers.monadic.algebraic` provides a free-monad-over-signature
 construction:
@@ -183,7 +176,6 @@ Handling one cell does not handle the other. A total handler removes its
 instance from the row because it accounts for every request on that
 instance; a partial handler leaves an obligation for the surrounding
 context.
-
 
 QVR's **QIEC effect calculus** is the source-level interface every
 computation of a module is checked under, a probabilistic `program` included:
@@ -240,7 +232,6 @@ a registered distributive law permits a particular change in effect order.
 The parser searches these choices alongside the syntactic category
 choices. Swapping two effects requires a registered distributive law
 for that pair and direction.
-
 
 When the chart parser fires at span `(i, j)`, each cell carries a
 distribution over `(Cat, EffectStack)` pairs (the residuated universe

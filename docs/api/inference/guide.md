@@ -1,17 +1,11 @@
 # Variational Guides
 
-A variational guide is an adjustable distribution over unobserved variables.
-Optimization changes its parameters to approximate the posterior. Independent Normal
-guides represent marginal locations and scales; covariance and flow guides can also
+A [variational guide](https://pyro.ai/examples/svi_part_i.html#Guide) is an adjustable
+distribution over unobserved variables [@pyroSVI; @blei2017variational; @hoffman2013svi].
+[Optimization changes its parameters](../../tutorials/python/05-variational-inference.md#building-a-model) to approximate the posterior. [Independent Normal
+guides](../../guides/inference-svi.md#guides-variational-families) represent marginal locations and scales; covariance and flow guides can also
 represent dependence. Compare fits from several initializations when assessing a more
 flexible guide.
-
-Pyro's [guide introduction](https://pyro.ai/examples/svi_part_i.html#Guide) explains the role of the adjustable distribution used to approximate a posterior [@pyroSVI].
-
-See [variational families and their assumptions](../../guides/inference-svi.md#guides-variational-families) and
-[a regression fitted with variational inference](../../tutorials/python/05-variational-inference.md#building-a-model).
-
-For variational approximation and its limits, see [@blei2017variational; @hoffman2013svi].
 
 Variational guide distributions for approximate inference. The guides
 live in submodules of `quivers.inference.guides` and share the `Guide`

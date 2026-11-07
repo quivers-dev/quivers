@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Changed
 
 - Expanded intuition throughout the guides, tutorials, examples, semantics, and API reference while stating the assumptions behind formal claims.
-- Added links between conceptual explanations, worked examples, and API definitions, together with direct links to external tutorial sections.
+- Integrated links and citations into explanations across the documentation; removed repetitive reading recommendations and unused bibliography entries.
 - Corrected mathematical claims, model descriptions, and source attributions in documentation and docstrings; recorded citation verification and its remaining limitations.
 
 ## [0.25.2] - 2026-10-11

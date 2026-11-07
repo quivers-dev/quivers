@@ -58,9 +58,10 @@ export bnn
 There are two sources of uncertainty in a Bayesian neural network. Even if
 the weights were known, observations would vary around the network's mean;
 that is the Normal kernel's noise. With finite data, the weights themselves
-are also uncertain; a prior and posterior over weights represent this second
-source. The code below first fits one weight vector, then adds the priors
-needed to represent weight uncertainty. Pyro’s [Bayesian regression model](https://pyro.ai/examples/bayesian_regression.html#Model) demonstrates this change from fitted weights to weight distributions in a smaller linear network [@pyroBayesianRegression].
+are also uncertain. A [prior and posterior over weights](https://pyro.ai/examples/bayesian_regression.html#Model)
+represent this second source [@pyroBayesianRegression]. The code below first
+fits one weight vector, then adds priors so inference can estimate uncertainty
+in those weights.
 
 A [posterior prediction](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) draws weights, computes a mean and scale for the new
 input, then draws an outcome. The initial maximum-likelihood block instead
