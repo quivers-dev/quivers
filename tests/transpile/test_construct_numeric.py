@@ -26,6 +26,7 @@ import torch
 import torch.distributions as D
 
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.checked_program import CheckedProgram
 from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.transpile import UnsupportedConstruct, transpile
@@ -640,7 +641,7 @@ def _reference(fixture: str) -> list[float]:
         fixture's independent oracle.
     """
     model = loads(_source(fixture)).morphism
-    assert isinstance(model, MonadicProgram)
+    assert isinstance(model, MonadicProgram | CheckedProgram)
     densities: list[float] = []
     for point in _POINTS[fixture]:
         values = _shaped(fixture, {**_DATA[fixture], **point})
