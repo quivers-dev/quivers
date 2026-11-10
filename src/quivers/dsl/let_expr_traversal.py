@@ -480,7 +480,6 @@ __all__ = [
     "free_let_names",
     "let_expr_children",
     "map_let_expr",
-    "map_let_expr",
     "substitute_let_expr",
     "walk_let_expr",
 ]
