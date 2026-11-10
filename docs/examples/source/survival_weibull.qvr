@@ -1,27 +1,39 @@
-# Weibull Parametric Survival Regression
+# Weibull Proportional-Hazards Survival Regression
 #
-# A parametric accelerated-failure-time / proportional-hazards
-# survival model with a Weibull baseline. Each item carries a
-# covariate whose linear contribution scales the Weibull rate;
-# the shape parameter k governs whether the hazard is
-# decreasing (k < 1), constant (k = 1, exponential), or
-# increasing (k > 1).
+# A parametric survival regression with a Weibull baseline and
+# right-censored follow-up. Each item has a covariate x_i, an
+# observed time t_i (supplied as log_t = log t_i), and an event
+# indicator d_i: 1 when the event was observed at t_i, 0 when
+# follow-up ended at t_i without it.
 #
 # Generative structure:
 #
 #   alpha   ~ Normal(0, 5)                        intercept
 #   beta    ~ Normal(0, 5)                        slope
 #   k       ~ Gamma(2, 1)                         Weibull shape
-#   t_i     ~ Weibull(exp(-(alpha + beta * x_i) / k), k)
+#   eta_i   = alpha + beta * x_i
+#   T_i     ~ Weibull(scale=exp(-eta_i / k), concentration=k)
+#   t_i     = min(T_i, C_i),  d_i = [T_i <= C_i]
 #
-# The scale reparameterization exp(-eta / k) is the Weibull
-# proportional-hazards convention so that increasing eta
-# increases the hazard. The model produces uncensored event
-# times; right-censoring is handled at the inference layer by
-# substituting the Weibull survival function for the density on
-# censored rows.
+# The hazard of T_i is h(t) = k * t**(k - 1) * exp(eta_i): a
+# Weibull baseline hazard k * t**(k - 1) multiplied by exp(eta_i),
+# which is the proportional-hazards form. The cumulative hazard is
+# H(t) = t**k * exp(eta_i). An event row contributes the density
+# log h(t_i) - H(t_i) and a censored row the log survival
+# function -H(t_i), so row i contributes d_i * log h(t_i) - H(t_i).
+#
+# Because d_i is 0 or 1, that equals
+#
+#   log Poisson(d_i | H(t_i)) + d_i * log(k / t_i),
+#
+# the Poisson form of the censored likelihood: the observe step
+# scores the first term and the score step adds the second. The
+# censoring times C_i are independent of T_i and carry no
+# parameters, so they contribute nothing to the posterior.
+#
+# Reference: [Aitkin and Clayton 1980](https://doi.org/10.2307/2986301).
 
-object Item : FinSet 64
+object Item : FinSet 200
 object Val : Real 1
 
 program survival_weibull : Item -> Val
@@ -30,9 +42,11 @@ program survival_weibull : Item -> Val
     sample k <- Gamma(concentration=2.0, rate=1.0)
 
     let eta = alpha + beta * x
-    let scale = exp(-eta / k)
+    let cumulative_hazard = exp(eta + k * log_t)
+    observe event : Item <- Poisson(rate=cumulative_hazard)
 
-    observe t : Item <- Weibull(scale=scale, concentration=k)
+    let log_hazard_ratio = log(k) - log_t
+    score event_hazard = sum(event * log_hazard_ratio)
     return beta
 
 export survival_weibull
