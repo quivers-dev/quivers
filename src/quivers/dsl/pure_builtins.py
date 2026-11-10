@@ -57,7 +57,11 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "logsigmoid": lambda a: _F.logsigmoid(a),
     "threshold": lambda a, t, v: _F.threshold(a, t, v),
     "glu": lambda a: _F.glu(a, dim=-1),
-    "normalize": lambda a, p=2.0: _F.normalize(a, p=p, dim=-1),
+    "normalize": lambda a, p=None: (
+        a / a.sum(dim=-1, keepdim=True)
+        if p is None
+        else _F.normalize(a, p=p, dim=-1)
+    ),
     "exp": lambda a: torch.exp(a),
     "expm1": lambda a: torch.expm1(a),
     "log": lambda a: torch.log(a),
@@ -207,7 +211,11 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     },
 }
 
-#: Builtin names that reduce a whole tensor to one number.
+#: Builtin names that collapse the last axis of a tensor: a vector reduces
+#: to one number, and a tensor of higher rank to the tensor of its leading
+#: axes. The checked lowering spells this as one whole-vector `Reduction`
+#: per row, the eager runtime reduces ``dim=-1``, and every renderer
+#: reduces the same axis.
 _REDUCTIONS: Mapping[str, ReductionOperator] = {
     "sum": "sum",
     "mean": "mean",
@@ -217,7 +225,8 @@ _REDUCTIONS: Mapping[str, ReductionOperator] = {
     "prod": "prod",
 }
 
-#: Builtin names that act along a tensor's last axis.
+#: Builtin names that act along a tensor's last axis, keeping its shape.
+#: ``normalize`` divides each row by its sum, onto the simplex.
 _ROWWISE: Mapping[str, RowwiseOperator] = {
     "softmax": "softmax",
     "log_softmax": "log_softmax",

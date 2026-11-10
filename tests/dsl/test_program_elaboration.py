@@ -142,11 +142,15 @@ def _tensor(value: object) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        The values as floats.
+        The values as integers when every one is an integer, as the
+        checked type of an index reads them, else as floats.
     """
     if isinstance(value, bool | int | float):
         return torch.tensor([float(value)])
-    return torch.tensor([float(item) for item in value])  # type: ignore[union-attr]
+    items = list(value)  # type: ignore[call-overload]
+    if all(isinstance(item, int) and not isinstance(item, bool) for item in items):
+        return torch.tensor(items, dtype=torch.long)
+    return torch.tensor([float(item) for item in items])
 
 
 def _classic_log_joint(

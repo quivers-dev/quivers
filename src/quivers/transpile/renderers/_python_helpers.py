@@ -57,6 +57,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
+from quivers.transpile.renderers._ranks import reduces_last_of_several_axes
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
 )
@@ -85,6 +86,7 @@ class PyCtx:
         gather_symbol: tuple[str, ...] | None = None,
         factor_towers: frozenset[str] | None = None,
         name_plates: dict[str, Plate] | None = None,
+        name_rank: dict[str, int] | None = None,
     ) -> None:
         self._sb = sb
         self._n = 0
@@ -121,6 +123,12 @@ class PyCtx:
         # tensor needs the observe's `via` gather, and the trailing
         # event extent to size a `class_index` atom set.
         self.name_plates: dict[str, Plate] = dict(name_plates or {})
+        # Per-name rank read from the IR: the batch and event axes of
+        # every bound name together. A reducing call whose argument has
+        # two or more axes reduces its last one, as the checked
+        # elaboration and the compiled runtime do, so it takes the
+        # target's axis keyword even when no axis is an event axis.
+        self.name_rank: dict[str, int] = dict(name_rank or {})
         # Imports a lowered ``LetExprCall`` symbol requires, as
         # ``(dotted-chain, alias)`` pairs. Only NumPyro emits an import
         # block, so only it drains this; the other backends assume their
@@ -847,17 +855,21 @@ def render_let_expr_python(
         args = ctx.v(ctx.fresh("args"), "argument_list")
         for a in expr.args:
             ctx.e(args, render_let_expr_python(ctx, a), "child_of")
-        # A reducing primitive (``sum``, ``mean``, ...) over a
-        # positive-event-rank argument collapses the trailing event
-        # axis; the renamed callee already targets the target's
-        # array-aware aggregator, so append the reduction-axis keyword
-        # (``axis=-1`` / ``dim=-1``). A scalar argument keeps the
-        # Python-builtin call shape with no keyword.
+        # A reducing primitive (``sum``, ``mean``, ...) collapses the
+        # last axis of its argument. The renamed callee already targets
+        # the target's array-aware aggregator, so an argument with an
+        # event axis, or with two or more axes of any kind, takes the
+        # reduction-axis keyword (``axis=-1`` / ``dim=-1``); a vector
+        # with no event axis reduces to the same number either way and
+        # keeps the call with no keyword.
         needs_trailing_axis = expr.func in _TRAILING_AXIS_CALLS and len(expr.args) == 1
         reduces_event_axis = (
             expr.func in _AXIS_REDUCING_CALLS
             and len(expr.args) == 1
-            and _infer_event_rank(ctx, expr.args[0]) > 0
+            and (
+                _infer_event_rank(ctx, expr.args[0]) > 0
+                or reduces_last_of_several_axes(expr, ctx.name_rank)
+            )
         )
         if needs_trailing_axis or reduces_event_axis:
             axis_kw = _AXIS_KEYWORD_BY_TARGET.get(ctx.target, "axis")
@@ -1264,23 +1276,23 @@ def render_deterministic_python(ctx: PyCtx, node: IRDeterministic) -> str:
     """Render the right-hand side of a deterministic let-binding.
 
     A binding that denotes a vector but is built coordinate by
-    coordinate is stacked into a target array; every other binding is
-    its expression rendered directly.
+    coordinate is stacked into a target array, and so is a uniform
+    factor over two or more binders, one stack per binder; every other
+    binding is its expression rendered directly.
     """
+    expr = node.expr
+    if (
+        isinstance(expr, LetExprFactor)
+        and len(expr.binders) >= 2
+        and expr.body is not None
+        and not expr.cases
+    ):
+        sizes = tuple(_card_for(ctx, binder) for binder in expr.binders)
+        return _build_stacked_python(ctx, expr.binders, sizes, expr.body, ())
     coordinates = _vector_binding_coordinates(ctx, node)
     if coordinates is None:
         return render_let_expr_python(ctx, node.expr)
-    stack = _PY_STACK_SYMBOLS.get(ctx.target)
-    if stack is None:
-        raise UnsupportedConstruct(
-            "qvr-python-helper",
-            [
-                f"let-expr:LetExprFactor:{ctx.target}: no array "
-                f"stacking primitive is mapped for this target, so "
-                f"the vector binding {node.name!r} cannot be "
-                f"materialised as an array"
-            ],
-        )
+    stack = _target_stack_symbol(ctx, node.name)
     element = _PY_STACK_ELEMENT_SYMBOLS.get(ctx.target)
     rendered: list[str] = []
     for coordinate in coordinates:
@@ -1293,6 +1305,98 @@ def render_deterministic_python(ctx: PyCtx, node: IRDeterministic) -> str:
         attribute(ctx, stack),
         positional=(python_list(ctx, tuple(rendered)),),
     )
+
+
+def _target_stack_symbol(ctx: PyCtx, name: str) -> tuple[str, ...]:
+    """The target's array-stacking primitive.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        The render context.
+    name : str
+        The binding being stacked, for the diagnostic.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The dotted stacking callee.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the target maps no stacking primitive.
+    """
+    stack = _PY_STACK_SYMBOLS.get(ctx.target)
+    if stack is None:
+        raise UnsupportedConstruct(
+            "qvr-python-helper",
+            [
+                f"let-expr:LetExprFactor:{ctx.target}: no array "
+                f"stacking primitive is mapped for this target, so "
+                f"the binding {name!r} cannot be materialised as an array"
+            ],
+        )
+    return stack
+
+
+def _build_stacked_python(
+    ctx: PyCtx,
+    binders: tuple[LetFactorBinder, ...],
+    sizes: tuple[int, ...],
+    body: LetExprNode,
+    fixed: tuple[int, ...],
+) -> str:
+    """Materialise a uniform factor as nested stacks of target arrays.
+
+    Each binder contributes one stack, outermost first, so the binding
+    is an array of shape ``(|b0|, ..., |bn-1|, *body_shape)`` that a
+    reduction can collapse along its last axis and a subscript can read
+    one level per index.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        The render context.
+    binders : tuple[LetFactorBinder, ...]
+        The factor's binders.
+    sizes : tuple[int, ...]
+        Each binder's extent.
+    body : LetExprNode
+        The factor's body.
+    fixed : tuple[int, ...]
+        The values of the binders already enumerated.
+
+    Returns
+    -------
+    str
+        The vertex of the stacked array, or of one cell's value when
+        every binder is fixed.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the target maps no stacking primitive.
+    """
+    if len(fixed) == len(binders):
+        cell = body
+        for binder, value in zip(binders, fixed, strict=True):
+            literal = LetExprLiteral(value=value, integral=True)
+            cell = _substitute_let_expr(
+                cell, binder.var, index_value=literal, scalar_value=literal
+            )
+        vid = render_let_expr_python(ctx, cell)
+        element = _PY_STACK_ELEMENT_SYMBOLS.get(ctx.target)
+        if element is not None:
+            vid = call(ctx, attribute(ctx, element), positional=(vid,))
+        return vid
+    level = len(fixed)
+    items = tuple(
+        _build_stacked_python(ctx, binders, sizes, body, (*fixed, index))
+        for index in range(sizes[level])
+    )
+    stack = _target_stack_symbol(ctx, binders[0].var)
+    return call(ctx, attribute(ctx, stack), positional=(python_list(ctx, items),))
 
 
 def _render_factor_python(ctx: PyCtx, expr: LetExprFactor) -> str:

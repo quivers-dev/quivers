@@ -148,6 +148,18 @@ _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
     ("bugs", "steps", "marginalize_step"): "marginalize:grouped-fibration",
 }
 
+# A let reduction collapses only the last axis of its argument, and BUGS /
+# JAGS have no partial reduction of a two-axis table.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_matrix")] = (
+        "let-expr:axis-reduction"
+    )
+# Church writes a factor as one list expression, which has no form for a
+# product over two axes.
+_EXPECTED_ORTHOGONAL_RAISES[("church", "let_expressions", "let_reduce_matrix")] = (
+    "let-expr:LetExprFactor:multi-axis-body"
+)
+
 for _backend in _BACKENDS:
     for _fixture in ("encoder_decl", "decoder_decl"):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "statements", _fixture)] = (

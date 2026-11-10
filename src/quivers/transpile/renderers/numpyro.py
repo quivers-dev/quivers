@@ -14,6 +14,7 @@ import torch.distributions.constraints as c
 
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._ranks import name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     PyCtx,
     arg_expr,
@@ -208,6 +209,7 @@ class NumPyroRenderer(RendererBase):
             cards=dict(ir.cards),
             target="numpyro",
             name_event_rank=name_event_rank_map(ir),
+            name_rank=name_rank_map(ir),
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )

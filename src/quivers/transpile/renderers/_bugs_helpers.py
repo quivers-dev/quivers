@@ -79,6 +79,7 @@ from quivers.transpile.ir import (
     LetExprAffineMap,
     Plate,
 )
+from quivers.transpile.renderers._ranks import LAST_AXIS_REDUCTIONS
 from quivers.transpile.renderers._base import IRArgTransform
 
 
@@ -841,9 +842,11 @@ def _emit_reduction_or_call(ctx: _LetEnv, expr: LetExprCall) -> str:
     written in terms of has no target form on its own. A reduction of
     a single rank-1 operand passes straight through, because the
     target builtin already contracts the one axis the operand
-    carries. Every other axis-carrying reduction raises.
+    carries. A reduction of an operand with several axes collapses
+    only its last one, which the target builtin cannot spell, so it
+    raises, whichever reduction it is.
     """
-    if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
+    if expr.func in LAST_AXIS_REDUCTIONS and len(expr.args) == 1:
         arg = expr.args[0]
         rank = axis_rank(ctx.decl_plates, arg)
         if rank > 1:
@@ -858,7 +861,11 @@ def _emit_reduction_or_call(ctx: _LetEnv, expr: LetExprCall) -> str:
                     f"reduction"
                 ],
             )
-        if rank == 1 and isinstance(arg, LetExprBinOp):
+        if (
+            rank == 1
+            and isinstance(arg, LetExprBinOp)
+            and expr.func in _AXIS_REDUCING_CALLS
+        ):
             return _emit_contracted_binop(ctx, expr.func, arg)
     return _emit_call(
         ctx,
@@ -1857,9 +1864,14 @@ def _index_letexpr_refs_inner(
         if plate is None or not plate.batch_dims:
             return expr
         indices: list[LetExprNode] = []
-        for dim in plate.batch_dims:
+        for position, dim in enumerate(plate.batch_dims):
             lname = axis_to_loop.get(dim.name)
-            if lname is None:
+            if lname is None or any(
+                earlier.name == dim.name for earlier in plate.batch_dims[:position]
+            ):
+                # An axis the loop does not iterate, or a second axis over
+                # the same object (a factor's `A`-by-`A` table), has no
+                # loop variable of its own: the name stays whole.
                 return expr
             indices.append(LetExprVar(name=lname))
         return LetExprIndex(

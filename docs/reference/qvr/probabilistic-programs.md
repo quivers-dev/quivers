@@ -54,6 +54,39 @@ its binding, and host data may supply free names used by expressions. The
 compiler records those names as input parameters rather than treating them as
 globals.
 
+## Host data
+
+Each free name is a program input with one checked type, which
+`qvr check` and `entry_points()` list and every transpile target declares. The
+type is inferred from the name's uses:
+
+| Use of the free name `x` | Checked type of `x` |
+| --- | --- |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, `Tensor[A]([x_extent, ...])` |
+| combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
+| read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
+| used as an index | its elements are `Int` |
+| none of the above | a scalar `Real`, or `Int` for an index |
+
+The rule applies to `let` and `score` expressions alike. A free name that a
+reduction or a rowwise operation consumes, but that no use fixes the shape of,
+as in `score s = sum(weight)`, is reported at the step that reads it: nothing
+says how many entries it has. State its extent by combining it elementwise with
+a value over the intended object, or by reading it entrywise in a factor, as in
+`sum(factor i : Item in weight[i] * resid[i])`. Uses that fix two different
+shapes for one name are refused the same way. A free name filling a scalar
+family parameter directly, as in `Normal(loc=mu, scale=1.0)`, is one value the
+draw's plate shares.
+
+A run supplies each input at its checked type. The reference machine validates
+every argument, and the compiled runtime (`log_joint`, `trace`, `rsample`, and
+the inference built on them) refuses a host datum whose shape or element type
+contradicts its checked type, naming the datum and both shapes: a vector for a
+scalar input, a `(rows, units)` index for a vector over `Row`, or a
+floating-point tensor for an `Int` index. An open extent takes the length of the
+first datum it shapes. The check is what keeps the compiled runtime scoring the
+model the checked module and every transpiled program describe.
+
 Pure collection expressions such as `map` stay on the right of `=`. An
 effect-aware `traverse` is computation syntax and stays on the right of `<-`;
 the called computation's effects join the program row. See
@@ -180,6 +213,15 @@ program mixture : Row -> Row
 
 export mixture
 ```
+
+The latent's atoms are the elements of its declared index object, here the
+two elements of `Component`, numbered from zero; every target enumerates
+exactly those atoms, whatever form the probability argument takes (a sampled
+simplex, a literal, or a `let`). A latent declared without an index object
+takes its atom count from the width of its probability argument, and a
+target refuses the block with `marginalize:unknown-cardinality:<family>` when
+neither fixes the count. Inside the scope the latent is a number in that
+zero-based range, so `real(z + 1)` is 1 at the first atom on every target.
 
 `over=Item` requests one latent mixture assignment per item. `via=item_idx`
 maps observation rows into those groups. For product groups write

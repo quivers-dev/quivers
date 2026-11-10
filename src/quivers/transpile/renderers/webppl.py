@@ -60,6 +60,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
+from quivers.transpile.renderers._ranks import let_expr_rank, name_rank_map
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
     BlockKind,
@@ -226,6 +227,7 @@ class WebPPLRenderer(RendererBase):
         # collapses the innermost axis through a `_qvr_<f>_last`
         # runtime helper; WebPPL's own `sum` flattens every axis.
         self._name_event_rank: dict[str, int] = {}
+        self._name_rank: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Abstract overrides: target_protocol + four dispatch points.
@@ -286,6 +288,7 @@ class WebPPLRenderer(RendererBase):
         # (`sum(z_row * w_row)`) collapses only the innermost axis
         # instead of flattening the whole nested array to one scalar.
         self._name_event_rank = name_event_rank_map(ir)
+        self._name_rank = name_rank_map(ir)
         # Program root: a single var-decl wrapping a function expression.
         ctx.sb.vertex("prog", "program")
         # WebPPL's `dists` module ships `Gaussian`, `Beta`, `Categorical`,
@@ -301,7 +304,7 @@ class WebPPLRenderer(RendererBase):
             any(_ir_uses_family(ir.body, f) for f in _WEBPPL_RUNTIME_HELPER_FAMILIES)
             or _ir_emits_qvr_bcast(ir, self._array_names)
             or _ir_uses_webppl_math(ir.body)
-            or _ir_reduces_event_axis(ir.body, self._name_event_rank)
+            or _ir_reduces_event_axis(ir.body, self._name_event_rank, self._name_rank)
             or _ir_has_marginalize(ir.body)
             or _ir_has_affine_map(ir.body)
             # A `Categorical` call site reads its support from
@@ -1492,7 +1495,7 @@ class WebPPLRenderer(RendererBase):
                 continue
             rhs = render_let_expr_javascript(
                 _JsLetCtx(ctx.sb, lambda p: self._fresh(ctx, p), self._cards),
-                _reduce_last_axis(argument, self._name_event_rank),
+                _reduce_last_axis(argument, self._name_event_rank, self._name_rank),
             )
             self._emit_var_decl(ctx, self._body_vid, bound, rhs)
             names.append(bound)
@@ -1534,7 +1537,7 @@ class WebPPLRenderer(RendererBase):
         [`IRArgRef`][quivers.transpile.ir.IRArgRef] references emit
         an index access.
         """
-        expr = _reduce_last_axis(node.expr, self._name_event_rank)
+        expr = _reduce_last_axis(node.expr, self._name_event_rank, self._name_rank)
         array_inputs = self._array_input_refs_in_expr(expr)
         array_bindings = self._array_binding_refs_in_expr(expr)
         if not array_inputs and not array_bindings:
@@ -1745,11 +1748,15 @@ class WebPPLRenderer(RendererBase):
         first so the factor reads a name. The expression is rendered
         through
         `render_let_expr_javascript`
-        so the bound value is a real JavaScript expression.
+        so the bound value is a real JavaScript expression. Operators
+        over array-valued operands, such as a per-row weight times a
+        per-row residual, go through the elementwise `_qvr_bcast` helper,
+        since a JavaScript operator would coerce an array to `NaN`.
         """
+        expr = _reduce_last_axis(node.expr, self._name_event_rank, self._name_rank)
         rhs = render_let_expr_javascript(
             _JsLetCtx(ctx.sb, lambda p: self._fresh(ctx, p), self._cards),
-            _reduce_last_axis(node.expr, self._name_event_rank),
+            _vectorize_let_expr(expr, self._array_names),
         )
         self._emit_var_decl(ctx, self._body_vid, node.name, rhs)
         factor_call = self._call(
@@ -2773,7 +2780,33 @@ def _js_event_rank(expr: LetExprNode, ranks: dict[str, int]) -> int:
     return 0
 
 
-def _reduce_last_axis(expr: LetExprNode, ranks: dict[str, int]) -> LetExprNode:
+def _needs_last_axis(
+    expr: LetExprNode, ranks: dict[str, int], full_ranks: dict[str, int]
+) -> bool:
+    """Whether a reduction's argument needs the last-axis runtime helper.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The reduction's argument.
+    ranks : dict[str, int]
+        Each name's event rank.
+    full_ranks : dict[str, int]
+        Each name's batch and event axes together.
+
+    Returns
+    -------
+    bool
+        True when the argument has an event axis or two or more axes of
+        any kind: WebPPL's own builtin flattens every axis, while the
+        reduction collapses only the last.
+    """
+    return _js_event_rank(expr, ranks) > 0 or let_expr_rank(expr, full_ranks) >= 2
+
+
+def _reduce_last_axis(
+    expr: LetExprNode, ranks: dict[str, int], full_ranks: dict[str, int]
+) -> LetExprNode:
     """Rewrite every reduction over a positive-rank argument into the
     matching ``_qvr_<f>_last`` runtime-helper call.
 
@@ -2787,17 +2820,19 @@ def _reduce_last_axis(expr: LetExprNode, ranks: dict[str, int]) -> LetExprNode:
     if isinstance(expr, LetExprBinOp):
         return LetExprBinOp(
             op=expr.op,
-            left=_reduce_last_axis(expr.left, ranks),
-            right=_reduce_last_axis(expr.right, ranks),
+            left=_reduce_last_axis(expr.left, ranks, full_ranks),
+            right=_reduce_last_axis(expr.right, ranks, full_ranks),
         )
     if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(operand=_reduce_last_axis(expr.operand, ranks))
+        return LetExprUnaryOp(
+            operand=_reduce_last_axis(expr.operand, ranks, full_ranks)
+        )
     if isinstance(expr, LetExprCall):
-        args = tuple(_reduce_last_axis(a, ranks) for a in expr.args)
+        args = tuple(_reduce_last_axis(a, ranks, full_ranks) for a in expr.args)
         if (
             expr.func in _REDUCTION_FUNCS
             and len(expr.args) == 1
-            and _js_event_rank(expr.args[0], ranks) > 0
+            and _needs_last_axis(expr.args[0], ranks, full_ranks)
         ):
             helper = _LAST_AXIS_REDUCERS.get(expr.func)
             if helper is None:
@@ -2814,32 +2849,38 @@ def _reduce_last_axis(expr: LetExprNode, ranks: dict[str, int]) -> LetExprNode:
         return LetExprCall(func=expr.func, args=args)
     if isinstance(expr, LetExprIndex):
         return LetExprIndex(
-            array=_reduce_last_axis(expr.array, ranks),
-            indices=tuple(_reduce_last_axis(i, ranks) for i in expr.indices),
+            array=_reduce_last_axis(expr.array, ranks, full_ranks),
+            indices=tuple(
+                _reduce_last_axis(i, ranks, full_ranks) for i in expr.indices
+            ),
         )
     if isinstance(expr, LetExprList):
-        return LetExprList(items=tuple(_reduce_last_axis(i, ranks) for i in expr.items))
+        return LetExprList(
+            items=tuple(_reduce_last_axis(i, ranks, full_ranks) for i in expr.items)
+        )
     if isinstance(expr, LetExprMethodCall):
         return LetExprMethodCall(
-            receiver=_reduce_last_axis(expr.receiver, ranks),
+            receiver=_reduce_last_axis(expr.receiver, ranks, full_ranks),
             method=expr.method,
-            args=tuple(_reduce_last_axis(a, ranks) for a in expr.args),
+            args=tuple(_reduce_last_axis(a, ranks, full_ranks) for a in expr.args),
         )
     if isinstance(expr, LetExprLambda):
         return LetExprLambda(
             param=expr.param,
-            body=_reduce_last_axis(expr.body, ranks),
+            body=_reduce_last_axis(expr.body, ranks, full_ranks),
         )
     if isinstance(expr, LetExprFactor):
         return LetExprFactor(
             binders=expr.binders,
             body=(
-                _reduce_last_axis(expr.body, ranks) if expr.body is not None else None
+                _reduce_last_axis(expr.body, ranks, full_ranks)
+                if expr.body is not None
+                else None
             ),
             cases=tuple(
                 LetFactorCase(
                     label=c.label,
-                    value=_reduce_last_axis(c.value, ranks),
+                    value=_reduce_last_axis(c.value, ranks, full_ranks),
                     line=c.line,
                     col=c.col,
                 )
@@ -2869,52 +2910,64 @@ def _ir_has_affine_map(body: tuple[IRNode, ...]) -> bool:
     return False
 
 
-def _ir_reduces_event_axis(body: tuple[IRNode, ...], ranks: dict[str, int]) -> bool:
+def _ir_reduces_event_axis(
+    body: tuple[IRNode, ...], ranks: dict[str, int], full_ranks: dict[str, int]
+) -> bool:
     """True iff any deterministic / score body reduces an event axis,
     so the emit references a `_qvr_<f>_last` runtime helper."""
     for node in body:
         if isinstance(node, (IRDeterministic, IRScore)):
-            if _let_expr_reduces_event_axis(node.expr, ranks):
+            if _let_expr_reduces_event_axis(node.expr, ranks, full_ranks):
                 return True
         elif isinstance(node, IRMarginalize):
-            if _ir_reduces_event_axis(node.scope, ranks):
+            if _ir_reduces_event_axis(node.scope, ranks, full_ranks):
                 return True
     return False
 
 
-def _let_expr_reduces_event_axis(expr: LetExprNode, ranks: dict[str, int]) -> bool:
+def _let_expr_reduces_event_axis(
+    expr: LetExprNode, ranks: dict[str, int], full_ranks: dict[str, int]
+) -> bool:
     """True iff ``expr`` contains a reduction over a positive-rank
     argument anywhere in its tree."""
     if isinstance(expr, LetExprCall):
         if (
             expr.func in _REDUCTION_FUNCS
             and len(expr.args) == 1
-            and _js_event_rank(expr.args[0], ranks) > 0
+            and _needs_last_axis(expr.args[0], ranks, full_ranks)
         ):
             return True
-        return any(_let_expr_reduces_event_axis(a, ranks) for a in expr.args)
+        return any(
+            _let_expr_reduces_event_axis(a, ranks, full_ranks) for a in expr.args
+        )
     if isinstance(expr, LetExprBinOp):
         return _let_expr_reduces_event_axis(
-            expr.left, ranks
-        ) or _let_expr_reduces_event_axis(expr.right, ranks)
+            expr.left, ranks, full_ranks
+        ) or _let_expr_reduces_event_axis(expr.right, ranks, full_ranks)
     if isinstance(expr, LetExprUnaryOp):
-        return _let_expr_reduces_event_axis(expr.operand, ranks)
+        return _let_expr_reduces_event_axis(expr.operand, ranks, full_ranks)
     if isinstance(expr, LetExprIndex):
-        return _let_expr_reduces_event_axis(expr.array, ranks) or any(
-            _let_expr_reduces_event_axis(i, ranks) for i in expr.indices
+        return _let_expr_reduces_event_axis(expr.array, ranks, full_ranks) or any(
+            _let_expr_reduces_event_axis(i, ranks, full_ranks) for i in expr.indices
         )
     if isinstance(expr, LetExprList):
-        return any(_let_expr_reduces_event_axis(i, ranks) for i in expr.items)
+        return any(
+            _let_expr_reduces_event_axis(i, ranks, full_ranks) for i in expr.items
+        )
     if isinstance(expr, LetExprLambda):
-        return _let_expr_reduces_event_axis(expr.body, ranks)
+        return _let_expr_reduces_event_axis(expr.body, ranks, full_ranks)
     if isinstance(expr, LetExprMethodCall):
-        return _let_expr_reduces_event_axis(expr.receiver, ranks) or any(
-            _let_expr_reduces_event_axis(a, ranks) for a in expr.args
+        return _let_expr_reduces_event_axis(expr.receiver, ranks, full_ranks) or any(
+            _let_expr_reduces_event_axis(a, ranks, full_ranks) for a in expr.args
         )
     if isinstance(expr, LetExprFactor):
-        if expr.body is not None and _let_expr_reduces_event_axis(expr.body, ranks):
+        if expr.body is not None and _let_expr_reduces_event_axis(
+            expr.body, ranks, full_ranks
+        ):
             return True
-        return any(_let_expr_reduces_event_axis(c.value, ranks) for c in expr.cases)
+        return any(
+            _let_expr_reduces_event_axis(c.value, ranks, full_ranks) for c in expr.cases
+        )
     return False
 
 
@@ -3155,6 +3208,8 @@ def _body_emits_qvr_bcast(
             has_input_pivot = bool(free & input_names)
             if not has_input_pivot and _let_expr_needs_bcast(node.expr, array_names):
                 return True
+        if isinstance(node, IRScore) and _let_expr_needs_bcast(node.expr, array_names):
+            return True
         if isinstance(node, IRMarginalize) and _body_emits_qvr_bcast(
             node.scope, array_names, input_names
         ):

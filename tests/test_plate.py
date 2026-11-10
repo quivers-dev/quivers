@@ -370,8 +370,11 @@ def test_inline_family_response_keeps_its_plate_shape() -> None:
 
     torch.manual_seed(0)
     program = loads(
-        "object Resp : FinSet 6\n"
+        "object Cut : FinSet 5\n"
+        "object Resp : FinSet 8\n"
         "program ord : Resp -> Resp\n"
+        "    sample eta : Resp <- Normal(loc=0.0, scale=1.0)\n"
+        "    sample cuts <- Normal(loc=0.0, scale=2.0) [over=Cut]\n"
         "    observe y : Resp <- OrderedLogistic(predictor=eta, cutpoints=cuts)\n"
         "    return y\n"
         "export ord\n"

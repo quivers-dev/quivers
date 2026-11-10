@@ -415,6 +415,8 @@ class Compiler(
         # QIEC-only source thus becomes an inspection/evaluation container;
         # its computation graph is never misrepresented as a PyTorch morphism.
         object.__setattr__(program, "qiec", qiec_module)
+        if qiec_module is not None:
+            self._attach_host_data_types(qiec_module)
         # Wire the loss registry into every compiled deduction so the
         # agenda's rule-firing and chart-completion paths can fire
         # rule-attached and chart-attached losses automatically.
@@ -423,6 +425,34 @@ class Compiler(
                 system._loss_registry = program.losses  # type: ignore[attr-defined]
                 system._deduction_name = name  # type: ignore[attr-defined]
         return program
+
+    def _attach_host_data_types(self, module: QiecModule) -> None:
+        """Give each compiled program the checked types of its host data.
+
+        A program's checked entry types every free name its steps read
+        (its ``data`` parameters) and every group map (its ``fibration``
+        parameters); the compiled program refuses a run whose supplied
+        data do not inhabit those types, so it computes only the model
+        the checked module describes.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The checked module.
+        """
+        compiled = {
+            **getattr(self, "_posteriors", {}),
+            **self._morphisms,
+        }
+        for entry in module.entries:
+            target = compiled.get(entry.name)
+            if not isinstance(target, MonadicProgram):
+                continue
+            target.host_data_types = {
+                parameter.name: parameter.type
+                for parameter in entry.parameters
+                if parameter.role in ("data", "fibration")
+            }
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.

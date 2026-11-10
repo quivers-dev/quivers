@@ -23,6 +23,7 @@ from quivers.transpile._pipeline import (
     parser_registry,
     target_protocol,
 )
+from quivers.transpile.renderers._ranks import name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     MarginalizeBody,
     PyCtx,
@@ -182,6 +183,7 @@ class PyMCRenderer(RendererBase):
             cards=dict(ir.cards),
             target="pymc",
             name_event_rank=name_event_rank_map(ir),
+            name_rank=name_rank_map(ir),
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )

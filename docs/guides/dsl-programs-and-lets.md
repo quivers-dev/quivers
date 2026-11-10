@@ -459,8 +459,16 @@ kernel](https://en.wikipedia.org/wiki/Dirac_delta_function).
 ### Checked primitive reference
 
 The checked registry defines the portable QIEC expression set. Operators and calls are
-resolved by argument type before execution or transpilation. Reductions act on
-the entire supplied tensor; rowwise operations act on its last axis. For a
+resolved by argument type before execution or transpilation. A reduction
+collapses the last axis of its argument and a rowwise operation acts along that
+axis, keeping the shape. For a vector over a plate, as in `sum(theta)` over
+`theta : School`, the last axis is the only one and the result is the plate's
+total. For a plate of event vectors, as in `sum(z_row * w_row)` over a
+`Resp`-plated value with an `[over=LatentDim]` event axis, the result keeps the
+plate and holds one inner product per row. For a table a `factor` builds over
+`Row` and `Unit`, the result holds one number per `Row`. `normalize` divides
+each row by its sum. Every execution path and transpile target reads the
+builtins this way. For a
 [contraction](dsl-contractions.md#type-driven-wiring-inference) over a named axis, use a typed
 [contraction declaration](dsl-contractions.md).
 

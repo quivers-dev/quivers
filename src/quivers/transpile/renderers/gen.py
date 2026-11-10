@@ -1626,12 +1626,14 @@ class GenRenderer(RendererBase):
 
         Gen scores the choices a trace holds, so the weight is traced
         as a factor choice: a one-point distribution whose log density
-        is the weight.
+        is the weight. The expression renders elementwise, so a weight
+        it combines with a plated value scales each row before a
+        reduction sums them.
         """
         gx = self._gx
         del ctx
         rhs = render_let_expr_julia(
-            _JlCtxAdapter(gx, "gen"), node.expr, shapes=gx.shapes
+            _JlCtxAdapter(gx, "gen"), node.expr, shapes=gx.shapes, dotted=True
         )
         bind = _assignment(gx, _ident(gx, node.name), rhs)
         gx.place(bind)

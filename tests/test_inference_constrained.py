@@ -134,7 +134,9 @@ def test_condition_data_dict_visible_to_let_expression() -> None:
     """A key in the ``condition`` data dict that does not match a
     declared sample / observe site is exposed as a deterministic
     value to ``let``-expression evaluation. This unlocks per-row
-    covariate / index passing for hierarchical regression."""
+    covariate / index passing for hierarchical regression: the
+    `Resp`-plated step that reads `mu` makes `subj_idx` a per-row index
+    in the checked program."""
     prog = loads(
         "object Subj : FinSet 4\n"
         "object Resp : FinSet 12\n"
@@ -142,6 +144,7 @@ def test_condition_data_dict_visible_to_let_expression() -> None:
         "program p : Resp -> Resp\n"
         "    sample by_subj : Subj <- Normal(loc=0.0, scale=1.0)\n"
         "    let mu = by_subj[subj_idx]\n"
+        "    sample y : Resp <- Normal(loc=mu, scale=1.0)\n"
         "    return mu\n"
         "export p\n"
     )

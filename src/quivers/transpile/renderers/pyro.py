@@ -15,6 +15,7 @@ import panproto
 from quivers.dsl.ast_nodes import MorphismInitFamily
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile.renderers._ranks import name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     MarginalizeBody,
     PyCtx,
@@ -149,6 +150,7 @@ class PyroRenderer(RendererBase):
             sb=sb,
             cards=dict(ir.cards),
             name_event_rank=name_event_rank_map(ir),
+            name_rank=name_rank_map(ir),
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )
@@ -1394,6 +1396,7 @@ class _PyroCtx(PyCtx):
         name_event_rank: dict[str, int] | None = None,
         factor_towers: frozenset[str] | None = None,
         name_plates: dict[str, Plate] | None = None,
+        name_rank: dict[str, int] | None = None,
     ) -> None:
         super().__init__(
             sb,
@@ -1402,6 +1405,7 @@ class _PyroCtx(PyCtx):
             name_event_rank=name_event_rank,
             factor_towers=factor_towers,
             name_plates=name_plates,
+            name_rank=name_rank,
         )
         self.body: str = ""
         self.observed: frozenset[str] = frozenset()

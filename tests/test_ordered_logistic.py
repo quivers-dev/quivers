@@ -142,7 +142,14 @@ def test_rejects_zero_cutpoints() -> None:
         OrderedLogistic(eta, torch.empty(0))
 
 
-def test_dsl_inline_observe_with_per_row_cutpoints() -> None:
+def test_per_row_cutpoints_contradicting_the_checked_type_are_refused() -> None:
+    """A free name filling a family parameter is a checked program input.
+
+    The checked elaboration reads `row_cuts` as one shared `Real`, the
+    type every transpile target declares it at, so a run refuses a
+    per-row matrix for it rather than scoring a model the checked
+    module does not describe.
+    """
     program = loads("""
 object Resp : FinSet 6
 program ord : Resp -> Resp
@@ -162,20 +169,22 @@ export ord
             [-2.0, -1.0, 0.0],
         ]
     )
-    tr = trace(
-        program.morphism,
-        torch.zeros(6, 1),
-        observations={"y": y, "row_cuts": row_cuts},
-    )
-    assert tr.log_joint is not None
-    assert torch.isfinite(tr.log_joint).all()
+    with pytest.raises(ValueError, match=r"host datum 'row_cuts' has shape \(6, 3\)"):
+        trace(
+            program.morphism,
+            torch.zeros(6, 1),
+            observations={"y": y, "row_cuts": row_cuts},
+        )
 
 
-def test_dsl_inline_observe_with_participant_indexed_cutpoints() -> None:
-    """Ordinal mixed model: each participant carries its own
-    cutpoints; the program gathers per-row cutpoints through a
-    participant index. This is the canonical
-    cumulative-link-with-random-thresholds shape.
+def test_participant_cutpoint_table_contradicting_the_checked_type_is_refused() -> (
+    None
+):
+    """A table a let gathers from has one open extent per gathered axis.
+
+    `cutpoints[participant_idx]` gathers one axis, so the checked
+    program reads `cutpoints` as a vector of open extent; a run refuses
+    a participant-by-threshold matrix for it.
     """
     program = loads("""
 object Resp : FinSet 6
@@ -195,29 +204,19 @@ export ord
         ]
     )
     participant_idx = torch.tensor([0, 1, 2, 0, 1, 2]).long()
-    tr = trace(
-        program.morphism,
-        torch.zeros(6, 1),
-        observations={
-            "y": y,
-            "cutpoints": cutpoints,
-            "participant_idx": participant_idx,
-        },
-    )
-    assert tr.log_joint is not None
-    assert torch.isfinite(tr.log_joint).all()
-    # The joint reduces to the narrowest shape its density-carrying
-    # sites agree on, and `eta` is one draw shared by every row, so
-    # that shape is a single element rather than one per row. What it
-    # has to equal is the sum of the sites it is built from, which is
-    # the invariant a shape alone does not pin: a joint that repeated
-    # a shared site once per row would have the same shape and the
-    # wrong value.
-    assert tr.log_joint.numel() == 1
-    site_total = sum(float(site.log_prob.sum()) for site in tr.sites.values())
-    torch.testing.assert_close(
-        float(tr.log_joint.sum()), site_total, atol=1e-5, rtol=1e-5
-    )
+    with pytest.raises(
+        ValueError,
+        match=r"host datum 'cutpoints' has shape \(3, 3\).*\(cutpoints_extent,\)",
+    ):
+        trace(
+            program.morphism,
+            torch.zeros(6, 1),
+            observations={
+                "y": y,
+                "cutpoints": cutpoints,
+                "participant_idx": participant_idx,
+            },
+        )
 
 
 def test_dsl_inline_observe_with_shared_cutpoints_vector() -> None:
@@ -232,6 +231,7 @@ object Cut  : FinSet 4
 object Resp : FinSet 100
 program ordinal : Resp -> Resp
     sample eta <- Normal(loc=0.0, scale=1.0)
+    sample base <- Normal(loc=0.0, scale=2.0) [over=Cut]
     observe y : Resp <- OrderedLogistic(predictor=eta, cutpoints=base)
     return y
 export ordinal
@@ -247,8 +247,7 @@ export ordinal
     )
     assert tr.log_joint is not None
     # One `eta` shared across the plate, so the joint reduces to a
-    # single element and must equal the sum of its sites; see the
-    # participant-indexed case above.
+    # single element and must equal the sum of its sites.
     assert tr.log_joint.numel() == 1
     torch.testing.assert_close(
         float(tr.log_joint.sum()),

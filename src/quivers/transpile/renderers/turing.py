@@ -1666,7 +1666,10 @@ class TuringRenderer(RendererBase):
 
     def _emit_score(self, ctx: RenderContext, node: IRScore) -> None:
         """Bind the score expression then add it to the log-joint via
-        `Turing.@addlogprob!`."""
+        `Turing.@addlogprob!`.
+
+        The expression renders elementwise, so a weight it combines with
+        a plated value scales each row before a reduction sums them."""
         assert isinstance(ctx, _TuringCtx)
         sb, counter = ctx.sb, ctx.counter
         lhs = _identifier(sb, counter, node.name)
@@ -1674,6 +1677,7 @@ class TuringRenderer(RendererBase):
             _JlCtxShim(sb, counter, ctx.cards, "turing"),
             node.expr,
             shapes=ctx.shapes,
+            dotted=True,
         )
         stmt = _assignment(sb, counter, lhs, rhs)
         sb.edge(ctx.body, stmt, "child_of")

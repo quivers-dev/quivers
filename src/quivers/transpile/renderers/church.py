@@ -44,6 +44,7 @@ import panproto
 
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile.renderers._ranks import several_axis_reductions
 from quivers.transpile.renderers._scheme_helpers import render_let_expr_scheme
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.dsl.ast_nodes.let_expressions import (
@@ -476,6 +477,23 @@ class ChurchRenderer(RendererBase):
             loop_name = _loop_name(node.plate)
             assert loop_name is not None
             expr = self._index_let_refs(expr, node.plate, loop_name)
+        ranks = {
+            name: len(plate.batch_dims) + len(plate.event_dims)
+            for name, plate in self._binding_plates.items()
+        }
+        found = several_axis_reductions(expr, ranks)
+        if found:
+            # The runtime's `sum` and its kin fold a flat list, so an
+            # argument that still has several axes would not reduce
+            # along its last one alone.
+            raise UnsupportedConstruct(
+                _TARGET,
+                [
+                    f"let-expr:axis-reduction:church: `{found[0].func}(...)` in "
+                    f"{node.name!r} reduces only the last axis of an argument "
+                    "with several axes, which the list fold has no form for"
+                ],
+            )
         expr_id = render_let_expr_scheme(_LetExprCtx(ctx.sb, ctx, self._cards), expr)
         if lift:
             expr_id = self._wrap_in_maps(

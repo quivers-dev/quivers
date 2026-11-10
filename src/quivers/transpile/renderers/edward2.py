@@ -33,6 +33,7 @@ import panproto
 from quivers.dsl.ast_nodes import Expr, MorphismDecl
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import EmitPretty, target_protocol
+from quivers.transpile.renderers._ranks import name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     MarginalizeBody,
     PyCtx,
@@ -274,6 +275,7 @@ class Edward2Renderer(RendererBase):
             cards=dict(ir.cards),
             target="edward2",
             name_event_rank=name_event_rank_map(ir),
+            name_rank=name_rank_map(ir),
             gather_symbol=("tf", "gather"),
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),

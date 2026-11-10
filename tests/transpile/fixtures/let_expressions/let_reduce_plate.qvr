@@ -1,0 +1,10 @@
+# Exercises a reduction of a vector over a plate: `sum(theta)` over a
+# `Group`-plated draw is the plate's total, one number every row reads.
+object Group : FinSet 4
+object Obs : FinSet 3
+program prog : Obs -> Obs
+    sample theta : Group <- Normal(loc=0.0, scale=1.0)
+    let total = sum(theta)
+    observe y : Obs <- Normal(loc=total, scale=1.0)
+    return y
+export prog

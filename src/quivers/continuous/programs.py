@@ -73,6 +73,7 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import as_torch_module
+from quivers.qiec.types import TypeExpr
 
 
 def _lookup_arg(
@@ -424,6 +425,15 @@ class MonadicProgram(ContinuousMorphism):
         The declared effect row (``Sample``, ``Score``, ``Marginal``,
         ``Pure``), or ``None`` when unannotated.
 
+    Attributes
+    ----------
+    host_data_types : dict[str, TypeExpr]
+        The checked type of each host datum the program reads by name,
+        keyed by name. The DSL compiler fills it from the program's
+        checked elaboration; a run refuses a supplied datum whose shape
+        or element type does not inhabit its entry. Empty for a program
+        built directly, whose data carry no checked contract.
+
     Raises
     ------
     ValueError
@@ -451,6 +461,7 @@ class MonadicProgram(ContinuousMorphism):
         # (Sample / Score / Marginal / Pure) for introspection by
         # downstream inference / dispatch code.
         self.effect_set: frozenset[str] | None = effect_set
+        self.host_data_types: dict[str, TypeExpr] = {}
         # compute input component dimensions for param splitting
         if params is not None and len(params) > 1:
             self._param_dims = self._compute_component_dims(domain)

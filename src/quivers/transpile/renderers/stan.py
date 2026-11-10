@@ -145,6 +145,7 @@ from quivers.transpile.renderers._qiec import (
     carried_computations,
     has_runtime_computations,
 )
+from quivers.transpile.renderers._ranks import several_axis_reductions
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
     render_let_expr_stan,
@@ -3482,6 +3483,7 @@ class StanRenderer(RendererBase):
         if not node.plate.batch_dims or isinstance(
             body_expr, (LetExprAffineMap, LetExprFactor, LetExprList)
         ):
+            self._refuse_several_axis_reductions(node.name, body_expr)
             rhs = render_let_expr_stan(
                 _StanLetCtx(ctx.sb, lambda p: self._fresh(ctx, p), self._cards),
                 body_expr,
@@ -3504,6 +3506,7 @@ class StanRenderer(RendererBase):
         subbed = self._index_plated_let_refs(
             node.expr, node.plate.batch_dims, loop_names
         )
+        self._refuse_several_axis_reductions(node.name, subbed)
         # LHS: indexed_lhs <name>[lv0, lv1, ...]
         asn = self._fresh(ctx, "asn")
         ctx.sb.vertex(asn, "assignment_statement")
@@ -3549,6 +3552,45 @@ class StanRenderer(RendererBase):
         ctx.sb.edge(fn, al, "child_of")
         return fn
 
+    def _refuse_several_axis_reductions(self, name: str, expr: LetExprNode) -> None:
+        """Refuse a reduction whose argument still has several axes.
+
+        A let reduction collapses the last axis of its argument. Inside
+        a binding's plate loop each plated name is read one row at a
+        time, so the argument usually has at most one axis left, which
+        Stan's `sum` and its kin reduce whole. An argument with two or
+        more axes left (a matrix-valued event, or a table built over
+        two axes) has no single Stan call that reduces only its last
+        axis, so the binding is refused rather than reduced whole.
+
+        Parameters
+        ----------
+        name : str
+            The binding.
+        expr : LetExprNode
+            Its right-hand side, as the loop reads it.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the expression holds such a reduction.
+        """
+        ranks = {
+            declared: len(plate.batch_dims) + len(plate.event_dims)
+            for declared, (_support, plate) in self._declared_shapes.items()
+        }
+        found = several_axis_reductions(expr, ranks)
+        if found:
+            raise UnsupportedConstruct(
+                "qvr-stan",
+                [
+                    f"let-expr:axis-reduction:stan: `{found[0].func}(...)` in "
+                    f"{name!r} reduces only the last axis of an argument with "
+                    f"several axes, and Stan's `{found[0].func}` reduces every "
+                    f"axis of an array or matrix"
+                ],
+            )
+
     def _index_plated_let_refs(
         self,
         expr: LetExprNode,
@@ -3557,8 +3599,11 @@ class StanRenderer(RendererBase):
     ) -> LetExprNode:
         """Substitute every free
         [`LetExprVar`][quivers.dsl.ast_nodes.LetExprVar] whose
-        declared plate's ``batch_dims`` matches ``batch_dims`` with
-        ``<name>[<loop_name>]`` (or nested for multi-batch).
+        declared plate's ``batch_dims`` begin with ``batch_dims`` with
+        ``<name>[<loop_name>]`` (or nested for multi-batch). A name
+        over further batch axes keeps them: read one row at a time, it
+        is the rest of its table, which a reduction in the expression
+        collapses.
 
         Walks the expression collecting candidate names, then calls
         `_substitute_let_expr`
@@ -3573,7 +3618,7 @@ class StanRenderer(RendererBase):
             if declared is None:
                 continue
             plate = declared[1]
-            if plate.batch_dims != batch_dims:
+            if plate.batch_dims[: len(batch_dims)] != batch_dims:
                 continue
             indexed = LetExprIndex(
                 array=LetExprVar(name=name),

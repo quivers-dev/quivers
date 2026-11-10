@@ -237,9 +237,15 @@ The arithmetic sublanguage is interpreted standardly: $\mathbb{R}$-valued and $\
 
 The let-expression call form `f(arg, ...)` resolves first against the closed
 QIEC primitive registry. Each application is selected by argument type; a
-name without a matching signature is a static error. Reductions consume the
-supplied tensor, while rowwise operations act on its final axis. Reductions
-over a *named* axis go through the typed
+name without a matching signature is a static error. A reduction collapses
+the last axis of its argument: a vector reduces to one number, and a tensor of
+shape $(n_1, \ldots, n_k)$ to the tensor of shape $(n_1, \ldots, n_{k-1})$
+whose entries reduce its rows. A rowwise operation acts along the same last
+axis and keeps the shape. The checked elaboration, the reference machine, the compiled
+runtime, and every transpile target read these builtins so; a target with no
+spelling for a last-axis reduction of a given argument refuses the program
+rather than reducing more axes. Reductions over a *named* axis go through the
+typed
 [`contraction`](../api/dsl/compiler.md) syntax.
 
 | Category | Primitives |

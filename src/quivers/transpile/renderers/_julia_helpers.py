@@ -181,7 +181,7 @@ _STANDALONE_SHAPES = JuliaShapes()
 
 @runtime_checkable
 class _JlShapeView(Protocol):
-    """The two rank tables the shape-inference walks read.
+    """The shape tables the shape-inference walks read.
 
     Satisfied by both
     `JuliaShapes`
@@ -191,6 +191,7 @@ class _JlShapeView(Protocol):
 
     name_event_rank: dict[str, int]
     name_array_rank: dict[str, int]
+    nested_names: frozenset[str]
 
 
 class _JlState:
@@ -282,8 +283,9 @@ def render_let_expr_julia(
 
 def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """True iff ``expr`` contracts an axis anywhere in its tree:
-    either a reduction over a positive-rank event axis, or the
-    matrix-vector product an affine parameter map denotes.
+    either a reduction along the last axis of an array with an event
+    axis or with two or more axes, or the matrix-vector product an
+    affine parameter map denotes.
 
     A binding whose body contracts an axis cannot be wrapped in
     Julia's ``@.`` macro: the macro broadcasts the contraction
@@ -293,11 +295,7 @@ def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     between the ``@.`` form and the explicitly dotted form.
     """
     if isinstance(expr, LetExprCall):
-        if (
-            expr.func in _AXIS_REDUCING_CALLS
-            and len(expr.args) == 1
-            and _infer_event_rank(ctx, expr.args[0]) > 0
-        ):
+        if _reduces_named_axis(ctx, expr.func, expr.args):
             return True
         return any(let_expr_has_axis_reduction(ctx, a) for a in expr.args)
     if isinstance(expr, LetExprBinOp):
@@ -666,21 +664,31 @@ def _emit_call(
     to a closed-form body before emission: `sigmoid(x)` becomes
     `1 / (1 + exp(-x))`.
 
-    A reduction primitive applied to an argument of positive event
-    rank routes to
-    `_emit_axis_reduction`
-    so it collapses the innermost axes instead of the whole array.
+    A reduction primitive collapses the last axis of its argument. An
+    argument with an event axis, or with two or more axes, routes to
+    `_emit_axis_reduction`, which names that axis; a nested tower
+    reduces each of its rows; a vector reduces whole, which is the
+    same.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
     if func == "sigmoid" and len(args) == 1:
         return _render(ctx, _sigmoid_expansion(args[0]))
-    if (
-        func in _AXIS_REDUCING_CALLS
-        and len(args) == 1
-        and _infer_event_rank(ctx, args[0]) > 0
-    ):
-        return _emit_axis_reduction(ctx, func, args[0], _infer_event_rank(ctx, args[0]))
+    if _reduces_tower_rows(ctx, func, args):
+        return _emit_tower_row_reduction(ctx, func, args[0])
+    if _reduces_named_axis(ctx, func, args):
+        return _emit_axis_reduction(ctx, func, args[0], infer_array_rank(ctx, args[0]))
+    if func in _AXIS_REDUCING_CALLS and len(args) == 1 and ctx.dotted:
+        # A reduction of a vector reduces it whole; broadcasting the
+        # call would apply it to each entry and reduce nothing.
+        rendered_argument = _render(ctx, args[0])
+        callee_vid, _callee_kind = _emit_identifier(ctx, _AXIS_REDUCING_CALLS[func])
+        al_vid = _emit_argument_list(ctx, (rendered_argument,))
+        vid = ctx.v(ctx.fresh("ce"), "call_expression")
+        ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+        ctx.e(vid, callee_vid, "child_of")
+        ctx.e(vid, al_vid, "child_of")
+        return vid, "call_expression"
     rendered = tuple(_render(ctx, a) for a in args)
     callee_vid, _callee_kind = _emit_identifier(ctx, func)
     al_vid = _emit_argument_list(ctx, rendered)
@@ -743,41 +751,170 @@ def _emit_keyword_call(
     return vid, "call_expression"
 
 
+def _is_tower(ctx: _JlShapeView, expr: LetExprNode) -> bool:
+    """Whether an expression names a nested vector tower.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        True for a bare name the emit materialises as nested vectors.
+    """
+    return isinstance(expr, LetExprVar) and expr.name in ctx.nested_names
+
+
+def _reduces_tower_rows(
+    ctx: _JlShapeView, func: str, args: tuple[LetExprNode, ...]
+) -> bool:
+    """Whether a call reduces the rows of a nested vector tower.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    func : str
+        The callee.
+    args : tuple[LetExprNode, ...]
+        The arguments.
+
+    Returns
+    -------
+    bool
+        True for a one-argument reduction of a tower name.
+    """
+    return func in _AXIS_REDUCING_CALLS and len(args) == 1 and _is_tower(ctx, args[0])
+
+
+def _reduces_named_axis(
+    ctx: _JlShapeView, func: str, args: tuple[LetExprNode, ...]
+) -> bool:
+    """Whether a reduction must name the last axis of a dense array.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    func : str
+        The callee.
+    args : tuple[LetExprNode, ...]
+        The arguments.
+
+    Returns
+    -------
+    bool
+        True for a one-argument reduction of an array, not a tower, that
+        has an event axis or two or more axes: Julia's `sum(x)` would
+        reduce every axis of it, not only the last.
+    """
+    return (
+        func in _AXIS_REDUCING_CALLS
+        and len(args) == 1
+        and not _is_tower(ctx, args[0])
+        and (_infer_event_rank(ctx, args[0]) > 0 or infer_array_rank(ctx, args[0]) >= 2)
+    )
+
+
+def _emit_tower_row_reduction(
+    ctx: _JlState, func: str, arg: LetExprNode
+) -> tuple[str, str]:
+    """Emit the reduction of each row of a two-level nested tower.
+
+    A tower over two binders is a vector of row vectors, so its last
+    axis is each row: the broadcast call `sum.(t)` reduces every row
+    and keeps one number per row.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    func : str
+        The QVR reduction.
+    arg : LetExprNode
+        The tower's name.
+
+    Returns
+    -------
+    tuple[str, str]
+        The broadcast call's vertex and kind.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the tower nests more than two levels, whose last axis lies
+        below a row.
+    """
+    if infer_array_rank(ctx, arg) != 2:
+        raise UnsupportedConstruct(
+            f"qvr-{ctx.target}-helper",
+            [
+                f"let-expr:axis-reduction:{ctx.target}: `{func}(...)` reduces the "
+                "last axis of a factor over more than two binders, which the "
+                "nested vector form has no single broadcast for"
+            ],
+        )
+    rendered = _render(ctx, arg)
+    callee_vid, _callee_kind = _emit_identifier(ctx, _AXIS_REDUCING_CALLS[func])
+    al_vid = _emit_argument_list(ctx, (rendered,))
+    vid = ctx.v(ctx.fresh("ce"), "broadcast_call_expression")
+    ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+    ctx.e(vid, callee_vid, "child_of")
+    ctx.e(vid, al_vid, "child_of")
+    return vid, "broadcast_call_expression"
+
+
 def _emit_axis_reduction(
     ctx: _JlState, func: str, arg: LetExprNode, rank: int
 ) -> tuple[str, str]:
-    """Emit a reduction of the innermost ``rank`` axes of ``arg``.
+    """Emit a reduction of the last axis of a ``rank``-axis ``arg``.
 
     Julia's `sum(x)` reduces every axis to a scalar and `@. sum(x)`
-    reduces none of them, so an event-axis reduction has to name the
-    axis: `sum(x, dims = d)` keeps the array rank and `dropdims`
-    removes the collapsed axis. Axes are collapsed innermost-first, so
-    each `dropdims` shifts the next axis into place without a tuple of
-    dimension indices.
+    reduces none of them, so a last-axis reduction has to name the
+    axis: `sum(x, dims = rank)` keeps the array rank and `dropdims`
+    removes the collapsed axis.
 
     The argument itself renders in dotted mode: it is the elementwise
     body the reduction consumes (`z_row .* w_row`), and the caller has
     already declined to wrap the binding in ``@.``.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    func : str
+        The QVR reduction.
+    arg : LetExprNode
+        The argument.
+    rank : int
+        Its number of axes; the last is reduced.
+
+    Returns
+    -------
+    tuple[str, str]
+        The reduction's vertex and kind.
     """
     julia_func = _AXIS_REDUCING_CALLS[func]
     outer = ctx.dotted
     ctx.dotted = True
     rendered = _render(ctx, arg)
     ctx.dotted = outer
-    for axis in range(ctx.batch_rank + rank, ctx.batch_rank, -1):
-        reduced = _emit_keyword_call(
-            ctx,
-            julia_func,
-            rendered,
-            (("dims", _emit_literal(ctx, axis)),),
-        )
-        rendered = _emit_keyword_call(
-            ctx,
-            "dropdims",
-            reduced,
-            (("dims", _emit_literal(ctx, axis)),),
-        )
-    return rendered
+    reduced = _emit_keyword_call(
+        ctx,
+        julia_func,
+        rendered,
+        (("dims", _emit_literal(ctx, rank)),),
+    )
+    return _emit_keyword_call(
+        ctx,
+        "dropdims",
+        reduced,
+        (("dims", _emit_literal(ctx, rank)),),
+    )
 
 
 def _emit_argument_list(ctx: _JlState, rendered: tuple[tuple[str, str], ...]) -> str:

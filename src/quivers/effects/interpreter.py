@@ -76,7 +76,7 @@ from quivers.qiec.evaluator import (
 from quivers.qiec.identifiers import SiteProvenance, SourceOrigin
 from quivers.qiec.kinds import NAT
 from quivers.qiec.module import NamedComputation, QiecModule
-from quivers.qiec.canonical import tensor_type
+from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.terms import (
     Call,
     Computation,
@@ -86,7 +86,17 @@ from quivers.qiec.terms import (
     Perform,
     Var,
 )
-from quivers.qiec.types import REAL, STRING, IndexLiteral
+from quivers.qiec.types import (
+    BOOL,
+    INT,
+    REAL,
+    STRING,
+    IndexLiteral,
+    IndexTerm,
+    IndexVariable,
+    TypeExpr,
+    render_static,
+)
 from quivers.qiec.identifiers import ComputationId
 from quivers.qiec.effects import ComputationType
 from quivers.qiec.module import KernelRegistry, validate_module
@@ -1030,6 +1040,118 @@ def _checked_registry(
     return registry
 
 
+def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
+    """Whether a tensor's dtype holds values of a checked element type.
+
+    Parameters
+    ----------
+    element : TypeExpr
+        The checked element type: ``Real``, ``Int``, or ``Bool``.
+    value : torch.Tensor
+        The supplied tensor.
+
+    Returns
+    -------
+    bool
+        True when the dtype is floating for ``Real``, a non-boolean
+        integer for ``Int``, and boolean for ``Bool``; True for any other
+        element type, whose host representation the run does not fix.
+    """
+    if element == REAL:
+        return value.is_floating_point()
+    if element == INT:
+        return (
+            not value.is_floating_point()
+            and not value.is_complex()
+            and (value.dtype != torch.bool)
+        )
+    if element == BOOL:
+        return value.dtype == torch.bool
+    return True
+
+
+def check_host_data(
+    program: MonadicProgram, data: Mapping[str, torch.Tensor | float | int]
+) -> None:
+    """Refuse host data that does not inhabit the program's checked types.
+
+    The checked elaboration types every free name a program reads, and
+    every target the module renders to reads the name at that type. A
+    datum whose shape or element type differs would make the run compute
+    a model the checked module does not describe, so it is refused. A
+    dimension the checked type leaves as an extent variable takes the
+    length of the first datum it shapes, and every later datum it shapes
+    must agree.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program, whose ``host_data_types`` give the checked types.
+    data : Mapping[str, torch.Tensor | float | int]
+        The supplied host data, by name.
+
+    Raises
+    ------
+    ValueError
+        If a datum's shape differs from the shape its checked type names,
+        or an extent variable is fixed at two different lengths.
+    TypeError
+        If a datum's element type is not the one its checked type names.
+    """
+    extents: dict[str, tuple[int, str]] = {}
+    for name, expected in program.host_data_types.items():
+        if name not in data:
+            continue
+        value = torch.as_tensor(data[name])
+        split = tensor_shape(expected)
+        element, dimensions = (expected, ()) if split is None else split
+        rendered = render_static(expected)
+        actual = tuple(value.shape)
+        if len(actual) != len(dimensions) or any(
+            isinstance(dimension, IndexLiteral) and dimension.value != extent
+            for dimension, extent in zip(dimensions, actual)
+        ):
+            raise ValueError(
+                f"host datum {name!r} has shape {actual}, but the checked "
+                f"program reads it at type {rendered}, of shape "
+                f"{_rendered_shape(dimensions)}; supply data of that shape"
+            )
+        for dimension, extent in zip(dimensions, actual):
+            if not isinstance(dimension, IndexVariable):
+                continue
+            fixed = extents.setdefault(dimension.name, (extent, name))
+            if fixed[0] != extent:
+                raise ValueError(
+                    f"host datum {name!r} fixes extent {dimension.name!r} at "
+                    f"{extent}, but {fixed[1]!r} fixes it at {fixed[0]}"
+                )
+        if not _element_admits(element, value):
+            raise TypeError(
+                f"host datum {name!r} has dtype {value.dtype}, but the checked "
+                f"program reads it at type {rendered}, whose elements are "
+                f"{render_static(element)}"
+            )
+
+
+def _rendered_shape(dimensions: tuple[IndexTerm, ...]) -> str:
+    """Render a checked shape as a tuple of extents.
+
+    Parameters
+    ----------
+    dimensions : tuple[IndexTerm, ...]
+        The checked dimensions.
+
+    Returns
+    -------
+    str
+        The shape, as ``(3, 2)``, an extent variable by its name.
+    """
+    parts = [render_static(dimension) for dimension in dimensions]
+    if len(parts) == 1:
+        return f"({parts[0]},)"
+    return f"({', '.join(parts)})"
+
+
 def run_program(
     program: MonadicProgram,
     x: torch.Tensor,
@@ -1061,6 +1183,7 @@ def run_program(
         never reaches.
     """
     sites, supplied, data = _split_observations(program, observations or {})
+    check_host_data(program, data)
     kernel = _cached_kernel(program, tuple(sorted(data)))
     _check_sequence_layouts(kernel, observations or {})
     run = RunContext(kernel, host_value, observations=dict(sites), supplied=supplied)
