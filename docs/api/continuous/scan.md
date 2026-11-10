@@ -13,10 +13,12 @@ density. It accepts the hidden-state trajectory either as a positional
 tensor or as a `{state_key: tensor}` dictionary. The default
 `state_key` is `"h"`.
 
-Inside a [`MonadicProgram`][quivers.continuous.MonadicProgram], a scan
-whose cell is a program is not drawn as one `ScanMorphism` sample; the
-compiler binds it with a [`Scan`][quivers.continuous.Scan] step, whose
-cell's sites are sites of the program addressed `"<label>@<n>"`. A
-program refuses a draw from a `ScanMorphism` over a program cell.
+`ScanMorphism` is the scan as a standalone morphism. Inside a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], the compiler binds
+every scan with a [`Scan`][quivers.continuous.Scan] step instead, whose
+step's sites are sites of the program addressed `"<label>@<n>"`: a
+stochastic morphism cell's draw at the scan's binding, a program cell's
+sites under their own labels. A program refuses a draw from a
+`ScanMorphism`.
 
 ::: quivers.continuous.scan

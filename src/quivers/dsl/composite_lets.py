@@ -319,13 +319,13 @@ def _copied(
     return tuple(out)
 
 
-def expand_program_cell_scans(
+def expand_program_scans(
     declaration: ProgramDecl, module: Module
 ) -> tuple[tuple[ProgramStep, ...], dict[str, ProgramDecl]]:
-    """Expand the draws of one program that scan a program cell.
+    """Expand the draws of one program that run a scan.
 
     A ``sample`` or ``observe`` step whose morphism resolves to a chain
-    with a ``scan`` over a program cell is rewritten exactly as
+    with a ``scan`` is rewritten exactly as
     [`expand_composite_lets`][quivers.dsl.composite_lets.expand_composite_lets]
     rewrites it: a ``let h = scan(step, xs)`` over a step program, with
     the chain's other elements as steps of the step program or of the
@@ -343,8 +343,8 @@ def expand_program_cell_scans(
     Returns
     -------
     tuple[tuple[ProgramStep, ...], dict[str, ProgramDecl]]
-        The program's draws, the input itself when no step scans a
-        program cell; and the step programs the expansion declared, by
+        The program's draws, the input itself when no step runs a scan;
+        and the step programs the expansion declared, by
         name, each after the step programs it scans with.
     """
     morphisms: dict[str, MorphismDecl] = {
@@ -364,12 +364,7 @@ def expand_program_cell_scans(
         if isinstance(statement, ProgramDecl)
     }
     declared = set(programs)
-    if not _selects(
-        declaration.draws,
-        morphisms,
-        lets,
-        lambda chain: _scans_a_program_cell(chain, declared),
-    ):
+    if not _selects(declaration.draws, morphisms, lets, _scans):
         return declaration.draws, {}
     program = _Program(
         morphisms,
@@ -381,7 +376,7 @@ def expand_program_cell_scans(
     draws = _expand_draws(
         declaration.draws,
         program,
-        select=lambda chain: _scans_a_program_cell(chain, declared),
+        select=_scans,
     )
     steps = {
         name: decl for name, decl in program.programs.items() if name not in declared
@@ -427,27 +422,25 @@ def _selects(
     return False
 
 
-def _scans_a_program_cell(chain: tuple[_ChainElem, ...], programs: set[str]) -> bool:
-    """Whether a chain scans a cell that is a program.
+def _scans(chain: tuple[_ChainElem, ...]) -> bool:
+    """Whether a chain runs a scan.
 
     Parameters
     ----------
     chain : tuple[_ChainElem, ...]
         The chain.
-    programs : set[str]
-        The names of the module's programs.
 
     Returns
     -------
     bool
-        ``True`` when a scan element, in the chain or in a branch of a
-        parallel element, names a program.
+        ``True`` when a scan element is in the chain or in a branch of
+        a parallel element.
     """
     for elem in chain:
-        if isinstance(elem, _ScanLeaf) and elem.name in programs:
+        if isinstance(elem, _ScanLeaf):
             return True
         if isinstance(elem, _ParallelLeaf) and any(
-            _scans_a_program_cell(branch, programs) for branch in elem.branches
+            _scans(branch) for branch in elem.branches
         ):
             return True
     return False

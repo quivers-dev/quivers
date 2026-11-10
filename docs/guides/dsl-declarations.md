@@ -581,10 +581,12 @@ hidden state `H` across a sequence:
   dimension.
 - **Works with both forms.** Parametric kernels (`morphism cell : A *
   H -> H ~ Normal`) and programs (`program cell(x, h) : A * H -> H`).
-  A program cell's steps run once per position inside the program
-  that draws the scan: they read that program's bindings made before
-  the scan, their sites are addressed `s@0`, `s@1`, ..., and an
-  `observe` in the cell scores one observation per position. The
+  Inside a program, a scan's step runs once per position: a morphism
+  cell is drawn at the scan's binding, `h@0`, `h@1`, ..., for
+  `sample h <- scan(cell)`, and a program cell's steps read the
+  program's bindings made before the scan, their sites are addressed
+  `s@0`, `s@1`, ..., and an `observe` in the cell scores one
+  observation per position. The
   [scans reference](../reference/qvr/probabilistic-programs.md#scans)
   states the rules.
 

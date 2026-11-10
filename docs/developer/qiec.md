@@ -530,11 +530,18 @@ observes one value per position, so the scanning program takes
 `Tensor[A]([<input>_extent, ...])` and the helper passes the step the
 entry `obs[t]`. The step's sites are reached once per position, and
 `run_program` replays the `n`-th occurrence of a site from the value
-keyed `"<site>@<n>"`; a site label the step shares with the scanning
-program is refused, since its occurrences would not number the
-positions.
+keyed `"<site>@<n>"`, and refuses a value keyed by the bare label of a
+site reached more than once. The labels the expansion synthesizes
+derive from the scan's binding: a morphism cell is drawn at the binding
+itself, the chain's prefix at `"<binding>$x_in"`, the step's parameters
+are `"<binding>$x_t"` and `"<binding>$h_prev"`, and a scan inside a
+longer chain or a parallel branch takes `"<binding>$<intermediate>"`.
+A program cell's own labels are the source's, and a label two sites of
+one program would share is refused, since its occurrences would not
+number the positions.
 
-The torch runtime compiles the same expansion. The scanning program's
+The torch runtime compiles the same expansion for every scan in a
+program, whatever its cell. The scanning program's
 `let h = scan(<step>, xs)` becomes a
 [`Scan`][quivers.continuous.Scan] step over the compiled step program,
 whose call of the cell becomes a [`Call`][quivers.continuous.Call] step.

@@ -134,8 +134,8 @@ def _bound_names(step: Step) -> tuple[str, ...]:
     raise TypeError(f"{type(step).__name__} is not a program step")
 
 
-def _scans_a_program(morphism: object) -> bool:
-    """Whether a morphism runs a scan whose cell is a program.
+def _runs_a_scan(morphism: object) -> bool:
+    """Whether a morphism runs a scan.
 
     Parameters
     ----------
@@ -145,14 +145,13 @@ def _scans_a_program(morphism: object) -> bool:
     Returns
     -------
     bool
-        ``True`` for a [`ScanMorphism`][quivers.continuous.ScanMorphism]
-        over a [`MonadicProgram`][quivers.continuous.MonadicProgram], or
-        a composition with one among its factors.
+        ``True`` for a [`ScanMorphism`][quivers.continuous.ScanMorphism],
+        or a composition with one among its factors.
     """
     if isinstance(morphism, ScanMorphism):
-        return isinstance(morphism.cell, MonadicProgram)
+        return True
     if isinstance(morphism, SampledComposition):
-        return any(_scans_a_program(factor) for factor in morphism.factors)
+        return any(_runs_a_scan(factor) for factor in morphism.factors)
     return False
 
 
@@ -473,13 +472,13 @@ class MonadicProgram(ContinuousMorphism):
                         f"two {step.kind} steps bind {step.names[0]!r}; each "
                         f"draw or observe binds a name no other one does"
                     )
-                if _scans_a_program(step.morphism):
+                if _runs_a_scan(step.morphism):
                     # Drawn as one opaque sample, the scan's per-position
                     # sites would be neither traced nor scored.
                     raise ValueError(
-                        f"{step.kind} {step.names[0]!r} draws from a scan whose "
-                        f"cell is a program; bind it with a Scan step, which "
-                        f"runs the cell's sites as sites of this program"
+                        f"{step.kind} {step.names[0]!r} draws from a scan; "
+                        f"bind it with a Scan step, which runs the step's "
+                        f"sites as sites of this program"
                     )
                 # A backend-agnostic `Morphism` registers through its
                 # parameter container, which keeps the morphism under

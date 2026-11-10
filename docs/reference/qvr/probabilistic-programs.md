@@ -212,31 +212,42 @@ sample hidden <- token_embedding >> scan(cell)
 
 The step program takes one position's entry and the previous state, draws the
 chain's elements before the scan at the entry, and applies the cell. The
-binding, here `hidden`, is the final state. `init=learned` adds a learned
-initial-state input; the default initial state is zero. The scan returns only
-the final state. A program reads per-position values through the cell's own
-sites and observations, described below.
+binding, here `hidden`, is the final state, a value the run computes rather
+than a site. `init=learned` adds a learned initial-state input; the default
+initial state is zero. The scan returns only the final state. Every scan,
+whatever its cell, runs its step as steps of the scanning program, once per
+position, and the compiled runtime and the reference machine apply the same
+rules to it.
 
-A cell may be a program. Its steps are then steps of the scanning program, run
-once per position, and three rules fix what they read and how they are
-addressed. The compiled runtime and the reference machine apply the same
-rules.
+A cell that is a stochastic morphism, `morphism cell : A * H -> H ~ Normal`,
+draws the next state at every position, at a site named by the scan's
+binding: `hidden@0`, `hidden@1`, and so on. The log joint is the density of
+the whole trajectory, `sum_t log p(hidden_t | x_t, hidden_{t-1})`. A cell that
+is a deterministic morphism contributes no site. A cell may also be a program,
+whose own steps run once per position under the three rules below.
 
-1. **Scope.** A name the cell reads without binding it is the scanning
+1. **Scope.** A name a program cell reads without binding it is the scanning
    program's binding of that name *before* the scan: a sampled site, a `let`,
    or a program input. A name the scanning program does not bind before the
    scan is host data of the scanning program, supplied under that name, and the
    scanning program cannot bind it afterwards. A name the cell binds itself
    shadows the scanning program's binding inside the cell and is not visible
    after the scan. Gradients flow through the bindings the cell reads.
-2. **Sites.** Every site the cell reaches, its own and those of the chain's
-   elements before the scan, is reached once per position. The `n`-th
-   occurrence of a site labelled `s` has the address `"s@n"`, counted from zero
-   over the run. For a single scan, `n` is the position. A trace records `s@0`,
-   `s@1`, and so on; a replay, a clamp, or a joint density addresses them by
-   these keys. A `let` or `score` in the cell appears in a trace as `name@n`, and
-   each position's `score` joins the log joint. A label shared by the cell and
-   the scanning program would make `s@0` ambiguous, so it is refused.
+2. **Sites.** Every site the step reaches is reached once per position. The
+   `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
+   from zero over the run, so for a single scan `n` is the position. A trace
+   records `s@0`, `s@1`, and so on; a replay, a clamp, or a joint density
+   addresses them by these keys. A `let` or `score` in a program cell appears in
+   a trace as `name@n`, and each position's `score` joins the log joint. The
+   labels the expansion makes derive from the binding the source writes: a
+   morphism cell's draw is the binding itself, the chain's elements before the
+   scan draw at `"<binding>$x_in"` (and `"<binding>$x_in_chain_<k>"` for a
+   longer prefix), and a scan inside a longer chain or a branch of `fan` or `@`
+   is named `"<binding>$<intermediate>"`. A source cannot write `$`, so these
+   labels never meet a source label. A program cell's own labels are the
+   source's; two sites of one program that would share a label, a program
+   cell's site and the scanning program's or another scan's, are refused on
+   both paths with one diagnostic at the scan.
 3. **Observations.** An `observe y` in the cell observes one value per
    position. The scanning program takes the whole sequence as its observation
    input `y`, with the position axis first: the checked elaboration types it
@@ -247,6 +258,15 @@ rules.
    given instead as `y@t`, shaped `(batch, ...)`. Giving a position twice, a
    value past the sequence's end, or a value for the scan's final state is
    refused. The scanning program cannot also bind `y`.
+
+The same two layouts address every per-position site: a latent `s` takes
+`s@t` for one position or `s` for the whole sequence, `(batch, seq_len,
+...)`, which is the shape a lift's `additional_latents` entry declares. A value
+under the bare label with any other shape, such as a single final state, is
+refused rather than split across positions. On the reference machine, which
+replays one sequence at a time, a value under the bare label of a site reached
+more than once is refused rather than replayed at every position; give each
+occurrence under `s@n`.
 
 The log joint is the sum over positions of every site's density, every
 observation's likelihood, and every score. For a state-space model whose cell

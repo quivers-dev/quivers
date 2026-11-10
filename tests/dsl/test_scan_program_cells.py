@@ -1,14 +1,18 @@
-"""A scan whose cell is a program, on the compiled and the checked path.
+"""Scans on the compiled and the checked path.
 
-The cell's steps are steps of the scanning program: they read the
-scanning program's bindings, their sites are reached once per position
-under ``"<label>@<n>"``, and an observation inside the cell is one
+Every scan's step runs as steps of the scanning program, once per
+position. A morphism cell is drawn at the site the scan's binding
+names, ``"<binding>@<n>"``; a program cell's steps read the scanning
+program's bindings, their sites are reached once per position under
+``"<label>@<n>"``, and an observation inside the cell is one
 observation per position. Each test pins the compiled runtime against a
 hand-written log density or against the reference machine running the
 checked elaboration of the same source.
 """
 
 from __future__ import annotations
+
+import math
 
 import pytest
 import torch
@@ -643,7 +647,7 @@ def test_both_paths_refuse_alike(body: str, message: str) -> None:
     assert str(checked.value).split("] ", 1)[1] == str(compiled.value).split("] ", 1)[1]
 
 
-def test_a_program_cannot_draw_a_scan_of_a_program_whole() -> None:
+def test_a_program_cannot_draw_a_scan_whole() -> None:
     program = _program(STATE_SPACE)
     (scan,) = [step for step in program.steps if isinstance(step, Scan)]
     with pytest.raises(ValueError, match="bind it with a Scan step"):
@@ -653,6 +657,173 @@ def test_a_program_cannot_draw_a_scan_of_a_program_whole() -> None:
             [Draw(names=("h",), morphism=ScanMorphism(scan.step))],
             ("h",),
         )
+
+
+# ---------------------------------------------------------------------
+# A scan whose cell is a morphism.
+# ---------------------------------------------------------------------
+
+MORPHISM_CELL = """\
+object Input : Real 2
+object Hidden : Real 3
+morphism cell : Input * Hidden -> Hidden ~ Normal
+define rnn = scan(cell)
+program prog : Input -> Hidden
+    sample h <- rnn
+    return h
+export prog
+"""
+
+
+def _scan_kernels(program: MonadicProgram) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """The weight and bias of the cell each of a program's scans draws.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The compiled program.
+
+    Returns
+    -------
+    list[tuple[torch.Tensor, torch.Tensor]]
+        One pair per scan, in the program's order.
+    """
+    kernels: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for step in program.steps:
+        if not isinstance(step, Scan):
+            continue
+        body = step.step
+        assert isinstance(body, MonadicProgram)
+        (draw,) = [item for item in body.steps if isinstance(item, Draw)]
+        kernel = body.step_module(draw)
+        linear = kernel.get_submodule("param_source.linear")
+        assert isinstance(linear, torch.nn.Linear)
+        kernels.append((linear.weight.detach(), linear.bias.detach()))
+    return kernels
+
+
+def _trajectory_density(
+    kernel: tuple[torch.Tensor, torch.Tensor],
+    inputs: torch.Tensor,
+    states: torch.Tensor,
+) -> torch.Tensor:
+    """The density of one trajectory under a normal cell, written out.
+
+    Parameters
+    ----------
+    kernel : tuple[torch.Tensor, torch.Tensor]
+        The cell's weight and bias.
+    inputs : torch.Tensor
+        ``(T, dim A)``.
+    states : torch.Tensor
+        ``(T, dim H)``.
+
+    Returns
+    -------
+    torch.Tensor
+        ``sum_t log N(h_t | cell(x_t, h_{t-1}))``, ``h_{-1} = 0``.
+    """
+    previous = torch.zeros(states.shape[-1])
+    total = torch.tensor(0.0)
+    for position in range(inputs.shape[0]):
+        distribution = _normal(*kernel, torch.cat([inputs[position], previous]))
+        total = total + distribution.log_prob(states[position]).sum()
+        previous = states[position]
+    return total
+
+
+def test_a_morphism_cell_scan_scores_its_trajectory_on_both_paths() -> None:
+    torch.manual_seed(8)
+    program = _program(MORPHISM_CELL)
+    module = _module(MORPHISM_CELL)
+    inputs = torch.randn(4, 2)
+    states = torch.randn(4, 3)
+    (kernel,) = _scan_kernels(program)
+    closed = float(_trajectory_density(kernel, inputs, states))
+    given = {f"h@{t}": states[t : t + 1] for t in range(4)}
+    run = trace(program, inputs.unsqueeze(0), given)
+    assert sorted(run.sites) == [f"h@{t}" for t in range(4)]
+    compiled = program.log_joint(inputs.unsqueeze(0), given).detach()
+    assert float(compiled.sum()) == pytest.approx(closed, rel=1e-6)
+    reference = run_program(
+        module,
+        "prog",
+        data={
+            "input": _host(inputs),
+            "cell_param_weight": _host(kernel[0]),
+            "cell_param_bias": _host(kernel[1]),
+        },
+        sites={f"h@{t}": _host(states[t]) for t in range(4)},
+    )
+    assert reference.log_joint == pytest.approx(closed, rel=1e-5)
+    moved = {**given, "h@1": given["h@1"] + 1.0}
+    assert float(program.log_joint(inputs.unsqueeze(0), moved).sum()) != pytest.approx(
+        closed
+    )
+
+
+FAN_OF_SCANS = """\
+object Input : Real 2
+object Hidden : Real 2
+object Both : Real 4
+morphism left : Input * Hidden -> Hidden ~ Normal
+morphism right : Input * Hidden -> Hidden ~ Normal
+define both = fan(scan(left), scan(right))
+program prog : Input -> Both
+    sample h <- both
+    return h
+export prog
+"""
+
+
+def test_scans_in_parallel_branches_are_addressed_apart_and_agree() -> None:
+    torch.manual_seed(9)
+    program = _program(FAN_OF_SCANS)
+    module = _module(FAN_OF_SCANS)
+    inputs = torch.randn(3, 2)
+    run = trace(program, inputs.unsqueeze(0))
+    labels = sorted({name.rpartition("@")[0] for name in run.sites if "@" in name})
+    assert len(labels) == 2 and all(label.startswith("h$") for label in labels)
+    first, second = _scan_kernels(program)
+    trajectories = {
+        label: torch.stack(
+            [run.sites[f"{label}@{t}"].value[0].detach() for t in range(3)]
+        )
+        for label in labels
+    }
+    left_label, right_label = labels
+    closed = float(
+        _trajectory_density(first, inputs, trajectories[left_label])
+        + _trajectory_density(second, inputs, trajectories[right_label])
+    )
+    given = {
+        f"{label}@{t}": trajectories[label][t : t + 1]
+        for label in labels
+        for t in range(3)
+    }
+    compiled = float(program.log_joint(inputs.unsqueeze(0), given).detach().sum())
+    assert compiled == pytest.approx(closed, rel=1e-6)
+    assert torch.allclose(
+        run.output[0],  # type: ignore[index]
+        torch.cat([trajectories[left_label][2], trajectories[right_label][2]]),
+    )
+    reference = run_program(
+        module,
+        "prog",
+        data={
+            "input": _host(inputs),
+            "left_param_weight": _host(first[0]),
+            "left_param_bias": _host(first[1]),
+            "right_param_weight": _host(second[0]),
+            "right_param_bias": _host(second[1]),
+        },
+        sites={
+            f"{label}@{t}": _host(trajectories[label][t])
+            for label in labels
+            for t in range(3)
+        },
+    )
+    assert reference.log_joint == pytest.approx(closed, rel=1e-5)
 
 
 # ---------------------------------------------------------------------
@@ -673,33 +844,40 @@ export prog
 
 
 def test_a_scans_sites_take_the_binding_the_source_wrote() -> None:
+    torch.manual_seed(10)
+    program = _program(USER_SITE_LIKE_A_SCAN)
     module = _module(USER_SITE_LIKE_A_SCAN)
-    step = next(entry for entry in module.entries if entry.name.startswith("cell__"))
-    assert [site.name for site in step.sites] == ["state"]
     inputs = torch.randn(3, 2)
     states = torch.randn(3, 3)
     user_h = torch.full((3,), 0.5)
-    weight = torch.randn(6, 5)
-    bias = torch.randn(6)
+    run = trace(program, inputs.unsqueeze(0))
+    assert sorted(run.sites) == ["h", "state@0", "state@1", "state@2"]
+    (kernel,) = _scan_kernels(program)
+    closed = float(
+        _trajectory_density(kernel, inputs, states)
+        + td.Normal(states[2], 1.0).log_prob(user_h).sum()
+    )
+    given = {
+        **{f"state@{t}": states[t : t + 1] for t in range(3)},
+        "h": user_h.unsqueeze(0),
+    }
+    compiled = float(program.log_joint(inputs.unsqueeze(0), given).detach().sum())
+    assert compiled == pytest.approx(closed, rel=1e-6)
     data = {
         "input": _host(inputs),
-        "cell_param_weight": _host(weight),
-        "cell_param_bias": _host(bias),
+        "cell_param_weight": _host(kernel[0]),
+        "cell_param_bias": _host(kernel[1]),
     }
-    previous = torch.zeros(3)
-    closed = td.Normal(states[2], 1.0).log_prob(user_h).sum()
-    for t in range(3):
-        closed = closed + _normal(
-            weight, bias, torch.cat([inputs[t], previous])
-        ).log_prob(states[t]).sum()
-        previous = states[t]
     reference = run_program(
         module,
         "prog",
         data=data,
-        sites={**{f"state@{t}": _host(states[t]) for t in range(3)}, "h": _host(user_h)},
+        sites={
+            **{f"state@{t}": _host(states[t]) for t in range(3)},
+            "h": _host(user_h),
+        },
     )
-    assert reference.log_joint == pytest.approx(float(closed), rel=1e-5)
+    assert reference.log_joint == pytest.approx(closed, rel=1e-5)
     # One value under a scan's label is never replayed at every position.
     with pytest.raises(ExecutionFailure, match="reached more than once"):
         run_program(
@@ -707,6 +885,10 @@ def test_a_scans_sites_take_the_binding_the_source_wrote() -> None:
             "prog",
             data=data,
             sites={"state": _host(states[2]), "h": _host(user_h)},
+        )
+    with pytest.raises(ValueError, match="laid out"):
+        program.log_joint(
+            inputs.unsqueeze(0), {"state": states[2:], "h": user_h.unsqueeze(0)}
         )
 
 
@@ -729,3 +911,115 @@ export prog
     with pytest.raises(QiecDiagnosticError, match="share addresses") as compiled:
         loads(source)
     assert str(checked.value).split("] ", 1)[1] == str(compiled.value).split("] ", 1)[1]
+
+
+# ---------------------------------------------------------------------
+# NUTS over a scanned trajectory against the Kalman smoother.
+# ---------------------------------------------------------------------
+
+KNOWN_STATE_SPACE = """\
+object Driver : Real 1
+object State : Real 1
+object Obs : Real 1
+program step(u_t, s_prev) : Driver * State -> State
+    let m = 0.8 * s_prev + 0.3 * u_t
+    sample s <- Normal(loc=m, scale=0.5)
+    observe o <- Normal(loc=s, scale=0.4)
+    return s
+define run_all = scan(step)
+program ssm : Driver -> State
+    sample h <- run_all
+    return h
+export ssm
+"""
+
+
+def _rts_smoother(
+    drivers: list[float], observations: list[float]
+) -> tuple[list[float], list[float]]:
+    """The Rauch-Tung-Striebel smoother of the known state-space model.
+
+    ``s_t = 0.8 s_{t-1} + 0.3 u_t + N(0, 0.5^2)`` from ``s_{-1} = 0``,
+    and ``o_t = s_t + N(0, 0.4^2)``.
+
+    Parameters
+    ----------
+    drivers : list[float]
+        ``u_t``.
+    observations : list[float]
+        ``o_t``.
+
+    Returns
+    -------
+    tuple[list[float], list[float]]
+        The posterior mean and variance of every ``s_t``.
+    """
+    a, b, q, r = 0.8, 0.3, 0.5, 0.4
+    filtered_mean: list[float] = []
+    filtered_var: list[float] = []
+    predicted_mean: list[float] = []
+    predicted_var: list[float] = []
+    mean, var = 0.0, 0.0
+    for drive, observed in zip(drivers, observations, strict=True):
+        prior_mean, prior_var = a * mean + b * drive, a * a * var + q * q
+        gain = prior_var / (prior_var + r * r)
+        mean = prior_mean + gain * (observed - prior_mean)
+        var = (1.0 - gain) * prior_var
+        predicted_mean.append(prior_mean)
+        predicted_var.append(prior_var)
+        filtered_mean.append(mean)
+        filtered_var.append(var)
+    smoothed_mean = list(filtered_mean)
+    smoothed_var = list(filtered_var)
+    for t in range(len(drivers) - 2, -1, -1):
+        gain = filtered_var[t] * a / predicted_var[t + 1]
+        smoothed_mean[t] = filtered_mean[t] + gain * (
+            smoothed_mean[t + 1] - predicted_mean[t + 1]
+        )
+        smoothed_var[t] = filtered_var[t] + gain * gain * (
+            smoothed_var[t + 1] - predicted_var[t + 1]
+        )
+    return smoothed_mean, smoothed_var
+
+
+@pytest.mark.slow
+def test_nuts_recovers_the_kalman_smoother_over_a_scanned_trajectory() -> None:
+    torch.manual_seed(0)
+    length = 20
+    program = _program(KNOWN_STATE_SPACE)
+    drivers = torch.randn(1, length, 1)
+    state = 0.0
+    observed: list[float] = []
+    for t in range(length):
+        state = (
+            0.8 * state + 0.3 * float(drivers[0, t, 0]) + 0.5 * float(torch.randn(()))
+        )
+        observed.append(state + 0.4 * float(torch.randn(())))
+    observations = torch.tensor(observed).reshape(1, length, 1)
+    means, variances = _rts_smoother(drivers.reshape(-1).tolist(), observed)
+    lifted, lx, lobs = bayesian_lift_parameters(
+        program,
+        drivers,
+        {"o": observations},
+        prior_scale=1.0,
+        additional_latents={"s": (1, length, 1)},
+    )
+    result = MCMC(
+        NUTSKernel(max_tree_depth=4),
+        num_warmup=120,
+        num_samples=200,
+        num_chains=1,
+        seed=0,
+    ).run(lifted, lx, lobs)
+    draws = result.samples["latent__s"].reshape(-1, length)
+    effective = result.ess["latent__s"].reshape(-1)
+    for t in range(length):
+        # The posterior mean's Monte Carlo error is the smoother's
+        # standard deviation over the square root of the effective
+        # sample size; four of them bound a correct sampler's deviation
+        # at every position with high probability.
+        tolerance = 4.0 * math.sqrt(variances[t]) / math.sqrt(float(effective[t]))
+        assert abs(float(draws[:, t].mean()) - means[t]) <= tolerance, (
+            f"position {t}: posterior mean {float(draws[:, t].mean()):.4f}, "
+            f"smoother {means[t]:.4f}, tolerance {tolerance:.4f}"
+        )

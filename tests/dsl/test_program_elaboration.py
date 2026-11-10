@@ -1644,8 +1644,8 @@ def test_a_scan_recurs_over_a_sequence() -> None:
     monadic = program._morphism
     assert isinstance(monadic, MonadicProgram)
     parameters = {name: item.detach() for name, item in monadic.named_parameters()}
-    weight = parameters["_step_h._cell.param_source.linear.weight"]
-    bias = parameters["_step_h._cell.param_source.linear.bias"]
+    weight = parameters["_scan_h._step_h.param_source.linear.weight"]
+    bias = parameters["_scan_h._step_h.param_source.linear.bias"]
     module = _module(SCANNED)
     assert loads(dumps(module)) == module
     assert [item.name for item in module.computations] == [
@@ -1684,10 +1684,11 @@ def test_a_scan_recurs_over_a_sequence() -> None:
         previous = states[position]
     assert run.log_joint == pytest.approx(float(closed), rel=1e-5)
     assert run.value == _nested(states[3])
-    scan = monadic.get_submodule("_step_h")
-    assert isinstance(scan, ScanMorphism)
-    classic = scan.log_joint(inputs.unsqueeze(0), states.unsqueeze(0)).detach()
-    assert run.log_joint == pytest.approx(float(classic.sum()), rel=1e-5)
+    compiled = monadic.log_joint(
+        inputs.unsqueeze(0),
+        {f"h@{position}": states[position : position + 1] for position in range(4)},
+    ).detach()
+    assert run.log_joint == pytest.approx(float(compiled.sum()), rel=1e-5)
 
 
 RECURRENT_CELL = """\

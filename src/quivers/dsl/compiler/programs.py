@@ -124,7 +124,7 @@ from quivers.dsl.compiler._deduction_terms import (
     variable_term,
 )
 from quivers.dsl.compiler.sugar import desugar_step
-from quivers.dsl.composite_lets import expand_program_cell_scans, scan_let_call
+from quivers.dsl.composite_lets import expand_program_scans, scan_let_call
 from quivers.dsl.let_expr_traversal import (
     free_let_callees,
     free_let_names,
@@ -240,6 +240,75 @@ def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
             if scan is not None:
                 found.append(scan[0])
     return tuple(found)
+
+
+def _draw_bundle(
+    value: LetExprNode, bound_vars: dict[str, AnySpace | None]
+) -> tuple[str, ...] | None:
+    """The draws a list literal bundles, when it bundles only draws.
+
+    The expansion of ``fan`` and ``@`` in a chain gathers the branches'
+    tails, each a per-row vector a draw or a scan bound, into a list
+    the next element of the chain reads as its input. That input is the
+    branches' product, the vectors laid end to end per row, as the
+    checked elaboration flattens it.
+
+    Parameters
+    ----------
+    value : LetExprNode
+        A let's value.
+    bound_vars : dict[str, AnySpace | None]
+        The names bound so far and their spaces.
+
+    Returns
+    -------
+    tuple[str, ...] | None
+        The bundled names, when ``value`` is a list of names each bound
+        to a continuous space; ``None`` otherwise.
+    """
+    if not isinstance(value, LetExprList) or not value.items:
+        return None
+    names: list[str] = []
+    for item in value.items:
+        if not isinstance(item, LetExprVar) or not isinstance(
+            bound_vars.get(item.name), ContinuousSpace
+        ):
+            return None
+        names.append(item.name)
+    return tuple(names)
+
+
+def _concatenation(names: tuple[str, ...]) -> Callable[[dict], torch.Tensor]:
+    """A let function laying bound per-row vectors end to end.
+
+    Parameters
+    ----------
+    names : tuple[str, ...]
+        The bound names, in order.
+
+    Returns
+    -------
+    Callable[[dict], torch.Tensor]
+        The function, reading exactly ``names``, returning their
+        concatenation along the feature axis.
+    """
+
+    def concatenate(env: dict) -> torch.Tensor:
+        """Concatenate the bundled values per row.
+
+        Parameters
+        ----------
+        env : dict
+            The bindings.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(batch, sum of widths)``.
+        """
+        return torch.cat([env[name] for name in names], dim=-1)
+
+    return reading(concatenate, names)
 
 
 def _input_name(decl: ProgramDecl) -> str:
@@ -2232,14 +2301,16 @@ class _ProgramsMixin:
     ) -> MonadicProgram | None:
         """Compile a monadic program block into a MonadicProgram.
 
-        A ``sample`` or ``observe`` step that scans a program cell is
-        expanded first, as the checked elaboration expands it: into a
+        A ``sample`` or ``observe`` step that runs a scan is expanded
+        first, as the checked elaboration expands it: into a
         ``let h = scan(step, xs)`` over a step program, which compiles
-        to a [`Scan`][quivers.continuous.Scan] step whose step program
-        runs the cell through a [`Call`][quivers.continuous.Call]. The
-        cell's sites are thus sites of this program, reached once per
-        position, and a name the cell reads without binding it is this
-        program's binding of that name before the scan, else host data.
+        to a [`Scan`][quivers.continuous.Scan] step. The step program
+        draws a morphism cell at the site the scan's binding names, or
+        runs a program cell through a [`Call`][quivers.continuous.Call].
+        The step's sites are thus sites of this program, reached once
+        per position, and a name a program cell reads without binding
+        it is this program's binding of that name before the scan, else
+        host data.
 
         Parametric programs (those carrying ``type_params``) are not
         compiled into a runtime ``MonadicProgram`` directly. They
@@ -3077,6 +3148,15 @@ class _ProgramsMixin:
                 if scan is not None and scan[0] in self._scan_step_declarations:
                     steps.append(self._compile_scan(step, scan, decl, bound_vars))
                     continue
+                bundle = _draw_bundle(step.value, bound_vars)
+                if bundle is not None:
+                    steps.append(Let(name=step.name, value=_concatenation(bundle)))
+                    bound_vars[step.name] = ProductSpace(
+                        components=tuple(
+                            cast(ContinuousSpace, bound_vars[name]) for name in bundle
+                        )
+                    )
+                    continue
                 if isinstance(step.value, LetExprVar) and step.value.name in bound_vars:
                     # Alias of a variable bound earlier in the body:
                     # the binding copies the slot and inherits its
@@ -3238,7 +3318,7 @@ class _ProgramsMixin:
         return None
 
     def _expand_cell_scans(self, decl: ProgramDecl) -> tuple[ProgramDecl, set[str]]:
-        """Expand the steps of a program that scan a program cell.
+        """Expand the steps of a program that run a scan.
 
         Parameters
         ----------
@@ -3259,7 +3339,7 @@ class _ProgramsMixin:
             If the expansion fails.
         """
         try:
-            draws, declared = expand_program_cell_scans(decl, self._module)
+            draws, declared = expand_program_scans(decl, self._module)
         except StepResolutionError as error:
             raise CompileError("; ".join(error.kinds), decl.line, decl.col) from error
         if draws is decl.draws:
