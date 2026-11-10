@@ -3601,6 +3601,31 @@ class _ProgramElaboration:
                         *(free_of(argument) for argument in step.call.arguments)
                     )
                     bound.add(step.name)
+                elif (
+                    isinstance(step, SampleStep)
+                    and step.morphism in self._program_declarations
+                ):
+                    # A draw from a program runs the program's steps in
+                    # place, so the names they read are typed as they
+                    # are read there.
+                    template = self._program_declarations[step.morphism]
+                    try:
+                        instantiated = instantiate_program(
+                            template,
+                            step.vars,
+                            template_bindings(
+                                template,
+                                step.args or (),
+                                {name: LetExprVar(name=name) for name in bound},
+                            ),
+                        )
+                    except TemplateError:
+                        # The elaboration of the draw reports the misfit
+                        # with its location.
+                        bound.update(step.vars)
+                        continue
+                    visit(instantiated, group)
+                    bound.update(step.vars)
                 elif isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
                     names = (
                         [step.var]
