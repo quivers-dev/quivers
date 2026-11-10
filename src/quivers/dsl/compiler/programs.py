@@ -4008,6 +4008,11 @@ class _ProgramsMixin:
                         parts = [_lookup_arg(local, a) for a in _obs_args]
                         if len(parts) == 1:
                             theta = parts[0]
+                            if theta.dim() == 0:
+                                # One value at this atom, shared by every
+                                # row: a single column, as the stacking
+                                # of several parameters gives each.
+                                theta = theta.reshape(1)
                             if _shared_vector and theta.dim() == 1:
                                 theta = theta.unsqueeze(0)
                         else:

@@ -50,6 +50,7 @@ _TARGETS: tuple[str, ...] = ("bugs", "gen", "jags", "stan", "turing")
 _UNGROUPED_MARGINALS: tuple[str, ...] = (
     "steps/marginalize_body_let_chain",
     "steps/marginalize_body_plated_let",
+    "steps/marginalize_latent_gather",
     "steps/marginalize_latent_value",
     "steps/marginalize_let_probs",
     "steps/marginalize_let_vector_probs",
@@ -171,6 +172,30 @@ def _body_plated_let(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
         D.Gamma(2.0, 1.0).log_prob(r)
         + D.Dirichlet(torch.ones(2)).log_prob(prior)
         + _poisson_marginal(prior.log(), rates, y)
+    )
+
+
+def _latent_gather(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A Dirichlet-weighted latent selecting one sampled location.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    mu, prior, y = v["mu"], v["prior"], v["y"]
+    per_atom = torch.stack(
+        [prior[z].log() + D.Normal(mu[z], 1.0).log_prob(y).sum() for z in range(4)]
+    )
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu).sum()
+        + D.Dirichlet(torch.ones(4)).log_prob(prior)
+        + torch.logsumexp(per_atom, 0)
     )
 
 
@@ -312,6 +337,7 @@ _DATA: dict[str, dict[str, Host]] = {
     "steps/marginalize_body_let_chain": {"y": [1, 3, 4]},
     "steps/marginalize_body_plated_let": {"y": [1, 3, 4]},
     "steps/marginalize_latent_value": {"y": [1, 3, 4]},
+    "steps/marginalize_latent_gather": {"y": [0.4, -1.2, 2.1]},
     "let_expressions/let_real_division": {"y": [0.1, -0.2, 0.3]},
     "let_expressions/let_factor_index_arithmetic": {"y": [1.0, 2.0, 3.0]},
     "let_expressions/let_row_gather": {"group_idx": [0, 1, 1, 0], "y": [0, 1, 0, 1]},
@@ -339,6 +365,11 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"r": 0.7, "prior": [0.3, 0.7]},
         {"r": 1.5, "prior": [0.5, 0.5]},
         {"r": 2.6, "prior": [0.8, 0.2]},
+    ],
+    "steps/marginalize_latent_gather": [
+        {"mu": [-1.0, 0.0, 0.5, 2.0], "prior": [0.1, 0.2, 0.3, 0.4]},
+        {"mu": [0.3, -0.8, 1.2, 0.1], "prior": [0.4, 0.3, 0.2, 0.1]},
+        {"mu": [1.5, 0.6, -0.4, -1.3], "prior": [0.25, 0.25, 0.25, 0.25]},
     ],
     "steps/marginalize_latent_value": [
         {"r": 0.7, "prior": [0.2, 0.3, 0.5]},
@@ -375,6 +406,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "steps/marginalize_body_let_chain": {"r": [], "prior": [4], "y": [3]},
     "steps/marginalize_body_plated_let": {"r": [], "prior": [2], "y": [3]},
     "steps/marginalize_latent_value": {"r": [], "prior": [3], "y": [3]},
+    "steps/marginalize_latent_gather": {"mu": [4], "prior": [4], "y": [3]},
     "let_expressions/let_real_division": {"mu": [], "y": [3]},
     "let_expressions/let_factor_index_arithmetic": {"mu": [], "y": [3]},
     "let_expressions/let_row_gather": {"a": [2], "group_idx": [4], "y": [4]},
@@ -410,6 +442,7 @@ _ORACLES: dict[str, Oracle] = {
     "steps/marginalize_body_let_chain": _body_let_chain,
     "steps/marginalize_body_plated_let": _body_plated_let,
     "steps/marginalize_latent_value": _latent_value,
+    "steps/marginalize_latent_gather": _latent_gather,
     "let_expressions/let_real_division": _real_division,
     "let_expressions/let_factor_index_arithmetic": _factor_index_arithmetic,
     "let_expressions/let_row_gather": _row_gather,
