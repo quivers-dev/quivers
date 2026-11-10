@@ -65,6 +65,7 @@ from quivers.qiec.types import (
     TypeApplication,
     TypeExpr,
     TypeVariable,
+    render_static,
 )
 
 
@@ -1651,6 +1652,7 @@ def replay_handler(
     extra: ExtraValuePolicy = ExtraValuePolicy.ERROR,
     answer_type: TypeExpr = ANSWER,
     key: str = "replay",
+    type_validator: Callable[[TypeExpr], RuntimeValidator | None] = lambda _type: None,
 ) -> RuntimeHandler:
     """Replay selected sites under an explicit scoring/intervention policy.
 
@@ -1687,6 +1689,11 @@ def replay_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    type_validator
+        The validator for a closed type, or ``None`` where the runtime
+        has none: each replayed value is checked against the type the
+        request instantiates the site at, so a value of the wrong
+        element type is refused where it enters, naming the site.
 
     Returns
     -------
@@ -1791,6 +1798,13 @@ def replay_handler(
                 request.core.result_type,
                 f"replay {site!r}",
             )
+            site_type = request.core.result_type
+            site_validator = type_validator(site_type)
+            if site_validator is not None and not _accepts(site_validator, value):
+                raise RuntimeTypeMismatch(
+                    f"the value given for site {site!r}, {value!r}, does not "
+                    f"inhabit the site's checked type {render_static(site_type)}"
+                )
             seen.add(site_key)
             if policy is ReplayPolicy.CLAMP_AND_SCORE:
                 assert score_instance is not None
