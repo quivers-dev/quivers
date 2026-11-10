@@ -21,6 +21,8 @@ evaluators agree on which variables are positions.
 
 from __future__ import annotations
 
+import didactic.api as dx
+
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
     ObjectEffectApply,
@@ -223,6 +225,130 @@ def position_slots(decl: DeductionDecl) -> PositionSlots:
     return slots
 
 
+class MisplacedPosition(dx.Model):
+    """A position slot a rule fills with something other than a position.
+
+    Parameters
+    ----------
+    rule : str
+        The rule.
+    symbol : str
+        The applied symbol whose slot it is.
+    slot : int
+        The slot's index.
+    text : str
+        The offending argument as written: a declared atom's name, or
+        the symbol of a structured term.
+    is_atom : bool
+        Whether the argument is a declared atom.
+    line : int
+        The rule's source line.
+    col : int
+        The rule's source column.
+    """
+
+    rule: str
+    symbol: str
+    slot: int
+    text: str
+    is_atom: bool
+    line: int
+    col: int
+
+    def message(self, deduction: str) -> str:
+        """The diagnostic both evaluators report.
+
+        Parameters
+        ----------
+        deduction : str
+            The deduction's name.
+
+        Returns
+        -------
+        str
+            The message, naming the rule, the identifier, and the slot.
+        """
+        where = f"slot {self.slot} of {self.symbol!r}"
+        if self.is_atom:
+            return (
+                f"deduction {deduction!r}: rule {self.rule!r} uses {self.text!r} "
+                f"at {where}, which holds a chart position, but {self.text!r} is "
+                "a declared atom; a position slot takes a position variable or "
+                "an integer, so rename the variable"
+            )
+        return (
+            f"deduction {deduction!r}: rule {self.rule!r} puts a {self.text!r} "
+            f"term at {where}, which holds a chart position; a position slot "
+            "takes a position variable or an integer"
+        )
+
+
+def misplaced_positions(
+    decl: DeductionDecl, slots: PositionSlots
+) -> list[MisplacedPosition]:
+    """The position slots the rules fill with an atom or a structured term.
+
+    An identifier spelled like a declared atom is that atom wherever it
+    occurs, in every evaluator; in a category slot that is its meaning,
+    but a position slot cannot hold it, so the rule is rejected rather
+    than read as a pattern that never matches.
+
+    Parameters
+    ----------
+    decl : DeductionDecl
+        The deduction.
+    slots : PositionSlots
+        Its position slots, from `position_slots`.
+
+    Returns
+    -------
+    list[MisplacedPosition]
+        Every offending slot, in rule and source order.
+    """
+    atoms = frozenset(decl.atoms)
+    found: list[MisplacedPosition] = []
+    for rule in decl.rules:
+
+        def walk(expr: ObjectExpr, rule: SequentRule = rule) -> None:
+            """Collect a pattern's misplaced positions.
+
+            Parameters
+            ----------
+            expr : ObjectExpr
+                The pattern.
+            rule : SequentRule
+                The rule it belongs to.
+            """
+            symbol = pattern_symbol(expr)
+            if symbol is None:
+                return
+            for index, argument in enumerate(pattern_arguments(expr)):
+                inner = pattern_symbol(argument)
+                if slots[symbol][index]:
+                    if isinstance(argument, TypeName) and argument.name in atoms:
+                        text, is_atom = argument.name, True
+                    elif inner is not None:
+                        text, is_atom = inner, False
+                    else:
+                        continue
+                    found.append(
+                        MisplacedPosition(
+                            rule=rule.name,
+                            symbol=symbol,
+                            slot=index,
+                            text=text,
+                            is_atom=is_atom,
+                            line=rule.line,
+                            col=rule.col,
+                        )
+                    )
+                walk(argument)
+
+        for pattern in (*rule.premises, rule.conclusion):
+            walk(pattern)
+    return found
+
+
 def rule_position_variables(
     decl: DeductionDecl, slots: PositionSlots, rule: SequentRule
 ) -> frozenset[str]:
@@ -271,9 +397,11 @@ def rule_position_variables(
 
 __all__ = [
     "SPAN_SYMBOL",
+    "MisplacedPosition",
     "PositionSlots",
     "has_lexicon",
     "is_pattern_variable",
+    "misplaced_positions",
     "pattern_arguments",
     "pattern_symbol",
     "position_slots",

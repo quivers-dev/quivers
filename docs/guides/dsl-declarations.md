@@ -331,9 +331,12 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
 ```
 
 - **`atoms NAME, NAME, ...`** declares the closed constructor universe.
-  Every identifier appearing in a rule pattern must be either an
-  atom or a single-uppercase wildcard variable (`X`, `Y`, `Z`,
-  `I`, `J`, `K`, ...).
+  In a rule pattern, a declared atom's name always denotes that atom;
+  every other identifier (other than a numeral) is a wildcard variable,
+  conventionally a single uppercase letter (`X`, `Y`, `I`, `J`, `K`,
+  ...). A variable must not share its spelling with an atom: in a
+  chart-position slot such as the first two slots of `span`, an atom
+  is a compile error naming the rule and the identifier.
 - **`rule NAME : premises |- conclusion`** is a sequent. Premises
   are comma-separated; arity is arbitrary (unary rules fire on a
   single chart cell, binary on a pair of adjacent cells, etc.). A

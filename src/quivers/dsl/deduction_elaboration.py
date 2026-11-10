@@ -77,7 +77,11 @@ from quivers.dsl.compiler._options import (
     get_option_flag,
     get_option_name,
 )
-from quivers.dsl.compiler._deduction_positions import position_slots
+from quivers.dsl.compiler._deduction_positions import (
+    is_pattern_variable,
+    misplaced_positions,
+    position_slots,
+)
 from quivers.dsl.compiler.deductions import load_lexicon_tsv
 from quivers.stochastic.categories import (
     AtomicCategory,
@@ -935,8 +939,10 @@ class _DeductionElaboration:
         Raises
         ------
         QiecDiagnosticError
-            If the semiring is unknown, an option has no elaboration, or
-            a rule's conclusion mentions a variable no premise binds.
+            If the semiring is unknown, an option has no elaboration, a
+            rule fills a position slot with an atom or a structured
+            term, or a rule's conclusion mentions a variable no premise
+            binds.
         """
         semiring = get_option_name(
             declaration.options, "semiring", line=declaration.line, col=declaration.col
@@ -979,6 +985,13 @@ class _DeductionElaboration:
             for rule in declaration.rules
             for pattern in (*rule.premises, rule.conclusion)
         )
+        for misplaced in misplaced_positions(declaration, position_slots(declaration)):
+            rule_node = next(
+                rule for rule in declaration.rules if rule.name == misplaced.rule
+            )
+            self._fail(
+                rule_node, misplaced.message(declaration.name), code="qiec-program"
+            )
         counter = [0]
         for rule in declaration.rules:
             premises = tuple(
@@ -1084,12 +1097,12 @@ class _DeductionElaboration:
             cover.
         """
         if isinstance(expr, TypeName):
-            if expr.name in atoms:
-                self._note_atom(system, expr.name)
-                return _Atom(expr.name)
+            if is_pattern_variable(expr, frozenset(atoms)):
+                return _Wild(expr.name)
             if expr.name.isdigit():
                 return _Lit(int(expr.name))
-            return _Wild(expr.name)
+            self._note_atom(system, expr.name)
+            return _Atom(expr.name)
         if isinstance(expr, ObjectEffectApply):
             args = tuple(
                 self._object_pattern(item, atoms, system) for item in expr.args

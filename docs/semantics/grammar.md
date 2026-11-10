@@ -35,8 +35,17 @@ arbitrary nested items. Concretely, `I` is the free algebra over
 the atoms quotiented by the underlying carrier object `Term`'s
 identification of structurally equal applications.
 
-Pattern variables (single-uppercase identifiers in a rule body)
-range over `I`; the unifier supplies first-order substitutions.
+Pattern variables range over `I`; the unifier supplies first-order
+substitutions. An identifier in a rule body is a variable exactly when it
+is neither a declared atom nor a numeral, whatever its spelling (single
+uppercase letters are the convention). A declared atom's name always
+denotes that atom, in the agenda chart and in the checked QIEC search
+alike, so a rule that means a variable must not spell it like an atom.
+In a category slot the atom is a legitimate ground pattern; in a
+chart-position slot (see [§2.1](#21-learnable-rule-weights-learnable))
+it is rejected at compile time with a diagnostic at the rule that names
+the identifier, since a position slot holds a position variable or an
+integer.
 
 ## 2. Rules
 

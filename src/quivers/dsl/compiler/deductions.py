@@ -55,6 +55,8 @@ from quivers.dsl.compiler._deduction_terms import (
     variable_term,
 )
 from quivers.dsl.compiler._deduction_positions import (
+    is_pattern_variable,
+    misplaced_positions,
     position_slots,
     rule_position_variables,
 )
@@ -540,8 +542,10 @@ class _DeductionsMixin:
         `DeductionSystem` and register it under ``decl.name``.
 
         Translates the declarative sequent-style rules into the
-        runtime's `InferenceRule` form (with single-uppercase
-        identifiers treated as wildcard variables). Resolves the
+        runtime's `InferenceRule` form (an identifier that is neither a
+        declared atom nor a numeral is a wildcard variable; an atom's
+        name is the atom, and is rejected in a chart-position slot).
+        Resolves the
         semiring by name. Wires the axiom source — one of:
 
         * a ``lexicon { ... }`` block, compiled into a learnable
@@ -557,6 +561,20 @@ class _DeductionsMixin:
 
         The result is callable as ``parse(NAME, input)`` from
         program bodies, producing a `ChartView`.
+
+        Parameters
+        ----------
+        decl : DeductionDecl
+            The declaration.
+
+        Raises
+        ------
+        CompileError
+            If the deduction is declared twice, an option is unknown or
+            malformed, a rule fills a chart-position slot with an atom
+            or a structured term, a ``parent`` names no rule, or the
+            lexicon or an attached signature or encoder does not
+            resolve.
         """
         if not hasattr(self, "_deductions"):
             self._deductions = {}
@@ -608,19 +626,20 @@ class _DeductionsMixin:
                 decl.col,
             )
 
+        frozen_atoms = frozenset(atoms_set)
+
         def _convert_pattern(texpr):
             if isinstance(texpr, TypeName):
                 name = texpr.name
-                if name in atoms_set:
-                    return atom_term(name)
-                # Variable convention: any identifier not in the
-                # atoms list (and not a numeric literal) is a
-                # wildcard. This permits arbitrary metavariable
-                # names — X, Y, Foo, antecedent — without ad-hoc
-                # capitalisation rules.
+                # Variable convention, shared with the QIEC elaboration:
+                # an identifier that is neither a declared atom nor a
+                # numeral is a wildcard, whatever its spelling; a
+                # declared atom's name is always that atom.
+                if is_pattern_variable(texpr, frozen_atoms):
+                    return Wildcard(name)
                 if name.isdigit():
                     return ("literal", int(name))
-                return Wildcard(name)
+                return atom_term(name)
             if isinstance(texpr, ObjectProduct):
                 return (
                     "product",
@@ -709,6 +728,10 @@ class _DeductionsMixin:
         # reduces to the standard semiring-parsing default (semiring
         # product of premise weights only).
         slots = position_slots(decl)
+        for misplaced in misplaced_positions(decl, slots):
+            raise CompileError(
+                misplaced.message(decl.name), misplaced.line, misplaced.col
+            )
         rule_positions = {
             sr.name: rule_position_variables(decl, slots, sr) for sr in decl.rules
         }
