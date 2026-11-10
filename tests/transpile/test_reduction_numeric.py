@@ -5,7 +5,8 @@ host name takes the shape of the plated values it is combined with. Each
 fixture here isolates one case where a target could render a program that
 runs and still reduce a different axis or read a datum at a different
 shape: a vector over a plate, a plate of event vectors, a table a factor
-builds over two plates, and a host weight a `score` reads elementwise. Every target that renders a fixture is scored
+builds over two plates, reductions nested in one let, and a host weight a
+`score` reads elementwise. Every target that renders a fixture is scored
 against the reference machine at points that vary every site, and the
 reference is pinned to an independent `torch.distributions` joint. A
 target with no spelling for a case refuses it under a stated kind.
@@ -64,6 +65,13 @@ def _reduce_matrix(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _reduce_nested(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    w, y = v["w"], v["y"]
+    table = w[:, None, None] * w[None, :, None] * w[None, None, :]
+    s = table.sum(-1).sum(-1)
+    return D.Normal(0.0, 1.0).log_prob(w).sum() + D.Normal(s, 1.0).log_prob(y).sum()
+
+
 def _score_host_weight(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     theta, y, weight = v["theta"], v["y"], v["weight"]
     return (
@@ -78,6 +86,7 @@ _DATA: dict[str, dict[str, Host]] = {
     "let_expressions/let_reduce_plate": {"y": [0.4, -1.1, 2.3]},
     "let_expressions/let_reduce_event": {"y": [0.4, -1.1, 2.3]},
     "let_expressions/let_reduce_matrix": {"y": [0.4, -1.1, 2.3]},
+    "let_expressions/let_reduce_nested": {"y": [0.6, -0.9]},
     "let_expressions/let_score_host_weight": {
         "y": [0.5, -1.0, 2.0, 0.3],
         "weight": [1.0, 0.0, 1.0, 0.5],
@@ -101,6 +110,11 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"x": [-1.0, 0.8, 0.0], "w": [-0.5, 1.2]},
         {"x": [1.4, 0.1, -0.7], "w": [0.9, 0.2]},
     ],
+    "let_expressions/let_reduce_nested": [
+        {"w": [0.3, -0.8]},
+        {"w": [-1.0, 0.5]},
+        {"w": [0.7, 0.9]},
+    ],
     "let_expressions/let_score_host_weight": [
         {"theta": [0.3, -0.2, 1.1, 0.4]},
         {"theta": [-1.0, 0.8, 0.0, -0.5]},
@@ -113,6 +127,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_reduce_plate": {"theta": [4], "y": [3]},
     "let_expressions/let_reduce_event": {"z": [3, 2], "y": [3]},
     "let_expressions/let_reduce_matrix": {"x": [3], "w": [2], "y": [3]},
+    "let_expressions/let_reduce_nested": {"w": [2], "y": [2]},
     "let_expressions/let_score_host_weight": {"theta": [4], "y": [4], "weight": [4]},
 }
 
@@ -121,12 +136,21 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_reduce_plate": _reduce_plate,
     "let_expressions/let_reduce_event": _reduce_event,
     "let_expressions/let_reduce_matrix": _reduce_matrix,
+    "let_expressions/let_reduce_nested": _reduce_nested,
     "let_expressions/let_score_host_weight": _score_host_weight,
 }
 
 #: The refusals each target states for a fixture it cannot render, by
 #: the kind prefix the refusal names.
 _REFUSED: dict[tuple[str, str], str] = {
+    ("let_expressions/let_reduce_nested", "bugs"): "let-expr:axis-reduction",
+    ("let_expressions/let_reduce_nested", "church"): (
+        "let-expr:LetExprFactor:multi-axis-body"
+    ),
+    ("let_expressions/let_reduce_nested", "gen"): "let-expr:axis-reduction",
+    ("let_expressions/let_reduce_nested", "jags"): "let-expr:axis-reduction",
+    ("let_expressions/let_reduce_nested", "stan"): "let-expr:axis-reduction",
+    ("let_expressions/let_reduce_nested", "turing"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_matrix", "church"): (
         "let-expr:LetExprFactor:multi-axis-body"
     ),

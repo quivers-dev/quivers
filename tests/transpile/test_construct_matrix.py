@@ -159,6 +159,15 @@ for _backend in ("bugs", "jags"):
 _EXPECTED_ORTHOGONAL_RAISES[("church", "let_expressions", "let_reduce_matrix")] = (
     "let-expr:LetExprFactor:multi-axis-body"
 )
+# No target spells the reduction of a rank-three factor's last axis inside
+# its row loop, and Church has no form for the factor itself.
+_EXPECTED_ORTHOGONAL_RAISES[("church", "let_expressions", "let_reduce_nested")] = (
+    "let-expr:LetExprFactor:multi-axis-body"
+)
+for _backend in ("bugs", "gen", "jags", "stan", "turing"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_nested")] = (
+        "let-expr:axis-reduction"
+    )
 
 for _backend in _BACKENDS:
     for _fixture in ("encoder_decl", "decoder_decl"):

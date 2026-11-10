@@ -598,6 +598,7 @@ def _last_axis_reduction(
     value: Value,
     shape: tuple[TypeExpr, tuple[IndexTerm, ...]],
     path: tuple[str | int, ...],
+    occupied: frozenset[str],
 ) -> Value:
     """Reduce a tensor along its last axis.
 
@@ -615,7 +616,11 @@ def _last_axis_reduction(
     shape : tuple[TypeExpr, tuple[IndexTerm, ...]]
         The tensor's element type and dimensions.
     path : tuple[str | int, ...]
-        The structural path, which names the comprehension binders.
+        The structural path of the reduction, positions included, which
+        names the comprehension binders: a reduction nested in another's
+        argument sits at a longer path, so the two never share a binder.
+    occupied : frozenset[str]
+        The names of the locals in scope, which no binder repeats.
 
     Returns
     -------
@@ -625,10 +630,17 @@ def _last_axis_reduction(
     element, dimensions = shape
     if len(dimensions) <= 1:
         return Reduction(operator, value, element)
-    stem = "_".join(str(item) for item in path if isinstance(item, str))
-    binder = Local(f"__{stem}_row{len(dimensions)}", INT)
+    stem = "_".join(str(item) for item in path)
+    name = f"__{stem}_row{len(dimensions)}"
+    suffix = 0
+    while name in occupied:
+        suffix += 1
+        name = f"__{stem}_row{len(dimensions)}_{suffix}"
+    binder = Local(name, INT)
     row = Gather(value, Var(binder), tensor_type(element, dimensions[1:]))
-    inner = _last_axis_reduction(operator, row, (element, dimensions[1:]), path)
+    inner = _last_axis_reduction(
+        operator, row, (element, dimensions[1:]), path, occupied | {name}
+    )
     inner_shape = tensor_shape(_reduced_type(element, dimensions[1:]))
     result = (
         tensor_type(element, (dimensions[0],))
@@ -2926,7 +2938,11 @@ class _Elaborator(
                 shape = tensor_shape(types[0])
                 if shape is not None:
                     return _last_axis_reduction(
-                        _REDUCTIONS[authored.func], arguments[0], shape, path
+                        _REDUCTIONS[authored.func],
+                        arguments[0],
+                        shape,
+                        path,
+                        frozenset(local.name for local in context.locals),
                     )
             if authored.func in _ROWWISE:
                 if len(arguments) != 1 or tensor_shape(types[0]) is None:

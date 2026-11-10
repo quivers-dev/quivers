@@ -241,7 +241,9 @@ name without a matching signature is a static error. A reduction collapses
 the last axis of its argument: a vector reduces to one number, and a tensor of
 shape $(n_1, \ldots, n_k)$ to the tensor of shape $(n_1, \ldots, n_{k-1})$
 whose entries reduce its rows. A rowwise operation acts along the same last
-axis and keeps the shape. The checked elaboration, the reference machine, the compiled
+axis and keeps the shape. Nested reductions therefore collapse one axis each,
+innermost first, and `sum(sum(t))` means the two lets `u = sum(t)` and
+`s = sum(u)`. The checked elaboration, the reference machine, the compiled
 runtime, and every transpile target read these builtins so; a target with no
 spelling for a last-axis reduction of a given argument refuses the program
 rather than reducing more axes. Reductions over a *named* axis go through the
