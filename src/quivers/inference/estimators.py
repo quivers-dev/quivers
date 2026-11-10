@@ -19,10 +19,10 @@ applicability:
   `doi:10.48550/arXiv.1810.04152 <https://doi.org/10.48550/arXiv.1810.04152>`_).
   Removes the score-function term whose variance grows with the
   particle count :math:`K`.
-* `ScoreFunction`: REINFORCE / black-box VI. The
-  fallback for non-reparameterizable sites (discrete latents,
-  reject-sampled families). Highest variance; pair with a
-  baseline whenever possible.
+* `ScoreFunction`: REINFORCE / black-box VI. The objectives draw
+  from the guide and hold the draws fixed, so the estimator applies
+  to guides whose ``rsample`` is not differentiable. Highest
+  variance.
 
 Objectives pass per-particle log-weights when the guide draws
 stratified particles (`Guide.rsample_strata`, as for
@@ -52,7 +52,19 @@ class GradientEstimator(ABC):
     estimator-specific auxiliary data), return the *negated*
     objective whose ``backward()`` produces the desired gradient
     estimator.
+
+    Attributes
+    ----------
+    fixed_draws : bool
+        Whether the estimator needs the guide's draws held fixed
+        (detached from the variational parameters). When true the
+        objectives draw independent samples with `Guide.rsample`,
+        detach them, and evaluate ``log_p`` and ``log_q`` at the
+        detached draws, so ``log_q`` carries only its direct
+        dependence on the variational parameters.
     """
+
+    fixed_draws: bool = False
 
     @abstractmethod
     def negative_objective(
@@ -248,13 +260,26 @@ class ScoreFunction(GradientEstimator):
     (Ranganath-Gerrish-Blei 2014,
     `doi:10.48550/arXiv.1401.0118 <https://doi.org/10.48550/arXiv.1401.0118>`_).
 
-    Uses the log-derivative identity instead of the
-    reparameterization trick. Required when sampling is not
-    differentiable (discrete latents, hard-truncated families,
-    accept-reject samplers). Variance is typically orders of
-    magnitude higher than reparameterized; combine with a
-    control-variate baseline whenever possible.
+    Uses the log-derivative identity
+
+    .. math::
+
+        \\nabla_\\phi\\, \\mathbb{E}_{q_\\phi}\\bigl[\\log p(z) - \\log q_\\phi(z)\\bigr]
+            = \\mathbb{E}_{q_\\phi}\\bigl[(\\log p(z) - \\log q_\\phi(z))\\,
+              \\nabla_\\phi \\log q_\\phi(z)\\bigr]
+
+    with the draws :math:`z` held fixed (the term
+    :math:`\\mathbb{E}_q[\\nabla_\\phi \\log q_\\phi(z)]` is zero and is
+    dropped). The objectives therefore draw from the guide and detach
+    the draws before scoring them (`GradientEstimator.fixed_draws`),
+    so the estimator applies to guides whose ``rsample`` is not
+    differentiable. Model parameters receive the gradient
+    :math:`\\mathbb{E}_q[\\nabla_\\theta \\log p_\\theta(z)]`. Variance is
+    typically orders of magnitude higher than the reparameterized
+    estimator's.
     """
+
+    fixed_draws = True
 
     def negative_objective(
         self,
@@ -264,16 +289,20 @@ class ScoreFunction(GradientEstimator):
         log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del log_q_detached
-        # Score-function estimator: ∇φ E_q[f(z)] = E_q[f(z) ∇φ log q(z)].
-        # As a surrogate loss whose backward gives the right
-        # gradient: detach f(z) so it contributes as a scalar
-        # weight on the score ∇φ log q(z).
+        if log_weights is not None:
+            raise RuntimeError(
+                "ScoreFunction: needs independent draws from the guide, "
+                "each scored with the guide density it was drawn from; "
+                "stratified particles do not satisfy this. Objectives "
+                "draw independent samples when this estimator is selected."
+            )
+        # Surrogate whose value is the ELBO estimate log p - log q and
+        # whose gradient is f * grad log q (variational parameters)
+        # plus grad log p (model parameters), with the draws fixed.
         f = (log_p - log_q).detach()
-        if log_weights is None:
-            return -((f * log_q).mean())
-        # E_q[f ∇ log q] is itself an expectation under q, so the
-        # stratified draws estimate it with detached weights.
-        return -((log_weights.exp().detach() * f * log_q).sum(dim=0).mean())
+        log_q_fixed = log_q.detach()
+        surrogate = log_p - log_q_fixed + f * (log_q - log_q_fixed)
+        return -(surrogate.mean())
 
 
 __all__ = [

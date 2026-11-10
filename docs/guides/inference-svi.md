@@ -216,7 +216,7 @@ strategy to `DoublyReparameterized` by definition:
 | [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Standard pathwise gradient (default) |
 | [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
 | [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG for IWAE [@tucker2019dreg]; removes the score-function term that can worsen signal-to-noise as $K$ grows |
-| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE; for non-reparameterizable sites |
+| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE [@ranganath2014bbvi]: the objective draws from the guide and holds the draws fixed, so the guide's `rsample` need not be differentiable; model parameters get $\mathbb{E}_q[\nabla_\theta \log p_\theta]$ |
 
 <!-- python: skip -->
 ```python

@@ -165,6 +165,7 @@ def _multi_particle_log_densities(
     num_particles: int,
     *,
     need_detached: bool,
+    fixed_draws: bool = False,
 ) -> _ParticleLogDensities:
     """Run ``num_particles`` independent stratified guide draws through
     the model's log-joint.
@@ -181,6 +182,11 @@ def _multi_particle_log_densities(
     For ``need_detached=True`` ``log q`` is also computed with the
     guide's parameters detached (needed by sticking-the-landing and
     DReG).
+
+    For ``fixed_draws=True`` each particle is instead one independent
+    `Guide.rsample` draw, detached from the variational parameters
+    before it is scored, with equal weight ``1/K`` (the score-function
+    estimator's draws).
 
     The particle loop is a Python ``for`` over ``num_particles``,
     since torch.distributions and the model's runtime path are not
@@ -200,6 +206,8 @@ def _multi_particle_log_densities(
         Number of independent stratified draws ``K``.
     need_detached : bool
         Whether to compute the detached guide log-density.
+    fixed_draws : bool
+        Whether to draw independent samples and hold them fixed.
 
     Returns
     -------
@@ -223,7 +231,12 @@ def _multi_particle_log_densities(
             p.requires_grad_(False)
     num_strata: int | None = None
     for _ in range(num_particles):
-        stratum_log_weights, stratum_draws = guide.rsample_strata(x)
+        if fixed_draws:
+            draw = guide.rsample(x)
+            stratum_log_weights = torch.zeros(1, device=x.device)
+            stratum_draws = [{name: value.detach() for name, value in draw.items()}]
+        else:
+            stratum_log_weights, stratum_draws = guide.rsample_strata(x)
         if num_strata is None:
             num_strata = len(stratum_draws)
         elif len(stratum_draws) != num_strata:
@@ -307,6 +320,7 @@ class ELBO(Objective):
             observations,
             self.num_particles,
             need_detached=need_detached,
+            fixed_draws=self.estimator.fixed_draws,
         )
         # ELBO loss = − E_q[log p − log q], estimated by the weighted
         # sum over particles; the estimator determines how the

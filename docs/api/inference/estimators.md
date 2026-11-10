@@ -9,6 +9,7 @@ Gradient-estimator strategies for [Objectives](elbo.md):
 `Reparameterized` supplies the default pathwise gradient;
 `StickingTheLanding` reduces variance near convergence;
 `DoublyReparameterized` supplies DReG for `IWAEBound` at large K; and
-`ScoreFunction` supplies REINFORCE for non-reparameterizable sites.
+`ScoreFunction` supplies REINFORCE with the draws held fixed, for guides
+whose draws are not differentiable.
 
 ::: quivers.inference.estimators

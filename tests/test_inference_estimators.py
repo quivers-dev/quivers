@@ -160,17 +160,35 @@ def test_dreg_gradient_flows() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_score_function_uses_detached_diff_as_weight_on_log_q() -> None:
-    """The score-function surrogate is ``-(log_p − log_q).detach() *
-    log_q`` averaged. Its gradient with respect to phi equals
-    ``-(log_p − log_q).detach() * ∇φ log q``, which is the standard
-    REINFORCE estimator."""
+def test_score_function_value_is_the_elbo_estimate() -> None:
+    """The surrogate's value is the ELBO estimate ``mean(log p - log q)``."""
     log_p = torch.tensor([1.0, 2.0])
     log_q = torch.tensor([0.5, 1.5])
     out = ScoreFunction().negative_objective(log_p, log_q)
+    assert torch.allclose(out, -(log_p - log_q).mean(), atol=1e-12)
+
+
+def test_score_function_gradient_is_f_times_the_score() -> None:
+    """With fixed draws the variational gradient is ``f * grad log q``
+    (averaged) and the model gradient is ``grad log p``."""
+    phi = torch.tensor(0.7, requires_grad=True)
+    theta = torch.tensor(-0.4, requires_grad=True)
+    log_q = torch.stack([phi * 1.0, phi * 2.0])
+    log_p = torch.stack([theta * 3.0, theta * 5.0])
+    ScoreFunction().negative_objective(log_p, log_q).backward()
     f = (log_p - log_q).detach()
-    expected = -((f * log_q).mean())
-    assert torch.allclose(out, expected, atol=1e-6)
+    assert phi.grad is not None and theta.grad is not None
+    assert torch.allclose(phi.grad, -(f * torch.tensor([1.0, 2.0])).mean())
+    assert torch.allclose(theta.grad, -torch.tensor([3.0, 5.0]).mean())
+
+
+def test_score_function_rejects_stratified_weights() -> None:
+    log_p = torch.zeros(2, 1)
+    log_q = torch.zeros(2, 1)
+    with pytest.raises(RuntimeError, match="independent draws"):
+        ScoreFunction().negative_objective(
+            log_p, log_q, log_weights=torch.full((2, 1), -0.6931471805599453)
+        )
 
 
 def test_score_function_gradient_flows() -> None:
