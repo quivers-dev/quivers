@@ -359,6 +359,29 @@ def _let_space(
     )
 
 
+def _first_call_step(steps: tuple[ProgramStep, ...]) -> CallStep | None:
+    """The first step of a body that calls a named computation.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The body, whose marginalization scopes are searched too.
+
+    Returns
+    -------
+    CallStep | None
+        The first `CallStep` at any depth, or ``None``.
+    """
+    for step in steps:
+        if isinstance(step, CallStep):
+            return step
+        if isinstance(step, MarginalizeStep):
+            found = _first_call_step(step.scope)
+            if found is not None:
+                return found
+    return None
+
+
 def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     """Whether a program body calls a named computation anywhere.
 
@@ -1693,11 +1716,45 @@ class _ProgramsMixin:
         # compiler's internal step shapes first (so the rename pass
         # operates on a uniform IR).
         expanded_body = self._expand_bind_steps(tmpl.draws)
+        self._refuse_computation_calls(tmpl.name, expanded_body)
         # Walk the expanded body, applying parameter substitution +
         # α-renaming step by step.
         return tuple(
             self._rename_step(step, type_subst, value_subst, rename)
             for step in expanded_body
+        )
+
+    @staticmethod
+    def _refuse_computation_calls(program: str, steps: tuple[ProgramStep, ...]) -> None:
+        """Refuse to instantiate a program that calls a named computation.
+
+        A program that calls a computation runs only as its checked
+        computation; the runtime compiler instantiates a template's steps
+        in place, where no checked computation runs the call.
+
+        Parameters
+        ----------
+        program : str
+            The program instantiated.
+        steps : tuple[ProgramStep, ...]
+            Its steps, as the source writes them.
+
+        Raises
+        ------
+        CompileError
+            At the first step that calls a computation, naming it and
+            the program.
+        """
+        call = _first_call_step(steps)
+        if call is None:
+            return
+        raise CompileError(
+            f"program {program!r} runs `let {call.name} <- {call.call.callee}"
+            f"(...)`, which calls a named computation that only the QIEC route "
+            f"runs; the runtime compiler instantiates a program's steps in "
+            f"place, where no checked computation runs the call",
+            call.line,
+            call.col,
         )
 
     def _collect_template_local_names(self, tmpl: ProgramDecl) -> set[str]:
@@ -1911,23 +1968,6 @@ class _ProgramsMixin:
                 name=rename.get(step.name, step.name),
                 value=self._rename_let_expr(
                     step.value, type_subst, value_subst, rename, step.line, step.col
-                ),
-            )
-        if isinstance(step, CallStep):
-            return step.with_(
-                name=rename.get(step.name, step.name),
-                call=step.call.with_(
-                    arguments=tuple(
-                        self._rename_let_expr(
-                            argument,
-                            type_subst,
-                            value_subst,
-                            rename,
-                            step.line,
-                            step.col,
-                        )
-                        for argument in step.call.arguments
-                    )
                 ),
             )
         if isinstance(step, VectorisedObserveStep):
@@ -2333,6 +2373,7 @@ class _ProgramsMixin:
         # scope, so the template's local names (return-var, latents,
         # let-bindings) need no further refresh.
         expanded_body = self._expand_bind_steps(tmpl.draws)
+        self._refuse_computation_calls(expr.callee, expanded_body)
         empty_rename: dict[str, str] = {}
         substituted_body = tuple(
             self._rename_step(step, type_subst, value_subst, empty_rename)

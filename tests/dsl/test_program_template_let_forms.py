@@ -6,8 +6,10 @@ included. The instantiated program must denote the same joint as the
 program written out by hand at the same arguments, whichever form a let
 takes: indexing by host data and by bound indices, nested indexing, both
 ``factor`` forms, calls, method calls, list and tuple collections,
-``map``, ``fold`` and ``traverse``, arithmetic, comparisons, and boolean
-connectives.
+``map`` and ``fold``, arithmetic, comparisons, and boolean connectives.
+A program that calls a named computation, ``traverse`` among the calls,
+runs only as its checked computation, so the runtime compiler refuses
+to instantiate it at the call.
 """
 
 from __future__ import annotations
@@ -73,8 +75,7 @@ DRAWN_LETS = """
     let arith = 0.5 - doubled[0] / 2.0 + both[1, 2] + cases[1] + called[0]
 """
 
-# Every let-expression form the grammar has, and a `traverse` call
-# step, over the same parameters. The instantiated right-hand sides
+# Every let-expression form the grammar has, over the same parameters. The instantiated right-hand sides
 # are compared structurally with the hand-inlined program's.
 EVERY_FORM_LETS = """
     sample effect : G <- Normal(loc=0.0, scale=tau)
@@ -93,7 +94,6 @@ EVERY_FORM_LETS = """
     let folded = fold(mapped, 0.0, acc -> e -> acc + e)
     let compared = effect[0] > tau && not (effect[1] <= 0.0) || tau == 1.0
     let shadow = map(cases, tau -> tau * 2.0)
-    let bumped <- traverse(cases, e -> bump(e))
     let arith = -row_effect + 0.1 * folded - doubled[0] / 2.0 % 3.0 + both[1, 2] + cases[1] + called[0] + permuted[0] + shadow[1] - method * 0.25
 """
 
@@ -267,3 +267,52 @@ export bad
     )
     with pytest.raises(CompileError, match="'tau' is a parameter that takes"):
         loads(source).bad(tau=TAU)
+
+
+CALLING_TEMPLATE = (
+    HEAD
+    + COMPUTATIONS
+    + """
+program part(tau : Real) : Row -> Val
+    sample effect : Group <- Normal(loc=0.0, scale=tau)
+    let bumped <- traverse(effect, e -> bump(e))
+    let first = bumped[0]
+    observe y : Row <- Normal(loc=first, scale=1.0)
+    return y
+"""
+)
+
+
+def test_instantiating_a_program_that_calls_a_computation_is_refused_at_the_call() -> (
+    None
+):
+    source = CALLING_TEMPLATE + "\nexport part\n"
+    with pytest.raises(CompileError) as raised:
+        loads(source).part(tau=TAU)
+    message = str(raised.value)
+    assert "program 'part' runs `let bumped <- traverse(...)`" in message
+    line = source.splitlines().index("    let bumped <- traverse(effect, e -> bump(e))")
+    assert message.startswith(f"line {line + 1}, col 4:")
+
+
+def test_drawing_a_program_that_calls_a_computation_is_refused_at_the_call() -> None:
+    source = (
+        CALLING_TEMPLATE.replace(
+            "    observe y : Row <- Normal(loc=first, scale=1.0)\n    return y",
+            "    return first",
+        )
+        + """
+program caller : Row -> Val
+    sample a <- part(0.7)
+    observe y : Row <- Normal(loc=a, scale=1.0)
+    return y
+
+export caller
+"""
+    )
+    with pytest.raises(CompileError) as raised:
+        loads(source)
+    message = str(raised.value)
+    assert "program 'part' runs `let bumped <- traverse(...)`" in message
+    line = source.splitlines().index("    let bumped <- traverse(effect, e -> bump(e))")
+    assert message.startswith(f"line {line + 1}, col 4:")
