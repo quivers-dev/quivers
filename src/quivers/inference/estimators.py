@@ -59,12 +59,16 @@ from abc import ABC, abstractmethod
 import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 
-class ParticleLogDensities(dx.Model):
+
+class ParticleLogDensities(ValueModel):
     """Per-draw log-densities that an objective hands its estimator.
 
     All tensors share the shape ``(N, batch)``, where ``N`` is the
-    number of draws per batch row (particles times strata).
+    number of draws per batch row (particles times strata). The
+    tensors compare by identity: two records are equal exactly when
+    they hold the same tensor objects and agree on ``stratified``.
 
     Parameters
     ----------
@@ -92,11 +96,13 @@ class ParticleLogDensities(dx.Model):
         from the guide.
     """
 
-    log_p: torch.Tensor = dx.field(opaque=True)
-    log_q: torch.Tensor = dx.field(opaque=True)
-    log_weights: torch.Tensor = dx.field(opaque=True)
-    log_q_detached: torch.Tensor | None = dx.field(opaque=True)
-    log_p_fixed: torch.Tensor | None = dx.field(opaque=True)
+    log_p: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_q: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_weights: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_q_detached: torch.Tensor | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    log_p_fixed: torch.Tensor | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     stratified: bool
 
 
