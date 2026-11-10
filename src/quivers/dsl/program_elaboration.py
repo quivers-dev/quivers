@@ -2262,13 +2262,16 @@ class _ProgramElaboration:
     def _check_scan_site_labels(
         self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
     ) -> None:
-        """Refuse a scan of a program cell sharing a site label with its program.
+        """Refuse a scan whose step shares a site label with another site.
 
         A site the step reaches is addressed by its label and its
         occurrence, ``"<label>@<n>"``, counted over the run. A label
-        the scanning program also draws or observes under would number
-        that site among the step's occurrences, so ``"<label>@0"``
-        would not name the first position.
+        the scanning program also draws or observes under, or that
+        another scan or call of the program reaches, would number that
+        site among the step's occurrences, so ``"<label>@0"`` would not
+        name the step's first position. The labels the expansion of a
+        scan synthesizes derive from the program's own bindings and
+        cannot collide; a program cell's own labels can.
 
         Parameters
         ----------
@@ -2284,24 +2287,33 @@ class _ProgramElaboration:
         QiecDiagnosticError
             If a label is shared.
         """
-        step = self._program_declarations.get(step_name)
-        if step is None or not any(isinstance(item, CallStep) for item in step.draws):
-            # A step drawing from a cell morphism keeps the address its
-            # synthesized draw has always had.
-            return
-        shared = sorted(
-            reached_site_labels(step_name, self._program_declarations)
-            & _own_site_labels(state.declaration.draws)
-        )
-        if shared:
-            self._fail(
-                node,
-                f"the scan step {step_name!r} reaches site "
-                f"{', '.join(repr(label) for label in shared)} at every position, "
-                f"and the scanning program {state.declaration.name!r} draws or "
-                f"observes under the same label; rename one of them",
-                code="qiec-program",
+        reached = reached_site_labels(step_name, self._program_declarations)
+        others: list[tuple[str, frozenset[str]]] = [
+            (
+                f"the program {state.declaration.name!r}",
+                _own_site_labels(state.declaration.draws),
             )
+        ]
+        others.extend(
+            (
+                f"the step {callee!r}",
+                reached_site_labels(callee, self._program_declarations),
+            )
+            for callee in _callees(state.declaration.draws)
+            if callee != step_name
+        )
+        for owner, labels in others:
+            shared = sorted(reached & labels)
+            if shared:
+                self._fail(
+                    node,
+                    f"the scan step {step_name!r} reaches site "
+                    f"{', '.join(repr(label) for label in shared)} at every "
+                    f"position, and {owner} reaches a site under the same "
+                    f"label, so the two would share addresses; rename one "
+                    f"of them",
+                    code="qiec-program",
+                )
 
     def _scan_call(
         self: _Elaborator,

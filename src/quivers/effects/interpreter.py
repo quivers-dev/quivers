@@ -371,6 +371,40 @@ def _environment(step: HostStep, argument: object) -> dict[str, torch.Tensor]:
     return dict(zip(step.environment, argument, strict=True))
 
 
+def _check_sequence_layouts(
+    kernel: ProgramKernel, observations: Mapping[str, torch.Tensor]
+) -> None:
+    """Check every whole-sequence value of a scanned site against its site.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding.
+    observations : Mapping[str, torch.Tensor]
+        The values given, by name.
+
+    Raises
+    ------
+    ValueError
+        If a value given under a scanned site's label is not laid out
+        ``(batch, seq_len, *event)`` for the site's event shape, as a
+        single position's value or a final state would not be.
+    """
+    for label, value in observations.items():
+        if label not in kernel.scanned:
+            continue
+        event = kernel.site_events[label]
+        if value.dim() < 2 or tuple(int(size) for size in value.shape[2:]) != event:
+            layout = "".join(f", {size}" for size in event)
+            raise ValueError(
+                f"{label!r} names a site reached once per scan position, so a "
+                f"value under that name is the sequence of every position's "
+                f"value, laid out (batch, seq_len{layout}); got shape "
+                f"{tuple(value.shape)}. Give one position's value as "
+                f"{label + '@<n>'!r}"
+            )
+
+
 def _site_morphism(kernel: ProgramKernel, address: str) -> ContinuousMorphism | None:
     """The morphism a site address draws from.
 
@@ -1028,6 +1062,7 @@ def run_program(
     """
     sites, supplied, data = _split_observations(program, observations or {})
     kernel = _cached_kernel(program, tuple(sorted(data)))
+    _check_sequence_layouts(kernel, observations or {})
     run = RunContext(kernel, host_value, observations=dict(sites), supplied=supplied)
     stack = list(_handler_stack())
     steps = _HostSteps(run, x)

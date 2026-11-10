@@ -1658,8 +1658,10 @@ def replay_handler(
     value; a request at any other site is forwarded to an outer handler.
     A site reached more than once, as a recurrence reaches the sites of
     its step at every position, replays the value keyed ``"<site>@<n>"``
-    at its ``n``-th occurrence, counted from zero, when one is recorded,
-    and the value keyed by the site alone otherwise.
+    at its ``n``-th occurrence, counted from zero. A value keyed by the
+    site alone replays a site reached once; given for a site reached
+    more than once, it is refused rather than replayed at every
+    occurrence.
 
     Parameters
     ----------
@@ -1753,8 +1755,10 @@ def replay_handler(
             Raises
             ------
             InvalidHandlerError
-                If the request does not carry a site and a sampleable, or
-                the value is scored and the sampleable has no ``log_prob``.
+                If the request does not carry a site and a sampleable, the
+                value is scored and the sampleable has no ``log_prob``, or
+                one value keyed by the site alone is given for a site
+                reached more than once.
             RuntimeTypeMismatch
                 If the recorded value does not inhabit the site's type.
             """
@@ -1765,6 +1769,18 @@ def replay_handler(
             if key_at in values:
                 site_key: object = key_at
             elif site in values:
+                if occurrence > 0 or any(
+                    isinstance(key, str) and key.startswith(f"{site}@")
+                    for key in values
+                ):
+                    # One value for a site reached more than once would be
+                    # replayed at every occurrence, a trajectory the caller
+                    # never gave.
+                    raise InvalidHandlerError(
+                        f"replay {site!r}: the site is reached more than once, "
+                        f"so each occurrence takes its own value under "
+                        f"'{site}@<n>', not one value under {site!r}"
+                    )
                 site_key = site
             else:
                 return Forward()

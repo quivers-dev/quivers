@@ -204,6 +204,9 @@ class ProgramKernel:
         occurrences are addressed ``"<label>@<n>"``.
     site_morphisms
         The morphism each site draws from, by label.
+    site_events
+        The event shape of one value of each site, by label: ``(dim,)``
+        for a continuous codomain, ``()`` otherwise.
     """
 
     module: QiecModule
@@ -219,6 +222,7 @@ class ProgramKernel:
     locals: dict[str, Local] = field(default_factory=dict)
     scanned: frozenset[str] = frozenset()
     site_morphisms: dict[str, ContinuousMorphism] = field(default_factory=dict)
+    site_events: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def space_type(space: SetObject | ContinuousSpace) -> TypeExpr:
@@ -705,6 +709,7 @@ class _Builder:
         self.sites: list[str] = []
         self.site_types: dict[str, TypeExpr] = {}
         self.site_morphisms: dict[str, ContinuousMorphism] = {}
+        self.site_steps: dict[str, Draw | Observe] = {}
         self.scanned: set[str] = set()
         self.unscanned: set[str] = set()
         self.helpers: list[NamedComputation] = []
@@ -904,16 +909,17 @@ class _Builder:
         ------
         ValueError
             If the label is reached both once and once per scan
-            position, or by two draws from different morphisms.
+            position, or by two different draws.
         """
         morphism = program.step_module(spec)
         assert isinstance(morphism, ContinuousMorphism)
-        known = self.site_morphisms.get(label)
-        if known is not None and known is not morphism:
+        known = self.site_steps.get(label)
+        if known is not None and known is not spec:
             raise ValueError(
-                f"site {label!r} is drawn by two steps from different "
-                f"morphisms; give one of them another name"
+                f"site {label!r} is drawn by two steps, so the two would share "
+                f"addresses; give one of them another name"
             )
+        self.site_steps[label] = spec
         self.site_morphisms[label] = morphism
         (self.scanned if frame.scanned else self.unscanned).add(label)
         if label in self.scanned and label in self.unscanned:
@@ -1052,6 +1058,14 @@ class _Builder:
             {name: local for name in frame.order if (local := frame.lookup(name))},
             frozenset(self.scanned),
             dict(self.site_morphisms),
+            {
+                label: (
+                    (int(getattr(morphism.codomain, "dim")),)
+                    if isinstance(morphism.codomain, ContinuousSpace)
+                    else ()
+                )
+                for label, morphism in self.site_morphisms.items()
+            },
         )
 
     def _steps(self, frame: _Frame, program: MonadicProgram) -> None:

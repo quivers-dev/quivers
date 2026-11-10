@@ -110,7 +110,7 @@ flowchart LR
 
 ### Generating synthetic data
 
-Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `x_in@t` and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
+Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
 
 ```python
 import torch
@@ -131,7 +131,7 @@ rows, seq_len, vocab = 32, 8, 256
 prompts = torch.randint(0, vocab, (rows, seq_len))
 with torch.no_grad():
     forward = trace(model, prompts)
-# Every position's embedding and cell draws, `x_in@t` and the cell's own
+# Every position's embedding and cell draws, `h$x_in@t` and the cell's own
 # sites at `@t`, are the latent trajectory the terminal state is a
 # function of.
 trajectory = {
@@ -209,7 +209,7 @@ print(f"final loss:   {losses[-1]:.2f}")
 
 ### NUTS posterior
 
-The lifted Bayesian model treats both the parameters $\theta$ and the latent trajectory $z$ as latents: $p(\theta, z \mid x, y) \propto p(\theta) \, p(z \mid x, \theta) \, p(y \mid z, \theta)$, where $z$ collects every draw the scan makes at every position, the embedding `x_in@t` and the cell's own sites, and the terminal state is a function of $z$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts each per-position label, stacked over positions as `(rows, seq_len, ...)`, as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(z, y \mid x, \theta)$. Given the full $(\theta, z)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
+The lifted Bayesian model treats both the parameters $\theta$ and the latent trajectory $z$ as latents: $p(\theta, z \mid x, y) \propto p(\theta) \, p(z \mid x, \theta) \, p(y \mid z, \theta)$, where $z$ collects every draw the scan makes at every position, the embedding `h$x_in@t` and the cell's own sites, and the terminal state is a function of $z$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts each per-position label, stacked over positions as `(rows, seq_len, ...)`, as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(z, y \mid x, \theta)$. Given the full $(\theta, z)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
 
 ```python
 import torch

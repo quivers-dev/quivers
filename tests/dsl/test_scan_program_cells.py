@@ -27,7 +27,7 @@ from quivers.inference import (
     bayesian_lift_parameters,
 )
 from quivers.inference.trace import trace
-from quivers.qiec import QiecModule
+from quivers.qiec import ExecutionFailure, QiecModule
 from quivers.qiec.program_runtime import program_entry, run_program
 from quivers.qiec.types import render_static
 
@@ -391,14 +391,14 @@ def test_a_cell_reads_the_scanning_programs_bindings() -> None:
     assert program.rsample(tokens).shape == (4,)
     run = trace(program, tokens)
     assert {"a", "b", "next_token"} <= set(run.sites)
-    assert [f"x_in@{t}" for t in range(6)] == [
-        name for name in run.sites if name.startswith("x_in@")
+    assert [f"h$x_in@{t}" for t in range(6)] == [
+        name for name in run.sites if name.startswith("h$x_in@")
     ]
     a = run.sites["a"].value
     b = run.sites["b"].value
     state = torch.zeros(4, 4)
     for t in range(6):
-        state = torch.tanh(run.sites[f"x_in@{t}"].value * a + state * b)
+        state = torch.tanh(run.sites[f"h$x_in@{t}"].value * a + state * b)
         assert torch.allclose(run.sites[f"h_new@{t}"].value, state)
 
 
@@ -653,3 +653,79 @@ def test_a_program_cannot_draw_a_scan_of_a_program_whole() -> None:
             [Draw(names=("h",), morphism=ScanMorphism(scan.step))],
             ("h",),
         )
+
+
+# ---------------------------------------------------------------------
+# Site addresses cannot collide.
+# ---------------------------------------------------------------------
+
+USER_SITE_LIKE_A_SCAN = """\
+object Input : Real 2
+object Hidden : Real 3
+morphism cell : Input * Hidden -> Hidden ~ Normal
+define rnn = scan(cell)
+program prog : Input -> Hidden
+    sample state <- rnn
+    sample h <- Normal(loc=state, scale=1.0)
+    return h
+export prog
+"""
+
+
+def test_a_scans_sites_take_the_binding_the_source_wrote() -> None:
+    module = _module(USER_SITE_LIKE_A_SCAN)
+    step = next(entry for entry in module.entries if entry.name.startswith("cell__"))
+    assert [site.name for site in step.sites] == ["state"]
+    inputs = torch.randn(3, 2)
+    states = torch.randn(3, 3)
+    user_h = torch.full((3,), 0.5)
+    weight = torch.randn(6, 5)
+    bias = torch.randn(6)
+    data = {
+        "input": _host(inputs),
+        "cell_param_weight": _host(weight),
+        "cell_param_bias": _host(bias),
+    }
+    previous = torch.zeros(3)
+    closed = td.Normal(states[2], 1.0).log_prob(user_h).sum()
+    for t in range(3):
+        closed = closed + _normal(
+            weight, bias, torch.cat([inputs[t], previous])
+        ).log_prob(states[t]).sum()
+        previous = states[t]
+    reference = run_program(
+        module,
+        "prog",
+        data=data,
+        sites={**{f"state@{t}": _host(states[t]) for t in range(3)}, "h": _host(user_h)},
+    )
+    assert reference.log_joint == pytest.approx(float(closed), rel=1e-5)
+    # One value under a scan's label is never replayed at every position.
+    with pytest.raises(ExecutionFailure, match="reached more than once"):
+        run_program(
+            module,
+            "prog",
+            data=data,
+            sites={"state": _host(states[2]), "h": _host(user_h)},
+        )
+
+
+def test_two_scans_reaching_one_label_are_refused_on_both_paths() -> None:
+    source = """\
+object Input : Real 2
+object Hidden : Real 2
+program cell(x_t, h_prev) : Input * Hidden -> Hidden
+    sample s <- Normal(loc=h_prev, scale=1.0)
+    return s
+define rnn = scan(cell)
+program prog : Input -> Hidden
+    sample first <- rnn
+    sample second <- rnn
+    return second
+export prog
+"""
+    with pytest.raises(QiecDiagnosticError, match="share addresses") as checked:
+        _module(source)
+    with pytest.raises(QiecDiagnosticError, match="share addresses") as compiled:
+        loads(source)
+    assert str(checked.value).split("] ", 1)[1] == str(compiled.value).split("] ", 1)[1]

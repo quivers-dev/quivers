@@ -1050,7 +1050,9 @@ def _emit_chain(
             rest = elements[scan_index + 1 :]
             source = _scan_input(prev_var, head_args, program, original)
             var = terminal_var if not rest else program.fresh(f"{base_name}_chain")
-            step_name = _scan_step_program(scan.name, prefix, program, original)
+            step_name = _scan_step_program(
+                scan.name, prefix, program, original, _scan_label(var, original)
+            )
             arguments: tuple[LetExprNode, ...] = (
                 LetExprVar(name=step_name),
                 LetExprVar(name=source),
@@ -1144,18 +1146,50 @@ def _scan_input(
     )
 
 
+def _scan_label(var: str, original: SampleStep | ObserveStep) -> str:
+    """The label a scan's per-position sites are named under.
+
+    Parameters
+    ----------
+    var : str
+        The name the scan's final state binds.
+    original : SampleStep | ObserveStep
+        The step the scan was expanded from.
+
+    Returns
+    -------
+    str
+        ``var`` when it is the name the source binds; otherwise, for a
+        scan inside a longer chain or a parallel branch, ``var``
+        qualified by that name as ``"<binding>$<var>"``. Every label
+        derives from a binding the source wrote, so two scans of one
+        program never share one, and the ``$`` the source cannot write
+        keeps a qualified label apart from every source name.
+    """
+    if var in original.vars:
+        return var
+    return f"{original.vars[0]}${var}"
+
+
 def _scan_step_program(
     cell: str,
     prefix: tuple[_ChainElem, ...],
     program: _Program,
     original: SampleStep | ObserveStep,
+    label: str,
 ) -> str:
     """Declare the program a scan applies at every position.
 
     The step program takes the position's input and the previous
     state, draws the chain's elements before the scan at the input,
     and applies the cell to the result and the state. A cell that is a
-    program is called; one that is a morphism is drawn through.
+    program is called, and its sites keep their own labels; one that is
+    a stochastic morphism is drawn at the site ``label``; one that is a
+    deterministic morphism is applied, and contributes no site. The
+    chain's elements before the scan draw at sites qualified by
+    ``label``, ``"<label>$x_in"``, and the step's parameters are named
+    the same way, so no name the step program binds is one the source
+    could write.
 
     Parameters
     ----------
@@ -1167,6 +1201,9 @@ def _scan_step_program(
         The enclosing program's expansion, which gains the step program.
     original
         The step being expanded.
+    label
+        The label of the scan's per-position sites, from
+        [`_scan_label`][quivers.dsl.composite_lets._scan_label].
 
     Returns
     -------
@@ -1224,16 +1261,18 @@ def _scan_step_program(
             ],
         )
     steps: list[ProgramStep] = []
-    fed = "x_t"
+    entry = f"{label}$x_t"
+    state = f"{label}$h_prev"
+    fed = entry
     if prefix:
-        fed = "x_in"
+        fed = f"{label}$x_in"
         steps.extend(
             _emit_chain(
                 prefix,
                 base_name=fed,
                 terminal_var=fed,
                 prev_var=None,
-                head_args=(DrawArgName(text="x_t"),),
+                head_args=(DrawArgName(text=entry),),
                 original=original,
                 program=program,
                 keep_last=False,
@@ -1242,10 +1281,21 @@ def _scan_step_program(
     if cell_program is not None:
         steps.append(
             CallStep(
-                name="h",
+                name=label,
                 call=QiecCallComputation(
                     callee=cell,
-                    arguments=(LetExprVar(name=fed), LetExprVar(name="h_prev")),
+                    arguments=(LetExprVar(name=fed), LetExprVar(name=state)),
+                ),
+                line=original.line,
+                col=original.col,
+            )
+        )
+    elif cell_morphism is not None and not _morphism_is_stochastic(cell_morphism):
+        steps.append(
+            LetStep(
+                name=label,
+                value=LetExprCall(
+                    func=cell, args=(LetExprVar(name=fed), LetExprVar(name=state))
                 ),
                 line=original.line,
                 col=original.col,
@@ -1254,20 +1304,20 @@ def _scan_step_program(
     else:
         steps.append(
             SampleStep(
-                vars=("h",),
+                vars=(label,),
                 morphism=cell,
-                args=(DrawArgName(text=fed), DrawArgName(text="h_prev")),
+                args=(DrawArgName(text=fed), DrawArgName(text=state)),
                 line=original.line,
                 col=original.col,
             )
         )
     declaration = ProgramDecl(
         name=name,
-        params=("x_t", "h_prev"),
+        params=(entry, state),
         domain=ObjectProduct(components=(input_object, state_object)),
         codomain=state_object,
         draws=tuple(steps),
-        return_vars=("h",),
+        return_vars=(label,),
         line=original.line,
         col=original.col,
     )

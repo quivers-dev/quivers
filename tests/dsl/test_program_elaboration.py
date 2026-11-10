@@ -1721,13 +1721,13 @@ def test_a_scan_step_program_carries_the_cells_inputs() -> None:
     ]
     step = program_entry(module, "rnn_cell__scan_step")
     assert [(item.name, item.role) for item in step.parameters] == [
-        ("x_t", "domain"),
-        ("h_prev", "domain"),
+        ("h$x_t", "domain"),
+        ("h$h_prev", "domain"),
         ("tok_embed_param_table", "table"),
         ("cell_param_weight", "weight"),
         ("cell_param_bias", "bias"),
     ]
-    assert [(site.name, site.family) for site in step.sites] == [("x_in", "Normal")]
+    assert [(site.name, site.family) for site in step.sites] == [("h$x_in", "Normal")]
     entry = program_entry(module, "lm")
     assert [
         (item.name, item.role, render_static(item.type)) for item in entry.parameters
@@ -1762,7 +1762,7 @@ def test_a_scan_step_program_carries_the_cells_inputs() -> None:
             "next_token": 3,
         },
         sites={
-            **{f"x_in@{t}": _nested(embedded[t]) for t in range(3)},
+            **{f"h$x_in@{t}": _nested(embedded[t]) for t in range(3)},
             **{f"squashed@{t}": _nested(squashed[t]) for t in range(3)},
         },
     )
