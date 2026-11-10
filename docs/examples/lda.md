@@ -127,10 +127,10 @@ topics = D.Categorical(true_theta[doc_idx]).sample()
 w = D.Categorical(true_phi[topics]).sample()
 
 observations = {"w": w, "doc_idx": doc_idx}
-x_in = torch.zeros(n_token, 1)
+x_in = torch.zeros(1, 1)
 ```
 
-The per-token topics `topics` are part of the simulation only. The model never sees them; it integrates them out.
+The program input `x_in` is a single row; the extents of the `Token` plate and of the gathered document weights come from `w` and `doc_idx`. The per-token topics `topics` are part of the simulation only. The model never sees them; it integrates them out.
 
 ### Checking the joint density
 

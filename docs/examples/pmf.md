@@ -97,10 +97,10 @@ user_idx, movie_idx = observed // n_movie, observed % n_movie
 r = full[user_idx, movie_idx]
 
 observations = {"r": r, "user_idx": user_idx, "movie_idx": movie_idx}
-x_in = torch.zeros(n_obs, 1)
+x_in = torch.zeros(1, 1)
 ```
 
-Every cell of `full` is a draw from the model, but only the 800 cells in `observed` reach the program. The other 1200 are kept aside as a test set.
+The program input `x_in` is a single row. The extent of the `Rating` plate comes from the observed ratings and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row. Every cell of `full` is a draw from the model, but only the 800 cells in `observed` reach the program. The other 1200 are kept aside as a test set.
 
 ### Checking the joint density
 

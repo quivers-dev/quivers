@@ -105,8 +105,10 @@ mu_true = (true_Z[item_idx] * true_W[obs_idx]).sum(dim=-1)
 y = D.Normal(mu_true, true_sigma).sample()
 
 observations = {"y": y, "item_idx": item_idx, "obs_idx": obs_idx}
-x_in = torch.zeros(N * Dn, 1)
+x_in = torch.zeros(1, 1)
 ```
+
+The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed responses and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row.
 
 ### Checking the joint density
 

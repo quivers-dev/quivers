@@ -115,10 +115,10 @@ comps = torch.distributions.Categorical(true_probs).sample((N,))
 r     = torch.distributions.Normal(true_mu[comps], true_sigma[comps]).sample()
 
 observations = {"r": r}
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
 ```
 
-The rows are drawn by sampling a component per row and then a value from that component's Gaussian. Only the rows `r` enter `observations`: the component labels, the mixing weights `probs`, the locations `mu`, and the scales `sigma` are all left for inference.
+The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed rows, and the unplated site `probs` is drawn once per run rather than once per input row. The rows are drawn by sampling a component per row and then a value from that component's Gaussian. Only the rows `r` enter `observations`: the component labels, the mixing weights `probs`, the locations `mu`, and the scales `sigma` are all left for inference.
 
 ### Checking the joint density
 
@@ -181,7 +181,7 @@ assert (fitted["mu"] - true_mu).abs().max() < 0.15
 assert (fitted["sigma"] - true_sigma).abs().max() < 0.15
 ```
 
-On this corpus two of the three restarts end with a loss about 230 nats worse than the third, at a configuration where the components overlap instead of separating; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 500$ (for instance, $\sqrt{0.25 \cdot 0.75 / 500} \approx 0.02$ for the smallest weight), so they leave room for finite-sample error but not for a collapsed or merged component.
+On this corpus one of the three restarts ends with a loss about 230 nats worse than the other two, at a configuration where the components overlap instead of separating; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 500$ (for instance, $\sqrt{0.25 \cdot 0.75 / 500} \approx 0.02$ for the smallest weight), so they leave room for finite-sample error but not for a collapsed or merged component.
 
 ### NUTS posterior
 

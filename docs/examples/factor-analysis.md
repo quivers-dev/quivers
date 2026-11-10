@@ -108,10 +108,10 @@ mu_true = (true_Z[item_idx] * true_W[obs_idx]).sum(dim=-1)
 y = D.Normal(mu_true, true_psi[obs_idx]).sample()
 
 observations = {"y": y, "item_idx": item_idx, "obs_idx": obs_idx}
-x_in = torch.zeros(N * Dn, 1)
+x_in = torch.zeros(1, 1)
 ```
 
-The uniquenesses range over a factor of six, so a single shared noise scale cannot describe these data well.
+The program input `x_in` is a single row; the extent of the `Resp` plate comes from the observed responses and their indices. The uniquenesses range over a factor of six, so a single shared noise scale cannot describe these data well.
 
 ### Checking the joint density
 
