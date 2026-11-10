@@ -1,186 +1,296 @@
-# Latent decoder with encoder and decoder paths
+# Variational Autoencoder
 
 ## Overview
 
-A [variational autoencoder](https://en.wikipedia.org/wiki/Variational_autoencoder) [@kingma2014autoencoding] trains a decoder with an observation-dependent encoder used as the variational guide. This source declares both an encoder-decoder composition and a prior-decoder composition, but exports only `vae_program`, whose latent `z` is sampled from `prior`. The runnable SVI block uses `AutoNormalGuide`; it does not use the declared `encoder` as an amortized guide. Thus this page demonstrates the two paths needed for a VAE without implementing joint VAE training.
+A [variational autoencoder](https://en.wikipedia.org/wiki/Variational_autoencoder) (VAE) [@kingma2014autoencoding] is a latent-variable model whose likelihood is a neural network, fitted together with a second network that approximates its posterior. Each observation $y_n$ has a code $z_n$:
+
+$$
+z_n \sim \mathcal{N}(0, I),
+\qquad
+y_n \mid z_n \sim \mathcal{N}\bigl(\mu_\theta(z_n), \operatorname{diag} \sigma_\theta^2(z_n)\bigr),
+$$
+
+where the decoder $(\mu_\theta, \sigma_\theta)$ is a one-hidden-layer tanh network. The encoder $q_\phi(z \mid y) = \mathcal{N}(m_\phi(y), \operatorname{diag} v_\phi^2(y))$ is a second network of the same shape. Training maximizes the evidence lower bound (ELBO)
+
+$$
+\mathcal{L}(\theta, \phi) = \sum_n \mathbb{E}_{q_\phi(z_n \mid y_n)}\bigl[\log p_\theta(y_n \mid z_n)\bigr] - \operatorname{KL}\bigl(q_\phi(z_n \mid y_n) \,\|\, p(z_n)\bigr)
+$$
+
+jointly in the decoder weights $\theta$ and the encoder weights $\phi$, with the reparameterized gradient. Because one encoder serves every observation, its posterior approximation is *amortized*: a new observation gets its code distribution from a single forward pass.
 
 ## QVR source
 
 ```qvr
-# Latent Decoder with Encoder and Decoder Paths
+# Variational Autoencoder
 #
-# The two network paths needed by a variational autoencoder,
-# expressed with stack and explicit Kleisli composition. The
-# exported program samples z from the prior and runs only the
-# decoder. The declared encoder is not connected to the
-# AutoNormalGuide used on the page, so this source does not train
-# an amortized VAE end to end.
+# The Gaussian variational autoencoder of Kingma and Welling. Each
+# observation y_n has a latent code z_n under a standard-Normal
+# prior, and a decoder network maps the code to a diagonal Normal
+# over observation space. An encoder network maps an observation to
+# a diagonal Normal over codes, the amortized variational posterior
+# q(z | y) used to train both networks by the ELBO.
 #
-# Structural form:
+# Generative structure:
 #
-#   encoder     = pixel_embed >> stack(enc_deep, 1) >> enc_to_latent
-#   decoder     = dec_1       >> stack(dec_deep, 1) >> dec_to_obs
-#   generative  = prior   >> decoder              ancestral sampling
-#   reconstruct = encoder >> decoder              posterior predictive
+#   z_n            ~ Normal(0, I)                    latent code
+#   mu(z), s(z)    = decoder MLP(z)                  one tanh layer
+#   y_n            ~ Normal(mu(z_n), diag s(z_n))    observation
 #
-# The encoder maps observations to a distribution over latent
-# codes; the decoder maps latent codes back to observation space.
-# A complete VAE must use the encoder as an observation-dependent
-# guide and add the corresponding KL term.
+# Variational posterior:
 #
-# Reference: [Kingma and Welling 2014](https://arxiv.org/abs/1312.6114).
+#   m(y), v(y)     = encoder MLP(y)                  one tanh layer
+#   q(z_n | y_n)   = Normal(m(y_n), diag v(y_n))
+#
+# Each network is a single conditional-Normal kernel whose mean and
+# log-scale come from a tanh MLP parameter source, so the hidden
+# layer is deterministic and the only random quantities are z and y.
+# Row is the plate of observations. `reconstruct` composes the
+# encoder with the decoder, mapping an observation to a distribution
+# over its reconstruction.
+#
+# Reference: [Kingma and Welling 2014](https://doi.org/10.48550/arXiv.1312.6114).
 
-object Pixel : FinSet 8
-object Latent : Real 4
-object EncoderHidden, DecoderHidden : Real 16
-object ObsSpace : Real 8
-object UnitSpace : Real 1
+object Row : FinSet 512
+object Latent : Real 2
+object ObsSpace : Real 5
 
-morphism pixel_embed : Pixel -> EncoderHidden [role=embed]
-morphism enc_deep : EncoderHidden -> EncoderHidden [param_source=mlp] ~ Normal
-morphism enc_to_latent : EncoderHidden -> Latent ~ Normal
+morphism encoder : ObsSpace -> Latent [param_source=mlp(32)] ~ Normal
+morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal
 
-define encoder = pixel_embed >> stack(enc_deep, 1) >> enc_to_latent
-
-morphism prior : UnitSpace -> Latent ~ Normal
-
-morphism dec_1 : Latent -> DecoderHidden ~ Normal
-morphism dec_deep : DecoderHidden -> DecoderHidden [param_source=mlp] ~ Normal
-morphism dec_to_obs : DecoderHidden -> ObsSpace ~ Normal
-
-define decoder = dec_1 >> stack(dec_deep, 1) >> dec_to_obs
-
-define generative = prior >> decoder
 define reconstruct = encoder >> decoder
 
-# Probabilistic model for the generative branch: sample the
-# latent code under the standard-Normal prior, then push it
-# through the decoder Kleisli morphism to score the observation
-# Y. The decoder's per-layer weights carry the kernel-prior
-# Normals declared above; the program traces both the latent and
-# the observation sites for inference.
-program vae_program : UnitSpace -> ObsSpace
-    sample z <- prior
-    observe Y <- decoder(z)
-    return Y
+program vae : Row -> ObsSpace
+    sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]
+    observe y : Row <- decoder(z)
+    return y
 
-export vae_program
+export vae
+export encoder
+export decoder
+export reconstruct
 ```
 
 ## Understanding the model
 
-Generation starts from a prior draw of a latent code and asks what observation
-the decoder would produce. Reconstruction starts from an observation and asks
-which code its encoder proposes before decoding. A trained VAE uses that
-observation-dependent encoder as its guide, sharing the inference mapping
-across observations; this is [amortized inference](../tutorials/python/05-variational-inference.md#creating-a-guide).
+Generation runs left to right: draw a code from the prior, decode it to a Normal over observations, draw an observation. Inference runs the other way: from an observation, the encoder proposes a Normal over the codes that could have produced it. The ELBO rewards the decoder for explaining each observation from codes the encoder proposes for it, and penalizes the encoder for proposing codes the prior finds implausible. A VAE fitted this way can do three things the runnable blocks check: score new data, reconstruct an observation through `encoder >> decoder`, and capture curved structure that a linear latent model cannot.
 
-The runnable fit below optimizes an `AutoNormalGuide` for `z`. Training the
-declared encoder as a [VAE guide](https://pyro.ai/examples/vae.html#VAE-in-Pyro)
-requires calling it on each observation and passing its parameters to the
-optimizer alongside the decoder's [@pyroVAE]. The encoder then learns to
-predict a distribution over latent values for each new observation.
+The network weights are point estimates, not random variables. Only $z$ and $y$ are random, which is what distinguishes a VAE from a [Bayesian neural network](bnn.md).
 
 ## Walkthrough
 
-The encoder begins with `morphism pixel_embed : Pixel -> EncoderHidden [role=embed]`, a deterministic embedding lookup mapping the discrete `Pixel` object into the continuous `EncoderHidden` space. The `stack(enc_deep, 1)` combinator inserts one independently-parameterized stochastic Normal hidden layer, distinct from `repeat(enc_deep, 1)` which would weight-tie. The final `enc_to_latent` projects to the latent space at small init scale.
+`object Row : FinSet 512` is the plate of observations; `Latent : Real 2` and `ObsSpace : Real 5` are the code and observation spaces.
 
-The decoder mirrors the encoder: an initial `dec_1` lifts the latent code into the decoder hidden width, one stacked deep layer `stack(dec_deep, 1)` adds depth, and `dec_to_obs` projects to the observation space at tight init scale (the reconstruction should be more precise than the encoding).
+`morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal` declares the decoder as a single conditional-Normal kernel. The [`MLPSource`](../api/continuous/param_source.md#quivers.continuous.param_source.MLPSource) behind it maps a code through one tanh layer of width 32 to a mean and a log-scale for each of the five observation coordinates, so the hidden layer is deterministic and the only randomness is the Normal draw at the output. `encoder` is the same construction in the other direction, from an observation to a mean and log-scale for each code coordinate.
 
-The two top-level compositions
+`program vae : Row -> ObsSpace` is the generative model. `sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]` draws one standard-Normal code per row, and `observe y : Row <- decoder(z)` scores each row's observation under the decoder at that row's code. `define reconstruct = encoder >> decoder` is the composite kernel from an observation to the distribution of its reconstruction. The four exports make `prog.encoder`, `prog.decoder` and `prog.reconstruct` available next to the program, and all of them share one set of network weights.
 
-<!-- compile: false -->
-```qvr
-define generative = prior >> decoder
-define reconstruct = encoder >> decoder
-```
-
-express generative and reconstruction-shaped execution paths. The exported `vae_program` traverses `prior` and `decoder`; the current ELBO does not traverse `reconstruct`. A complete VAE would connect `encoder` to a guide conditioned on the observation.
+The encoder becomes the variational posterior through the [`Guide`](../api/inference/guide.md#quivers.inference.guides.Guide) interface. A guide supplies `rsample` and `log_prob` for the latent sites; the `EncoderGuide` class below answers both by applying the declared `encoder` kernel to the observed rows. [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) with the [`ELBO`](../api/inference/elbo.md) objective then optimizes the decoder's weights (the program's parameters) and the encoder's weights together, which is Kingma and Welling's training procedure. The library ships no guide class that wraps a declared morphism, so the page writes this one; its two methods are the whole of it.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 ### Generating synthetic data
+
+The data lie near a two-dimensional *twisted strip* in five dimensions: the first code coordinate winds around a circle and the second sets the width of a twist about it. The generator is a member of the model's own family, $z \sim \mathcal{N}(0, I)$ and $y \sim \mathcal{N}(g(z), 0.1^2 I)$ for a fixed smooth map $g$, which the decoder network has to learn. A second sample of 512 rows is held out. The block also checks the program's log joint at the true codes against a hand-written prior plus decoder density.
 
 ```python
 import torch
 from quivers.dsl import load
-from quivers.inference.trace import trace
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/vae.qvr")
 model = prog.morphism
+encoder, decoder = prog.encoder, prog.decoder
 
-N = 32
-unit = torch.zeros(N, 1)
-x_in = unit
+N, latent_dim, obs_dim = 512, 2, 5
+x_in = torch.zeros(N, 1)
 
-# Run one forward trace under the program's own parameters so the
-# captured latent and observation are jointly consistent under the
-# generative kernel.
-with torch.no_grad():
-    forward = trace(model, unit)
-true_z = forward.sites["z"].value.detach()
-Y = forward.sites["Y"].value.detach()
 
-observations = {"Y": Y, "z": true_z}
-print("Y shape:", Y.shape)
+def twisted_strip(z):
+    """The first code coordinate winds around a circle; the second
+    sets the radius of a twist around it."""
+    angle = 1.5 * z[:, 0]
+    return torch.stack(
+        [
+            torch.cos(angle),
+            torch.sin(angle),
+            z[:, 1],
+            0.5 * z[:, 1] * torch.cos(angle),
+            0.5 * z[:, 1] * torch.sin(angle),
+        ],
+        dim=-1,
+    )
+
+
+noise = 0.1
+true_z = torch.randn(N, latent_dim)
+y = twisted_strip(true_z) + noise * torch.randn(N, obs_dim)
+z_test = torch.randn(N, latent_dim)
+y_test = twisted_strip(z_test) + noise * torch.randn(N, obs_dim)
+observations = {"y": y}
+
+# Independent oracle: the program's log joint at the true codes is the
+# standard-Normal prior plus the decoder's Normal density, computed
+# here from the decoder's own MLP weights.
+first, second = decoder.param_source.net[0], decoder.param_source.net[2]
+raw = torch.tanh(true_z @ first.weight.T + first.bias) @ second.weight.T + second.bias
+loc, scale = raw[:, :obs_dim], raw[:, obs_dim:].exp()
+Normal = torch.distributions.Normal
+hand = Normal(0.0, 1.0).log_prob(true_z).sum() + Normal(loc, scale).log_prob(y).sum()
+log_joint_true = model.log_joint(x_in, {"y": y, "z": true_z})
+assert torch.allclose(log_joint_true, hand.expand(N), rtol=1e-5)
+print(f"log joint at the true codes: {log_joint_true[0].item():.1f} (hand-written {float(hand):.1f})")
 ```
 
-The exported `vae_program` is a [Kleisli](https://en.wikipedia.org/wiki/Kleisli_category) morphism `UnitSpace -> ObsSpace` whose body samples the latent `z` and scores the observation `Y` under `decoder(z)`; the forward trace captures a jointly-consistent `(z, Y)` pair, which the observation dict then clamps while [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts the entire parameter vector into a Bayesian model for SVI and NUTS.
+### Training the encoder and decoder by the ELBO
 
-### SVI fit
+`EncoderGuide` is the amortized posterior. The fit conditions on `y` alone; the codes stay latent and are drawn from the encoder at every step.
 
 ```python
-from quivers.inference import (
-    AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters,
-)
+from quivers.inference import ELBO, SVI
+from quivers.inference.guides import Guide
 
-model, x_in, observations = bayesian_lift_parameters(
-    prog.morphism, x_in, observations, prior_scale=1.0,
-)
+
+class EncoderGuide(Guide):
+    """The amortized posterior q(z | y): the declared encoder applied
+    to every observed row."""
+
+    def __init__(self, model, encoder, y):
+        super().__init__()
+        self._registry = self.build_registry(model, {"y"})
+        self.encoder = encoder
+        self.y = y
+
+    @property
+    def latent_names(self):
+        return ["z"]
+
+    def rsample(self, x):
+        return {"z": self.encoder.rsample(self.y)}
+
+    def log_prob(self, x, sites):
+        total = self.encoder.log_prob(self.y, sites["z"]).sum()
+        return total.expand(x.shape[0])
+
 
 torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names=set())
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=1e-2,
-)
-svi = SVI(model, guide, optim, ELBO(num_particles=1))
-
-losses = [svi.step(x_in, observations) for _ in range(50)]
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+guide = EncoderGuide(model, encoder, y)
+optim = torch.optim.Adam(list(model.parameters()) + list(encoder.parameters()), lr=3e-3)
+svi = SVI(model, guide, optim, ELBO())
+losses = [svi.step(x_in, observations) for _ in range(3000)]
+print(f"training ELBO per row: first step {-losses[0] / N:.2f}, last 100 steps {-sum(losses[-100:]) / 100 / N:.2f}")
 ```
 
-### NUTS posterior
+### Held-out evidence and reconstruction
+
+Two baselines, both fitted to the same training rows. [Probabilistic PCA](ppca.md) (PPCA) [@tipping1999ppca] is the linear-Gaussian latent model with the same two latent dimensions, and its maximum-likelihood fit has a closed form and an exact marginal likelihood. Since the ELBO lower-bounds the VAE's own log likelihood, a held-out ELBO above the exact PPCA log likelihood shows that the VAE models the curved data better than any linear latent model can. The reconstruction check runs held-out rows through `reconstruct`, averages 20 draws, and compares the error with predicting the training mean. Both assertions were fixed before the run.
+
+```python
+def heldout_elbo(y_eval, particles=20):
+    """Monte Carlo ELBO per row on rows the networks never saw."""
+    q = EncoderGuide(model, encoder, y_eval)
+    with torch.no_grad():
+        terms = []
+        for _ in range(particles):
+            z = q.rsample(x_in)
+            log_p = model.log_joint(x_in, {"y": y_eval, **z})[0]
+            terms.append(log_p - q.log_prob(x_in, z)[0])
+    return float(torch.stack(terms).mean()) / y_eval.shape[0]
+
+
+def ppca_loglik(y_fit, y_eval, k):
+    """Exact held-out log likelihood per row of maximum-likelihood PPCA."""
+    mean = y_fit.mean(0)
+    eigvals, eigvecs = torch.linalg.eigh(torch.cov((y_fit - mean).T, correction=0))
+    eigvals, eigvecs = eigvals.flip(0), eigvecs.flip(1)
+    noise_var = eigvals[k:].mean()
+    loading = eigvecs[:, :k] * (eigvals[:k] - noise_var).sqrt()
+    cov = loading @ loading.T + noise_var * torch.eye(y_fit.shape[1])
+    return float(torch.distributions.MultivariateNormal(mean, cov).log_prob(y_eval).mean())
+
+
+elbo_test = heldout_elbo(y_test)
+ppca_test = ppca_loglik(y, y_test, latent_dim)
+
+with torch.no_grad():
+    reconstruction = torch.stack([prog.reconstruct.rsample(y_test) for _ in range(20)]).mean(0)
+recon_mse = float(((reconstruction - y_test) ** 2).mean())
+baseline_mse = float(((y.mean(0) - y_test) ** 2).mean())
+
+print(f"held-out ELBO per row:          {elbo_test:.2f}")
+print(f"held-out PPCA log lik per row:  {ppca_test:.2f}")
+print(f"reconstruction MSE: {recon_mse:.3f} (training-mean baseline {baseline_mse:.3f})")
+
+assert elbo_test > ppca_test
+assert recon_mse < 0.5 * baseline_mse
+```
+
+### An oracle on linear data
+
+On data from a linear-Gaussian generator the true marginal likelihood is available in closed form, and a VAE whose decoder can represent the linear map and whose encoder can represent the Gaussian posterior should reach it from below. The block refits a fresh copy of the model to such data and requires the held-out ELBO per row to come within 0.25 nats of the exact log likelihood, and to exceed it by no more than 0.05 nats of sampling noise.
+
+```python
+torch.manual_seed(2)
+linear = load("docs/examples/source/vae.qvr")
+loading = torch.randn(obs_dim, latent_dim)
+offset = torch.randn(obs_dim)
+linear_noise = 0.3
+
+
+def linear_gaussian(n):
+    return torch.randn(n, latent_dim) @ loading.T + offset + linear_noise * torch.randn(n, obs_dim)
+
+
+y_lin, y_lin_test = linear_gaussian(N), linear_gaussian(N)
+exact = torch.distributions.MultivariateNormal(
+    offset, loading @ loading.T + linear_noise**2 * torch.eye(obs_dim)
+)
+exact_test = float(exact.log_prob(y_lin_test).mean())
+
+model, encoder = linear.morphism, linear.encoder
+guide = EncoderGuide(model, encoder, y_lin)
+optim = torch.optim.Adam(list(model.parameters()) + list(encoder.parameters()), lr=3e-3)
+svi = SVI(model, guide, optim, ELBO())
+for _ in range(3000):
+    svi.step(x_in, {"y": y_lin})
+elbo_lin = heldout_elbo(y_lin_test)
+
+print(f"held-out ELBO per row:                {elbo_lin:.3f}")
+print(f"held-out exact log lik per row:       {exact_test:.3f}")
+gap = exact_test - elbo_lin
+assert -0.05 <= gap <= 0.25
+```
+
+### NUTS over the codes
+
+With the networks fixed at their trained weights, the program's only latent site is `z`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the 1,024 code coordinates directly. `init_strategy="guide"` starts the chain from an encoder draw. Comparing the chain's mean codes with the encoder's means gives a direct look at the amortization gap, the error the encoder makes by predicting each posterior instead of computing it. Thirty warmup and thirty retained draws keep the block short; a longer run is needed before reading the difference as a precise measurement.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-torch.manual_seed(2)
-# The lifted parameter vector is high-dimensional, so a small
-# step size and shallow tree keep one full chain inside a
-# documentation-friendly budget.
-kernel = NUTSKernel(step_size=0.005, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=5, num_samples=5, num_chains=1)
-result = mc.run(model, x_in, observations)
+model, encoder = prog.morphism, prog.encoder
+guide = EncoderGuide(model, encoder, y)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=30, num_samples=30, num_chains=1, init_strategy="guide", seed=3)
+result = mc.run(model, x_in, observations, guide=guide)
 
+with torch.no_grad():
+    encoder_means = encoder.param_source(y)[:, :latent_dim]
+nuts_means = result.samples["z"][0].mean(0)
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
+print(f"mean |NUTS mean - encoder mean| per code coordinate: {float((nuts_means - encoder_means).abs().mean()):.3f}")
 ```
 
 ## Categorical perspective
 
-The two compositions `prior >> decoder` and `encoder >> decoder` share the decoder but differ in which morphism produces the latent code. `stack(f, N)` creates independently parameterized copies, unlike a weight-sharing repetition. Only the prior-decoder program participates in the runnable inference block on this page.
-
-For a complete VAE with guide $q(z \mid y)$, the ELBO is the expected decoder log likelihood minus $\operatorname{KL}(q(z \mid y) \| p(z))$. The first term rewards reconstruction and the second compares the guide with the latent prior. That interpretation requires connecting and training an observation-dependent guide, which the declared `encoder` does not do in the runnable fit here.
+`encoder : ObsSpace -> Latent` and `decoder : Latent -> ObsSpace` are [Kleisli morphisms](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]: each sends a point to a Gaussian measure on the other space. The generative program composes the prior $1 \to \mathcal{G}(\mathsf{Latent})$ with the decoder, giving the model's marginal over observations, and `reconstruct` composes the encoder with the decoder, giving an endomorphism of $\mathsf{ObsSpace}$. Training by the ELBO asks the encoder to approximate the Bayesian inverse of the decoder with respect to the prior, the kernel $\mathsf{ObsSpace} \to \mathcal{G}(\mathsf{Latent})$ that disintegrates the joint distribution of $(z, y)$ along $y$. Under that reading, `reconstruct` is the composite of a kernel with its approximate inverse, and its distance from the identity is what the reconstruction check measures.
 
 ## See also
 
-- [Probabilistic PCA](ppca.md) for a linear-Gaussian latent-variable model.
-- [DSL Guide](../guides/dsl-overview.md) for morphism composition (`>>`, `stack`, `embed`).
+- [Probabilistic PCA](ppca.md) for the linear-Gaussian latent model that serves as the baseline and the oracle here.
+- [Bayesian Neural Network](bnn.md) for a network whose weights, rather than its inputs, are the latent variables.
 
 ## Sources and further reading
 
 - *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].
+- *Probabilistic Principal Component Analysis* [@tipping1999ppca].
