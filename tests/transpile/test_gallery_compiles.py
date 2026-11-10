@@ -198,6 +198,25 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
             "webppl",
         )
     },
+    # 2b. The weighted-grammar examples score a deduction's goal
+    #     weight from a program, which reaches the same boundary.
+    **{
+        (backend, stem): "qiec:capability:search"
+        for stem in ("ccg", "custom_rules", "pmcfg")
+        for backend in (
+            "bugs",
+            "church",
+            "edward2",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "pyro",
+            "stan",
+            "turing",
+            "webppl",
+        )
+    },
     # 3b. A recurrent cell adds two rank-1 operands. Neither BUGS nor
     #     JAGS lifts an infix operator over an axis, and the
     #     elementwise result exists only as a named array built one
