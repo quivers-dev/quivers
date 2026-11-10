@@ -271,6 +271,10 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
 }
 
 
+#: Let calls Julia spells under another name: integer division and
+#: remainder truncate toward zero, as Julia's `div` and `rem` do.
+_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem"}
+
 #: QVR builtins whose two-argument form is pointwise, which Julia spells
 #: as a broadcast call.
 _BINARY_POINTWISE_CALLS: frozenset[str] = frozenset({"max", "min"})
@@ -763,7 +767,7 @@ def _emit_call(
         ctx.e(vid, al_vid, "child_of")
         return vid, "call_expression"
     rendered = tuple(_render(ctx, a) for a in args)
-    callee_vid, _callee_kind = _emit_identifier(ctx, func)
+    callee_vid, _callee_kind = _emit_identifier(ctx, _JULIA_CALL_NAMES.get(func, func))
     al_vid = _emit_argument_list(ctx, rendered)
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
     # `max(a, b)` of two arrays compares them as wholes and returns one,

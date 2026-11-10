@@ -4926,7 +4926,9 @@ class _ProgramsMixin:
         * `LetExprIndex` — tensor gather.
         """
         if isinstance(node, LetExprLiteral):
-            val = node.value
+            # An integral literal is an integer tensor, so integer
+            # arithmetic on it (division above all) stays integral.
+            val = int(node.value) if node.integral else node.value
 
             def _literal(env: dict) -> torch.Tensor:
                 for v in env.values():
@@ -5032,8 +5034,13 @@ class _ProgramsMixin:
                 elif op == "*":
                     return l * r
                 elif op == "/":
+                    # Integer division truncates toward zero; real
+                    # division is exact.
+                    if not (l.is_floating_point() or r.is_floating_point()):
+                        return torch.div(l, r, rounding_mode="trunc")
                     return l / r
                 elif op == "%":
+                    # The remainder of the truncating division.
                     return torch.fmod(l, r)
                 elif op == "==":
                     return l == r

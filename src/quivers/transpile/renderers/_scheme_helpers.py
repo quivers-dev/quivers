@@ -34,8 +34,13 @@ from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 _TARGET = "qvr-scheme-helper"
 
 #: QVR builtins Scheme spells under another name: the power function is
-#: `expt`, and Scheme has no `pow`.
-_SCHEME_CALL_NAMES: dict[str, str] = {"pow": "expt"}
+#: `expt`, and Scheme has no `pow`; integer division and remainder
+#: truncate toward zero, as `quotient` and `remainder` do.
+_SCHEME_CALL_NAMES: dict[str, str] = {
+    "pow": "expt",
+    "quot": "quotient",
+    "rem": "remainder",
+}
 
 
 def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:

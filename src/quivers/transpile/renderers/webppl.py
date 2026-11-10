@@ -2848,9 +2848,9 @@ def _ir_emits_qvr_bcast(ir: IRProgram, ranks: Mapping[str, int]) -> bool:
 #: QVR math primitives the WebPPL runtime supplies as elementwise
 #: globals (`Math` has no bare `sigmoid` / `exp` / `log` / `sqrt` /
 #: `abs`, and WebPPL no `max` / `min` / `pow`, whose two-argument forms
-#: are pointwise).
+#: are pointwise, nor the truncating `quot` / `rem`).
 _WEBPPL_MATH_HELPERS: frozenset[str] = frozenset(
-    {"sigmoid", "exp", "log", "sqrt", "abs", "max", "min", "pow"}
+    {"sigmoid", "exp", "log", "sqrt", "abs", "max", "min", "pow", "quot", "rem"}
 )
 
 

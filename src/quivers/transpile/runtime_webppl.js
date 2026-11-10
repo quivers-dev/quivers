@@ -123,6 +123,8 @@ var _qvr_bcast = function(op, a, b) {
       : op === "^" ? Math.pow(a, b)
       : op === "max" ? Math.max(a, b)
       : op === "min" ? Math.min(a, b)
+      : op === "quot" ? Math.trunc(a / b)
+      : op === "rem" ? a % b
       : NaN;
   }
   var n = a_arr ? a.length : b.length;
@@ -325,6 +327,15 @@ var min = function(a, b) {
 
 var pow = function(a, b) {
   return _qvr_bcast("^", a, b);
+};
+
+// Integer division and remainder truncate toward zero, pointwise.
+var quot = function(a, b) {
+  return _qvr_bcast("quot", a, b);
+};
+
+var rem = function(a, b) {
+  return _qvr_bcast("rem", a, b);
 };
 
 var Logistic = function(params) {

@@ -843,6 +843,108 @@ def _is_factor_tower(ctx: PyCtx, expr: LetExprNode) -> bool:
     return isinstance(expr, LetExprVar) and expr.name in ctx.factor_towers
 
 
+#: Each NumPy-like target's sign, absolute value, flooring division,
+#: product, and difference, from which its truncating integer division
+#: and remainder are built as calls, which need no parentheses wherever
+#: they appear.
+_TRUNCATION_SYMBOLS: dict[str, dict[str, tuple[str, ...]]] = {
+    "numpyro": {
+        "sign": ("jnp", "sign"),
+        "abs": ("jnp", "abs"),
+        "floor_divide": ("jnp", "floor_divide"),
+        "multiply": ("jnp", "multiply"),
+        "subtract": ("jnp", "subtract"),
+    },
+    "pymc": {
+        "sign": ("pymc", "math", "sgn"),
+        "abs": ("pymc", "math", "abs"),
+        "floor_divide": ("pymc", "pytensorf", "pt", "int_div"),
+        "multiply": ("pymc", "pytensorf", "pt", "mul"),
+        "subtract": ("pymc", "pytensorf", "pt", "sub"),
+    },
+    "edward2": {
+        "sign": ("tf", "math", "sign"),
+        "abs": ("tf", "math", "abs"),
+        "floor_divide": ("tf", "math", "floordiv"),
+        "multiply": ("tf", "math", "multiply"),
+        "subtract": ("tf", "math", "subtract"),
+    },
+}
+
+
+def _render_truncating(
+    ctx: PyCtx, func: str, dividend: LetExprNode, divisor: LetExprNode
+) -> str:
+    """Render integer division or remainder, which truncate toward zero.
+
+    Python's `//` and `%` floor, and so differ from truncation when the
+    operands' signs differ. Pyro uses `torch.div(..., rounding_mode="trunc")`
+    and `torch.fmod` on tensors of its operands. The other targets build
+    the quotient as ``sign(a) * sign(b) * (|a| // |b|)``, which keeps
+    integer operands integral, and the remainder as ``a - b * quot``,
+    each spelled as the library's calls.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        The emit context.
+    func : str
+        ``"quot"`` or ``"rem"``.
+    dividend : LetExprNode
+        The dividend.
+    divisor : LetExprNode
+        The divisor.
+
+    Returns
+    -------
+    str
+        The expression vertex.
+    """
+    if ctx.target == "pyro":
+        operands = tuple(
+            call(
+                ctx,
+                attribute(ctx, ("torch", "as_tensor")),
+                positional=(render_let_expr_python(ctx, operand),),
+            )
+            for operand in (dividend, divisor)
+        )
+        if func == "rem":
+            return call(ctx, attribute(ctx, ("torch", "fmod")), positional=operands)
+        return call(
+            ctx,
+            attribute(ctx, ("torch", "div")),
+            positional=operands,
+            keyword=(("rounding_mode", string_literal(ctx, "trunc")),),
+        )
+    symbols = _TRUNCATION_SYMBOLS[ctx.target]
+
+    def apply(name: str, *operands: str) -> str:
+        return call(ctx, attribute(ctx, symbols[name]), positional=operands)
+
+    def operand(expr: LetExprNode) -> str:
+        return render_let_expr_python(ctx, expr)
+
+    quotient = apply(
+        "multiply",
+        apply(
+            "multiply",
+            apply("sign", operand(dividend)),
+            apply("sign", operand(divisor)),
+        ),
+        apply(
+            "floor_divide",
+            apply("abs", operand(dividend)),
+            apply("abs", operand(divisor)),
+        ),
+    )
+    if func == "quot":
+        return quotient
+    return apply(
+        "subtract", operand(dividend), apply("multiply", operand(divisor), quotient)
+    )
+
+
 def render_let_expr_python(
     ctx: PyCtx, expr: LetExprNode, *, index_slot: bool = False
 ) -> str:
@@ -921,6 +1023,17 @@ def render_let_expr_python(
         )
         return u
     if isinstance(expr, LetExprCall):
+        if expr.func == "real" and len(expr.args) == 1 and ctx.target == "edward2":
+            return call(
+                ctx,
+                attribute(ctx, ("tf", "cast")),
+                positional=(
+                    render_let_expr_python(ctx, expr.args[0]),
+                    attribute(ctx, ("tf", "float32")),
+                ),
+            )
+        if expr.func in ("quot", "rem") and len(expr.args) == 2:
+            return _render_truncating(ctx, expr.func, expr.args[0], expr.args[1])
         if expr.func == "int" and len(expr.args) == 1:
             argument = render_let_expr_python(ctx, expr.args[0])
             if ctx.target == "pyro":

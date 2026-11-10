@@ -623,6 +623,8 @@ def _render(ctx: _LetEnv, expr: LetExprNode) -> str:
         return _emit_binop(ctx, expr)
     if isinstance(expr, LetExprUnaryOp):
         return _emit_unary(ctx, expr)
+    if isinstance(expr, LetExprCall) and expr.func in ("quot", "rem"):
+        return _render(ctx, _truncating(expr))
     if isinstance(expr, LetExprCall):
         return _emit_reduction_or_call(ctx, expr)
     if isinstance(expr, LetExprIndex):
@@ -1124,6 +1126,36 @@ def _emit_index(ctx: _LetEnv, expr: LetExprIndex) -> str:
     for dim in residual_event_dims(ctx.decl_plates, expr.array.name, len(expr.indices)):
         ctx.e(il, ctx.range_1_to(dim_upper_text(dim)), "range")
     return iv
+
+
+def _truncating(expr: LetExprCall) -> LetExprNode:
+    """Integer division or remainder in BUGS / JAGS arithmetic.
+
+    BUGS and JAGS hold every value as a real and have no integer
+    division, so the quotient truncating toward zero is
+    ``trunc(a / b)`` and the remainder ``a - b * trunc(a / b)``.
+
+    Parameters
+    ----------
+    expr : LetExprCall
+        A ``quot(a, b)`` or ``rem(a, b)`` call.
+
+    Returns
+    -------
+    LetExprNode
+        The expression in the language's own functions.
+    """
+    dividend, divisor = expr.args
+    quotient = LetExprCall(
+        func="trunc", args=(LetExprBinOp(op="/", left=dividend, right=divisor),)
+    )
+    if expr.func == "quot":
+        return quotient
+    return LetExprBinOp(
+        op="-",
+        left=dividend,
+        right=LetExprBinOp(op="*", left=divisor, right=quotient),
+    )
 
 
 def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:

@@ -191,6 +191,17 @@ _TRANSPARENT: frozenset[str] = frozenset({"int_to_real", "as_weight", "weight_va
 #: the same number and a real.
 _INTEGRAL_ARITHMETIC_TARGETS: frozenset[str] = frozenset({"stan"})
 
+#: Targets whose arithmetic does not promote an integer operand to a
+#: real one: TensorFlow refuses a product of a float and an int tensor.
+#: On them a conversion to real reads back as an explicit `real(x)`.
+_STRICT_DTYPE_TARGETS: frozenset[str] = frozenset({"edward2"})
+
+#: Integer division and remainder, which truncate toward zero. A target
+#: whose `/` and `%` on two integers do so reads them as the operators;
+#: every other target reads them as these calls, which each renderer
+#: spells with its own truncating division and remainder.
+_TRUNCATING_CALLS: dict[str, str] = {"div_int": "quot", "mod_int": "rem"}
+
 #: Unary primitives the expression language writes as operators.
 _UNARY_OPERATORS: dict[str, Literal["-", "not"]] = {
     "neg_int": "-",
@@ -2399,8 +2410,22 @@ def _expression(
                 left=LetExprLiteral(value=1.0),
                 right=_expression(value.arguments[0], cards, target, program),
             )
+        if value.name == "int_to_real" and target in _STRICT_DTYPE_TARGETS:
+            return LetExprCall(
+                func="real",
+                args=(_expression(value.arguments[0], cards, target, program),),
+            )
         if value.name in _TRANSPARENT:
             return _expression(value.arguments[0], cards, target, program)
+        truncating = _TRUNCATING_CALLS.get(value.name)
+        if truncating is not None and target not in _INTEGRAL_ARITHMETIC_TARGETS:
+            return LetExprCall(
+                func=truncating,
+                args=tuple(
+                    _expression(argument, cards, target, program)
+                    for argument in value.arguments
+                ),
+            )
         operator = PRIMITIVE_OPERATORS.get(value.name)
         if operator is not None and len(value.arguments) == 2:
             left, right = value.arguments
