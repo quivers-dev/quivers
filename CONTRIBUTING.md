@@ -225,6 +225,29 @@ package re-exports its modules' public names, public signatures name
 only public types, and every public name renders in the API reference.
 `tests/test_public_api.py` and `tools/check_api_reference.py` enforce it.
 
+### Opaque didactic fields
+
+didactic's `Model.__eq__` and `Model.__hash__` read only a model's
+encoded storage, which an opaque field (`dx.field(opaque=True)`) does
+not enter, so a plain `dx.Model` treats values that differ in an opaque
+field as equal, and its pickle hooks drop the field. Prefer a typed
+field whenever didactic can encode the type (`dict[str, str]`,
+`dict[str, tuple[int, ...]]`, nested models). When a field must stay
+opaque, the model subclasses `quivers._values.ValueModel` and the field
+declares how it enters equality, hashing, copying, and pickling:
+
+- `extras=OPAQUE_BY_VALUE` for data: compared by content (arrays
+  exactly by dtype, shape, and bytes; mappings by key set; tuples
+  elementwise), and frozen at construction (arrays become read-only
+  copies, mappings read-only proxies);
+- `extras=OPAQUE_BY_IDENTITY` for live runtime objects (tensors,
+  modules, callables, AST nodes, dataframes): compared by object
+  identity.
+
+State the policy in the class docstring. `tests/test_opaque_field_policies.py`
+fails on any opaque field without a declared policy and on any model
+with an opaque field that is not a `ValueModel`.
+
 ## The DSL Pipeline
 
 The QVR DSL processes `.qvr` files through these stages:
