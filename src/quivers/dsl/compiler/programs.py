@@ -5395,17 +5395,23 @@ class _ProgramsMixin:
                 for ix in node.indices
             ]
 
-            def _index(env: dict) -> torch.Tensor:
-                # Indexed-gather always operates on tensor-valued
-                # arrays and tensor-valued indices; narrow for the
-                # type checker without runtime cost.
-                arr = cast(torch.Tensor, arr_fn(env))
-                idx_tensors = [cast(torch.Tensor, fn(env)) for fn in idx_fns]
+            def _index(env: dict) -> LetValue:
+                arr = arr_fn(env)
+                idx_tensors = [torch.as_tensor(fn(env)) for fn in idx_fns]
+                if isinstance(arr, tuple):
+                    # A tuple's component is selected by one static
+                    # position, as the checked program projects it.
+                    if len(idx_tensors) != 1 or idx_tensors[0].numel() != 1:
+                        raise CompileError(
+                            "a tuple component is selected by one integer"
+                        )
+                    return arr[int(idx_tensors[0].reshape(()).item())]
+                tensor = cast(torch.Tensor, arr)
                 long_idx = tuple(
                     ix.to(torch.long) if ix.dtype != torch.long else ix
                     for ix in idx_tensors
                 )
-                return arr[long_idx]
+                return tensor[long_idx]
 
             return _index
         raise CompileError(f"unknown let expression node: {type(node).__name__}")

@@ -248,6 +248,12 @@ class TraceHandler(EffectHandler):
             self._occurrences[event.instance] = occurrence + 1
             name = f"{name}@{occurrence}"
         value = event.result
+        if step.kind != "score" and isinstance(value, tuple):
+            # A let binding a tuple holds a product of values rather
+            # than one tensor; the trace records tensor-valued bindings,
+            # and a tuple's components are bindings of their own once a
+            # let projects them.
+            return
         assert isinstance(value, torch.Tensor)
         if step.kind == "score":
             log_prob = self._step_contribution(run, step, event, value)
