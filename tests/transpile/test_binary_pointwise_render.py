@@ -219,9 +219,10 @@ def test_binary_builtins_render_pointwise_and_keep_integers(
 #: for the targets outside the Python family, whose numeric agreement
 #: the probe tier checks.
 _SPELLINGS: tuple[tuple[str, str, str], ...] = (
-    ("stan", "min(mu, 1.0)", "fmin(mu,1.0)"),
+    ("stan", "min(mu, 1.0)", "fmin(mu,"),
     ("stan", "max(ys, zs)", "fmax(ys[m_Step],zs[m_Step])"),
-    ("stan", "factor t : Step in ys[max(t - 1, 0)]", "ys[max(0-1,0)+1]"),
+    # Two integers keep Stan's integer `max`, so the subscript stays an int.
+    ("stan", "factor t : Step in ys[max(t - 1, 0)]", "ys[max(0-1,0)"),
     ("turing", "max(ys, zs)", "max.(ys, zs)"),
     ("turing", "min(mu, 1.0)", "min.(mu, 1"),
     ("jags", "factor t : Step in ys[max(t - 1, 0)]", "ys[1]"),
