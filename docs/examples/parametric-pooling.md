@@ -74,11 +74,12 @@ twice creates separate local bindings. The `spread` argument determines how
 far each group's effect can lie from zero; a smaller spread imposes stronger
 [pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered) toward the common baseline.
 
-The centering score favors effects whose sum is near zero. Because it adds
-a finite penalty, it is a soft preference rather than an exact sum-to-zero
-constraint. Stan’s [soft-centering discussion](https://mc-stan.org/docs/stan-users-guide/regression.html#soft-centering) compares such a penalty with an exact sum-to-zero parameterization [@stanRegression]. The returned labels make it possible to inspect group effects
-and the residual scale separately, even when their internal site names differ
-between template instantiations.
+The [centering score](https://mc-stan.org/docs/stan-users-guide/regression.html#soft-centering)
+adds a finite penalty when the group effects sum to a value away from zero
+[@stanRegression]. Nonzero sums remain possible; the penalty controls how
+strongly they are discouraged. The returned labels identify group effects
+and residual scales even when their internal site names differ between
+template instantiations.
 
 ## Walkthrough
 
@@ -101,7 +102,6 @@ The non-centered form routes `spread` through the `let` arithmetic (`effect = sp
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -167,11 +167,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 A parametric program denotes a dependent kernel $\Pi (p_1 : P_1) \ldots \Pi (p_n : P_n).\ \mathbf{Kern}(\mathrm{dom}(p), \mathrm{cod}(p))$ in the indexed family of [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) arrows of the [Giry monad](https://doi.org/10.1007/BFb0092872) over the parameter category; each call site realizes a section of the family at the supplied arguments. The `score` step multiplies the weighted measure by a density factor. This particular nonpositive score gives a factor at most one, but arbitrary scoring does not generally preserve a subprobability bound; and the labeled return tuple names the projections out of the program's product codomain. [@giry1982categorical]
-
 
 ## Sources and further reading
 

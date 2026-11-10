@@ -20,7 +20,6 @@ the caller receives. `marginalize` asks the model to account for every
 value of a finite unknown rather than select one. These steps define
 the model; a separate inference procedure estimates its posterior.
 
-
 A `program` block defines a probabilistic program. The body is a
 sequence of *steps* (bind, observe, let, marginalize) followed by
 `return`. Sampling steps compose probability kernels over the accumulated variable
@@ -149,7 +148,6 @@ scale is integrated out. An unusually large effect for one subject can
 raise the inferred shared scale and thereby widen the plausible effects
 for the others.
 
-
 `sample v : A <- Family(args)` declares `v` as an $A$-indexed family of
 independent $F$-distributed draws. The per-index kernel assigns a distribution on `K` to each index in `A`.
 Taking their independent product produces a distribution on `K^A`.
@@ -172,7 +170,6 @@ density may exceed one. For a uniform density on an interval of width
 `0.1`, the density is `10` and an observation contributes `log(10)`.
 Such scores are likelihood weights; a sub-probability kernel would
 additionally require total mass at most one.
-
 
 `observe r : N <- Family(args)` accumulates a batched
 log-likelihood, reweighting the current execution by $\prod_{n \in N} p_F(r_{\mathrm{obs}}(n);
@@ -216,7 +213,6 @@ If `by_verb = [0.2, -0.1, 0.5]` and `verb_of_item = [2, 0, 2]`,
 the gather returns `[0.5, 0.2, 0.5]`. Items zero and two share the
 same realized verb effect. Sampling again per item would define a
 different model. The index map is what preserves the intended sharing.
-
 
 A `let` expression of the form `arr[idx]` gathers values by their indices.
 Once a plate has been sampled, this is deterministic reindexing of its
@@ -314,17 +310,16 @@ consumes; the runtime supplies a per-sample snapshot of the model's
 
 ## Axis-role clause: `over` and `iid_over`
 
-For a numerical comparison of dependent event coordinates and conditionally independent repetitions, see Pyro’s [distribution shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) and [plate examples](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate). [@pyroTensorShapes] Quivers’ [family catalog](continuous-families.md#event-rank-and-axis-role-syntax) lists the event ranks used by this syntax.
-
-Ask what counts as one outcome before choosing the axes. A probability
+Ask what counts as [one outcome](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) [@pyroTensorShapes] before choosing the axes. A probability
 vector over three topics is one Dirichlet outcome; ten documents can
 each have such a vector. The topic axis is an event axis and the
 document axis is a batch/plate axis, producing ten jointly constrained
 three-component vectors. `over=Topic` records the former; `: Doc` or
 `iid_over=Doc` records the latter. This declaration constrains the three
 topic probabilities within each document to sum to one and treats the
-documents as conditionally independent draws.
-
+documents as [conditionally independent draws](https://pyro.ai/examples/tensor_shapes.html#Declaring-independent-dims-with-plate)
+[@pyroTensorShapes]. Each family’s [event rank](continuous-families.md#event-rank-and-axis-role-syntax)
+determines how many axes belong to one outcome.
 
 Every distribution-bearing form (kernel and latent-prior morphism
 declarations, `sample` / `observe` / `marginalize` steps) accepts
@@ -508,7 +503,6 @@ of index tuples and compute a value at every tuple. Indexing reads one
 cell of a table; a factor expression constructs the whole table. For
 two verbs and three classes, the body runs at six `(verb, class)`
 pairs and produces a table with those two leading axes.
-
 
 The `factor` expression in a `let` body builds a
 finite-domain-indexed tensor by evaluating a body once per tuple of

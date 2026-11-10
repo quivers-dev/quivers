@@ -509,4 +509,4 @@ After the first revision, an additional pass removed formulaic contrasts and gen
 
 ## Follow-up cross-linking revision
 
-The [cross-linking audit](docs-link-audit.md) records the subsequent revision across 317 documentation pages: 569 additional internal links, 130 additional external links, and 29 verified bibliography resources. It includes final build, section-anchor, citation, and code-preservation checks.
+The [cross-linking audit](docs-link-audit.md) records the linking pass and its editorial follow-up, including current link counts, source verification, build results, and checks that executable examples are unchanged.

@@ -1,14 +1,9 @@
 # Predictive
 
-Posterior prediction draws latent parameters from a fitted approximation and then
-simulates responses conditional on those parameters. In a regression, this includes
-uncertainty in the coefficients and variation in the response distribution. The returned
+[Posterior prediction](../../guides/inference-svi.md#predictive-sampling) draws latent parameters from a fitted approximation and then
+simulates responses conditional on those parameters. In a [regression](../../tutorials/python/05-variational-inference.md#building-a-model), this includes
+uncertainty in the coefficients and variation in the response distribution [@gelman2013bayesian]. The returned
 simulations can be compared with observations or summarized as predictive intervals.
-
-See [posterior predictive sampling](../../guides/inference-svi.md#predictive-sampling) and
-[a regression fitted with variational inference](../../tutorials/python/05-variational-inference.md#building-a-model).
-
-For posterior predictive inference, see [@gelman2013bayesian].
 
 Predictive inference and posterior sampling.
 

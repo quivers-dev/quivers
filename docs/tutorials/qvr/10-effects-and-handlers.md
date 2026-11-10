@@ -8,8 +8,11 @@ The caller states the requested operation; the handler supplies its interpretati
 Read `perform robust.shrink(8.0)` as asking a named service for an adjusted
 value. The calling computation pauses at that request. A handler can answer
 `4.0`, and `resume(4.0)` makes that value the result of `perform`, allowing
-the remaining computation to continue. The remaining work is called the
-*[continuation](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)*. Pyro’s [effect-handler introduction](https://pyro.ai/examples/effect_handlers.html#Introduction) shows how tracing and conditioning can change the interpretation of sampling statements [@pyroEffects].
+the remaining computation to continue. This remaining work is the
+*[continuation](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)*.
+For a probabilistic request, [different handlers](https://pyro.ai/examples/effect_handlers.html#Introduction)
+can draw a fresh value, supply an observation, or record the value for later
+inspection [@pyroEffects].
 
 An effect interface lists the requests available; an instance identifies
 which service receives them; a handler decides how to answer. Two instances

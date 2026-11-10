@@ -56,11 +56,11 @@ next conditional mean by `0.8` units. Repeated effects decay when `abs(phi) < 1`
 the stationary mean is `alpha / (1 - phi)`, not generally `alpha` itself.
 `sigma` controls the new variation added at each step.
 
-The fit receives both the current series and its [lagged values](../tutorials/qvr/05-time-series.md#plates-revisited). This makes
-the model a regression conditional on those lags, including the chosen first-row
-boundary. [Posterior draws](../tutorials/qvr/01-first-model.md#inspect-the-posterior) of `phi` describe uncertainty in persistence; to
-forecast several future steps, each generated observation must become the
-next step's lag. Stan’s [AR(1) example](https://mc-stan.org/docs/stan-users-guide/time-series.html#ar1-models) also explains how the first observation can serve as a conditioning value. Reusing one fixed lag vector would answer a different question [@stanTimeSeries].
+The fit receives both the current series and its [lagged values](../tutorials/qvr/05-time-series.md#plates-revisited).
+The likelihood is conditional on those lags, including the [initial value](https://mc-stan.org/docs/stan-users-guide/time-series.html#ar1-models)
+[@stanTimeSeries]. [Posterior draws](../tutorials/qvr/01-first-model.md#inspect-the-posterior)
+of `phi` describe uncertainty in persistence. To forecast several future
+steps, feed each generated observation back as the next step's lag.
 
 ## Walkthrough
 
@@ -71,7 +71,6 @@ The program returns `phi`, a scalar real, so the declared codomain is `Val : Rea
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -146,11 +145,9 @@ for name, samples in result.samples.items():
     print(f"{name}: posterior mean = {samples.mean().item():.3f}")
 ```
 
-
 ## Categorical perspective
 
 The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the standard AR(1) joint $p(\alpha, \phi, \sigma) \prod_t \mathcal{N}(y_t \mid \alpha + \phi y_{t-1}, \sigma)$. The `Step`-indexed plate is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) of the per-step Normal kernel along the trivial projection $\mathrm{Step} \to \mathbf{1}$. [@giry1982categorical]
-
 
 ## Sources and further reading
 

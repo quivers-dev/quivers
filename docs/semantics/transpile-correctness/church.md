@@ -11,12 +11,10 @@ to the joint density.
 
 ## Semantics
 
-DIPPL’s [random-computation execution tree](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation) illustrates how alternative random choices produce different weighted executions [@goodman2014design]. The [generative-fragment laws](../programs.md#5-algebraic-laws-and-their-scope) state when QVR can regroup their sequential composition.
-
 Church's denotational semantics is the stochastic lambda calculus
 of Goodman, Mansinghka, Roy, Bonawitz, and Tenenbaum
 [@goodman2008church]. A program is a Scheme
-expression whose `sample` invocations introduce randomness; the
+expression whose [`sample` invocations introduce randomness](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation) [@goodman2014design]; the
 trace is a sequence of (address, distribution, value) triples. The
 joint log-density is the sum of the per-site log-density contributions.
 

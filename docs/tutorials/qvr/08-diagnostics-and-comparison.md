@@ -2,11 +2,11 @@
 
 Model assessment asks whether a fit converged, whether the fitted model reproduces the observed data, and how its predictive accuracy compares with another model's. Quivers exposes these checks through [ArviZ](https://python.arviz.org/) via [`quivers.diagnostics`](../../api/diagnostics/index.md). This chapter applies that diagnostic pipeline to the regression from chapter 1.
 
-A regression can have agreeing chains yet predict too few extreme responses.
-R-hat helps detect the first kind of problem, disagreement between chains;
-a [posterior predictive check](../python/08-analysis-pipelines.md#posterior-predictive-checks) can reveal the second by comparing observed and
-simulated extremes. Stan’s [discussion of which statistics to check](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) gives examples of discrepancies that a mean alone can miss [@stanPredictiveChecks]. Cross-validation then compares predictive performance on
-observations left out of fitting.
+R-hat assesses agreement between chains. A regression whose chains agree
+can still predict too few extreme responses. A [posterior predictive check](../python/08-analysis-pipelines.md#posterior-predictive-checks)
+can reveal that discrepancy by comparing [observed and simulated extremes](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test)
+[@stanPredictiveChecks]. Cross-validation estimates predictive performance
+on observations left out of fitting.
 
 A chain is one dependent sequence of posterior draws. Several chains provide
 independent attempts to explore the same target; R-hat detects some forms of
@@ -171,7 +171,6 @@ transformations, or composition rules, continue to the Python API track
 starting at [chapter 1](../python/01-first-quiver.md). For a formal treatment,
 the [semantics section](../../semantics/index.md) gives the denotational
 semantics of QVR.
-
 
 ## Sources and further reading
 

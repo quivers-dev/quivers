@@ -57,10 +57,11 @@ so the item distinguishes more strongly between nearby abilities.
 
 Each response row identifies both a person and an item. For row indices
 `person_idx[n] = 2` and `item_idx[n] = 5`, the likelihood uses ability 2,
-difficulty 5, and discrimination 5. Priors help anchor the latent ability
-scale; raw ability and difficulty numbers should be interpreted together on
-that scale. [Posterior predictive](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) response probabilities are often easier to
-compare than the latent coordinates themselves. Stan’s [multilevel 2PL example](https://mc-stan.org/docs/stan-users-guide/regression.html#multilevel-2pl-model) develops the ability, difficulty, and discrimination parameterization [@stanRegression].
+difficulty 5, and discrimination 5. These [three parameters](https://mc-stan.org/docs/stan-users-guide/regression.html#multilevel-2pl-model)
+determine the response probability together [@stanRegression]. Priors help
+anchor the latent ability scale; ability and difficulty must be interpreted
+on that same scale. [Posterior predictive](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks)
+response probabilities express their combined effect on the observed outcome.
 
 ## Walkthrough
 
@@ -76,7 +77,6 @@ roles, which the program's annotations should keep distinct.
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -154,11 +154,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The 2PL is a Kleisli morphism over the Person + Item plate structure in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The plate-gather operations are pullbacks of indexed kernels along the response-row index maps `person_idx : Resp -> Person` and `item_idx : Resp -> Item`. [@giry1982categorical]
-
 
 ## Sources and further reading
 

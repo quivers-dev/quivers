@@ -1,12 +1,9 @@
 # Pure builtins
 
-A pure builtin computes from its arguments without requesting an effect such as
+A [pure builtin](../../reference/qvr/types-and-indexed-families.md#pure-expressions) computes from its arguments without requesting an effect such as
 sampling. Lowering resolves the supported operation using its type so the core can
 execute or translate it. A deterministic builtin can still return different values
 across model runs when its arguments are random.
-
-See [the pure expression language](../../reference/qvr/types-and-indexed-families.md#pure-expressions) and
-[substitution that respects variable binding](../qiec/substitution.md).
 
 The pure-expression builtins the QIEC lowering resolves by type.
 

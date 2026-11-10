@@ -54,11 +54,12 @@ The sigmoid gate makes a weighted transition between the two rates, so
 observations near `tau` can use an intermediate rate. This is a smooth-change
 model even when the synthetic series uses a hard switch.
 
-A [posterior interval](../tutorials/qvr/01-first-model.md#inspect-the-posterior) for `tau` describes uncertainty about the transition's
-location under this specification. It is not the same object as probabilities
-over finitely many hard switch points. In the latter model one switch is
-shared across the whole series: multiply all row likelihoods for each candidate
-switch before [summing over candidates](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping). The [Stan change point derivation](https://mc-stan.org/docs/stan-users-guide/latent-discrete.html#marginalizing-out-the-discrete-parameter) displays this discrete alternative explicitly [@stanLatentDiscrete].
+A [posterior interval](../tutorials/qvr/01-first-model.md#inspect-the-posterior)
+for `tau` describes uncertainty about the transition's location under this
+specification. A model with [finitely many hard switch points](https://mc-stan.org/docs/stan-users-guide/latent-discrete.html#marginalizing-out-the-discrete-parameter)
+assigns a posterior probability to each candidate [@stanLatentDiscrete].
+Because one switch is shared across the whole series, its likelihood
+multiplies all row contributions before [summing over candidates](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping).
 
 ## Walkthrough
 
@@ -71,7 +72,6 @@ The program returns `tau`, a scalar real, so the declared codomain is `Val : Rea
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -150,11 +150,9 @@ for name, samples in result.samples.items():
     print(f"{name}: posterior mean = {samples.mean().item():.3f}")
 ```
 
-
 ## Categorical perspective
 
 The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the joint $p(\tau, r_1, r_2) \prod_t \mathrm{Poisson}(y_t \mid r(t; \tau, r_1, r_2))$. The soft indicator is the [reparameterization gradient](https://arxiv.org/abs/1312.6114)-friendly relaxation of an indicator function; in the hard-change-point variant, the discrete `tau_idx` is integrated out by `marginalize`, realizing the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) along the trivial projection from the time axis to a singleton. [@giry1982categorical] [@kingma2014autoencoding]
-
 
 ## Sources and further reading
 

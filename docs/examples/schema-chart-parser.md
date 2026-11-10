@@ -49,11 +49,13 @@ export lp_parser
 
 ## Understanding the model
 
-A schema is a reusable [rule template](custom-rules.md#understanding-the-model): “a phrase needing `Y` on the right,
-followed by a `Y`, yields `X`.” Instantiating it with `X = NP` and `Y = N`
-gives the familiar combination of `the : NP/N` with `dog : N`. A bundle
-is a named list of these templates, while the finite category inventory
-specifies which substitutions the compiler actually tries. The NLTK book’s [context-free grammar examples](https://www.nltk.org/book/ch08.html#context-free-grammar) introduce the phrase categories and production notation behind this template [@nltkSyntax2019].
+A schema is a reusable [rule template](custom-rules.md#understanding-the-model):
+“a phrase needing `Y` on the right, followed by a `Y`, yields `X`.”
+The [phrase categories](https://www.nltk.org/book/ch08.html#context-free-grammar)
+`NP` and `N` denote noun phrases and nouns [@nltkSyntax2019]. Instantiating
+`X = NP` and `Y = N` gives the combination of `the : NP/N` with `dog : N`.
+A bundle names a list of templates; the finite category inventory determines
+which substitutions the compiler tries.
 
 The parser returns one aggregate score for all derivations reaching the
 sentence goal. This tells you how the model weights those analyses; without

@@ -164,13 +164,11 @@ Finite distributivity holds for the Boolean, Gödel, tropical, max-plus, log-pro
 
 ## 3. Base change
 
-A functor preserves composition and identities. Milewski’s [opening definition and “Equational Reasoning” example](https://bartoszmilewski.com/2015/01/20/functors/) explain those two requirements [@milewski2015functors]. The [QVR base-change guide](../guides/categorical.md#base-change) then applies entry conversions to concrete tensors.
-
-A base change converts the meaning of each table entry while keeping its
+A [base change](../guides/categorical.md#base-change) converts the meaning of each table entry while keeping its
 axes. For instance, thresholding fuzzy values produces yes/no entries.
 A stronger claim would be that converting before composition gives the same
 answer as converting afterward. This is the preservation law behind the
-word *functor*, and lossy conversions can fail it. Two stages of weight
+word *[functor](../guides/categorical.md#functors)*, and lossy conversions can fail it. Two stages of weight
 $0.6$ each survive a threshold of $0.5$ separately, but their product $0.36$
 does not survive that threshold after composition.
 

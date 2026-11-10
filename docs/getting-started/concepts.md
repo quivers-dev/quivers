@@ -5,9 +5,6 @@ how they combine. The categorical vocabulary names patterns in those
 computations. We can understand the patterns by calculating with small tables
 before learning the general definitions.
 
-Milewski's programming examples provide a longer introduction to
-composition and effectful sequencing [@milewski2014composition; @milewski2014kleisli].
-
 This page assumes familiarity with functions, arrays, and elementary
 probability. First we compose weighted tables; then we distinguish simulation
 from inference; finally we connect those operations to categories, monads,
@@ -16,10 +13,8 @@ assumptions.
 
 ## 1. An object names the possible values
 
-For the Python representations used here, see [finite sets](../guides/core.md#objects-finite-sets) and [products and coproducts](../guides/core.md#productset-and-coproductset). Milewski’s [“Products” and “Coproduct” sections](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/) develop the corresponding pair and tagged-union constructions from their input and output functions [@milewski2015products].
-
 Suppose a model relates weather, travel routes, and arrival times. We use
-three finite sets: `Weather = {dry, rainy}`, `Route = {walk, bus}`, and
+three [finite sets](../guides/core.md#objects-finite-sets): `Weather = {dry, rainy}`, `Route = {walk, bus}`, and
 `Arrival = {on_time, late}`. These sets are **objects**. A `FinSet` records a
 name and cardinality; in tensor computations its elements are represented by
 indices. Here index 0 represents dry weather and index 1 represents rain.
@@ -144,28 +139,23 @@ in our example are mutually exclusive, so their probabilities add to $0.16$.
 Choosing the algebra determines which of these calculations Quivers performs.
 
 The algebra also determines which equations composition satisfies. A **category**
-has associative composition and identity arrows. Associativity permits
+has associative composition and identity arrows [@maclane1998categories]. Associativity permits
 regrouping three stages without changing their meaning; an identity leaves
 its input unchanged. Sum-product matrix composition has these properties.
 For general weighted tables, distributivity of the combination operations
-is part of what makes reassociation work. The default noisy-OR/product pair
+is part of what makes reassociation work [@kelly1982basic]. The default noisy-OR/product pair
 fails that distributivity law: regrouping its matrix contractions can
 change their entries. [Algebras and base change](../semantics/algebras.md)
 gives the equations and a counterexample.
 
-For the general theory, Mac Lane develops categories and functors, while
-Kelly develops enrichment [@maclane1998categories; @kelly1982basic]. These
-sources state the mathematical hypotheses behind the laws.
-
 ## 4. A probabilistic program describes how data could arise
 
-An executable introduction is DIPPL’s [three-coin model and inference calculation](https://dippl.org/chapters/02-webppl.html#and-inference) [@goodman2014design]. For the same steps in QVR, the [first-model tutorial](../tutorials/qvr/01-first-model.md#what-inference-will-answer) states the unknowns and observations before writing the model.
-
-A **generative model** describes a process that produces values. A
+A **[generative model](https://dippl.org/chapters/02-webppl.html#and-inference)**
+describes a process that produces values [@goodman2014design]. A
 **latent variable** is a value we do not observe. A **prior** describes it
 before using the observations; a **likelihood** scores observations given a
 particular latent value. The **posterior** describes the latent variable
-after taking those observations into account.
+after taking those observations into account [@bishop2006pattern; @gelman2013bayesian].
 
 Consider a separate, smaller model. Suppose the probability of rain is
 $0.3$, and the probability of being late is $0.6$ on rainy days and $0.1$ on
@@ -199,9 +189,6 @@ separate inference procedure uses that evidence to approximate or compute
 the posterior. The [first-model tutorial](../tutorials/qvr/01-first-model.md)
 works through these operations in a regression.
 
-For a systematic introduction to generative modeling and Bayesian inference,
-see Bishop and Gelman and colleagues [@bishop2006pattern; @gelman2013bayesian].
-
 ## 5. A distribution is more than one sample
 
 A **Markov kernel** assigns an output probability distribution to each
@@ -232,13 +219,11 @@ categorical account of stochastic maps [@giry1982categorical; @fritz2020syntheti
 
 ## 6. Monads and handlers describe how computations continue
 
-Milewski derives `bind` and `join` in the [“Fish Anatomy” section of his monad tutorial](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/#:~:text=Fish%20Anatomy) [@milewski2016monads]. DIPPL’s [continuation examples](https://dippl.org/chapters/03-enumeration.html#continuations) make the remaining computation explicit as an ordinary function [@goodman2014design].
-
 An ordinary function returns a value that the next function can consume.
 A probabilistic computation instead describes a distribution of possible
 values. To continue it, we must specify what happens for each possible
 outcome and combine the resulting distributions. That operation is
-**bind**. **Pure**, also called **return** in the mathematical interface,
+**[bind](../guides/dsl-programs-and-lets.md#kleisli-bind-syntax)**. **Pure**, also called **return** in the mathematical interface,
 embeds a value as a distribution concentrated at that value.
 
 A **monad** packages these operations and their laws. Its laws say, among
@@ -259,15 +244,14 @@ the probability measures before scoring and after successful normalization;
 the intermediate computation uses an unnormalized measure.
 
 An **effect** describes an operation a computation requests, such as drawing
-a sample. A **handler** supplies an interpretation of that request. For
+a sample. A **[handler](../guides/effects.md#algebraic-effects-handlers)** supplies an interpretation
+of that request [@plotkin2009handlers; @bauer2015programming]. For
 instance, a handler may draw a fresh value, supply an observation, or reuse
-a recorded value. A **continuation** is the rest of the computation waiting
+a recorded value. A **[continuation](https://dippl.org/chapters/03-enumeration.html#continuations)**
+is the rest of the computation waiting
 for that value. A trace records the sampled values and scores from one execution. An
 inference procedure can use many such traces to estimate posterior expectations. The [effect guide](../guides/effects.md) develops
 the interfaces and the restrictions on combining handlers.
-
-For the general handler construction, see the mathematical treatment
-[@plotkin2009handlers] and programming examples [@bauer2015programming].
 
 ## 7. Reading the notation and finding the next explanation
 
@@ -288,9 +272,3 @@ Continue with the [quickstart](quickstart.md) to build weighted tables, or
 the [first-model tutorial](../tutorials/qvr/01-first-model.md) to fit a
 probabilistic model. For the precise mathematical development, the
 [semantics overview](../semantics/index.md) supplies a reading order.
-
-For a longer introduction built around programming examples, see Bartosz
-Milewski's [Category: The Essence of Composition](https://bartoszmilewski.com/2014/11/04/category-the-essence-of-composition/)
-and [Kleisli Categories](https://bartoszmilewski.com/2014/12/23/kleisli-categories/).
-Those explain the general constructions; the algebra and runtime
-qualifications above are specific to Quivers.

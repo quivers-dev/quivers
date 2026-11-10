@@ -75,9 +75,11 @@ which code its encoder proposes before decoding. A trained VAE uses that
 observation-dependent encoder as its guide, sharing the inference mapping
 across observations; this is [amortized inference](../tutorials/python/05-variational-inference.md#creating-a-guide).
 
-The runnable fit below optimizes an `AutoNormalGuide` for `z`. To train the
-declared encoder as a VAE guide, the guide would need to call it on each
-observation and pass its parameters to the optimizer alongside the decoder's. The [Pyro VAE implementation](https://pyro.ai/examples/vae.html#VAE-in-Pyro) connects the encoder and decoder through `guide` and `model` methods [@pyroVAE].
+The runnable fit below optimizes an `AutoNormalGuide` for `z`. Training the
+declared encoder as a [VAE guide](https://pyro.ai/examples/vae.html#VAE-in-Pyro)
+requires calling it on each observation and passing its parameters to the
+optimizer alongside the decoder's [@pyroVAE]. The encoder then learns to
+predict a distribution over latent values for each new observation.
 
 ## Walkthrough
 
@@ -98,7 +100,6 @@ express generative and reconstruction-shaped execution paths. The exported `vae_
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -169,7 +170,6 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The two compositions `prior >> decoder` and `encoder >> decoder` share the decoder but differ in which morphism produces the latent code. `stack(f, N)` creates independently parameterized copies, unlike a weight-sharing repetition. Only the prior-decoder program participates in the runnable inference block on this page.
@@ -180,7 +180,6 @@ For a complete VAE with guide $q(z \mid y)$, the ELBO is the expected decoder lo
 
 - [Probabilistic PCA](ppca.md) for a linear-Gaussian latent-variable model.
 - [DSL Guide](../guides/dsl-overview.md) for morphism composition (`>>`, `stack`, `embed`).
-
 
 ## Sources and further reading
 

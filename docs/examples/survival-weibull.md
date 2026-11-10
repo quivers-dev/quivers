@@ -55,11 +55,11 @@ below one makes that rate decrease with elapsed time; a shape above one
 makes it increase. The predictor shifts the rate, so a positive coefficient
 in this parameterization tends to shorten event times.
 
-An exact event time and a right-censored record provide different information.
-An exact time contributes a [density](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample) at that time. A record saying the event
-has not occurred by time `c` contributes `P(T > c)`. The current example
-contains only exact times; treating censored limits as event times would
-change the likelihood and bias the interpretation. Stan’s [Weibull survival example](https://mc-stan.org/docs/stan-users-guide/survival.html#weibull-survival-model) shows how observed event times and censored records enter that likelihood [@stanSurvival].
+An exact event time contributes a [density](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample)
+at that time. A [right-censored record](https://mc-stan.org/docs/stan-users-guide/survival.html#weibull-survival-model)
+saying the event has not occurred by time `c` contributes `P(T > c)`
+[@stanSurvival]. The current example contains only exact times. Censored
+records would require a separate log-survival contribution to the likelihood.
 
 ## Walkthrough
 
@@ -70,7 +70,6 @@ The program returns `beta`, a scalar real, so the declared codomain is `Val : Re
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -141,11 +140,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The model denotes a conditional kernel into the positive reals. At `k = 1`, the Weibull likelihood reduces to an exponential likelihood; other shape values allow increasing or decreasing hazards.
-
 
 ## Sources and further reading
 

@@ -20,9 +20,7 @@ hom-sets with objects of a specified enriching category [@kelly1982basic].
 
 ## 1. Algebras as enrichment bases
 
-The [weather-table calculation](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value) supplies a finite example of the operations below. Milewski’s [“Preorders” and “Metric Spaces” examples](https://bartoszmilewski.com/2017/05/13/enriched-categories/) explain how truth values and distances can take the place of ordinary hom-sets [@milewski2017enriched].
-
-The implementation calls any instance of `quivers.core.algebras.Algebra` a *QVR algebra*. The class supplies `tensor_op`, `join`, `meet`, `negate`, `unit`, and `zero`; the equations below state the laws required of those operations. A unital [quantale](https://ncatlab.org/nlab/show/quantale) supplies the stronger structure needed for the usual enriched-category results: a complete lattice $V$, a monoid product $\otimes$, and arbitrary joins $\bigvee$ over which $\otimes$ distributes on both sides:
+The implementation calls any instance of `quivers.core.algebras.Algebra` a *QVR algebra*. The class supplies `tensor_op`, `join`, `meet`, `negate`, `unit`, and `zero`, the operations behind calculations such as [combining weather and travel tables](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value); the equations below state the laws required of those operations. A unital [quantale](https://ncatlab.org/nlab/show/quantale) supplies the stronger structure needed for the usual enriched-category results: a complete lattice $V$, a monoid product $\otimes$, and arbitrary joins $\bigvee$ over which $\otimes$ distributes on both sides:
 
 $$
 a \otimes \bigvee_{i \in I} b_i \;=\; \bigvee_{i \in I} (a \otimes b_i),

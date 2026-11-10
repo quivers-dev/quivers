@@ -12,8 +12,6 @@ different latent configurations.
 
 ## Semantics
 
-NumPyro’s [eight-schools example](https://num.pyro.ai/en/stable/getting_started.html#a-simple-example-8-schools) shows named samples and observations in a complete model. The [QVR observation contract](../programs.md#22-observe) specifies the likelihood contribution that the renderer preserves.
-
 NumPyro's denotational semantics is the trace semantics of
 Goodman et al. [@goodman2008church] /
 Wingate, Stuhlmüller, Goodman
@@ -21,10 +19,11 @@ Wingate, Stuhlmüller, Goodman
 implemented via the effect-handler architecture of Phan, Pradhan,
 and Jankowiak
 [@phan2019numpyro]. A program
-is a JAX-traced Python function whose `numpyro.sample` invocations
+is a JAX-traced Python function whose [`numpyro.sample` invocations](https://num.pyro.ai/en/stable/getting_started.html#a-simple-example-8-schools)
 register sites in a trace. The log-density probe is
 [`numpyro.infer.util.log_density`](https://num.pyro.ai/en/stable/utilities.html#log-density);
-NumPyro returns the joint log-density of the trace.
+NumPyro returns the joint log-density of the trace, including the
+[observation likelihoods](../programs.md#22-observe).
 
 ## Unconstrained-space change of variables
 

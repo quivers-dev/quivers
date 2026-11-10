@@ -23,7 +23,6 @@ observed, and choose an inference driver.
 The registry records the remaining latent sites; the driver updates or
 samples their values.
 
-
 The inference subpackage is a six-layer stack, each layer consumable
 independently and re-exported from
 [`quivers.inference`](../api/index.md#inference-package):
@@ -54,11 +53,10 @@ The latent registry gives algorithms a consistent numerical representation.
 A positive scale and a real-valued mean have different supports, but an
 optimizer or Hamiltonian sampler can operate on one unconstrained real
 vector. Per-site bijections map its pieces back to valid values. Density
-calculations include Jacobian corrections for this coordinate change;
-otherwise the algorithm would target the wrong distribution.
-
-Stan’s [change-of-variables example](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) derives the density correction for a log transform. [@stanReparameterization] The same correction appears in [continuous flows](continuous-spaces.md#normalizing-flows) and [constrained guides](inference-svi.md#autonormalguide).
-
+calculations include [Jacobian corrections](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) [@stanReparameterization] for this coordinate change;
+the corrected density gives the same probability to corresponding regions
+in the two coordinate systems. [Flows](continuous-spaces.md#normalizing-flows)
+and [constrained guides](inference-svi.md#autonormalguide) use this correction.
 
 ```mermaid
 flowchart TB
@@ -76,15 +74,12 @@ flowchart TB
 
 ## Trace and sample sites
 
-A trace is a record of one execution. For a model with latent `mu` and
+A trace is a record of [one execution](../reference/qvr/probabilistic-programs.md#running-and-scoring). For a model with latent `mu` and
 observed `y`, it records a candidate `mu`, the supplied `y`, and both
 local log densities. A *site* is the named point where a value is drawn
-or scored. Repeated executions give that same site different values. The joint log density adds the sites' contributions.
+or scored. Repeated executions give that same site different values. The [joint log density adds the sites' contributions](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) [@pyroEffects].
 A deterministic `let` records a computed value with zero additional
 log density, because it introduces no independent random choice.
-
-Pyro’s [first effect handler example](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) builds a log joint evaluator by combining tracing with conditioning. [@pyroEffects] In QVR, [running and scoring](../reference/qvr/probabilistic-programs.md#running-and-scoring) expose these execution records.
-
 
 A trace records all stochastic operations in a program. Each sample
 point is a
@@ -123,7 +118,6 @@ not replace prior draws at other sites with posterior draws: that
 requires the inference algorithm. Also distinguish a random latent
 site from an `nn.Parameter`; the latter is an optimized model or guide
 parameter unless the model explicitly puts a prior on it.
-
 
 The
 [`condition()`](../api/inference/conditioning.md#quivers.inference.conditioning.condition)

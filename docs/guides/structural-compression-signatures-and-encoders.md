@@ -11,14 +11,11 @@ For instance, encode `App(Const("dog"), Const("cat"))` by first encoding
 the two constants, then applying the learned `App` function to their
 vectors. Formally,
 $C(\mathrm{App}(t,u)) = \widehat C_{\mathrm{App}}(C(t),C(u))$.
-This equation explains the algebra-homomorphism terminology below:
+This equation explains the [algebra-homomorphism](../semantics/structural.md#22-denotation-structural-recursion) terminology below:
 constructing a term and then encoding agrees with encoding its children
 and combining them with the corresponding vector operation. Two terms
 can receive the same vector; the decoder models which reconstructions
 are likely from that vector.
-
-Milewski’s [F-algebras chapter](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Category%20of%20F-Algebras), in its “Category of F-Algebras” and “Catamorphisms” sections, constructs an evaluator by assigning an operation to each constructor. [@milewski2017falgebras] The [algebras and coalgebras guide](monadic.md#algebras-and-coalgebras) gives the corresponding equations.
-
 
 Quivers exposes a uniform algebraic interface for compressing
 arbitrary structured objects to fixed-length vectors and decoding
@@ -62,7 +59,6 @@ constructors that build them. In the example, `Const` builds a term from
 a name, while `App` builds a term from two terms. `Term` and `Type`
 specify which constructors are allowed; they can have different
 constructors even when their embeddings have the same length. The `dim` fields specify representations used by the neural modules.
-
 
 A `signature` declares the sorts, constructors, binders, and (for
 graph signatures) vertex / edge kinds of an inductive (or
@@ -109,7 +105,6 @@ Renaming a bound variable thus does not change this representation.
 The context `Gamma` records the available variables together with their
 embeddings and annotations, so nested scopes remain distinct.
 
-
 A binder declaration introduces one or more typed scoped variables.
 `binds (x : Term : ty : Type) in (body : Term) -> Term` reads:
 "constructs a value of sort `Term`; in the scope of argument
@@ -143,7 +138,6 @@ fold over a tree. The framework supplies the traversal, while each
 `op` body supplies the local computation. The formal account uses
 algebras over a signature functor; the concrete recurrence above is the
 behavior a model author needs to implement.
-
 
 An encoder declares the carrier dim per sort plus one parametric
 function per constructor / binder. Bodies are optional; the
@@ -306,7 +300,6 @@ fixed number of rounds. Each edge sends information from a source to a
 target; each target combines incoming messages with its current state;
 a readout aggregates the resulting vertex states. The iteration count
 controls how many rounds of local communication are available.
-
 
 Graph signatures declare `vertex_kinds` and `edge_kinds` (with
 typed endpoints), and the encoder body uses message-passing:

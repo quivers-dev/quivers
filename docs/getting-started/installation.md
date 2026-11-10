@@ -105,8 +105,8 @@ After installing the extras you have these new console scripts:
 | `qvr-kernel install` | `[repl]` | Register the Jupyter kernelspec |
 | `qvr kernel install` | `[repl]` | Same, as a subcommand |
 
-See [Interactive tools](../guides/repl-and-lsp.md) for the full
-guide.
+The [interactive tools](../guides/repl-and-lsp.md) support program inspection,
+entry execution, and editor diagnostics after installation.
 
 ## Verify Installation
 

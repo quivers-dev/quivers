@@ -10,7 +10,6 @@ additional task of finding plausible latent values given those observations.
 The [inference guides](inference-foundations.md) explain how SVI and MCMC
 use the program’s scores to fit or sample the latent mean.
 
-
 A
 [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram)
 is a probabilistic program specified as a sequence of sampling, observation,
@@ -82,15 +81,12 @@ log_joint = program.log_joint(
 
 ## Bind steps
 
-Pyro’s [explanation of sample sites](https://pyro.ai/examples/intro_long.html#Background:-the-pyro.sample-primitive) follows a random variable from a draw to an observed value. [@pyroIntroduction] The QVR [step reference](../reference/qvr/probabilistic-programs.md#step-reference) gives the corresponding source forms.
-
-A *binding* gives a value a name for subsequent steps. A stochastic bind
-first draws the value, then makes it available. Thus `sample y <- f(x)`
+A *binding* gives a value a name for subsequent steps. [A stochastic bind
+first draws the value, then makes it available](https://pyro.ai/examples/intro_long.html#Background:-the-pyro.sample-primitive) [@pyroIntroduction]. Thus [`sample y <- f(x)`](../reference/qvr/probabilistic-programs.md#step-reference)
 uses the particular value of `x` drawn earlier in this execution. Repeating
 the program produces a new set of draws. The monadic account expresses
 this sequencing without treating random computations as ordinary functions
 returning fixed values.
-
 
 A bind step `sample x <- f` or `sample x <- f(y, z)` samples from a morphism,
 optionally conditioned on previous variables.
@@ -142,7 +138,6 @@ the current latent values predict it." If `mu` changes, the observed
 response remains fixed but its likelihood changes. SVI uses the resulting
 score to update a guide; MCMC uses it when proposing and accepting changes
 to `mu`.
-
 
 Condition the program on an observation:
 
@@ -214,7 +209,6 @@ $\log p(\mu,y)=\log p(\mu)+\log p(y\mid\mu)$. The first term
 is the prior score; the second is the likelihood. Supplying a candidate
 `mu` and an observed `y` lets inference compare candidates. The
 normalizing constant of the posterior is not required for this comparison.
-
 
 Compute $\log p(z_1, \ldots, z_k \mid x) = \sum_i \log p(z_i \mid
 \mathrm{pa}(z_i))$ given all bound-variable values:
@@ -379,7 +373,6 @@ dependencies as QVR source. `Draw` and `Observe` introduce random and
 measured values; `Let` computes from values already available. The example
 below compares the joint scores of two constructions of the same model,
 which is stronger evidence of agreement than merely comparing their shapes.
-
 
 Every program the DSL compiles is assembled from objects the
 [`quivers.continuous`](../api/continuous/programs.md) package exports, so

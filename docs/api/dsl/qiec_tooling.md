@@ -1,11 +1,8 @@
 # QIEC tooling
 
-These adapters expose checked core information to diagnostics and editor features. Use
+These adapters expose checked core information to [diagnostics](../../tutorials/qvr/13-release-workflow.md#4-use-target-diagnostics-while-editing) and [editor features](../../reference/qvr/execution-and-tooling.md#language-server-features). Use
 them to connect source locations, names, and types to the corresponding core
 declarations when implementing inspection tools.
-
-See [source-aware editor inspection](../../reference/qvr/execution-and-tooling.md#language-server-features) and
-[using diagnostics during development](../../tutorials/qvr/13-release-workflow.md#4-use-target-diagnostics-while-editing).
 
 Shared QIEC analysis and symbol metadata for interactive tooling.
 

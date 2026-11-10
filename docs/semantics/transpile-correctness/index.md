@@ -76,13 +76,11 @@ The family and construct matrices are executable inventories. They should be con
 
 ## 4. Distribution parameterization
 
-Stan’s [changes-of-variables example](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) derives a transformed density and its Jacobian. The [Stan target page](stan.md#unconstrained-space-change-of-variables) applies that correction to the coordinates used by the repository’s probe.
-
 A scale-to-precision conversion changes a constructor argument:
 $\tau=1/\sigma^2$ describes the same Normal family at a different parameter
-coordinate. A change of the sampled variable is different. If a positive
+coordinate. A [change of the sampled variable](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables) is different. If a positive
 variable is represented as $\theta=\exp(u)$, equal-length intervals in $u$
-do not have equal lengths in $\theta$. The Jacobian compensates for this
+do not have equal lengths in $\theta$. The [Jacobian](stan.md#unconstrained-space-change-of-variables) compensates for this
 stretching: the density in $u$ includes $\log|d\theta/du|=u$ in addition
 to the density evaluated at $\theta=\exp(u)$.
 
@@ -98,9 +96,7 @@ For each supported family, the renderer must preserve:
 
 ## 5. Plates, marginalization, and `via`
 
-The [plate definition](../programs.md#24-indexed-bind-plate) gives the independent product, while [grouped marginalization](../programs.md#27-grouped-marginalize-with-multi-observe-fibration) specifies how several observations share one hidden choice. Stan’s [mixture calculation](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter) works through the corresponding finite sum.
-
-An indexed `sample` or `observe` denotes repeated sites over a finite axis. A renderer may express that repetition through vectorization, a plate context, or an explicit loop. Correctness requires the same product of per-site factors, with event dimensions excluded from the plate reduction.
+An [indexed `sample` or `observe`](../programs.md#24-indexed-bind-plate) denotes repeated sites over a finite axis. A renderer may express that repetition through vectorization, a plate context, or an explicit loop. Correctness requires the same product of per-site factors, with event dimensions excluded from the plate reduction.
 
 Scoped finite `marginalize` must preserve the integrated density. Renderers
 can enumerate support values and add their reduced log weight, or use an

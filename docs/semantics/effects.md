@@ -55,9 +55,7 @@ element of $\widehat{\mathcal{C}}$.
 
 ## 2. Typeclass denotations
 
-Milewski’s [“The Maybe Functor” example](https://bartoszmilewski.com/2015/01/20/functors/) explains `fmap` through pattern matching, and his [derivation of bind and join](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/) explains monadic sequencing [@milewski2015functors; @milewski2016monads]. The [QVR typeclass guide](../guides/effects.md#typeclass-hierarchy) connects these operations to the implemented interfaces.
-
-The hierarchy distinguishes how a computation may use earlier results.
+The [typeclass hierarchy](../guides/effects.md#typeclass-hierarchy) distinguishes how a computation may use earlier results.
 A functor maps a pure function over a context-bearing value, such as mapping
 an increment over a possibly missing integer. An applicative combines
 context-bearing inputs using a fixed computation shape. A monad additionally
@@ -253,11 +251,10 @@ derivation also requires the recurrence conditions just cited.
 
 ## 6. Free-monad denotation
 
-DIPPL’s [execution-tree example](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation) enumerates possible continuations of random choices [@goodman2014design]. Milewski’s [“Recursion”](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Recursion) and [“Catamorphisms”](https://bartoszmilewski.com/2017/02/28/f-algebras/#:~:text=Catamorphisms) sections explain how a tree is interpreted by recursively combining its children [@milewski2017falgebras].
-
 A free computation records requests before deciding how to answer them.
 A leaf contains a completed value. An operation node contains a request and
-a continuation for each possible response, describing what happens next.
+a [continuation for each possible response](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation),
+describing what happens next [@goodman2014design].
 A handler interprets the tree by replacing each request with its chosen
 behavior. This is a fold over the request structure, analogous to evaluating
 an expression tree with a chosen interpretation of its operators.
@@ -326,12 +323,12 @@ extension over the bare grammar fragment.
 
 ## 8. QIEC rows and lexical handlers
 
-Pyro’s [effect-handler introduction](https://pyro.ai/examples/effect_handlers.html#Introduction) shows tracing, conditioning, and replay as alternative interpretations of sample requests. QVR’s [handler typing rules](typing.md#7-handlers-and-scoped-instances) specify its lexical dispatch and resumption restrictions.
-
 Consider two state cells, `counter` and `total`, both storing integers.
 Their interfaces match, but their identities differ: handling a request to
 `counter` must leave a request to `total` untouched. A row lists these
-instance identities, so a handler can select the intended cell.
+instance identities, so a handler can select the intended cell. The
+[typing rules](typing.md#7-handlers-and-scoped-instances) track which requests
+remain after handling and how often each resumption may be used.
 
 When a handler answers a request, its resumption represents the rest of the
 computation. A draw handler can resume once with a random value; an
@@ -396,6 +393,5 @@ carries on every derived request as the site's static identity and dynamic
 address.
 
 ## References
-
 
 For algebraic operations and their interpretation, see [@plotkin2003algebraic]. Handlers are developed mathematically in [@plotkin2009handlers] and through programming examples in [@bauer2015programming]. Arrows generalize the composition interface of monads [@hughes2000arrows]. For applications to natural-language interpretation, see the forthcoming book [@bumford2026effect] and its [author preprint](https://arxiv.org/abs/2504.00316).

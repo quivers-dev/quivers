@@ -63,11 +63,12 @@ export zip_regression
 
 ## Understanding the model
 
-There are two ways to observe zero: the row belongs to the always-zero branch,
-or it belongs to the Poisson-active branch and that Poisson draw happens to
-be zero. With active probability `pi` and rate `lambda`, the zero probability
-is `(1 - pi) + pi * exp(-lambda)`; for a positive count, only the active
-branch contributes. Thus the same zero count can arise from either branch. The [Stan zero-inflation example](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#zero-inflation) derives the corresponding log likelihood [@stanFiniteMixtures].
+There are [two ways to observe zero](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#zero-inflation):
+the row belongs to the always-zero branch, or it belongs to the Poisson-active
+branch and that draw happens to be zero [@stanFiniteMixtures]. With active
+probability `pi` and rate `lambda`, the zero probability is
+`(1 - pi) + pi * exp(-lambda)`. For a positive count, only the active branch
+contributes to the likelihood.
 
 The gate probability here is the probability of being active, despite the
 `alpha_zero` and `beta_zero` names. The [reference marginalization](../tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) enumerates
@@ -84,7 +85,6 @@ The program returns `beta_rate`, an `Out`-indexed plate of real scalars, so the 
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -153,11 +153,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The marginalized gate is a two-object coproduct: one branch maps to `Poisson(0)`, the other to `Poisson(rate)`, and log-sum-exp computes their weighted pushforward to the count space. The `ContinuousBernoulli` name controls the live forward draw, while the marginalization contract fixes the scored support to the two endpoints.
-
 
 ## Sources and further reading
 

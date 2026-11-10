@@ -34,13 +34,11 @@ Here $n \in \mathbb{N}$ is an integer literal, $X$ ranges over object names, $S$
 
 ## 2. Denotation of types
 
-The [product and coproduct guide](../guides/core.md#productset-and-coproductset) constructs pairs and tagged alternatives in Python. Milewski’s [“Initial Object,” “Terminal Object,” “Products,” and “Coproduct” sections](https://bartoszmilewski.com/2015/01/07/products-and-coproducts/) explain the universal properties used by these clauses [@milewski2015products].
-
 The function signature below says that interpreting a type expression takes
 its syntax and a table of declared objects, and returns an object.
 $\mathrm{Ob}(\mathbf{FinSet})$ means “the objects of the category of finite
 sets.” Each line then explains one syntax constructor: look up a name, form
-a pair, or form a tagged alternative. The final three lines require the
+a [pair, or form a tagged alternative](../guides/core.md#productset-and-coproductset). The final three lines require the
 richer grammar-specific universe described after the display.
 
 Type denotation is a function
@@ -137,9 +135,7 @@ The `FreeResiduated(G, depth = d, ops = O)` initializer binds $X$ to a finite en
 
 ## 3. Free monoids
 
-Milewski’s [construction from the two generators `a` and `b`](https://bartoszmilewski.com/2015/07/21/free-monoids/) builds lists by concatenation before stating the universal property [@milewski2015free]. The [bounded `FreeMonoid` example](../guides/core.md#freemonoid) shows how QVR represents the finite inventory below.
-
-The runtime value layer exposes a `FreeMonoid` object class, which arises in the deduction fragment as the carrier of strings over an alphabet (see [Weighted Deduction Fragment](grammar.md)). At the surface, `FreeMonoid(X, max_length = n)` appears only as an *object initializer* (§2a.2 above), not as a `ObjectExpr` constructor: a free monoid must be bound to an `object` name via `object Words : FreeMonoid(...)` before it can be referenced as a type.
+The runtime value layer exposes a [`FreeMonoid` object class](../guides/core.md#freemonoid), which arises in the deduction fragment as the carrier of strings over an alphabet (see [Weighted Deduction Fragment](grammar.md)). At the surface, `FreeMonoid(X, max_length = n)` appears only as an *object initializer* (§2a.2 above), not as a `ObjectExpr` constructor: a free monoid must be bound to an `object` name via `object Words : FreeMonoid(...)` before it can be referenced as a type.
 
 The denotation of `FreeMonoid(generators = X, max_length = n)` is the bounded Kleene star
 

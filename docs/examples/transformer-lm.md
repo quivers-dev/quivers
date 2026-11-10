@@ -71,9 +71,11 @@ Categorical kernel assigns probabilities to vocabulary entries, from which
 the observed token receives a log-likelihood score.
 
 The branches process one token vector per row. Their combined representation
-parameterizes a distribution over the following token. Implementing attention
-across positions would require a sequence axis, [query-key scores](tensor-contraction.md#understanding-the-model), and a weighted
-sum over value vectors; those operations are absent from this source. Alammar’s [worked self-attention calculation](https://jalammar.github.io/illustrated-transformer/#self-attention-in-detail) shows those query, key, and value operations [@alammar2018transformer].
+parameterizes a distribution over the following token. [Attention across
+positions](https://jalammar.github.io/illustrated-transformer/#self-attention-in-detail)
+requires a sequence axis, [query-key scores](tensor-contraction.md#understanding-the-model),
+and a weighted sum over value vectors [@alammar2018transformer]. Those
+operations would need to be added to this source to implement attention.
 
 ## Walkthrough
 
@@ -103,7 +105,6 @@ The two `FinSet` objects sit in different positions and mean different things. `
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -209,11 +210,9 @@ print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
 The model composes replicated stochastic branches, a projection, and two-stage feed-forward kernels. [`stack`](../guides/dsl-declarations.md#stack-independent-multi-layer) makes independently parameterized layers, while [`fan`](../guides/dsl-declarations.md#fan-out-diagonal-morphism) copies the input across parallel branches. Neither combinator by itself implements self-attention.
-
 
 ## Sources and further reading
 

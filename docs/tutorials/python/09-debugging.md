@@ -82,7 +82,11 @@ Each step has a `name`, an `inputs` tuple (names it depends on), and a `family` 
 
 ## Tracing intermediate values
 
-Pyro’s [effect-handler example](https://pyro.ai/examples/effect_handlers.html#Introduction) builds a joint log density by recording distributions and values at named sites; the Quivers trace below exposes the same ingredients [@pyroEffects].
+A joint log density can be computed by [recording distributions and values
+at named sites](https://pyro.ai/examples/effect_handlers.html#Introduction)
+and adding their log probabilities [@pyroEffects]. The Quivers trace below
+exposes those ingredients, allowing a surprising joint score to be traced
+to an individual site.
 
 [`trace`](../../api/inference/trace.md) runs the program forward once and records the value and log-density at every sample site:
 <!-- python: skip -->

@@ -1,14 +1,9 @@
 # Trace
 
-A trace records the random choices and scores from one execution. Adding the relevant
+A [trace records the random choices and scores](../../guides/inference-foundations.md#trace-and-sample-sites) from [one execution](../../tutorials/python/05-variational-inference.md#tracing-the-model). Adding the relevant
 log-density contributions gives that execution’s joint score. Inference procedures use
 such scores to weight, optimize, or accept proposed latent values when approximating a
-posterior.
-
-See [what a trace records](../../guides/inference-foundations.md#trace-and-sample-sites) and
-[inspecting a model execution](../../tutorials/python/05-variational-inference.md#tracing-the-model).
-
-For the distinction between a model and posterior inference, see [@gelman2013bayesian].
+posterior [@gelman2013bayesian].
 
 Program trace data structures and trace-based inference.
 

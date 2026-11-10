@@ -1,13 +1,8 @@
 # Arrow Theories (panproto mirror)
 
-These records describe an arrow interface through its operations and equations. An
+These records describe an arrow interface through its [operations and equations](../../guides/effects.md#typeclass-hierarchy). An
 identity law, for instance, requires composing an arrow with an identity to leave it
-unchanged. Tooling can inspect this specification when working with an implementation.
-
-See [the operations represented by an arrow theory](../../guides/effects.md#typeclass-hierarchy) and
-[the relationship to monadic sequencing](../monadic/bridges.md).
-
-For the arrow interfaces and their motivation, see [@hughes2000arrows].
+unchanged [@hughes2000arrows]. Tooling can inspect this specification when working with an implementation.
 
 `TypeclassTheory` records for the arrow typeclasses: `ThCategory_`,
 `ThArrow`, `ThArrowChoice`, `ThArrowApply`, `ThArrowLoop`, `ThArrowZero`,

@@ -1,11 +1,9 @@
 # Overview
 
-Transpilation translates a checked QVR computation into another probabilistic
+[Transpilation translates a checked QVR computation](../../semantics/transpile-architecture.md#1-the-shared-pipeline) into another probabilistic
 programming language. The target’s supported operations determine which models can be
-emitted. Validation then checks the generated syntax and compares scores at fixed latent
-values to assess whether the translation preserves the model.
-
-See [the shared translation pipeline](../../semantics/transpile-architecture.md#1-the-shared-pipeline) and [the score-preservation criterion](../../semantics/transpile-correctness/index.md#2-correctness-criterion).
+emitted. Validation then checks the generated syntax and [compares scores at fixed latent
+values](../../semantics/transpile-correctness/index.md#2-correctness-criterion) to assess whether the translation preserves the model.
 
 The pipeline from a compiled module to a target program, with the public
 entry points. Every public name of the transpile package is importable

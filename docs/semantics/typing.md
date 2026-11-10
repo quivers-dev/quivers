@@ -309,11 +309,9 @@ does not require unrolling during type checking.
 
 ## 7. Handlers and scoped instances
 
-DIPPL’s [continuation examples](https://dippl.org/chapters/03-enumeration.html#continuations) explain how the remainder of a computation can be passed as a function [@goodman2014design]. A handler’s resumption uses this idea; the grade below controls how often the function may be invoked.
-
 A handler supplies an interpretation for a request and may resume the
-computation that made it. The *resumption* is the remaining computation with
-the request's answer supplied. Grade `0` allows no resumption, `aff` at most
+computation that made it. The *resumption* is the [remaining computation with
+the request's answer supplied](https://dippl.org/chapters/03-enumeration.html#continuations) [@goodman2014design]. Grade `0` allows no resumption, `aff` at most
 one, `1` exactly one, and `omega` unrestricted use. An abort handler can use
 grade `0`; an enumeration handler that explores several answers needs
 `omega`.

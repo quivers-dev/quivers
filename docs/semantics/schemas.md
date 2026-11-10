@@ -62,14 +62,14 @@ $$
 
 ### 3.1 Residuation slashes
 
-Milewski’s [“Adjunctions and Hom-Sets” explanation](https://bartoszmilewski.com/2016/04/18/adjunctions/#:~:text=Adjunctions%20and%20Hom-Sets) motivates the correspondence between the two arrow types below [@milewski2016adjunctions]. The [residuation witnesses](expressions.md#210-residuation-witnesses) implement the corresponding rearrangement of arguments.
-
 Read `S / NP` as “produces `S` when an `NP` arrives on the right.” In QVR,
 `S \ NP` similarly produces `S` when an `NP` arrives on the left. Thus both
 forms put the result type first; the slash direction selects the side of
 the missing argument. The adjunctions below express that supplying the
 missing argument and treating it as a pending input are two equivalent ways
 to describe the same composition, under the residuated-category hypotheses.
+The [residuation witnesses](expressions.md#210-residuation-witnesses) implement
+this rearrangement of arguments.
 
 QVR uses a *biclosed* slash convention: in both $\tau_1 / \tau_2$ and $\tau_1 \backslash \tau_2$, the lexical-left operand $\tau_1$ is the *result* and the lexical-right operand $\tau_2$ is the *argument*. The direction indicates *where the argument is sought* in a chart firing: $/$ seeks the argument on the right, $\backslash$ seeks it on the left. This is opposite to the standard Lambek convention (where `A\B` reads "needs A on the left to give B"); see the runtime documentation of `SlashCategory` for confirmation.
 
@@ -199,6 +199,5 @@ signature Mol
 These declarations extend the signature's *theory*. The QVR protocol records the declaration syntax, while the signature theory records its vertex and edge kinds. A `vertex_kind_decl` $K : k\,[\mathrm{dim}\,d]$ extends the signature's kind set with a typed vertex kind whose sort role is $k$ and whose declared embedding dimension is $d$; an `edge_kind_decl` $\varepsilon : K_s\,\mathrm{arrow}\,K_t$ extends the signature's edge set with a typed binary relation between vertex kinds, directed iff `arrow == '->'`. The denotation of a graph signature equipped with these declarations is the category $\mathbf{Graph}_\Sigma$ of finite typed graphs of the prescribed shape; see [Structural Compression §1.3](structural.md#13-graph-signatures) for the formal treatment and §2.4 of the same page for the message-passing encoder that consumes them.
 
 ## References
-
 
 The connection between grammatical composition and directed implication originates in Lambek calculus [@lambek1958mathematics]. QVR’s operand convention is stated in §3.1.

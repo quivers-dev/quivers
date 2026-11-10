@@ -40,7 +40,6 @@ the finite object describing the subjects, and the tensors supplied at
 runtime. Category ordering is thus part of the model/data interface,
 not merely a display choice.
 
-
 [`DatasetSchema`](../api/data/schema.md) is a typed
 [`didactic.api.Model`](https://didactic.dev/api/Model) that maps
 dataframe columns to QVR-program artifacts. It accepts pandas,
@@ -111,7 +110,6 @@ the predictor. For Bernoulli outcomes the inverse logit, or sigmoid,
 turns any real predictor into a valid probability. The formula's `~`
 introduces a response model; it is not the same operation as drawing
 a value with `sample` inside QVR.
-
 
 The [formula frontend](../api/formulas/index.md) compiles a
 [brms](https://paul-buerkner.github.io/brms/) /
@@ -234,7 +232,6 @@ that redundant direction; the other logits describe comparisons with
 that reference category. With logits `[0, 0, 0]`, for instance, each
 category has probability `1/3`, including the reference category.
 
-
 The categorical family infers `K` from contiguous integer labels
 `0, ..., K-1` and uses category zero as the reference. Every fixed-effect
 coefficient and random effect is thus a vector of `K - 1` logits.
@@ -272,7 +269,6 @@ component labels leaves the same distribution; centering component
 offsets solves a different ambiguity, separating overall location from
 relative component locations. Interpret component summaries with both
 symmetries in mind.
-
 
 The mixture family represents each response as a finite Gaussian mixture.
 `mixture_components` sets the number of components, while the formula's
@@ -313,7 +309,6 @@ ordered cutpoints. Moving the predictor changes which intervals are
 likely; changing the spacings changes how broadly particular rating
 categories are used. Group-specific spacings can represent differences
 in scale use without changing the order of the categories.
-
 
 The cumulative family infers the number of categories from contiguous
 integer response labels `0, ..., K-1`. Shared cutpoints are represented
@@ -376,8 +371,6 @@ tensor from the host runtime.
 
 ### Coefficient priors are autoscaled
 
-Use [prior predictive checks](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#prior-predictive-checks) to examine the observations implied by a coefficient prior before fitting. [@stanPredictiveChecks] Inspecting the [generated QVR](#inspect-or-dump-the-generated-qvr) shows the scales that autoscaling selects.
-
 A column enters the linear predictor as `beta * column`, so a prior on
 the coefficient alone is really a statement about the coefficient's
 contribution, and the same nominal prior means something different for
@@ -386,7 +379,9 @@ its scale is divided by the column's root-mean-square, which states it
 in contribution space so that `Normal(0.0, 5.0)` means the same thing
 on a raw predictor and on an orthonormal `poly` column. The
 coefficients themselves stay on their own column's scale, so nothing
-needs transforming back.
+needs transforming back. The [generated QVR](#inspect-or-dump-the-generated-qvr)
+records the selected scales. Before fitting, [prior predictive checks](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#prior-predictive-checks)
+show whether those scales imply plausible responses [@stanPredictiveChecks].
 
 This matters most for a basis whose columns are not O(1). `poly(x, k)`
 returns columns of norm one, whose entries run about $1/\sqrt{N}$; an

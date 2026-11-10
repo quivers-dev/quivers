@@ -30,8 +30,6 @@ at the renderer level.
 
 ## Family parameterizations
 
-The Distributions.jl [truncated-distribution definition](https://juliastats.org/Distributions.jl/stable/truncate/#Truncated-Distributions) gives the normalizing denominator used by the half-family mappings. The [shared parameterization contract](index.md#4-distribution-parameterization) distinguishes these distribution parameters from a change in the sampled variable.
-
 Turing consumes
 [Distributions.jl](https://juliastats.org/Distributions.jl/) which
 uses the canonical parameterizations of
@@ -39,8 +37,11 @@ uses the canonical parameterizations of
 Some families use the same parameters, but the renderer also translates
 conventions: Exponential and Gamma rates become scales by inversion,
 NegativeBinomial probabilities are complemented, and Weibull arguments are
-reordered. These are density-preserving parameter substitutions on the
-supported domains.
+reordered. These [parameter substitutions](index.md#4-distribution-parameterization)
+preserve densities on the supported domains. The half-family mappings
+also use [truncation normalization](https://juliastats.org/Distributions.jl/stable/truncate/#Truncated-Distributions):
+restricting a distribution to positive values requires dividing its density
+by the probability of that region.
 
 The Turing renderer composes `HalfNormal` / `HalfCauchy` (which
 have no Distributions.jl primitive) as `truncated(Normal(0,

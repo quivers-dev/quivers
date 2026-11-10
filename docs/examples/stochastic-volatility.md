@@ -54,10 +54,11 @@ deviation used by the return likelihood. Raising `h` widens the predicted
 return distribution without changing its center.
 
 The supplied `h_prev` vector is known to the fit, though it was generated
-from a latent process in the simulation. [Conditional](../tutorials/python/02-stochastic-relations.md#observations-and-conditioning) on those lags, the program
-fits one-step volatility relations. This is easier than inferring the whole
-[hidden volatility path](continuous-hmm.md#understanding-the-model) from returns alone. Posterior summaries should state
-that conditioning information; it is part of the inferential question. The [Stan stochastic volatility model](https://mc-stan.org/docs/stan-users-guide/time-series.html#stochastic-volatility-models) shows a model that infers the coupled latent path [@stanTimeSeries].
+from a latent process in the simulation. [Conditional](../tutorials/python/02-stochastic-relations.md#observations-and-conditioning)
+on those lags, the program fits one-step volatility relations. Inferring a
+[coupled volatility path from returns alone](https://mc-stan.org/docs/stan-users-guide/time-series.html#stochastic-volatility-models)
+requires treating the earlier states as unknowns too [@stanTimeSeries].
+Posterior summaries for this example are conditional on the supplied lag vector.
 
 ## Walkthrough
 
@@ -68,7 +69,6 @@ The program returns `phi`, a scalar real, so the declared codomain is `Val : Rea
 ## Try it
 
 > The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 
 ### Generating synthetic data
 
@@ -143,11 +143,9 @@ print(f"phi posterior mean:     {result.samples['phi'].mean().item():.3f}")
 print(f"sigma_h posterior mean: {result.samples['sigma_h'].mean().item():.3f}")
 ```
 
-
 ## Categorical perspective
 
 The model is a Kleisli morphism over the latent log-volatility plate, composed with a per-step Normal observation kernel whose scale depends on the latent. In the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category, `h_prev -> h -> r` is associative Kleisli composition at each row; the SVI guide approximates $p(\mu, \phi, \sigma_h, h \mid r, h_{\mathrm{prev}})$. [@giry1982categorical]
-
 
 ## Model reference
 

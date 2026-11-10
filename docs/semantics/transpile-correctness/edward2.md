@@ -46,12 +46,10 @@ and $c_{F, \mathsf{Edward2}} = 0$.
 
 ## Per-construct emit
 
-TensorFlow Probability’s [shape basics](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#basics) distinguish sample, batch, and event dimensions. Compare QVR’s [indexed bind](../programs.md#24-indexed-bind-plate) and [event-axis declarations](../morphisms.md#6-axis-role-specifications) when reading `sample_shape` below.
-
 **Sample / observe.** `<name> = edward2.<Family>(<args>,
 sample_shape=[B0, B1, ...], name="<name>")` for latents and
-observed variables. The `sample_shape` argument carries the
-batch-axis shape.
+observed variables. For QVR’s [indexed binds](../programs.md#24-indexed-bind-plate), the `sample_shape` argument carries the
+[batch-axis shape](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#basics).
 
 **Plate.** Captured via `sample_shape=[B]`. By TFP's documented
 broadcasting semantics, `sample_shape=[B]` produces a $B$-fold
@@ -81,6 +79,5 @@ assignments. The function returns the named random variables.
   [the test contract](index.md#6-evidence-tiers).
 
 ### References
-
 
 For the Edward2 design, see [@tran2018simple]. The target library and renderer determine which distribution constructors and marginalizations are supported.

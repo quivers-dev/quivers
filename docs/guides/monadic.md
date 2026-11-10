@@ -7,27 +7,19 @@ computations of one such kind. A **comonad** describes operations that
 consume values with context. We first connect these ideas to ordinary
 functions, then give their laws and Quivers interfaces.
 
-
 ## Monads
-
-The computational account follows the monad-based treatment of effects
-[@moggi1991notions; @wadler1992essence]; a programmer-oriented explanation
-of sequencing appears in [@milewski2014kleisli].
 
 For the ordinary list monad, `pure(a)` produces `[a]`; `fmap(f)` applies
 `f` to each element; `join` flattens one layer of lists. For instance,
 `[[1, 2], [3]]` becomes `[1, 2, 3]`. The type constructor `T` says what
 extra structure a result carries. An *[endofunctor](categorical.md#functors)* maps objects and arrows
 within the same category; here it maps element types to list types and
-functions to elementwise functions.
-
-Milewski’s [programmer’s definition of monads](https://bartoszmilewski.com/2016/11/21/monads-programmers-definition/) develops `join` and `bind` from nested computations. [@milewski2016monads] The [program bind syntax](dsl-programs-and-lets.md#kleisli-bind-syntax) shows how this sequencing appears in QVR.
+functions to elementwise functions [@moggi1991notions; @wadler1992essence].
 
 The laws below say that flattening three layers in either order agrees,
 and that adding then removing a singleton layer changes nothing. They
-justify regrouping a sequence of computations. They are obligations on
+justify regrouping a [sequence of computations](dsl-programs-and-lets.md#kleisli-bind-syntax). They are obligations on
 an implementation: each side of an equation must give the same result.
-
 
 A monad $T: \mathcal{C} \to \mathcal{C}$ is an endofunctor with two [natural transformations](categorical.md#natural-transformations):
 
@@ -50,7 +42,6 @@ to every value from `f`, then flatten the resulting list of lists. For
 probabilities, the corresponding operation weights each route and sums
 over the intermediate. A Kleisli arrow packages this familiar sequencing
 pattern as an arrow `X -> Y` whose actual result has type `T(Y)`.
-
 
 Every monad $T$ induces a Kleisli category $\mathcal{C}_T$ where:
 
@@ -116,7 +107,6 @@ can lose weight: with `max_length=2`, flattening `[[a, b], [c]]`
 drops the length-three result. The usual list-monad equations thus
 require a separate check for this truncated representation.
 
-
 The `FreeMonoidMonad` API stores words up to a maximum length:
 
 ```python
@@ -143,7 +133,6 @@ comonad `W(X) = E * X`, a fixed environment `E` travels with the value:
 retains the environment for another contextual operation. This ordinary
 example motivates the interface; it is different from the pair operation
 implemented by `DiagonalComonad` below.
-
 
 A comonad $W: \mathcal{C} \to \mathcal{C}$ is a dual monad with:
 
@@ -174,7 +163,6 @@ Applying the first projection inside each pair then gives $(a,a)$, not
 $(a,b)$ in general; thus $W(\varepsilon)\circ\delta=\mathrm{id}$
 fails whenever `a` and `b` differ. The example below constructs these
 pair operations.
-
 
 The `DiagonalComonad` implementation stores $W(A) = A \times A$, takes the
 first projection as `counit`, and duplicates the pair in `comultiply`:
@@ -218,7 +206,6 @@ and summing flattened lists agrees with summing each sublist and then
 summing the results. These are exactly the two laws below. This use of
 *algebra* is distinct from the entry-combination `Algebra` in [Core Types](core.md).
 
-
 A $T$-algebra is a pair $(A, \alpha: T(A) \to A)$ satisfying:
 
 $$
@@ -258,7 +245,6 @@ evaluating after mapping the structured inputs. For list summation, this
 is the requirement that the map preserve the chosen addition and zero.
 The homomorphism test below checks that agreement for supplied tensors.
 
-
 The Eilenberg-Moore category of $T$ has $T$-algebras as objects and algebra homomorphisms as morphisms:
 
 ```python
@@ -286,7 +272,6 @@ over lists store different structures; combining them requires a specified
 rule for moving one layer through the other. A distributive law supplies
 that rule and its compatibility with both units and multiplications.
 The type $T(S(A)) \to S(T(A))$ records the direction of the exchange.
-
 
 A distributive law $\lambda: T \circ S \Rightarrow S \circ T$ between monads allows lifting one through the other:
 

@@ -1,14 +1,12 @@
 # Reparameterization
 
-Reparameterization changes the variables used to express a model. A location-scale
-transform, for instance, writes a Normal variable as a location plus a scale times a
+Reparameterization changes the variables used to express a model. A [location-scale
+transform](../../tutorials/qvr/03-hierarchical.md#non-centered-parameterization), for instance, writes a Normal variable as a location plus a scale times a
 standard Normal draw. Preserving the target density requires accounting for the
-transformed prior, observation scores, and any Jacobian correction.
+transformed prior, observation scores, and any [Jacobian correction](../continuous/bijectors.md).
 
-See [a non-centered parameterization](../../tutorials/qvr/03-hierarchical.md#non-centered-parameterization) and
-[coordinate transforms and density corrections](../continuous/bijectors.md).
-
-For neural transport, see the author-published preprint [@hoffman2019neutra].
+Neural transport learns a change of coordinates intended to simplify the
+target geometry before running MCMC [@hoffman2019neutra].
 
 Reparameterization strategies for individual sample sites.
 

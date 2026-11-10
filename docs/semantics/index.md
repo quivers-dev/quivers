@@ -98,12 +98,8 @@ dimension of a continuous space $S$.
 
 ## Audience
 
-The [notation table](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) decodes the symbols used across these pages. For additional background, Milewski’s [functor example using optional values](https://bartoszmilewski.com/2015/01/20/functors/) [@milewski2015functors] and DIPPL’s [coin-flip program](https://dippl.org/chapters/02-webppl.html#and-inference) [@goodman2014design] connect the categorical and probabilistic vocabulary to executable calculations.
-
-This document is written for users who wish to reason formally about QVR programs: to verify that two `.qvr` files denote the same morphism, to prove that an optimization pass preserves meaning, or to understand the precise relationship between the syntactic AST, the `dx.Model` value-type layer, and the underlying tensor computations. The examples and notation explanations provide an entry point without prior category-theory or probabilistic-programming training. Enriched categories [@kelly1982basic] and probability kernels [@giry1982categorical; @fritz2020synthetic] provide the mathematical background.
-
+This document is written for users who wish to reason formally about QVR programs: to verify that two `.qvr` files denote the same morphism, to prove that an optimization pass preserves meaning, or to understand the precise relationship between the syntactic AST, the `dx.Model` value-type layer, and the underlying tensor computations. The [examples and notation explanations](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) introduce the mathematical vocabulary through table calculations and small probabilistic programs. Enriched categories [@kelly1982basic] and probability kernels [@giry1982categorical; @fritz2020synthetic] provide the mathematical background.
 
 ## References
-
 
 For enriched categories, see [@kelly1982basic]. For probability measures and kernels, see [@giry1982categorical; @fritz2020synthetic]. The [concepts primer](../getting-started/concepts.md) introduces the notation used here.
