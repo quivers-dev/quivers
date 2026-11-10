@@ -38,6 +38,7 @@ from typing import Literal, TypeVar
 import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import Morphism
 
@@ -125,7 +126,7 @@ def reads_of(function: collections.abc.Callable[..., object]) -> frozenset[str] 
     return names
 
 
-class Step(dx.TaggedUnion, discriminator="kind"):
+class Step(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """One step of a [`MonadicProgram`][quivers.continuous.MonadicProgram].
 
     The variants are [`Draw`][quivers.continuous.program_steps.Draw],
@@ -134,6 +135,11 @@ class Step(dx.TaggedUnion, discriminator="kind"):
     [`Score`][quivers.continuous.program_steps.Score],
     [`Call`][quivers.continuous.program_steps.Call], and
     [`Scan`][quivers.continuous.program_steps.Scan].
+
+    Steps compare by value over their names, tags, and arguments, and
+    by identity over the morphisms, functions, constants, and tensors
+    they hold: two steps are equal exactly when they agree on the
+    former and share the latter objects.
     """
 
 
@@ -163,8 +169,12 @@ class Draw(Step):
     """
 
     names: tuple[str, ...]
-    morphism: ContinuousMorphism | Morphism = dx.field(opaque=True)
-    args: tuple[StepArgument, ...] | None = dx.field(default=None, opaque=True)
+    morphism: ContinuousMorphism | Morphism = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    args: tuple[StepArgument, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     kind: Literal["draw"] = "draw"
 
 
@@ -191,8 +201,12 @@ class Observe(Step):
     """
 
     names: tuple[str, ...]
-    morphism: ContinuousMorphism | Morphism = dx.field(opaque=True)
-    args: tuple[StepArgument, ...] | None = dx.field(default=None, opaque=True)
+    morphism: ContinuousMorphism | Morphism = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    args: tuple[StepArgument, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     kind: Literal["observe"] = "observe"
 
 
@@ -215,7 +229,7 @@ class Let(Step):
     """
 
     name: str
-    value: float | str | StepFunction = dx.field(opaque=True)
+    value: float | str | StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     kind: Literal["let"] = "let"
 
 
@@ -238,7 +252,7 @@ class Score(Step):
     """
 
     name: str
-    score: StepFunction = dx.field(opaque=True)
+    score: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     kind: Literal["score"] = "score"
 
 
@@ -268,7 +282,7 @@ class Call(Step):
     """
 
     name: str
-    program: ContinuousMorphism = dx.field(opaque=True)
+    program: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     args: tuple[str, ...] = ()
     kind: Literal["call"] = "call"
 
@@ -311,9 +325,11 @@ class Scan(Step):
     """
 
     name: str
-    step: ContinuousMorphism = dx.field(opaque=True)
+    step: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     source: str | None = None
-    initial: torch.Tensor | None = dx.field(default=None, opaque=True)
+    initial: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     kind: Literal["scan"] = "scan"
 
 
