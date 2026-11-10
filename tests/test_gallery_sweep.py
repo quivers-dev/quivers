@@ -47,7 +47,16 @@ from quivers.stochastic.deduction import (
 # The corpus each deduction example parses, keyed by its stem: the
 # deduction's name and the sentences its rules and lexicon license.
 _DEDUCTION_CORPORA: dict[str, tuple[str, list[list[str]]]] = {
-    "ccg": ("CCG", [["the", "cat", "sleeps"]]),
+    "ccg": (
+        "CCG",
+        [
+            ["the", "cat", "sleeps"],
+            ["the", "dog", "whom", "Mary", "saw", "sleeps"],
+            ["the", "cat", "that", "sleeps", "today", "purrs"],
+            ["Mary", "probably", "sleeps"],
+            ["Mary", "saw", "yesterday", "the", "cat"],
+        ],
+    ),
     "custom_rules": (
         "AB",
         [
