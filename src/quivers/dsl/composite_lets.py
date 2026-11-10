@@ -853,6 +853,54 @@ class _Program:
         return f"{stem}_{self.counter}"
 
 
+def _refuse_program_leaves(
+    chain: tuple[_ChainElem, ...],
+    program: _Program,
+    step: SampleStep | ObserveStep,
+) -> None:
+    """Refuse a chain that composes a program other than as a scan's cell.
+
+    A program composes with ``sample y <- p(x)``, or runs at every
+    position as the cell of ``scan(p)``. Composed with ``>>``, repeated
+    with ``repeat``, stacked with ``stack``, or bundled with ``fan`` or
+    ``@``, it would be read as a host function of its input, which it
+    is not.
+
+    Parameters
+    ----------
+    chain : tuple[_ChainElem, ...]
+        The chain, searched through parallel branches.
+    program : _Program
+        The enclosing program's expansion.
+    step : SampleStep | ObserveStep
+        The step being expanded.
+
+    Raises
+    ------
+    StepResolutionError
+        If a non-scan element names a program.
+    """
+    for elem in chain:
+        if isinstance(elem, _ParallelLeaf):
+            for branch in elem.branches:
+                _refuse_program_leaves(branch, program, step)
+        elif (
+            isinstance(elem, _StochasticLeaf | _DeterministicLeaf)
+            and elem.name in program.programs
+        ):
+            raise StepResolutionError(
+                "qvr-expand",
+                [
+                    f"chain:program:{elem.name}",
+                    f"the morphism {step.morphism!r} drawn at line {step.line} "
+                    f"composes the program {elem.name!r} with `>>`, `repeat`, "
+                    f"`stack`, `fan`, or `@`; a program composes by drawing "
+                    f"from it, `sample y <- {elem.name}(x)`, or runs at every "
+                    f"position as the cell of `scan({elem.name})`",
+                ],
+            )
+
+
 def _expand_step(
     step: SampleStep | ObserveStep,
     chain: tuple[_ChainElem, ...],
@@ -895,6 +943,7 @@ def _expand_step(
     """
     if len(chain) < 1:
         return [step]
+    _refuse_program_leaves(chain, program, step)
     base_name = step.vars[0] if step.vars else "tmp"
     if len(chain) == 1 and isinstance(chain[0], _StochasticLeaf):
         elem = chain[0]
