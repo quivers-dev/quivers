@@ -440,7 +440,7 @@ def _render(ctx: _JlState, expr: LetExprNode) -> tuple[str, str]:
     """Recursive renderer returning ``(vertex_id, vertex_kind)`` so
     parents can populate ``chose-alt-child-kinds`` accurately."""
     if isinstance(expr, LetExprLiteral):
-        return _emit_literal(ctx, expr.value)
+        return _emit_literal(ctx, expr.value, integral=expr.integral)
     if isinstance(expr, LetExprString):
         return _emit_string(ctx, expr.value)
     if isinstance(expr, LetExprVar):
@@ -474,43 +474,55 @@ def _render(ctx: _JlState, expr: LetExprNode) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _emit_literal(ctx: _JlState, value: object) -> tuple[str, str]:
-    """Emit `integer_literal` for whole numbers, `float_literal` otherwise.
+def _emit_literal(
+    ctx: _JlState, value: float | int, *, integral: bool
+) -> tuple[str, str]:
+    """Emit an `integer_literal` or a `float_literal` of the literal's own type.
 
-    Whole-number floats (`1.0`, `2.0`) emit as `integer_literal` so
-    that array indices substituted from factor binders satisfy Julia's
-    `arr[Int]` typing rule.
+    An integral literal (a source integer, a factor binder's value, a
+    subscript, an axis count) is a Julia `Int`; every other literal is a
+    `Float64` spelled with its decimal point, so real arithmetic on
+    whole-number reals stays in floating point instead of wrapping
+    around past `typemax(Int)`.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    value : float | int
+        The literal's value.
+    integral : bool
+        Whether the literal is an integer.
+
+    Returns
+    -------
+    tuple[str, str]
+        The vertex and its kind.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If an integral literal's value is not a whole number.
     """
-    if isinstance(value, bool):
-        # `bool` is a subclass of `int` in Python; treat as integer.
+    if integral:
+        if not float(value).is_integer():
+            raise UnsupportedConstruct(
+                f"qvr-{_target(ctx)}-helper",
+                [
+                    f"let-expr:LetExprLiteral:{_target(ctx)}: integral literal "
+                    f"{value!r} is not a whole number"
+                ],
+            )
+        text = str(int(value))
         vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(int(value)))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(int(value)))
-        return vid, "integer_literal"
-    if isinstance(value, int):
-        vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(value))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(value))
-        return vid, "integer_literal"
-    if isinstance(value, float) and value.is_integer():
-        vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(int(value)))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(int(value)))
-        return vid, "integer_literal"
-    if isinstance(value, float):
-        text = repr(value)
-        vid = ctx.v(ctx.fresh("fl"), "float_literal")
         ctx.lit(vid, text)
         ctx.constraint(vid, "chose-alt-fingerprint", text)
-        return vid, "float_literal"
-    raise UnsupportedConstruct(
-        f"qvr-{_target(ctx)}-helper",
-        [
-            f"let-expr:LetExprLiteral:{_target(ctx)}: literal value "
-            f"{value!r} of type {type(value).__name__} has no Julia "
-            f"numeric literal representation"
-        ],
-    )
+        return vid, "integer_literal"
+    text = repr(float(value))
+    vid = ctx.v(ctx.fresh("fl"), "float_literal")
+    ctx.lit(vid, text)
+    ctx.constraint(vid, "chose-alt-fingerprint", text)
+    return vid, "float_literal"
 
 
 def _emit_string(ctx: _JlState, text: str) -> tuple[str, str]:
@@ -972,13 +984,13 @@ def _emit_axis_reduction(
         ctx,
         julia_func,
         rendered,
-        (("dims", _emit_literal(ctx, rank)),),
+        (("dims", _emit_literal(ctx, rank, integral=True)),),
     )
     return _emit_keyword_call(
         ctx,
         "dropdims",
         reduced,
-        (("dims", _emit_literal(ctx, rank)),),
+        (("dims", _emit_literal(ctx, rank, integral=True)),),
     )
 
 
@@ -1087,8 +1099,8 @@ def _emit_range(ctx: _JlState, lower: int, upper: int) -> tuple[str, str]:
     vid = ctx.v(ctx.fresh("rng"), "range_expression")
     ctx.constraint(vid, "chose-alt-fingerprint", ":")
     ctx.constraint(vid, "chose-alt-child-kinds", "integer_literal integer_literal")
-    lo_vid, _lo_kind = _emit_literal(ctx, float(lower))
-    hi_vid, _hi_kind = _emit_literal(ctx, float(upper))
+    lo_vid, _lo_kind = _emit_literal(ctx, lower, integral=True)
+    hi_vid, _hi_kind = _emit_literal(ctx, upper, integral=True)
     ctx.e(vid, lo_vid, "child_of")
     ctx.e(vid, hi_vid, "child_of")
     return vid, "range_expression"

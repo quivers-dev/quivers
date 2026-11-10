@@ -1,0 +1,15 @@
+# Exercises whole-number real literals in real arithmetic: each target
+# must spell them as reals, or an integer product past 2^63 wraps and a
+# ratio of two integers truncates.
+object Item : FinSet 3
+object Val : Real 1
+
+program p : Item -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=mu, scale=1.0)
+    let wide = 3000000000.0 * 4000000000.0 * 1.0e-18
+    let ratio = 7.0 / 2.0
+    score s = mu * (wide + ratio)
+    return mu
+
+export p
