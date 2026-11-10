@@ -23,6 +23,7 @@ import torch
 from torch import nn
 from narwhals.typing import IntoDataFrame
 
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
 from quivers.dsl.emit import module_to_source
@@ -41,7 +42,7 @@ from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
 
-class BayesianFit(dx.Model):
+class BayesianFit(ValueModel):
     """A fitted Bayesian regression: the compiled program, the
     parsed formula, the family, the user-supplied data, and the
     posterior samples.
@@ -60,14 +61,20 @@ class BayesianFit(dx.Model):
     observations : Mapping[str, torch.Tensor]
         Inference-time observations dict (response + per-column
         covariates + per-group plate indices).
+
+    Fits compare by value over the formula, family, and settings, and
+    by identity over the live objects: the program, the posterior, the
+    observations mapping, the predictor, and its data. Two fits are
+    thus equal exactly when they share those objects and agree on
+    everything else.
     """
 
-    formula: Formula = dx.field(opaque=True)
+    formula: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     family: Family
-    program: MonadicProgram = dx.field(opaque=True)
-    posterior: MCMCResult | Guide = dx.field(opaque=True)
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    posterior: MCMCResult | Guide = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     observations: Mapping[str, torch.Tensor] = dx.field(
-        default_factory=dict, opaque=True
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     reparameterize: Literal["centered", "noncentered"] = "noncentered"
     binomial_trials: int | str = 1
@@ -75,9 +82,13 @@ class BayesianFit(dx.Model):
     mixture_components: int = 2
     fixed_prior: str = "Normal(0.0, 5.0)"
     random_scale_prior: str = "HalfNormal(1.0)"
-    priors: Mapping[str, str] = dx.field(default_factory=dict, opaque=True)
-    predictor: nn.Module | None = dx.field(default=None, opaque=True)
-    predictor_data: torch.Tensor | None = dx.field(default=None, opaque=True)
+    priors: dict[str, str] = dx.field(default_factory=dict)
+    predictor: nn.Module | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    predictor_data: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     predictor_name: str | None = None
 
     @property

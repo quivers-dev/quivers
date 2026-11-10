@@ -40,6 +40,7 @@ from __future__ import annotations
 import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core.morphisms import Morphism, observed
 from quivers.core.morphisms import identity as id_morph
 from quivers.core.objects import FinSet, ProductSet, SetObject
@@ -250,7 +251,7 @@ def _encode_continuation(outputs: tuple[int, ...], sub_size: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-class Handler(dx.Model):
+class Handler(ValueModel):
     """Interpretation of a free-monad computation in a target monad.
 
     A handler supplies a clause for each operation in its signature
@@ -267,6 +268,12 @@ class Handler(dx.Model):
     carrier) into the corresponding target-side function-space
     continuation by recursive descent, then routes through the clause.
 
+    Handlers compare by value over ``signature`` and by identity over
+    ``target``, ``return_clause``, and ``operation_clauses``: two
+    handlers are equal exactly when they share a signature and hold
+    the same target monad, return-clause morphism, and clause mapping
+    objects.
+
     Attributes
     ----------
     signature : EffectSignature
@@ -282,9 +289,13 @@ class Handler(dx.Model):
     """
 
     signature: EffectSignature
-    target: object = dx.field(default=None, opaque=True)
-    return_clause: object = dx.field(default=None, opaque=True)
-    operation_clauses: object = dx.field(default_factory=dict, opaque=True)
+    target: object = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    return_clause: object = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    operation_clauses: object = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def as_theory_morphism(self) -> object:
         """Realise this handler as a panproto theory morphism.

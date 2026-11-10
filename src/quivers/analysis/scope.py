@@ -49,6 +49,7 @@ from typing import Literal
 
 import didactic.api as dx
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
     BundleDecl,
     LetStep,
@@ -122,8 +123,12 @@ compiler's public accessors, in the order ``ReplSession.browse()``
 walks them for output."""
 
 
-class ScopedRef(dx.Model):
+class ScopedRef(ValueModel):
     """One resolved binding.
+
+    Refs compare by value over their names, kinds, and paths, and by
+    identity over ``node``: two refs are equal exactly when they
+    resolve the same path to the same node object.
 
     Attributes
     ----------
@@ -146,10 +151,10 @@ class ScopedRef(dx.Model):
     kind: ScopeKind
     path: str
     parent_kind: ScopeKind | None = None
-    # The underlying AST node / runtime object. Stored opaquely
-    # because the union of all possible node types is wide; callers
-    # downcast based on ``kind``.
-    node: object = dx.field(opaque=True)
+    # The underlying AST node / runtime object. Stored opaquely, and
+    # compared by identity, because the union of all possible node
+    # types is wide; callers downcast based on ``kind``.
+    node: object = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 # ---------------------------------------------------------------------------

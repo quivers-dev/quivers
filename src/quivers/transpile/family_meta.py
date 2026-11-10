@@ -17,6 +17,7 @@ import torch.distributions as td
 import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
     ConditionalBernoulli,
@@ -93,7 +94,7 @@ from quivers.transpile.ir import (
 )
 
 
-class FamilyMeta(dx.Model):
+class FamilyMeta(ValueModel):
     """Static transpile-only metadata for one distribution family.
 
     `event_rank` is the rank of the distribution's natural event
@@ -107,13 +108,21 @@ class FamilyMeta(dx.Model):
     Edward2 ``sample_shape=[...]``). PyMC labels every plate axis with a
     named ``dims`` coordinate, so it needs no residual lift. Default is
     0; vector families override to 1, matrix families to 2.
+
+    Metadata compares by value over every field; the class-valued
+    `distribution_class` and `quivers_class` fields compare as the
+    classes themselves.
     """
 
     qvr_name: str
-    distribution_class: type[Distribution] = dx.field(opaque=True)
+    distribution_class: type[Distribution] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     target_names: dict[str, str]
     arg_aliases: dict[str, dict[str, str]] = dx.field(default_factory=lambda: {})
-    quivers_class: type[ContinuousMorphism] | None = dx.field(default=None, opaque=True)
+    quivers_class: type[ContinuousMorphism] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     structured_lowering: StructuredSampleLowering | None = None
     event_rank: int = 0
 

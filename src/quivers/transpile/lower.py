@@ -26,6 +26,7 @@ import torch
 import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core._util import EPS
 from quivers.dsl.ast_nodes import (
     DrawArg,
@@ -494,27 +495,40 @@ class ObjectShape(dx.Model):
     bounds: RealBounds = dx.field(default_factory=RealBounds)
 
 
-class _LowerCtx(dx.Model):
+class _LowerCtx(ValueModel):
     """Internal carrier for the resolver / cardinality tables and the
-    sentinel cache. Threaded through the lowering recursion."""
+    sentinel cache. Threaded through the lowering recursion.
 
-    morphisms: dict[str, MorphismDecl] = dx.field(opaque=True)
-    lets: dict[str, Expr] = dx.field(opaque=True)
+    The opaque tables are mutable working state shared by reference
+    along the recursion, so they compare by identity: two contexts are
+    equal exactly when they share those table objects and agree on the
+    typed fields."""
+
+    morphisms: dict[str, MorphismDecl] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    lets: dict[str, Expr] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     cards: dict[str, int]
     family_set: frozenset[str]
     sentinel_cache: dict[tuple[str, tuple[str, ...]], Distribution] = dx.field(
-        opaque=True
+        opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    program: ProgramDecl = dx.field(opaque=True)
+    program: ProgramDecl = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     real_widths: dict[str, int] = dx.field(default_factory=dict)
     bounds: dict[str, RealBounds] = dx.field(default_factory=dict)
     shapes: dict[str, ObjectShape] = dx.field(default_factory=dict)
-    bound_plates: dict[str, Plate] = dx.field(default_factory=dict, opaque=True)
-    bound_kinds: dict[str, str] = dx.field(default_factory=dict, opaque=True)
-    alphabet_event_dims: dict[str, DimStatic] = dx.field(
-        default_factory=dict, opaque=True
+    bound_plates: dict[str, Plate] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    param_map_inputs: dict[str, Plate] = dx.field(default_factory=dict, opaque=True)
+    bound_kinds: dict[str, str] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    alphabet_event_dims: dict[str, DimStatic] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    param_map_inputs: dict[str, Plate] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     reserved_names: frozenset[str] = frozenset()
 
 

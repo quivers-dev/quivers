@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import didactic.api as dx
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.arrows.typeclasses import Arrow, ArrowApply, Category_
 from quivers.core._factories import parallel
 from quivers.core.morphisms import Morphism
@@ -55,7 +56,7 @@ def _monad_strength(m, A: SetObject, B: SetObject) -> Morphism:
     return inject >> lifted
 
 
-class Kleisli(dx.Model):
+class Kleisli(ValueModel):
     """The Kleisli arrow of a monad.
 
     Hom from ``A`` to ``B`` is the set of morphisms ``A → m(B)`` in
@@ -67,6 +68,8 @@ class Kleisli(dx.Model):
     `monad` is held opaquely so the typeclass-ABC reference
     survives in-process identity through ``with_`` without panproto
     schema validation; the field does not round-trip through JSON.
+    It compares by identity: two Kleisli categories are equal exactly
+    when they wrap the same monad object.
 
     Attributes
     ----------
@@ -74,7 +77,7 @@ class Kleisli(dx.Model):
         The underlying monad instance.
     """
 
-    monad: object = dx.field(default=None, opaque=True)
+    monad: object = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def id_arr(self, A: SetObject) -> Morphism:
         return self.monad.pure(A)
@@ -203,7 +206,7 @@ def _recover_value_type(m, mB: SetObject) -> SetObject:
     return mB
 
 
-class ArrowMonad(dx.Model):
+class ArrowMonad(ValueModel):
     """The monad induced by an `ArrowApply` arrow.
 
     For a lawful ``ArrowApply`` interface ``a``, the corresponding monadic
@@ -217,7 +220,8 @@ class ArrowMonad(dx.Model):
     - ``join(A)`` is the arrow's ``app`` morphism on the unit-anchored
       arrow values.
 
-    `arrow` is held opaquely.
+    `arrow` is held opaquely and compares by identity: two arrow
+    monads are equal exactly when they wrap the same arrow object.
 
     Attributes
     ----------
@@ -225,7 +229,7 @@ class ArrowMonad(dx.Model):
         The underlying arrow.
     """
 
-    arrow: object = dx.field(default=None, opaque=True)
+    arrow: object = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def fmap_obj(self, A: SetObject) -> SetObject:
         return A
@@ -301,7 +305,7 @@ def arrow_monad(arrow: ArrowApply) -> ArrowMonad:
     return ArrowMonad(arrow=arrow)
 
 
-class CoKleisli(dx.Model):
+class CoKleisli(ValueModel):
     """The CoKleisli category of a comonad.
 
     Hom from ``A`` to ``B`` is the set of morphisms ``W(A) → B``.
@@ -319,6 +323,8 @@ class CoKleisli(dx.Model):
 
     `comonad` is held opaquely so the typeclass-ABC reference
     survives in-process identity without panproto schema validation.
+    It compares by identity: two CoKleisli categories are equal
+    exactly when they wrap the same comonad object.
 
     Attributes
     ----------
@@ -326,7 +332,7 @@ class CoKleisli(dx.Model):
         The underlying comonad instance.
     """
 
-    comonad: object = dx.field(default=None, opaque=True)
+    comonad: object = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def id_arr(self, A: SetObject) -> Morphism:
         return self.comonad.counit(A)
