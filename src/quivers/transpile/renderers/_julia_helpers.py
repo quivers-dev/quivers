@@ -143,6 +143,9 @@ class JuliaShapes:
     indices are chained as ``t[i][j]`` rather than emitted as ``t[i, j]``.
     `index_covariates` names the integer data inputs, whose entries the data
     contract delivers as one-based subscripts.
+    `row_arrays` maps each binding stored as an array of event vectors to
+    the number of its outer array axes: a subscript into it reads those axes
+    first and then the event, as ``p[i, j][k]``.
     Defaults describe a standalone scalar expression with no declared plates.
     """
 
@@ -151,6 +154,7 @@ class JuliaShapes:
     nested_names: frozenset[str]
     batch_rank: int
     index_covariates: frozenset[str]
+    row_arrays: dict[str, int]
 
     def __init__(
         self,
@@ -160,12 +164,14 @@ class JuliaShapes:
         nested_names: frozenset[str] = frozenset(),
         batch_rank: int = 0,
         index_covariates: frozenset[str] = frozenset(),
+        row_arrays: dict[str, int] | None = None,
     ) -> None:
         self.name_event_rank = dict(name_event_rank or {})
         self.name_array_rank = dict(name_array_rank or {})
         self.nested_names = nested_names
         self.batch_rank = batch_rank
         self.index_covariates = index_covariates
+        self.row_arrays = dict(row_arrays or {})
 
     def scoped_to(self, batch_rank: int) -> JuliaShapes:
         """The same rank tables, scoped to a binding whose plate has
@@ -181,6 +187,7 @@ class JuliaShapes:
             nested_names=self.nested_names,
             batch_rank=batch_rank,
             index_covariates=self.index_covariates,
+            row_arrays=self.row_arrays,
         )
 
 
@@ -232,6 +239,7 @@ class _JlState:
         self.nested_names = shapes.nested_names
         self.batch_rank = shapes.batch_rank
         self.index_covariates = shapes.index_covariates
+        self.row_arrays = shapes.row_arrays
         self.dotted = dotted
 
     def fresh(self, prefix: str) -> str:
@@ -1001,6 +1009,14 @@ def _emit_index(ctx: _JlState, expr: LetExprIndex) -> tuple[str, str]:
         for one in inner_rendered:
             current = _emit_subscript(ctx, current, (one,))
         return current
+    outer = (
+        ctx.row_arrays.get(expr.array.name)
+        if isinstance(expr.array, LetExprVar)
+        else None
+    )
+    if outer is not None and len(inner_rendered) > outer:
+        rows = _emit_subscript(ctx, (arr_vid, arr_kind), inner_rendered[:outer])
+        return _emit_subscript(ctx, rows, inner_rendered[outer:])
     residual = _residual_index_axes(ctx, expr)
     inner_rendered += tuple(_emit_operator(ctx, ":") for _ in range(residual))
     return _emit_subscript(ctx, (arr_vid, arr_kind), inner_rendered)

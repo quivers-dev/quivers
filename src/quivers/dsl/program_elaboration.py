@@ -4427,6 +4427,24 @@ class _ProgramElaboration:
                 # [over=Col]`` draws one simplex point per row. An
                 # annotation naming an event axis restates it.
                 batch_axes = (self._object_axis(step.index, step),)
+            rank = record.event_rank
+            if (
+                isinstance(step, SampleStep)
+                and rank <= 1
+                and len(over) > rank
+                and not (rank == 0 and len(over) == 1)
+            ):
+                # The leading axes beyond the family's event rank index
+                # an independent array of variates: ``Normal`` over
+                # ``[B, C]`` is a ``(B, C)`` array of independent
+                # normals, ``Dirichlet`` over ``[B, K]`` one ``K``-simplex
+                # point per element of ``B``. They are batch axes after
+                # the plate, in the order written.
+                split = len(over) - rank
+                return PlateShape(
+                    (*batch_axes, *(self._axis(name, step) for name in over[:split])),
+                    tuple(self._axis(name, step) for name in over[split:]),
+                )
             return PlateShape(
                 batch_axes, tuple(self._axis(name, step) for name in over)
             )

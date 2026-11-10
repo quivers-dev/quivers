@@ -1,0 +1,12 @@
+# A scalar family drawn over two `over` axes beside an index annotation:
+# an independent (A, B, C) array of normals, read entrywise.
+object A : FinSet 2
+object B : FinSet 3
+object C : FinSet 2
+object Obs : FinSet 4
+program prog : Obs -> Obs
+    sample w : A <- Normal(loc=0.0, scale=1.0) [over=[B, C]]
+    let t = w[1, 2, 0] - w[0, 1, 1]
+    observe y : Obs <- Normal(loc=t, scale=1.0)
+    return t
+export prog

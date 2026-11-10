@@ -151,6 +151,11 @@ class LatentSite:
         Number of elements this site occupies in the flat vector
         (= ``plate_index_size * unconstrained_dim`` for plate
         sites, ``unconstrained_dim`` for scalar sites).
+    plate_shape : tuple[int, ...]
+        The extents of a plate site's axes, outermost first, whose
+        product is ``plate_index_size``: ``(|A|,)`` for a plate over one
+        axis, ``(|A|, |B|, |C|)`` for an independent array over
+        several; ``()`` otherwise.
     """
 
     name: str
@@ -164,6 +169,7 @@ class LatentSite:
     spec_index: int
     flat_offset: int
     flat_length: int
+    plate_shape: tuple[int, ...] = ()
 
     @property
     def constrained_shape(self) -> tuple[int, ...]:
@@ -171,7 +177,9 @@ class LatentSite:
         support (after the bijector, with a length-one event axis
         squeezed off).
 
-        Plate sites have shape ``(|A|,)`` or ``(|A|, d)``; non-plate
+        Plate sites have shape ``(*plate_shape,)`` or
+        ``(*plate_shape, d)``, ``(|A|,)`` or ``(|A|, d)`` for a plate
+        over one axis; non-plate
         sites have shape ``()`` for a scalar event and ``(d,)``
         otherwise. Posterior containers index draws by this shape:
         `MCMCResult.samples` holds ``(num_chains, num_samples,
@@ -197,7 +205,7 @@ class LatentSite:
         else:
             event = (self.constrained_dim,)
         if self.is_plate:
-            return (self.plate_index_size, *event)
+            return (*(self.plate_shape or (self.plate_index_size,)), *event)
         return event
 
     @property
@@ -303,6 +311,7 @@ class LatentRegistry:
                         constrained_dim = 1
                     support = inner.support
                     plate_index_size = plate.index_size
+                    plate_shape = plate.index_shape
                 else:
                     cod = morph_cm.codomain
                     if isinstance(cod, ContinuousSpace):
@@ -312,6 +321,7 @@ class LatentRegistry:
                         constrained_dim = 1
                     support = morph_cm.support
                     plate_index_size = 0
+                    plate_shape = ()
 
                 unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
                 bijector = biject_to(support)
@@ -334,6 +344,7 @@ class LatentRegistry:
                     spec_index=spec_idx,
                     flat_offset=flat_cursor,
                     flat_length=flat_length,
+                    plate_shape=plate_shape,
                 )
                 flat_cursor += flat_length
 

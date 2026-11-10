@@ -803,6 +803,36 @@ def _gen_transform_args(gx: _GenCtx, arg_vids: list[str], family: str) -> list[s
     return arg_vids
 
 
+def _row_array_names(body: tuple[IRNode, ...]) -> dict[str, int]:
+    """The sampled names stored as arrays of event vectors.
+
+    A latent drawn under one or more loop axes from a family with its own
+    event axes is allocated as an array, over those axes, whose elements
+    are the family's event vectors (`_emit_storage_alloc`). An entrywise
+    read must index the array and then the vector.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    dict[str, int]
+        Each such name and the number of its outer array axes.
+    """
+    out: dict[str, int] = {}
+    for node in body:
+        if isinstance(node, IRSample):
+            own = _family_event_rank(node.family)
+            outer = len(node.plate.batch_dims) + len(node.plate.event_dims) - own
+            if own > 0 and outer > 0:
+                out[node.name] = outer
+        elif isinstance(node, IRMarginalize):
+            out.update(_row_array_names(node.scope))
+    return out
+
+
 def _family_event_rank(family: str) -> int:
     """The rank of the family's own event shape.
 
@@ -1057,6 +1087,7 @@ class GenRenderer(RendererBase):
             name_array_rank=name_array_rank_map(ir),
             nested_names=nested_tower_names(ir),
             index_covariates=index_covariate_names(ir),
+            row_arrays=_row_array_names(ir.body),
         )
 
         # Sort inputs alphabetically so the emitted `model(...)` signature

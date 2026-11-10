@@ -149,14 +149,29 @@ class PlateDraw(ContinuousMorphism):
     codomain is the flat product-space of ``index_size`` copies of
     the per-row family's codomain.
 
+    The plate may range over several finite axes at once,
+    :math:`A_1 \\times \\dots \\times A_k`: the draw is then an
+    independent array of shape ``(|A_1|, ..., |A_k|, *B.shape)``, one
+    independent ``F`` variate per element of the product.
+
     Parameters
     ----------
     index_size : int
-        Cardinality :math:`|A|`.
+        Cardinality :math:`|A|`, the number of independent rows: the
+        product of ``index_shape`` when that is given.
     family : ContinuousMorphism
         Per-row distribution family.
     domain : AnySpace
         The program's input space (broadcast conditioning).
+    index_shape : tuple[int, ...] | None
+        The extents of the plate's axes, outermost first, when the
+        plate ranges over more than one axis; ``None`` for the single
+        axis ``(index_size,)``.
+
+    Raises
+    ------
+    ValueError
+        If ``index_shape`` does not multiply out to ``index_size``.
     """
 
     def __init__(
@@ -164,7 +179,15 @@ class PlateDraw(ContinuousMorphism):
         index_size: int,
         family: ContinuousMorphism,
         domain: AnySpace | None = None,
+        *,
+        index_shape: tuple[int, ...] | None = None,
     ) -> None:
+        shape = (index_size,) if index_shape is None else tuple(index_shape)
+        if not shape or math.prod(shape) != index_size:
+            raise ValueError(
+                f"PlateDraw: index_shape {shape} does not multiply out to "
+                f"index_size {index_size}"
+            )
         # A matrix-valued space (a Cholesky factor, a covariance) keeps
         # `dim` as its matrix size and states its flat element count as
         # `shape`; other continuous spaces state only `dim`.
@@ -184,14 +207,18 @@ class PlateDraw(ContinuousMorphism):
         # codomain recoverable: a consumer that reads the variable as
         # a *parameter* needs the per-row width, since the plate axis
         # is a batch axis in that position rather than an event axis.
+        # The rows a gather along the outermost axis selects are the
+        # slabs over the remaining axes, so that axis is the codomain's
+        # row count.
         flat_codomain = Euclidean(
-            name=f"plate({index_size}x{family.codomain!s})",
+            name=f"plate({'x'.join(map(str, shape))}x{family.codomain!s})",
             dim=index_size * per_row_dim,
-            plate_rows=index_size,
+            plate_rows=shape[0],
         )
         actual_domain = domain if domain is not None else family.domain
         super().__init__(actual_domain, flat_codomain)
         self._index_size = index_size
+        self._index_shape = shape
         self._family = family
         self._per_row_shape = per_row_shape
         self._per_row_dim = per_row_dim
@@ -211,6 +238,11 @@ class PlateDraw(ContinuousMorphism):
     @property
     def index_size(self) -> int:
         return self._index_size
+
+    @property
+    def index_shape(self) -> tuple[int, ...]:
+        """The extents of the plate's axes, outermost first."""
+        return self._index_shape
 
     @property
     def family(self) -> ContinuousMorphism:
@@ -303,7 +335,7 @@ class PlateDraw(ContinuousMorphism):
         return self._to_structured(base)
 
     def _to_structured(self, value: torch.Tensor) -> torch.Tensor:
-        """Reshape a plate value to its structured ``(|A|, *B.shape)``.
+        """Reshape a plate value to its structured ``(*index_shape, *B.shape)``.
 
         The per-row event axis ``B`` is carried explicitly so a
         downstream gather ``v[idx]`` along the plate axis preserves the
@@ -312,7 +344,7 @@ class PlateDraw(ContinuousMorphism):
         the latent has the natural ``(|A|,)`` shape and ``v[idx]``
         advance-indexing produces ``(N,)`` without a manual squeeze.
         """
-        sample = value.reshape(self._index_size, *self._per_row_shape)
+        sample = value.reshape(*self._index_shape, *self._per_row_shape)
         if len(self._per_row_shape) == 1 and self._per_row_shape[0] == 1:
             sample = sample.squeeze(-1)
         return sample
@@ -343,9 +375,9 @@ class PlateDraw(ContinuousMorphism):
         product ``prod_a p_F(v_a)`` of the per-row family ``F``; the
         contribution is ``sum_a log p_F(v_a)``.
 
-        Two layouts are accepted. The natural *plate latent* carries a
-        leading axis of length ``|A|`` (or is a flat vector whose
-        element count is ``|A| * prod(event)``): its rows are scored
+        Two layouts are accepted. The natural *plate latent* carries the
+        plate's axes leading (or holds exactly ``|A| * prod(event)``
+        elements in any layout, a flat vector included): its rows are scored
         under ``F`` and reduced to a scalar, wrapped in a length-1
         tensor so the downstream log-joint accumulator sees a uniform
         1-d shape it can broadcast against the response plate. A
@@ -360,7 +392,11 @@ class PlateDraw(ContinuousMorphism):
         """
         index_size = self._index_size
         per_row_family = self._per_row_dim
-        batched = y.dim() >= 2 and y.shape[0] != index_size
+        axes = len(self._index_shape)
+        structured = tuple(y.shape[:axes]) == self._index_shape
+        batched = (
+            y.dim() >= 2 and not structured and y.numel() != index_size * per_row_family
+        )
         if not batched:
             total = y.numel()
             if total % index_size != 0:

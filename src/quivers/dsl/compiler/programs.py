@@ -7,6 +7,7 @@ compilation.
 
 from __future__ import annotations
 import inspect
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
@@ -53,6 +54,7 @@ from quivers.continuous.spaces import (
 from quivers.core.objects import FinSet, ProductSet, SetObject
 from quivers.core.wiring import EinsumWiring
 from quivers.dsl.ast_nodes import (
+    AxisSpec,
     BindStep,
     ContractionDecl,
     ContractionInput,
@@ -134,6 +136,7 @@ from quivers.dsl.let_expr_traversal import (
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
+from quivers.qiec.families import FAMILIES
 from quivers.stochastic.agenda import DeductionSystem
 from quivers.dsl.compiler._prelude import (
     CompileError,
@@ -2466,6 +2469,42 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+                array = self._independent_over_axes(
+                    step.morphism, getattr(step, "axes", None), step.line, step.col
+                )
+                if array is not None:
+                    array_shape, event_axes = array
+                    family, step_args = self._resolve_draw_morphism(
+                        DrawStep(
+                            vars=(step.name,),
+                            morphism=step.morphism,
+                            args=step.args,
+                            is_observed=False,
+                            axes=event_axes,
+                            line=step.line,
+                            col=step.col,
+                        ),
+                        bound_vars,
+                        Euclidean(name=f"_{step.name}", dim=1),
+                    )
+                    if step.name in bound_vars:
+                        raise CompileError(
+                            f"variable {step.name!r} already bound in program",
+                            step.line,
+                            step.col,
+                        )
+                    index_shape = (idx_space.size, *array_shape)
+                    plate = PlateDraw(
+                        math.prod(index_shape),
+                        family,
+                        domain=family.domain,
+                        index_shape=index_shape,
+                    )
+                    bound_vars[step.name] = plate.codomain
+                    steps.append(
+                        Draw(names=(step.name,), morphism=plate, args=step_args)
+                    )
+                    continue
                 # The per-row codomain `B` is either a declared object /
                 # space or an integer literal interpreted as
                 # `Euclidean(N)` — the standard convention for
@@ -3266,7 +3305,32 @@ class _ProgramsMixin:
             # a free name in a let is: the run reads it from the
             # bindings visible where the program runs, else from the
             # conditioning data.
-            morph, step_args = self._resolve_draw_morphism(draw, bound_vars, codomain)
+            array = (
+                self._independent_over_axes(
+                    draw.morphism, draw.axes, draw.line, draw.col
+                )
+                if isinstance(draw, DrawStep)
+                and not draw.is_observed
+                and len(draw.vars) == 1
+                else None
+            )
+            if array is not None and isinstance(draw, DrawStep):
+                array_shape, event_axes = array
+                family, step_args = self._resolve_draw_morphism(
+                    draw.with_(axes=event_axes),
+                    bound_vars,
+                    Euclidean(name=f"_{draw.vars[0]}", dim=1),
+                )
+                morph = PlateDraw(
+                    math.prod(array_shape),
+                    family,
+                    domain=family.domain,
+                    index_shape=array_shape,
+                )
+            else:
+                morph, step_args = self._resolve_draw_morphism(
+                    draw, bound_vars, codomain
+                )
             if len(draw.vars) == 1:
                 bound_vars[draw.vars[0]] = morph.codomain
             elif isinstance(morph, MonadicProgram) and (not morph._return_is_single):
@@ -3978,6 +4042,75 @@ class _ProgramsMixin:
             draw.line,
             draw.col,
         )
+
+    def _independent_over_axes(
+        self, family: str, axes: AxisSpec | None, line: int, col: int
+    ) -> tuple[tuple[int, ...], AxisSpec | None] | None:
+        """Split an ``[over=...]`` clause into independent axes and event axes.
+
+        A family of event rank ``r`` drawn ``[over=[X1, ..., Xn]]`` with
+        ``n > r`` draws an independent array over the leading
+        ``n - r`` axes of one variate on the trailing ``r``: a
+        ``Normal`` over ``[B, C]`` is a ``(|B|, |C|)`` array of
+        independent normals, a ``Dirichlet`` over ``[B, K]`` one
+        ``K``-simplex point per element of ``B``. The value holds every
+        listed axis in order, after the plate of an index annotation.
+
+        Parameters
+        ----------
+        family : str
+            The family the step draws from.
+        axes : AxisSpec | None
+            The step's axis-role clause.
+        line : int
+            The step's source line, for diagnostics.
+        col : int
+            The step's source column, for diagnostics.
+
+        Returns
+        -------
+        tuple[tuple[int, ...], AxisSpec | None] | None
+            The extents of the independent axes and the clause naming
+            the event axes alone (``None`` for a scalar family), or
+            ``None`` when the clause names no independent axis beyond
+            the single axis of a scalar family, which the family's own
+            codomain carries.
+
+        Raises
+        ------
+        CompileError
+            If a matrix-valued family names independent axes, or an
+            axis names no finite object.
+        """
+        record = FAMILIES.get(family)
+        if axes is None or record is None or get_inline_param_names(family) is None:
+            return None
+        rank = record.event_rank
+        over = tuple(axes.over)
+        independent = over[: max(0, len(over) - rank)]
+        if not independent or (rank == 0 and len(over) == 1):
+            return None
+        if rank > 1 or self._matrix_family_spec(family) is not None:
+            raise CompileError(
+                f"matrix-valued family {family!r} draws one variate over its "
+                f"event axes and takes no further independent axes, but "
+                f"`over` lists {len(over)}: {', '.join(over)}",
+                line,
+                col,
+            )
+        sizes: list[int] = []
+        for name in independent:
+            obj = self._objects.get(name)
+            if not isinstance(obj, SetObject):
+                raise CompileError(
+                    f"`over` axis {name!r} of a {family} draw must name a "
+                    f"finite object to index an independent array",
+                    line,
+                    col,
+                )
+            sizes.append(int(obj.size))
+        event = over[len(independent) :]
+        return tuple(sizes), (axes.with_(over=event, iid_over=()) if event else None)
 
     def _axes_codomain(self, axes):
         """Translate an `AxisSpec`'s ``over`` clause into a

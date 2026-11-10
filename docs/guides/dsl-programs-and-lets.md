@@ -341,8 +341,9 @@ option block, before any trailing `~ Family(...)` initializer:
 ```
 
 `over=<axes>` names the **event axes**: the axes on which the
-family's joint structure lives. The axis count must match the
-family's declared `event_rank` (0 for scalar families like Normal /
+family's joint structure lives. On a `morphism` declaration the axis
+count must match the family's declared `event_rank`, and on a `sample`
+step it must be at least that rank, as described below (0 for scalar families like Normal /
 Beta / Gamma; 1 for vector families like
 [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal),
 [`Dirichlet`](../api/continuous/families.md#quivers.continuous.families.ConditionalDirichlet),
@@ -360,6 +361,20 @@ ordering (for asymmetric families like `MatrixNormal`, the first
 axis is the row axis, the second the column axis). The full
 event-rank table lives in
 [continuous families](continuous-families.md#event-rank-and-axis-role-syntax).
+
+On a `sample` step, `over` may list more axes than the family's event
+rank. The leading axes beyond the event rank then index an independent
+array of variates, and the trailing ones are the family's event axes:
+`sample w : A <- Normal(loc=0.0, scale=1.0) [over=[B, C]]` draws an
+`(A, B, C)` array of independent normals, and `sample p : A <-
+Dirichlet(concentration=1.0) [over=[B, K]]` draws one `K`-simplex point
+per element of `A` and `B`, an `(A, B, K)` array. The site holds every
+listed axis in the order written, after the plate of the index
+annotation, so a body reads it as `w[a, b, c]`. The independent axes are
+batch axes of the site, exactly as if they were written in `iid_over`. A
+matrix-valued family (event rank 2) takes no such leading axes, and the
+compiler rejects them. A `morphism` declaration's clause keeps the exact
+count below.
 
 `iid_over=<axes>` is an optional readability assertion naming the
 batch axes (the complement of `over`). Any axis not in `over` is
@@ -399,8 +414,9 @@ rebinding.
 
 **Compile-time errors.** Two diagnostics fire here:
 
-- *"axis count does not match family event_rank"*: the family
-  declares event_rank `k` but `over` lists `j ≠ k` axes. Common
+- *"axis count does not match family event_rank"*: on a `morphism`
+  declaration, the family declares event_rank `k` but `over` lists
+  `j ≠ k` axes. Common
   when migrating from a flat
   [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal)
   (event_rank 1) to a matrix
