@@ -2346,7 +2346,14 @@ def _infer_domain(
     components = []
     for vn in var_names:
         vtype = _argument_type(vn, variable_types)
-        if vtype is not None:
+        if isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
+            # A plate-row parameter contributes one row of its plate to
+            # each row of the stacked input, not the whole plate.
+            label = vn.name if isinstance(vn, Indexed) else vn
+            components.append(
+                Euclidean(name=f"_inline_{label}", dim=vtype.row_width)
+            )
+        elif vtype is not None:
             components.append(vtype)
         else:
             label = vn.name if isinstance(vn, Indexed) else vn
