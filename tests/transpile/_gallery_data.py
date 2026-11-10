@@ -25,11 +25,15 @@ import shutil
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import torch
 from torch.distributions import constraints
 
 from quivers.continuous import ContinuousMorphism, Draw, MonadicProgram, Observe
+from quivers.dsl import loads
+from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.types import IndexLiteral
 from tests.transpile.probes._protocol import Point
 from tests.transpile.probes.qvr import QvrProbe
 
@@ -349,6 +353,11 @@ class GalleryDataset:
     instantiated MonadicProgram. The QVR probe consumes this directly
     rather than re-parsing the source, so it sees the same template
     instance the data was generated under."""
+
+    shared_plates: dict[str, int] = dataclasses.field(default_factory=dict)
+    """The plate extent of each datum supplied as one value every row of
+    that plate shares. See
+    [`_shared_plates`][tests.transpile._gallery_data._shared_plates]."""
 
 
 def md_path_for(source_qvr: Path) -> Path:
@@ -897,6 +906,8 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         source_qvr.stem,
     )
 
+    shared_plates = _shared_plates(source_qvr, obs_tensors)
+
     single_row = _program_is_plateless(source_qvr)
     if single_row:
         # The program denotes one row and every backend emits one, so
@@ -924,7 +935,108 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         ),
         single_row=single_row,
         monadic=monadic,
+        shared_plates=shared_plates,
     )
+
+
+def _shared_plates(
+    source_qvr: Path, observations: dict[str, torch.Tensor]
+) -> dict[str, int]:
+    """The data supplied as one value every row of a plate shares.
+
+    A datum that fills a family parameter of a plated draw directly is
+    checked as one value per row of that plate; the snippet may supply
+    it without the row axis, as one value every row shares. The
+    reference machine and the compiled runtime read it as given, and
+    every transpile target declares the per-row shape, so
+    [`target_point`][tests.transpile._gallery_data.target_point] hands
+    each such datum to a target spread across the plate, as
+    [`broadcast_shared_data`][quivers.qiec.broadcast_shared_data] does.
+
+    Parameters
+    ----------
+    source_qvr : Path
+        The example's QVR source.
+    observations : dict[str, torch.Tensor]
+        The snippet's observations, by name.
+
+    Returns
+    -------
+    dict[str, int]
+        The plate's extent for each datum supplied without its axis.
+    """
+    module = loads(source_qvr.read_text()).qiec
+    if module is None:
+        return {}
+    shared: dict[str, int] = {}
+    for entry in module.entries:
+        for parameter in entry.parameters:
+            value = observations.get(parameter.name)
+            if not parameter.per_row or value is None:
+                continue
+            shape = tensor_shape(parameter.type)
+            if shape is None or not shape[1]:
+                continue
+            plate = shape[1][0]
+            if isinstance(plate, IndexLiteral) and value.dim() == len(shape[1]) - 1:
+                shared[parameter.name] = int(plate.value)
+    return shared
+
+
+type PointSection = dict[str, float | int | list[float] | list[int]]
+"""One section of a point as it crosses the probe boundary."""
+
+
+def target_point(dataset: GalleryDataset, point: Point) -> dict[str, PointSection]:
+    """A point as a transpile target reads it, shared data spread.
+
+    Parameters
+    ----------
+    dataset : GalleryDataset
+        The example's data, naming the shared data.
+    point : Point
+        The point.
+
+    Returns
+    -------
+    dict[str, PointSection]
+        The point's ``params`` and ``data``, each shared datum repeated
+        once per row of its plate in row-major order.
+    """
+    data: PointSection = dict(point.data)
+    for name, rows in dataset.shared_plates.items():
+        if name not in data:
+            continue
+        value = data[name]
+        if isinstance(value, list):
+            data[name] = cast(list[float], value) * rows
+        else:
+            data[name] = [float(value)] * rows
+    return {"params": point.params, "data": data}
+
+
+def target_shapes(
+    dataset: GalleryDataset, shapes: dict[str, list[int]]
+) -> dict[str, list[int]]:
+    """A shape table with each shared datum's plate axis restored.
+
+    Parameters
+    ----------
+    dataset : GalleryDataset
+        The example's data, naming the shared data.
+    shapes : dict[str, list[int]]
+        The shape of each name as the dataset holds it.
+
+    Returns
+    -------
+    dict[str, list[int]]
+        The shapes, each shared datum led by its plate's extent.
+    """
+    spread = dict(shapes)
+    for name, rows in dataset.shared_plates.items():
+        if name in spread:
+            spread[name] = [rows, *spread[name]]
+    return spread
 
 
 def _program_is_plateless(source_qvr: Path) -> bool:

@@ -1230,9 +1230,9 @@ def test_gallery_backend_logdensity_matches_qvr(
         script=script_path,
         source=emitted,
         source_ext=ext,
-        points=[{"params": point.params, "data": point.data} for point in points],
+        points=[_gallery_data.target_point(dataset, point) for point in points],
         scratch=scratch,
-        shapes=_shapes_from_dataset(dataset),
+        shapes=_gallery_data.target_shapes(dataset, _shapes_from_dataset(dataset)),
         dtypes=_dtypes_from_dataset(dataset),
     )
 
