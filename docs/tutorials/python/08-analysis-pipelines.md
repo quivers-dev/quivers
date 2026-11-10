@@ -482,7 +482,7 @@ for col in result.formula.fixed_columns:
     print(f"  {col.qvr_name}: term={col.term!r}, is_intercept={col.is_intercept}")
 ```
 
-The lens behind the scenes (`FormulaToQVRModule`) is a typed [`dx.Lens`](https://github.com/aaronstevenwhite/didactic) whose forward emits `(Module, FormulaData)`. `FormulaData` is the strict subset of the formula that isn't encoded in the QVR program: the per-row data arrays, the original (pre-`_qvr_name`) identifier names, presentation labels, the formula string itself. Calling `lens.backward(module, complement)` decodes the structural skeleton out of the Module and fuses it with the complement to reproduce the original `Formula` byte-for-byte. See the [formulas API reference](../../api/formulas/compile.md) for the full lens signature.
+The lens behind the scenes (`FormulaToQVRModule`) is a typed [`dx.Lens`](https://github.com/aaronstevenwhite/didactic) whose forward emits `(Module, FormulaData)`. `FormulaData` is the strict subset of the formula that isn't encoded in the QVR program: the per-row data arrays, the original (pre-`_qvr_name`) identifier names, presentation labels, the formula string itself. Calling `lens.backward(module, complement)` decodes the structural skeleton out of the Module and fuses it with the complement to reproduce the original `Formula` byte-for-byte: `lens.backward(module, complement) == formula` holds, and formula equality compares every field, the per-row arrays included. See the [formulas API reference](../../api/formulas/compile.md) for the full lens signature.
 
 ## Next
 
