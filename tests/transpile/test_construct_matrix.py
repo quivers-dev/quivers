@@ -182,6 +182,11 @@ for _backend in ("bugs", "church", "gen", "jags", "stan", "turing"):
         "let-expr:axis-reduction"
     )
 
+# A site drawn over more `over` axes than its family's event rank is
+# plated over several axes, and a WebPPL draw carries one batch axis.
+for _fixture in ("scalar_independent_array", "vector_independent_array"):
+    _EXPECTED_ORTHOGONAL_RAISES[("webppl", "axes", _fixture)] = "batch-rank:"
+
 for _backend in _BACKENDS:
     for _fixture in ("encoder_decl", "decoder_decl"):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "statements", _fixture)] = (
