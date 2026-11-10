@@ -123,8 +123,9 @@ _SYNTAX_CHECKS: dict[str, tuple[str, list[str], str | None]] = {
 # 1. Composition and contraction declarations still have no executable
 #    QIEC entry, so those examples fail before target capability analysis.
 # 2. Executable search computations (`schema_chart_parser` and the
-#    deduction call in `montague_nli`) reach the QIEC boundary, which
-#    refuses them on every target for want of a search runtime.
+#    deduction calls in `montague_nli`, `multimodal_tlg`,
+#    `quantifier_scope`, and `type_logical`) reach the QIEC boundary,
+#    which refuses them on every target for want of a search runtime.
 # 3. The term autoencoder reaches the same boundary with typed structural
 #    computations, which require a neural attachment no target provides.
 #
@@ -176,7 +177,13 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
     #    on every target: the deduction enumerates its derivations
     #    through a search handler no target runtime carries.
     **{
-        (backend, "montague_nli"): "qiec:capability:search"
+        (backend, stem): "qiec:capability:search"
+        for stem in (
+            "montague_nli",
+            "multimodal_tlg",
+            "quantifier_scope",
+            "type_logical",
+        )
         for backend in (
             "bugs",
             "church",
