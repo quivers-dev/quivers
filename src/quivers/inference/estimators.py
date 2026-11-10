@@ -24,6 +24,12 @@ applicability:
   reject-sampled families). Highest variance; pair with a
   baseline whenever possible.
 
+Objectives pass per-particle log-weights when the guide draws
+stratified particles (`Guide.rsample_strata`, as for
+`AutoMixtureGuide`); the estimators then weight each particle's
+term by its stratum weight. `DoublyReparameterized` rejects
+stratified particles.
+
 Estimators are *strategies* held by `Objective`
 implementations; they don't store any state themselves and
 operate on tensors only. The `Reparameterized` instance
@@ -54,6 +60,7 @@ class GradientEstimator(ABC):
         log_p: torch.Tensor,
         log_q: torch.Tensor,
         log_q_detached: torch.Tensor | None = None,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return the scalar loss whose gradient is the chosen
         estimator.
@@ -74,6 +81,28 @@ class GradientEstimator(ABC):
             with the variational parameters detached from the
             autograd graph. Required by sticking-the-landing and
             DReG; ignored by the basic estimators.
+        log_weights : torch.Tensor or None
+            Log-weights of the particles, broadcastable to
+            ``log_p``'s shape, with ``logsumexp`` over the particle
+            axis equal to zero. They are supplied when the particles
+            are stratified draws (see `Guide.rsample_strata`): the
+            weighted sum :math:`\\sum_n \\omega_n f(z_n)` is then the
+            unbiased estimate of :math:`\\mathbb{E}_q[f]`, and the
+            weights carry gradient to the variational parameters
+            that set them (such as mixture logits). ``None`` means the
+            particles are independent draws from :math:`q` with equal
+            weight :math:`1/K`.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss.
+
+        Raises
+        ------
+        RuntimeError
+            If the estimator needs an input the caller did not
+            supply, or cannot be applied to stratified particles.
         """
         ...
 
@@ -94,17 +123,17 @@ class Reparameterized(GradientEstimator):
         log_p: torch.Tensor,
         log_q: torch.Tensor,
         log_q_detached: torch.Tensor | None = None,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del log_q_detached
         # ELBO with K particles:
-        #   L = (1/K) Σ_k [ log p(z_k) − log q(z_k) ]    (ELBO, K=1: standard ELBO)
-        # IWAE with K particles:
-        #   L = logsumexp_k [ log p(z_k) − log q(z_k) ] − log K
-        # We don't decide which here; that's the Objective's
-        # job. We return the per-particle term log p − log q
-        # negated and averaged over (K, batch).
+        #   L = Σ_k ω_k [ log p(z_k) − log q(z_k) ],  ω_k = 1/K for i.i.d. draws
+        # Stratified draws carry their own ω_k, which stay in the
+        # graph so the gradient reaches the parameters that set them.
         diff = log_p - log_q
-        return -(diff.mean())
+        if log_weights is None:
+            return -(diff.mean())
+        return -((log_weights.exp() * diff).sum(dim=0).mean())
 
 
 class StickingTheLanding(GradientEstimator):
@@ -130,6 +159,7 @@ class StickingTheLanding(GradientEstimator):
         log_p: torch.Tensor,
         log_q: torch.Tensor,
         log_q_detached: torch.Tensor | None = None,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if log_q_detached is None:
             raise RuntimeError(
@@ -141,7 +171,12 @@ class StickingTheLanding(GradientEstimator):
             )
         del log_q
         diff = log_p - log_q_detached
-        return -(diff.mean())
+        if log_weights is None:
+            return -(diff.mean())
+        # The dropped direct term has zero expectation under the
+        # stratified weights as well, since Σ_s ω_s E_{q_s}[g] = E_q[g];
+        # the weights themselves keep their gradient.
+        return -((log_weights.exp() * diff).sum(dim=0).mean())
 
 
 class DoublyReparameterized(GradientEstimator):
@@ -174,6 +209,7 @@ class DoublyReparameterized(GradientEstimator):
         log_p: torch.Tensor,
         log_q: torch.Tensor,
         log_q_detached: torch.Tensor | None = None,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if log_q_detached is None:
             raise RuntimeError(
@@ -181,6 +217,16 @@ class DoublyReparameterized(GradientEstimator):
                 "log_q_detached (log q evaluated with the variational "
                 "parameters detached). The IWAE objective produces this "
                 "natively; confirm the objective is IWAEBound."
+            )
+        if log_weights is not None:
+            raise RuntimeError(
+                "DoublyReparameterized: the guide supplies stratified "
+                "particles (for instance, an AutoMixtureGuide enumerates its "
+                "components). The DReG identity rewrites the score of the "
+                "density each particle was drawn from, and stratified "
+                "particles are drawn from the strata rather than from q, so "
+                "the surrogate would be biased. Use estimator=Reparameterized() "
+                "or estimator=StickingTheLanding() with this guide."
             )
         if log_p.dim() < 1:
             raise RuntimeError(
@@ -215,6 +261,7 @@ class ScoreFunction(GradientEstimator):
         log_p: torch.Tensor,
         log_q: torch.Tensor,
         log_q_detached: torch.Tensor | None = None,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del log_q_detached
         # Score-function estimator: ∇φ E_q[f(z)] = E_q[f(z) ∇φ log q(z)].
@@ -222,7 +269,11 @@ class ScoreFunction(GradientEstimator):
         # gradient: detach f(z) so it contributes as a scalar
         # weight on the score ∇φ log q(z).
         f = (log_p - log_q).detach()
-        return -((f * log_q).mean())
+        if log_weights is None:
+            return -((f * log_q).mean())
+        # E_q[f ∇ log q] is itself an expectation under q, so the
+        # stratified draws estimate it with detached weights.
+        return -((log_weights.exp().detach() * f * log_q).sum(dim=0).mean())
 
 
 __all__ = [

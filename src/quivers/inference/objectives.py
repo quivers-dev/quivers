@@ -15,9 +15,18 @@ strategy that decides how the per-particle log-density tensors
 are turned into a scalar loss whose gradient is the chosen
 estimator. The default is [`quivers.inference.estimators.Reparameterized`][quivers.inference.estimators.Reparameterized].
 
-Per-particle log-densities are stacked along a leading torch
-axis of shape ``(K, batch)`` before the estimator turns them
-into a scalar loss. The particle draws themselves run in a
+Each particle is a call to `Guide.rsample_strata`, which returns
+one or more weighted strata whose weighted average estimates
+expectations under the density `Guide.log_prob` scores. An ordinary
+guide returns one stratum; `AutoMixtureGuide` returns one per
+component, so every objective here becomes its stratified
+counterpart for a mixture guide (the stratified ELBO and SIWAE of
+[Morningstar, Vikram, Ham, Gallagher and Dillon 2021](https://doi.org/10.48550/arXiv.2003.01687)),
+an unbiased estimate of the same quantity for the mixture density,
+with gradients to the mixture logits through the stratum weights.
+Per-draw log-densities are stacked along a leading torch axis of
+shape ``(K * S, batch)``, with a log-weight per draw, before the
+estimator turns them into a scalar loss. The particle draws themselves run in a
 Python ``for`` loop over ``num_particles``, since the model's
 runtime path and the underlying torch.distributions calls are
 not vectorized over a Monte Carlo dimension; the per-step cost
@@ -38,8 +47,10 @@ References
 from __future__ import annotations
 
 import copy
+import math
 from abc import ABC, abstractmethod
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
 
@@ -82,6 +93,70 @@ class Objective(nn.Module, ABC):
 # ---------------------------------------------------------------------------
 
 
+class _ParticleLogDensities(dx.Model):
+    """Per-particle log-densities of a multi-particle objective.
+
+    Parameters
+    ----------
+    log_p
+        Model log-joint at each particle, shape ``(N, batch)``.
+    log_q
+        Guide log-density at each particle, shape ``(N, batch)``.
+    log_q_detached
+        Guide log-density with the variational parameters detached,
+        shape ``(N, batch)``, or ``None`` when not requested.
+    log_weights
+        Log-weight of each particle, shape ``(N, batch)``, with
+        ``logsumexp`` over the particle axis equal to zero. Uniform
+        (``-log N``) for independent draws; for stratified draws the
+        stratum log-weights (minus ``log K``), which keep their
+        gradient to the variational parameters.
+    stratified
+        Whether the guide drew more than one stratum per particle.
+    """
+
+    log_p: torch.Tensor = dx.field(opaque=True)
+    log_q: torch.Tensor = dx.field(opaque=True)
+    log_q_detached: torch.Tensor | None = dx.field(opaque=True)
+    log_weights: torch.Tensor = dx.field(opaque=True)
+    stratified: bool
+
+    @property
+    def estimator_log_weights(self) -> torch.Tensor | None:
+        """The ``log_weights`` argument for a `GradientEstimator`.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The particle log-weights for stratified particles;
+            ``None`` for independent draws from the guide, which the
+            estimators weight uniformly.
+        """
+        return self.log_weights if self.stratified else None
+
+    def log_mean_weight(self, power: float) -> torch.Tensor:
+        """Estimate of :math:`\\log \\mathbb{E}_q[(p / q)^{a}]`.
+
+        Computes :math:`\\log \\sum_n \\omega_n
+        \\exp\\bigl(a (\\log p_n - \\log q_n)\\bigr)`, the log of an
+        unbiased estimate of :math:`\\mathbb{E}_q[(p / q)^{a}]`
+        (plain importance sampling for independent draws, stratified
+        importance sampling for stratified ones).
+
+        Parameters
+        ----------
+        power : float
+            The exponent :math:`a`.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``.
+        """
+        log_w = self.log_p - self.log_q
+        return torch.logsumexp(self.log_weights + power * log_w, dim=0)
+
+
 def _multi_particle_log_densities(
     model: MonadicProgram,
     guide: Guide,
@@ -90,46 +165,95 @@ def _multi_particle_log_densities(
     num_particles: int,
     *,
     need_detached: bool,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Run ``num_particles`` independent guide samples through the
-    model's log-joint and return per-particle log-densities at
-    shape ``(K, batch)``.
+) -> _ParticleLogDensities:
+    """Run ``num_particles`` independent stratified guide draws through
+    the model's log-joint.
 
-    For ``need_detached=True`` we also compute ``log q`` with the
-    guide's parameters detached (needed by sticking-the-landing
-    and DReG); ``None`` otherwise.
+    Each particle calls `Guide.rsample_strata`, which returns ``S``
+    strata (``S = 1`` for a guide whose draws are reparameterized as a
+    whole; one per component for `AutoMixtureGuide`). The ``K * S``
+    stratum draws are stacked along a leading particle axis of size
+    ``N = K * S``, and each carries the log-weight
+    :math:`\\log \\omega_s - \\log K`, so a weighted sum over the
+    particle axis is an unbiased estimate of an expectation under the
+    density that `Guide.log_prob` scores.
+
+    For ``need_detached=True`` ``log q`` is also computed with the
+    guide's parameters detached (needed by sticking-the-landing and
+    DReG).
 
     The particle loop is a Python ``for`` over ``num_particles``,
-    since torch.distributions and the model's runtime path are
-    not vectorized over a Monte Carlo dimension in the current
-    quivers runtime; we stack the outputs into the leading axis
-    after the fact. When ``num_particles == 1`` (the ELBO
-    default) the loop runs once and the cost matches the
-    single-particle ELBO path.
+    since torch.distributions and the model's runtime path are not
+    vectorized over a Monte Carlo dimension.
+
+    Parameters
+    ----------
+    model : MonadicProgram
+        The generative model.
+    guide : Guide
+        The variational guide.
+    x : torch.Tensor
+        Program input.
+    observations : dict[str, torch.Tensor]
+        Observed-site values.
+    num_particles : int
+        Number of independent stratified draws ``K``.
+    need_detached : bool
+        Whether to compute the detached guide log-density.
+
+    Returns
+    -------
+    _ParticleLogDensities
+        The stacked per-particle log-densities and log-weights.
+
+    Raises
+    ------
+    ValueError
+        If the guide returns a different number of strata on
+        different particles.
     """
     log_p_parts: list[torch.Tensor] = []
     log_q_parts: list[torch.Tensor] = []
-    log_q_det_parts: list[torch.Tensor] | None = [] if need_detached else None
+    log_q_det_parts: list[torch.Tensor] = []
+    log_weight_parts: list[torch.Tensor] = []
     detached_guide: Guide | None = None
     if need_detached:
         detached_guide = copy.deepcopy(guide)
         for p in detached_guide.parameters():
             p.requires_grad_(False)
+    num_strata: int | None = None
     for _ in range(num_particles):
-        latents = guide.rsample(x)
-        all_sites = {**latents, **observations}
-        log_p = model.log_joint(x, all_sites)
-        log_q = guide.log_prob(x, latents)
-        log_p_parts.append(log_p)
-        log_q_parts.append(log_q)
-        if log_q_det_parts is not None and detached_guide is not None:
-            log_q_det_parts.append(detached_guide.log_prob(x, latents))
-    log_p_stack = torch.stack(log_p_parts, dim=0)
-    log_q_stack = torch.stack(log_q_parts, dim=0)
-    if log_q_det_parts is None:
-        return log_p_stack, log_q_stack, None
-    log_q_det_stack = torch.stack(log_q_det_parts, dim=0)
-    return log_p_stack, log_q_stack, log_q_det_stack
+        stratum_log_weights, stratum_draws = guide.rsample_strata(x)
+        if num_strata is None:
+            num_strata = len(stratum_draws)
+        elif len(stratum_draws) != num_strata:
+            raise ValueError(
+                f"{type(guide).__name__}.rsample_strata returned "
+                f"{len(stratum_draws)} strata after returning {num_strata}; "
+                f"the stratum count must not vary between particles"
+            )
+        for stratum_log_weight, latents in zip(stratum_log_weights, stratum_draws):
+            all_sites = {**latents, **observations}
+            log_p = model.log_joint(x, all_sites)
+            log_q = guide.log_prob(x, latents)
+            log_p_parts.append(log_p)
+            log_q_parts.append(log_q)
+            log_weight_parts.append(
+                (stratum_log_weight.to(dtype=log_q.dtype) - math.log(num_particles))
+                .reshape(1)
+                .expand_as(log_q)
+            )
+            if detached_guide is not None:
+                log_q_det_parts.append(detached_guide.log_prob(x, latents))
+    return _ParticleLogDensities(
+        log_p=torch.stack(log_p_parts, dim=0),
+        log_q=torch.stack(log_q_parts, dim=0),
+        log_q_detached=(
+            torch.stack(log_q_det_parts, dim=0) if detached_guide is not None else None
+        ),
+        log_weights=torch.stack(log_weight_parts, dim=0),
+        stratified=num_strata is not None and num_strata > 1,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +300,7 @@ class ELBO(Objective):
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
         need_detached = not isinstance(self.estimator, Reparameterized)
-        log_p, log_q, log_q_det = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -184,10 +308,15 @@ class ELBO(Objective):
             self.num_particles,
             need_detached=need_detached,
         )
-        # ELBO loss = − E_q[log p − log q]. With multiple particles
-        # we average over the particle axis; the estimator
-        # determines how the gradient flows.
-        return self.estimator.negative_objective(log_p, log_q, log_q_det)
+        # ELBO loss = − E_q[log p − log q], estimated by the weighted
+        # sum over particles; the estimator determines how the
+        # gradient flows.
+        return self.estimator.negative_objective(
+            particles.log_p,
+            particles.log_q,
+            particles.log_q_detached,
+            log_weights=particles.estimator_log_weights,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +340,13 @@ class IWAEBound(Objective):
     because the naive reparameterized gradient's signal-to-noise
     ratio for the inference network collapses as :math:`K` grows
     (Tucker-Lawson-Gu-Maddison 2019).
+
+    For a guide with several strata per draw (`AutoMixtureGuide`)
+    the bound is the stratified IWAE bound
+    :math:`\\log \\frac{1}{K} \\sum_k \\sum_s \\omega_s\\,
+    p(z_{ks}, y) / q_\\phi(z_{ks})`, still a lower bound on
+    :math:`\\log p(y)`. `DoublyReparameterized` does not apply to
+    stratified draws and raises; pass ``estimator=Reparameterized()``.
     """
 
     def __init__(
@@ -238,7 +374,7 @@ class IWAEBound(Objective):
         # for plain reparameterized IWAE we still compute it so
         # the estimator interface is uniform.
         need_detached = True
-        log_p, log_q, log_q_det = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -248,17 +384,17 @@ class IWAEBound(Objective):
         )
         # If the chosen estimator is DReG, hand the surrogate
         # construction off to it (it builds the importance-weight²
-        # surrogate). For non-DReG estimators we use the standard
-        # logsumexp IWAE bound and pipe it through the estimator
-        # for variance-reduction tweaks (sticking-the-landing) or
-        # high-variance score-function path.
+        # surrogate, and rejects stratified particles). For other
+        # estimators the loss is the IWAE bound itself,
+        # log Σ_n ω_n p_n / q_n (SIWAE for stratified particles).
         if isinstance(self.estimator, DoublyReparameterized):
-            return self.estimator.negative_objective(log_p, log_q, log_q_det)
-        # Standard IWAE surrogate: logsumexp_k [log p_k - log q_k] - log K
-        log_w = log_p - log_q
-        bound = torch.logsumexp(log_w, dim=0) - torch.log(
-            torch.tensor(float(self.num_particles), device=log_w.device)
-        )
+            return self.estimator.negative_objective(
+                particles.log_p,
+                particles.log_q,
+                particles.log_q_detached,
+                log_weights=particles.estimator_log_weights,
+            )
+        bound = particles.log_mean_weight(1.0)
         # Return the negated bound averaged over the batch.
         return -(bound.mean())
 
@@ -319,7 +455,7 @@ class RenyiBound(Objective):
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
         need_detached = not isinstance(self.estimator, Reparameterized)
-        log_p, log_q, _ = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -327,13 +463,9 @@ class RenyiBound(Objective):
             self.num_particles,
             need_detached=need_detached,
         )
-        # log E_q[(p/q)^{1-α}] ≈ logsumexp_k[(1-α)(log p - log q)] - log K
+        # log E_q[(p/q)^{1-α}] ≈ log Σ_n ω_n (p_n / q_n)^{1-α}
         a = 1.0 - self.alpha
-        log_w = log_p - log_q
-        logsumexp = torch.logsumexp(a * log_w, dim=0) - torch.log(
-            torch.tensor(float(self.num_particles), device=log_w.device)
-        )
-        bound = logsumexp / a
+        bound = particles.log_mean_weight(a) / a
         return -(bound.mean())
 
 
@@ -389,7 +521,7 @@ class VRIWAEBound(Objective):
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
         need_detached = not isinstance(self.estimator, Reparameterized)
-        log_p, log_q, _ = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -398,11 +530,7 @@ class VRIWAEBound(Objective):
             need_detached=need_detached,
         )
         a = 1.0 - self.alpha
-        log_w = log_p - log_q
-        logsumexp = torch.logsumexp(a * log_w, dim=0) - torch.log(
-            torch.tensor(float(self.num_particles), device=log_w.device)
-        )
-        bound = logsumexp / a
+        bound = particles.log_mean_weight(a) / a
         return -(bound.mean())
 
 
@@ -466,7 +594,7 @@ class ChiVI(Objective):
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
         need_detached = not isinstance(self.estimator, Reparameterized)
-        log_p, log_q, _ = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -475,12 +603,8 @@ class ChiVI(Objective):
             need_detached=need_detached,
         )
         # CUBO_n = (1/n) log E_q [ (p/q)^n ]
-        #        ≈ (1/n) [ logsumexp_k (n * (log p - log q)) - log K ]
-        log_w = log_p - log_q
-        logsumexp = torch.logsumexp(self.n * log_w, dim=0) - torch.log(
-            torch.tensor(float(self.num_particles), device=log_w.device)
-        )
-        cubo = logsumexp / self.n
+        #        ≈ (1/n) log Σ_n ω_n (p_n / q_n)^n
+        cubo = particles.log_mean_weight(self.n) / self.n
         # Minimise CUBO directly (it's an upper bound; we want it
         # small). Loss is the batch mean without negation.
         return cubo.mean()
@@ -546,7 +670,7 @@ class RWS(Objective):
         # the wake-guide surrogate is E_q[w * log q] with w computed
         # from the current (detached) guide but scored under the
         # differentiable guide.
-        log_p, log_q, log_q_det = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -554,11 +678,16 @@ class RWS(Objective):
             self.num_particles,
             need_detached=True,
         )
-        # Self-normalised importance weights from the detached
-        # log-densities (no gradient through the weights).
+        log_p = particles.log_p
+        log_q = particles.log_q
+        log_q_det = particles.log_q_detached
+        assert log_q_det is not None
+        # Self-normalised importance weights ω_n p_n / q_n from the
+        # detached log-densities (no gradient through the weights).
+        # The particle weights ω_n are uniform for independent draws
+        # and the stratum weights for stratified ones.
         with torch.no_grad():
-            log_q_ref = log_q_det if log_q_det is not None else log_q.detach()
-            log_w = log_p.detach() - log_q_ref
+            log_w = particles.log_weights + log_p.detach() - log_q_det
             log_norm = torch.logsumexp(log_w, dim=0, keepdim=True)
             w_tilde = torch.exp(log_w - log_norm)
         # Wake-theta: -E_q[w_tilde * log p]. Guide is treated as the
@@ -596,6 +725,11 @@ class DReGsBound(Objective):
     and can be attached to any objective through the ``estimator``
     argument.
 
+    The DReG surrogate requires independent draws from the
+    guide; with a stratified guide (`AutoMixtureGuide`) it raises,
+    and `IWAEBound` with ``estimator=Reparameterized()`` gives the
+    stratified bound instead.
+
     Parameters
     ----------
     num_particles : int
@@ -618,7 +752,7 @@ class DReGsBound(Objective):
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        log_p, log_q, log_q_det = _multi_particle_log_densities(
+        particles = _multi_particle_log_densities(
             model,
             guide,
             x,
@@ -626,7 +760,12 @@ class DReGsBound(Objective):
             self.num_particles,
             need_detached=True,
         )
-        return self.estimator.negative_objective(log_p, log_q, log_q_det)
+        return self.estimator.negative_objective(
+            particles.log_p,
+            particles.log_q,
+            particles.log_q_detached,
+            log_weights=particles.estimator_log_weights,
+        )
 
 
 __all__ = [

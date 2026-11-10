@@ -7,24 +7,45 @@ A finite mixture of component guides:
     q(z) = \\sum_{k=1}^{K} \\pi_k\\, q_k(z),
 
 with :math:`\\pi \\in \\Delta^{K-1}` parameterized by an
-unconstrained logit vector. Sampling draws a component index
-:math:`k \\sim \\mathrm{Categorical}(\\pi)` (Gumbel-Softmax-relaxed
-during training so the choice is reparameterized) and then samples
-:math:`z \\sim q_k`. Log-density uses ``logsumexp``:
+unconstrained logit vector. Log-density uses ``logsumexp``:
 
 .. math::
 
     \\log q(z) = \\mathrm{logsumexp}_k\\bigl(
         \\log \\pi_k + \\log q_k(z)\\bigr).
 
-The component guides may be of any `Guide` subclass. The
-canonical use case is to wrap several `AutoNormalGuide`
-instances to recover a multimodal posterior that no single
-unimodal guide can capture.
+Sampling (`AutoMixtureGuide.rsample`) draws a component index
+:math:`k \\sim \\mathrm{Categorical}(\\pi)` and then
+:math:`z \\sim q_k`, so its draws follow exactly the density that
+`AutoMixtureGuide.log_prob` scores. The component choice is
+discrete, so these draws carry no gradient to the mixture logits.
 
-Gradients flow through both the component variational parameters
-(via reparameterization inside each component) and the mixture
-logits (via the Gumbel-Softmax relaxation of the component pick).
+Training instead goes through `AutoMixtureGuide.rsample_strata`,
+which enumerates the components: it returns one reparameterized
+draw per component together with the log mixture weights. Every
+variational objective in [`quivers.inference.objectives`][quivers.inference.objectives]
+consumes these strata, so the ELBO becomes the stratified ELBO
+
+.. math::
+
+    \\mathcal{L}(\\phi) = \\sum_{k=1}^{K} \\pi_k\\,
+        \\mathbb{E}_{z \\sim q_k}\\bigl[\\log p(z, y) - \\log q(z)\\bigr],
+
+and the importance-weighted bounds become their stratified
+counterparts (SIWAE), following Morningstar, Vikram, Ham, Gallagher,
+and Dillon (2021),
+[Automatic Differentiation Variational Inference with Mixtures](https://proceedings.mlr.press/v130/morningstar21b.html)
+([doi:10.48550/arXiv.2003.01687](https://doi.org/10.48550/arXiv.2003.01687)).
+The estimate is unbiased for the objective of the mixture density
+that `log_prob` scores; gradients reach the component parameters
+through each component's reparameterized draw and reach the mixture
+logits through the finite sum over components.
+
+The component guides may be of any `Guide` subclass, including
+another `AutoMixtureGuide`, whose strata are then enumerated
+recursively. The canonical use case is to wrap several
+`AutoNormalGuide` instances to recover a multimodal posterior that
+no single unimodal guide can capture.
 """
 
 from __future__ import annotations
@@ -45,16 +66,15 @@ class AutoMixtureGuide(Guide):
         Component guides. All components must share the same
         `LatentRegistry` (i.e. be built against the same
         model + observed-name set).
-    init_temperature : float
-        Initial Gumbel-Softmax temperature. Default ``1.0``;
-        anneal toward zero for sharper component selection.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two components are given, or if the
+        components cover different latent names.
     """
 
-    def __init__(
-        self,
-        components: list[Guide],
-        init_temperature: float = 1.0,
-    ) -> None:
+    def __init__(self, components: list[Guide]) -> None:
         super().__init__()
         if len(components) < 2:
             raise ValueError(
@@ -70,79 +90,99 @@ class AutoMixtureGuide(Guide):
                     f"latent names {comp_names!r} than component 0 "
                     f"{ref_names!r}"
                 )
-        if init_temperature <= 0.0:
-            raise ValueError(
-                f"AutoMixtureGuide: init_temperature must be positive, "
-                f"got {init_temperature}"
-            )
         self._registry = reference.registry
+        self._component_guides: list[Guide] = list(components)
         self.components = nn.ModuleList(components)
         self.mixture_logits = nn.Parameter(torch.zeros(len(components)))
-        self._temperature: torch.Tensor
-        self.register_buffer("_temperature", torch.tensor(float(init_temperature)))
 
     @property
     def num_components(self) -> int:
+        """Number of mixture components."""
         return len(self.components)
 
-    @property
-    def temperature(self) -> float:
-        """Current Gumbel-Softmax temperature."""
-        return float(self._temperature.item())
+    def mixture_weights(self) -> torch.Tensor:
+        """Mixture weights :math:`\\pi = \\mathrm{softmax}(\\text{logits})`.
 
-    def set_temperature(self, value: float) -> None:
-        """Anneal the Gumbel-Softmax temperature."""
-        if value <= 0.0:
-            raise ValueError(
-                f"AutoMixtureGuide.set_temperature: must be positive, got {value}"
-            )
-        self._temperature.fill_(float(value))
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(K,)``, non-negative and summing to one.
+        """
+        return F.softmax(self.mixture_logits, dim=-1)
 
     # ------------------------------------------------------------------
     # Sampling
     # ------------------------------------------------------------------
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Reparameterized mixture draw via Gumbel-Softmax.
+        """Draw from the mixture density that `log_prob` scores.
 
-        Each call samples a Gumbel-Softmax weight vector
-        :math:`w \\in \\Delta^{K-1}` and returns
-        :math:`\\sum_k w_k \\cdot v^{(k)}` per site, where
-        :math:`v^{(k)}` is component ``k``'s constrained-space
-        sample. Because the constrained-space sites' supports are
-        not in general convex (e.g. a Cholesky factor on
-        `torch.distributions.constraints.corr_cholesky`), the
-        soft mixture can drift outside any single component's
-        support during training; the categorical-pick fallback in
-        `hard_rsample` returns a single component's sample
-        for use at inference time.
+        Samples a component index :math:`k \\sim
+        \\mathrm{Categorical}(\\pi)` and returns component ``k``'s
+        reparameterized draw. One index is drawn per call and shared
+        across the batch rows, so a plate latent and the per-row
+        latents of every row come from the same component, matching
+        the per-row joint density `log_prob` evaluates.
+
+        Gradients reach the chosen component's parameters but not
+        the mixture logits, since the component choice is discrete.
+        The variational objectives train the logits through
+        `rsample_strata` instead.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input. Shape ``(batch, ...)``.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Per-site constrained draws from the mixture.
         """
-        gumbel_logits = (
-            self.mixture_logits
-            - torch.empty_like(self.mixture_logits).exponential_().log()
-        )
-        w = F.softmax(gumbel_logits / self._temperature, dim=-1)
-        component_samples = [comp.rsample(x) for comp in self.components]
-
-        result: dict[str, torch.Tensor] = {}
-        for site_name in self._registry.names:
-            stacked = torch.stack(
-                [comp_samples[site_name] for comp_samples in component_samples],
-                dim=0,
+        with torch.no_grad():
+            index = int(
+                torch.distributions.Categorical(logits=self.mixture_logits)
+                .sample()
+                .item()
             )
-            # Broadcast w against the stacked shape.
-            broadcast_shape = (self.num_components,) + (1,) * (stacked.dim() - 1)
-            result[site_name] = (w.reshape(broadcast_shape) * stacked).sum(dim=0)
-        return result
+        return self._component_guides[index].rsample(x)
 
-    def hard_rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Categorical-pick variant: sample a component index and
-        return that component's draw verbatim. Use at inference
-        time when soft-mixture interpolation would violate a
-        support constraint."""
-        probs = F.softmax(self.mixture_logits, dim=-1)
-        k = int(torch.distributions.Categorical(probs=probs).sample().item())
-        return self.components[k].rsample(x)
+    def rsample_strata(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+        """Enumerate the components as strata.
+
+        Each component contributes its own strata (one for an
+        ordinary component, several for a nested mixture), with the
+        component's log mixture weight added to their log-weights.
+        The resulting weights sum to one and the strata partition
+        the mixture density, so
+        :math:`\\sum_s \\omega_s f(z_s)` estimates
+        :math:`\\mathbb{E}_q[f]` without bias, with gradients to the
+        mixture logits through :math:`\\omega_s`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input. Shape ``(batch, ...)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
+            Log-weights of shape ``(S,)`` and the ``S`` per-site
+            draws, where ``S`` is the total stratum count over the
+            components.
+        """
+        log_pi = F.log_softmax(self.mixture_logits, dim=-1)
+        log_weight_parts: list[torch.Tensor] = []
+        draws: list[dict[str, torch.Tensor]] = []
+        for k, component in enumerate(self._component_guides):
+            component_log_weights, component_draws = component.rsample_strata(x)
+            log_weight_parts.append(
+                log_pi[k] + component_log_weights.to(dtype=log_pi.dtype)
+            )
+            draws.extend(component_draws)
+        return torch.cat(log_weight_parts, dim=0), draws
 
     # ------------------------------------------------------------------
     # Log-density
@@ -153,15 +193,29 @@ class AutoMixtureGuide(Guide):
         x: torch.Tensor,
         sites: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Mixture log-density via logsumexp over components."""
+        """Mixture log-density via logsumexp over components.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input. Shape ``(batch, ...)``.
+        sites : dict[str, torch.Tensor]
+            Per-site constrained values to score.
+
+        Returns
+        -------
+        torch.Tensor
+            :math:`\\log \\sum_k \\pi_k q_k(z)`, shape ``(batch,)``.
+        """
         log_pi = F.log_softmax(self.mixture_logits, dim=-1)
         component_log_probs = torch.stack(
-            [comp.log_prob(x, sites) for comp in self.components], dim=0
+            [comp.log_prob(x, sites) for comp in self._component_guides], dim=0
         )
         return torch.logsumexp(log_pi.unsqueeze(-1) + component_log_probs, dim=0)
 
     @property
     def latent_names(self) -> list[str]:
+        """Names of the latent sites the mixture covers."""
         return list(self._registry.names)
 
 

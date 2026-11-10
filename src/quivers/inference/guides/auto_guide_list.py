@@ -101,6 +101,46 @@ class AutoGuideList(Guide):
                 result[name] = tensor
         return result
 
+    def rsample_strata(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+        """Product of the parts' strata.
+
+        The parts are independent, so the joint guide's strata are
+        the Cartesian product of the parts' strata: each joint
+        stratum merges one draw per part and carries the sum of the
+        parts' log-weights. A part that is an `AutoMixtureGuide` thus
+        has its components enumerated inside the list guide, and the
+        weights of the product still sum to one.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input. Shape ``(batch, ...)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
+            Log-weights of shape ``(S,)``, where ``S`` is the product
+            of the parts' stratum counts, and the ``S`` merged
+            per-site draws.
+        """
+        joint_log_weights: list[torch.Tensor] = [
+            torch.zeros((), device=x.device, dtype=torch.get_default_dtype())
+        ]
+        joint_draws: list[dict[str, torch.Tensor]] = [{}]
+        for part in self._parts_dict.values():
+            part_log_weights, part_draws = part.rsample_strata(x)
+            next_log_weights: list[torch.Tensor] = []
+            next_draws: list[dict[str, torch.Tensor]] = []
+            for prefix_log_weight, prefix_draw in zip(joint_log_weights, joint_draws):
+                for part_log_weight, part_draw in zip(part_log_weights, part_draws):
+                    next_log_weights.append(prefix_log_weight + part_log_weight)
+                    next_draws.append({**prefix_draw, **part_draw})
+            joint_log_weights = next_log_weights
+            joint_draws = next_draws
+        return torch.stack(joint_log_weights, dim=0), joint_draws
+
     def log_prob(
         self,
         x: torch.Tensor,

@@ -64,7 +64,7 @@ The shipped guides:
 | `AutoNormalizingFlow` | Composed bijector over Normal base | Multimodal or heavy-tailed posteriors; you supply the flow stack. |
 | `AutoIAFGuide` | Inverse autoregressive flow | Flagship NF default; good general-purpose non-Gaussian guide. |
 | `AutoNeuralSplineGuide` | Rational-quadratic spline coupling | Sharper than IAF on bounded support. |
-| `AutoMixtureGuide` | K-component mixture of guides | Multimodal posteriors; specify `num_components`. |
+| `AutoMixtureGuide` | K-component mixture of guides | Multimodal posteriors; pass a list of at least two component guides. The objectives enumerate the components exactly. |
 | `AutoGuideList` | Composition of guides | Assign different guide families to different latent subsets. |
 | `AutoStructured` | Structured Gaussian approximation | Preserve selected posterior dependencies. |
 
@@ -190,7 +190,7 @@ Whenever you're unsure which guide handles a model shape, look at
 ## Try this
 
 - Take the eight-schools model from chapter 3 and run every guide on it, comparing posterior `tau` recovery against the NUTS reference.
-- Take the GMM from chapter 4 and compare `AutoMixtureGuide(num_components=4)` with `AutoNormalGuide`, accounting for label switching when you assess mode recovery.
+- Take the GMM from chapter 4 and compare an `AutoMixtureGuide` over four `AutoNormalGuide` components with a single `AutoNormalGuide`, accounting for label switching when you assess mode recovery.
 - Run `AutoDAIS` on the donut posterior (a non-simply-connected support); compare to `AutoIAFGuide`.
 
 ## Next

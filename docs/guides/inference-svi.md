@@ -118,6 +118,66 @@ z_map = guide.rsample(x)
 log_q = guide.log_prob(x, z_map)
 ```
 
+### AutoMixtureGuide
+
+A mixture guide combines $K$ component guides with learnable weights
+$\pi = \mathrm{softmax}(\texttt{mixture\_logits})$:
+
+$$q_\phi(z) = \sum_{k=1}^{K} \pi_k\, q_k(z).$$
+
+Each component may be any guide, so a mixture of `AutoNormalGuide`
+instances can place one component on each of several separated modes.
+`log_prob` evaluates the mixture density with a log-sum-exp over the
+components. `rsample` draws from that same density: it picks a component
+index $k \sim \mathrm{Categorical}(\pi)$ and returns component $k$'s
+draw, so predictive sampling from a fitted mixture guide reproduces the
+distribution that `log_prob` scores. Its draws carry gradient to the
+chosen component's parameters but not to the mixture logits, since the
+component choice is discrete.
+
+Training does not go through `rsample`. Every objective calls
+[`Guide.rsample_strata`](../api/inference/guide.md#quivers.inference.guides.Guide.rsample_strata),
+which a mixture implements by enumerating its components: one
+reparameterized draw $z_k \sim q_k$ per component, weighted by $\pi_k$.
+The ELBO is thus estimated as the stratified ELBO
+[@morningstar2021mixtures]
+
+$$\mathcal{L}(\phi) = \sum_{k=1}^{K} \pi_k\,
+\mathbb{E}_{q_k}\bigl[\log p(y, z \mid x) - \log q_\phi(z)\bigr],$$
+
+which equals the ELBO of the mixture density exactly. Gradients reach the
+component parameters through each reparameterized draw and reach the
+mixture logits through the finite sum. The importance-weighted objectives
+use the same weights: `IWAEBound` becomes the stratified IWAE bound
+$\log \frac{1}{K'}\sum_{j}\sum_{k} \pi_k\, p(y, z_{jk})/q_\phi(z_{jk})$
+over $K'$ particles, and `RenyiBound`, `VRIWAEBound`, `ChiVI`, and `RWS`
+weight each draw the same way. A mixture nested inside another mixture or
+inside an `AutoGuideList` part is enumerated as well (an `AutoGuideList`
+takes the product of its parts' strata), so each step costs $K$ model
+evaluations per particle.
+
+The `DoublyReparameterized` estimator rewrites the score of the density
+each particle was drawn from, and stratified draws come from the
+components rather than from $q_\phi$. It therefore raises an error with a
+mixture guide; use `IWAEBound(num_particles=K, estimator=Reparameterized())`
+or `StickingTheLanding()` instead.
+
+<!-- python: skip -->
+```python
+from quivers.inference import ELBO, SVI, AutoMixtureGuide, AutoNormalGuide
+
+components = [
+    AutoNormalGuide(conditioned.model, observed_names=set(observations))
+    for _ in range(3)
+]
+guide = AutoMixtureGuide(components)
+svi = SVI(conditioned.model, guide, optimizer, ELBO(num_particles=4))
+
+# After fitting: draws from the mixture density q
+z = guide.rsample(x)
+weights = guide.mixture_weights()
+```
+
 ## Objectives and gradient estimators
 
 The **objective** says what numerical quantity the fit optimizes. The
@@ -167,11 +227,14 @@ loss = iwae(model, guide, x, observations)
 ```
 
 Multi-particle objectives run a Python `for` loop over
-`num_particles`, calling `guide.rsample` and `model.log_joint` once
-per particle and stacking the per-particle log-densities into a
-leading `(K, batch)` axis. `torch.distributions` and the model
-runtime are not vectorized over a Monte Carlo dimension, so `K > 1`
-scales linearly in the particle count.
+`num_particles`, calling `guide.rsample_strata` once per particle and
+`model.log_joint` once per stratum, and stack the per-draw
+log-densities into a leading `(K * S, batch)` axis with a log-weight
+for each draw. An ordinary guide returns a single stratum ($S = 1$, equal
+weights $1/K$); an `AutoMixtureGuide` returns one stratum per component,
+weighted by the mixture weights. `torch.distributions` and the model
+runtime are not vectorized over a Monte Carlo dimension, so the cost
+scales linearly in the number of draws.
 
 ## ELBO: evidence lower bound
 
@@ -230,11 +293,15 @@ loss.backward()  # backprop through both model and guide
 
 Internally, the ELBO:
 
-1. Samples latent variables $z \sim q_\phi(\cdot \mid x, y)$.
+1. Draws latent variables with `guide.rsample_strata()`: one draw
+   $z \sim q_\phi(\cdot \mid x, y)$ with weight $\omega = 1$ for an
+   ordinary guide, or one draw per component with weight $\pi_k$ for an
+   [`AutoMixtureGuide`](#automixtureguide).
 2. Computes $\log p(y, z \mid x)$ via
    [`model.log_joint()`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint).
 3. Computes $\log q_\phi(z \mid x, y)$ via `guide.log_prob()`.
-4. Returns $\frac{1}{n}\sum_i [\log q - \log p]$.
+4. Returns $\frac{1}{n}\sum_i \sum_s \omega_{s} [\log q - \log p]$ over
+   the $n$ particles and their strata $s$.
 
 ## SVI: stochastic variational inference
 
@@ -392,6 +459,13 @@ class MyGuide(Guide):
         raise NotImplementedError()
 ```
 
+The objectives draw through `Guide.rsample_strata`, whose default
+returns the single stratum `[self.rsample(x)]` with weight one. A guide
+whose sampler makes a discrete choice that `rsample` cannot
+reparameterize overrides it to return weighted strata whose weighted
+average estimates expectations under `log_prob`'s density, as
+`AutoMixtureGuide` does.
+
 ## Further reading
 
 - [@durkan2019splines]
@@ -402,3 +476,4 @@ class MyGuide(Guide):
 - [@bornschein2015rws]
 - [@li2016renyi]
 - [@burda2016iwae]
+- [@morningstar2021mixtures]

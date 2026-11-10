@@ -10,6 +10,13 @@ ABC fixes a uniform contract:
   ``(batch, *B.shape)`` or ``(batch,)`` for scalar event shape).
 * `Guide.log_prob` evaluates the variational density of a
   per-site dict and returns a ``(batch,)``-shaped tensor.
+* `Guide.rsample_strata` returns a stratified set of draws whose
+  weighted average estimates expectations under the same density
+  that `Guide.log_prob` scores. The variational objectives consume
+  this method, so a guide whose draws are not reparameterizable as a
+  whole (a finite mixture, whose component choice is discrete) can
+  still be trained with pathwise gradients by enumerating its
+  discrete part exactly.
 
 Every concrete subclass under [`quivers.inference.guides`][quivers.inference.guides] is
 constructed against a `quivers.inference.registry.LatentRegistry`,
@@ -77,6 +84,43 @@ class Guide(nn.Module, ABC):
             model's trace-side convention.
         """
         ...
+
+    def rsample_strata(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+        """Stratified reparameterized draws from :math:`q_\\phi(z \\mid x)`.
+
+        Returns log-weights :math:`\\log \\omega_s` and one draw
+        :math:`z_s \\sim q_s` per stratum :math:`s` such that the
+        strata partition the guide's density,
+        :math:`q_\\phi = \\sum_s \\omega_s\\, q_s` with
+        :math:`\\sum_s \\omega_s = 1`. Thus
+        :math:`\\sum_s \\omega_s f(z_s)` is an unbiased estimate of
+        :math:`\\mathbb{E}_{q_\\phi}[f(z)]` for every ``f``, and
+        :math:`\\sum_s \\omega_s\\, p(z_s) / q_\\phi(z_s)` is an
+        unbiased estimate of :math:`\\int p`. Gradients reach the
+        variational parameters through the reparameterized draws and
+        through the log-weights.
+
+        A guide whose `rsample` is reparameterized returns a single
+        stratum with log-weight zero, which is this default. A guide
+        with a discrete choice inside its sampler (such as
+        `AutoMixtureGuide`) overrides it to enumerate that choice.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input, as for `rsample`.
+
+        Returns
+        -------
+        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
+            The stratum log-weights, shape ``(S,)`` with
+            ``logsumexp == 0``, and the ``S`` per-site draws, each
+            shaped as `rsample`'s output.
+        """
+        log_weights = torch.zeros(1, device=x.device, dtype=torch.get_default_dtype())
+        return log_weights, [self.rsample(x)]
 
     @abstractmethod
     def log_prob(
