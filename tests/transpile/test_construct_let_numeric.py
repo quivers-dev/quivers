@@ -109,6 +109,16 @@ def _real_literals(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _scalar_from_plate(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    mu, y = v["mu"], v["y"]
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu)
+        + D.Normal(mu, 1.0).log_prob(y).sum()
+        + mu * y[0]
+        + y[1]
+    )
+
+
 #: Each fixture's data inputs, as flat lists.
 def _template_substitution(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     effect, y = v["a$effect"], v["y"]
@@ -126,6 +136,7 @@ _DATA: dict[str, dict[str, Host]] = {
     "let_expressions/let_template_substitution": {"y": [0.4, -0.3, 0.8]},
     "let_expressions/let_pow": {"y": [0.4, -0.3, 0.8]},
     "let_expressions/let_real_literals": {"y": [0.2, -0.1, 0.6]},
+    "let_expressions/let_scalar_from_plate": {"y": [1.0, 2.0, 3.0]},
 }
 
 #: Each fixture's clamped points; every site varies across them.
@@ -144,6 +155,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
     ],
     "let_expressions/let_pow": [{"mu": -0.7}, {"mu": 0.3}, {"mu": 1.4}],
     "let_expressions/let_real_literals": [{"mu": -0.4}, {"mu": 0.1}, {"mu": 0.9}],
+    "let_expressions/let_scalar_from_plate": [{"mu": -0.5}, {"mu": 0.5}, {"mu": 1.2}],
 }
 
 #: The shape of every name a point carries; a scalar's is empty.
@@ -154,6 +166,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_template_substitution": {"a$effect": [2], "y": [3]},
     "let_expressions/let_pow": {"mu": [], "y": [3]},
     "let_expressions/let_real_literals": {"mu": [], "y": [3]},
+    "let_expressions/let_scalar_from_plate": {"mu": [], "y": [3]},
 }
 
 #: The integer-valued names of each fixture; every other name is real.
@@ -167,6 +180,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_template_substitution": _template_substitution,
     "let_expressions/let_pow": _pow,
     "let_expressions/let_real_literals": _real_literals,
+    "let_expressions/let_scalar_from_plate": _scalar_from_plate,
 }
 
 
