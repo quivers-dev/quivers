@@ -102,6 +102,7 @@ from quivers.qiec.terms import (
 from quivers.dsl.program_elaboration import GAP_CODE
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.dsl.qiec_lowering import (
+    _replace_locals,
     QiecDiagnosticError,
     has_qiec_surface,
     lower_qvr_to_qiec,
@@ -1036,19 +1037,29 @@ class _ProgramWalk:
                     f"`sample {binder.name} <- {call.name}` to run it in place"
                 ],
             )
-        arguments = tuple(self._expr(argument) for argument in call.arguments)
-        inlined = _inline_pure(callee, arguments)
+        inlined = self._inlined(callee, call, binder)
         arguments_value = TupleValue(call.arguments, binder.type)
         axes = self._inferred_axes(binder.type, arguments_value)
         self.axes[binder.name] = axes
         plate = self._inferred_plate(binder.type, axes, arguments_value)
         self.bound_plates[binder.name] = plate
         if inlined is not None:
+            shared, result = inlined
+            nodes: list[IRNode] = []
+            for binding in shared:
+                self.local_types[binding.binder.name] = binding.binder.type
+                nodes.extend(self._deterministic(binding.binder, binding.value))
+            self.axes[binder.name] = axes
+            self.bound_plates[binder.name] = plate
             self.ctx.bound_kinds[binder.name] = "deterministic"
-            yield IRDeterministic(
-                name=binder.name, expr=inlined, constraint=CSReal(), plate=plate
+            nodes.append(
+                IRDeterministic(
+                    name=binder.name, expr=result, constraint=CSReal(), plate=plate
+                )
             )
+            yield from nodes
             return
+        arguments = tuple(self._expr(argument) for argument in call.arguments)
         allowed = {self.entry.random_instance, self.entry.score_instance}
         for row_entry in call.effects.entries:
             if row_entry.instance not in allowed:
@@ -1068,6 +1079,49 @@ class _ProgramWalk:
             score_instance=str(self.entry.score_instance),
             plate=plate,
         )
+
+    def _inlined(
+        self, callee: NamedComputation, call: Call, binder: Local
+    ) -> tuple[tuple[LetBinding, ...], LetExprNode] | None:
+        """A pure computation's result at the call, as shared bindings.
+
+        A pure computation whose body is a chain of pure bindings is
+        inlined: its parameters are bound to the call's arguments and
+        each of its bindings to its value, as one
+        [`LetValue`][quivers.qiec.LetValue] that the plan's floater
+        hoists to statements of their own under fresh names. Each
+        binding is thus stated once, however many times the body reads
+        it, so the inlined code grows linearly in the computation's
+        size.
+
+        Parameters
+        ----------
+        callee : NamedComputation
+            The computation called.
+        call : Call
+            The call.
+        binder : Local
+            The local the call's result binds.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], LetExprNode] | None
+            The hoisted bindings and the result's expression, or
+            ``None`` when the computation performs an effect, takes
+            static arguments, calls anything, or binds a value the
+            expression language has no form for; such a call is made
+            through the target's host runtime.
+        """
+        shared = _pure_body(callee, call.arguments, binder.type)
+        if shared is None:
+            return None
+        hoisted, result = self.floater.value(shared, {})
+        try:
+            for binding in hoisted:
+                self._expr(binding.value)
+            return hoisted, self._expr(result)
+        except UnsupportedConstruct:
+            return None
 
     def _marginalize(self, call: Call) -> IRMarginalize:
         """The scope a marginalization helper's call denotes.
@@ -2433,108 +2487,59 @@ def _expression(
     )
 
 
-def _inline_pure(
+def _pure_body(
     callee: NamedComputation,
-    arguments: tuple[LetExprNode, ...],
-) -> LetExprNode | None:
-    """A pure computation's result at the arguments, as one expression.
+    arguments: tuple[Value, ...],
+    result_type: TypeExpr,
+) -> Value | None:
+    """A pure computation's body at the arguments, as one shared value.
 
     Parameters
     ----------
     callee : NamedComputation
         The computation called.
-    arguments : tuple[LetExprNode, ...]
-        The arguments as let expressions, one per parameter.
+    arguments : tuple[Value, ...]
+        The call's arguments, one per parameter.
+    result_type : TypeExpr
+        The type of the call's result.
 
     Returns
     -------
-    LetExprNode | None
-        The body's returned value with every binding and parameter
-        substituted, or ``None`` when the computation performs an
-        effect, takes static arguments, calls anything, or binds a
-        value the expression language has no form for.
+    Value | None
+        A [`LetValue`][quivers.qiec.LetValue] binding each parameter to
+        its argument (a variable or literal argument is read in place)
+        and each of the body's bindings to its value, whose body is the
+        returned value; ``None`` when the computation
+        performs an effect, takes static arguments, or does anything but
+        bind pure values and return one.
     """
     if callee.type.effects.entries or callee.telescope:
         return None
     if len(arguments) != len(callee.parameters):
         return None
-    bindings: dict[str, LetExprNode] = {
-        parameter.name: argument
-        for parameter, argument in zip(callee.parameters, arguments, strict=True)
-    }
+    # A variable or literal argument is read in place; any other is
+    # bound once, like the body's own bindings.
+    replaced: dict[Local, Value] = {}
+    bindings: list[LetBinding] = []
+    for parameter, argument in zip(callee.parameters, arguments, strict=True):
+        if isinstance(argument, Var | LiteralValue):
+            replaced[parameter] = argument
+        else:
+            bindings.append(LetBinding(parameter, argument))
     node: Computation = callee.body
     while isinstance(node, Bind):
         if not isinstance(node.first, Return):
             return None
-        try:
-            bindings[node.binder.name] = _substitute(
-                _expression(node.first.value, {}, "", callee.name), bindings
-            )
-        except UnsupportedConstruct:
-            return None
+        bindings.append(
+            LetBinding(node.binder, _replace_locals(node.first.value, replaced))
+        )
         node = node.then
     if not isinstance(node, Return):
         return None
-    try:
-        return _substitute(_expression(node.value, {}, "", callee.name), bindings)
-    except UnsupportedConstruct:
-        return None
-
-
-def _substitute(expr: LetExprNode, bindings: dict[str, LetExprNode]) -> LetExprNode:
-    """Replace named references in a let expression.
-
-    Parameters
-    ----------
-    expr : LetExprNode
-        The expression.
-    bindings : dict[str, LetExprNode]
-        The expression each name stands for.
-
-    Returns
-    -------
-    LetExprNode
-        The expression with every bound name replaced.
-    """
-    if isinstance(expr, LetExprVar):
-        return bindings.get(expr.name, expr)
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_substitute(expr.left, bindings),
-            right=_substitute(expr.right, bindings),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(op=expr.op, operand=_substitute(expr.operand, bindings))
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(_substitute(argument, bindings) for argument in expr.args),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_substitute(expr.array, bindings),
-            indices=tuple(_substitute(index, bindings) for index in expr.indices),
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(
-            items=tuple(_substitute(item, bindings) for item in expr.items)
-        )
-    if isinstance(expr, LetExprFactor):
-        shadowed = {
-            name: value
-            for name, value in bindings.items()
-            if name not in {binder.var for binder in expr.binders}
-        }
-        return LetExprFactor(
-            binders=expr.binders,
-            body=None if expr.body is None else _substitute(expr.body, shadowed),
-            cases=tuple(
-                LetFactorCase(label=case.label, value=_substitute(case.value, shadowed))
-                for case in expr.cases
-            ),
-        )
-    return expr
+    body = _replace_locals(node.value, replaced)
+    if not bindings:
+        return body
+    return LetValue(tuple(bindings), body, result_type)
 
 
 def _lower_static(argument: StaticArgument) -> IRQiecStatic:
