@@ -136,6 +136,7 @@ from quivers.dsl.let_expr_traversal import (
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
+from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.families import FAMILIES
@@ -4237,9 +4238,14 @@ class _ProgramsMixin:
             as a Euclidean space: one coordinate for a scalar, and for a
             tensor its entries, read as rows of the plate its checked
             axes name when it ranges over one. Empty when the module has
-            no checked entry for the program.
+            no checked entry for the program, or when the module does not
+            lower: its diagnostic is then raised where `compile` reads
+            the module, after the declarations' own diagnostics.
         """
-        module = self.qiec_module
+        try:
+            module = self.qiec_module
+        except QiecDiagnosticError:
+            return {}
         if module is None:
             return {}
         entry = next((e for e in module.entries if e.name == program), None)
