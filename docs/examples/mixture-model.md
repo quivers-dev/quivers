@@ -206,4 +206,4 @@ The per-row likelihood `MixtureNormal(probs, mu, sigma)` is a conditional [Kleis
 
 ## See also
 
-- [Latent Dirichlet Allocation](lda.md), a document-level topic mixture whose shared document assignment is integrated out by a scoped `marginalize` block.
+- [Latent Dirichlet Allocation](lda.md), a topic model in which every token draws its own topic from per-document weights and a `marginalize` block integrates each token's topic out exactly.
