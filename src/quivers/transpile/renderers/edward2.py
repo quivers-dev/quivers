@@ -412,16 +412,11 @@ class Edward2Renderer(RendererBase):
                 family=node.family,
                 args=node.args,
                 arg_names=node.arg_names,
-                # Observed leaves omit ``sample_shape``: the probe
-                # detects the value-shape mismatch and scores the
-                # observation directly via ``dist.log_prob(value)``,
-                # which broadcasts ``loc`` / ``scale`` / ``probs``
-                # against the user-supplied tensor's shape. Carrying
-                # batch_dims into the RV constructor instead would
-                # bake in a fixed ``value.shape`` that rejects any
-                # observation whose runtime shape comes from a
-                # deterministic input the IR does not know about.
-                plate=Plate(event_dims=node.plate.event_dims, batch_dims=()),
+                # An observation is a random variable over its plate,
+                # whose value is the observed data: a later binding
+                # that reads the name reads the data, and a run with no
+                # data draws the whole plate.
+                plate=node.plate,
                 input_specs=input_specs,
                 bindings=bindings,
                 observed_name=node.name,
@@ -446,6 +441,9 @@ class Edward2Renderer(RendererBase):
             return
         if isinstance(node, IRCall):
             emit_call_python(py, body_vid, node, ctx.module, ctx.operations_bound)
+            # A call's result is laid out over the plate its binding
+            # declares, so a site reading it knows its broadcast shape.
+            bindings[node.name] = _Binding(constraint=CSReal(), plate=node.plate)
             return
         if isinstance(node, IRMarginalize):
             self._emit_marginalize(py, body_vid, node, input_specs, bindings)
@@ -1181,13 +1179,16 @@ class Edward2Renderer(RendererBase):
         multi-positional families to match Edward2's `tfp` conventions.
         ``arg_aliases["edward2"]`` rewrites argument names.
 
+        An observed site (`observed_name` set) also carries
+        ``value=<observed_name>``, so its random variable holds the
+        observation over the whole plate.
+
         `callee_chain` names the module the distribution class is read
         from. It defaults to Edward2, whose constructors register a
         random variable on the trace; the marginalize enumeration
         passes ``("tfp", "distributions")`` for the mixture
         components, which are plain distributions rather than sites.
         """
-        del observed_name
         meta = self._lookup_meta(family)
         dist_class = meta.target_names.get(_TARGET)
         if dist_class is None:
@@ -1202,6 +1203,7 @@ class Edward2Renderer(RendererBase):
             return self._matrix_normal_call(
                 py,
                 name=name,
+                observed_name=observed_name,
                 dist_class=dist_class,
                 args=args,
                 plate=plate,
@@ -1212,6 +1214,7 @@ class Edward2Renderer(RendererBase):
             return self._lkj_cholesky_call(
                 py,
                 name=name,
+                observed_name=observed_name,
                 dist_class=dist_class,
                 args=args,
                 plate=plate,
@@ -1222,6 +1225,7 @@ class Edward2Renderer(RendererBase):
             return self._mixture_normal_call(
                 py,
                 name=name,
+                observed_name=observed_name,
                 dist_class=dist_class,
                 args=args,
                 arg_names=arg_names,
@@ -1313,10 +1317,11 @@ class Edward2Renderer(RendererBase):
             plate,
             family,
             carried=self._carried_batch_keys(args, meta, bindings),
+            observed=observed_name is not None,
         )
         if sample_shape is not None:
             keyword.append(("sample_shape", sample_shape))
-        keyword.append(("name", string_literal(py, name)))
+        keyword.extend(_site_keywords(py, name, observed_name))
 
         return call(
             py,
@@ -1330,6 +1335,7 @@ class Edward2Renderer(RendererBase):
         py: PyCtx,
         *,
         name: str,
+        observed_name: str | None,
         dist_class: str,
         args: tuple[IRArg, ...],
         arg_names: tuple[str, ...],
@@ -1395,7 +1401,7 @@ class Edward2Renderer(RendererBase):
             for dim in dims:
                 py.e(shape_list, _dim_expr(py, dim), "child_of")
             keyword.append(("sample_shape", shape_list))
-        keyword.append(("name", string_literal(py, name)))
+        keyword.extend(_site_keywords(py, name, observed_name))
         return call(
             py,
             attribute(py, (*callee_chain, dist_class)),
@@ -1407,6 +1413,7 @@ class Edward2Renderer(RendererBase):
         py: PyCtx,
         *,
         name: str,
+        observed_name: str | None,
         dist_class: str,
         args: tuple[IRArg, ...],
         plate: Plate,
@@ -1451,10 +1458,11 @@ class Edward2Renderer(RendererBase):
             carried=self._carried_batch_keys(
                 args, self._lookup_meta("LKJCholesky"), bindings
             ),
+            observed=observed_name is not None,
         )
         if sample_shape is not None:
             keyword.append(("sample_shape", sample_shape))
-        keyword.append(("name", string_literal(py, name)))
+        keyword.extend(_site_keywords(py, name, observed_name))
         return call(
             py,
             callee,
@@ -1467,6 +1475,7 @@ class Edward2Renderer(RendererBase):
         py: PyCtx,
         *,
         name: str,
+        observed_name: str | None,
         dist_class: str,
         args: tuple[IRArg, ...],
         plate: Plate,
@@ -1516,10 +1525,11 @@ class Edward2Renderer(RendererBase):
             plate,
             "MatrixNormal",
             carried=self._carried_batch_keys(args, meta, bindings),
+            observed=observed_name is not None,
         )
         if sample_shape is not None:
             keyword.append(("sample_shape", sample_shape))
-        keyword.append(("name", string_literal(py, name)))
+        keyword.extend(_site_keywords(py, name, observed_name))
         return call(py, callee, keyword=tuple(keyword))
 
     def _render_arg(
@@ -1755,6 +1765,7 @@ class Edward2Renderer(RendererBase):
         family: str,
         *,
         carried: tuple[str, ...] | None,
+        observed: bool = False,
     ) -> str | None:
         """Build the ``sample_shape=[D0, D1, ...]`` argument for Edward2.
 
@@ -1763,8 +1774,12 @@ class Edward2Renderer(RendererBase):
         arguments are removed because TensorFlow Probability includes their
         broadcast batch shape in the random variable's value shape.
 
-        Returns `None` when no dimensions remain. Raises when carried axes are
-        absent from the declared plate or cannot be resolved.
+        Returns `None` when no dimensions remain. An observed site carries
+        its data as the random variable's ``value``, which fixes its shape,
+        so when its arguments' broadcast shape is not statically known it
+        takes no ``sample_shape`` and the data's shape stands. A latent
+        site raises when carried axes are absent from the declared plate
+        or cannot be resolved.
         """
         meta = FAMILY_META.get(family)
         natural = meta.event_rank if meta is not None else 0
@@ -1775,6 +1790,8 @@ class Edward2Renderer(RendererBase):
         )
         dims = (*plate.batch_dims, *residual_event)
         if not dims:
+            return None
+        if carried is None and observed:
             return None
         if carried is None:
             raise UnsupportedConstruct(
@@ -2151,6 +2168,34 @@ def _real_input_names(ir: IRProgram) -> tuple[str, ...]:
         for inp in ir.inputs
         if isinstance(inp.constraint, CSReal) and inp.name not in observed
     )
+
+
+def _site_keywords(
+    py: PyCtx, name: str, observed_name: str | None
+) -> tuple[tuple[str, str], ...]:
+    """The keywords that name a random variable and, if observed, fix its value.
+
+    Parameters
+    ----------
+    py : PyCtx
+        The emit context.
+    name : str
+        The site's name.
+    observed_name : str | None
+        The model argument holding the observation, or ``None`` for a
+        latent site.
+
+    Returns
+    -------
+    tuple[tuple[str, str], ...]
+        ``value=<observed_name>`` for an observation, whose random
+        variable then holds the data (or a draw when the argument is
+        ``None``), followed by ``name="<name>"``.
+    """
+    named = (("name", string_literal(py, name)),)
+    if observed_name is None:
+        return named
+    return (("value", identifier(py, observed_name)), *named)
 
 
 def _observed_names(body: tuple[IRNode, ...]) -> frozenset[str]:

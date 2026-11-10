@@ -80,6 +80,16 @@ def _binary_min_max(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _observed_read(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    mu, y = v["mu"], v["y"]
+    resid = y - mu
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu)
+        + D.Normal(mu, 1.0).log_prob(y).sum()
+        + (resid * resid).sum() * 0.5
+    )
+
+
 #: Each fixture's data inputs, as flat lists.
 def _template_substitution(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     effect, y = v["a$effect"], v["y"]
@@ -93,6 +103,7 @@ def _template_substitution(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
 _DATA: dict[str, dict[str, Host]] = {
     "let_expressions/let_fold_shared_accumulator": {"y": [0.4, -0.3, 0.8]},
     "let_expressions/let_binary_min_max": {"y": [0.2, -0.5, 1.1, 0.4]},
+    "let_expressions/let_observed_read": {"y": [0.5, -1.0, 2.0, 0.3]},
     "let_expressions/let_template_substitution": {"y": [0.4, -0.3, 0.8]},
 }
 
@@ -104,6 +115,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"mu": 1.1},
     ],
     "let_expressions/let_binary_min_max": [{"mu": -0.6}, {"mu": 0.4}, {"mu": 1.7}],
+    "let_expressions/let_observed_read": [{"mu": -0.4}, {"mu": 0.2}, {"mu": 1.1}],
     "let_expressions/let_template_substitution": [
         {"a$effect": [-0.6, 0.3]},
         {"a$effect": [0.2, -1.1]},
@@ -115,6 +127,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
 _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_fold_shared_accumulator": {"mu": [], "y": [3]},
     "let_expressions/let_binary_min_max": {"mu": [], "y": [4]},
+    "let_expressions/let_observed_read": {"mu": [], "y": [4]},
     "let_expressions/let_template_substitution": {"a$effect": [2], "y": [3]},
 }
 
@@ -125,6 +138,7 @@ _INTEGERS: dict[str, frozenset[str]] = {}
 _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_fold_shared_accumulator": _fold_shared_accumulator,
     "let_expressions/let_binary_min_max": _binary_min_max,
+    "let_expressions/let_observed_read": _observed_read,
     "let_expressions/let_template_substitution": _template_substitution,
 }
 

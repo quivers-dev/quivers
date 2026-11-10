@@ -398,8 +398,8 @@ _AR1_FAMILY_SUBSTITUTED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
-                    new='edward2.StudentT(df=4.,loc=mu,scale=sigma,name="y" )',
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
+                    new='edward2.StudentT(df=4.,loc=mu,scale=sigma,value=y,name="y" )',
                 ),
             ),
         ),
@@ -569,8 +569,10 @@ _AR1_LOCATION_TRUNCATED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
-                    new=('edward2.Normal(loc=tf.math.floor(mu),scale=sigma,name="y" )'),
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
+                    new=(
+                        'edward2.Normal(loc=tf.math.floor(mu),scale=sigma,value=y,name="y" )'
+                    ),
                 ),
             ),
         ),
@@ -691,11 +693,11 @@ _AR1_OBSERVATION_TERM_DROPPED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
                     new=(
                         "edward2.Normal(loc=mu,scale=tf.concat("
                         "[sigma*tf.ones([63]),tf.constant([1e6])],axis=0),"
-                        'name="y" )'
+                        'value=y,name="y" )'
                     ),
                 ),
             ),
@@ -865,8 +867,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Weibull(scale=scale,concentration=k,name="t" )',
-                    new='edward2.Weibull(scale=k,concentration=scale,name="t" )',
+                    old='edward2.Weibull(scale=scale,concentration=k,value=t,name="t" )',
+                    new='edward2.Weibull(scale=k,concentration=scale,value=t,name="t" )',
                 ),
             ),
         ),
