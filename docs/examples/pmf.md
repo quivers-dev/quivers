@@ -9,7 +9,7 @@ U_u \sim \mathcal{N}(0, I_K), \quad V_m \sim \mathcal{N}(0, I_K), \quad
 r_{u, m} \mid U, V \sim \mathcal{N}(U_u^\top V_m, \sigma^2) \text{ for each observed } (u, m).
 $$
 
-Only observed cells enter the likelihood. The unobserved cells are predicted through the same inner product, so the quality of a fit is measured by how well it predicts ratings it never saw. Salakhutdinov and Mnih fix the prior and noise precisions or adapt them; this page places a half-Normal prior on $\sigma$ and unit-scale priors on the factors.
+Only observed cells enter the likelihood. The unobserved cells are predicted through the same inner product, so the quality of a fit is measured by how well it predicts ratings it never saw. Salakhutdinov and Mnih fix the prior and noise precisions or adapt them; this page places a weakly informative half-Cauchy prior on $\sigma$ and unit-scale priors on the factors.
 
 ## QVR source
 
@@ -23,7 +23,7 @@ Only observed cells enter the likelihood. The unobserved cells are predicted thr
 #
 #   U[u]    ~ Normal(0, I_K)                    user factors
 #   V[m]    ~ Normal(0, I_K)                    item factors
-#   sigma   ~ HalfNormal(1)                     rating noise scale
+#   sigma   ~ HalfCauchy(2.5)                   rating noise scale
 #   r_n     ~ Normal(U[u_n] . V[m_n], sigma)    observed rating n
 #
 # Only the observed (user, item) pairs are scored: the host data
@@ -41,7 +41,7 @@ object Rating : FinSet 800
 object Val : Real 1
 
 program pmf : Rating -> Val
-    sample sigma <- HalfNormal(scale=1.0)
+    sample sigma <- HalfCauchy(scale=2.5)
     sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]
     sample V : Movie <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Movie]
 
@@ -112,7 +112,7 @@ log_joint = model.log_joint(x_in, truth)[0]
 
 score = (true_U[user_idx] * true_V[movie_idx]).sum(dim=-1)
 by_hand = (
-    D.HalfNormal(1.0).log_prob(torch.tensor(true_sigma))
+    D.HalfCauchy(2.5).log_prob(torch.tensor(true_sigma))
     + D.Normal(0.0, 1.0).log_prob(true_U).sum()
     + D.Normal(0.0, 1.0).log_prob(true_V).sum()
     + D.Normal(score, true_sigma).log_prob(r).sum()

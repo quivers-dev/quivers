@@ -46,7 +46,7 @@ so the model carries no discrete latent: `MixtureNormal` integrates the componen
 composition log_prob [level=algebra]
 
 object Component : FinSet 3
-object Resp : FinSet 500
+object Resp : FinSet 200
 object Weights : Real 3
 
 program gmm(alpha : Real) : Resp -> Weights
@@ -79,7 +79,7 @@ the fitted locations.
 
 ## Walkthrough
 
-`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 500` declare the two discrete plates: $K = 3$ mixture components and $N = 500$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
+`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 200` declare the two discrete plates: $K = 3$ mixture components and $N = 200$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
 
 The three `sample` steps draw the shared per-component parameters:
 
@@ -103,10 +103,10 @@ from quivers.dsl import load
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/mixture_model.qvr")
-fit = prog.gmm(alpha=1.0)
+fit = prog.gmm(alpha=2.0)
 model = fit.morphism
 
-K, N = 3, 500
+K, N = 3, 200
 true_probs = torch.tensor([0.4, 0.35, 0.25])
 true_mu    = torch.tensor([-3.0, 0.0, 3.0])
 true_sigma = torch.tensor([0.5, 0.7, 0.4])
@@ -132,7 +132,7 @@ log_joint = model.log_joint(x_in, truth)[0]
 
 mixture = D.MixtureSameFamily(D.Categorical(true_probs), D.Normal(true_mu, true_sigma))
 by_hand = (
-    D.Dirichlet(torch.ones(K)).log_prob(true_probs)
+    D.Dirichlet(torch.full((K,), 2.0)).log_prob(true_probs)
     + D.Normal(0.0, 5.0).log_prob(true_mu).sum()
     + D.HalfNormal(1.0).log_prob(true_sigma).sum()
     + mixture.log_prob(r).sum()
@@ -176,12 +176,12 @@ fitted = {name: value[order] for name, value in best.items()}
 for name, true_value in (("probs", true_probs), ("mu", true_mu), ("sigma", true_sigma)):
     print(f"{name:5s} fitted {fitted[name].numpy().round(2)}  true {true_value.numpy()}")
 
-assert (fitted["probs"] - true_probs).abs().max() < 0.06
-assert (fitted["mu"] - true_mu).abs().max() < 0.15
-assert (fitted["sigma"] - true_sigma).abs().max() < 0.15
+assert (fitted["probs"] - true_probs).abs().max() < 0.09
+assert (fitted["mu"] - true_mu).abs().max() < 0.25
+assert (fitted["sigma"] - true_sigma).abs().max() < 0.2
 ```
 
-On this corpus one of the three restarts ends with a loss about 230 nats worse than the other two, at a configuration where the components overlap instead of separating; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 500$ (for instance, $\sqrt{0.25 \cdot 0.75 / 500} \approx 0.02$ for the smallest weight), so they leave room for finite-sample error but not for a collapsed or merged component.
+A restart can end where the components overlap instead of separating, with a loss far worse than the others; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 200$ (for instance, $\sqrt{0.25 \cdot 0.75 / 200} \approx 0.03$ for the smallest weight, and $0.7 / \sqrt{70} \approx 0.08$ for the middle component's mean), so they leave room for finite-sample error but not for a collapsed or merged component.
 
 ### NUTS posterior
 

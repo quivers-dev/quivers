@@ -7,7 +7,7 @@
 #
 #   U[u]    ~ Normal(0, I_K)                    user factors
 #   V[m]    ~ Normal(0, I_K)                    item factors
-#   sigma   ~ HalfNormal(1)                     rating noise scale
+#   sigma   ~ HalfCauchy(2.5)                   rating noise scale
 #   r_n     ~ Normal(U[u_n] . V[m_n], sigma)    observed rating n
 #
 # Only the observed (user, item) pairs are scored: the host data
@@ -25,7 +25,7 @@ object Rating : FinSet 800
 object Val : Real 1
 
 program pmf : Rating -> Val
-    sample sigma <- HalfNormal(scale=1.0)
+    sample sigma <- HalfCauchy(scale=2.5)
     sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]
     sample V : Movie <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Movie]
 
