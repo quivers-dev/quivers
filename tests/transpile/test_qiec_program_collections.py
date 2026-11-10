@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import math
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,78 @@ def test_lexical_uncertainty_rsa_transpiles_to_python_targets(target: str) -> No
         assert tuple(float(value) for value in posterior) == pytest.approx(
             (0.29586356, 0.70413644), abs=1e-6
         )
+
+
+def _lexical_uncertainty_reference(
+    alpha: float, epsilon: float
+) -> tuple[list[list[float]], list[float]]:
+    """Equations (34) to (37) of Bergen, Levy and Goodman (2016), Figure 5.
+
+    Written from the paper, independently of the QVR source: uniform
+    world prior, costs (1, 1, 5) for ("some", "all", null), the three
+    enrichments of "some", and lexica marginalized only at L1. A false
+    cell holds ``epsilon``; ``epsilon = 0`` is the paper's exact model.
+
+    Parameters
+    ----------
+    alpha : float
+        The speaker rationality (the paper's lambda).
+    epsilon : float
+        The value of a false lexicon cell.
+
+    Returns
+    -------
+    tuple[list[list[float]], list[float]]
+        ``S1("some" | w, L)`` indexed ``[lexicon][world]``, and
+        ``L1(w | "some")``.
+    """
+    prior = [0.5, 0.5]
+    costs = [1.0, 1.0, 5.0]
+    some_meanings = [[1.0, 1.0], [epsilon, 1.0], [1.0, epsilon]]
+    all_meaning = [1.0, epsilon]
+    speakers: list[list[float]] = []
+    for some_meaning in some_meanings:
+        lexicon = [some_meaning, all_meaning, [1.0, 1.0]]
+        literal = []
+        for meaning in lexicon:
+            masses = [meaning[w] * prior[w] for w in range(2)]
+            literal.append([mass / sum(masses) for mass in masses])
+        row = []
+        for world in range(2):
+            scores = [
+                math.exp(alpha * (math.log(literal[u][world]) - costs[u]))
+                if literal[u][world] > 0.0
+                else 0.0
+                for u in range(3)
+            ]
+            row.append(scores[0] / sum(scores))
+        speakers.append(row)
+    masses = [prior[w] * sum(s[w] for s in speakers) / 3.0 for w in range(2)]
+    return speakers, [mass / sum(masses) for mass in masses]
+
+
+@pytest.mark.parametrize("alpha", (0.25, 0.5, 1.0, 2.0, 4.0))
+def test_lexical_uncertainty_rsa_matches_the_paper_recursion(alpha: float) -> None:
+    """The checked recursion equals an independent transcription of the
+    paper's equations, and the 1e-6 relaxation stays close to exact zeros."""
+    from quivers.dsl import load
+
+    program = load(str(_ROOT / "docs/examples/qiec/lexical-uncertainty-rsa.qvr"))
+    speakers = program.run("lexical_speakers", alpha, 1e-6).value
+    listener = program.run("lexical_listener", alpha, 1e-6).value
+    reference_speakers, reference_listener = _lexical_uncertainty_reference(
+        alpha, 1e-6
+    )
+    for row, reference_row in zip(speakers, reference_speakers, strict=True):
+        assert tuple(row) == pytest.approx(tuple(reference_row), rel=1e-9, abs=1e-12)
+    assert tuple(listener) == pytest.approx(tuple(reference_listener), abs=1e-12)
+    # A false cell of 1e-6 enters S1 as (1e-6)^alpha, so the gap to the
+    # exact model shrinks with alpha: about 8e-4 at alpha = 0.5, 1.1e-5
+    # at alpha = 1, and under 1e-7 from alpha = 2.
+    _, exact_listener = _lexical_uncertainty_reference(alpha, 0.0)
+    assert tuple(listener) == pytest.approx(tuple(exact_listener), abs=1e-3)
+    if alpha >= 1.0:
+        assert tuple(listener) == pytest.approx(tuple(exact_listener), abs=2e-5)
+    # The specificity implicature of Figure 5: "some" favours
+    # some-but-not-all at L1.
+    assert exact_listener[1] > exact_listener[0]
