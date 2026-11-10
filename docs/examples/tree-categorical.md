@@ -1,249 +1,295 @@
-# Tree-structured score tensor
+# Tree-Structured Categorical Model
 
 ## Overview
 
-This program assembles log weights for four leaves of a binary tree and a per-verb/per-class score tensor. Its observation is `Normal(cell_score[0, 0], 0.5)`: it does not use a Categorical likelihood or select a class from the tree probabilities.
+This program models a categorical response over four classes whose probabilities come from a binary tree of splits, a tree-structured categorical in which every internal node of the tree is a binary split. Each response belongs to a verb, and each verb has its own split probabilities: a population-level logit for each split plus a per-verb random effect. A root split chooses between the leaf pairs $\{0, 1\}$ and $\{2, 3\}$, and a second split chooses within the pair, so a leaf's probability is the product of the two branch probabilities on its path:
 
-This example demonstrates both forms of the [`factor`](../guides/dsl-programs-and-lets.md#factor-expressions-assembling-indexed-tensors) expression. The pattern-match form builds the leaf-log-weight vector with a case table, and the multi-binder form builds a rank-2 score tensor by evaluating its body once per cell.
+$$
+p_v(0) = (1 - \rho_v)(1 - \lambda_v), \quad
+p_v(1) = (1 - \rho_v)\lambda_v, \quad
+p_v(2) = \rho_v (1 - \kappa_v), \quad
+p_v(3) = \rho_v \kappa_v,
+$$
+
+where $\rho_v$, $\lambda_v$, and $\kappa_v$ are the [logistic](https://en.wikipedia.org/wiki/Logistic_function) transforms of verb $v$'s root, left, and right split logits $\eta_{\mathrm{root},v} = a_{\mathrm{root}} + \sigma_v e_{\mathrm{root},v}$ (and likewise for the other two splits), with $e_{s,v} \sim \mathcal{N}(0, 1)$. The four probabilities sum to one by construction, so their logarithms serve directly as the logits of a Categorical likelihood.
+
+The example shows both forms of the [`factor`](../guides/dsl-programs-and-lets.md#factor-expressions-assembling-indexed-tensors) expression: the pattern-match form writes out one case per leaf, and the multi-binder form arranges the result into the verb-by-class table the likelihood reads.
+
+```mermaid
+flowchart TD
+    R["root split: rho_v"] -->|"1 - rho_v"| L["left split: lambda_v"]
+    R -->|"rho_v"| Rt["right split: kappa_v"]
+    L -->|"1 - lambda_v"| C0["class 0"]
+    L -->|"lambda_v"| C1["class 1"]
+    Rt -->|"1 - kappa_v"| C2["class 2"]
+    Rt -->|"kappa_v"| C3["class 3"]
+```
 
 ## QVR source
 
 ```qvr
-# Tree-Structured Score Tensor
+# Tree-Structured Categorical Model
 #
-# A factor-expression example that assembles log weights for the
-# leaves of a binary tree and then combines them with per-verb and
-# per-class effects. The observation uses only cell_score[0, 0]
-# under a Normal likelihood; the source does not define a
-# Categorical outcome over the four leaves.
+# A categorical response over four leaf classes whose probabilities
+# come from a binary tree of splits, with per-verb random effects on
+# each split's logit. A root split chooses between the left pair
+# {0, 1} and the right pair {2, 3}; a second split then chooses
+# within the pair. A leaf's probability is the product of the
+# branch probabilities on its path, so the four probabilities are
+# normalized by construction.
 #
 # Generative structure:
 #
-#   p_root         ~ Beta(1, 1)                    root split
-#   p_left         ~ Beta(1, 1)                    left subtree split
-#   p_right        ~ Beta(1, 1)                    right subtree split
-#   sigma_v        ~ HalfNormal(1)                 per-verb scale
-#   delta_v        ~ Normal(0, sigma_v)            per-verb effect
-#   mu_k           ~ Normal(0, 1)                  per-class effect
-#   y              ~ Normal(cell_score[0, 0], 0.5)
+#   a_s       ~ Normal(0, 1.5)            population logit of split s
+#   sigma_v   ~ HalfNormal(1)             spread of verb effects
+#   e_s[v]    ~ Normal(0, 1)              standardized verb effect
+#   eta_s[v]  = a_s + sigma_v * e_s[v]    verb v's logit of split s
+#   y_n       ~ Categorical(leaf_log[verb_idx[n]])
 #
-# Two forms of the factor expression appear: a pattern-match
-# factor builds the tree-shaped leaf log-probability vector with
-# a case table over Class (compiler-enforced label coverage of
-# {0, ..., K-1}), and a multi-binder uniform factor builds the
-# rank-2 score tensor by evaluating its body once per (Verb,
-# Class) cell.
+# for s in {root, left, right}, where with q = logsigmoid,
+#
+#   leaf_log[v] = ( q(-eta_root) + q(-eta_left),
+#                   q(-eta_root) + q(eta_left),
+#                   q(eta_root)  + q(-eta_right),
+#                   q(eta_root)  + q(eta_right) ).
+#
+# A pattern-match factor builds the class-by-verb table of leaf log
+# probabilities, one case per leaf; a uniform factor transposes it
+# to the verb-by-class table whose rows are the response logits.
+# There is no free per-class offset: adding one would let the class
+# effects absorb any change in the splits, leaving the splits
+# unidentified.
 
 object Verb : FinSet 12
 object Class : FinSet 4
-object Resp : FinSet 200
-object Val : Real 1
+object Resp : FinSet 2400
+object LeafLog : Real 4
 
-# Resp is the response plate: 200 rows of a single real response.
-# Val is the program's codomain, the value space of what the
-# program returns. It returns the per-verb effect vector delta,
-# whose rows are single real numbers, so the codomain is Real 1
-# and not the Resp index the observations are plated over.
-program tree_categorical : Resp -> Val
-    sample p_root <- Beta(concentration1=1.0, concentration0=1.0)
-    sample p_left <- Beta(concentration1=1.0, concentration0=1.0)
-    sample p_right <- Beta(concentration1=1.0, concentration0=1.0)
+# Resp is the plate of observed class labels and verb_idx maps each
+# label to its verb. LeafLog is the value space of the returned rows
+# of leaf log probabilities, one real coordinate per class.
 
-    let leaf_log = factor cls : Class in { 0 -> log(1.0 - p_root) + log(1.0 - p_left), 1 -> log(1.0 - p_root) + log(p_left), 2 -> log(p_root)       + log(1.0 - p_right), 3 -> log(p_root)       + log(p_right), }
-
+program tree_categorical : Resp -> LeafLog
+    sample a_root <- Normal(loc=0.0, scale=1.5)
+    sample a_left <- Normal(loc=0.0, scale=1.5)
+    sample a_right <- Normal(loc=0.0, scale=1.5)
     sample sigma_v <- HalfNormal(scale=1.0)
-    sample delta : Verb <- Normal(loc=0.0, scale=sigma_v)
-    sample mu : Class <- Normal(loc=0.0, scale=1.0)
+    sample e_root : Verb <- Normal(loc=0.0, scale=1.0)
+    sample e_left : Verb <- Normal(loc=0.0, scale=1.0)
+    sample e_right : Verb <- Normal(loc=0.0, scale=1.0)
 
-    let cell_score = factor v : Verb, cls : Class in delta[v] + mu[cls] + leaf_log[cls]
-    let cell0 = cell_score[0, 0]
+    let eta_root = a_root + sigma_v * e_root
+    let eta_left = a_left + sigma_v * e_left
+    let eta_right = a_right + sigma_v * e_right
 
-    observe y : Resp <- Normal(loc=cell0, scale=0.5)
-    return delta
+    let leaf_by_class = factor cls : Class in {
+        0 -> logsigmoid(-eta_root) + logsigmoid(-eta_left),
+        1 -> logsigmoid(-eta_root) + logsigmoid(eta_left),
+        2 -> logsigmoid(eta_root) + logsigmoid(-eta_right),
+        3 -> logsigmoid(eta_root) + logsigmoid(eta_right),
+    }
+    let leaf_log = factor v : Verb, cls : Class in leaf_by_class[cls, v]
+    let row_logits = leaf_log[verb_idx]
+
+    observe y : Resp <- Categorical(logits=row_logits)
+    return leaf_log
 
 export tree_categorical
 ```
 
 ## Understanding the model
 
-A binary tree assigns a probability to a leaf by multiplying the branch
-probabilities along its path. Taking logs turns that product into a sum.
-The first `factor` expression writes out these different paths; the second
-builds one score for every verb/class pair by combining the relevant entries.
+A binary tree assigns a probability to a leaf by multiplying the branch probabilities along its path. Taking logs turns that product into a sum, and $\log \sigma(\eta)$ and $\log \sigma(-\eta) = \log(1 - \sigma(\eta))$ are the log-probabilities of the two branches of a split with logit $\eta$. The tree encodes a hypothesis about which classes resemble one another: a verb effect on the root logit moves probability between the two pairs as a block, while an effect on the left or right logit moves it only within a pair.
 
-Here `factor` assembles a tensor deterministically. The [observation likelihood](../tutorials/qvr/01-first-model.md#the-model)
-reads only `cell_score[0, 0]`, so changing other cells while preserving that
-entry leaves the likelihood unchanged. Learning those cells would require
-observations that select them.
+Each verb has its own three split logits, drawn around shared population logits $a_s$ with spread $\sigma_v$. The data inform each verb's logits through that verb's responses, and the population logits through all verbs together.
+
+The model has no free per-class offset. With one, the four class offsets could absorb any change in the population split logits and leave the likelihood unchanged, so the splits would not be identified; and since the tree's leaf probabilities already sum to one, an offset would also require renormalizing. Keeping the tree as the only source of class probabilities makes every parameter identified from per-verb class frequencies.
 
 ## Walkthrough
 
 ### What the four objects name
 
-`Verb` and `Class` index the two axes of the constructed score tensor.
-`Resp` indexes the rows scored by the Normal likelihood. The family makes
-each observed value real; the response index does not determine its value
-type. `Val : Real 1` describes the real entries of the returned `delta`
-vector. Keeping these roles separate makes the declared shapes readable
-without treating every finite set as a response space.
+`Verb` indexes the verbs and `Class` the four leaves. `Resp` is the plate of observed class labels, and the host datum `verb_idx` maps each label to its verb. `LeafLog : Real 4` is the value space of the returned rows of leaf log-probabilities, one real coordinate per class.
 
-### Pattern-match factor: tree-shaped leaf probabilities
+### Split logits
+
+The three `a_*` sites are the population split logits, `sigma_v` the spread of verb effects, and the three `e_*` sites the standardized per-verb effects, one per verb for each split. The `let eta_*` steps form each verb's split logits in non-centered form, $\eta_{s} = a_s + \sigma_v e_s$, which tends to sample better than drawing the effects directly at scale $\sigma_v$ when $\sigma_v$ is uncertain.
+
+### Pattern-match factor: tree-shaped leaf log-probabilities
 
 <!-- compile: false -->
 ```qvr
-let leaf_log = factor cls : Class in {
-    0 -> log(1.0 - p_root) + log(1.0 - p_left),
-    1 -> log(1.0 - p_root) + log(p_left),
-    2 -> log(p_root)       + log(1.0 - p_right),
-    3 -> log(p_root)       + log(p_right),
+let leaf_by_class = factor cls : Class in {
+    0 -> logsigmoid(-eta_root) + logsigmoid(-eta_left),
+    1 -> logsigmoid(-eta_root) + logsigmoid(eta_left),
+    2 -> logsigmoid(eta_root) + logsigmoid(-eta_right),
+    3 -> logsigmoid(eta_root) + logsigmoid(eta_right),
 }
 ```
 
-The pattern-match form `factor cls : I in { 0 -> e_0, ..., n-1 -> e_{n-1} }` denotes a tensor of shape `(|I|, ...)` whose `i`-th cell is `e_i`. Here each leaf class is a structurally different product of internal-node log-probabilities, reflecting the geometry of a binary decision tree: classes 0 and 1 sit beneath the left child of the root (`1 - p_root` × left branch); classes 2 and 3 sit beneath the right (`p_root` × right branch). The compiler enforces label coverage of `{0, ..., |Class|-1}` exactly and rejects gaps, duplicates, or out-of-range labels at compile time.
+The pattern-match form `factor cls : I in { 0 -> e_0, ..., n-1 -> e_{n-1} }` denotes a tensor of shape `(|I|, ...)` whose `i`-th cell is `e_i`. Each case here is a `Verb`-shaped vector, so `leaf_by_class` has shape `(Class, Verb)`. Each leaf is a structurally different sum of split log-probabilities: classes 0 and 1 sit beneath the left child of the root, classes 2 and 3 beneath the right. The compiler enforces label coverage of `{0, ..., |Class|-1}` exactly and rejects gaps, duplicates, or out-of-range labels at compile time.
 
-This is the categorical representation of *structurally heterogeneous* indexed families: distributions over $\mathsf{Class}$ whose cells come from different upstream latents in different ways.
-
-### Multi-binder uniform factor: the joint score tensor
+### Multi-binder factor: the verb-by-class table
 
 <!-- compile: false -->
 ```qvr
-let cell_score = factor v : Verb, cls : Class in
-    delta[v] + mu[cls] + leaf_log[cls]
+let leaf_log = factor v : Verb, cls : Class in leaf_by_class[cls, v]
 ```
 
-The multi-binder form `factor v_1 : I_1, ..., v_n : I_n in <body>` constructs a tensor of shape `(|I_1|, ..., |I_n|, *body_shape)` whose `(i_1, ..., i_n)`-th cell is the body evaluated with each binder `v_k := i_k`.
+The multi-binder form `factor v_1 : I_1, ..., v_n : I_n in <body>` constructs a tensor of shape `(|I_1|, ..., |I_n|, *body_shape)` whose `(i_1, ..., i_n)`-th cell is the body evaluated with each binder `v_k := i_k`. Here the body reads the pattern-match table with its indices swapped, so `leaf_log` has shape `(Verb, Class)`: one row of leaf log-probabilities per verb, with the class axis last, where the Categorical family expects its logits. The binder variables `v` and `cls` are integer-valued and visible only inside the body.
 
-Here the body indexes into three previously-bound objects: the `Verb`-plate `delta`, the `Class`-plate `mu`, and the pattern-match factor `leaf_log` produced two steps earlier. Each `(v, cls)` cell evaluates to a different scalar; the resulting tensor lives on `Verb × Class` and carries the joint per-verb / per-class log-score.
+### Likelihood
 
-The binder variables `v` and `cls` are integer-valued and visible only inside the body, mirroring the binder-localization of `let` in any functional language.
+`let row_logits = leaf_log[verb_idx]` gathers each response's verb row, and `observe y : Resp <- Categorical(logits=row_logits)` scores the observed class. Because each row's leaf probabilities already sum to one, the softmax that `Categorical(logits=...)` applies leaves them unchanged.
 
 ### Why factor and not a plate
 
-A plate-bound draw `delta : Verb <- Normal(0.0, sigma_v)` and a factor expression `factor v : Verb in <body>` are not interchangeable. The plate draws an `|Verb|`-shape tensor of *independent* samples from the same kernel; the factor evaluates a *deterministic body* once per index and assembles the results into a tensor. The plate's family is exchangeable in its index; the factor's body is allowed to depend on the index in arbitrary structurally-different ways.
-
-Use `factor` when cells need different expressions in upstream latents.
-Here each leaf uses a different product of branch probabilities. A plate draw
-instead applies one distribution family across an index, as in the gallery's
-Normal and Dirichlet priors.
+A plate-bound draw such as `sample e_root : Verb <- Normal(...)` and a factor expression are not interchangeable. The plate draws an `|Verb|`-shaped tensor of independent samples from one kernel; the factor evaluates a deterministic body once per index and assembles the results. Use `factor` when cells need different expressions in upstream latents, as the four leaves do here.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate labels from the model, check the compiled joint against a hand-written Categorical log density, fit by SVI and check the recovered leaf probabilities, and run a short NUTS chain on the same joint. The program's scalar sites (the population logits and `sigma_v`) combine with `Verb`-shaped sites, so the program input is a single row, `torch.zeros(1, 1)`; the `Resp` plate's extent comes from the observed labels.
 
 ### Generating synthetic data
 
-Pick true values for the three tree splits and for the per-verb and
-per-class effects, assemble the observed cell score `cell_score[0, 0]`
-from those same values by hand, and draw one response per row of the
-`Resp` plate. Generating the data from the latents the program
-samples is what makes the synthetic point self-consistent: a fit has
-a ground truth to recover, and the reference oracle scores the joint
-at a point the model itself could have produced.
-
 ```python
-import math
-
 import torch
+import torch.nn.functional as F
 from quivers.dsl import load
+
+D = torch.distributions
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/tree_categorical.qvr")
 model = prog.morphism
 
-N_RESP, N_VERB = 200, 12
+n_verb, n_class, n_resp = 12, 4, 2400
 
-true_p_root = 0.7
-true_p_left = 0.3
-true_p_right = 0.6
-true_sigma_v = 0.5
-true_delta = true_sigma_v * torch.randn(N_VERB)
-true_mu = torch.tensor([0.0, 0.5, -0.5, 1.0])
+true_a_root, true_a_left, true_a_right = 0.8, -0.8, 0.4
+true_sigma_v = 0.7
+true_e_root = torch.randn(n_verb)
+true_e_left = torch.randn(n_verb)
+true_e_right = torch.randn(n_verb)
 
-leaf_log_0 = math.log(1.0 - true_p_root) + math.log(1.0 - true_p_left)
-cell0 = true_delta[0] + true_mu[0] + leaf_log_0
-y = torch.distributions.Normal(cell0, 0.5).sample((N_RESP,))
 
-observations = {"y": y}
-x_in = torch.zeros(N_RESP, 1)
-print("y batch shape:", tuple(y.shape))
+def leaf_probs(a_root, a_left, a_right, sigma_v, e_root, e_left, e_right):
+    eta_root = a_root + sigma_v * e_root
+    eta_left = a_left + sigma_v * e_left
+    eta_right = a_right + sigma_v * e_right
+    q = F.logsigmoid
+    return torch.stack([
+        q(-eta_root) + q(-eta_left),
+        q(-eta_root) + q(eta_left),
+        q(eta_root) + q(-eta_right),
+        q(eta_root) + q(eta_right),
+    ], dim=-1).exp()
+
+
+true_leaf = leaf_probs(
+    true_a_root, true_a_left, true_a_right, true_sigma_v,
+    true_e_root, true_e_left, true_e_right,
+)
+verb_idx = torch.arange(n_verb).repeat_interleave(n_resp // n_verb)
+y = D.Categorical(probs=true_leaf[verb_idx]).sample()
+
+observations = {"y": y, "verb_idx": verb_idx}
+x_in = torch.zeros(1, 1)
+```
+
+### Checking the joint density
+
+At the true values, [`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) should equal the Normal and half-Normal prior terms plus $\sum_n \log p_{v_n}(y_n)$, written out by hand from the leaf probabilities.
+
+```python
+truth = {
+    "a_root": torch.tensor(true_a_root),
+    "a_left": torch.tensor(true_a_left),
+    "a_right": torch.tensor(true_a_right),
+    "sigma_v": torch.tensor(true_sigma_v),
+    "e_root": true_e_root,
+    "e_left": true_e_left,
+    "e_right": true_e_right,
+}
+log_joint = model.log_joint(x_in, {**truth, **observations})[0]
+
+by_hand = (
+    sum(D.Normal(0.0, 1.5).log_prob(truth[k]) for k in ("a_root", "a_left", "a_right"))
+    + D.HalfNormal(1.0).log_prob(truth["sigma_v"])
+    + sum(D.Normal(0.0, 1.0).log_prob(truth[k]).sum() for k in ("e_root", "e_left", "e_right"))
+    + true_leaf[verb_idx, y].log().sum()
+)
+assert torch.allclose(log_joint, by_hand, rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint):.2f}")
 ```
 
 ### SVI fit
 
-Reinitialize from the prior, then maximize the [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) against the synthetic responses with an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) on the latent sites and [`SVI`](../api/inference/svi.md#svi) over [`Adam`](https://pytorch.org/docs/stable/generated/torch.optim.Adam.html). Print the initial and final loss to confirm the guide is moving toward the posterior.
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi), push 200 guide draws through `leaf_probs`, and compare the posterior-mean leaf probabilities of every verb with the truth. The comparison point is each verb's raw class frequencies: with 200 labels per verb, the frequencies are themselves about 0.04 (in mean total variation) from the truth, so the fit should be about that close.
 
 ```python
-import math
-
-import torch
-from quivers.dsl import load
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-torch.manual_seed(0)
-N_RESP, N_VERB = 200, 12
-true_p_root, true_p_left = 0.7, 0.3
-true_sigma_v = 0.5
-true_delta = true_sigma_v * torch.randn(N_VERB)
-true_mu = torch.tensor([0.0, 0.5, -0.5, 1.0])
-leaf_log_0 = math.log(1.0 - true_p_root) + math.log(1.0 - true_p_left)
-cell0 = true_delta[0] + true_mu[0] + leaf_log_0
-obs = {"y": torch.distributions.Normal(cell0, 0.5).sample((N_RESP,))}
-
 torch.manual_seed(1)
-prog = load("docs/examples/source/tree_categorical.qvr")
-model = prog.morphism
-guide = AutoNormalGuide(model, observed_names=set(obs.keys()))
+guide = AutoNormalGuide(model, observed_names={"y", "verb_idx"})
 optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=2e-2,
+    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
 )
-svi = SVI(model, guide, optim, ELBO())
-svi_x = torch.zeros(1, 1)
-loss0 = svi.step(svi_x, obs)
-for _ in range(100):
-    loss = svi.step(svi_x, obs)
-print(f"ELBO loss: {loss0:.2f} -> {loss:.2f}")
+svi = SVI(model, guide, optim, ELBO(num_particles=1))
+losses = [svi.step(x_in, observations) for _ in range(1000)]
+
+sites = ("a_root", "a_left", "a_right", "sigma_v", "e_root", "e_left", "e_right")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(200)]
+fit_leaf = torch.stack([
+    leaf_probs(*(d[k].reshape(-1) if k.startswith("e_") else d[k].reshape(-1)[0] for k in sites))
+    for d in draws
+]).mean(0)
+
+counts = torch.zeros(n_verb, n_class).index_put_(
+    (verb_idx, y), torch.ones(n_resp), accumulate=True,
+)
+freq = counts / counts.sum(-1, keepdim=True)
+model_tv = float(0.5 * (fit_leaf - true_leaf).abs().sum(-1).mean())
+freq_tv = float(0.5 * (freq - true_leaf).abs().sum(-1).mean())
+
+split_truth = torch.sigmoid(torch.tensor([true_a_root, true_a_left, true_a_right]))
+split_fit = torch.stack([
+    torch.sigmoid(torch.stack([d[k].reshape(-1)[0] for d in draws])).mean()
+    for k in ("a_root", "a_left", "a_right")
+])
+
+print(f"ELBO loss: {losses[0]:.1f} -> {sum(losses[-100:]) / 100:.1f}")
+print(f"leaf TV: model {model_tv:.3f}, raw frequencies {freq_tv:.3f}")
+print(f"population splits: fitted {split_fit.numpy().round(2)}, true {split_truth.numpy().round(2)}")
+
+assert model_tv < 0.08
+assert (split_fit - split_truth).abs().max() < 0.15
 ```
+
+The split tolerance reflects that the population logits are informed by only 12 verbs: with $\sigma_v = 0.7$, the mean of 12 verb effects has a standard error of about 0.2 on the logit scale, or roughly 0.05 on the probability scale.
 
 ### NUTS posterior
 
-The tree-categorical program declares explicit `sample` priors for every latent (the three Beta splits, `sigma_v`, the per-verb `delta`, the per-class `mu`), so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets them directly without a parameter lift. For parameter-only models, the analogous step would route through [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters).
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint; every site has an explicit prior, so no parameter lift is needed. The chain below is short; a real analysis would run several chains and check their diagnostics.
 
 ```python
-import math
-
-import torch
-from quivers.dsl import load
 from quivers.inference import MCMC, NUTSKernel
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/tree_categorical.qvr")
-model = prog.morphism
-
-N_RESP, N_VERB = 200, 12
-true_p_root, true_p_left = 0.7, 0.3
-true_sigma_v = 0.5
-true_delta = true_sigma_v * torch.randn(N_VERB)
-true_mu = torch.tensor([0.0, 0.5, -0.5, 1.0])
-leaf_log_0 = math.log(1.0 - true_p_root) + math.log(1.0 - true_p_left)
-cell0 = true_delta[0] + true_mu[0] + leaf_log_0
-obs = {"y": torch.distributions.Normal(cell0, 0.5).sample((N_RESP,))}
 
 torch.manual_seed(2)
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
-result = mc.run(model, torch.zeros(1, 1), obs)
+mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
+result = mc.run(model, x_in, observations)
 
-print("acceptance:", float(result.acceptance_rates.mean()))
-print("divergences:", int(result.divergence_counts.sum()))
+assert torch.isfinite(result.log_densities).all()
+print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
-
 
 ## Categorical perspective
 
-Operationally, `factor` constructs a tensor by finite index binding, while `arr[i]` eliminates an index by lookup. The compiler implements these two operations directly, and nothing on this page turns on a stronger adjunction or Kan-extension reading of them.
+Operationally, `factor` constructs a tensor by finite index binding, while `arr[i]` eliminates an index by lookup. The program uses both: the pattern-match factor introduces the `Class` index case by case, the uniform factor reorders the two indices by introducing them again around a lookup, and the gather `leaf_log[verb_idx]` pulls the verb-indexed table back along the map from responses to verbs. Each row of the result is a point of the four-class simplex, and the Categorical likelihood is the kernel from that simplex to `Class` that it parameterizes.
 
 ## See also
 
 - [DSL Guide: Factor expressions](../guides/dsl-programs-and-lets.md#factor-expressions-assembling-indexed-tensors)
-- [Mixture Model](mixture-model.md), the exchangeable counterpart: a flat Dirichlet over `Component` rather than a tree-shaped construction.
+- [Bayesian Gaussian Mixture Model](mixture-model.md), whose class weights come from a flat Dirichlet over `Component` rather than a tree of splits.
