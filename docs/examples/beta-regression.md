@@ -28,9 +28,8 @@ A multi-output beta regression [@ferrari2004beta] for response variables on the 
 #
 # Reference: [Ferrari and Cribari-Neto 2004](https://doi.org/10.1080/0266476042000214501).
 
-object Item : FinSet 21
 object Out : FinSet 3
-object Resp : FinSet 63
+object Resp : FinSet 300
 object Val : Real 1
 
 program beta_regression : Resp -> Val
@@ -68,14 +67,17 @@ scientific question is about differences on the original response scale.
 
 ## Walkthrough
 
-Per-output coefficient plates `beta_0 : Out` and `beta_1 : Out` carry one coefficient per response dimension; per-output precision `phi : Out` permits heterogeneous dispersion across the response axis. The per-cell linear predictor `eta = b0 + b1 * x` is mapped to the unit interval via `mu = sigmoid(eta)`. The mean / precision form of the Beta is `Beta(mu * phi, (1 - mu) * phi)`, giving mean `mu` and variance `mu * (1 - mu) / (1 + phi)`. Plate-gathers `beta_0[out_idx]`, `beta_1[out_idx]`, `phi[out_idx]` broadcast each output's coefficients across its share of the flat `Resp` plate.
+Per-output coefficient plates `beta_0 : Out` and `beta_1 : Out` carry one coefficient per response dimension; per-output precision `phi : Out` permits heterogeneous dispersion across the response axis. The per-cell linear predictor `eta = b0 + b1 * x` is mapped to the unit interval via `mu = sigmoid(eta)`. The mean / precision form of the Beta is `Beta(mu * phi, (1 - mu) * phi)`, giving mean `mu` and variance `mu * (1 - mu) / (1 + phi)`. Plate-gathers `beta_0[out_idx]`, `beta_1[out_idx]`, `phi[out_idx]` broadcast each output's coefficients across its share of the flat `Resp` plate, 100 rows per output.
 
 The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the plate extent of the response and appears in the signature only as the domain.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate from the model, check the compiled log joint against
+a hand-written density, and then recover the parameters with SVI and NUTS. The
+program reads its data by name, so its input `x_in` is a single dummy row: that
+leading axis is a particle axis, and a longer one would score the whole data
+set once per row.
 
 ### Generating synthetic data
 
@@ -87,7 +89,7 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/beta_regression.qvr")
 model = prog.morphism
 
-N, D = 21, 3
+N, D = 100, 3
 ND = N * D
 out_idx = torch.arange(D).repeat(N)
 x = torch.randn(ND)
@@ -101,56 +103,80 @@ beta_true = (1.0 - mu_true) * true_phi[out_idx]
 y = torch.distributions.Beta(alpha_true, beta_true).sample()
 
 observations = {"x": x, "y": y, "out_idx": out_idx}
-x_in = torch.zeros(ND, 1)
+x_in = torch.zeros(1, 1)
+```
+
+### Checking the log joint
+
+```python
+D_ = torch.distributions
+truth = {"beta_0": true_beta_0, "beta_1": true_beta_1, "phi": true_phi}
+oracle = (
+    D_.Normal(0.0, 5.0).log_prob(true_beta_0).sum()
+    + D_.Normal(0.0, 5.0).log_prob(true_beta_1).sum()
+    + D_.HalfCauchy(2.5).log_prob(true_phi).sum()
+    + D_.Beta(alpha_true, beta_true).log_prob(y).sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
 ```
 
 ### SVI fit
 
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md). With 100 rows per output and precisions of
+10 to 20, each coefficient's posterior standard deviation is below 0.1, so the
+check asks every coefficient's posterior mean to sit within 0.3 of the truth.
+The precision's relative standard error is near `sqrt(2 / N)`, about 0.14, so
+`phi` is checked on the log scale to within log(1.5).
+
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-oracle_nll = float(
-    -torch.distributions.Beta(alpha_true, beta_true).log_prob(y).mean()
-)
-
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"x", "y", "out_idx"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = []
-for _ in range(300):
-    losses.append(svi.step(x_in, observations))
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: torch.stack([d[k] for d in draws]).mean(0) for k in truth}
+for k in truth:
+    print(f"{k:>6}: posterior mean {post[k].numpy().round(2)}, truth {truth[k].numpy()}")
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-print(f"oracle NLL:   {oracle_nll:.2f}")
+assert (post["beta_0"] - true_beta_0).abs().max() < 0.3
+assert (post["beta_1"] - true_beta_1).abs().max() < 0.3
+assert (post["phi"].log() - true_phi.log()).abs().max() < 0.41
 ```
 
 ### NUTS posterior
 
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+300 rows. Its posterior means should meet the same tolerances and agree with
+the SVI means to within 0.15 for the coefficients.
+
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-N_mcmc, D_mcmc = 11, 3
-ND_mcmc = N_mcmc * D_mcmc
-out_idx_mcmc = torch.arange(D_mcmc).repeat(N_mcmc)
-x_mcmc = x[:ND_mcmc]
-y_mcmc = y[:ND_mcmc]
-obs_mcmc = {"x": x_mcmc, "y": y_mcmc, "out_idx": out_idx_mcmc}
-x_in_mcmc = torch.zeros(ND_mcmc, 1)
-
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=20, num_samples=20, num_chains=1)
-result = mc.run(model, x_in_mcmc, obs_mcmc)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+for k in ("beta_0", "beta_1"):
+    mean = result.samples[k].reshape(-1, D).mean(0)
+    print(f"{k}: posterior mean {mean.numpy().round(2)}, truth {truth[k].numpy()}")
+    assert (mean - truth[k]).abs().max() < 0.3
+    assert (mean - post[k]).abs().max() < 0.15
+phi_nuts = result.samples["phi"].reshape(-1, D).mean(0)
+print(f"phi: posterior mean {phi_nuts.numpy().round(1)}, truth {true_phi.numpy()}")
+assert (phi_nuts.log() - true_phi.log()).abs().max() < 0.41
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
-
 
 ## Categorical perspective
 

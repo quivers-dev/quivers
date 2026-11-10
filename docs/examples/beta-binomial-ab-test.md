@@ -50,7 +50,7 @@ The Beta-Binomial integrates the latent per-batch conversion rate $p_n$ analytic
 # Reference: [Skellam 1948](https://doi.org/10.1111/j.2517-6161.1948.tb00014.x).
 
 object Arm : FinSet 2
-object Batch : FinSet 12
+object Batch : FinSet 40
 object Val : Real 1
 
 program ab_test : Batch -> Val
@@ -81,18 +81,23 @@ observations rather than a population-level pooling term.
 
 ## Walkthrough
 
-`object Arm : FinSet 2` is the plate the concentrations are allocated over, `object Batch : FinSet 12` is the plate the counts are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Batch -> Val`. The domain names the observation plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
+`object Arm : FinSet 2` is the plate the concentrations are allocated over, `object Batch : FinSet 40` is the plate the counts are observed over (20 batches per arm), and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Batch -> Val`. The domain names the observation plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
 The per-arm concentration parameters `conc1` and `conc0` have independent HalfCauchy priors with scale $2$. `let a = conc1[arm_idx]` and `let b = conc0[arm_idx]` gather each batch's pair through the exogenous arm-assignment vector, the same plate-gather idiom the [2PL IRT example](irt-2pl.md) uses for its cross-classified design. The `observe` step then scores the batch's successes under a Beta-Binomial likelihood with shared trial count `n_trials`, also supplied through host data. `return a` exposes the fitted per-batch success concentration; conversion probabilities can be summarized from `conc1 / (conc1 + conc0)` after drawing both sites.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate batches from the two arms, check the compiled log
+joint against a hand-written density, and then compare the arms: the quantity
+an A/B test reports is the posterior of the difference in mean conversion rate,
+`conc1 / (conc1 + conc0)` in arm B minus the same in arm A. The program reads
+its data by name, so its input `x_in` is a single dummy row: that leading axis
+is a particle axis, and a longer one would score the whole data set once per
+row.
 
 ### Generating synthetic data
 
-Pick ground truth for both concentration sites, draw each batch's latent conversion rate from the Beta its arm's concentrations define, and forward-generate the successes as Binomial draws at that rate. The composition of the two steps is exactly the Beta-Binomial the model scores, so the generated counts and the clamped concentrations describe one self-consistent point.
+Pick ground truth for both concentration sites, draw each batch's latent conversion rate from the Beta its arm's concentrations define, and forward-generate the successes as Binomial draws at that rate. The composition of the two steps is exactly the Beta-Binomial the model scores. The true mean rates are `12 / 40 = 0.30` in arm A and `18 / 40 = 0.45` in arm B.
 
 ```python
 import torch
@@ -102,10 +107,12 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/beta_binomial_ab_test.qvr")
 model = prog.morphism
 
-n_arm, n_batch, n_trials = 2, 12, 200
+n_arm, n_batch, n_trials = 2, 40, 200
 
 true_conc1 = torch.tensor([12.0, 18.0])
 true_conc0 = torch.tensor([28.0, 22.0])
+true_mean = true_conc1 / (true_conc1 + true_conc0)
+true_lift = float(true_mean[1] - true_mean[0])
 
 arm_idx = torch.arange(n_arm).repeat(n_batch // n_arm)
 rate = torch.distributions.Beta(
@@ -114,41 +121,93 @@ rate = torch.distributions.Beta(
 y = torch.distributions.Binomial(n_trials, rate).sample()
 
 observations = {"y": y, "arm_idx": arm_idx, "n_trials": torch.tensor(n_trials)}
-x_in = torch.zeros(n_batch, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 The trial count `n_trials` and the arm assignment `arm_idx` are both exogenous: the program never declares them, so the runtime resolves them from the observations dict at trace time and every backend takes them as data inputs.
 
-### SVI fit
+### Checking the log joint
+
+The Beta-Binomial log mass is written out with `lgamma`, in double precision
+because its terms reach several hundred nats before they cancel.
+
+```python
+D = torch.distributions
+truth = {"conc1": true_conc1, "conc0": true_conc0}
+a, b = true_conc1[arm_idx].double(), true_conc0[arm_idx].double()
+k, n = y.double(), torch.tensor(float(n_trials), dtype=torch.float64)
+lg = torch.lgamma
+log_beta_binomial = (
+    lg(n + 1) - lg(k + 1) - lg(n - k + 1)
+    + lg(k + a) + lg(n - k + b) - lg(n + a + b)
+    - lg(a) - lg(b) + lg(a + b)
+)
+oracle = (
+    D.HalfCauchy(2.0).log_prob(true_conc1).sum().double()
+    + D.HalfCauchy(2.0).log_prob(true_conc0).sum().double()
+    + log_beta_binomial.sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum().double()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-6)
+```
+
+### SVI fit and arm comparison
+
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md), and the lift is computed in every guide draw.
+Batch rates vary with a standard deviation near 0.07 around each arm's mean, so
+with 20 batches per arm the lift has a standard error near 0.025. The check asks
+that the posterior mean lift lie within 0.07 of the true 0.15 (about three
+standard errors) and that the posterior put at least 99% of its mass on arm B
+converting better.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"y", "arm_idx", "n_trials"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = [svi.step(x_in, observations) for _ in range(300)]
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(2000)]
+c1 = torch.stack([d["conc1"] for d in draws])
+c0 = torch.stack([d["conc0"] for d in draws])
+lift = (c1 / (c1 + c0)) @ torch.tensor([-1.0, 1.0])
+print(f"posterior mean rates: {(c1 / (c1 + c0)).mean(0).numpy().round(3)}")
+print(f"posterior lift: {float(lift.mean()):.3f} (truth {true_lift:.3f})")
+print(f"P(arm B > arm A) = {float((lift > 0).float().mean()):.3f}")
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+assert abs(float(lift.mean()) - true_lift) < 0.07
+assert float((lift > 0).float().mean()) > 0.99
 ```
 
 ### NUTS posterior
+
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+40 batches, and the lift computed from its draws is held to the same checks.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=6, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=5, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=100, num_samples=150, num_chains=1)
 result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+c1 = result.samples["conc1"].reshape(-1, n_arm)
+c0 = result.samples["conc0"].reshape(-1, n_arm)
+lift_nuts = (c1 / (c1 + c0)) @ torch.tensor([-1.0, 1.0])
+print(f"posterior lift: {float(lift_nuts.mean()):.3f} (truth {true_lift:.3f})")
+print(f"P(arm B > arm A) = {float((lift_nuts > 0).float().mean()):.3f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
+
+assert abs(float(lift_nuts.mean()) - true_lift) < 0.07
+assert float((lift_nuts > 0).float().mean()) > 0.99
 ```
 
 ## Use cases

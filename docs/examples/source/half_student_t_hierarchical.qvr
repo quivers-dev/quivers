@@ -24,8 +24,8 @@
 #
 # Reference: [Gelman 2006](https://doi.org/10.1214/06-BA117A).
 
-object Group : FinSet 6
-object Resp : FinSet 60
+object Group : FinSet 12
+object Resp : FinSet 120
 object Val : Real 1
 
 program hierarchical_regression : Resp -> Val

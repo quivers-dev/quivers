@@ -26,7 +26,7 @@
 #
 # Reference: [Kumaraswamy 1980](https://doi.org/10.1016/0022-1694(80)90036-0).
 
-object Resp : FinSet 64
+object Resp : FinSet 200
 object Val : Real 1
 
 program kumaraswamy_regression : Resp -> Val

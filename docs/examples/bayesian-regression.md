@@ -83,8 +83,11 @@ The three `sample` lines draw the prior parameters as global scalars: `sample si
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate from the model, check the compiled log joint against
+a hand-written density, and then recover the parameters with SVI and NUTS. The
+program reads its data by name, so its input `x_in` is a single dummy row: that
+leading axis is a particle axis, and a longer one would score the whole data
+set once per row.
 
 ### Generating synthetic data
 
@@ -97,60 +100,80 @@ prog = load("docs/examples/source/bayesian_regression.qvr")
 model = prog.morphism
 
 N = 64
-true_sigma = 0.5
-true_beta_0 = 1.5
-true_beta_1 = 2.0
+true_sigma = torch.tensor(0.5)
+true_beta_0 = torch.tensor(1.5)
+true_beta_1 = torch.tensor(2.0)
 
 x = torch.randn(N)
 y = torch.distributions.Normal(true_beta_0 + true_beta_1 * x, true_sigma).sample()
 observations = {"x": x, "y": y}
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
+```
+
+### Checking the log joint
+
+```python
+D = torch.distributions
+truth = {"sigma": true_sigma, "beta_0": true_beta_0, "beta_1": true_beta_1}
+oracle = (
+    D.HalfCauchy(2.0).log_prob(true_sigma)
+    + D.Normal(0.0, 5.0).log_prob(true_beta_0)
+    + D.Normal(0.0, 2.0).log_prob(true_beta_1)
+    + D.Normal(true_beta_0 + true_beta_1 * x, true_sigma).log_prob(y).sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
 ```
 
 ### SVI fit
 
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md). With 64 rows and noise scale 0.5, the coefficients' standard errors are near
+`0.5 / sqrt(64) = 0.0625` and the noise scale's near `0.5 / sqrt(128) = 0.044`,
+so the tolerances are four standard errors: 0.25 for each coefficient and 0.18
+for `sigma`.
+
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-oracle_nll = float(
-    -torch.distributions.Normal(true_beta_0 + true_beta_1 * x, true_sigma)
-    .log_prob(y)
-    .mean()
-)
+tolerance = {"beta_0": 0.25, "beta_1": 0.25, "sigma": 0.18}
 
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"x", "y"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = []
-for _ in range(300):
-    losses.append(svi.step(x_in, observations))
-
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-print(f"oracle NLL:   {oracle_nll:.2f}")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: float(torch.stack([d[k] for d in draws]).mean()) for k in tolerance}
+for k, tol in tolerance.items():
+    print(f"{k:>8}: posterior mean {post[k]:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(post[k] - float(truth[k])) < tol
 ```
 
 ### NUTS posterior
 
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+64 rows. Its posterior means should meet the same tolerances and agree with
+the SVI means to within half of each tolerance.
+
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-N_mcmc = 32
-x_mcmc = x[:N_mcmc]
-y_mcmc = y[:N_mcmc]
-obs_mcmc = {"x": x_mcmc, "y": y_mcmc}
-x_in_mcmc = torch.zeros(N_mcmc, 1)
-
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=20, num_samples=20, num_chains=1)
-result = mc.run(model, x_in_mcmc, obs_mcmc)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+for k, tol in tolerance.items():
+    mean = float(result.samples[k].mean())
+    print(f"{k:>8}: posterior mean {mean:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(mean - float(truth[k])) < tol
+    assert abs(mean - post[k]) < tol / 2
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 

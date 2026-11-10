@@ -11,7 +11,7 @@ The 2PL [item response theory](https://en.wikipedia.org/wiki/Item_response_theor
 #
 # The two-parameter logistic IRT model for binary responses
 # y_{ij} of respondent i to item j. Each item carries its own
-# discrimination and difficulty; respondents carry an
+# discrimination and difficulty; respondents carry a
 # unidimensional ability.
 #
 # Generative structure:
@@ -21,14 +21,14 @@ The 2PL [item response theory](https://en.wikipedia.org/wiki/Item_response_theor
 #   discrim_j     ~ LogNormal(0, 1)               positive discrimination
 #   y_{ij}        ~ Bernoulli(sigmoid(discrim_j * (ability_i - difficulty_j)))
 #
-# The runtime observes the full response matrix indexed by
-# Resp; the per-row item and respondent indices are supplied at
-# fit time via the standard plate-gather idiom
-# (difficulty[item_idx], ability[person_idx]).
+# Resp enumerates the full 100 x 20 person-by-item crossing, one
+# row per response; the per-row person and item indices are host
+# data, read through the plate-gather idiom
+# (ability[person_idx], difficulty[item_idx]).
 
-object Person : FinSet 8
-object Item : FinSet 8
-object Resp : FinSet 64
+object Person : FinSet 100
+object Item : FinSet 20
+object Resp : FinSet 2000
 object Val : Real 1
 
 program irt_2pl : Resp -> Val
@@ -66,8 +66,9 @@ response probabilities express their combined effect on the observed outcome.
 ## Walkthrough
 
 `Person` and `Item` index the respondent and question parameters. `Resp`
-indexes the observed respondent-item pairs; it need not enumerate every
-possible pair. The Bernoulli family supplies the binary value type of each
+indexes the observed respondent-item pairs; here it enumerates the full
+crossing of 100 persons and 20 items, though a design with missing pairs would
+simply list fewer rows. The Bernoulli family supplies the binary value type of each
 response, while `return p` returns real-valued probabilities, reflected in
 `Val : Real 1`. Indexing a response and describing its value are different
 roles, which the program's annotations should keep distinct.
@@ -76,7 +77,11 @@ roles, which the program's annotations should keep distinct.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The blocks below simulate the full 100 x 20 response matrix, check the compiled
+log joint against a hand-written density, and then fit with SVI and NUTS. The
+program reads its data by name, so its input `x_in` is a single dummy row: that
+leading axis is a particle axis, and a longer one would score the whole data
+set once per row.
 
 ### Generating synthetic data
 
@@ -88,12 +93,15 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/irt_2pl.qvr")
 model = prog.morphism
 
-n_person, n_item, n_resp = 8, 8, 64
+n_person, n_item = 100, 20
+n_resp = n_person * n_item
 ability_true = torch.randn(n_person)
 difficulty_true = torch.randn(n_item)
-discrim_true = torch.randn(n_item).exp()
-person_idx = torch.randint(0, n_person, (n_resp,))
-item_idx = torch.randint(0, n_item, (n_resp,))
+discrim_true = (0.5 * torch.randn(n_item)).exp()
+
+# Every person answers every item: row n is (person n // 20, item n % 20).
+person_idx = torch.arange(n_person).repeat_interleave(n_item)
+item_idx = torch.arange(n_item).repeat(n_person)
 eta_true = discrim_true[item_idx] * (
     ability_true[person_idx] - difficulty_true[item_idx]
 )
@@ -101,57 +109,102 @@ p_true = torch.sigmoid(eta_true)
 y = torch.bernoulli(p_true)
 
 observations = {"person_idx": person_idx, "item_idx": item_idx, "y": y}
-x_in = torch.zeros(n_resp, 1)
+x_in = torch.zeros(1, 1)
+```
+
+### Checking the log joint
+
+```python
+D = torch.distributions
+truth = {"ability": ability_true, "difficulty": difficulty_true, "discrim": discrim_true}
+oracle = (
+    D.Normal(0.0, 1.0).log_prob(ability_true).sum()
+    + D.Normal(0.0, 1.0).log_prob(difficulty_true).sum()
+    + D.LogNormal(0.0, 1.0).log_prob(discrim_true).sum()
+    + D.Bernoulli(p_true).log_prob(y).sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
 ```
 
 ### SVI fit
 
+The 2PL's location, scale, and sign are fixed only softly, by the Normal(0, 1)
+prior on ability, so the checks compare quantities that do not depend on that
+indeterminacy. Each ability is estimated from 20 binary responses, which bounds
+how well it can be recovered: the check asks for a correlation of at least 0.85
+between posterior-mean and true abilities. Each difficulty rests on 100
+responses, and the check asks for a correlation of at least 0.9. Finally, the
+fitted response probabilities should track the true ones: their mean absolute
+error should be at most half of what a constant probability of 0.5 leaves on
+these data.
+
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-oracle_nll = float(
-    -torch.distributions.Bernoulli(p_true).log_prob(y).mean()
-)
-
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"y", "person_idx", "item_idx"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = []
-for _ in range(300):
-    losses.append(svi.step(x_in, observations))
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: torch.stack([d[k] for d in draws]).mean(0) for k in truth}
+p_svi = torch.stack(
+    [
+        torch.sigmoid(
+            d["discrim"][item_idx] * (d["ability"][person_idx] - d["difficulty"][item_idx])
+        )
+        for d in draws
+    ]
+).mean(0)
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-print(f"oracle NLL:   {oracle_nll:.2f}")
+
+def corr(a, b):
+    return float(torch.corrcoef(torch.stack([a, b]))[0, 1])
+
+
+baseline_mae = float((p_true - 0.5).abs().mean())
+svi_mae = float((p_svi - p_true).abs().mean())
+print(f"ability correlation:    {corr(post['ability'], ability_true):.3f}")
+print(f"difficulty correlation: {corr(post['difficulty'], difficulty_true):.3f}")
+print(f"probability MAE: {svi_mae:.3f} (constant 0.5: {baseline_mae:.3f})")
+
+assert corr(post["ability"], ability_true) > 0.85
+assert corr(post["difficulty"], difficulty_true) > 0.9
+assert svi_mae < 0.5 * baseline_mae
 ```
 
 ### NUTS posterior
 
+[`NUTSKernel`](../api/inference/mcmc.md) samples the 140-dimensional posterior
+over the full response matrix and is held to the same three checks.
+
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-n_resp_mcmc = 32
-person_idx_mcmc = person_idx[:n_resp_mcmc]
-item_idx_mcmc = item_idx[:n_resp_mcmc]
-y_mcmc = y[:n_resp_mcmc]
-obs_mcmc = {
-    "person_idx": person_idx_mcmc,
-    "item_idx": item_idx_mcmc,
-    "y": y_mcmc,
-}
-x_in_mcmc = torch.zeros(n_resp_mcmc, 1)
-
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=20, num_samples=20, num_chains=1)
-result = mc.run(model, x_in_mcmc, obs_mcmc)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+s = {k: result.samples[k].reshape(-1, v.numel()) for k, v in truth.items()}
+p_nuts = torch.sigmoid(
+    s["discrim"][:, item_idx] * (s["ability"][:, person_idx] - s["difficulty"][:, item_idx])
+).mean(0)
+nuts_mae = float((p_nuts - p_true).abs().mean())
+print(f"ability correlation:    {corr(s['ability'].mean(0), ability_true):.3f}")
+print(f"difficulty correlation: {corr(s['difficulty'].mean(0), difficulty_true):.3f}")
+print(f"probability MAE: {nuts_mae:.3f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
+
+assert corr(s["ability"].mean(0), ability_true) > 0.85
+assert corr(s["difficulty"].mean(0), difficulty_true) > 0.9
+assert nuts_mae < 0.5 * baseline_mae
 ```
 
 ## Categorical perspective
