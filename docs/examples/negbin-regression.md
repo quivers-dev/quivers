@@ -3,27 +3,38 @@
 ## Overview
 
 A multi-output [negative-binomial](https://en.wikipedia.org/wiki/Negative_binomial_distribution)
-regression gives each output its own coefficients and count parameter.
-The source uses PyTorch's `NegativeBinomial(total_count, probs)` convention.
-Its intermediate variable `mu` is not the distribution mean under the
-probability expression shown below; the walkthrough states that distinction
-explicitly so the fitted coefficients have the correct interpretation.
+regression in the NB2 form: each output has its own intercept, slope, and
+dispersion, the log link sets the count mean `mu = exp(eta)`, and the
+dispersion `phi` sets the variance `mu + mu**2 / phi`. As `phi` grows the
+variance approaches `mu` and the model approaches
+[Poisson regression](../tutorials/qvr/02-glms.md#poisson-regression); a
+small `phi` allows counts far more variable than a Poisson with the same mean.
 
 ## QVR source
 
 ```qvr
 # Multi-Output Negative Binomial Regression
 #
-# Per-output coefficients and count parameters are gathered to response rows.
-# The inline family follows PyTorch's NegativeBinomial convention:
-# mean = total_count * probs / (1 - probs).
-# With probs = disp / (disp + mu), the actual mean is disp**2 / mu.
-# For the usual NB2 mean mu, use probs = mu / (disp + mu) instead.
-# This source preserves the former probability expression.
+# An NB2 negative-binomial regression with one intercept, one
+# slope, and one dispersion per output. The log link maps the
+# linear predictor to the count mean mu = exp(eta); the dispersion
+# phi sets the extra-Poisson variance mu + mu**2 / phi.
+#
+# Generative structure:
+#
+#   beta_0_d     ~ Normal(0, 5)                   per-output intercept
+#   beta_1_d     ~ Normal(0, 5)                   per-output slope
+#   phi_d        ~ Gamma(2, 0.5)                  per-output dispersion
+#   mu_n         = exp(beta_0_{d(n)} + beta_1_{d(n)} * x_n)
+#   y_n          ~ NegativeBinomial(total_count=phi_{d(n)},
+#                                   probs=mu_n / (phi_{d(n)} + mu_n))
+#
+# NegativeBinomial(total_count, probs) has mean
+# total_count * probs / (1 - probs), so probs = mu / (phi + mu)
+# gives mean mu and variance mu + mu**2 / phi (the NB2 form).
 
-object Item : FinSet 21
 object Out : FinSet 3
-object Resp : FinSet 63
+object Resp : FinSet 300
 object Val : Real 1
 
 program negbin_regression : Resp -> Val
@@ -36,7 +47,7 @@ program negbin_regression : Resp -> Val
     let disp = dispersion[out_idx]
     let eta = b0 + b1 * x
     let mu = exp(eta)
-    let probs = disp / (disp + mu)
+    let probs = mu / (disp + mu)
 
     observe y : Resp <- NegativeBinomial(total_count=disp, probs=probs)
     return beta_1
@@ -46,29 +57,43 @@ export negbin_regression
 
 ## Understanding the model
 
-[Poisson variation](../tutorials/qvr/02-glms.md#poisson-regression) ties the variance of a count to its mean. A negative
-binomial allows extra variation, as if an underlying Poisson rate itself
-varied across observations. The distribution's count parameter and probability
-parameter jointly set its mean; their exact convention matters.
+[Poisson variation](../tutorials/qvr/02-glms.md#poisson-regression) ties the
+variance of a count to its mean. A negative binomial allows extra variation, as
+if an underlying Poisson rate itself varied across observations. The family's
+two parameters, a count `total_count` and a probability `probs`, jointly set its
+mean, so the regression has to choose `probs` with the family's convention in
+view.
 
-In this source, `mu = exp(eta)` is an intermediate positive predictor. Under
-the PyTorch convention used by the inline family, the displayed
-`probs = disp / (disp + mu)` gives mean `disp**2 / mu`, not `mu`.
-Thus increasing `eta` lowers this model's actual count mean at fixed `disp`.
-The source and synthetic generator use that same convention; to specify the
-usual NB2 mean `mu`, a model author would instead use
-`probs = mu / (disp + mu)`.
+`NegativeBinomial(total_count, probs)` counts the successes observed before
+`total_count` failures when each trial succeeds with probability `probs`. Its
+mean is `total_count * probs / (1 - probs)`. Setting `total_count = phi` and
+`probs = mu / (phi + mu)` makes `probs / (1 - probs) = mu / phi`, so the mean is
+exactly `mu` and the variance is `mu + mu**2 / phi`. Raising the linear
+predictor `eta` thus raises the expected count, and `beta_1` reads as the change
+in log mean per unit of `x`, as in any log-link count regression.
 
 ## Walkthrough
 
-Per-output coefficient and dispersion plates broadcast through `out_idx` gathers. The per-cell linear predictor `eta = b0 + b1 * x` is mapped through the log link `exp` to give the positive intermediate value `mu`. Under PyTorch's convention, `probs = dispersion / (dispersion + mu)` gives actual mean `m = dispersion**2 / mu` and variance `m + m**2 / dispersion`. To use `mu` as the NB2 mean, the probability expression would be `mu / (dispersion + mu)`. The Gamma prior on dispersion encodes a soft preference for finite overdispersion; per-output dispersion permits heterogeneous count regimes across the response axis.
+Per-output coefficient and dispersion plates broadcast to the 300 response rows
+through `out_idx` gathers: 100 rows for each of the three outputs. The per-row
+linear predictor `eta = b0 + b1 * x` passes through the log link `exp` to give
+the mean `mu`, and `probs = mu / (disp + mu)` converts that mean into the
+family's probability parameter. The Gamma(2, 0.5) prior on the dispersion has
+mean 4 and a long right tail, so it allows anything from strong overdispersion
+to counts that are close to Poisson.
 
-The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the plate extent of the response and appears in the signature only as the domain.
+The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the
+declared codomain is `Val : Real 1`: the per-row value space of the returned
+coefficients. `Resp` names the plate extent of the response and appears in the
+signature only as the domain.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate from the model, check the compiled log joint against
+a hand-written density, and then recover the coefficients with SVI and NUTS.
+The program reads its data by name, so its input `x_in` is a single dummy row:
+that leading axis is a particle axis, and a longer one would score the whole
+data set once per row.
 
 ### Generating synthetic data
 
@@ -80,7 +105,7 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/negbin_regression.qvr")
 model = prog.morphism
 
-N, D = 21, 3
+N, D = 100, 3
 ND = N * D
 out_idx = torch.arange(D).repeat(N)
 x = torch.randn(ND)
@@ -88,64 +113,113 @@ x = torch.randn(ND)
 true_beta_0 = torch.tensor([1.0, 0.5, 2.0])
 true_beta_1 = torch.tensor([0.5, -0.3, 0.8])
 true_dispersion = torch.tensor([5.0, 10.0, 3.0])
+
 mu_true = torch.exp(true_beta_0[out_idx] + true_beta_1[out_idx] * x)
-probs_true = true_dispersion[out_idx] / (true_dispersion[out_idx] + mu_true)
-y = torch.distributions.NegativeBinomial(true_dispersion[out_idx], probs_true).sample()
+disp_true = true_dispersion[out_idx]
+likelihood_true = torch.distributions.NegativeBinomial(
+    total_count=disp_true, probs=mu_true / (disp_true + mu_true),
+)
+y = likelihood_true.sample()
 
 observations = {"x": x, "y": y, "out_idx": out_idx}
-x_in = torch.zeros(ND, 1)
+x_in = torch.zeros(1, 1)
+```
+
+### Checking the density
+
+The NB2 parameterization should give each row mean `mu` and variance
+`mu + mu**2 / phi`. Simulating many replicates at the true parameters checks
+both moments, and the compiled log joint at the true latents must equal the
+same density written directly in torch.
+
+```python
+replicates = likelihood_true.sample((4000,))
+mean_rel_err = ((replicates.mean(0) - mu_true).abs() / mu_true).max()
+var_ratio = (replicates.var(0) / (mu_true + mu_true**2 / disp_true)).mean()
+print(f"max relative error of the sample mean: {float(mean_rel_err):.3f}")
+print(f"mean ratio of sample to NB2 variance:  {float(var_ratio):.3f}")
+assert mean_rel_err < 0.1
+assert abs(float(var_ratio) - 1.0) < 0.05
+
+Normal = torch.distributions.Normal
+Gamma = torch.distributions.Gamma
+truth = {
+    "beta_0": true_beta_0,
+    "beta_1": true_beta_1,
+    "dispersion": true_dispersion,
+}
+oracle = (
+    Normal(0.0, 5.0).log_prob(true_beta_0).sum()
+    + Normal(0.0, 5.0).log_prob(true_beta_1).sum()
+    + Gamma(2.0, 0.5).log_prob(true_dispersion).sum()
+    + likelihood_true.log_prob(y).sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
 ```
 
 ### SVI fit
 
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md). With 100 rows per output, the posterior
+standard deviation of each coefficient is roughly 0.08, so the recovery check
+asks every coefficient's posterior mean to sit within 0.3 of the truth (about
+four standard deviations). The dispersion is weakly identified at this sample
+size (its posterior standard deviation is of the same order as its value), so it
+is checked only to within a factor of two.
+
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-oracle_nll = float(
-    -torch.distributions.NegativeBinomial(true_dispersion[out_idx], probs_true)
-    .log_prob(y)
-    .mean()
-)
-
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"x", "y", "out_idx"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = []
-for _ in range(300):
-    losses.append(svi.step(x_in, observations))
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: torch.stack([d[k] for d in draws]).mean(0) for k in truth}
+for k in truth:
+    print(f"{k:>10}: posterior mean {post[k].numpy().round(2)}, truth {truth[k].numpy()}")
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-print(f"oracle NLL:   {oracle_nll:.2f}")
+assert (post["beta_0"] - true_beta_0).abs().max() < 0.3
+assert (post["beta_1"] - true_beta_1).abs().max() < 0.3
+assert (post["dispersion"].log() - true_dispersion.log()).abs().max() < 0.7
 ```
 
 ### NUTS posterior
 
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+300 rows. Each coefficient's truth should lie within three posterior standard
+deviations of its posterior mean.
+
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-N_mcmc, D_mcmc = 11, 3
-ND_mcmc = N_mcmc * D_mcmc
-out_idx_mcmc = torch.arange(D_mcmc).repeat(N_mcmc)
-x_mcmc = x[:ND_mcmc]
-y_mcmc = y[:ND_mcmc]
-obs_mcmc = {"x": x_mcmc, "y": y_mcmc, "out_idx": out_idx_mcmc}
-x_in_mcmc = torch.zeros(ND_mcmc, 1)
-
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=20, num_samples=20, num_chains=1)
-result = mc.run(model, x_in_mcmc, obs_mcmc)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+for k in ("beta_0", "beta_1"):
+    s = result.samples[k].reshape(-1, D)
+    mean, sd = s.mean(0), s.std(0)
+    print(f"{k}: mean {mean.numpy().round(2)}, sd {sd.numpy().round(2)}")
+    assert ((mean - truth[k]).abs() < 3 * sd).all()
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
-The negative binomial is the Gamma-Poisson [mixture](https://en.wikipedia.org/wiki/Compound_probability_distribution): a `Poisson(rate)` kernel with `rate ~ Gamma(dispersion, mu / dispersion)` marginalizes, under PyTorch's parameter convention, to the source's `NegativeBinomial(dispersion, dispersion / (dispersion + mu))`. The Gamma rate is `mu / dispersion` because this source's count mean is `dispersion**2 / mu`. The model uses this closed-form marginal per cell.
+The negative binomial is the Gamma-Poisson
+[mixture](https://en.wikipedia.org/wiki/Compound_probability_distribution): a
+`Poisson(rate)` kernel composed after `rate ~ Gamma(concentration=phi,
+rate=phi / mu)` marginalizes to `NegativeBinomial(total_count=phi,
+probs=mu / (phi + mu))`. The Gamma mixing kernel has mean `mu` and variance
+`mu**2 / phi`, which is where the NB2 variance `mu + mu**2 / phi` comes from:
+`mu` from the Poisson and `mu**2 / phi` from the varying rate. The program uses
+the closed-form marginal per row rather than sampling the per-row rate.
