@@ -74,85 +74,6 @@ from quivers.dsl.family_schemas import family_parameterizations
 from quivers.dsl.draw_args import bind_family_arguments
 
 
-def _floating_support(support: _constraints.Constraint) -> bool:
-    """Whether a discrete support takes floating-point values.
-
-    `torch.distributions` scores and samples Boolean (`Bernoulli`) and
-    one-hot supports as floating-point tensors; every other discrete
-    support (the integer intervals of `Poisson`, `Categorical`,
-    `Binomial`, and the rest) as integer tensors.
-
-    Parameters
-    ----------
-    support : torch.distributions.constraints.Constraint
-        The distribution's support.
-
-    Returns
-    -------
-    bool
-        ``True`` for a Boolean or one-hot support.
-    """
-    return isinstance(support, (_constraints._Boolean, _constraints._OneHot))
-
-
-def _discrete_sample(
-    dist: D.Distribution,
-    sample_shape: torch.Size,
-    support: _constraints.Constraint,
-) -> torch.Tensor:
-    """Draw from a discrete distribution at its support's dtype.
-
-    Parameters
-    ----------
-    dist : torch.distributions.Distribution
-        The distribution sampled.
-    sample_shape : torch.Size
-        Leading sample dimensions.
-    support : torch.distributions.constraints.Constraint
-        The distribution's support.
-
-    Returns
-    -------
-    torch.Tensor
-        A floating draw for a Boolean or one-hot support, and an
-        integer (``long``) draw otherwise.
-    """
-    draw = dist.sample(sample_shape)
-    return draw if _floating_support(support) else draw.long()
-
-
-def _discrete_value(
-    value: torch.Tensor,
-    support: _constraints.Constraint,
-    floating_dtype: torch.dtype,
-) -> torch.Tensor:
-    """Cast a value scored by a discrete distribution to its support's dtype.
-
-    A Boolean or one-hot support scores floating values, so an integer
-    value (a draw, or integer-typed data) is cast to ``floating_dtype``;
-    an integer support scores integer values, so a floating value is
-    cast to ``long``. A value already at the right dtype is returned
-    unchanged.
-
-    Parameters
-    ----------
-    value : torch.Tensor
-        The value scored.
-    support : torch.distributions.constraints.Constraint
-        The distribution's support.
-    floating_dtype : torch.dtype
-        The floating dtype of the distribution's parameters.
-
-    Returns
-    -------
-    torch.Tensor
-        ``value`` at the dtype the support is scored in.
-    """
-    if _floating_support(support):
-        return value if value.dtype.is_floating_point else value.to(floating_dtype)
-    return value.long() if value.dtype.is_floating_point else value
-
-
 def _to_event_shape(value: torch.Tensor, dist: D.Distribution) -> torch.Tensor:
     """Unflatten a matrix-valued value to its distribution's event shape.
 
@@ -289,7 +210,7 @@ class FixedDistribution(ContinuousMorphism):
             )
             shape = shape + rows
         if self._discrete:
-            return _discrete_sample(dist, shape, self._support)
+            return dist.sample(shape).long()
         if getattr(dist, "has_rsample", True):
             return dist.rsample(shape)
         # Continuous but non-reparameterizable (e.g. VonMises).
@@ -310,13 +231,7 @@ class FixedDistribution(ContinuousMorphism):
         torch.Tensor
             Log-probabilities. Shape ``(batch,)``.
         """
-        if self._discrete:
-            floating = (
-                x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
-            )
-            value = _discrete_value(y, self._support, floating)
-        else:
-            value = y
+        value = y.float() if self._discrete else y
         # The distribution's parameters are shared constants, so the
         # density is built once (batch of one) and its constant
         # parameters broadcast against whatever value is scored: a
@@ -622,7 +537,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         if self._discrete:
             # Discrete samples are kept at the distribution's native
             # batch shape; downstream code unpacks as needed.
-            return _discrete_sample(dist, torch.Size(sample_shape), self._support)
+            return dist.sample(sample_shape).long()
         if getattr(dist, "has_rsample", True):
             result = dist.rsample(sample_shape)
         else:
@@ -651,15 +566,20 @@ class MixedInlineDistribution(ContinuousMorphism):
         """
         params = self._resolve_params(x)
         dist = self._dist_builder(params)
-        # A discrete value is scored at its support's dtype: floating
-        # for a Boolean or one-hot support, integer otherwise, whether
-        # it is observed data or a draw of the site.
-        if self._discrete:
-            floating = next(
-                (p.dtype for p in params if p.dtype.is_floating_point),
-                torch.get_default_dtype(),
-            )
-            y_in = _discrete_value(y, self._support, floating)
+        # For discrete distributions over an integer support,
+        # categorical-valued samples must remain integer-typed so
+        # PyTorch's ``IntegerInterval`` validator accepts them.
+        # Bernoulli / Boolean families accept float-valued samples,
+        # but the integer family suite (Categorical, Binomial,
+        # Geometric, NegativeBinomial, Poisson) refuses floats. Cast
+        # only when the validator's support is a continuous
+        # constraint.
+        if self._discrete and y.dtype.is_floating_point:
+            sup = self._support
+            if isinstance(sup, _constraints._Boolean):
+                y_in = y.float()
+            else:
+                y_in = y.long()
         else:
             y_in = y
         # Reconcile y's shape with the distribution's expected
