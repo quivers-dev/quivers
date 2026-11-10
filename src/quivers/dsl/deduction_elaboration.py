@@ -30,10 +30,16 @@ derivation of ``span(i, j, ...)`` chooses split positions for the
 premise positions the conclusion leaves free and derives each premise
 over its own span, so the search is bounded by the sentence, and only a
 unary rule, which keeps the span, needs the declaration's ``depth``
-option to bound it. Any other system takes its axioms and their weights
-as input and enumerates derivations of any item to the depth the
-option declares, or to the number of axioms and rules together without
-one. The agenda engine tabulates the same derivations; the two agree on
+option to bound it. A system with a lexicon whose items are not all
+spans, such as a multiple context-free grammar, derives an item from its
+head symbol and the positions of its yield, read in pairs as the
+components the item covers: its rules must be linear, each conclusion
+component a concatenation of premise components, so a rule with several
+premises derives each over fewer tokens, and its unary rules must form
+no cycle. Any other system takes its axioms and their weights as input
+and enumerates derivations of any item to the depth the option
+declares, or to the number of axioms and rules together without one.
+The agenda engine tabulates the same derivations; the two agree on
 every system whose derivations of the goal fit the bound.
 """
 
@@ -369,6 +375,33 @@ class _System:
     span_shaped
         Whether every rule relates span items, so derivations may be
         enumerated by span.
+    span_fuel_factor
+        For a schema parser, the units of derivation fuel per sentence
+        position.
+    schema_categories
+        For a schema parser, its finite category algebra.
+    schema_words
+        For a schema parser, its vocabulary.
+    heads
+        For a yield-directed system, the head symbols of its items, in
+        the order its derivation numbers them.
+    live
+        For a yield-directed system, the indices of the rules that can
+        fire: those without a premise that has no positions.
+    closure
+        The indices of the unary rules.
+    cyclic
+        Whether a chain of unary rules may revisit an item.
+    family
+        The item family, once declared.
+    constructors
+        The item family's constructors, by symbol.
+    choice
+        The ``Search`` instance.
+    weight
+        The ``Weight`` instance.
+    fresh
+        The count of fresh locals minted so far.
     """
 
     decl: DeductionDecl
@@ -384,11 +417,27 @@ class _System:
     span_fuel_factor: int = 0
     schema_categories: tuple[Pattern, ...] = ()
     schema_words: tuple[str, ...] = ()
+    heads: list[str] = field(default_factory=list)
+    live: list[int] = field(default_factory=list)
+    closure: list[int] = field(default_factory=list)
+    cyclic: bool = False
     family: FamilyDecl | None = None
     constructors: dict[str, ConstructorDecl] = field(default_factory=dict)
     choice: NamedEffectInstance | None = None
     weight: NamedEffectInstance | None = None
     fresh: int = 0
+
+    @property
+    def by_yield(self) -> bool:
+        """Whether items are derived from their heads and yield positions.
+
+        Returns
+        -------
+        bool
+            ``True`` for a system with a lexicon whose rules do not all
+            relate spans, such as a multiple context-free grammar.
+        """
+        return bool(self.entries) and not self.span_shaped
 
     @property
     def carrier(self) -> TypeExpr:
@@ -534,6 +583,335 @@ def _is_span(pattern: Pattern) -> bool:
         and isinstance(pattern.args[0], _Wild)
         and isinstance(pattern.args[1], _Wild)
     )
+
+
+def _rule_positions(system: _System, rule: _Rule) -> list[str]:
+    """The variables a rule uses in integer slots, in first-occurrence order.
+
+    Parameters
+    ----------
+    system : _System
+        The system, whose slot sorts are inferred.
+    rule : _Rule
+        The rule.
+
+    Returns
+    -------
+    list[str]
+        The names.
+    """
+    found: list[str] = []
+
+    def walk(pattern: Pattern) -> None:
+        """Collect the integer-slot variables of one pattern.
+
+        Parameters
+        ----------
+        pattern : Pattern
+            The pattern.
+        """
+        if not isinstance(pattern, _App):
+            return
+        sorts = system.symbols[pattern.symbol]
+        for position, argument in enumerate(pattern.args):
+            if isinstance(argument, _Wild):
+                if sorts[position] == "int" and argument.name not in found:
+                    found.append(argument.name)
+            else:
+                walk(argument)
+
+    for pattern in (*rule.premises, rule.conclusion):
+        walk(pattern)
+    return found
+
+
+#: A position in a rule's yield: a position variable's name or a literal.
+type _Node = str | int
+#: How a rule's conclusion yield is built from its premises' components:
+#: for each conclusion component, the positions from its start to its end
+#: through the premise components it concatenates; and the position
+#: variables only an empty premise component mentions.
+type _YieldPlan = tuple[tuple[tuple[_Node, ...], ...], tuple[str, ...]]
+
+
+def _components(system: _System, pattern: Pattern) -> list[tuple[_Node, _Node]] | str:
+    """The yield components of an item pattern: its position slots in pairs.
+
+    Parameters
+    ----------
+    system : _System
+        The system, whose slot sorts are inferred.
+    pattern : Pattern
+        A rule's premise or conclusion.
+
+    Returns
+    -------
+    list[tuple[_Node, _Node]] | str
+        Each component's start and end, or the reason the pattern has no
+        such components.
+    """
+    if not isinstance(pattern, _App):
+        return "is not an item with a head symbol and positions"
+    slots = [
+        index
+        for index, sort in enumerate(system.symbols[pattern.symbol])
+        if sort == "int"
+    ]
+    if not slots or len(slots) % 2:
+        return (
+            f"is headed by {pattern.symbol!r}, whose {len(slots)} position slots "
+            "do not pair into components"
+        )
+    nodes: list[_Node] = []
+    for slot in slots:
+        argument = pattern.args[slot]
+        if isinstance(argument, _Wild):
+            nodes.append(argument.name)
+        elif isinstance(argument, _Lit):
+            nodes.append(argument.value)
+        else:
+            return f"fills a position slot of {pattern.symbol!r} with a term"
+    return [(nodes[index], nodes[index + 1]) for index in range(0, len(nodes), 2)]
+
+
+def _has_positions(system: _System, pattern: Pattern) -> bool:
+    """Whether an item pattern has a position slot.
+
+    Parameters
+    ----------
+    system : _System
+        The system, whose slot sorts are inferred.
+    pattern : Pattern
+        A rule's premise or conclusion.
+
+    Returns
+    -------
+    bool
+        ``True`` for an applied symbol with an ``Int`` slot.
+    """
+    return isinstance(pattern, _App) and "int" in system.symbols[pattern.symbol]
+
+
+def _head(pattern: Pattern) -> str:
+    """The head symbol of an item pattern.
+
+    Parameters
+    ----------
+    pattern : Pattern
+        An applied symbol or an atom.
+
+    Returns
+    -------
+    str
+        Its symbol or the atom's name.
+    """
+    if isinstance(pattern, _App):
+        return pattern.symbol
+    assert isinstance(pattern, _Atom)
+    return pattern.name
+
+
+def _yield_plan(system: _System, rule: _Rule) -> _YieldPlan | str:
+    """Read how a rule concatenates its premises' components into its conclusion's.
+
+    A rule is linear when each component of its conclusion is the
+    concatenation of premise components, start to end, and every
+    non-empty premise component is used exactly once: the multiple
+    context-free reading, under which an item's yield is the tokens its
+    components cover and a rule rearranges its premises' yields without
+    copying or dropping any.
+
+    Parameters
+    ----------
+    system : _System
+        The system, whose slot sorts are inferred.
+    rule : _Rule
+        The rule.
+
+    Returns
+    -------
+    _YieldPlan | str
+        The plan, or why the rule is not linear.
+    """
+    conclusion = _components(system, rule.conclusion)
+    if isinstance(conclusion, str):
+        return f"its conclusion {conclusion}"
+    edges: list[tuple[_Node, _Node]] = []
+    mentioned: list[str] = []
+    for position, premise in enumerate(rule.premises):
+        components = _components(system, premise)
+        if isinstance(components, str):
+            return f"its premise {position + 1} {components}"
+        for start, end in components:
+            for node in (start, end):
+                if isinstance(node, str) and node not in mentioned:
+                    mentioned.append(node)
+            if start != end:
+                edges.append((start, end))
+    leaving: dict[_Node, list[int]] = {}
+    for index, (start, _end) in enumerate(edges):
+        leaving.setdefault(start, []).append(index)
+    for node, indices in leaving.items():
+        if len(indices) > 1:
+            return f"two premise components start at {node!r}, so they overlap"
+    used: set[int] = set()
+    paths: list[tuple[_Node, ...]] = []
+    for start, end in conclusion:
+        path: list[_Node] = [start]
+        current = start
+        while current != end:
+            following = [
+                index for index in leaving.get(current, []) if index not in used
+            ]
+            if not following:
+                return (
+                    f"its conclusion's component ({start}, {end}) is not a "
+                    "concatenation of premise components"
+                )
+            used.add(following[0])
+            current = edges[following[0]][1]
+            path.append(current)
+        paths.append(tuple(path))
+    if len(used) != len(edges):
+        start, end = next(edge for index, edge in enumerate(edges) if index not in used)
+        return (
+            f"its premise component ({start}, {end}) is not part of the "
+            "conclusion's yield"
+        )
+    on_paths = {node for path in paths for node in path}
+    loose = tuple(name for name in mentioned if name not in on_paths)
+    return tuple(paths), loose
+
+
+def _unifiable(left: Pattern, right: Pattern) -> bool:
+    """Whether two patterns, their variables apart, have a common instance.
+
+    Parameters
+    ----------
+    left : Pattern
+        A pattern whose variables are its own.
+    right : Pattern
+        A pattern whose variables are its own.
+
+    Returns
+    -------
+    bool
+        ``True`` when some substitution makes the two equal.
+    """
+    bindings: dict[tuple[int, str], tuple[int, Pattern]] = {}
+
+    def resolve(side: int, pattern: Pattern) -> tuple[int, Pattern]:
+        """Follow a variable's binding to its value.
+
+        Parameters
+        ----------
+        side : int
+            Which pattern the variable belongs to.
+        pattern : Pattern
+            The pattern.
+
+        Returns
+        -------
+        tuple[int, Pattern]
+            The side and pattern the variable stands for.
+        """
+        while isinstance(pattern, _Wild) and (side, pattern.name) in bindings:
+            side, pattern = bindings[(side, pattern.name)]
+        return side, pattern
+
+    def unify(one: tuple[int, Pattern], two: tuple[int, Pattern]) -> bool:
+        """Unify two sided patterns, extending the bindings.
+
+        Parameters
+        ----------
+        one : tuple[int, Pattern]
+            A side and its pattern.
+        two : tuple[int, Pattern]
+            A side and its pattern.
+
+        Returns
+        -------
+        bool
+            Whether they unify.
+        """
+        side_a, a = resolve(*one)
+        side_b, b = resolve(*two)
+        if isinstance(a, _Wild):
+            if not (isinstance(b, _Wild) and (side_a, a.name) == (side_b, b.name)):
+                bindings[(side_a, a.name)] = (side_b, b)
+            return True
+        if isinstance(b, _Wild):
+            bindings[(side_b, b.name)] = (side_a, a)
+            return True
+        if isinstance(a, _App) and isinstance(b, _App):
+            return (
+                a.symbol == b.symbol
+                and len(a.args) == len(b.args)
+                and all(
+                    unify((side_a, x), (side_b, y))
+                    for x, y in zip(a.args, b.args, strict=True)
+                )
+            )
+        return a == b
+
+    return unify((0, left), (1, right))
+
+
+def _may_cycle(system: _System) -> bool:
+    """Whether a chain of the system's unary rules may revisit an item.
+
+    One unary rule can follow another when the first's conclusion and
+    the second's premise have a common instance; a chain revisits an
+    item only if this follows-graph over the unary rules has a cycle.
+    The test is conservative: a cycle in the graph is necessary for a
+    revisit, not sufficient.
+
+    Parameters
+    ----------
+    system : _System
+        The system.
+
+    Returns
+    -------
+    bool
+        ``False`` only when no chain of unary rules can revisit an item.
+    """
+    unary = [system.rules[index] for index in system.closure]
+    follows = {
+        position: [
+            target
+            for target, after in enumerate(unary)
+            if _unifiable(rule.conclusion, after.premises[0])
+        ]
+        for position, rule in enumerate(unary)
+    }
+    finished: set[int] = set()
+    active: set[int] = set()
+
+    def reaches_cycle(node: int) -> bool:
+        """Whether a cycle is reachable from a rule.
+
+        Parameters
+        ----------
+        node : int
+            The rule's position among the unary rules.
+
+        Returns
+        -------
+        bool
+            ``True`` when the depth-first walk meets a rule on its path.
+        """
+        if node in active:
+            return True
+        if node in finished:
+            return False
+        active.add(node)
+        found = any(reaches_cycle(target) for target in follows[node])
+        active.discard(node)
+        finished.add(node)
+        return found
+
+    return any(reaches_cycle(node) for node in follows)
 
 
 class _DeductionElaboration:
@@ -1060,6 +1438,12 @@ class _DeductionElaboration:
             for rule in system.rules
             for pattern in (*rule.premises, rule.conclusion)
         )
+        system.closure = [
+            index for index, rule in enumerate(system.rules) if len(rule.premises) == 1
+        ]
+        system.cyclic = _may_cycle(system)
+        if system.by_yield:
+            self._read_heads(system)
         unary = any(len(rule.premises) == 1 for rule in system.rules)
         if system.depth is None and unary and system.span_shaped:
             self._fail(
@@ -1069,6 +1453,134 @@ class _DeductionElaboration:
                 code="qiec-program",
             )
         return system
+
+    def _read_heads(self: _Elaborator, system: _System) -> None:
+        """Number the heads of a yield-directed system and check its rules.
+
+        A rule with a positional conclusion must be linear. A rule whose
+        conclusion has no positions erases its premises' positions, as a
+        test that some item exists anywhere in the sentence does; its
+        premises' positions range over the whole sentence. Items without
+        positions are derived only by erasing rules, so a positional rule
+        with such a premise fires only if the deduction has an erasing
+        rule, and then it is refused, since its premise could rest on its
+        own conclusion.
+
+        Parameters
+        ----------
+        system : _System
+            A system with a lexicon whose rules do not all relate spans.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a rule is not linear in the multiple context-free sense,
+            a positional rule has a premise without positions that an
+            erasing rule could derive, the rules among items without
+            positions may form a cycle, or the unary rules may form a
+            cycle, none of which the derivation by heads and components
+            bounds.
+        """
+        heads: list[str] = [SPAN]
+        erasing = any(
+            not _has_positions(system, rule.conclusion) for rule in system.rules
+        )
+        unpositioned: dict[str, set[str]] = {}
+        for index, rule in enumerate(system.rules):
+            for pattern in (*rule.premises, rule.conclusion):
+                if not isinstance(pattern, (_Atom, _App)):
+                    self._fail(
+                        rule.source,
+                        f"rule {rule.source.name!r} has a premise or conclusion "
+                        "that is not an item with a head symbol; a lexical "
+                        "deduction whose items are not all spans derives each "
+                        "item by its head",
+                        code="qiec-program",
+                    )
+            free = [
+                premise
+                for premise in rule.premises
+                if not _has_positions(system, premise)
+            ]
+            if _has_positions(system, rule.conclusion):
+                if free and not erasing:
+                    # Every item an erasing rule does not derive covers a
+                    # token: an axiom covers one, and a linear rule's
+                    # conclusion covers its premises'. Without erasing
+                    # rules a premise without positions is never derived,
+                    # and the rule never fires, in either evaluator.
+                    continue
+                if free:
+                    self._fail(
+                        rule.source,
+                        f"rule {rule.source.name!r} derives an item with "
+                        "positions from an item without them, which an erasing "
+                        "rule derives from items with positions; the search by "
+                        "yields cannot bound that recursion",
+                        code="qiec-program",
+                    )
+                plan = _yield_plan(system, rule)
+                if isinstance(plan, str):
+                    self._fail(
+                        rule.source,
+                        f"rule {rule.source.name!r}: {plan}; a lexical deduction "
+                        "whose items are not all spans derives items by their "
+                        "yields, which needs every rule to concatenate its "
+                        "premises' position pairs into its conclusion's",
+                        code="qiec-program",
+                    )
+            else:
+                unpositioned.setdefault(_head(rule.conclusion), set()).update(
+                    _head(premise) for premise in free
+                )
+            system.live.append(index)
+            for pattern in (*rule.premises, rule.conclusion):
+                if _head(pattern) not in heads:
+                    heads.append(_head(pattern))
+        finished: set[str] = set()
+        active: set[str] = set()
+
+        def cycles(node: str) -> bool:
+            """Whether a cycle among heads without positions is reachable.
+
+            Parameters
+            ----------
+            node : str
+                A head without positions.
+
+            Returns
+            -------
+            bool
+                ``True`` when the walk meets a head on its path.
+            """
+            if node in active:
+                return True
+            if node in finished:
+                return False
+            active.add(node)
+            found = any(cycles(target) for target in unpositioned.get(node, ()))
+            active.discard(node)
+            finished.add(node)
+            return found
+
+        if any(cycles(node) for node in list(unpositioned)):
+            self._fail(
+                system.decl,
+                f"deduction {system.decl.name!r} has rules among items without "
+                "positions that may form a cycle, which the search by yields "
+                "cannot bound",
+                code="qiec-program",
+            )
+        if system.cyclic:
+            self._fail(
+                system.decl,
+                f"deduction {system.decl.name!r} has unary rules that may form a "
+                "cycle; a lexical deduction whose items are not all spans "
+                "derives items by their yields, which a cycle of unary rules "
+                "does not shrink",
+                code="qiec-program",
+            )
+        system.heads = heads
 
     def _object_pattern(
         self: _Elaborator, expr: ObjectExpr, atoms: set[str], system: _System
@@ -1474,6 +1986,24 @@ class _DeductionElaboration:
             self.constructors[constructor.name] = constructor
             self.registry.register_constructor(constructor)
 
+    def _frame_width(self: _Elaborator, system: _System) -> int:
+        """The most position slots any head of a yield-directed system has.
+
+        Parameters
+        ----------
+        system : _System
+            The system.
+
+        Returns
+        -------
+        int
+            The number of frame arguments its derivation takes.
+        """
+        return max(
+            sum(1 for sort in system.symbols[head] if sort == "int")
+            for head in system.heads
+        )
+
     def _declare_deduction_instances(self: _Elaborator, system: _System) -> None:
         """Allocate the deduction's search and weight instances.
 
@@ -1555,9 +2085,13 @@ class _DeductionElaboration:
         # the parameter store.
         logged = system.semiring in ("LogProb", "Viterbi")
         lexical_learned = logged and any(entry.learnable for entry in system.entries)
+        firing = (
+            [system.rules[index] for index in system.live]
+            if system.by_yield
+            else system.rules
+        )
         learned = lexical_learned or (
-            logged
-            and any(rule.learnable or rule.parent is not None for rule in system.rules)
+            logged and any(rule.learnable or rule.parent is not None for rule in firing)
         )
         base = (system.choice.entry, system.weight.entry)
         axiom_row = EffectRow((*base, params.entry) if lexical_learned else base)
@@ -1632,7 +2166,7 @@ class _DeductionElaboration:
                 if system.schema_categories
                 else (INT, INT, INT, tokens_type)
                 if system.span_shaped
-                else (INT, tokens_type),
+                else (INT, *([INT] * self._frame_width(system)), tokens_type),
                 item,
                 row,
             )
@@ -2741,6 +3275,8 @@ class _Context:
         """
         if self.system.schema_categories:
             return self.schema_derivation(signature)
+        if self.system.by_yield:
+            return self.yield_derivation(signature)
         system = self.system
         item = system.item
         fuel = Local("fuel", INT)
@@ -2774,52 +3310,6 @@ class _Context:
                 ),
                 self.call(system.name("axiom"), (Var(start), Var(tokens))),
                 self.fail(item, "derive", "lexical", "span"),
-            )
-        elif system.entries:
-            # A lexicon whose rules do not relate spans: every lexical
-            # item at every position is an axiom, and the rules derive
-            # their premises without positions.
-            tokens = Local("tokens", signature.parameters[1])
-            parameters = (fuel, tokens)
-
-            def recursion(low: Value, high: Value) -> Call:
-                """Derive any item with one less fuel.
-
-                Parameters
-                ----------
-                low : Value
-                    Unused; the system derives without spans.
-                high : Value
-                    Unused; the system derives without spans.
-
-                Returns
-                -------
-                Call
-                    The recursive call.
-                """
-                del low, high
-                return self.call(signature.name, (spent, Var(tokens)))
-
-            positions = self.system.local("k", INT)
-            axiom_alternative = self.bind(
-                "chosen",
-                INT,
-                self.choose(
-                    Comprehension(
-                        positions,
-                        self.extent,
-                        Var(positions),
-                        tensor_type(INT, (self.extent,)),
-                    ),
-                    INT,
-                    self.extent,
-                    "derive",
-                    "axiom",
-                    "choose",
-                ),
-                lambda chosen: self.call(
-                    system.name("axiom"), (Var(chosen), Var(tokens))
-                ),
             )
         else:
             axioms = Local("axioms", signature.parameters[1])
@@ -3399,6 +3889,931 @@ class _Context:
         )
         return self.computation(signature, parameters, body)
 
+    def conclude(
+        self,
+        index: int,
+        rule: _Rule,
+        bindings: dict[str, Local],
+        then: Callable[[Value], Computation],
+    ) -> Computation:
+        """Instantiate a rule's conclusion, add its weight, and continue.
+
+        Parameters
+        ----------
+        index : int
+            The rule's index.
+        rule : _Rule
+            The rule.
+        bindings : dict[str, Local]
+            The complete bindings.
+        then : Callable[[Value], Computation]
+            What to run with the conclusion once its weight is added.
+
+        Returns
+        -------
+        Computation
+            The weighted conclusion.
+        """
+        system = self.system
+        conclusion = self.instantiate(rule.conclusion, bindings)
+
+        def weighted(weight: Value) -> Computation:
+            """Add the weight, then continue.
+
+            Parameters
+            ----------
+            weight : Value
+                The weight.
+
+            Returns
+            -------
+            Computation
+                The sequence.
+            """
+            return Bind(
+                system.local("added", UNIT),
+                self.add_weight(weight, "derive", "rule", index, "weight"),
+                then(conclusion),
+            )
+
+        if system.semiring not in ("LogProb", "Viterbi") or not (
+            rule.learnable or rule.parent is not None
+        ):
+            return weighted(self.weight_of(None))
+        return self.rule_weight(rule, index, bindings, weighted)
+
+    def apply_group(
+        self,
+        group: _Group,
+        derived: list[Local],
+        positions: Callable[[int], dict[str, Local]],
+        then: Callable[[Value], Computation],
+        *path: str | int,
+    ) -> Computation:
+        """Choose a rule of a group and match its premises against derived items.
+
+        Parameters
+        ----------
+        group : _Group
+            The group, whose premises share one shape.
+        derived : list[Local]
+            The derived premise items, in premise order.
+        positions : Callable[[int], dict[str, Local]]
+            For a rule index, the bindings its position variables start
+            from.
+        then : Callable[[Value], Computation]
+            What to run with the chosen rule's weighted conclusion.
+        *path : str | int
+            The group's path.
+
+        Returns
+        -------
+        Computation
+            The rule choice, each rule's matches innermost.
+        """
+        item = self.system.item
+
+        def match_rule(entry: tuple[int, _Rule]) -> Computation:
+            """Match the derived premises against one rule's patterns.
+
+            Parameters
+            ----------
+            entry : tuple[int, _Rule]
+                The rule and its index.
+
+            Returns
+            -------
+            Computation
+                The matches, innermost the conclusion.
+            """
+            index, rule = entry
+
+            def step(position: int, current: dict[str, Local]) -> Computation:
+                """Match the premises from a position on.
+
+                Parameters
+                ----------
+                position : int
+                    The next premise.
+                current : dict[str, Local]
+                    The bindings so far.
+
+                Returns
+                -------
+                Computation
+                    The match from that premise on.
+                """
+                if position == len(rule.premises):
+                    return self.conclude(index, rule, current, then)
+                return self.match(
+                    derived[position],
+                    rule.premises[position],
+                    current,
+                    item,
+                    lambda extended: step(position + 1, extended),
+                    *path,
+                    "rule",
+                    index,
+                    "premise",
+                    position,
+                )
+
+            return step(0, positions(index))
+
+        if len(group.rules) == 1:
+            return match_rule(group.rules[0])
+        rule_alternatives = TensorValue(
+            tuple(_int(index) for index in range(len(group.rules))),
+            tensor_type(INT, (IndexLiteral(len(group.rules), NAT),)),
+        )
+
+        def dispatch(selected: Local, position: int) -> Computation:
+            """Select the chosen rule by index.
+
+            Parameters
+            ----------
+            selected : Local
+                The chosen index.
+            position : int
+                The rule tested here.
+
+            Returns
+            -------
+            Computation
+                The chain of tests from this rule on.
+            """
+            if position == len(group.rules):
+                return self.fail(item, *path, "rule", "none")
+            return If(
+                self.primitive("eq_int", Var(selected), _int(position)),
+                match_rule(group.rules[position]),
+                dispatch(selected, position + 1),
+            )
+
+        return self.bind(
+            "rule",
+            INT,
+            self.choose(
+                rule_alternatives,
+                INT,
+                IndexLiteral(len(group.rules), NAT),
+                *path,
+                "rule",
+            ),
+            lambda selected: dispatch(selected, 0),
+        )
+
+    def choose_position(self, *path: str | int) -> Perform:
+        """Choose an integer below the extent.
+
+        Parameters
+        ----------
+        *path : str | int
+            The request's path.
+
+        Returns
+        -------
+        Perform
+            The request, resumed once per integer ``0 .. n - 1``.
+        """
+        index = self.system.local("k", INT)
+        return self.choose(
+            Comprehension(
+                index, self.extent, Var(index), tensor_type(INT, (self.extent,))
+            ),
+            INT,
+            self.extent,
+            *path,
+        )
+
+    def frame_slots(self, head: str) -> list[int]:
+        """The position slots of a head symbol, in slot order.
+
+        Parameters
+        ----------
+        head : str
+            The symbol.
+
+        Returns
+        -------
+        list[int]
+            The indices of its ``Int`` slots.
+        """
+        return [
+            index
+            for index, sort in enumerate(self.system.symbols[head])
+            if sort == "int"
+        ]
+
+    def frame_width(self) -> int:
+        """The most position slots any head symbol has.
+
+        Returns
+        -------
+        int
+            The number of frame arguments the derivation takes.
+        """
+        return max(len(self.frame_slots(head)) for head in self.system.heads)
+
+    def choose_boundary(
+        self, then: Callable[[Local], Computation], *path: str | int
+    ) -> Computation:
+        """Choose a sentence boundary, an integer from zero to the extent.
+
+        Parameters
+        ----------
+        then : Callable[[Local], Computation]
+            What to run with the chosen boundary.
+        *path : str | int
+            The choice's path.
+
+        Returns
+        -------
+        Computation
+            The choice: zero, or one more than an integer below the
+            extent.
+        """
+        return self.bind("boundary", INT, self.boundary(*path), then)
+
+    def boundary(self, *path: str | int) -> Computation:
+        """Choose any sentence boundary, an integer from zero to the extent.
+
+        Parameters
+        ----------
+        *path : str | int
+            The choice's path.
+
+        Returns
+        -------
+        Computation
+            Zero, or one more than an integer below the extent.
+        """
+        sides = TensorValue(
+            (_int(0), _int(1)), tensor_type(INT, (IndexLiteral(2, NAT),))
+        )
+        return self.bind(
+            "side",
+            INT,
+            self.choose(sides, INT, IndexLiteral(2, NAT), *path, "side"),
+            lambda side: If(
+                self.primitive("eq_int", Var(side), _int(0)),
+                Return(_int(0)),
+                self.bind(
+                    "offset",
+                    INT,
+                    self.choose_position(*path, "offset"),
+                    lambda offset: Return(
+                        self.primitive("add_int", Var(offset), _int(1))
+                    ),
+                ),
+            ),
+        )
+
+    def choose_between(
+        self,
+        low: Value,
+        high: Value,
+        then: Callable[[Local], Computation],
+        *path: str | int,
+    ) -> Computation:
+        """Choose a sentence boundary that may lie between two others.
+
+        The choice offers ``low + k`` for every ``k`` below the extent,
+        which covers every boundary from ``low`` to ``high`` unless the
+        two are the sentence's own ends; only then does it offer every
+        boundary. Candidates outside the range are left for the caller's
+        order check to refuse.
+
+        Parameters
+        ----------
+        low : Value
+            The least boundary the caller accepts.
+        high : Value
+            The greatest.
+        then : Callable[[Local], Computation]
+            What to run with the chosen boundary.
+        *path : str | int
+            The choice's path.
+
+        Returns
+        -------
+        Computation
+            The choice.
+        """
+        offset = self.bind(
+            "offset",
+            INT,
+            self.choose_position(*path, "offset"),
+            lambda chosen: Return(self.primitive("add_int", low, Var(chosen))),
+        )
+        boundary = If(
+            self.primitive(
+                "lt_int", self.primitive("sub_int", high, low), self.length()
+            ),
+            offset,
+            self.bind(
+                "any", INT, self.boundary(*path, "any"), lambda any_: Return(Var(any_))
+            ),
+        )
+        return self.bind("boundary", INT, boundary, then)
+
+    def yield_derivation(self, signature: ComputationSignature) -> NamedComputation:
+        """Derive an item from its head and the positions of its yield.
+
+        A lexical system whose items are not all spans, such as a
+        multiple context-free grammar, derives an item given its head
+        symbol and its frame, the values of its position slots, read in
+        pairs as the components of its yield. An axiom is the item over
+        a one-token span; a rule whose conclusion has the head binds its
+        conclusion's positions to the frame, chooses the positions inside
+        each component where its premises' components meet, in order,
+        and derives each premise from its own head and frame. Every
+        derivable item covers at least one token with components that run
+        forward, so a frame that does not is refused at once; the rules
+        are linear, so a rule with several premises derives each over
+        fewer tokens than its conclusion's, and the unary rules form no
+        cycle, so the recursion is finite.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
+        system = self.system
+        item = system.item
+        width = self.frame_width()
+        head = Local("head", INT)
+        frame = tuple(Local(f"p{index}", INT) for index in range(width))
+        tokens = Local("tokens", signature.parameters[-1])
+        parameters = (head, *frame, tokens)
+
+        def recursion(symbol: str, values: list[Value]) -> Call:
+            """Derive an item with a head and a frame.
+
+            Parameters
+            ----------
+            symbol : str
+                The head symbol.
+            values : list[Value]
+                The frame's values, in slot order.
+
+            Returns
+            -------
+            Call
+                The recursive call.
+            """
+            padded = [*values, *([_int(0)] * (width - len(values)))]
+            return self.call(
+                signature.name,
+                (_int(system.heads.index(symbol)), *padded, Var(tokens)),
+            )
+
+        def value_of(node: _Node, bindings: dict[str, Local]) -> Value:
+            """The value of a yield position under bindings.
+
+            Parameters
+            ----------
+            node : _Node
+                A variable's name or a literal.
+            bindings : dict[str, Local]
+                The variables' values.
+
+            Returns
+            -------
+            Value
+                The position.
+            """
+            return _int(node) if isinstance(node, int) else Var(bindings[node])
+
+        def rule_body(index: int, rule: _Rule, symbol: str) -> Computation:
+            """Derive the head's item by one rule.
+
+            Parameters
+            ----------
+            index : int
+                The rule's index.
+            rule : _Rule
+                The rule, whose conclusion has the head.
+            symbol : str
+                The head symbol.
+
+            Returns
+            -------
+            Computation
+                The frame binding, the choice of the inner positions, the
+                premises' derivations, and the rule's match.
+            """
+            path: tuple[str | int, ...] = ("derive", "rule", index)
+            if _has_positions(system, rule.conclusion):
+                plan = _yield_plan(system, rule)
+                assert not isinstance(plan, str)
+                paths, loose = plan
+                conclusion = _components(system, rule.conclusion)
+                assert not isinstance(conclusion, str)
+            else:
+                # An erasing rule: every premise position ranges over
+                # the sentence.
+                paths, loose = (), tuple(self.position_variables(rule))
+                conclusion = []
+            checks: list[Value] = []
+            bound: dict[str, Local] = {}
+            for position, (start, end) in enumerate(conclusion):
+                for offset, node in ((0, start), (1, end)):
+                    given = frame[2 * position + offset]
+                    if isinstance(node, int):
+                        checks.append(self.primitive("eq_int", Var(given), _int(node)))
+                    elif node in bound:
+                        checks.append(
+                            self.primitive("eq_int", Var(bound[node]), Var(given))
+                        )
+                    else:
+                        bound[node] = given
+            low: Value = Var(frame[0]) if conclusion else _int(0)
+            high: Value = Var(frame[0]) if conclusion else self.length()
+            for position in range(1, 2 * len(conclusion)):
+                low = self.primitive("min_int", low, Var(frame[position]))
+                high = self.primitive("max_int", high, Var(frame[position]))
+            steps: list[tuple[_Node, _Node, _Node]] = [
+                (component[step - 1], component[step], component[-1])
+                for component in paths
+                for step in range(1, len(component) - 1)
+            ]
+            group = _Group(len(rule.premises), (), (), [(index, rule)], {})
+
+            def inner(position: int, current: dict[str, Local]) -> Computation:
+                """Place the positions inside each component, in order.
+
+                Parameters
+                ----------
+                position : int
+                    The next inner position.
+                current : dict[str, Local]
+                    The position bindings so far.
+
+                Returns
+                -------
+                Computation
+                    The choices, innermost the loose positions.
+                """
+                if position == len(steps):
+                    return spread(0, current)
+                previous, node, end = steps[position]
+                after = value_of(previous, current)
+                before = value_of(end, current)
+
+                def placed(chosen: Value, extended: dict[str, Local]) -> Computation:
+                    """Check that a position lies in order, then continue.
+
+                    Parameters
+                    ----------
+                    chosen : Value
+                        The position.
+                    extended : dict[str, Local]
+                        The bindings with it.
+
+                    Returns
+                    -------
+                    Computation
+                        The check and the rest.
+                    """
+                    return If(
+                        self.primitive(
+                            "and",
+                            self.primitive("le_int", after, chosen),
+                            self.primitive("le_int", chosen, before),
+                        ),
+                        inner(position + 1, extended),
+                        self.fail(item, *path, "order", position),
+                    )
+
+                if isinstance(node, int) or node in current:
+                    return placed(value_of(node, current), current)
+                return self.choose_between(
+                    after,
+                    before,
+                    lambda chosen: placed(Var(chosen), {**current, node: chosen}),
+                    *path,
+                    "position",
+                    node,
+                )
+
+            def spread(position: int, current: dict[str, Local]) -> Computation:
+                """Choose the positions only an empty premise component has.
+
+                Parameters
+                ----------
+                position : int
+                    The next such position.
+                current : dict[str, Local]
+                    The position bindings so far.
+
+                Returns
+                -------
+                Computation
+                    The choices, innermost the premises.
+                """
+                if position == len(loose):
+                    return If(
+                        nonempty(current),
+                        premises(0, [], current),
+                        self.fail(item, *path, "premises"),
+                    )
+                name = loose[position]
+                if name in current:
+                    return spread(position + 1, current)
+                return self.choose_boundary(
+                    lambda chosen: If(
+                        self.primitive(
+                            "and",
+                            self.primitive("le_int", low, Var(chosen)),
+                            self.primitive("le_int", Var(chosen), high),
+                        ),
+                        spread(position + 1, {**current, name: chosen}),
+                        self.fail(item, *path, "loose", name),
+                    ),
+                    *path,
+                    "position",
+                    name,
+                )
+
+            def premises(
+                position: int, derived: list[Local], current: dict[str, Local]
+            ) -> Computation:
+                """Derive the premises from a position on.
+
+                Parameters
+                ----------
+                position : int
+                    The next premise.
+                derived : list[Local]
+                    The premises derived so far.
+                current : dict[str, Local]
+                    The position bindings.
+
+                Returns
+                -------
+                Computation
+                    The derivations, innermost the rule's match.
+                """
+                if position == len(rule.premises):
+                    return self.apply_group(
+                        group, derived, lambda _: dict(current), Return, *path
+                    )
+                pattern = rule.premises[position]
+                values: list[Value] = []
+                if _has_positions(system, pattern):
+                    components = _components(system, pattern)
+                    assert not isinstance(components, str)
+                    values = [
+                        value_of(node, current)
+                        for component in components
+                        for node in component
+                    ]
+                return self.bind(
+                    "premise",
+                    item,
+                    recursion(_head(pattern), values),
+                    lambda value: premises(position + 1, [*derived, value], current),
+                )
+
+            def nonempty(current: dict[str, Local]) -> Value:
+                """Whether every premise's frame runs forward over a token.
+
+                Checked before any premise is derived: every derivable item
+                covers a token, and the premises' tokens add up to the
+                conclusion's, so each premise covers fewer than it does.
+
+                Parameters
+                ----------
+                current : dict[str, Local]
+                    The position bindings.
+
+                Returns
+                -------
+                Value
+                    The test.
+                """
+                condition: Value = LiteralValue(True, BOOL)
+                for pattern in rule.premises:
+                    if not _has_positions(system, pattern):
+                        continue
+                    components = _components(system, pattern)
+                    assert not isinstance(components, str)
+                    covered: Value = _int(0)
+                    for start, end in components:
+                        low_end = value_of(start, current)
+                        high_end = value_of(end, current)
+                        condition = self.primitive(
+                            "and",
+                            condition,
+                            self.primitive("le_int", low_end, high_end),
+                        )
+                        covered = self.primitive(
+                            "add_int",
+                            covered,
+                            self.primitive("sub_int", high_end, low_end),
+                        )
+                    condition = self.primitive(
+                        "and", condition, self.primitive("lt_int", _int(0), covered)
+                    )
+                return condition
+
+            body = inner(0, dict(bound))
+            if not checks:
+                return body
+            condition = checks[0]
+            for check in checks[1:]:
+                condition = self.primitive("and", condition, check)
+            return If(condition, body, self.fail(item, *path, "frame"))
+
+        def head_body(symbol: str) -> Computation:
+            """Derive an item with one head: an axiom or a rule concluding it.
+
+            Parameters
+            ----------
+            symbol : str
+                The head symbol.
+
+            Returns
+            -------
+            Computation
+                The frame's check and the choice among the head's
+                derivations.
+            """
+            components = len(self.frame_slots(symbol)) // 2
+            concluding = [
+                (index, system.rules[index])
+                for index in system.live
+                if _head(system.rules[index].conclusion) == symbol
+            ]
+            options: list[Callable[[], Computation]] = []
+            if symbol == SPAN:
+                options.append(
+                    lambda: If(
+                        self.primitive(
+                            "eq_int",
+                            Var(frame[1]),
+                            self.primitive("add_int", Var(frame[0]), _int(1)),
+                        ),
+                        self.call(system.name("axiom"), (Var(frame[0]), Var(tokens))),
+                        self.fail(item, "derive", "axiom", "span"),
+                    )
+                )
+            for index, rule in concluding:
+                options.append(
+                    lambda index=index, rule=rule: rule_body(index, rule, symbol)
+                )
+            if not options:
+                return self.fail(item, "derive", "head", symbol)
+
+            def dispatch(chosen: Local, position: int) -> Computation:
+                """Select the chosen derivation by position.
+
+                Parameters
+                ----------
+                chosen : Local
+                    The chosen position.
+                position : int
+                    The derivation tested here.
+
+                Returns
+                -------
+                Computation
+                    The chain of tests from this derivation on.
+                """
+                if position == len(options) - 1:
+                    return options[position]()
+                return If(
+                    self.primitive("eq_int", Var(chosen), _int(position)),
+                    options[position](),
+                    dispatch(chosen, position + 1),
+                )
+
+            if len(options) == 1:
+                derivations = options[0]()
+            else:
+                derivations = self.bind(
+                    "derivation",
+                    INT,
+                    self.choose(
+                        TensorValue(
+                            tuple(_int(index) for index in range(len(options))),
+                            tensor_type(INT, (IndexLiteral(len(options), NAT),)),
+                        ),
+                        INT,
+                        IndexLiteral(len(options), NAT),
+                        "derive",
+                        "head",
+                        symbol,
+                    ),
+                    lambda chosen: dispatch(chosen, 0),
+                )
+            if not components:
+                return derivations
+            covered: Value = _int(0)
+            forward: Value = LiteralValue(True, BOOL)
+            for position in range(components):
+                start, end = Var(frame[2 * position]), Var(frame[2 * position + 1])
+                forward = self.primitive(
+                    "and", forward, self.primitive("le_int", start, end)
+                )
+                covered = self.primitive(
+                    "add_int", covered, self.primitive("sub_int", end, start)
+                )
+            return If(
+                self.primitive(
+                    "and", forward, self.primitive("lt_int", _int(0), covered)
+                ),
+                derivations,
+                self.fail(item, "derive", "head", symbol, "frame"),
+            )
+
+        def heads(position: int) -> Computation:
+            """Dispatch on the requested head.
+
+            Parameters
+            ----------
+            position : int
+                The head tested here.
+
+            Returns
+            -------
+            Computation
+                The chain of tests from this head on.
+            """
+            if position == len(system.heads):
+                return self.fail(item, "derive", "head", "none")
+            return If(
+                self.primitive("eq_int", Var(head), _int(position)),
+                head_body(system.heads[position]),
+                heads(position + 1),
+            )
+
+        return self.computation(signature, parameters, heads(0))
+
+    def length(self) -> Value:
+        """The sentence's length, the extent counted as a sum of ones.
+
+        Returns
+        -------
+        Value
+            The length.
+        """
+        return Reduction(
+            "sum",
+            Comprehension(
+                self.system.local("k", INT),
+                self.extent,
+                _int(1),
+                tensor_type(INT, (self.extent,)),
+            ),
+            INT,
+        )
+
+    def yield_root(self, tokens: Local) -> Computation:
+        """Derive a goal item of a yield-directed system.
+
+        A goal span covers the whole sentence, so its frame is the
+        sentence's bounds, as the agenda engine's goal spans are. A goal
+        item headed by the start symbol has any frame whose components
+        lie in the sentence; without a start symbol every head is a goal
+        head.
+
+        Parameters
+        ----------
+        tokens : Local
+            The sentence.
+
+        Returns
+        -------
+        Computation
+            The derivation of a candidate goal item.
+        """
+        system = self.system
+        item = system.item
+        width = self.frame_width()
+        start = system.start
+        roots: list[str] = []
+        if start is None:
+            roots = list(system.heads)
+        else:
+            if start in system.constructors and not system.constructors[start].fields:
+                roots.append(SPAN)
+            if start in system.heads and start not in roots:
+                roots.append(start)
+
+        def derive(symbol: str, values: list[Value]) -> Call:
+            """Call the derivation on a head and a frame.
+
+            Parameters
+            ----------
+            symbol : str
+                The head.
+            values : list[Value]
+                The frame.
+
+            Returns
+            -------
+            Call
+                The call.
+            """
+            padded = [*values, *([_int(0)] * (width - len(values)))]
+            return self.call(
+                system.name("derive"),
+                (_int(system.heads.index(symbol)), *padded, Var(tokens)),
+            )
+
+        def root(symbol: str) -> Computation:
+            """Derive a goal candidate with one head.
+
+            Parameters
+            ----------
+            symbol : str
+                The head.
+
+            Returns
+            -------
+            Computation
+                The derivation.
+            """
+            if symbol == SPAN:
+                return derive(SPAN, [_int(0), self.length()])
+            slots = self.frame_slots(symbol)
+
+            def frame(values: list[Value]) -> Computation:
+                """Choose the frame's values, then derive.
+
+                Parameters
+                ----------
+                values : list[Value]
+                    The values chosen so far.
+
+                Returns
+                -------
+                Computation
+                    The choices, innermost the derivation.
+                """
+                if len(values) == len(slots):
+                    return derive(symbol, values)
+                return self.choose_boundary(
+                    lambda chosen: frame([*values, Var(chosen)]),
+                    "entry",
+                    "frame",
+                    symbol,
+                    len(values),
+                )
+
+            return frame([])
+
+        if not roots:
+            return self.fail(item, "entry", "root")
+        if len(roots) == 1:
+            return root(roots[0])
+
+        def dispatch(chosen: Local, position: int) -> Computation:
+            """Select the chosen root head.
+
+            Parameters
+            ----------
+            chosen : Local
+                The chosen position.
+            position : int
+                The head tested here.
+
+            Returns
+            -------
+            Computation
+                The chain of tests from this head on.
+            """
+            if position == len(roots) - 1:
+                return root(roots[position])
+            return If(
+                self.primitive("eq_int", Var(chosen), _int(position)),
+                root(roots[position]),
+                dispatch(chosen, position + 1),
+            )
+
+        return self.bind(
+            "root",
+            INT,
+            self.choose(
+                TensorValue(
+                    tuple(_int(index) for index in range(len(roots))),
+                    tensor_type(INT, (IndexLiteral(len(roots), NAT),)),
+                ),
+                INT,
+                IndexLiteral(len(roots), NAT),
+                "entry",
+                "root",
+            ),
+            lambda chosen: dispatch(chosen, 0),
+        )
+
     def rule_groups(self) -> list[_Group]:
         """Group the rules by the shape of their premises.
 
@@ -3462,29 +4877,7 @@ class _Context:
         list[str]
             The names.
         """
-        found: list[str] = []
-
-        def walk(pattern: Pattern) -> None:
-            """Collect the integer-slot variables of one pattern.
-
-            Parameters
-            ----------
-            pattern : Pattern
-                The pattern.
-            """
-            if not isinstance(pattern, _App):
-                return
-            sorts = self.system.symbols[pattern.symbol]
-            for position, argument in enumerate(pattern.args):
-                if isinstance(argument, _Wild):
-                    if sorts[position] == "int" and argument.name not in found:
-                        found.append(argument.name)
-                else:
-                    walk(argument)
-
-        for pattern in (*rule.premises, rule.conclusion):
-            walk(pattern)
-        return found
+        return _rule_positions(self.system, rule)
 
     def rule_weight(
         self,
@@ -3697,9 +5090,6 @@ class _Context:
             derivation of the goal.
         """
         system = self.system
-        assert system.choice is not None and system.weight is not None
-        search_handler, collect_handler = handlers
-        item = system.item
         parameters = tuple(
             Local(name, type_)
             for name, type_ in zip(
@@ -3708,20 +5098,48 @@ class _Context:
                 strict=True,
             )
         )
-        if system.span_shaped:
+        body = self.searched(parameters, handlers)
+        return self.computation(signature, parameters, body)
+
+    def searched(
+        self,
+        parameters: tuple[Local, ...],
+        handlers: tuple[HandlerDef, HandlerDef],
+    ) -> Computation:
+        """Handle the search and the weights around a derivation of the goal.
+
+        Parameters
+        ----------
+        parameters : tuple[Local, ...]
+            The entry's inputs: the tokens, or the axioms and weights.
+        handlers : tuple[HandlerDef, HandlerDef]
+            The search and collection handlers.
+
+        Returns
+        -------
+        Computation
+            The handled derivation, answering the goal's inside weight.
+        """
+        system = self.system
+        assert system.choice is not None and system.weight is not None
+        search_handler, collect_handler = handlers
+        item = system.item
+        length: Value = Reduction(
+            "sum",
+            Comprehension(
+                system.local("k", INT),
+                self.extent,
+                _int(1),
+                tensor_type(INT, (self.extent,)),
+            ),
+            INT,
+        )
+        if system.by_yield:
+            derived = self.yield_root(parameters[0])
+        elif system.span_shaped:
             # The sentence's length is the sum of a tensor of ones over
             # the extent; without a declared depth it bounds the depth of
             # a binary system's derivations of the whole sentence.
-            length: Value = Reduction(
-                "sum",
-                Comprehension(
-                    system.local("k", INT),
-                    self.extent,
-                    _int(1),
-                    tensor_type(INT, (self.extent,)),
-                ),
-                INT,
-            )
             if system.span_fuel_factor:
                 fuel_value = length
                 for _ in range(system.span_fuel_factor - 1):
@@ -3754,21 +5172,57 @@ class _Context:
             if system.depth is not None:
                 fuel_value = _int(system.depth)
             else:
-                count: Value = Reduction(
-                    "sum",
-                    Comprehension(
-                        system.local("k", INT),
-                        self.extent,
-                        _int(1),
-                        tensor_type(INT, (self.extent,)),
-                    ),
-                    INT,
-                )
-                fuel_value = self.primitive("add_int", count, _int(len(system.rules)))
+                fuel_value = self.primitive("add_int", length, _int(len(system.rules)))
             derived = self.call(
                 system.name("derive"),
                 (fuel_value, *(Var(parameter) for parameter in parameters)),
             )
+
+        def accept() -> Computation:
+            """Answer the scope's unit, accepting the derivation.
+
+            Returns
+            -------
+            Computation
+                ``()``.
+            """
+            return Return(LiteralValue(None, UNIT))
+
+        def whole(found: Local) -> Computation:
+            """Accept a goal item, requiring a span to cover the sentence.
+
+            Parameters
+            ----------
+            found : Local
+                The goal item.
+
+            Returns
+            -------
+            Computation
+                Acceptance, or an empty choice for a span over part of
+                the sentence.
+            """
+            if not system.by_yield:
+                return accept()
+            return self.case(
+                Var(found),
+                UNIT,
+                {
+                    SPAN: lambda fields: If(
+                        self.primitive(
+                            "and",
+                            self.primitive("eq_int", Var(fields[0]), _int(0)),
+                            self.primitive("eq_int", Var(fields[1]), length),
+                        ),
+                        accept(),
+                        self.fail(UNIT, "entry", "extent"),
+                    )
+                },
+                accept,
+                "entry",
+                "extent",
+            )
+
         goal_check = self.bind(
             "item",
             item,
@@ -3779,18 +5233,17 @@ class _Context:
                 self.call(system.name("goal"), (Var(found),)),
                 lambda is_goal: If(
                     Var(is_goal),
-                    Return(LiteralValue(None, UNIT)),
+                    whole(found),
                     self.fail(UNIT, "entry", "goal"),
                 ),
             ),
         )
-        body = Handle(
+        return Handle(
             system.choice.entry.instance,
             search_handler.id,
             Handle(system.weight.entry.instance, collect_handler.id, goal_check, ()),
             (),
         )
-        return self.computation(signature, parameters, body)
 
     def computation(
         self,

@@ -602,8 +602,18 @@ pattern by `case` analysis (a shared pattern variable is checked by the
 family's `<name>__eq`), instantiates the conclusion, and adds the rule's
 weight; a failed match performs an empty choice. A system whose rules all
 relate `span` items derives by span, choosing split positions for the
-premises and deriving each over its own span; any other system takes its
-axioms and their weights as input. The entry `<name>__run` handles the
+premises and deriving each over its own span. A system with a lexicon whose
+items are not all spans, such as a multiple context-free grammar, derives an
+item from its head symbol and its frame, the values of its position slots
+read in pairs as the components of its yield: a rule binds its conclusion's
+positions to the frame, chooses in order the positions inside each component
+where its premises' components meet, and derives each premise from its own
+frame. The lowering accepts such a system when its rules are linear (each
+conclusion component the concatenation of premise components, every
+non-empty premise component used once, so premises are derived over fewer
+tokens than their conclusion) and its unary rules form no cycle, and refuses
+it otherwise; its goal spans cover the whole sentence, as the agenda engine's
+do. Any other system takes its axioms and their weights as input. The entry `<name>__run` handles the
 weight instance with a collecting handler and the search instance with a
 handler that resumes once per alternative and combines the shots by the
 semiring's addition, so its answer is the semiring sum over derivations of

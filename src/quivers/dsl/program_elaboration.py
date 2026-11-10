@@ -2238,7 +2238,12 @@ class _ProgramElaboration:
         tokens = self._declare_parameter(
             source, tensor_type(STRING, (extent,)), "data", scope, state, node
         )
-        state.uses_params = True
+        params = self.instances.get(PARAMS_INSTANCE)
+        if params is not None and any(
+            entry.instance == params.entry.instance
+            for entry in signature.effects.entries
+        ):
+            state.uses_params = True
         return Call(
             signature.id,
             signature.name,
