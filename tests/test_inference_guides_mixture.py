@@ -514,9 +514,9 @@ def test_doubly_reparameterized_rejects_stratified_particles() -> None:
     torch.manual_seed(0)
     model = _standard_normal_model()
     guide = _mixture(model, (-1.0, 1.0), (0.5, 0.5))
-    with pytest.raises(RuntimeError, match="stratified"):
+    with pytest.raises(ValueError, match="stratified"):
         DReGsBound(num_particles=4)(model, guide, _X, {})
-    with pytest.raises(RuntimeError, match="stratified"):
+    with pytest.raises(ValueError, match="stratified"):
         IWAEBound(num_particles=4, estimator=DoublyReparameterized())(
             model, guide, _X, {}
         )

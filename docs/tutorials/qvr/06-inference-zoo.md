@@ -80,7 +80,7 @@ The benchmark grid in `tests/benchmarks/` walks these against synthetic posterio
 | `RenyiBound(alpha, K)` | Rényi divergence bound | Interpolates ELBO (α=1) and IWAE (α=0). |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE | Mass-covering vs mode-seeking knob via α; tight via K. |
 | `ChiVI(num_particles=K)` | $\chi$-divergence objective | Alternative mass-covering variational objective. |
-| `RWS(num_particles=K)` | Reweighted wake-sleep | Separate model and guide updates from importance weights. |
+| `RWS(num_particles=K)` | Reweighted wake-sleep (wake phase) | Separate model and guide updates from importance weights, with the draws held fixed; takes no estimator. |
 | `DReGsBound(num_particles=K)` | Doubly reparameterized bound | Importance-weighted objective with DReG guide gradients. |
 
 For most workflows, the default `ELBO()` is the right call. `IWAEBound` matters when the posterior is multimodal and the guide is flow-shaped (the importance weighting tightens the bound; coupling layers exploit it). `RenyiBound` is useful when you specifically want a mass-covering posterior (e.g. for Bayesian-optimization acquisition functions).
@@ -90,9 +90,9 @@ For most workflows, the default `ELBO()` is the right call. `IWAEBound` matters 
 | Estimator | What it does | When |
 |---|---|---|
 | `Reparameterized` | Standard pathwise gradient | Default. |
-| `StickingTheLanding` | Detaches variational params in `log q` | When `q → p*` and you're getting noisy gradients at convergence. |
-| `DoublyReparameterized` | DReG for IWAE | With `IWAEBound(K)` at large K. |
-| `ScoreFunction` | REINFORCE | Discrete (non-reparameterizable) latents you can't `marginalize`. |
+| `StickingTheLanding` | Detaches variational params in `log q` | When `q → p*` and you're getting noisy gradients at convergence. Valid for `ELBO` (and single-draw bounds); the multi-draw bounds reject it. |
+| `DoublyReparameterized` | DReG (generalized to the Rényi, VR-IWAE, and χ bounds) | With `IWAEBound(K)` at large K; not with a mixture guide on a multi-draw bound. |
+| `ScoreFunction` | REINFORCE with the draws held fixed | Guides whose draws are not differentiable. |
 
 `IWAEBound(num_particles=16, estimator=DoublyReparameterized())` combines importance weighting with DReG guide gradients. `K` trades computation and memory for a tighter importance-weighted bound; choose it by profiling rather than relying on a fixed threshold.
 

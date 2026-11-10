@@ -1,312 +1,408 @@
-"""Gradient estimators for variational objectives.
+r"""Gradient estimators for variational objectives.
 
-A `GradientEstimator` is the strategy that takes (latent
-samples, model log-density, guide log-density) and returns a
-scalar loss whose ``backward()`` produces the chosen gradient
-estimator. Different strategies trade variance against
-applicability:
+Every Monte Carlo objective in [`quivers.inference.objectives`][quivers.inference.objectives]
+is a *power-mean bound* of the per-draw log importance ratios
+:math:`\ell_n = \log p(z_n, y) - \log q_\phi(z_n)` with particle
+weights :math:`\omega_n` (``1/K`` for independent draws, the stratum
+weights for stratified ones):
 
-* `Reparameterized`: pathwise gradient (the standard SVI
-  reparameterization trick). Lowest variance for reparameterizable
-  families; requires ``rsample``.
-* `StickingTheLanding`: detaches the variational-parameter
-  dependence in :math:`\\log q_\\phi(z)` so the gradient variance
-  asymptotically vanishes as :math:`q \\to p^*`
-  (Roeder-Wu-Duvenaud 2017,
-  `doi:10.48550/arXiv.1703.09194 <https://doi.org/10.48550/arXiv.1703.09194>`_).
-* `DoublyReparameterized`: the DReG estimator for IWAE
-  (Tucker-Lawson-Gu-Maddison 2019,
-  `doi:10.48550/arXiv.1810.04152 <https://doi.org/10.48550/arXiv.1810.04152>`_).
-  Removes the score-function term whose variance grows with the
-  particle count :math:`K`.
-* `ScoreFunction`: REINFORCE / black-box VI. The objectives draw
-  from the guide and hold the draws fixed, so the estimator applies
-  to guides whose ``rsample`` is not differentiable. Highest
-  variance.
+.. math::
 
-Objectives pass per-particle log-weights when the guide draws
-stratified particles (`Guide.rsample_strata`, as for
-`AutoMixtureGuide`); the estimators then weight each particle's
-term by its stratum weight. `DoublyReparameterized` rejects
-stratified particles.
+    B_a = \frac{1}{a} \log \sum_n \omega_n e^{a \ell_n}
+    \quad (a \neq 0), \qquad
+    B_0 = \sum_n \omega_n \ell_n.
 
-Estimators are *strategies* held by `Objective`
-implementations; they don't store any state themselves and
-operate on tensors only. The `Reparameterized` instance
-is a singleton; every objective defaults to it.
+``a = 0`` is the ELBO, ``a = 1`` the IWAE bound, ``a = 1 - \alpha``
+the Rényi / VR-IWAE bound, and ``a = n`` the CUBO of `ChiVI`. A
+`GradientEstimator` turns the per-draw log-densities into a surrogate
+whose value is :math:`B_a` and whose gradient is an estimate of
+:math:`\nabla \mathbb{E}[B_a]`, the gradient of the expected Monte
+Carlo objective, for both the variational parameters :math:`\phi` and
+the model parameters :math:`\theta`:
+
+* `Reparameterized`: the pathwise gradient of :math:`B_a`. Unbiased
+  for every ``a``.
+* `StickingTheLanding`: drops the direct dependence of
+  :math:`\log q_\phi` on :math:`\phi` and keeps the pathwise one
+  (Roeder, Wu and Duvenaud 2017). The dropped term has mean zero only
+  for the ELBO or a single draw, so other objectives with several
+  draws reject it.
+* `DoublyReparameterized`: rewrites the dropped score term with the
+  reparameterization identity instead of discarding it (Tucker, Lawson,
+  Gu and Maddison 2019 for IWAE; Daudel, Benton, Shi and Doucet 2023,
+  Theorem 2, for VR-IWAE). Unbiased for independent draws; it
+  coincides with sticking the landing at ``a = 0``.
+* `ScoreFunction`: REINFORCE (Ranganath, Gerrish and Blei 2014) with
+  the draws held fixed, so it applies to guides whose draws are not
+  differentiable.
+
+Estimators are stateless strategies. `Objective` implementations call
+`GradientEstimator.check` with their bound and draw count, so an
+(objective, estimator) pair without a valid estimator raises before
+it is used, and `GradientEstimator.surrogate` on the particles they
+draw.
+
+References
+==========
+
+- Reparameterization: [Kingma and Welling 2013](https://doi.org/10.48550/arXiv.1312.6114).
+- Sticking the landing: [Roeder, Wu and Duvenaud 2017](https://doi.org/10.48550/arXiv.1703.09194).
+- DReG: [Tucker, Lawson, Gu and Maddison 2019](https://doi.org/10.48550/arXiv.1810.04152).
+- Generalized DReG for VR-IWAE: [Daudel, Benton, Shi and Doucet 2023](https://doi.org/10.48550/arXiv.2210.06226).
+- Score function: [Ranganath, Gerrish and Blei 2014](https://doi.org/10.48550/arXiv.1401.0118).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import didactic.api as dx
 import torch
 
 
-class GradientEstimator(ABC):
-    """Strategy for computing :math:`\\nabla_\\phi \\mathcal{L}` from
-    samples + densities.
+class ParticleLogDensities(dx.Model):
+    """Per-draw log-densities that an objective hands its estimator.
 
-    Subclasses implement `negative_objective`: given the
-    per-particle ``log_p`` and ``log_q`` tensors (and any
-    estimator-specific auxiliary data), return the *negated*
-    objective whose ``backward()`` produces the desired gradient
-    estimator.
+    All tensors share the shape ``(N, batch)``, where ``N`` is the
+    number of draws per batch row (particles times strata).
+
+    Parameters
+    ----------
+    log_p
+        Model log-joint :math:`\\log p_\\theta(z_n, y)` at each draw,
+        differentiable in the model parameters and, unless the draws
+        are fixed, in the variational parameters through the draw.
+    log_q
+        Guide log-density :math:`\\log q_\\phi(z_n)` at each draw.
+    log_weights
+        Log particle weights :math:`\\log \\omega_n`, with ``logsumexp``
+        over the draw axis equal to zero: ``-log K`` for independent
+        draws, the stratum log-weights (minus ``log K``) for stratified
+        ones. Stratum weights keep their gradient to the variational
+        parameters that set them.
+    log_q_detached
+        :math:`\\log q_{\\bar\\phi}(z_n)` with the variational
+        parameters detached but the draw not, or ``None`` when the
+        estimator does not need it.
+    log_p_fixed
+        :math:`\\log p_\\theta(\\bar z_n, y)` at the detached draw, or
+        ``None`` when the estimator does not need it.
+    stratified
+        Whether the draws are stratified rather than independent draws
+        from the guide.
+    """
+
+    log_p: torch.Tensor = dx.field(opaque=True)
+    log_q: torch.Tensor = dx.field(opaque=True)
+    log_weights: torch.Tensor = dx.field(opaque=True)
+    log_q_detached: torch.Tensor | None = dx.field(opaque=True)
+    log_p_fixed: torch.Tensor | None = dx.field(opaque=True)
+    stratified: bool
+
+
+def power_mean_bound(
+    log_ratio: torch.Tensor, log_weights: torch.Tensor, power: float
+) -> torch.Tensor:
+    """The power-mean bound :math:`B_a` of weighted log ratios.
+
+    Parameters
+    ----------
+    log_ratio : torch.Tensor
+        Per-draw :math:`\\ell_n`, shape ``(N, batch)``.
+    log_weights : torch.Tensor
+        Per-draw :math:`\\log \\omega_n`, broadcastable to
+        ``log_ratio``, normalized over the draw axis.
+    power : float
+        The exponent :math:`a`; ``0`` gives the weighted mean.
+
+    Returns
+    -------
+    torch.Tensor
+        :math:`\\frac{1}{a} \\log \\sum_n \\omega_n e^{a \\ell_n}`, or
+        :math:`\\sum_n \\omega_n \\ell_n` at ``a = 0``; shape ``(batch,)``.
+    """
+    if power == 0.0:
+        return (log_weights.exp() * log_ratio).sum(dim=0)
+    return torch.logsumexp(log_weights + power * log_ratio, dim=0) / power
+
+
+def _require_detached(estimator: str, particles: ParticleLogDensities) -> torch.Tensor:
+    if particles.log_q_detached is None:
+        raise RuntimeError(
+            f"{estimator}: the particles carry no log_q_detached (the guide "
+            f"log-density with detached variational parameters); the "
+            f"objective must compute it when needs_detached_parameters is set"
+        )
+    return particles.log_q_detached
+
+
+class GradientEstimator(ABC):
+    """Strategy for estimating :math:`\\nabla \\mathbb{E}[B_a]`.
 
     Attributes
     ----------
     fixed_draws : bool
-        Whether the estimator needs the guide's draws held fixed
-        (detached from the variational parameters). When true the
-        objectives draw independent samples with `Guide.rsample`,
-        detach them, and evaluate ``log_p`` and ``log_q`` at the
-        detached draws, so ``log_q`` carries only its direct
+        Whether the estimator needs the guide's draws held fixed. When
+        true, objectives draw independent samples with `Guide.rsample`,
+        detach them, and score them, so ``log_q`` carries only its direct
         dependence on the variational parameters.
+    needs_detached_parameters : bool
+        Whether the estimator reads `ParticleLogDensities.log_q_detached`.
     """
 
     fixed_draws: bool = False
+    needs_detached_parameters: bool = False
 
-    @abstractmethod
-    def negative_objective(
-        self,
-        log_p: torch.Tensor,
-        log_q: torch.Tensor,
-        log_q_detached: torch.Tensor | None = None,
-        log_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Return the scalar loss whose gradient is the chosen
-        estimator.
+    def needs_fixed_log_p(self, power: float) -> bool:
+        """Whether the estimator reads `ParticleLogDensities.log_p_fixed`.
 
         Parameters
         ----------
-        log_p : torch.Tensor
-            Model log-joint ``log p(z, y)`` at the sampled latents.
-            Shape ``(K, batch)`` where ``K`` is the particle axis
-            (``K = 1`` for plain ELBO) and ``batch`` is the
-            program-input batch axis.
-        log_q : torch.Tensor
-            Guide log-density ``log q_phi(z)`` at the sampled
-            latents. Same shape as ``log_p``. Gradients flow back
-            to the variational parameters through this tensor.
-        log_q_detached : torch.Tensor or None
-            ``log q_{stop_grad(phi)}(z)``, the guide log-density
-            with the variational parameters detached from the
-            autograd graph. Required by sticking-the-landing and
-            DReG; ignored by the basic estimators.
-        log_weights : torch.Tensor or None
-            Log-weights of the particles, broadcastable to
-            ``log_p``'s shape, with ``logsumexp`` over the particle
-            axis equal to zero. They are supplied when the particles
-            are stratified draws (see `Guide.rsample_strata`): the
-            weighted sum :math:`\\sum_n \\omega_n f(z_n)` is then the
-            unbiased estimate of :math:`\\mathbb{E}_q[f]`, and the
-            weights carry gradient to the variational parameters
-            that set them (such as mixture logits). ``None`` means the
-            particles are independent draws from :math:`q` with equal
-            weight :math:`1/K`.
+        power : float
+            The bound's exponent :math:`a`.
+
+        Returns
+        -------
+        bool
+            ``False`` unless a subclass needs the model log-joint at
+            the detached draws.
+        """
+        del power
+        return False
+
+    def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        """Raise if this estimator has no valid form for the bound.
+
+        Objectives call this at construction with their particle count
+        and again on each call with the drawn particles.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        num_draws : int
+            Draws per batch row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            If the estimator is biased or undefined for this bound.
+        """
+        del power, num_draws, stratified
+
+    @abstractmethod
+    def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        """Surrogate for the bound :math:`B_a`.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
 
         Returns
         -------
         torch.Tensor
-            Scalar loss.
+            Shape ``(batch,)``. Its value is :math:`B_a` and its
+            gradient is this estimator's estimate of
+            :math:`\\nabla \\mathbb{E}[B_a]`.
 
         Raises
         ------
         RuntimeError
-            If the estimator needs an input the caller did not
-            supply, or cannot be applied to stratified particles.
+            If the particles lack a tensor the estimator needs.
         """
         ...
 
 
 class Reparameterized(GradientEstimator):
-    """Standard pathwise gradient.
+    """Pathwise gradient of the bound (Kingma and Welling 2013).
 
-    For the ELBO with ``num_particles = 1`` this is the textbook
-    reparameterization trick (Kingma-Welling 2013,
-    `doi:10.48550/arXiv.1312.6114 <https://doi.org/10.48550/arXiv.1312.6114>`_).
-    For higher ``num_particles`` it's the importance-weighted
-    score function with reparameterized samples, i.e. the IWAE
-    bound under the naive gradient.
+    Differentiates :math:`B_a` through the reparameterized draws, the
+    guide density, and the particle weights. Unbiased for every bound.
     """
 
-    def negative_objective(
-        self,
-        log_p: torch.Tensor,
-        log_q: torch.Tensor,
-        log_q_detached: torch.Tensor | None = None,
-        log_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        del log_q_detached
-        # ELBO with K particles:
-        #   L = Σ_k ω_k [ log p(z_k) − log q(z_k) ],  ω_k = 1/K for i.i.d. draws
-        # Stratified draws carry their own ω_k, which stay in the
-        # graph so the gradient reaches the parameters that set them.
-        diff = log_p - log_q
-        if log_weights is None:
-            return -(diff.mean())
-        return -((log_weights.exp() * diff).sum(dim=0).mean())
+    def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        return power_mean_bound(
+            particles.log_p - particles.log_q, particles.log_weights, power
+        )
 
 
 class StickingTheLanding(GradientEstimator):
-    """Roeder-Wu-Duvenaud 2017 sticking-the-landing estimator.
+    """Sticking-the-landing gradient (Roeder, Wu and Duvenaud 2017).
 
-    Replaces ``log q(z)`` in the loss with
-    ``log q_{detach(phi)}(z)``: the score is evaluated at the
-    same sample but the variational parameters are detached
-    from the autograd graph. The total derivative loses its
-    direct dependence on the variational parameters through
-    ``log q``, leaving only the indirect dependence through the
-    sampled ``z``. As :math:`q \\to p^*` the latter vanishes and
-    so does the gradient variance.
-
-    Use when training with a guide that's already close to the
-    true posterior, typically after a warm-up phase. May
-    *increase* variance early in training when ``q`` is far
-    from ``p``.
+    Replaces :math:`\\log q_\\phi(z)` with
+    :math:`\\log q_{\\bar\\phi}(z)`, whose parameters are detached
+    while the draw is not, so the gradient keeps only the pathwise
+    dependence through :math:`z` (and through stratum weights). The
+    dropped term is :math:`-\\sum_n \\bar w_n \\nabla_\\phi \\log
+    q_\\phi(z_n)` with :math:`\\bar w = \\mathrm{softmax}(\\log \\omega
+    + a \\ell)`. Its expectation is zero for the ELBO (``a = 0``, where
+    :math:`\\bar w = \\omega`) and for a single draw, and nonzero
+    otherwise, so `check` rejects other bounds with several draws; for
+    those, `DoublyReparameterized` is the unbiased counterpart. As
+    :math:`q \\to p` the gradient's variance vanishes.
     """
 
-    def negative_objective(
-        self,
-        log_p: torch.Tensor,
-        log_q: torch.Tensor,
-        log_q_detached: torch.Tensor | None = None,
-        log_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if log_q_detached is None:
-            raise RuntimeError(
-                "StickingTheLanding: requires the caller to supply "
-                "log_q_detached (log q evaluated with the variational "
-                "parameters detached). The objective in use does not "
-                "produce this; check that the Objective implementation "
-                "supplies log_q_detached when this estimator is selected."
-            )
-        del log_q
-        diff = log_p - log_q_detached
-        if log_weights is None:
-            return -(diff.mean())
-        # The dropped direct term has zero expectation under the
-        # stratified weights as well, since Σ_s ω_s E_{q_s}[g] = E_q[g];
-        # the weights themselves keep their gradient.
-        return -((log_weights.exp() * diff).sum(dim=0).mean())
+    needs_detached_parameters = True
+
+    def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        if power == 0.0 or (num_draws == 1 and not stratified):
+            return
+        alternative = "Reparameterized()" if stratified else "DoublyReparameterized()"
+        raise ValueError(
+            "StickingTheLanding is unbiased only for the ELBO or a single "
+            f"draw; this bound (exponent {power}) uses {num_draws} draws per "
+            f"row, where dropping the score term biases the gradient. Use "
+            f"estimator={alternative}."
+        )
+
+    def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        log_q_detached = _require_detached("StickingTheLanding", particles)
+        return power_mean_bound(
+            particles.log_p - log_q_detached, particles.log_weights, power
+        )
 
 
 class DoublyReparameterized(GradientEstimator):
-    """Doubly-reparameterized IWAE gradient (Tucker-Lawson-Gu-
-    Maddison 2019).
+    """Doubly reparameterized gradient (DReG).
 
-    Specialised for the IWAE bound at K particles. Reweights the
-    per-particle terms so the variance no longer collapses as
-    :math:`K \\to \\infty`. The objective itself is the standard
-    IWAE bound; only the gradient is reweighted.
-
-    The estimator's mathematical content is the *gradient*:
+    The gradient of :math:`B_a` contains the score term
+    :math:`-\\sum_n \\bar w_n \\nabla_\\phi \\log q_\\phi(z_n)` with
+    :math:`\\bar w = \\mathrm{softmax}(\\log \\omega + a \\ell)`. The
+    reparameterization identity
+    :math:`\\mathbb{E}_q[g(z) \\nabla_\\phi \\log q_\\phi(z)] =
+    \\mathbb{E}_\\epsilon[\\nabla_z g(z)\\, \\partial z / \\partial \\phi]`
+    rewrites it as a pathwise term, giving
 
     .. math::
 
-        \\nabla_\\phi \\mathcal{L}_{\\mathrm{IWAE}} \\;=\\;
-        \\sum_k w_k^2 \\, \\nabla_\\phi
-            \\bigl[\\log p(z_k) - \\log q_\\phi(z_k)\\bigr]
+        \\nabla_\\phi \\mathbb{E}[B_a] = \\mathbb{E}\\Bigl[\\sum_n
+            \\bigl((1 - a)\\bar w_n + a \\bar w_n^2\\bigr)
+            \\nabla_z \\bigl(\\log p(z_n) - \\log q_{\\bar\\phi}(z_n)\\bigr)
+            \\frac{\\partial z_n}{\\partial \\phi}\\Bigr].
 
-    where :math:`w_k = \\exp(\\log p_k - \\log q_k) /
-    \\sum_j \\exp(\\log p_j - \\log q_j)`. Implementing this as a
-    surrogate loss whose ``backward()`` yields the right gradient
-    is the standard trick: detach the importance weights from the
-    autograd graph and use them as a non-differentiable scaling
-    on the per-particle reparameterized difference.
+    At ``a = 1`` this is the IWAE estimator of Tucker, Lawson, Gu and
+    Maddison (2019); for ``a = 1 - \\alpha`` it is Theorem 2 of Daudel,
+    Benton, Shi and Doucet (2023); at ``a = 0`` it is sticking the
+    landing. The derivation uses only the identity above, so it holds
+    for every ``a``, including `ChiVI`. Model parameters get
+    :math:`\\sum_n \\bar w_n \\nabla_\\theta \\log p_\\theta(z_n)`, the
+    gradient of :math:`B_a` itself.
+
+    The identity requires each draw to come from :math:`q_\\phi`, so
+    stratified draws (an `AutoMixtureGuide` enumerating its components)
+    are rejected unless ``a = 0``.
     """
 
-    def negative_objective(
-        self,
-        log_p: torch.Tensor,
-        log_q: torch.Tensor,
-        log_q_detached: torch.Tensor | None = None,
-        log_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if log_q_detached is None:
-            raise RuntimeError(
-                "DoublyReparameterized: requires the caller to supply "
-                "log_q_detached (log q evaluated with the variational "
-                "parameters detached). The IWAE objective produces this "
-                "natively; confirm the objective is IWAEBound."
+    needs_detached_parameters = True
+
+    def needs_fixed_log_p(self, power: float) -> bool:
+        return power != 0.0
+
+    def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        del num_draws
+        if stratified and power != 0.0:
+            raise ValueError(
+                "DoublyReparameterized: the guide supplies stratified draws "
+                "(for instance, an AutoMixtureGuide enumerates its components). "
+                "The DReG identity rewrites the score of the density each draw "
+                "comes from, and stratified draws come from the strata rather "
+                "than from q, so the estimator would be biased. Use "
+                "estimator=Reparameterized()."
             )
-        if log_weights is not None:
-            raise RuntimeError(
-                "DoublyReparameterized: the guide supplies stratified "
-                "particles (for instance, an AutoMixtureGuide enumerates its "
-                "components). The DReG identity rewrites the score of the "
-                "density each particle was drawn from, and stratified "
-                "particles are drawn from the strata rather than from q, so "
-                "the surrogate would be biased. Use estimator=Reparameterized() "
-                "or estimator=StickingTheLanding() with this guide."
+
+    def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        log_q_detached = _require_detached("DoublyReparameterized", particles)
+        if power == 0.0:
+            return power_mean_bound(
+                particles.log_p - log_q_detached, particles.log_weights, power
             )
-        if log_p.dim() < 1:
+        if particles.stratified:
+            self.check(power, particles.log_p.shape[0], stratified=True)
+        log_p_fixed = particles.log_p_fixed
+        if log_p_fixed is None:
             raise RuntimeError(
-                "DoublyReparameterized: log_p must have a leading "
-                f"particle axis (K, batch); got shape {tuple(log_p.shape)}"
+                "DoublyReparameterized: the particles carry no log_p_fixed (the "
+                "model log-joint at the detached draws); the objective must "
+                "compute it when needs_fixed_log_p is true"
             )
-        # w_k = softmax_k (log p_k - log q_k) along the particle
-        # axis (axis 0). Detach the weights so they don't
-        # contribute to the gradient.
-        log_w = log_p - log_q_detached
-        weights = torch.softmax(log_w, dim=0).detach()
-        # Surrogate loss whose gradient is the DReG estimator.
-        surrogate = (weights**2) * (log_p - log_q)
-        return -(surrogate.sum(dim=0).mean())
+        log_weights = particles.log_weights.detach()
+        log_ratio = (particles.log_p - particles.log_q).detach()
+        normalized = torch.softmax(log_weights + power * log_ratio, dim=0)
+        coefficients = (1.0 - power) * normalized + power * normalized**2
+        pathwise = particles.log_p - log_q_detached
+        value = power_mean_bound(log_ratio, log_weights, power)
+        # The variational gradient flows through the pathwise term with
+        # the DReG coefficients; the model gradient is moved from those
+        # coefficients to the bound's own weights with log p at the
+        # detached draws, which carries no variational gradient.
+        return (
+            value
+            + (coefficients * (pathwise - pathwise.detach())).sum(dim=0)
+            + ((normalized - coefficients) * (log_p_fixed - log_p_fixed.detach())).sum(
+                dim=0
+            )
+        )
 
 
 class ScoreFunction(GradientEstimator):
-    """REINFORCE / black-box VI gradient
-    (Ranganath-Gerrish-Blei 2014,
-    `doi:10.48550/arXiv.1401.0118 <https://doi.org/10.48550/arXiv.1401.0118>`_).
+    """REINFORCE / black-box VI gradient (Ranganath, Gerrish and Blei 2014).
 
-    Uses the log-derivative identity
+    Uses the log-derivative identity with the draws held fixed:
 
     .. math::
 
-        \\nabla_\\phi\\, \\mathbb{E}_{q_\\phi}\\bigl[\\log p(z) - \\log q_\\phi(z)\\bigr]
-            = \\mathbb{E}_{q_\\phi}\\bigl[(\\log p(z) - \\log q_\\phi(z))\\,
-              \\nabla_\\phi \\log q_\\phi(z)\\bigr]
+        \\nabla_\\phi \\mathbb{E}_{q_\\phi}[B_a]
+            = \\mathbb{E}\\Bigl[\\nabla_\\phi B_a\\big|_{z}
+              + B_a \\sum_n \\nabla_\\phi \\log q_\\phi(z_n)\\Bigr].
 
-    with the draws :math:`z` held fixed (the term
-    :math:`\\mathbb{E}_q[\\nabla_\\phi \\log q_\\phi(z)]` is zero and is
-    dropped). The objectives therefore draw from the guide and detach
-    the draws before scoring them (`GradientEstimator.fixed_draws`),
-    so the estimator applies to guides whose ``rsample`` is not
-    differentiable. Model parameters receive the gradient
-    :math:`\\mathbb{E}_q[\\nabla_\\theta \\log p_\\theta(z)]`. Variance is
+    For the ELBO (``a = 0``) the first term has mean zero and the
+    second decouples across draws, so the estimate is
+    :math:`\\sum_n \\omega_n \\ell_n \\nabla_\\phi \\log q_\\phi(z_n)`.
+    The objectives draw independent samples and detach them
+    (`GradientEstimator.fixed_draws`), so the estimator applies to
+    guides whose ``rsample`` is not differentiable. Model parameters
+    receive :math:`\\nabla_\\theta B_a` at the fixed draws. Variance is
     typically orders of magnitude higher than the reparameterized
     estimator's.
     """
 
     fixed_draws = True
 
-    def negative_objective(
-        self,
-        log_p: torch.Tensor,
-        log_q: torch.Tensor,
-        log_q_detached: torch.Tensor | None = None,
-        log_weights: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        del log_q_detached
-        if log_weights is not None:
-            raise RuntimeError(
-                "ScoreFunction: needs independent draws from the guide, "
-                "each scored with the guide density it was drawn from; "
-                "stratified particles do not satisfy this. Objectives "
-                "draw independent samples when this estimator is selected."
+    def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        del power, num_draws
+        if stratified:
+            raise ValueError(
+                "ScoreFunction: needs independent draws from the guide, each "
+                "scored with the density it was drawn from; stratified draws "
+                "do not satisfy this. Objectives draw independent samples when "
+                "this estimator is selected."
             )
-        # Surrogate whose value is the ELBO estimate log p - log q and
-        # whose gradient is f * grad log q (variational parameters)
-        # plus grad log p (model parameters), with the draws fixed.
-        f = (log_p - log_q).detach()
+
+    def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        self.check(power, particles.log_p.shape[0], particles.stratified)
+        log_q = particles.log_q
         log_q_fixed = log_q.detach()
-        surrogate = log_p - log_q_fixed + f * (log_q - log_q_fixed)
-        return -(surrogate.mean())
+        score = log_q - log_q_fixed
+        log_weights = particles.log_weights.detach()
+        if power == 0.0:
+            # Value: sum_n w_n (log p - log q). Gradient: w_n * l_n * score
+            # for the guide and w_n * grad log p for the model.
+            log_ratio = (particles.log_p - log_q).detach()
+            per_draw = particles.log_p - log_q_fixed + log_ratio * score
+            return (log_weights.exp() * per_draw).sum(dim=0)
+        bound = power_mean_bound(particles.log_p - log_q, log_weights, power)
+        return bound + bound.detach() * score.sum(dim=0)
 
 
 __all__ = [
     "GradientEstimator",
+    "ParticleLogDensities",
+    "power_mean_bound",
     "Reparameterized",
     "StickingTheLanding",
     "DoublyReparameterized",

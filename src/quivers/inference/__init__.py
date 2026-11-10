@@ -56,9 +56,11 @@ from quivers.inference.guides import (
 from quivers.inference.estimators import (
     DoublyReparameterized,
     GradientEstimator,
+    ParticleLogDensities,
     Reparameterized,
     ScoreFunction,
     StickingTheLanding,
+    power_mean_bound,
 )
 from quivers.inference.objectives import (
     ELBO,
@@ -143,6 +145,8 @@ __all__ = [
     "DReGsBound",
     "VRIWAEBound",
     "GradientEstimator",
+    "ParticleLogDensities",
+    "power_mean_bound",
     "Reparameterized",
     "StickingTheLanding",
     "DoublyReparameterized",

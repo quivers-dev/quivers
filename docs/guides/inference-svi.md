@@ -204,19 +204,40 @@ objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objective
 | `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ [@burda2016iwae] |
 | `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE [@daudel2023vriwae] | Controls the tradeoff between computation and approximation |
-| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [@dieng2017chi]) | Over-covering approximation; pair with ELBO for lower/upper estimates |
-| `RWS(K)` | Reweighted wake-sleep [@bornschein2015rws] | Discrete latents and importance-weighted wake updates |
+| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [@dieng2017chi]) | Over-covering approximation; the $K$-sample estimate's expectation lies below the CUBO, so treat it as an upper bound only as $K$ grows |
+| `RWS(K)` | Reweighted wake-sleep, wake phase [@bornschein2015rws] | Importance-weighted wake updates with the draws held fixed; not a bound, takes no estimator |
 | `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient [@tucker2019dreg] | Switch the IWAE bound and DReG estimator together |
 
-The first six accept an `estimator=` strategy. `DReGsBound` fixes the
-strategy to `DoublyReparameterized` by definition:
+The first five are Monte Carlo *power-mean bounds* of the per-draw log
+importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$,
+
+$$B_a = \frac{1}{a}\log \frac{1}{K}\sum_{k=1}^{K} e^{a \ell_k},$$
+
+with exponent $a = 0$ (the ELBO, read as the mean of $\ell_k$), $a = 1$
+(IWAE), $a = 1 - \alpha$ (Rényi and VR-IWAE), or $a = n$ (`ChiVI`). Each
+accepts an `estimator=` strategy, which estimates the gradient of
+$\mathbb{E}[B_a]$ for both the guide and the model parameters.
+`DReGsBound` fixes the strategy to `DoublyReparameterized`, and `RWS`
+takes none:
 
 | Estimator | What it does |
 |---|---|
-| [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Standard pathwise gradient (default) |
-| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
-| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG for IWAE [@tucker2019dreg]; removes the score-function term that can worsen signal-to-noise as $K$ grows |
-| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE [@ranganath2014bbvi]: the objective draws from the guide and holds the draws fixed, so the guide's `rsample` need not be differentiable; model parameters get $\mathbb{E}_q[\nabla_\theta \log p_\theta]$ |
+| [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Pathwise gradient of $B_a$ (default except for `IWAEBound`) |
+| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches the variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
+| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG [@tucker2019dreg; @daudel2023vriwae]: rewrites the score term with the reparameterization identity, weighting draw $k$ by $(1-a)\bar w_k + a \bar w_k^2$ with $\bar w = \mathrm{softmax}(a\ell)$; default for `IWAEBound` |
+| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE [@ranganath2014bbvi]: the objective draws from the guide and holds the draws fixed, so the guide's `rsample` need not be differentiable |
+
+Not every pair has an unbiased estimator. Dropping the score term, as
+sticking the landing does, is unbiased only when that term has mean zero:
+for the ELBO, or for a single draw. The objectives check the pair at
+construction and on every call, and raise `ValueError` naming a valid
+estimator instead of silently using another one:
+
+| Objective | `Reparameterized` | `StickingTheLanding` | `DoublyReparameterized` | `ScoreFunction` |
+|---|---|---|---|---|
+| `ELBO` | yes | yes | yes (equals sticking the landing) | yes |
+| `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `ChiVI` | yes | only with `num_particles=1` | yes | yes |
+| any of the above with an `AutoMixtureGuide` | yes | `ELBO` only | `ELBO` only | yes (independent draws) |
 
 <!-- python: skip -->
 ```python
