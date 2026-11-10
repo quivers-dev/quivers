@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import torch.nn as nn
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.continuous.morphisms import AnySpace
 from quivers.continuous.programs import MonadicProgram
 from quivers.core.objects import SetObject
 from quivers.program import Program
@@ -134,6 +135,9 @@ class Compiler(
         # Every ``program`` declaration of the module by name, parametric
         # or not: the scope model a program's sites are addressed through.
         self._program_decls: dict[str, ProgramDecl] = {}
+        # The parameter spaces of the program being compiled, innermost
+        # last: its host data and its lets, by name.
+        self._parameter_space_stack: list[dict[str, AnySpace]] = []
         # Operadic contraction declarations. Each entry is callable
         # from the DSL at define-binding sites; the value records the
         # compiled `EinsumWiring` plus the declared domain /

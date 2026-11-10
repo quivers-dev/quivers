@@ -512,7 +512,15 @@ class VectorisedObserve(ContinuousMorphism):
         result is the per-observation response sample. Used in
         prior-predictive simulation; never called during inference
         when the response is observed.
+
+        A θ shared by every observation (a single row: literal or
+        program-wide parameters) is drawn once per row of the plate,
+        so the draw has the plate's rows whatever mix of shared and
+        per-row parameters the observation reads.
         """
+        rows = self.response.shape[0]
+        if x.dim() >= 1 and x.shape[0] == 1 and rows > 1:
+            x = x.expand(rows, *x.shape[1:])
         return self._family.rsample(x, sample_shape)
 
     def _align_response(self, target: torch.Tensor) -> torch.Tensor:

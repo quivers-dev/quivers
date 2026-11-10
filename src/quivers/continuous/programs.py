@@ -682,6 +682,18 @@ class MonadicProgram(ContinuousMorphism):
                     shaped.append(tf.reshape(1, -1))
                 else:
                     shaped.append(tf.reshape(tf.shape[0], -1))
+            elif dim is not None:
+                # A parameter of declared per-row width: its entries are
+                # rows of that width, however many leading axes carry
+                # them (a value drawn under the program's batch axis
+                # arrives as ``(1, N)`` for ``N`` rows of one column).
+                if tf.numel() % dim != 0:
+                    raise RuntimeError(
+                        f"_stack_params: a parameter of declared width {dim} "
+                        f"holds {tf.numel()} entries, which are no whole "
+                        f"number of rows of that width"
+                    )
+                shaped.append(tf.reshape(-1, dim))
             else:
                 # Per-row scalar.
                 if tf.dim() == 0:

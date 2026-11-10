@@ -136,7 +136,10 @@ from quivers.dsl.let_expr_traversal import (
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
+from quivers.qiec import QiecModule
+from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.families import FAMILIES
+from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
 from quivers.dsl.compiler._prelude import (
     CompileError,
@@ -198,6 +201,161 @@ def _let_expr_reads(node: LetExprNode) -> frozenset[str]:
         program.
     """
     return frozenset(free_let_names(node))
+
+
+def _checked_real_space(
+    name: str, type_: TypeExpr, axes: tuple[str, ...]
+) -> Euclidean | None:
+    """The Euclidean space a checked real-valued datum occupies.
+
+    Parameters
+    ----------
+    name : str
+        The datum's name.
+    type_ : TypeExpr
+        Its checked type.
+    axes : tuple[str, ...]
+        The plate axes its values range over, outermost first.
+
+    Returns
+    -------
+    Euclidean | None
+        One coordinate for ``Real``; for ``Tensor[Real]`` of fixed
+        extents its entries, as rows of its leading extent when it
+        ranges over a plate. ``None`` for any other element type or an
+        extent no literal fixes.
+    """
+    split = tensor_shape(type_)
+    element, dimensions = (type_, ()) if split is None else split
+    if element != REAL:
+        return None
+    extents: list[int] = []
+    for dimension in dimensions:
+        if not isinstance(dimension, IndexLiteral) or not isinstance(
+            dimension.value, int
+        ):
+            return None
+        extents.append(dimension.value)
+    if not extents:
+        return Euclidean(name=f"_{name}", dim=1)
+    total = math.prod(extents)
+    return Euclidean(
+        name=f"_{name}", dim=total, plate_rows=extents[0] if axes else None
+    )
+
+
+def _space_rows(space: AnySpace | None) -> tuple[int | None, int] | None:
+    """A parameter space as plate rows and per-row width.
+
+    Parameters
+    ----------
+    space : AnySpace | None
+        The space.
+
+    Returns
+    -------
+    tuple[int | None, int] | None
+        The plate rows (``None`` for a value shared by every row) and
+        the width of one row; ``None`` for a space with no Euclidean
+        reading.
+    """
+    if isinstance(space, Euclidean):
+        return (space.plate_rows, space.row_width)
+    if isinstance(space, ContinuousSpace) and not isinstance(space, ProductSpace):
+        dim = getattr(space, "dim", None)
+        if isinstance(dim, int) and len(space.event_shape) <= 1:
+            return (None, dim)
+    return None
+
+
+#: Builtins that apply entrywise, so their result has the shape of
+#: their argument.
+_ENTRYWISE_BUILTINS = frozenset(
+    {
+        "abs",
+        "exp",
+        "expm1",
+        "log",
+        "log1p",
+        "neg",
+        "reciprocal",
+        "relu",
+        "rsqrt",
+        "sigmoid",
+        "softplus",
+        "sqrt",
+        "square",
+        "tanh",
+    }
+)
+
+
+def _let_space(
+    expr: LetExprNode,
+    bound: Mapping[str, AnySpace | None],
+    known: Mapping[str, AnySpace],
+) -> Euclidean | None:
+    """The space an entrywise let expression's value occupies.
+
+    A variable, a number, and entrywise arithmetic and builtins over
+    them have the broadcast shape of their operands: a value shared by
+    every row broadcasts against one plated over rows, and a single
+    coordinate against several.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+    bound : Mapping[str, AnySpace | None]
+        The spaces of the names bound in the body.
+    known : Mapping[str, AnySpace]
+        The spaces of host data and of earlier lets.
+
+    Returns
+    -------
+    Euclidean | None
+        The broadcast space; ``None`` for any other expression or an
+        operand whose space is unknown or whose shape does not
+        broadcast.
+    """
+
+    def shape(node: LetExprNode) -> tuple[int | None, int] | None:
+        if isinstance(node, LetExprLiteral):
+            return (None, 1)
+        if isinstance(node, LetExprVar):
+            space = bound.get(node.name)
+            return _space_rows(space if space is not None else known.get(node.name))
+        if isinstance(node, LetExprUnaryOp) and node.op == "-":
+            return shape(node.operand)
+        if isinstance(node, LetExprBinOp) and node.op in ("+", "-", "*", "/"):
+            left, right = shape(node.left), shape(node.right)
+            if left is None or right is None:
+                return None
+            if left[0] is not None and right[0] is not None and left[0] != right[0]:
+                return None
+            if left[1] != right[1] and 1 not in (left[1], right[1]):
+                return None
+            return (
+                left[0] if left[0] is not None else right[0],
+                max(left[1], right[1]),
+            )
+        if (
+            isinstance(node, LetExprCall)
+            and node.func in _ENTRYWISE_BUILTINS
+            and len(node.args) == 1
+        ):
+            return shape(node.args[0])
+        return None
+
+    found = shape(expr)
+    if found is None:
+        return None
+    rows, width = found
+    return Euclidean(
+        name="_let",
+        dim=width if rows is None else rows * width,
+        plate_rows=rows,
+    )
 
 
 def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
@@ -674,6 +832,8 @@ class _ProgramsMixin:
     _output_expr: Expr | None
     _groups: dict[str, list[str]]
     _program_templates: dict[str, ProgramDecl]
+    _parameter_space_stack: list[dict[str, AnySpace]]
+    qiec_module: QiecModule | None
     _contractions: dict
     _transformations: dict
     _trans_singletons: dict
@@ -2455,6 +2615,11 @@ class _ProgramsMixin:
         # arguments, contributing its own factors to the parent's
         # joint kernel.
         expanded_draws = self._expand_template_calls(ir_draws)
+        # The widths an inline family reads its parameters at come from
+        # the checked types: of the host data the program reads, and of
+        # each let as its operands type it.
+        parameter_spaces = self._host_data_spaces(decl.name)
+        self._parameter_space_stack.append(parameter_spaces)
         steps: list[Step] = []
         for step in expanded_draws:
             if isinstance(step, PlateDrawStep):
@@ -3259,6 +3424,9 @@ class _ProgramsMixin:
                         _let_expr_reads(step.value),
                     )
                     bound_vars[step.name] = None
+                    let_space = _let_space(step.value, bound_vars, parameter_spaces)
+                    if let_space is not None:
+                        parameter_spaces[step.name] = let_space
                     steps.append(Let(name=step.name, value=compiled_fn))
                 continue
             if isinstance(step, ScoreStep):
@@ -3367,6 +3535,7 @@ class _ProgramsMixin:
                 raise CompileError(
                     f"return variable {rv!r} not bound in program", decl.line, decl.col
                 )
+        self._parameter_space_stack.pop()
         prog = MonadicProgram(
             domain,
             codomain,
@@ -4003,12 +4172,22 @@ class _ProgramsMixin:
                     line=draw.line,
                     col=draw.col,
                 )
+                parameter_spaces = (
+                    self._parameter_space_stack[-1]
+                    if self._parameter_space_stack
+                    else {}
+                )
                 morph, var_args = make_inline_distribution(
                     draw.morphism,
                     draw.args,
                     inline_codomain,
                     variable_types={
-                        k: v for k, v in bound_vars.items() if v is not None
+                        **{
+                            name: space
+                            for name, space in parameter_spaces.items()
+                            if bound_vars.get(name) is None
+                        },
+                        **{k: v for k, v in bound_vars.items() if v is not None},
                     },
                 )
             except TypeError as exc:
@@ -4042,6 +4221,38 @@ class _ProgramsMixin:
             draw.line,
             draw.col,
         )
+
+    def _host_data_spaces(self, program: str) -> dict[str, AnySpace]:
+        """The spaces the host data a program reads are checked at.
+
+        Parameters
+        ----------
+        program : str
+            The program's name.
+
+        Returns
+        -------
+        dict[str, AnySpace]
+            Each real-valued host datum of the program's checked entry
+            as a Euclidean space: one coordinate for a scalar, and for a
+            tensor its entries, read as rows of the plate its checked
+            axes name when it ranges over one. Empty when the module has
+            no checked entry for the program.
+        """
+        module = self.qiec_module
+        if module is None:
+            return {}
+        entry = next((e for e in module.entries if e.name == program), None)
+        if entry is None:
+            return {}
+        spaces: dict[str, AnySpace] = {}
+        for parameter in entry.parameters:
+            if parameter.role != "data":
+                continue
+            space = _checked_real_space(parameter.name, parameter.type, parameter.axes)
+            if space is not None:
+                spaces[parameter.name] = space
+        return spaces
 
     def _independent_over_axes(
         self, family: str, axes: AxisSpec | None, line: int, col: int
