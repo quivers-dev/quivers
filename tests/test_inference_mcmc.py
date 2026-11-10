@@ -19,12 +19,23 @@ Cover:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 import torch
 
 import quivers.inference.mcmc.hmc as hmc_module
-from quivers.continuous import Draw, Euclidean, MonadicProgram, make_fixed_normal
+from torch.distributions import Categorical, Distribution, Gamma, Normal
+
+from quivers.continuous import (
+    ContinuousMorphism,
+    Draw,
+    Euclidean,
+    MonadicProgram,
+    make_fixed_halfnormal,
+    make_fixed_normal,
+)
+from quivers.continuous.program_steps import Score, reading
 from quivers.core import Unit
 from quivers.dsl import loads
 from quivers.inference.mcmc.adapt import (
@@ -34,6 +45,7 @@ from quivers.inference.mcmc.adapt import (
 )
 from quivers.inference.mcmc import HMCKernel, MCMC, NUTSKernel, PotentialFn
 from quivers.inference.mcmc.hmc import MassMatrixKind
+from quivers.inference.mcmc.kernel import _rejects_position
 from quivers.inference.registry import LatentRegistry
 
 
@@ -1044,3 +1056,268 @@ def test_guide_initialisation_rejects_a_guide_without_the_batch_axis() -> None:
             _UnbatchedGuide(),  # type: ignore[arg-type]
             torch.Generator().manual_seed(0),
         )
+
+
+# ---------------------------------------------------------------------------
+# Errors: positions outside the support versus defects
+# ---------------------------------------------------------------------------
+
+
+def _regression_program():
+    return loads(
+        "object Resp : FinSet 12\n"
+        "program p : Resp -> Resp\n"
+        "    sample b0 <- Normal(loc=0.0, scale=1.0)\n"
+        "    sample b1 <- Normal(loc=0.0, scale=1.0)\n"
+        "    let mu = b0 + b1 * x_cov\n"
+        "    observe y : Resp <- Normal(loc=mu, scale=1.0)\n"
+        "    return mu\n"
+        "export p\n"
+    ).morphism
+
+
+def _count_program():
+    return loads(
+        "object Resp : FinSet 12\n"
+        "program p : Resp -> Resp\n"
+        "    sample log_rate <- Normal(loc=0.0, scale=1.0)\n"
+        "    let rate = exp(log_rate)\n"
+        "    observe y : Resp <- Poisson(rate=rate)\n"
+        "    return rate\n"
+        "export p\n"
+    ).morphism
+
+
+def _design_likelihood(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    eta = env["X"] @ env["beta"].reshape(-1)
+    return Normal(eta, 1.0).log_prob(env["y"]).sum().reshape(1)
+
+
+def _design_program() -> MonadicProgram:
+    return MonadicProgram(
+        Unit,
+        Euclidean(name="out", dim=1),
+        steps=[
+            Draw(
+                names=("beta",),
+                morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="Coef", dim=3)),
+            ),
+            Score(name="lik", score=reading(_design_likelihood, ("beta", "X", "y"))),
+        ],
+        return_vars=(),
+    )
+
+
+_X_COV = torch.linspace(0.0, 1.0, 12)
+_Y = 0.5 + 2.0 * _X_COV
+_DEFECTS = {
+    "covariate rows disagree with response rows": (
+        _regression_program,
+        {"x_cov": _X_COV[:11], "y": _Y},
+        ValueError,
+    ),
+    "NaN in the observed response": (
+        _regression_program,
+        {"x_cov": _X_COV, "y": torch.cat([_Y[:11], torch.tensor([float("nan")])])},
+        ValueError,
+    ),
+    "negative count under Poisson": (
+        _count_program,
+        {"y": torch.tensor([3.0, 1.0, -1.0, 2.0] * 3)},
+        ValueError,
+    ),
+    "design matrix narrower than the coefficients": (
+        _design_program,
+        {"X": torch.randn(12, 2), "y": torch.randn(12)},
+        RuntimeError,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_DEFECTS))
+def test_mcmc_run_raises_on_a_program_or_data_defect(case: str) -> None:
+    make, data, error_type = _DEFECTS[case]
+    driver = MCMC(
+        NUTSKernel(max_tree_depth=3), num_warmup=5, num_samples=5, num_chains=1, seed=0
+    )
+    with pytest.raises(error_type) as raised:
+        driver.run(make(), torch.zeros(1, 1), data)
+    assert any("chain 0's initial position" in note for note in raised.value.__notes__)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "covariate rows disagree with response rows",
+        "design matrix narrower than the coefficients",
+    ],
+)
+def test_potential_never_scores_a_defect_as_minus_infinity(case: str) -> None:
+    """A defect that is not a validation error raises at every
+    position, inside or outside the initial check."""
+    make, data, error_type = _DEFECTS[case]
+    model = make()
+    registry = LatentRegistry.from_model(
+        model, {"y"} if make is _regression_program else set()
+    )
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), data)
+    position = torch.full((registry.total_unconstrained_dim,), 0.3)
+    with pytest.raises(error_type):
+        potential.value_and_grad(position)
+    with pytest.raises(error_type):
+        potential.check_initial(position)
+
+
+@pytest.mark.parametrize(
+    "case", ["NaN in the observed response", "negative count under Poisson"]
+)
+def test_check_initial_rejects_observed_data_outside_the_likelihood(case: str) -> None:
+    make, data, _ = _DEFECTS[case]
+    model = make()
+    registry = LatentRegistry.from_model(model, {"y"})
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), data)
+    with pytest.raises(ValueError):
+        potential.check_initial(torch.zeros(registry.total_unconstrained_dim))
+
+
+def _score_program(
+    score: Callable[[dict[str, torch.Tensor]], torch.Tensor],
+    reads: tuple[str, ...],
+    site: str = "b",
+    prior: ContinuousMorphism | None = None,
+) -> MonadicProgram:
+    return MonadicProgram(
+        Unit,
+        Euclidean(name="out", dim=1),
+        steps=[
+            Draw(
+                names=(site,),
+                morphism=prior
+                if prior is not None
+                else make_fixed_normal(0.0, 1.0, Euclidean(name="R", dim=1)),
+            ),
+            Score(name="lik", score=reading(score, reads)),
+        ],
+        return_vars=(),
+    )
+
+
+def _scale_likelihood(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    scale = env["b"].reshape(()) + 1.0
+    return Normal(0.0, scale).log_prob(env["y"]).sum().reshape(1)
+
+
+def test_parameter_outside_its_constraint_rejects_the_position() -> None:
+    model = _score_program(_scale_likelihood, ("b", "y"))
+    registry = LatentRegistry.from_model(model, set())
+    data = {"y": torch.linspace(-1.0, 1.0, 6)}
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), data)
+    assert torch.isfinite(potential.check_initial(torch.zeros(1)))
+    value, grad = potential.value_and_grad(torch.tensor([-2.0]))
+    assert value == float("-inf")
+    assert torch.equal(grad, torch.zeros(1))
+    result = MCMC(
+        NUTSKernel(max_tree_depth=4),
+        num_warmup=30,
+        num_samples=30,
+        num_chains=1,
+        seed=0,
+    ).run(model, torch.zeros(1, 1), data)
+    assert (result.samples["b"] > -1.0).all()
+
+
+def _gamma_score(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    return Gamma(2.0, 1.0).log_prob(env["sigma"].reshape(())).reshape(1)
+
+
+def test_latent_on_its_support_boundary_rejects_the_position() -> None:
+    model = _score_program(
+        _gamma_score,
+        ("sigma",),
+        site="sigma",
+        prior=make_fixed_halfnormal(1.0, Euclidean(name="R", dim=1)),
+    )
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    assert torch.isfinite(potential.log_density(torch.tensor([0.0])))
+    # exp(-1000) underflows to zero, outside the Gamma's positive support.
+    assert potential.log_density(torch.tensor([-1000.0])) == float("-inf")
+
+
+def _cholesky_score(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    r = env["b"].reshape(())
+    one = torch.ones(())
+    cov = torch.stack([torch.stack([one, r]), torch.stack([r, one])])
+    return torch.linalg.cholesky(cov).diagonal().log().sum().reshape(1)
+
+
+def test_non_positive_definite_factorization_rejects_the_position() -> None:
+    model = _score_program(_cholesky_score, ("b",))
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    assert torch.isfinite(potential.log_density(torch.tensor([0.5])))
+    assert potential.log_density(torch.tensor([2.0])) == float("-inf")
+
+
+def _log_score(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    return env["b"].reshape(1).log()
+
+
+def test_check_initial_names_the_non_finite_term() -> None:
+    model = _score_program(_log_score, ("b",))
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    assert torch.isfinite(potential.check_initial(torch.tensor([0.5])))
+    with pytest.raises(ValueError, match="non-finite terms: lik"):
+        potential.check_initial(torch.tensor([-1.0]))
+
+
+def test_check_initial_validates_whatever_the_global_default() -> None:
+    model = _count_program()
+    registry = LatentRegistry.from_model(model, {"y"})
+    potential = PotentialFn(
+        model,
+        registry,
+        torch.zeros(1, 1),
+        {"y": torch.tensor([3.0, 1.0, -1.0, 2.0] * 3)},
+    )
+    previous = Distribution._validate_args
+    Distribution.set_default_validate_args(False)
+    try:
+        with pytest.raises(ValueError):
+            potential.check_initial(torch.zeros(1))
+        assert Distribution._validate_args is False
+    finally:
+        Distribution.set_default_validate_args(previous)
+
+
+def _raised(call: Callable[[], object]) -> BaseException:
+    try:
+        call()
+    except BaseException as error:  # noqa: BLE001 - the test inspects the error
+        return error
+    raise AssertionError("expected an error")
+
+
+def test_rejects_position_recognises_torch_validators_by_raising_frame() -> None:
+    """Pinned to the installed torch: its parameter and value
+    validators are `Distribution.__init__` and
+    `Distribution._validate_sample`."""
+    assert _rejects_position(_raised(lambda: Normal(0.0, -1.0)))
+    assert _rejects_position(
+        _raised(lambda: Normal(0.0, 1.0).log_prob(torch.tensor(float("nan"))))
+    )
+    assert _rejects_position(
+        _raised(lambda: Normal(torch.zeros(3), 1.0).log_prob(torch.zeros(4)))
+    )
+    assert _rejects_position(
+        _raised(lambda: torch.linalg.cholesky(torch.tensor([[1.0, 2.0], [2.0, 1.0]])))
+    )
+    # Raised by a distribution's own argument handling, not its validator.
+    assert not _rejects_position(_raised(lambda: Categorical()))
+    assert not _rejects_position(_raised(lambda: torch.ones(2, 3) @ torch.ones(2)))
+
+    def _user_value_error() -> None:
+        raise ValueError("Expected parameter scale to satisfy the constraint")
+
+    assert not _rejects_position(_raised(_user_value_error))

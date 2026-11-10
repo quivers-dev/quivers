@@ -81,6 +81,18 @@ advance a caller-owned stream. `seed` and `generator` are mutually
 exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
+Before sampling, `MCMC.run` scores each chain's initial position with
+[`PotentialFn.check_initial`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.check_initial),
+which converts no error: observed values that are not finite or lie
+outside a likelihood's support, row counts that disagree, and errors in
+a custom score function raise there, with a note naming the chain, and
+a non-finite initial log density raises naming the offending terms.
+During sampling a position scores $-\infty$, and is rejected, only when
+it lies outside the model's support: a `torch.distributions` parameter
+or value validation error, recognised by the validator that raised it,
+or a `torch.linalg.LinAlgError` from a matrix the position makes
+non-positive-definite. Every other error propagates.
+
 The [`MCMCResult`](../api/inference/mcmc.md) holds each site's draws at
 `(num_chains, num_samples, *constrained_shape)`, where
 `constrained_shape` is the shape of one draw: `()` for a scalar site,

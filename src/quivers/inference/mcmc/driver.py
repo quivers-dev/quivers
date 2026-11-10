@@ -443,7 +443,44 @@ class MCMC:
         guide: Guide | None = None,
     ) -> MCMCResult:
         """Run the configured kernel for ``num_chains`` chains of
-        ``num_warmup + num_samples`` steps each."""
+        ``num_warmup + num_samples`` steps each.
+
+        Each chain's initial position is scored by
+        `PotentialFn.check_initial` before sampling, so an error in
+        the program or its data (observed values outside a
+        likelihood's support or not finite, mismatched row counts, an
+        error in a custom score function) raises here, with a note
+        naming the chain, rather than producing a chain that rejects
+        every proposal. During sampling only positions outside the
+        model's support score ``-inf``; other errors propagate.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The program to sample.
+        x : torch.Tensor
+            Program input, shape ``(batch, ...)``.
+        observations : dict[str, torch.Tensor]
+            Observed-site values and host data.
+        guide : Guide, optional
+            Fitted guide, required by ``init_strategy="guide"``.
+
+        Returns
+        -------
+        MCMCResult
+            Posterior draws and diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If a chain's initial position is not finite, an observed
+            value is not finite, or the log-density at an initial
+            position is not finite.
+        Exception
+            Any error the program raises at an initial position, or
+            raises during sampling for a reason other than a position
+            outside its support.
+        """
         observed_names = set(observations.keys())
         registry = LatentRegistry.from_model(model, observed_names)
         potential = PotentialFn(model, registry, x, observations)
@@ -463,6 +500,14 @@ class MCMC:
                     f"MCMC.run: chain {chain} initial_position must contain "
                     "only finite values"
                 )
+            try:
+                potential.check_initial(init_pos)
+            except Exception as error:
+                error.add_note(
+                    f"MCMC.run: raised while scoring chain {chain}'s initial "
+                    "position, before any sampling"
+                )
+                raise
             self.kernel._set_generator(chain_generator)
             state = self.kernel.init(registry, model, x, observations, init_pos)
             # Warmup.

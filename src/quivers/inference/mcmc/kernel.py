@@ -22,12 +22,83 @@ the kernel itself.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
+from torch.distributions import Distribution
 
+from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.registry import LatentRegistry
+from quivers.inference.trace import trace
+
+
+_DISTRIBUTION_VALIDATION_CODE = frozenset(
+    {Distribution.__init__.__code__, Distribution._validate_sample.__code__}
+)
+"""Code objects of the two `torch.distributions` validators: the
+parameter-constraint check in `Distribution.__init__` and the value
+check in `Distribution._validate_sample`."""
+
+
+def _rejects_position(error: BaseException) -> bool:
+    """Whether an error raised while scoring a position means the
+    position lies outside the model's support.
+
+    Two kinds of error qualify. A ``ValueError`` raised by one of
+    `torch.distributions`' own validators (a parameter that fails its
+    constraint, or a value outside its support) is identified by the
+    code object of the innermost traceback frame, not by its message.
+    A `torch.linalg.LinAlgError` is a factorization of a matrix that
+    the position makes numerically non-positive-definite. Every other
+    error is a defect of the program or its data.
+
+    Parameters
+    ----------
+    error : BaseException
+        The error raised by ``log_joint``.
+
+    Returns
+    -------
+    bool
+        ``True`` when the position should be rejected with a
+        log-density of ``-inf``; ``False`` when the error must
+        propagate.
+    """
+    if isinstance(error, torch.linalg.LinAlgError):
+        return True
+    if not isinstance(error, ValueError):
+        return False
+    frame = error.__traceback__
+    if frame is None:
+        return False
+    while frame.tb_next is not None:
+        frame = frame.tb_next
+    return frame.tb_frame.f_code in _DISTRIBUTION_VALIDATION_CODE
+
+
+@contextmanager
+def _distribution_validation() -> Iterator[None]:
+    """Enable `torch.distributions` argument validation for a block.
+
+    The initial-position check relies on the validators to report
+    observed data outside a likelihood's support, so it runs with
+    validation on whatever the process-wide default is, and restores
+    that default afterwards.
+
+    Yields
+    ------
+    None
+        Control, with validation enabled.
+    """
+    previous = bool(Distribution._validate_args)
+    Distribution.set_default_validate_args(True)
+    try:
+        yield
+    finally:
+        Distribution.set_default_validate_args(previous)
 
 
 @dataclass
@@ -90,6 +161,11 @@ class PotentialFn:
     axis being the program's batch axis, and plate sites at
     ``constrained_shape``.
 
+    `check_initial` scores a starting position strictly and must run
+    once before sampling (`MCMC.run` does): it raises on observed data
+    that is not finite or lies outside a likelihood's support, which
+    `log_density` would otherwise score as an unreachable position.
+
     Parameters
     ----------
     model : MonadicProgram
@@ -129,15 +205,18 @@ class PotentialFn:
         leading axis accordingly; the shapes reported by
         `MCMCResult` carry no such axis.
 
-        Trajectories that wander to the edge of a constrained
-        support can produce values that fall outside
-        `torch.distributions`' validation envelope (e.g. exact
-        zeros against a strictly-positive support after a long
-        leapfrog stride). Rather than letting the resulting
-        ``ValueError`` propagate and kill the chain, this method
-        returns ``-inf`` for those positions; the kernel reads
-        non-finite log-densities as divergent transitions and
-        rejects them in the Metropolis step.
+        A position outside the model's support scores ``-inf``, and
+        the kernel rejects it. Two errors from ``log_joint`` mean
+        that: a ``ValueError`` from `torch.distributions`' own
+        parameter or value validation (a scale that underflows to
+        zero, a latent value pushed onto its support's boundary), and
+        a `torch.linalg.LinAlgError` from factorizing a matrix the
+        position makes non-positive-definite. They are recognised by
+        where they are raised, not by their message. Every other
+        error (a shape or dtype mismatch, an error in a custom score
+        function, a missing name) propagates, and so do the
+        validation errors that hold at every position, which
+        `check_initial` raises before sampling starts.
 
         Parameters
         ----------
@@ -148,27 +227,114 @@ class PotentialFn:
         -------
         torch.Tensor
             Scalar Jacobian-corrected log-density, or ``-inf`` where
-            the program rejects the position.
+            the position is outside the model's support.
 
         Raises
         ------
         ValueError
             If ``z`` does not have the registry's flat length.
+        Exception
+            Any error ``log_joint`` raises that does not mark the
+            position as outside the support.
+        """
+        trace_side, log_det_total = self._trace_side(z)
+        try:
+            log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
+        except (ValueError, torch.linalg.LinAlgError) as error:
+            if not _rejects_position(error):
+                raise
+            return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
+        result = log_p.sum() + log_det_total
+        if not torch.isfinite(result):
+            return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
+        return result
+
+    def _trace_side(
+        self, z: torch.Tensor
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Map a flat position to trace-side latent values and the
+        total log-Jacobian of the bijectors.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], torch.Tensor]
+            The latent values `LatentRegistry.trace_values` produces
+            with a batch of one, and the scalar ``log |det dT/dz|``.
         """
         per_site_unc = self._registry.unflatten_unconstrained(z)
         constrained, log_abs_dets = self._registry.to_constrained(per_site_unc)
         log_det_total = torch.zeros((), device=z.device, dtype=z.dtype)
         for site in self._registry.sites.values():
             log_det_total = log_det_total + log_abs_dets[site.name].sum()
-        trace_side = self._registry.trace_values(constrained, batch_size=1)
-        try:
-            log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
-            result = log_p.sum() + log_det_total
-        except ValueError:
-            return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
-        if not torch.isfinite(result):
-            return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
-        return result
+        return self._registry.trace_values(constrained, batch_size=1), log_det_total
+
+    def check_initial(self, z: torch.Tensor) -> torch.Tensor:
+        """Score a chain's initial position, raising on any failure.
+
+        Run once before sampling. Observed values must be finite; the
+        program is then scored with `torch.distributions` validation
+        enabled and no error converted, so observed data outside a
+        likelihood's support, mismatched row counts, and errors in
+        custom score functions raise here with their own type. A
+        position that scores a non-finite log-density raises, naming
+        the sites whose log-density is not finite.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained initial position, shape ``(D,)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The finite scalar Jacobian-corrected log-density at ``z``.
+
+        Raises
+        ------
+        ValueError
+            If an observed value is not finite, or the log-density at
+            ``z`` is not finite.
+        Exception
+            Any error ``log_joint`` raises at ``z``.
+        """
+        site_names = {
+            name
+            for step in self._model.steps
+            if isinstance(step, Draw | Observe)
+            for name in step.names
+        }
+        for name, value in self._observations.items():
+            if (
+                name in site_names
+                and value.dtype.is_floating_point
+                and not torch.isfinite(value).all()
+            ):
+                raise ValueError(
+                    f"PotentialFn: observed site {name!r} holds non-finite values"
+                )
+        with torch.no_grad(), _distribution_validation():
+            trace_side, log_det_total = self._trace_side(z)
+            values = {**trace_side, **self._observations}
+            result = self._model.log_joint(self._x, values).sum() + log_det_total
+            if torch.isfinite(result):
+                return result
+            recorded = trace(self._model, self._x, observations=values)
+        offending = sorted(
+            name
+            for name, site in recorded.sites.items()
+            if not torch.isfinite(site.log_prob).all()
+        )
+        if not torch.isfinite(log_det_total):
+            offending.append("the bijector log-Jacobian")
+        raise ValueError(
+            f"PotentialFn: the log-density at the initial position is "
+            f"{float(result)}; non-finite terms: {', '.join(offending) or 'none recorded'}"
+        )
 
     def value_and_grad(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(log_density, grad_log_density)`` for ``z``.
@@ -196,24 +362,25 @@ class PotentialFn:
         tuple[torch.Tensor, torch.Tensor]
             The detached scalar log-density and its detached
             gradient with respect to ``z`` (shape ``(D,)``).
+
+        Raises
+        ------
+        Exception
+            Any error `log_density` propagates: an error from the
+            program or its data rather than a position outside the
+            support.
         """
         z_leaf = z.detach().clone().requires_grad_(True)
-        try:
-            with torch.enable_grad():
-                ld = self.log_density(z_leaf)
-                if not torch.isfinite(ld):
-                    return ld.detach(), torch.zeros_like(z)
-                grad = torch.autograd.grad(
-                    ld, z_leaf, create_graph=False, allow_unused=False
-                )[0]
-            if grad is None or not torch.isfinite(grad).all():
+        with torch.enable_grad():
+            ld = self.log_density(z_leaf)
+            if not torch.isfinite(ld):
                 return ld.detach(), torch.zeros_like(z)
-            return ld.detach(), grad.detach()
-        except ValueError, RuntimeError:
-            return (
-                torch.tensor(float("-inf"), device=z.device, dtype=z.dtype),
-                torch.zeros_like(z),
-            )
+            grad = torch.autograd.grad(
+                ld, z_leaf, create_graph=False, allow_unused=False
+            )[0]
+        if grad is None or not torch.isfinite(grad).all():
+            return ld.detach(), torch.zeros_like(z)
+        return ld.detach(), grad.detach()
 
 
 class MCMCKernel(ABC):
