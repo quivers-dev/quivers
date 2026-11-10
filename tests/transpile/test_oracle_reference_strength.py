@@ -520,104 +520,35 @@ def _reconstruct_vae(
 ) -> dict[str, Tensor]:
     """`vae.qvr`:
 
-        sample z <- prior
-        observe Y <- decoder(z)
+        sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]
+        observe y : Row <- decoder(z)
 
-    `prior : UnitSpace -> Latent ~ Normal` is one affine map to a
-    `(loc, log_scale)` pair over `Latent : Real 4`. `decoder` is the
-    chain `dec_1 >> stack(dec_deep, 1) >> dec_to_obs`, whose three
-    factors each carry a conditional density, so
-    [`SampledComposition`][quivers.continuous.morphisms.SampledComposition]
-    scores every one of them along its canonical path: each
-    intermediate is bound to the image of the base measure's origin,
-    which for a Normal factor is its own location, and the observed
-    `Y` enters through the last factor. A factor scored at its own
-    location contributes its normalizer alone, and writing that out
-    makes this an independent statement of the path density
-    rather than a call back into the object under test.
+    `z` is one standard-Normal code in `Latent : Real 2` per row of the
+    512-row `Row` plate. `decoder : Latent -> ObsSpace [param_source=mlp(32)]
+    ~ Normal` is a single kernel: one affine layer, `tanh`, and an affine
+    head split into a location and a log-scale over `ObsSpace : Real 5`.
 
-    The affine weights are compile-time draws with no spelling in the
-    source and are taken as given; the wiring, the layer order of the
-    `mlp` source, the head split, the three densities and the sum
-    over the 32-row plate are rebuilt.
+    The decoder's affine weights are compile-time draws with no spelling
+    in the source and are taken as given; the layer order, the head
+    split, both densities and the sum over the plate are rebuilt.
     """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "vae's reconstruction needs the snippet's `UnitSpace` "
-            "driver column, which the dataset did not carry."
-        )
-    raw_z = _affine(
-        x_input,
-        weights["_step_z.param_source.linear.weight"],
-        weights["_step_z.param_source.linear.bias"],
-    )
-    # `object Latent : Real 4`.
-    loc_z, scale_z = _normal_head(raw_z, 4)
-    per_z = td.Normal(loc_z, scale_z).log_prob(values["z"])
-
-    # `dec_1 : Latent -> DecoderHidden`, `object DecoderHidden : Real 16`.
-    raw_1 = _affine(
-        values["z"],
-        weights["_step_Y.left.left.param_source.linear.weight"],
-        weights["_step_Y.left.left.param_source.linear.bias"],
-    )
-    loc_1, scale_1 = _normal_head(raw_1, 16)
-    if variant == "prefix_at_zero":
-        hidden_1 = torch.zeros_like(loc_1)
-    else:
-        hidden_1 = loc_1
-    per_1 = td.Normal(loc_1, scale_1).log_prob(hidden_1)
-
-    # `dec_deep : DecoderHidden -> DecoderHidden [param_source=mlp]`.
-    prefix = "_step_Y.left.right.param_source.net."
-    layer = _affine(
-        hidden_1,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    layer = _affine(
-        torch.tanh(layer),
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    layer = torch.tanh(layer)
-    raw_2 = _affine(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-    loc_2, scale_2 = _normal_head(raw_2, 16)
-    per_2 = td.Normal(loc_2, scale_2).log_prob(loc_2)
-
-    # `dec_to_obs : DecoderHidden -> ObsSpace`, `object ObsSpace : Real 8`.
-    raw_3 = _affine(
-        loc_2,
-        weights["_step_Y.right.param_source.linear.weight"],
-        weights["_step_Y.right.param_source.linear.bias"],
-    )
-    loc_3, scale_3 = _normal_head(
-        raw_3,
-        8,
-        unit_scale=variant == "decoder_unit_scale",
-    )
-    per_obs = td.Normal(loc_3, scale_3).log_prob(values["Y"])
-
-    if variant == "drop_decoder_prefix":
-        observation = per_obs.sum()
-    elif variant in (
-        "",
-        "prefix_at_zero",
-        "decoder_unit_scale",
-        "drop_latent_prior",
-    ):
-        observation = (per_1.sum(-1) + per_2.sum(-1) + per_obs.sum(-1)).sum()
+    del dataset
+    z = values["z"].reshape(-1, 2)
+    prefix = "_step_y._family.param_source.net."
+    hidden = _affine(z, weights[prefix + "0.weight"], weights[prefix + "0.bias"])
+    if variant == "drop_activation":
+        activated = hidden
+    elif variant in ("", "decoder_unit_scale", "drop_latent_prior", "plate_mean"):
+        activated = torch.tanh(hidden)
     else:
         raise _unknown_variant("vae", variant)
-
+    raw = _affine(activated, weights[prefix + "2.weight"], weights[prefix + "2.bias"])
+    loc, scale = _normal_head(raw, 5, unit_scale=variant == "decoder_unit_scale")
+    per_row = td.Normal(loc, scale).log_prob(values["y"].reshape(-1, 5)).sum(-1)
+    observation = per_row.mean() if variant == "plate_mean" else per_row.sum()
     if variant == "drop_latent_prior":
-        return {"z": torch.zeros(()), "Y": observation}
-    return {"z": per_z.sum(), "Y": observation}
+        return {"z": torch.zeros(()), "y": observation}
+    return {"z": td.Normal(0.0, 1.0).log_prob(z).sum(), "y": observation}
 
 
 def _reconstruct_bnn(
@@ -626,48 +557,39 @@ def _reconstruct_bnn(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`bnn.qvr`: `observe y : Resp <- net(x)`, `net` a heteroscedastic
-    `~ Normal` morphism with `[param_source=mlp, hidden_dim=64]`.
+    """`bnn.qvr`: a four-unit, one-hidden-layer tanh network whose
+    weights are declared sample sites.
 
-    `net`'s weights are drawn at compile time from torch's default
-    `nn.Linear` initialiser. They appear nowhere in the `.qvr` text
-    and nowhere in the `.md` snippet, so the reconstruction takes the
-    four tensors as given and rebuilds everything else: the layer
-    order (affine, `tanh`, affine), the `(loc, log_scale)` split of
-    the two output columns, the Normal density, and the sum over the
-    200-row `Resp` plate. That is the whole of what the oracle
-    computes here apart from the numbers in the weight tensors, which
-    no independent source can supply.
+    `w_in`, `b_in` and `w_out` are `Hidden`-plated Normal draws, `b_out`
+    a scalar Normal and `sigma` a HalfNormal; the mean is
+    `b_out + sum_h w_out[h] * tanh(w_in[h] * x + b_in[h])` and `y` is
+    scored over the 128-row `Resp` plate. Every quantity is a site or
+    host data, so nothing is taken as given from the compiled module.
     """
-    del dataset
-    prefix = "_step_y._family.param_source.net."
-    hidden = _affine(
-        values["x"],
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if variant == "mlp_without_activation":
-        activated = hidden
-    elif variant in ("", "homoscedastic", "plate_mean"):
-        activated = torch.tanh(hidden)
+    del dataset, weights
+    w_in, b_in, w_out = values["w_in"], values["b_in"], values["w_out"]
+    b_out = values["b_out"].reshape(())
+    sigma = values["sigma"].reshape(())
+    if variant == "output_weights_shifted":
+        paired_out = torch.roll(w_out, 1)
+    elif variant in ("", "drop_activation", "plate_mean", "input_prior_unit_scale"):
+        paired_out = w_out
     else:
         raise _unknown_variant("bnn", variant)
-    raw = _affine(
-        activated,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    # `object Target : Real 1`: a one-dimensional response, so the
-    # head emits one location column and one log-scale column.
-    loc, scale = _normal_head(
-        raw,
-        1,
-        unit_scale=variant == "homoscedastic",
-    )
-    per_row = td.Normal(loc, scale).log_prob(values["y"])
-    if variant == "plate_mean":
-        return {"y": per_row.mean()}
-    return {"y": per_row.sum()}
+    x = values["x"].reshape(-1, 1)
+    pre = x * w_in + b_in
+    hidden = pre if variant == "drop_activation" else torch.tanh(pre)
+    mu = (hidden * paired_out).sum(-1) + b_out
+    per_row = td.Normal(mu, sigma).log_prob(values["y"].reshape(-1))
+    input_scale = 1.0 if variant == "input_prior_unit_scale" else 2.0
+    return {
+        "w_in": td.Normal(0.0, input_scale).log_prob(w_in).sum(),
+        "b_in": td.Normal(0.0, 2.0).log_prob(b_in).sum(),
+        "w_out": td.Normal(0.0, 1.0).log_prob(w_out).sum(),
+        "b_out": td.Normal(0.0, 1.0).log_prob(b_out),
+        "sigma": td.HalfNormal(0.5).log_prob(sigma),
+        "y": per_row.mean() if variant == "plate_mean" else per_row.sum(),
+    }
 
 
 def _reconstruct_state_space(
@@ -1208,36 +1130,16 @@ _RECONSTRUCTIONS: dict[str, _Reconstruction] = {
     "vae": _Reconstruction(
         _reconstruct_vae,
         (
-            "_step_z.param_source.linear.weight",
-            "_step_z.param_source.linear.bias",
-            "_step_Y.left.left.param_source.linear.weight",
-            "_step_Y.left.left.param_source.linear.bias",
-            "_step_Y.left.right.param_source.net.0.weight",
-            "_step_Y.left.right.param_source.net.0.bias",
-            "_step_Y.left.right.param_source.net.2.weight",
-            "_step_Y.left.right.param_source.net.2.bias",
-            "_step_Y.left.right.param_source.net.4.weight",
-            "_step_Y.left.right.param_source.net.4.bias",
-            "_step_Y.right.param_source.linear.weight",
-            "_step_Y.right.param_source.linear.bias",
-        ),
-        "`prior` and the three decoder factors take their affine "
-        "weights from compile-time draws, which are named in neither "
-        "the `.qvr` source nor the `.md` snippet.",
-    ),
-    "bnn": _Reconstruction(
-        _reconstruct_bnn,
-        (
             "_step_y._family.param_source.net.0.weight",
             "_step_y._family.param_source.net.0.bias",
             "_step_y._family.param_source.net.2.weight",
             "_step_y._family.param_source.net.2.bias",
         ),
-        "`net`'s MLP weights are drawn by torch's default `nn.Linear` "
-        "initialiser when the module compiles. They are named in "
-        "neither the `.qvr` source nor the `.md` snippet, so no "
-        "independent source can supply their values.",
+        "The decoder MLP takes its weights from compile-time draws, "
+        "which are named in neither the `.qvr` source nor the `.md` "
+        "snippet.",
     ),
+    "bnn": _Reconstruction(_reconstruct_bnn, (), ""),
     "continuous_hmm": _Reconstruction(
         _reconstruct_continuous_hmm,
         (
@@ -1354,56 +1256,60 @@ _MUTANTS: tuple[_Mutant, ...] = (
     ),
     _Mutant(
         "vae",
-        "drop_decoder_prefix",
-        "the two decoder prefix factors are dropped and only the "
-        "observation factor is scored, which is what a chain that "
-        "scores its endpoint's marginal alone would report.",
-        25.0,
-    ),
-    _Mutant(
-        "vae",
-        "prefix_at_zero",
-        "the first decoder intermediate is bound to the origin of "
-        "the codomain rather than to the image of the base measure's "
-        "origin, which is the off-by-one a chain that forgets to "
-        "push its own location through would make.",
-        43.0,
+        "drop_activation",
+        "the decoder's hidden `tanh` is dropped, collapsing the "
+        "decoder to an affine map: the linear-decoder model the VAE "
+        "is meant to improve on.",
+        500.0,
     ),
     _Mutant(
         "vae",
         "decoder_unit_scale",
-        "the observation head's log-scale columns are ignored and "
-        "`Y` is scored at unit scale.",
-        0.35,
+        "the decoder head's log-scale columns are ignored and `y` is "
+        "scored at unit scale.",
+        140.0,
     ),
     _Mutant(
         "vae",
         "drop_latent_prior",
-        "the `sample z <- prior` term is dropped, leaving the "
+        "the standard-Normal prior on `z` is dropped, leaving the "
         "likelihood alone in a joint that claims to carry both.",
-        6.3,
+        1400.0,
+    ),
+    _Mutant(
+        "vae",
+        "plate_mean",
+        "the 512-row `Row` plate is averaged instead of summed.",
+        3200.0,
     ),
     _Mutant(
         "bnn",
-        "mlp_without_activation",
+        "drop_activation",
         "the hidden layer's `tanh` is dropped, collapsing the network "
         "to a single affine map: the defect class of a renderer that "
-        "emits a linear head for a nonlinear parameter source.",
-        5000.0,
+        "emits a linear head for a nonlinear network.",
+        30000.0,
     ),
     _Mutant(
         "bnn",
-        "homoscedastic",
-        "the head's log-scale columns are ignored and the response is "
-        "scored at unit scale, dropping the heteroscedasticity the "
-        "model exists to express.",
-        80.0,
+        "output_weights_shifted",
+        "`w_out` is read one hidden unit off, pairing each unit's "
+        "activation with its neighbour's output weight; every shape "
+        "stays valid.",
+        3700.0,
+    ),
+    _Mutant(
+        "bnn",
+        "input_prior_unit_scale",
+        "the `w_in` prior is scored at scale 1 instead of the declared "
+        "2, a mis-parameterised prior family.",
+        10.0,
     ),
     _Mutant(
         "bnn",
         "plate_mean",
-        "the 200-row `Resp` plate is averaged instead of summed.",
-        200.0,
+        "the 128-row `Resp` plate is averaged instead of summed.",
+        1200.0,
     ),
     _Mutant(
         "continuous_hmm",
@@ -2182,7 +2088,7 @@ Measured: 5678, `mixture_model`'s dropped `Dirichlet(1, 1, 1)` prior,
 which shifts the joint by exactly `log Gamma(3) = 0.6931` nats against
 a 1.221e-04 tolerance. The next-narrowest is 9122
 (`continuous_hmm`'s emission conditioned on the wrong state) and the
-catalogue runs out to 4.9e07 (`bnn`'s MLP stripped of its `tanh`).
+catalogue runs out to 1.0e09 (`bnn`'s network stripped of its `tanh`).
 Declaring the tightest one is what keeps the catalogue from decaying
 into a set of enormous, uninformative deviations while the small,
 realistic defect quietly stops being covered."""

@@ -152,12 +152,12 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # targets render both examples and stay carried by that registry.
 }
 
-# bnn's `net` morphism draws its mean from an `mlp` param source. The
-# network weights are model-internal, absent from both the wire form
-# and the sample sites, so no backend can reconstruct the mean; the
-# transpiler raises on every backend. The same holds for every model
-# below: each hides part of its structure in a `param_source` network
-# rather than writing it as a program whose steps are declared sites.
+# A morphism that draws its mean from an `mlp` param source keeps its
+# network weights model-internal, absent from both the wire form and
+# the sample sites, so no backend can reconstruct the mean; the
+# transpiler raises on every backend. Each model below hides part of
+# its structure in a `param_source` network rather than writing it as
+# a program whose steps are declared sites.
 # The targets that reduce an ungrouped `marginalize` row by row
 # refuse it rather than emit it. An ungrouped block shares one latent
 # across the body's rows, so its density accumulates the rows and
@@ -197,7 +197,6 @@ for _scan_model in (
         _EXPECTED_TRANSPILE_RAISES[(_scan_backend, _scan_model)] = "scan:no-lowering"
 
 for _neural_model in (
-    "bnn",
     "deep_markov",
     "seq2seq",
     "transformer_lm",
@@ -240,15 +239,15 @@ _SKIP_DATASET_LOAD_FAILED: frozenset[str] = frozenset()
 # `test_oracle_reference_strength.py::test_composition_exemption_grounds_partition_the_registry`
 # requires them to cover this registry exactly once:
 #
-# 1. For `bidirectional_rnn_lm`, `deep_markov`, `seq2seq`,
-#    `transformer_lm`, and `vae` the joint is a property of the
+# 1. For `bidirectional_rnn_lm`, `deep_markov`, `seq2seq`, and
+#    `transformer_lm` the joint is a property of the
 #    quadrature rule rather than of the model, so it is the output of
 #    an estimator and there is no value a pin could hold. This is a
 #    measurement, not an inference from the shape of the program:
 #    forcing every `SampledComposition.n_intermediate` in the compiled
 #    module from its default 100 down to 23 and re-scoring the same
 #    six points moves the joint by 1.04 nats (`seq2seq`), 1.45
-#    (`deep_markov`), 12.97 (`vae`), 1.36e04 (`transformer_lm`) and
+#    (`deep_markov`), 1.36e04 (`transformer_lm`) and
 #    9.17e05 (`bidirectional_rnn_lm`) at the point each moves most.
 #    Two rules integrating the same kernel against the same data would
 #    return the same density; these return different numbers, and the
@@ -369,12 +368,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         16.414939880371094,
     ),
     "bnn": (
-        -412.09527587890625,
-        -412.09527587890625,
-        -433.6674499511719,
-        -431.0032653808594,
-        -412.09527587890625,
-        -416.7749938964844,
+        92.09696960449219,
+        48.172828674316406,
+        -266.59625244140625,
+        -614.60498046875,
+        -1252.4736328125,
+        -316.6635437011719,
     ),
     "changepoint": (
         -131.08474731445312,
@@ -577,12 +576,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -15819.671875,
     ),
     "vae": (
-        -41.807464599609375,
-        -42.399044036865234,
-        -42.460121154785156,
-        -42.049835205078125,
-        -42.313289642333984,
-        -42.44348907470703,
+        -4664.140625,
+        -4679.982421875,
+        -4722.1455078125,
+        -4720.44921875,
+        -4680.5263671875,
+        -4712.373046875,
     ),
 }
 

@@ -231,7 +231,6 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
 #    the mean. The transpiler raises rather than emit a meanless
 #    observation. Every syntax-check backend is affected.
 for _neural_example in (
-    "bnn",
     "deep_markov",
     "seq2seq",
     "transformer_lm",

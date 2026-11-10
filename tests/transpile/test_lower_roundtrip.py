@@ -115,7 +115,6 @@ GALLERY = _gallery_paths()
 #: same kind the renderers report for it.
 _EXPECTED_LOWER_REFUSAL: dict[str, str] = {
     "bidirectional_rnn_lm": "scan:no-lowering",
-    "bnn": "param-source:mlp",
     "deep_markov": "param-source:mlp",
     "gru_lm": "scan:no-lowering",
     "lstm_lm": "scan:no-lowering",
