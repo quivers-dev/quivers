@@ -1,32 +1,39 @@
 # Probabilistic Matrix Factorization
 #
-# A user-item latent-factor recommender model. Every user and
-# every item carries a K-dimensional latent vector, and the
-# expected rating is their inner product. In categorical form,
-# the two factor matrices are morphisms and the bilinear score
-# is the composite User -> Movie obtained by transposing U and
-# contracting along LatentDim.
+# A user-item latent-factor model for completing a sparse rating
+# matrix. Every user and every item carries a K-dimensional latent
+# vector with a Normal prior, and each observed rating is Normal
+# around the inner product of its user's and its item's vectors:
 #
-# Structural form:
+#   U[u]    ~ Normal(0, I_K)                    user factors
+#   V[m]    ~ Normal(0, I_K)                    item factors
+#   sigma   ~ HalfNormal(1)                     rating noise scale
+#   r_n     ~ Normal(U[u_n] . V[m_n], sigma)    observed rating n
 #
-#   U     : LatentDim -> User            user latent factors
-#   V     : LatentDim -> Movie           movie latent factors
-#   pmf   = U.dagger >> V                bilinear rating score
+# Only the observed (user, item) pairs are scored: the host data
+# user_idx and movie_idx give the user and item of each observed
+# rating, so the rows of the Rating plate are a sparse subset of
+# the User x Movie grid. The posterior over U and V predicts every
+# unobserved cell through the same inner product.
 #
-# The (u, m) entry of the resulting tensor is sum_k U[k, u] *
-# V[k, m], the canonical PMF rating mean. The `[role=latent]`
-# declarations create learned factor tensors but do not declare
-# probability distributions; the runnable fit on the page adds
-# Normal priors and a Normal observation model in Python.
-
-composition real [level=algebra]
+# Reference: [Salakhutdinov and Mnih 2007](https://papers.nips.cc/paper/2007/hash/d7322ed717dedf1eb4e6e52a37ea7bcd-Abstract.html).
 
 object LatentDim : FinSet 2
-object User, Movie : FinSet 8
+object User : FinSet 50
+object Movie : FinSet 40
+object Rating : FinSet 800
+object Val : Real 1
 
-morphism U : LatentDim -> User [role=latent]
-morphism V : LatentDim -> Movie [role=latent]
+program pmf : Rating -> Val
+    sample sigma <- HalfNormal(scale=1.0)
+    sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]
+    sample V : Movie <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Movie]
 
-define pmf = U.dagger >> V
+    let u_row = U[user_idx]
+    let v_row = V[movie_idx]
+    let score = sum(u_row * v_row)
+
+    observe r : Rating <- Normal(loc=score, scale=sigma)
+    return r
 
 export pmf
