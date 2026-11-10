@@ -17,34 +17,29 @@
 #   fwd_comp  : X/Y, Y/Z  |- X/Z      forward composition
 #   bwd_comp  : Y\Z, X\Y  |- X\Z      backward composition
 #
+# Fwd(X, Y) is X/Y and Bwd(X, Y) is X\Y: the result comes first
+# and the slash direction says where the argument is sought.
+#
+# The lexicon is chosen so that each rule is needed by some
+# sentence. Application alone derives "the dog runs". The object
+# relative "the dog whom Mary saw runs" needs forward composition:
+# the type-raised subject Mary : S/(S\NP) composes with
+# saw : (S\NP)/NP into S/NP, the argument whom : (N\N)/(S/NP)
+# seeks. The subject relative "the dog that runs today barks"
+# needs backward composition: runs : S\NP composes with the
+# sentence modifier today : S\S into S\NP, the argument
+# that : (N\N)/(S\NP) seeks.
+#
 # Pattern variables are single-uppercase identifiers (X, Y, Z,
 # I, J, K); every other identifier appearing in a rule pattern
 # must be listed in the atoms block.
 
 object Term : FinSet 16
 
-object Rule : FinSet 16
-
-object Weight : Real 1
-
-# Probabilistic model for transpilation: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program custom_rules_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export custom_rules_prior
+object LogWeight : Real 1
 
 deduction AB : Term -> Term [semiring=LogProb, start=S, depth=6]
-    atoms S, NP, N, VP, PP, Fwd, Bwd, span, the, dog, runs
+    atoms S, NP, N, Fwd, Bwd, span, the, dog, cat, mary, saw, runs, barks, whom, that, today
     rule fwd_app : span(I, K, Fwd(X, Y)), span(K, J, Y) |- span(I, J, X) #[learnable]
     rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]
     rule fwd_comp : span(I, K, Fwd(X, Y)), span(K, J, Fwd(Y, Z)) |- span(I, J, Fwd(X, Z)) #[learnable]
@@ -52,12 +47,32 @@ deduction AB : Term -> Term [semiring=LogProb, start=S, depth=6]
     lexicon
         "the" : Fwd(NP, N) = the #[learnable]
         "dog" : N = dog #[learnable]
+        "cat" : N = cat #[learnable]
+        "Mary" : NP = mary #[learnable]
+        "Mary" : Fwd(S, Bwd(S, NP)) = mary #[learnable]
+        "saw" : Fwd(Bwd(S, NP), NP) = saw #[learnable]
         "runs" : Bwd(S, NP) = runs #[learnable]
+        "barks" : Bwd(S, NP) = barks #[learnable]
+        "whom" : Fwd(Bwd(N, N), Fwd(S, NP)) = whom #[learnable]
+        "that" : Fwd(Bwd(N, N), Bwd(S, NP)) = that #[learnable]
+        "today" : Bwd(S, S) = today #[learnable]
+
+# The grammar's contribution to a probabilistic program: parsing an
+# observed sentence and scoring the chart's goal weight adds the
+# inside log-weight log Z(s), summed over every derivation of S, to
+# the program's log-joint. The program returns that one real number,
+# so its codomain is LogWeight : Real 1.
+program score_sentence : Term -> LogWeight
+    let chart = parse(AB, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export score_sentence
 ```
 
 ## Overview
 
-Every rule in a `deduction { … }` block is a sequent declared in the DSL itself; there are no built-in named rule schemas to import. This example defines an AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic composition over chart-spans `span(I, J, X)`. `Fwd(X, Y)` is the forward-slash constructor `X/Y`; `Bwd(X, Y)` is the backward-slash constructor `X\Y`.
+Every rule in a `deduction { … }` block is a sequent declared in the DSL itself; there are no built-in named rule schemas to import. This example defines an AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic composition over chart-spans `span(I, J, X)`. `Fwd(X, Y)` is the forward-slash constructor `X/Y`; `Bwd(X, Y)` is the backward-slash constructor `X\Y`. The lexicon is chosen so that each of the four rules is needed by at least one sentence, and the page checks this by deleting each rule in turn.
 
 ## Understanding the model
 
@@ -67,27 +82,49 @@ and category variables in forward application must agree, giving
 `span(0, 2, NP)`. This agreement is unification: different occurrences of one
 variable receive one value within that rule firing.
 
+Application suffices for `the dog runs`. Composition earns its place when a
+constituent is missing an argument at its edge. In the object relative
+`the dog whom Mary saw runs`, the clause `Mary saw` lacks its object, and
+`whom : (N\N)/(S/NP)` asks for exactly such a clause. Forward composition
+builds it: the type-raised subject `Mary : S/(S\NP)` composes with
+`saw : (S\NP)/NP` into `S/NP`. In the subject relative
+`the dog that runs today barks`, `that : (N\N)/(S\NP)` asks for a verb phrase,
+and backward composition of `runs : S\NP` with the sentence modifier
+`today : S\S` supplies the verb phrase `runs today : S\NP`.
+
 An [agenda](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) records newly derived entries and tries rules that can use them.
 Weights say how to combine evidence along a derivation and across alternatives.
 Changing the rule changes what can be derived; changing the [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) changes
 what is accumulated about those derivations. Keep those two choices separate
 when interpreting the returned goal weight.
 
+The goal weight $Z(s)$ is a sum of exponentiated derivation weights, not a
+probability. Over the finitely many strings of a fixed length $n$ it
+normalizes into the *length-conditional distribution*
+$P(s \mid n) = Z(s) / \sum_{|s'| = n} Z(s')$, which is the model the fit below
+recovers.
+
 ## Walkthrough
 
-`object Term : FinSet 16` is the index the deduction's domain and codomain range over; its cardinality is incidental, since rules match constructor-tagged tuples symbolically. `object Rule : FinSet 16` indexes the rule-weight vector instead, and the `custom_rules_prior` program puts an independent `Normal(0.0, 1.0)` on each of its coordinates. Here the `Normal` family makes each indexed coordinate real-valued. The program returns one real-valued weight, so its codomain is `object Weight : Real 1`. The count model uses each exponentiated weight as a Poisson rate and observes one `rule_counts` value per rule.
+`object Term : FinSet 16` is the index the deduction's domain and codomain range over; its cardinality is incidental, since rules match constructor-tagged tuples symbolically.
 
-`atoms NAME, NAME, …` lists every identifier the rules may match literally. Category atoms (`S`, `NP`, `N`, `VP`, `PP`), slash constructors (`Fwd`, `Bwd`), and the chart-item constructor (`span`) are atoms. Identifiers that appear in a rule pattern but are *not* listed in `atoms` are pattern variables; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`).
+`atoms NAME, NAME, …` lists every identifier the rules may match literally. Category atoms (`S`, `NP`, `N`), slash constructors (`Fwd`, `Bwd`), the chart-item constructor (`span`), and the lexical logical-form constants are atoms. Identifiers that appear in a rule pattern but are *not* listed in `atoms` are pattern variables; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`). A pattern variable must not reuse an atom's spelling: had a rule written a position as `N`, it would match the noun category literally.
 
-Each rule's body is a sequent: comma-separated premises on the left of `|-`, a single conclusion on the right. The premise multiplicity determines whether the rule fires on a single chart cell (unary) or on a pair of adjacent cells (binary).
+Each rule's body is a sequent: comma-separated premises on the left of `|-`, a single conclusion on the right. The premise multiplicity determines whether the rule fires on a single chart cell (unary) or on several cells (binary and higher).
 
 A variable appearing multiple times in the same rule unifies across occurrences: in `fwd_app`, the `Y` in the first premise must match the `Y` in the second premise. Different rules instantiate independently.
+
+Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the full binding of its pattern variables, the span positions `I`, `J`, `K` as well as the categories `X`, `Y`, `Z` ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Two firings of `fwd_app` at different positions thus carry different weights.
+
+The `score_sentence` program connects the grammar to a probabilistic program: `parse(AB, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
 
 ## DSL features
 
 - **`rule NAME : premises |- conclusion`**: a sequent rule. Arbitrary-arity premise lists are supported; the compiler dispatches to the appropriate chart-cell shape.
 - **Pattern variables vs atoms**: single-uppercase identifiers bind as wildcards; every other identifier in a rule pattern must appear in the `atoms` list.
 - **Constructor applications in patterns**: `Fwd(X, Y)`, `Bwd(X, Y)`, `span(I, J, X)` are patterns whose head is an atom and whose arguments are nested patterns. Matching is structural and unification-based.
+- **Several entries per word**: `Mary` is listed twice, as `NP` and as the type-raised `S/(S\NP)`; the lexicon injects one axiom per entry, and the chart sums over both.
+- **`parse(D, sentence)` in a program**: a program body can run a deduction and score its goal weight.
 
 ## Pattern Matching and Unification
 
@@ -96,16 +133,27 @@ The compiler uses first-order pattern matching with occurs-checking-free unifica
 - **Variables** (`X`, `Y`, `Z`): metavariables that match any concrete subterm. Repeated occurrences within a rule must unify.
 - **Constructor patterns** (`Fwd(X, Y)`): match constructor-application items whose head is the same atom and whose children unify.
 
-The agenda fires each rule at every chart cell (unary) or every pair of adjacent cells (binary) whose categories unify with the rule's premises; the conclusion item is then inserted into the chart under the rule's weight.
+The agenda fires each rule at every chart cell (unary) or every combination of cells (binary and higher) whose items unify with the rule's premises; the conclusion item is then inserted into the chart under the rule's weight.
 
 ## Extending the Rule Set
 
-Additional combinators are spelled out as more sequent rules in the same block:
+Additional combinators are spelled out as more sequent rules in the same block. Every variable in a conclusion must be bound by a premise, because the chart holds only ground items. General type-raising, `span(I, J, X) |- span(I, J, Fwd(Y, Bwd(Y, X)))`, leaves the result category `Y` free, and the compiler rejects it with `rule 'type_raise' concludes with 'Y', which no premise binds`. Fixing the raised-over category makes the rule well formed. Subject type-raising to `S/(S\NP)`, the category `Mary` carries lexically above, compiles and fires:
 
-- **Type-raising** (unary): `rule type_raise : span(I, J, X) |- span(I, J, Fwd(Y, Bwd(Y, X)))`, note that introducing a fresh wildcard like `Y` in the conclusion requires either an `axioms = …` source or a downstream rule that pins it down.
-- **Restricted composition**: `rule restricted_comp : span(I, K, Fwd(X, Y)), span(K, J, Fwd(Y, NP)) |- span(I, J, Fwd(X, NP))`, by replacing the third wildcard with the literal `NP` atom we constrain when the rule fires.
+```qvr
+object Term : FinSet 16
 
-Rule premise multiplicity is unary or binary; combinators that need three or more premises are expressed as a chain of binary rules sharing intermediate categories.
+deduction Raised : Term -> Term [semiring=LogProb, start=S, depth=6]
+    atoms S, NP, N, Fwd, Bwd, span, the, dog, runs
+    rule fwd_app : span(I, K, Fwd(X, Y)), span(K, J, Y) |- span(I, J, X)
+    rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X)
+    rule subject_raise : span(I, J, NP) |- span(I, J, Fwd(S, Bwd(S, NP)))
+    lexicon
+        "the" : Fwd(NP, N) = the
+        "dog" : N = dog
+        "runs" : Bwd(S, NP) = runs
+```
+
+With `subject_raise`, `the dog runs` has two derivations, one by backward application and one by forward application of the raised subject, so its goal weight is $\log 2$ with every weight at zero. Literal atoms in a pattern restrict a rule in the same way: `span(I, K, Fwd(X, Y)), span(K, J, Fwd(Y, NP)) |- span(I, J, Fwd(X, NP))` is forward composition limited to functors whose argument is `NP`.
 
 ## Try it
 
@@ -114,110 +162,127 @@ exposes a real `nn.Parameter` on the compiled
 [`DeductionSystem`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem). The
 system is callable: `ded(sentence)` returns a
 [`ChartView`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView) whose
-`goal_weight()` is the differentiable log-marginal
+`goal_weight()` is the differentiable log-weight
 $\log Z(s; \mathbf{w}) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$
 summed over every derivation $d$ that the start symbol licenses for
-the input. Fitting the lexicon and rule weights together is then a
-regression-style problem: minimise $-\sum_n \log Z(s_n)$ over a
-corpus of sentences. The
-[`quivers.stochastic.deduction`](../api/stochastic/deduction.md) module provides
-the fitting utilities used below.
+the input.
 
-### Generating synthetic data
+### Each rule is needed
 
-The `custom_rules_prior` program is a standalone Bayesian model over the same
-rule weights. Each rule draws one log-weight from a unit Normal;
-exponentiating that weight gives the rate at which the rule fires, and
-a treebank reports the count. Drawing the weights from their own prior
-and the counts from those weights keeps the synthetic point
-self-consistent, so a fit has a ground truth to recover.
+Removing a rule from the compiled system and reparsing shows which sentences
+depend on it. Each sentence below parses with the full rule set and fails
+without the rule it is meant to exercise.
 
 ```python
+import dataclasses
+
 import torch
 from quivers.dsl import load
 
-torch.manual_seed(0)
 prog = load("docs/examples/source/custom_rules.qvr")
-model = prog.morphism
+ded = prog.deductions["AB"]
 
-N_RULES = 16
-true_rule_weights = torch.randn(N_RULES)
-rule_counts = torch.poisson(torch.exp(true_rule_weights))
 
-observations = {"rule_counts": rule_counts}
-x_in = torch.zeros(N_RULES, 1)
-```
+def parses(system, sentence):
+    return bool(torch.isfinite(system(sentence.split()).goal_weight()))
 
-### MAP fit (Adam on rule & lexicon weights)
 
-```python
-import torch
-from quivers.dsl import load
-from quivers.stochastic.deduction import adam_fit_deduction, sample_corpus
+def without(system, rule_name):
+    rules = tuple(rule for rule in system.rules if rule.name != rule_name)
+    assert len(rules) == len(system.rules) - 1
+    return dataclasses.replace(system, rules=rules)
 
-torch.manual_seed(0)
-prog = load("docs/examples/source/custom_rules.qvr")
-ded  = prog.deductions["AB"]
 
-corpus = [["the", "dog", "runs"]] * 4
-
-history = adam_fit_deduction(
-    ded, corpus, steps=300, lr=5e-2, prior_scale=1.0,
-)
-print(f"loss: {history[0]:.2f} → {history[-1]:.2f}")  # strictly decreasing
-
-# Forward-sample under the fitted parameters and check the
-# dominant length-3 yield recovers the training corpus.
-draws = sample_corpus(ded, length=3, n_samples=32, seed=0)
-print("dominant yield:", max(set(map(tuple, draws)), key=draws.count))
-# → ("the dog runs",)
-```
-
-`adam_fit_deduction` maximizes the corpus log-marginal under an
-optional Normal prior on the parameters; `prior_scale=1.0` gives MAP
-under a unit Normal. `sample_corpus` enumerates yields of the chosen
-length and draws from the categorical defined by their chart weights; exact forward sampling because the chart marginalizes the
-derivation forest.
-
-### NUTS (full Bayesian posterior)
-
-```python
-import torch
-from quivers.dsl import load
-from quivers.inference import MCMC, NUTSKernel
-from quivers.stochastic.deduction import nuts_program_from_deduction
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/custom_rules.qvr")
-ded  = prog.deductions["AB"]
-
-corpus = [["the", "dog", "runs"]] * 4
-
-model, x, observations = nuts_program_from_deduction(
-    ded, corpus, prior_scale=1.0,
-)
-
-kernel = NUTSKernel(step_size=0.1, max_tree_depth=4, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=50, num_samples=50, num_chains=2)
-result = mc.run(model, x, observations)
-
-print("acceptance:", float(result.acceptance_rates.mean()))
-print("divergences:", int(result.divergence_counts.sum()))
-posterior_means = {
-    name: float(samples.mean()) for name, samples in result.samples.items()
+needs = {
+    "fwd_app": "the dog runs",
+    "bwd_app": "the dog runs",
+    "fwd_comp": "the dog whom Mary saw runs",
+    "bwd_comp": "the dog that runs today barks",
 }
-print("posterior mean log-weights:", posterior_means)
+for rule_name, sentence in needs.items():
+    assert parses(ded, sentence), sentence
+    assert not parses(without(ded, rule_name), sentence), (rule_name, sentence)
+    print(f"{rule_name:9s} is needed for {sentence!r}")
 ```
 
-`nuts_program_from_deduction` lifts every learnable parameter of the
-deduction into a [`Normal(0, σ)`](../api/continuous/families.md) sample
-site and adds the corpus log-marginal $\log Z$ to the joint via a
-[`score`](../api/program.md) step. The standard
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) drives the
-posterior $p(\mathbf{w} \mid s_1, \ldots, s_N) \propto p(\mathbf{w})
-\cdot \prod_n Z(s_n; \mathbf{w})$. The same Bayesian object
-[`bayesian_regression`](bayesian-regression.md) fits, with the chart
-total in place of the Gaussian likelihood.
+### Recovering a length-conditional distribution
+
+A copy of the grammar with every weight drawn from a unit Normal serves as the
+ground truth. [`sample_corpus`](../api/stochastic/deduction/sample.md#quivers.stochastic.deduction.sample.sample_corpus) draws 2,000
+three-word sentences from its length-conditional distribution, enumerating
+every string over the vocabulary and sampling in proportion to $Z(s)$. A
+freshly loaded copy, with every weight at zero, is then fit by maximizing the
+same length-conditional log-likelihood. The denominator needs only the
+strings that parse at all, and whether a string parses does not depend on the
+weights, so the grammatical strings are enumerated once.
+
+```python
+import itertools
+
+from quivers.stochastic.deduction import sample_corpus
+
+torch.manual_seed(0)
+VOCAB = ["the", "dog", "cat", "Mary", "saw", "runs", "barks", "whom", "that", "today"]
+truth = load("docs/examples/source/custom_rules.qvr").deductions["AB"]
+model = load("docs/examples/source/custom_rules.qvr").deductions["AB"]
+
+strings = [
+    list(words)
+    for words in itertools.product(VOCAB, repeat=3)
+    if parses(truth, " ".join(words))
+]
+print(len(strings), "grammatical three-word strings")
+
+
+def log_conditional(system):
+    """log P(s | n = 3) for every grammatical three-word string."""
+    scores = torch.stack([system(s).goal_weight() for s in strings])
+    return scores - torch.logsumexp(scores, dim=0)
+
+
+def kl(log_p, log_q):
+    return float((log_p.exp() * (log_p - log_q)).sum())
+
+
+# Parsing every string once allocates every weight either system uses.
+for s in strings:
+    truth(s).goal_weight()
+    model(s).goal_weight()
+with torch.no_grad():
+    for p in truth.parameters():
+        p.normal_(0.0, 1.0)
+    true_log_p = log_conditional(truth)
+
+corpus = sample_corpus(truth, length=3, n_samples=2000, seed=0)
+index = {tuple(s): i for i, s in enumerate(strings)}
+counts = torch.bincount(
+    torch.tensor([index[tuple(s)] for s in corpus]), minlength=len(strings)
+).float()
+
+with torch.no_grad():
+    kl_initial = kl(true_log_p, log_conditional(model))
+opt = torch.optim.Adam(list(model.parameters()), lr=5e-2)
+for _ in range(200):
+    opt.zero_grad()
+    loss = -(counts * log_conditional(model)).sum() / counts.sum()
+    loss.backward()
+    opt.step()
+with torch.no_grad():
+    kl_fitted = kl(true_log_p, log_conditional(model))
+
+print(f"KL(true || initial) = {kl_initial:.4f}")
+print(f"KL(true || fitted)  = {kl_fitted:.4f}")
+assert kl_fitted < 0.05 and kl_fitted < 0.25 * kl_initial
+```
+
+Seven three-word strings parse, and two of them use composition:
+`Mary saw Mary` has one derivation through forward composition of the raised
+subject with `saw`, and `Mary runs today` two through backward composition of
+`runs` with `today`. With 2,000 draws over seven outcomes, the sampling error
+of the maximum-likelihood fit is near $6 / (2 \cdot 2000) = 0.0015$ nats, so a
+divergence below 0.05 indicates that the fit has recovered the distribution.
+The weights themselves are not identifiable: several bindings can trade mass
+along one derivation, so the check is on the distribution over strings.
 
 ## Categorical perspective
 

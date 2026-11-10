@@ -12,34 +12,29 @@
 #   fwd_comp  : X/Y, Y/Z  |- X/Z      forward composition
 #   bwd_comp  : Y\Z, X\Y  |- X\Z      backward composition
 #
+# Fwd(X, Y) is X/Y and Bwd(X, Y) is X\Y: the result comes first
+# and the slash direction says where the argument is sought.
+#
+# The lexicon is chosen so that each rule is needed by some
+# sentence. Application alone derives "the dog runs". The object
+# relative "the dog whom Mary saw runs" needs forward composition:
+# the type-raised subject Mary : S/(S\NP) composes with
+# saw : (S\NP)/NP into S/NP, the argument whom : (N\N)/(S/NP)
+# seeks. The subject relative "the dog that runs today barks"
+# needs backward composition: runs : S\NP composes with the
+# sentence modifier today : S\S into S\NP, the argument
+# that : (N\N)/(S\NP) seeks.
+#
 # Pattern variables are single-uppercase identifiers (X, Y, Z,
 # I, J, K); every other identifier appearing in a rule pattern
 # must be listed in the atoms block.
 
 object Term : FinSet 16
 
-object Rule : FinSet 16
-
-object Weight : Real 1
-
-# Probabilistic surface for transpile: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program custom_rules_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export custom_rules_prior
+object LogWeight : Real 1
 
 deduction AB : Term -> Term [semiring=LogProb, start=S, depth=6]
-    atoms S, NP, N, VP, PP, Fwd, Bwd, span, the, dog, runs
+    atoms S, NP, N, Fwd, Bwd, span, the, dog, cat, mary, saw, runs, barks, whom, that, today
     rule fwd_app : span(I, K, Fwd(X, Y)), span(K, J, Y) |- span(I, J, X) #[learnable]
     rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]
     rule fwd_comp : span(I, K, Fwd(X, Y)), span(K, J, Fwd(Y, Z)) |- span(I, J, Fwd(X, Z)) #[learnable]
@@ -47,4 +42,24 @@ deduction AB : Term -> Term [semiring=LogProb, start=S, depth=6]
     lexicon
         "the" : Fwd(NP, N) = the #[learnable]
         "dog" : N = dog #[learnable]
+        "cat" : N = cat #[learnable]
+        "Mary" : NP = mary #[learnable]
+        "Mary" : Fwd(S, Bwd(S, NP)) = mary #[learnable]
+        "saw" : Fwd(Bwd(S, NP), NP) = saw #[learnable]
         "runs" : Bwd(S, NP) = runs #[learnable]
+        "barks" : Bwd(S, NP) = barks #[learnable]
+        "whom" : Fwd(Bwd(N, N), Fwd(S, NP)) = whom #[learnable]
+        "that" : Fwd(Bwd(N, N), Bwd(S, NP)) = that #[learnable]
+        "today" : Bwd(S, S) = today #[learnable]
+
+# The grammar's contribution to a probabilistic program: parsing an
+# observed sentence and scoring the chart's goal weight adds the
+# inside log-weight log Z(s), summed over every derivation of S, to
+# the program's log-joint. The program returns that one real number,
+# so its codomain is LogWeight : Real 1.
+program score_sentence : Term -> LogWeight
+    let chart = parse(AB, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export score_sentence
