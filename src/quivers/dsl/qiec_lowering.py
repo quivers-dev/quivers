@@ -54,6 +54,8 @@ from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl.structural_elaboration import _StructuralElaboration
 from quivers.dsl.program_elaboration import (
     ObjectInfo,
+    _extent,
+    _fixed_extent,
     _object_expr_info,
     _ProgramElaboration,
     _ProgramState,
@@ -3956,7 +3958,15 @@ class _Elaborator(
                     code="qiec-primitive",
                 )
             binder = binders[0]
-            extent = self._factor_extent(binder, authored)
+            extent = _fixed_extent(self._factor_extent(binder, authored))
+            if extent is None:
+                self._fail(
+                    authored,
+                    f"a case-structured factor needs a fixed extent, but binder "
+                    f"{binder.var!r} ranges over the object parameter "
+                    f"{getattr(binder.index, 'name', binder.index.kind)!r}",
+                    code="qiec-primitive",
+                )
             labels = sorted(case.label for case in authored.cases)
             if labels != list(range(extent)):
                 self._fail(
@@ -4006,20 +4016,20 @@ class _Elaborator(
         )
         value_type = self._value_type(value, body_context, authored.body)
         for binder, local in reversed(list(zip(binders, locals_, strict=True))):
-            extent = self._factor_extent(binder, authored)
+            extent = _extent(self._factor_extent(binder, authored))
             inner_shape = tensor_shape(value_type)
             result = (
-                tensor_type(value_type, (IndexLiteral(extent, NAT),))
+                tensor_type(value_type, (extent,))
                 if inner_shape is None
-                else tensor_type(
-                    inner_shape[0], (IndexLiteral(extent, NAT), *inner_shape[1])
-                )
+                else tensor_type(inner_shape[0], (extent, *inner_shape[1]))
             )
-            value = Comprehension(local, IndexLiteral(extent, NAT), value, result)
+            value = Comprehension(local, extent, value, result)
             value_type = result
         return value
 
-    def _factor_extent(self, binder: surface.LetFactorBinder, authored: object) -> int:
+    def _factor_extent(
+        self, binder: surface.LetFactorBinder, authored: object
+    ) -> int | IndexVariable:
         """The extent of a factor binder's axis.
 
         Parameters
@@ -4031,13 +4041,14 @@ class _Elaborator(
 
         Returns
         -------
-        int
-            The axis's static extent.
+        int | IndexVariable
+            The axis's cardinality, or the index variable a program
+            template binds for an object parameter's size.
 
         Raises
         ------
         QiecDiagnosticError
-            If the axis names no object with a static extent.
+            If the axis names no object with a known extent.
         """
         index = binder.index
         if isinstance(index, surface.TypeName) and index.name.isdigit():

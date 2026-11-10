@@ -38,7 +38,10 @@ A weighted deduction system becomes a search computation whose weights are
 interpreted in the declared semiring. For a span grammar, elaboration creates:
 
 1. an item family with constructors for atoms, applied symbols, and positions;
-2. a recursive derive computation that chooses axioms or applicable rules;
+2. a recursive derive computation that chooses axioms or applicable rules,
+   recurring on smaller spans (or smaller yields, for items with several spans),
+   with a closure computation for unary rules and, when `depth` is declared, a
+   depth computation that bounds each conclusion's category;
 3. structural equality and display computations for items;
 4. a `Search` instance for alternatives;
 5. a `Weight[K]` instance for rule and lexical contributions;

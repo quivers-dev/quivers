@@ -28,19 +28,23 @@ row for the run to serve.
 A system whose rules all relate ``span`` items enumerates by span: the
 derivation of ``span(i, j, ...)`` chooses split positions for the
 premise positions the conclusion leaves free and derives each premise
-over its own span, so the search is bounded by the sentence, and only a
-unary rule, which keeps the span, needs the declaration's ``depth``
-option to bound it. A system with a lexicon whose items are not all
+over its own smaller span, so the search is bounded by the sentence.
+Unary rules, which keep the span, extend a derived item in chains; when
+a chain could revisit an item, the chain carries the items it visited,
+a bound limits how often it may revisit one, and the entry raises the
+bound until the goal's weight settles within the declared
+``tolerance``, as the chart's Kleene-star aggregation settles. The
+``depth`` option bounds the constructor depth of every rule's
+conclusion category, as the agenda engine's side condition does, and
+never the number of rules a derivation applies. A system with a lexicon whose items are not all
 spans, such as a multiple context-free grammar, derives an item from its
 head symbol and the positions of its yield, read in pairs as the
 components the item covers: its rules must be linear, each conclusion
 component a concatenation of premise components, so a rule with several
 premises derives each over fewer tokens, and its unary rules must form
 no cycle. Any other system takes its axioms and their weights as input
-and enumerates derivations of any item to the depth the option
-declares, or to the number of axioms and rules together without one.
-The agenda engine tabulates the same derivations; the two agree on
-every system whose derivations of the goal fit the bound.
+and enumerates derivations of any item to a height of its axioms and
+rules together. The agenda engine tabulates the same derivations.
 """
 
 from __future__ import annotations
@@ -81,6 +85,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.compiler._options import (
     find_option,
     get_option_flag,
+    get_option_float,
     get_option_name,
 )
 from quivers.dsl.compiler._deduction_positions import (
@@ -382,6 +387,8 @@ class _System:
         For a schema parser, its finite category algebra.
     schema_words
         For a schema parser, its vocabulary.
+    tolerance
+        The declared convergence tolerance, zero without one.
     heads
         For a yield-directed system, the head symbols of its items, in
         the order its derivation numbers them.
@@ -389,13 +396,21 @@ class _System:
         For a yield-directed system, the indices of the rules that can
         fire: those without a premise that has no positions.
     closure
-        The indices of the unary rules.
+        The indices of the unary rules, which a span-shaped system
+        applies in chains over one derived item.
     cyclic
-        Whether a chain of unary rules may revisit an item.
+        Whether a chain of unary rules may revisit an item, so a
+        span-shaped search bounds how often a chain repeats an item and
+        iterates that bound to convergence.
     family
         The item family, once declared.
     constructors
         The item family's constructors, by symbol.
+    chain_family
+        For a cyclic system, the family of the item chains the unary
+        closure carries.
+    chain_constructors
+        The chain family's ``nil`` and ``cons`` constructors.
     choice
         The ``Search`` instance.
     weight
@@ -417,12 +432,15 @@ class _System:
     span_fuel_factor: int = 0
     schema_categories: tuple[Pattern, ...] = ()
     schema_words: tuple[str, ...] = ()
+    tolerance: float = 0.0
     heads: list[str] = field(default_factory=list)
     live: list[int] = field(default_factory=list)
     closure: list[int] = field(default_factory=list)
     cyclic: bool = False
     family: FamilyDecl | None = None
     constructors: dict[str, ConstructorDecl] = field(default_factory=dict)
+    chain_family: FamilyDecl | None = None
+    chain_constructors: dict[str, ConstructorDecl] = field(default_factory=dict)
     choice: NamedEffectInstance | None = None
     weight: NamedEffectInstance | None = None
     fresh: int = 0
@@ -438,6 +456,40 @@ class _System:
             relate spans, such as a multiple context-free grammar.
         """
         return bool(self.entries) and not self.span_shaped
+
+    @property
+    def closes(self) -> bool:
+        """Whether derivations apply unary rules as chains over a derived item.
+
+        Returns
+        -------
+        bool
+            ``True`` for a span-shaped lexical system with a unary rule.
+        """
+        return self.span_shaped and not self.schema_categories and bool(self.closure)
+
+    @property
+    def chained(self) -> bool:
+        """Whether the unary closure carries the chain of items it visited.
+
+        Returns
+        -------
+        bool
+            ``True`` when the closure may revisit an item.
+        """
+        return self.closes and self.cyclic
+
+    @property
+    def chain(self) -> TypeApplication:
+        """The chain family applied.
+
+        Returns
+        -------
+        TypeApplication
+            The type of the item chains a cyclic closure carries.
+        """
+        assert self.chain_family is not None
+        return TypeApplication(self.chain_family.type_constructor, ())
 
     @property
     def carrier(self) -> TypeExpr:
@@ -971,6 +1023,8 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            if system.chained:
+                self._declare_chain_family(system)
             self._declare_deduction_instances(system)
             self._deductions[declaration.name] = system
 
@@ -1438,20 +1492,34 @@ class _DeductionElaboration:
             for rule in system.rules
             for pattern in (*rule.premises, rule.conclusion)
         )
+        tolerance = get_option_float(
+            declaration.options, "tolerance", line=declaration.line, col=declaration.col
+        )
+        system.tolerance = float(tolerance) if tolerance is not None else 0.0
         system.closure = [
             index for index, rule in enumerate(system.rules) if len(rule.premises) == 1
         ]
         system.cyclic = _may_cycle(system)
         if system.by_yield:
             self._read_heads(system)
-        unary = any(len(rule.premises) == 1 for rule in system.rules)
-        if system.depth is None and unary and system.span_shaped:
-            self._fail(
-                declaration,
-                f"deduction {declaration.name!r} has a unary rule, so its "
-                "derivations over one span need a depth option to bound them",
-                code="qiec-program",
-            )
+        if system.span_shaped:
+            for rule in system.rules:
+                conclusion = rule.conclusion
+                assert isinstance(conclusion, _App)
+                whole = (conclusion.args[0], conclusion.args[1])
+                if len(rule.premises) > 1 and any(
+                    isinstance(premise, _App)
+                    and (premise.args[0], premise.args[1]) == whole
+                    for premise in rule.premises
+                ):
+                    self._fail(
+                        rule.source,
+                        f"rule {rule.source.name!r} has a premise over its "
+                        "conclusion's whole span beside other premises; the "
+                        "search derives such a premise over the same span it "
+                        "is deriving, which nothing bounds",
+                        code="qiec-program",
+                    )
         return system
 
     def _read_heads(self: _Elaborator, system: _System) -> None:
@@ -2004,6 +2072,49 @@ class _DeductionElaboration:
             for head in system.heads
         )
 
+    def _declare_chain_family(self: _Elaborator, system: _System) -> None:
+        """Declare the family of item chains a cyclic closure carries.
+
+        A chain is ``nil`` or ``cons(item, chain)``: the items a chain of
+        unary rules has visited, most recent first, against which each
+        new conclusion is counted.
+
+        Parameters
+        ----------
+        system : _System
+            The system, whose item family is declared.
+        """
+        family_name = system.name("Chain")
+        family_id = FamilyId.derive(self.source.module_name, "family", family_name)
+        symbols = ("nil", "cons")
+        constructor_ids = tuple(
+            ConstructorId.derive(
+                family_id, "constructor", system.name(f"chain_{symbol}")
+            )
+            for symbol in symbols
+        )
+        family = FamilyDecl(family_id, family_name, (), (), constructor_ids)
+        system.chain_family = family
+        chain = TypeApplication(family.type_constructor, ())
+        self.families[family_name] = family
+        self.registry.register_family(family)
+        fields_of = {
+            "nil": (),
+            "cons": (FieldDef("head", system.item), FieldDef("tail", chain)),
+        }
+        for symbol, identity in zip(symbols, constructor_ids, strict=True):
+            constructor = ConstructorDecl(
+                identity,
+                family_id,
+                system.name(f"chain_{symbol}"),
+                (),
+                fields_of[symbol],
+                (),
+            )
+            system.chain_constructors[symbol] = constructor
+            self.constructors[constructor.name] = constructor
+            self.registry.register_constructor(constructor)
+
     def _declare_deduction_instances(self: _Elaborator, system: _System) -> None:
         """Allocate the deduction's search and weight instances.
 
@@ -2159,17 +2270,42 @@ class _DeductionElaboration:
                 item,
                 axiom_row,
             )
+            repeats: tuple[TypeExpr, ...] = (INT,) if system.chained else ()
             derive = declare(
                 system.name("derive"),
                 (extent,),
                 (INT, INT, INT, item, tokens_type)
                 if system.schema_categories
-                else (INT, INT, INT, tokens_type)
+                else (*repeats, INT, INT, tokens_type)
                 if system.span_shaped
                 else (INT, *([INT] * self._frame_width(system)), tokens_type),
                 item,
                 row,
             )
+            if system.closes:
+                declare(
+                    system.name("close"),
+                    (),
+                    (INT, system.chain, item) if system.chained else (item,),
+                    item,
+                    row,
+                )
+            if system.chained:
+                declare(system.name("count"), (), (item, system.chain), INT, pure)
+                declare(
+                    system.name("inside"),
+                    (extent,),
+                    (INT, tokens_type),
+                    carrier,
+                    outer,
+                )
+                declare(
+                    system.name("converge"),
+                    (extent,),
+                    (INT, carrier, tokens_type),
+                    carrier,
+                    outer,
+                )
             entry = declare(
                 system.name("run"), (extent,), (tokens_type,), carrier, outer
             )
@@ -2191,6 +2327,8 @@ class _DeductionElaboration:
                 carrier,
                 outer,
             )
+        if system.depth is not None:
+            declare(system.name("depth"), (), (item,), INT, pure)
         context = _Context(self, system, signatures, params, n)
         computations = [
             context.equality(eq),
@@ -2198,10 +2336,24 @@ class _DeductionElaboration:
             context.goal(goal),
             context.failure(failing),
         ]
+        if system.depth is not None:
+            computations.append(context.depth_measure(signatures[system.name("depth")]))
+        if system.chained:
+            computations.append(context.chain_count(signatures[system.name("count")]))
         if axiom is not None:
             computations.append(context.axiom(axiom))
         computations.append(context.derivation(derive))
-        computations.append(context.entry(entry, self._deduction_handlers(system)))
+        if system.closes:
+            computations.append(context.closure(signatures[system.name("close")]))
+        handlers = self._deduction_handlers(system)
+        if system.chained:
+            computations.append(
+                context.inside(signatures[system.name("inside")], handlers)
+            )
+            computations.append(
+                context.convergence(signatures[system.name("converge")])
+            )
+        computations.append(context.entry(entry, handlers))
         return computations
 
     def _deduction_handlers(
@@ -3255,12 +3407,21 @@ class _Context:
     def derivation(self, signature: ComputationSignature) -> NamedComputation:
         """Derive an item by one rule application or one axiom.
 
+        A span-shaped system derives the items over a span: an axiom
+        over a one-token span, or a rule with several premises whose
+        spans split the conclusion's at chosen positions, each premise
+        derived over its own smaller span; the unary rules then extend
+        the item by the closure. The recursion thus follows the
+        sentence, and only the closure, over one span, needs its own
+        bound. A system without a lexicon chooses an axiom or a rule
+        group and derives each premise with one less unit of fuel.
+
         Rules are grouped by the shape of their premises: the spans the
         premises cover relative to the conclusion's, or, without spans,
-        their number. A derivation chooses an axiom or a group, derives
-        the group's premises once, then chooses a rule of the group and
-        matches the premises against its patterns, so the sub-derivations
-        are shared by every rule of the same shape.
+        their number. A derivation derives the group's premises once,
+        then chooses a rule of the group and matches the premises
+        against its patterns, so the sub-derivations are shared by every
+        rule of the same shape.
 
         Parameters
         ----------
@@ -3279,16 +3440,22 @@ class _Context:
             return self.yield_derivation(signature)
         system = self.system
         item = system.item
-        fuel = Local("fuel", INT)
+        repeats: Local | None = None
         start = Local("start", INT)
         stop = Local("stop", INT)
-        spent = self.primitive("sub_int", Var(fuel), _int(1))
+        fuel = Local("fuel", INT)
         if system.span_shaped:
-            tokens = Local("tokens", signature.parameters[3])
-            parameters: tuple[Local, ...] = (fuel, start, stop, tokens)
+            repeats = Local("repeats", INT) if system.chained else None
+            tokens = Local("tokens", signature.parameters[-1])
+            parameters: tuple[Local, ...] = (
+                *((repeats,) if repeats is not None else ()),
+                start,
+                stop,
+                tokens,
+            )
 
             def recursion(low: Value, high: Value) -> Call:
-                """Derive an item over a sub-span with one less fuel.
+                """Derive an item over a sub-span.
 
                 Parameters
                 ----------
@@ -3302,7 +3469,8 @@ class _Context:
                 Call
                     The recursive call.
                 """
-                return self.call(signature.name, (spent, low, high, Var(tokens)))
+                prefix = (Var(repeats),) if repeats is not None else ()
+                return self.call(signature.name, (*prefix, low, high, Var(tokens)))
 
             axiom_alternative: Computation = If(
                 self.primitive(
@@ -3311,10 +3479,12 @@ class _Context:
                 self.call(system.name("axiom"), (Var(start), Var(tokens))),
                 self.fail(item, "derive", "lexical", "span"),
             )
+            groups = [group for group in self.rule_groups() if group.arity > 1]
         else:
             axioms = Local("axioms", signature.parameters[1])
             weights = Local("weights", signature.parameters[2])
             parameters = (fuel, axioms, weights)
+            spent = self.primitive("sub_int", Var(fuel), _int(1))
 
             def recursion(low: Value, high: Value) -> Call:
                 """Derive any item with one less fuel.
@@ -3334,23 +3504,10 @@ class _Context:
                 del low, high
                 return self.call(signature.name, (spent, Var(axioms), Var(weights)))
 
-            positions = self.system.local("k", INT)
             axiom_alternative = self.bind(
                 "chosen",
                 INT,
-                self.choose(
-                    Comprehension(
-                        positions,
-                        self.extent,
-                        Var(positions),
-                        tensor_type(INT, (self.extent,)),
-                    ),
-                    INT,
-                    self.extent,
-                    "derive",
-                    "axiom",
-                    "choose",
-                ),
+                self.choose_position("derive", "axiom", "choose"),
                 lambda chosen: Bind(
                     system.local("added", UNIT),
                     self.add_weight(
@@ -3362,7 +3519,7 @@ class _Context:
                     Return(Gather(Var(axioms), Var(chosen), item)),
                 ),
             )
-        groups = self.rule_groups()
+            groups = self.rule_groups()
         alternatives = TensorValue(
             tuple(_int(index) for index in range(-1, len(groups))),
             tensor_type(INT, (IndexLiteral(len(groups) + 1, NAT),)),
@@ -3405,23 +3562,10 @@ class _Context:
                 if not remaining:
                     return premises(0, chosen, [])
                 name = remaining[0]
-                index_local = system.local("k", INT)
                 return self.bind(
                     "split",
                     INT,
-                    self.choose(
-                        Comprehension(
-                            index_local,
-                            self.extent,
-                            Var(index_local),
-                            tensor_type(INT, (self.extent,)),
-                        ),
-                        INT,
-                        self.extent,
-                        *path,
-                        "position",
-                        name,
-                    ),
+                    self.choose_position(*path, "position", name),
                     lambda split: If(
                         self.primitive(
                             "and",
@@ -3432,6 +3576,26 @@ class _Context:
                         self.fail(item, *path, "position", name),
                     ),
                 )
+
+            def positions(index: int, chosen: dict[str, Local]) -> dict[str, Local]:
+                """The bindings a rule's position variables start from.
+
+                Parameters
+                ----------
+                index : int
+                    The rule's index.
+                chosen : dict[str, Local]
+                    The positions, by normalized name.
+
+                Returns
+                -------
+                dict[str, Local]
+                    Each position variable bound to its position.
+                """
+                return {
+                    name: chosen[normalized]
+                    for name, normalized in group.names[index].items()
+                }
 
             def premises(
                 position: int, chosen: dict[str, Local], derived: list[Local]
@@ -3453,7 +3617,13 @@ class _Context:
                     The derivations, innermost the rule choice.
                 """
                 if position == group.arity:
-                    return choose_rule(chosen, derived)
+                    return self.apply_group(
+                        group,
+                        derived,
+                        lambda index: positions(index, chosen),
+                        Return,
+                        *path,
+                    )
                 if system.span_shaped:
                     low, high = group.spans[position]
                     call = recursion(Var(chosen[low]), Var(chosen[high]))
@@ -3466,174 +3636,9 @@ class _Context:
                     lambda value: premises(position + 1, chosen, [*derived, value]),
                 )
 
-            def choose_rule(
-                chosen: dict[str, Local], derived: list[Local]
-            ) -> Computation:
-                """Choose a rule of the group and match the premises against it.
-
-                Parameters
-                ----------
-                chosen : dict[str, Local]
-                    The positions, by normalized name.
-                derived : list[Local]
-                    The derived premises.
-
-                Returns
-                -------
-                Computation
-                    The choice, each rule's match innermost.
-                """
-                if len(group.rules) == 1:
-                    return match_rule(group.rules[0], chosen, derived)
-                rule_alternatives = TensorValue(
-                    tuple(_int(index) for index in range(len(group.rules))),
-                    tensor_type(INT, (IndexLiteral(len(group.rules), NAT),)),
-                )
-
-                def dispatch(selected: Local, position: int) -> Computation:
-                    """Select the chosen rule by index.
-
-                    Parameters
-                    ----------
-                    selected : Local
-                        The chosen index.
-                    position : int
-                        The rule tested here.
-
-                    Returns
-                    -------
-                    Computation
-                        The chain of tests from this rule on.
-                    """
-                    if position == len(group.rules):
-                        return self.fail(item, *path, "rule", "none")
-                    return If(
-                        self.primitive("eq_int", Var(selected), _int(position)),
-                        match_rule(group.rules[position], chosen, derived),
-                        dispatch(selected, position + 1),
-                    )
-
-                return self.bind(
-                    "rule",
-                    INT,
-                    self.choose(
-                        rule_alternatives,
-                        INT,
-                        IndexLiteral(len(group.rules), NAT),
-                        *path,
-                        "rule",
-                    ),
-                    lambda selected: dispatch(selected, 0),
-                )
-
-            def match_rule(
-                entry: tuple[int, _Rule], chosen: dict[str, Local], derived: list[Local]
-            ) -> Computation:
-                """Match the derived premises against one rule's patterns.
-
-                Parameters
-                ----------
-                entry : tuple[int, _Rule]
-                    The rule and its index.
-                chosen : dict[str, Local]
-                    The positions, by normalized name.
-                derived : list[Local]
-                    The derived premises.
-
-                Returns
-                -------
-                Computation
-                    The matches, innermost the conclusion.
-                """
-                index, rule = entry
-                bindings: dict[str, Local] = {}
-                if system.span_shaped:
-                    for name, normalized in group.names[index].items():
-                        bindings[name] = (
-                            start
-                            if normalized == "L"
-                            else stop
-                            if normalized == "R"
-                            else chosen[normalized]
-                        )
-
-                def step(position: int, current: dict[str, Local]) -> Computation:
-                    """Match the premises from a position on.
-
-                    Parameters
-                    ----------
-                    position : int
-                        The next premise.
-                    current : dict[str, Local]
-                        The bindings so far.
-
-                    Returns
-                    -------
-                    Computation
-                        The match from that premise on.
-                    """
-                    if position == len(rule.premises):
-                        return conclude(index, rule, current)
-                    return self.match(
-                        derived[position],
-                        rule.premises[position],
-                        current,
-                        item,
-                        lambda extended: step(position + 1, extended),
-                        *path,
-                        "rule",
-                        index,
-                        "premise",
-                        position,
-                    )
-
-                return step(0, bindings)
-
+            if not system.span_shaped:
+                return premises(0, {}, [])
             return choose_positions(list(group.splits), {"L": start, "R": stop})
-
-        def conclude(index: int, rule: _Rule, current: dict[str, Local]) -> Computation:
-            """Instantiate a rule's conclusion, add its weight, answer.
-
-            Parameters
-            ----------
-            index : int
-                The rule's index.
-            rule : _Rule
-                The rule.
-            current : dict[str, Local]
-                The complete bindings.
-
-            Returns
-            -------
-            Computation
-                The conclusion.
-            """
-            answer = Return(self.instantiate(rule.conclusion, current))
-
-            def weighted(weight: Value) -> Computation:
-                """Add the weight, then answer.
-
-                Parameters
-                ----------
-                weight : Value
-                    The weight.
-
-                Returns
-                -------
-                Computation
-                    The sequence.
-                """
-                return Bind(
-                    system.local("added", UNIT),
-                    self.add_weight(weight, "derive", "rule", index, "weight"),
-                    answer,
-                )
-
-            if system.semiring not in ("LogProb", "Viterbi") or not (
-                rule.learnable or rule.parent is not None
-            ):
-                return weighted(self.weight_of(None))
-            return self.rule_weight(rule, index, current, weighted)
 
         def dispatch(chosen: Local, index: int) -> Computation:
             """Select the chosen alternative by index.
@@ -3658,26 +3663,36 @@ class _Context:
                 dispatch(chosen, index + 1),
             )
 
-        body = If(
-            self.primitive("le_int", Var(fuel), _int(0)),
-            self.fail(item, "derive", "fuel"),
-            self.bind(
-                "alternative",
+        base = self.bind(
+            "alternative",
+            INT,
+            self.choose(
+                alternatives,
                 INT,
-                self.choose(
-                    alternatives,
-                    INT,
-                    IndexLiteral(len(groups) + 1, NAT),
-                    "derive",
-                    "choose",
-                ),
-                lambda chosen: If(
-                    self.primitive("eq_int", Var(chosen), _int(-1)),
-                    axiom_alternative,
-                    dispatch(chosen, 0),
-                ),
+                IndexLiteral(len(groups) + 1, NAT),
+                "derive",
+                "choose",
+            ),
+            lambda chosen: If(
+                self.primitive("eq_int", Var(chosen), _int(-1)),
+                axiom_alternative,
+                dispatch(chosen, 0),
             ),
         )
+        if system.span_shaped:
+            body: Computation = If(
+                self.primitive("lt_int", Var(start), Var(stop)),
+                self.bind(
+                    "base", item, base, lambda found: self.closed(repeats, found)
+                ),
+                self.fail(item, "derive", "span"),
+            )
+        else:
+            body = If(
+                self.primitive("le_int", Var(fuel), _int(0)),
+                self.fail(item, "derive", "fuel"),
+                base,
+            )
         return self.computation(signature, parameters, body)
 
     def schema_derivation(self, signature: ComputationSignature) -> NamedComputation:
@@ -3916,6 +3931,52 @@ class _Context:
         """
         system = self.system
         conclusion = self.instantiate(rule.conclusion, bindings)
+        if system.depth is not None:
+            # The declared depth bounds the conclusion's category, as the
+            # agenda engine's side condition does; a deeper conclusion is
+            # not derived.
+            bound = system.depth
+            return self.bind(
+                "measured",
+                INT,
+                self.call(system.name("depth"), (conclusion,)),
+                lambda measured: If(
+                    self.primitive("le_int", Var(measured), _int(bound)),
+                    self.weighted_conclusion(index, rule, bindings, conclusion, then),
+                    self.fail(system.item, "derive", "rule", index, "depth"),
+                ),
+            )
+        return self.weighted_conclusion(index, rule, bindings, conclusion, then)
+
+    def weighted_conclusion(
+        self,
+        index: int,
+        rule: _Rule,
+        bindings: dict[str, Local],
+        conclusion: Value,
+        then: Callable[[Value], Computation],
+    ) -> Computation:
+        """Add a rule's weight, then continue with its conclusion.
+
+        Parameters
+        ----------
+        index : int
+            The rule's index.
+        rule : _Rule
+            The rule.
+        bindings : dict[str, Local]
+            The complete bindings.
+        conclusion : Value
+            The instantiated conclusion.
+        then : Callable[[Value], Computation]
+            What to run with the conclusion once its weight is added.
+
+        Returns
+        -------
+        Computation
+            The weighted conclusion.
+        """
+        system = self.system
 
         def weighted(weight: Value) -> Computation:
             """Add the weight, then continue.
@@ -3941,6 +4002,101 @@ class _Context:
         ):
             return weighted(self.weight_of(None))
         return self.rule_weight(rule, index, bindings, weighted)
+
+    def depth_measure(self, signature: ComputationSignature) -> NamedComputation:
+        """The constructor-tree depth of an item's category.
+
+        Atoms, bound variables, and positions have depth zero; a ``span``
+        has its category's depth; any other constructor adds one to the
+        deepest of its item fields. This is the agenda engine's measure,
+        which its ``depth`` side condition compares against the bound.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
+        system = self.system
+        item = Local("item", system.item)
+
+        def branch(symbol: str) -> Callable[[tuple[Local, ...]], Computation]:
+            """The depth of one constructor applied to its fields.
+
+            Parameters
+            ----------
+            symbol : str
+                The constructor's symbol.
+
+            Returns
+            -------
+            Callable[[tuple[Local, ...]], Computation]
+                The branch body builder.
+            """
+
+            def body(fields: tuple[Local, ...]) -> Computation:
+                """Measure the constructor's fields.
+
+                Parameters
+                ----------
+                fields : tuple[Local, ...]
+                    The fields.
+
+                Returns
+                -------
+                Computation
+                    The depth.
+                """
+                if symbol == SPAN:
+                    return self.call(signature.name, (Var(fields[2]),))
+                if symbol == BOUND:
+                    return Return(_int(0))
+                nested = [field for field in fields if field.type != INT]
+                if not fields:
+                    return Return(_int(0))
+
+                def deepest(position: int, most: Value) -> Computation:
+                    """Fold the item fields' depths into their maximum.
+
+                    Parameters
+                    ----------
+                    position : int
+                        The next item field.
+                    most : Value
+                        The deepest so far.
+
+                    Returns
+                    -------
+                    Computation
+                        One more than the maximum.
+                    """
+                    if position == len(nested):
+                        return Return(self.primitive("add_int", most, _int(1)))
+                    return self.bind(
+                        "inner",
+                        INT,
+                        self.call(signature.name, (Var(nested[position]),)),
+                        lambda inner: deepest(
+                            position + 1, self.primitive("max_int", most, Var(inner))
+                        ),
+                    )
+
+                return deepest(0, _int(0))
+
+            return body
+
+        body = self.case(
+            Var(item),
+            INT,
+            {symbol: branch(symbol) for symbol in system.constructors},
+            lambda: Return(_int(0)),
+            "depth",
+        )
+        return self.computation(signature, (item,), body)
 
     def apply_group(
         self,
@@ -4085,6 +4241,243 @@ class _Context:
             self.extent,
             *path,
         )
+
+    def closed(self, repeats: Local | None, base: Local) -> Computation:
+        """Answer a derived item extended by a chain of unary rules.
+
+        Parameters
+        ----------
+        repeats : Local | None
+            How often a chain may revisit an item, for a cyclic system.
+        base : Local
+            The item derived without a trailing unary rule.
+
+        Returns
+        -------
+        Computation
+            The item itself without unary rules, else the closure's
+            answer starting from it.
+        """
+        system = self.system
+        if not system.closes:
+            return Return(Var(base))
+        if not system.chained:
+            return self.call(system.name("close"), (Var(base),))
+        assert repeats is not None
+        nil = ConstructorValue(
+            system.chain_constructors["nil"].id, (), (), system.chain
+        )
+        chain = ConstructorValue(
+            system.chain_constructors["cons"].id, (), (Var(base), nil), system.chain
+        )
+        return self.call(system.name("close"), (Var(repeats), chain, Var(base)))
+
+    def closure(self, signature: ComputationSignature) -> NamedComputation:
+        """Extend an item by a chain of unary rules.
+
+        The computation answers the item itself, or applies a unary rule
+        to it and recurs on the conclusion. In a cyclic system it
+        carries the chain of items visited and refuses a conclusion that
+        the chain already holds more often than the repeat bound allows,
+        so every chain is finite and the bound counts how often a chain
+        may traverse a cycle.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
+        system = self.system
+        item = system.item
+        current = Local("current", item)
+        if system.chained:
+            repeats: Local | None = Local("repeats", INT)
+            chain: Local | None = Local("chain", system.chain)
+            parameters: tuple[Local, ...] = (repeats, chain, current)
+        else:
+            repeats = chain = None
+            parameters = (current,)
+        rules = system.closure
+        alternatives = TensorValue(
+            tuple(_int(index) for index in range(-1, len(rules))),
+            tensor_type(INT, (IndexLiteral(len(rules) + 1, NAT),)),
+        )
+
+        def onward(conclusion: Value) -> Computation:
+            """Recur on a unary rule's conclusion.
+
+            Parameters
+            ----------
+            conclusion : Value
+                The conclusion.
+
+            Returns
+            -------
+            Computation
+                The closure from the conclusion on.
+            """
+            if repeats is None or chain is None:
+                return self.call(signature.name, (conclusion,))
+
+            def counted(following: Local) -> Computation:
+                """Count the conclusion in the chain, then recur or refuse.
+
+                Parameters
+                ----------
+                following : Local
+                    The conclusion.
+
+                Returns
+                -------
+                Computation
+                    The bounded recursion.
+                """
+                assert repeats is not None and chain is not None
+                bound, visited = repeats, chain
+                extended = ConstructorValue(
+                    system.chain_constructors["cons"].id,
+                    (),
+                    (Var(following), Var(visited)),
+                    system.chain,
+                )
+                return self.bind(
+                    "seen",
+                    INT,
+                    self.call(system.name("count"), (Var(following), Var(visited))),
+                    lambda seen: If(
+                        self.primitive("le_int", Var(seen), Var(bound)),
+                        self.call(
+                            signature.name, (Var(bound), extended, Var(following))
+                        ),
+                        self.fail(item, "close", "repeat"),
+                    ),
+                )
+
+            return self.bind("following", item, Return(conclusion), counted)
+
+        def apply(position: int) -> Computation:
+            """Apply one unary rule to the current item.
+
+            Parameters
+            ----------
+            position : int
+                The rule's position among the unary rules.
+
+            Returns
+            -------
+            Computation
+                The match and the recursion on the conclusion.
+            """
+            index = rules[position]
+            rule = system.rules[index]
+            return self.match(
+                current,
+                rule.premises[0],
+                {},
+                item,
+                lambda bindings: self.conclude(index, rule, bindings, onward),
+                "close",
+                position,
+            )
+
+        def dispatch(chosen: Local, position: int) -> Computation:
+            """Select the chosen unary rule by position.
+
+            Parameters
+            ----------
+            chosen : Local
+                The chosen position, ``-1`` to stop.
+            position : int
+                The rule tested here.
+
+            Returns
+            -------
+            Computation
+                The chain of tests from this rule on.
+            """
+            if position == len(rules):
+                return self.fail(item, "close", "none")
+            return If(
+                self.primitive("eq_int", Var(chosen), _int(position)),
+                apply(position),
+                dispatch(chosen, position + 1),
+            )
+
+        body = self.bind(
+            "step",
+            INT,
+            self.choose(
+                alternatives, INT, IndexLiteral(len(rules) + 1, NAT), "close", "choose"
+            ),
+            lambda chosen: If(
+                self.primitive("eq_int", Var(chosen), _int(-1)),
+                Return(Var(current)),
+                dispatch(chosen, 0),
+            ),
+        )
+        return self.computation(signature, parameters, body)
+
+    def chain_count(self, signature: ComputationSignature) -> NamedComputation:
+        """How often an item occurs in a chain.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+
+        Returns
+        -------
+        NamedComputation
+            The computation, comparing by the family's structural
+            equality.
+        """
+        system = self.system
+        item = Local("item", system.item)
+        chain = Local("chain", system.chain)
+        nil = system.chain_constructors["nil"]
+        cons = system.chain_constructors["cons"]
+        head = system.local("head", system.item)
+        tail = system.local("tail", system.chain)
+        cons_body = self.bind(
+            "same",
+            BOOL,
+            self.call(system.name("eq"), (Var(item), Var(head))),
+            lambda same: self.bind(
+                "rest",
+                INT,
+                self.call(signature.name, (Var(item), Var(tail))),
+                lambda rest: If(
+                    Var(same),
+                    Return(self.primitive("add_int", Var(rest), _int(1))),
+                    Return(Var(rest)),
+                ),
+            ),
+        )
+        branches = tuple(
+            CaseBranch(
+                constructor.id,
+                (),
+                fields,
+                body,
+                StaticScopeId.derive(
+                    self.module,
+                    (*self.path, "count"),
+                    "branch",
+                    position,
+                    constructor.id,
+                ),
+            )
+            for position, (constructor, fields, body) in enumerate(
+                ((nil, (), Return(_int(0))), (cons, (head, tail), cons_body))
+            )
+        )
+        body = Case(Var(chain), CaseMotive((), INT), branches)
+        return self.computation(signature, (item, chain), body)
 
     def frame_slots(self, head: str) -> list[int]:
         """The position slots of a head symbol, in slot order.
@@ -5075,6 +5468,11 @@ class _Context:
     ) -> NamedComputation:
         """The deduction's entry: the inside weight of the goal.
 
+        A cyclic system's entry iterates the closure's repeat bound from
+        zero until two successive inside weights agree within the
+        declared tolerance (exactly, without one), which is how the
+        chart's Kleene-star aggregation converges on the same cycles.
+
         Parameters
         ----------
         signature : ComputationSignature
@@ -5098,12 +5496,113 @@ class _Context:
                 strict=True,
             )
         )
-        body = self.searched(parameters, handlers)
+        if not system.chained:
+            body = self.searched(parameters, None, handlers)
+            return self.computation(signature, parameters, body)
+        inputs = tuple(Var(parameter) for parameter in parameters)
+        body = self.bind(
+            "first",
+            system.carrier,
+            self.call(system.name("inside"), (_int(0), *inputs)),
+            lambda first: self.call(
+                system.name("converge"), (_int(1), Var(first), *inputs)
+            ),
+        )
         return self.computation(signature, parameters, body)
+
+    def inside(
+        self, signature: ComputationSignature, handlers: tuple[HandlerDef, HandlerDef]
+    ) -> NamedComputation:
+        """The inside weight of the goal under a repeat bound on chains.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+        handlers : tuple[HandlerDef, HandlerDef]
+            The search and collection handlers.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
+        repeats = Local("repeats", INT)
+        tokens = Local("tokens", signature.parameters[1])
+        body = self.searched((tokens,), Var(repeats), handlers)
+        return self.computation(signature, (repeats, tokens), body)
+
+    def convergence(self, signature: ComputationSignature) -> NamedComputation:
+        """Raise the repeat bound until the inside weight converges.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+
+        Returns
+        -------
+        NamedComputation
+            The computation, answering the first inside weight within
+            the tolerance of the one under the bound below it.
+        """
+        system = self.system
+        repeats = Local("repeats", INT)
+        previous = Local("previous", system.carrier)
+        tokens = Local("tokens", signature.parameters[2])
+
+        def converged(current: Local) -> Value:
+            """Whether a weight is within the tolerance of the previous one.
+
+            Parameters
+            ----------
+            current : Local
+                The weight under the current bound.
+
+            Returns
+            -------
+            Value
+                The test.
+            """
+            if system.semiring == "Boolean":
+                return self.primitive("eq_bool", Var(current), Var(previous))
+            if system.semiring == "Counting":
+                return self.primitive("eq_int", Var(current), Var(previous))
+            now = self.primitive("weight_value", Var(current))
+            before = self.primitive("weight_value", Var(previous))
+            return self.primitive(
+                "or",
+                self.primitive("eq_real", now, before),
+                self.primitive(
+                    "le_real",
+                    self.primitive("abs_real", self.primitive("sub_real", now, before)),
+                    LiteralValue(system.tolerance, REAL),
+                ),
+            )
+
+        body = self.bind(
+            "current",
+            system.carrier,
+            self.call(system.name("inside"), (Var(repeats), Var(tokens))),
+            lambda current: If(
+                converged(current),
+                Return(Var(current)),
+                self.call(
+                    signature.name,
+                    (
+                        self.primitive("add_int", Var(repeats), _int(1)),
+                        Var(current),
+                        Var(tokens),
+                    ),
+                ),
+            ),
+        )
+        return self.computation(signature, (repeats, previous, tokens), body)
 
     def searched(
         self,
         parameters: tuple[Local, ...],
+        repeats: Value | None,
         handlers: tuple[HandlerDef, HandlerDef],
     ) -> Computation:
         """Handle the search and the weights around a derivation of the goal.
@@ -5112,6 +5611,8 @@ class _Context:
         ----------
         parameters : tuple[Local, ...]
             The entry's inputs: the tokens, or the axioms and weights.
+        repeats : Value | None
+            The repeat bound on unary chains, for a cyclic system.
         handlers : tuple[HandlerDef, HandlerDef]
             The search and collection handlers.
 
@@ -5136,43 +5637,30 @@ class _Context:
         )
         if system.by_yield:
             derived = self.yield_root(parameters[0])
+        elif system.schema_categories:
+            # A schema parser's finite category algebra closes its unary
+            # rules within a fixed number of rounds per position.
+            fuel_value = length
+            for _ in range(system.span_fuel_factor - 1):
+                fuel_value = self.primitive("add_int", fuel_value, length)
+            assert system.start is not None
+            expected = self.constructor(system.start, ())
+            derived = self.call(
+                system.name("derive"),
+                (fuel_value, _int(0), length, expected, Var(parameters[0])),
+            )
         elif system.span_shaped:
-            # The sentence's length is the sum of a tensor of ones over
-            # the extent; without a declared depth it bounds the depth of
-            # a binary system's derivations of the whole sentence.
-            if system.span_fuel_factor:
-                fuel_value = length
-                for _ in range(system.span_fuel_factor - 1):
-                    fuel_value = self.primitive("add_int", fuel_value, length)
-            else:
-                fuel_value = _int(system.depth) if system.depth is not None else length
-            if system.schema_categories:
-                assert system.start is not None
-                expected = self.constructor(system.start, ())
-                derived = self.call(
-                    system.name("derive"),
-                    (
-                        fuel_value,
-                        _int(0),
-                        length,
-                        expected,
-                        Var(parameters[0]),
-                    ),
-                )
-            else:
-                derived = self.call(
-                    system.name("derive"),
-                    (fuel_value, _int(0), length, Var(parameters[0])),
-                )
+            prefix = (repeats,) if repeats is not None else ()
+            derived = self.call(
+                system.name("derive"),
+                (*prefix, _int(0), length, Var(parameters[0])),
+            )
         else:
-            # Without a declared depth, a system deriving without spans
-            # enumerates derivations at most as deep as it has tokens or
-            # axioms and rules together, which every derivation without a
-            # repeated rule application along a path fits within.
-            if system.depth is not None:
-                fuel_value = _int(system.depth)
-            else:
-                fuel_value = self.primitive("add_int", length, _int(len(system.rules)))
+            # A system without a lexicon has no sentence to recur on: it
+            # enumerates derivations up to a height of its axioms and
+            # rules together, a bound its input fixes; ``depth`` bounds
+            # its categories, as everywhere.
+            fuel_value = self.primitive("add_int", length, _int(len(system.rules)))
             derived = self.call(
                 system.name("derive"),
                 (fuel_value, *(Var(parameter) for parameter in parameters)),

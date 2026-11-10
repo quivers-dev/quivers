@@ -261,6 +261,15 @@ The renamed step list is inlined into the caller, so distinct call
 sites contribute distinct factors to the parent's joint kernel:
 fresh latents per use, no inadvertent tying.
 
+The substitution reaches every position a name can occupy in a `let`
+or `score` right-hand side and in the arguments of a computation call:
+the array and the indices of `arr[idx]`, call arguments, method
+receivers, list and tuple items, lambda and `factor` bodies, and an
+object parameter named as a `factor` binder's index. It is
+capture-avoiding: a lambda parameter or `factor` binder shadows a
+parameter or local of the same spelling, and is renamed if a
+substituted name would otherwise be captured by it.
+
 <!-- compile: false -->
 ```qvr
 # Parametric random-intercepts template: one HalfNormal scale and

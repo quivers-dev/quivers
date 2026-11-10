@@ -618,7 +618,17 @@ weight instance with a collecting handler and the search instance with a
 handler that resumes once per alternative and combines the shots by the
 semiring's addition, so its answer is the semiring sum over derivations of
 the goal of the product of the weights along each: the inside weight the
-agenda engine tabulates, to the depth the `depth` option bounds. A program
+agenda engine tabulates. In a span system, unary rules extend a derived item
+in chains through `<name>__close`; when the unary rules may cycle, a chain
+carries the items it visited (`<name>__Chain`, counted by `<name>__count`),
+`<name>__inside` bounds how often a chain revisits an item, and
+`<name>__converge` raises that bound until two successive inside weights
+agree within the declared `tolerance` (exactly, without one), the search's
+counterpart of the chart's Kleene-star convergence. The `depth` option bounds
+the constructor depth of each rule's conclusion category through
+`<name>__depth`, the agenda engine's measure, and never the length of a
+derivation; a system without a lexicon bounds derivation height by the number
+of its axioms and rules. A program
 calls the deduction with `let chart = parse(D, sentence)`, which types
 `sentence` as a tensor of tokens over one of the program's open extents,
 and reads `chart.goal_weight()` as a real to score.

@@ -165,24 +165,38 @@ def _candidate_atoms(
     )
 
 
-def _category_depth(value) -> int:
+def _category_depth(value: object) -> int:
     """Constructor-tree depth of a chart category or item.
 
-    Atoms and bound variables count as depth 0; the tagged pairs
-    ``("atom", "S")`` and ``("var", "#v1")`` are leaves. A wrapping
-    tuple ``(<ctor>, <args>...)`` whose head is a non-tag,
-    non-``"span"`` constructor counts as
+    Atoms, bound variables, integer literals, and positions count as
+    depth 0; the tagged pairs ``("atom", "S")``, ``("var", "#v1")``,
+    and ``("literal", 3)`` are leaves. A ``span`` item has the depth of
+    its category. A product ``("product", (c_1, ..., c_n))`` and any
+    other wrapping tuple ``(<ctor>, <args>...)`` count as
     :math:`1 + \\max_i \\text{depth}(\\text{args}_i)`. Used to gate
     rules that would otherwise rewrite ``A`` into ``Dia(A)`` or
-    ``Cont(A)`` ad infinitum.
+    ``Cont(A)`` ad infinitum; the checked QIEC search measures its
+    conclusions the same way.
+
+    Parameters
+    ----------
+    value : object
+        A chart item, category, or field of one.
+
+    Returns
+    -------
+    int
+        The depth.
     """
     if not isinstance(value, tuple):
         return 0
     if not value:
         return 0
     head = value[0]
-    if head in TERM_LEAF_TAGS:
+    if head in TERM_LEAF_TAGS or head == "literal":
         return 0
+    if head == "product" and len(value) == 2 and isinstance(value[1], tuple):
+        return 1 + max((_category_depth(v) for v in value[1]), default=0)
     if head == "span":
         # span(I, J, C, ...): depth of the surrounding span is the
         # depth of its category subterm, ignoring positional

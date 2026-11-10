@@ -8,7 +8,7 @@ instead of being silently treated as a leaf.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 
 from quivers.dsl import ast_nodes as surface
 
@@ -88,6 +88,90 @@ def walk_let_expr(expr: surface.LetExprNode) -> Iterator[surface.LetExprNode]:
         yield from walk_let_expr(child)
 
 
+def map_let_expr(
+    expr: surface.LetExprNode,
+    transform: Callable[[surface.LetExprNode], surface.LetExprNode],
+) -> surface.LetExprNode:
+    """Rebuild ``expr`` bottom-up, applying ``transform`` at every node.
+
+    Each node is first rebuilt over its rewritten children and then
+    passed to ``transform``, so ``transform`` sees a node whose
+    subexpressions are already rewritten. The rebuild is structural and
+    does not track binders, so a rewrite of variable names belongs in
+    `substitute_let_expr`.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The root of the rewrite.
+    transform : Callable[[LetExprNode], LetExprNode]
+        The rewrite applied to each rebuilt node.
+
+    Returns
+    -------
+    LetExprNode
+        The rewritten expression.
+
+    Raises
+    ------
+    TypeError
+        If the rewrite reaches an unsupported let-expression variant.
+    """
+
+    def rebuild(node: surface.LetExprNode) -> surface.LetExprNode:
+        if isinstance(
+            node,
+            surface.LetExprLiteral
+            | surface.LetExprBool
+            | surface.LetExprUnit
+            | surface.LetExprVar
+            | surface.LetExprString,
+        ):
+            return transform(node)
+        if isinstance(node, surface.LetExprBinOp):
+            return transform(
+                node.with_(left=rebuild(node.left), right=rebuild(node.right))
+            )
+        if isinstance(node, surface.LetExprUnaryOp):
+            return transform(node.with_(operand=rebuild(node.operand)))
+        if isinstance(node, surface.LetExprCall):
+            return transform(node.with_(args=tuple(map(rebuild, node.args))))
+        if isinstance(node, surface.LetExprIndex):
+            return transform(
+                node.with_(
+                    array=rebuild(node.array),
+                    indices=tuple(map(rebuild, node.indices)),
+                )
+            )
+        if isinstance(node, surface.LetExprList | surface.LetExprTuple):
+            return transform(node.with_(items=tuple(map(rebuild, node.items))))
+        if isinstance(node, surface.LetExprLambda):
+            return transform(node.with_(body=rebuild(node.body)))
+        if isinstance(node, surface.LetExprFactor):
+            return transform(
+                node.with_(
+                    body=None if node.body is None else rebuild(node.body),
+                    cases=tuple(
+                        case.with_(value=rebuild(case.value)) for case in node.cases
+                    ),
+                )
+            )
+        if isinstance(node, surface.LetExprMethodCall):
+            return transform(
+                node.with_(
+                    receiver=rebuild(node.receiver),
+                    args=tuple(map(rebuild, node.args)),
+                )
+            )
+        if isinstance(node, surface.QiecConstructorValue):
+            return transform(node.with_(fields=tuple(map(rebuild, node.fields))))
+        raise TypeError(
+            f"map_let_expr: unsupported let-expression variant {type(node).__name__}"
+        )
+
+    return rebuild(expr)
+
+
 def free_let_names(
     expr: surface.LetExprNode,
     *,
@@ -153,9 +237,59 @@ def free_let_names(
     return tuple(found)
 
 
+def free_let_callees(
+    expr: surface.LetExprNode,
+    *,
+    bound: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Return the free callee names of calls in first-use order.
+
+    A call ``f(...)`` whose ``f`` is not bound by an enclosing lambda
+    parameter or factor index contributes ``f``.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression to scan.
+    bound : frozenset[str]
+        Names already bound around ``expr``, which are not free.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Each free callee once, in the order of its first occurrence.
+
+    Raises
+    ------
+    TypeError
+        If the scan reaches an unsupported let-expression variant.
+    """
+    found: list[str] = []
+
+    def visit(node: surface.LetExprNode, local_bound: frozenset[str]) -> None:
+        if isinstance(node, surface.LetExprCall):
+            if node.func not in local_bound and node.func not in found:
+                found.append(node.func)
+        elif isinstance(node, surface.LetExprLambda):
+            visit(node.body, local_bound | {node.param})
+            return
+        elif isinstance(node, surface.LetExprFactor):
+            inner = local_bound | {binder.var for binder in node.binders}
+            for child in let_expr_children(node):
+                visit(child, inner)
+            return
+        for child in let_expr_children(node):
+            visit(child, local_bound)
+
+    visit(expr, bound)
+    return tuple(found)
+
+
 def substitute_let_expr(
     expr: surface.LetExprNode,
     substitution: Mapping[str, surface.LetExprNode],
+    *,
+    callees: Mapping[str, str] | None = None,
 ) -> surface.LetExprNode:
     """Substitute expressions for free variables in ``expr`` without capture.
 
@@ -168,6 +302,11 @@ def substitute_let_expr(
         The expression to rewrite.
     substitution : Mapping[str, LetExprNode]
         The replacement for each free variable name.
+    callees : Mapping[str, str] or None
+        The replacement name for each free callee of a call
+        ``f(...)``. A callee bound by an enclosing lambda or factor is
+        not free and keeps its name; a binder that would capture a
+        replacement callee name is renamed like any other capture.
 
     Returns
     -------
@@ -179,9 +318,11 @@ def substitute_let_expr(
     TypeError
         If the rewrite reaches an unsupported let-expression variant.
     """
+    callee_map: Mapping[str, str] = {} if callees is None else callees
     occupied = set(free_let_names(expr, include_callees=True))
     for replacement in substitution.values():
         occupied.update(free_let_names(replacement, include_callees=True))
+    occupied.update(callee_map.values())
     for node in walk_let_expr(expr):
         if isinstance(node, surface.LetExprLambda):
             occupied.add(node.param)
@@ -199,14 +340,21 @@ def substitute_let_expr(
 
     def replacement_names(
         active: Mapping[str, surface.LetExprNode],
+        active_callees: Mapping[str, str],
         body: surface.LetExprNode,
     ) -> set[str]:
         used_keys = set(free_let_names(body)) & active.keys()
-        return {name for key in used_keys for name in free_let_names(active[key])}
+        names = {name for key in used_keys for name in free_let_names(active[key])}
+        used_callees = set(free_let_names(body, include_callees=True))
+        names.update(
+            active_callees[key] for key in used_callees & active_callees.keys()
+        )
+        return names
 
     def replace(
         node: surface.LetExprNode,
         active: Mapping[str, surface.LetExprNode],
+        active_callees: Mapping[str, str],
     ) -> surface.LetExprNode:
         if isinstance(node, surface.LetExprVar):
             return active.get(node.name, node)
@@ -220,25 +368,37 @@ def substitute_let_expr(
             return node
         if isinstance(node, surface.LetExprBinOp):
             return node.with_(
-                left=replace(node.left, active),
-                right=replace(node.right, active),
+                left=replace(node.left, active, active_callees),
+                right=replace(node.right, active, active_callees),
             )
         if isinstance(node, surface.LetExprUnaryOp):
-            return node.with_(operand=replace(node.operand, active))
+            return node.with_(operand=replace(node.operand, active, active_callees))
         if isinstance(node, surface.LetExprCall):
-            return node.with_(args=tuple(replace(item, active) for item in node.args))
+            return node.with_(
+                func=active_callees.get(node.func, node.func),
+                args=tuple(replace(item, active, active_callees) for item in node.args),
+            )
         if isinstance(node, surface.LetExprIndex):
             return node.with_(
-                array=replace(node.array, active),
-                indices=tuple(replace(item, active) for item in node.indices),
+                array=replace(node.array, active, active_callees),
+                indices=tuple(
+                    replace(item, active, active_callees) for item in node.indices
+                ),
             )
         if isinstance(node, surface.LetExprList | surface.LetExprTuple):
-            return node.with_(items=tuple(replace(item, active) for item in node.items))
+            return node.with_(
+                items=tuple(
+                    replace(item, active, active_callees) for item in node.items
+                )
+            )
         if isinstance(node, surface.LetExprLambda):
             inner = {key: value for key, value in active.items() if key != node.param}
+            inner_callees = {
+                key: value for key, value in active_callees.items() if key != node.param
+            }
             param = node.param
             body = node.body
-            if param in replacement_names(inner, body):
+            if param in replacement_names(inner, inner_callees, body):
                 renamed = fresh(param)
                 body = replace(
                     body,
@@ -249,17 +409,23 @@ def substitute_let_expr(
                             col=node.col,
                         )
                     },
+                    {param: renamed},
                 )
                 param = renamed
-            return node.with_(param=param, body=replace(body, inner))
+            return node.with_(param=param, body=replace(body, inner, inner_callees))
         if isinstance(node, surface.LetExprFactor):
             bound = {binder.var for binder in node.binders}
             inner = {key: value for key, value in active.items() if key not in bound}
+            inner_callees = {
+                key: value for key, value in active_callees.items() if key not in bound
+            }
             bodies = (() if node.body is None else (node.body,)) + tuple(
                 case.value for case in node.cases
             )
             captures = {
-                name for body in bodies for name in replacement_names(inner, body)
+                name
+                for body in bodies
+                for name in replacement_names(inner, inner_callees, body)
             }
             binders = list(node.binders)
             body = node.body
@@ -275,38 +441,46 @@ def substitute_let_expr(
                         col=binder.col,
                     )
                 }
-                body = None if body is None else replace(body, alpha)
+                alpha_callees = {binder.var: renamed}
+                body = None if body is None else replace(body, alpha, alpha_callees)
                 cases = tuple(
-                    case.with_(value=replace(case.value, alpha)) for case in cases
+                    case.with_(value=replace(case.value, alpha, alpha_callees))
+                    for case in cases
                 )
                 binders[position] = binder.with_(var=renamed)
             return node.with_(
                 binders=tuple(binders),
-                body=None if body is None else replace(body, inner),
+                body=None if body is None else replace(body, inner, inner_callees),
                 cases=tuple(
-                    case.with_(value=replace(case.value, inner)) for case in cases
+                    case.with_(value=replace(case.value, inner, inner_callees))
+                    for case in cases
                 ),
             )
         if isinstance(node, surface.LetExprMethodCall):
             return node.with_(
-                receiver=replace(node.receiver, active),
-                args=tuple(replace(item, active) for item in node.args),
+                receiver=replace(node.receiver, active, active_callees),
+                args=tuple(replace(item, active, active_callees) for item in node.args),
             )
         if isinstance(node, surface.QiecConstructorValue):
             return node.with_(
-                fields=tuple(replace(field, active) for field in node.fields)
+                fields=tuple(
+                    replace(field, active, active_callees) for field in node.fields
+                )
             )
         raise TypeError(
             f"substitute_let_expr: unsupported let-expression variant "
             f"{type(node).__name__}"
         )
 
-    return replace(expr, substitution)
+    return replace(expr, substitution, callee_map)
 
 
 __all__ = [
+    "free_let_callees",
     "free_let_names",
     "let_expr_children",
+    "map_let_expr",
+    "map_let_expr",
     "substitute_let_expr",
     "walk_let_expr",
 ]

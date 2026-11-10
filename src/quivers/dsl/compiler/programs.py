@@ -125,7 +125,12 @@ from quivers.dsl.compiler._deduction_terms import (
 )
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import expand_program_cell_scans, scan_let_call
-from quivers.dsl.let_expr_traversal import free_let_names
+from quivers.dsl.let_expr_traversal import (
+    free_let_callees,
+    free_let_names,
+    map_let_expr,
+    substitute_let_expr,
+)
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
@@ -1448,7 +1453,7 @@ class _ProgramsMixin:
                     out.update(step.vars)
                     if step.scope is not None:
                         _walk(step.scope)
-                elif isinstance(step, LetStep):
+                elif isinstance(step, (LetStep, ScoreStep, CallStep)):
                     out.add(step.name)
                 # Internal IR (post-expand) — also covered, for the
                 # case where _collect_local_names is invoked on
@@ -1622,9 +1627,35 @@ class _ProgramsMixin:
         if isinstance(step, LetStep):
             return LetStep(
                 name=rename.get(step.name, step.name),
-                value=self._rename_let_expr(step.value, value_subst, rename),
+                value=self._rename_let_expr(
+                    step.value, type_subst, value_subst, rename, step.line, step.col
+                ),
                 line=step.line,
                 col=step.col,
+            )
+        if isinstance(step, ScoreStep):
+            return step.with_(
+                name=rename.get(step.name, step.name),
+                value=self._rename_let_expr(
+                    step.value, type_subst, value_subst, rename, step.line, step.col
+                ),
+            )
+        if isinstance(step, CallStep):
+            return step.with_(
+                name=rename.get(step.name, step.name),
+                call=step.call.with_(
+                    arguments=tuple(
+                        self._rename_let_expr(
+                            argument,
+                            type_subst,
+                            value_subst,
+                            rename,
+                            step.line,
+                            step.col,
+                        )
+                        for argument in step.call.arguments
+                    )
+                ),
             )
         if isinstance(step, VectorisedObserveStep):
             new_morph = value_subst.get(step.morphism, step.morphism)
@@ -1722,110 +1753,86 @@ class _ProgramsMixin:
     def _rename_let_expr(
         self,
         expr: LetExprNode,
+        type_subst: dict[str, ObjectExpr],
         value_subst: dict[str, str | float],
         rename: dict[str, str],
+        line: int,
+        col: int,
     ) -> LetExprNode:
-        """Apply parameter substitution + α-renaming inside a let RHS."""
-        if isinstance(expr, LetExprVar):
-            if expr.name in value_subst:
-                val = value_subst[expr.name]
-                if isinstance(val, str):
-                    return LetExprVar(name=val)
-                return LetExprLiteral(value=float(val))
-            if expr.name in rename:
-                return LetExprVar(name=rename[expr.name])
-            return expr
-        if isinstance(expr, LetExprLiteral):
-            return expr
-        if isinstance(expr, LetExprBinOp):
-            return LetExprBinOp(
-                op=expr.op,
-                left=self._rename_let_expr(expr.left, value_subst, rename),
-                right=self._rename_let_expr(
-                    expr.right,
-                    value_subst,
-                    rename,
-                ),
-                line=expr.line,
-                col=expr.col,
-            )
-        if isinstance(expr, LetExprUnaryOp):
-            return LetExprUnaryOp(
-                operand=self._rename_let_expr(
-                    expr.operand,
-                    value_subst,
-                    rename,
-                ),
-                op=expr.op,
-                line=expr.line,
-                col=expr.col,
-            )
-        if isinstance(expr, LetExprTuple):
-            return LetExprTuple(
-                items=tuple(
-                    self._rename_let_expr(item, value_subst, rename)
-                    for item in expr.items
-                ),
-                line=expr.line,
-                col=expr.col,
-            )
-        if isinstance(expr, LetExprCall):
-            new_func = value_subst.get(expr.func, expr.func)
-            if not isinstance(new_func, str):
+        """Apply parameter substitution and alpha-renaming inside a let RHS.
+
+        The rewrite is one capture-avoiding substitution over the whole
+        expression: a scalar parameter becomes its literal or the
+        caller's name, a template local becomes its renamed name
+        wherever it occurs (a variable, the array of an index, a call
+        argument, a method receiver, a collection item, a lambda or
+        factor body), a morphism parameter called as ``f(...)`` becomes
+        the morphism it takes, and an object parameter in a factor
+        binder's index becomes the object it takes. A lambda parameter
+        or factor binder shadows a parameter or local of the same name
+        and is renamed if it would capture a substituted name.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The let right-hand side from the template body.
+        type_subst : dict[str, ObjectExpr]
+            The object each object parameter takes.
+        value_subst : dict[str, str | float]
+            The value each scalar or morphism parameter takes: a
+            number, or the name of a bound value or a morphism.
+        rename : dict[str, str]
+            The caller's name of each name the template binds.
+        line : int
+            The source line of the step holding the expression.
+        col : int
+            The source column of the step holding the expression.
+
+        Returns
+        -------
+        LetExprNode
+            The rewritten expression.
+
+        Raises
+        ------
+        CompileError
+            If a parameter that takes a number is called as a function.
+        TypeError
+            If the expression contains a let-expression variant the
+            substitution does not cover; the message names it.
+        """
+        values: dict[str, LetExprNode] = {}
+        callees: dict[str, str] = {}
+        for name, target in rename.items():
+            values[name] = LetExprVar(name=target)
+            callees[name] = target
+        for name, sub in value_subst.items():
+            if isinstance(sub, str):
+                values[name] = LetExprVar(name=sub)
+                callees[name] = sub
+            else:
+                values[name] = LetExprLiteral(value=float(sub))
+        for callee in free_let_callees(expr):
+            if callee in value_subst and callee not in callees:
                 raise CompileError(
-                    f"let-expression callee {expr.func!r} substituted to "
-                    f"non-string value {new_func!r}",
-                    0,
-                    0,
+                    f"let-expression callee {callee!r} is a parameter that "
+                    f"takes the number {value_subst[callee]!r}, not a function",
+                    line,
+                    col,
                 )
-            return LetExprCall(
-                func=new_func,
-                args=tuple(
-                    self._rename_let_expr(a, value_subst, rename) for a in expr.args
-                ),
-            )
-        if isinstance(expr, LetExprIndex):
-            new_arr = value_subst.get(expr.array, expr.array)
-            if not isinstance(new_arr, str):
-                raise CompileError(
-                    f"let-expression array {expr.array!r} substituted to "
-                    f"non-string value {new_arr!r}",
-                    expr.line,
-                    expr.col,
+
+        def substitute_objects(node: LetExprNode) -> LetExprNode:
+            if not isinstance(node, LetExprFactor):
+                return node
+            return node.with_(
+                binders=tuple(
+                    binder.with_(index=self._rename_type(binder.index, type_subst))
+                    for binder in node.binders
                 )
-            arr_name = (
-                rename.get(new_arr, new_arr) if isinstance(new_arr, str) else new_arr
             )
-            return LetExprIndex(
-                array=arr_name,
-                indices=tuple(
-                    self._rename_let_expr(i, value_subst, rename) for i in expr.indices
-                ),
-                line=expr.line,
-                col=expr.col,
-            )
-        if isinstance(expr, LetExprFactor):
-            # Factor binders are local; their identifiers shouldn't
-            # be alpha-renamed against the outer template's rename
-            # dict.  Body and case values are recursively renamed.
-            return LetExprFactor(
-                binders=expr.binders,
-                body=(
-                    self._rename_let_expr(expr.body, value_subst, rename)
-                    if expr.body is not None
-                    else None
-                ),
-                cases=tuple(
-                    LetFactorCase(
-                        label=c.label,
-                        value=self._rename_let_expr(c.value, value_subst, rename),
-                        line=c.line,
-                        col=c.col,
-                    )
-                    for c in expr.cases
-                ),
-            )
-        return expr
+
+        renamed = substitute_let_expr(expr, values, callees=callees)
+        return map_let_expr(renamed, substitute_objects)
 
     def _compile_morphism_call(self, expr: ExprMorphismCall):
         """Compile ``callee(arg1, arg2, …)`` — currently used to

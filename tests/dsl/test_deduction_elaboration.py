@@ -177,6 +177,7 @@ def test_a_deduction_becomes_a_checked_family_and_computations() -> None:
         "AB__show",
         "AB__goal",
         "AB__fail",
+        "AB__depth",
         "AB__axiom",
         "AB__derive",
         "AB__run",
@@ -561,7 +562,13 @@ def test_gallery_grammars_agree_with_the_agenda(
     ("edit", "fragment"),
     [
         (("semiring=SEMIRING", "semiring=Tropical"), "the semirings are"),
-        (("depth=6", ""), "need a depth option"),
+        (
+            (
+                "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y))",
+                "rule bwd_app : span(I, J, Y), span(K, J, Bwd(X, Y))",
+            ),
+            "over its conclusion's whole span beside other premises",
+        ),
         (
             (
                 "|- span(I, J, X) #[learnable]\n    rule bwd_app",
@@ -575,15 +582,6 @@ def test_forms_outside_the_elaboration_are_reported(
     edit: tuple[str, str], fragment: str
 ) -> None:
     source = AB.replace(*edit)
-    if edit[0] == "depth=6":
-        source = source.replace(
-            "[semiring=SEMIRING, start=S, ]", "[semiring=SEMIRING, start=S]"
-        )
-        source = source.replace(
-            "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]",
-            "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]\n"
-            "    rule lift : span(I, J, N) |- span(I, J, NP)",
-        )
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(source)
     assert fragment in captured.value.message

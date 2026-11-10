@@ -38,12 +38,10 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
     LetExprFactor,
-    LetExprLambda,
     LetExprLiteral,
     LetExprNode,
     LetExprTuple,
     LetExprVar,
-    LetFactorBinder,
     LetStep,
     MarginalizeStep,
     ObjectExpr,
@@ -58,6 +56,7 @@ from quivers.dsl.ast_nodes import (
     ScoreStep,
     TypeName,
 )
+from quivers.dsl.let_expr_traversal import map_let_expr, substitute_let_expr
 
 
 class TemplateError(Exception):
@@ -305,14 +304,14 @@ def _rename_step(
     if isinstance(step, (LetStep, ScoreStep)):
         return step.with_(
             name=rename.get(step.name, step.name),
-            value=_rename_expr(step.value, objects, values, rename, frozenset()),
+            value=_rename_expr(step.value, objects, values, rename),
         )
     if isinstance(step, CallStep):
         return step.with_(
             name=rename.get(step.name, step.name),
             call=step.call.with_(
                 arguments=tuple(
-                    _rename_expr(argument, objects, values, rename, frozenset())
+                    _rename_expr(argument, objects, values, rename)
                     for argument in step.call.arguments
                 )
             ),
@@ -495,9 +494,16 @@ def _rename_expr(
     objects: Mapping[str, str],
     values: Mapping[str, LetExprNode],
     rename: Mapping[str, str],
-    shadowed: frozenset[str],
 ) -> LetExprNode:
     """A let expression under the substitution and the renaming.
+
+    One capture-avoiding substitution over the whole expression: a
+    scalar parameter becomes the expression it takes and a name the
+    program binds becomes the caller's name wherever it occurs free; a
+    lambda parameter or factor binder shadows a name of the same
+    spelling and is renamed if it would capture a substituted name. An
+    object parameter in a factor binder's index becomes the object it
+    takes.
 
     Parameters
     ----------
@@ -509,69 +515,34 @@ def _rename_expr(
         The expression each scalar parameter takes.
     rename : Mapping[str, str]
         The caller's name of each name the program binds.
-    shadowed : frozenset[str]
-        The names a lambda or a factor binds inside the expression,
-        which refer to those binders rather than to the program's.
 
     Returns
     -------
     LetExprNode
         The rewritten expression.
+
+    Raises
+    ------
+    TypeError
+        If the expression contains a let-expression variant the
+        substitution does not cover.
     """
-    if isinstance(expr, LetExprVar):
-        if expr.name in shadowed:
-            return expr
-        replacement = values.get(expr.name)
-        if replacement is not None:
-            return replacement
-        return expr.with_(name=rename.get(expr.name, expr.name))
-    if isinstance(expr, LetExprLambda):
-        return expr.with_(
-            body=_rename_expr(
-                expr.body, objects, values, rename, shadowed | {expr.param}
-            )
-        )
-    if isinstance(expr, LetExprFactor):
-        inner = shadowed | {binder.var for binder in expr.binders}
-        return expr.with_(
+    substitution: dict[str, LetExprNode] = {
+        name: LetExprVar(name=target) for name, target in rename.items()
+    }
+    substitution.update(values)
+
+    def substitute_objects(node: LetExprNode) -> LetExprNode:
+        if not isinstance(node, LetExprFactor):
+            return node
+        return node.with_(
             binders=tuple(
-                LetFactorBinder(
-                    var=binder.var,
-                    index=_rename_object(binder.index, objects),
-                    line=binder.line,
-                    col=binder.col,
-                )
-                for binder in expr.binders
-            ),
-            body=(
-                None
-                if expr.body is None
-                else _rename_expr(expr.body, objects, values, rename, inner)
-            ),
-            cases=tuple(
-                case.with_(
-                    value=_rename_expr(case.value, objects, values, rename, inner)
-                )
-                for case in expr.cases
-            ),
-        )
-    changes: dict[str, LetExprNode | tuple[LetExprNode, ...]] = {}
-    for field in type(expr).__field_specs__:
-        current = getattr(expr, field)
-        if isinstance(current, LetExprNode):
-            changes[field] = _rename_expr(current, objects, values, rename, shadowed)
-        elif (
-            isinstance(current, tuple)
-            and current
-            and all(isinstance(item, LetExprNode) for item in current)
-        ):
-            changes[field] = tuple(
-                _rename_expr(item, objects, values, rename, shadowed)
-                for item in current
+                binder.with_(index=_rename_object(binder.index, objects))
+                for binder in node.binders
             )
-    if not changes:
-        return expr
-    return expr.with_(**changes)
+        )
+
+    return map_let_expr(substitute_let_expr(expr, substitution), substitute_objects)
 
 
 __all__ = []

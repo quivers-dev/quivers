@@ -326,7 +326,13 @@ conclusion category exceeds depth $d$ in the constructor tree
 is a category constructor as one unit of depth). This bounds the
 chart's category-constructor tower for rule systems with growing
 unary intro / elim cycles (modal, continuation, residuation),
-without privileging any particular category constructor.
+without privileging any particular category constructor. A `span`
+item measures as its category; positions, atoms, bound variables, and
+integer literals measure zero. The bound never limits how many rules
+a derivation applies: a sentence whose derivations are deeper than
+$d$ is parsed in full. The checked QIEC search applies the same
+measure to the same conclusions, so the two evaluators cut off exactly
+the same items.
 
 `tolerance ε` controls convergence detection in the chart's
 weight aggregation. For non-idempotent semirings with cyclic
@@ -339,7 +345,12 @@ the chart terminates re-firings on an item once successive
 updates fall below $\varepsilon$. With a divergent cycle the
 agenda hits `max_iterations` instead (the correct rejection of
 an ill-posed model). Setting $\varepsilon = 0$ recovers strict
-structural equality and the default acyclic-friendly semantics.
+structural equality and the default acyclic-friendly semantics. The
+checked QIEC search reaches the same limit by enumeration: it bounds
+how often a chain of unary rules may revisit an item and raises the
+bound until two successive goal weights differ by at most
+$\varepsilon$ (are equal, for $\varepsilon = 0$); a divergent cycle
+runs until the run's step budget is spent.
 
 `max_iterations N` caps the number of agenda pops; the agenda
 raises on exceeding it. Default is $10^5$.
