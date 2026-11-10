@@ -245,7 +245,7 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "gamma_regression",
             "cat_idx",
-            "Gathers beta_0 and beta_1 over the Cat plate",
+            "Gathers beta_0, beta_1 and shape over the Cat plate",
         ),
         (
             "half_student_t_hierarchical",

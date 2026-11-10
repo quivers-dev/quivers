@@ -194,8 +194,9 @@ assert (post["dispersion"].log() - true_dispersion.log()).abs().max() < 0.7
 ### NUTS posterior
 
 [`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
-300 rows. Each coefficient's truth should lie within three posterior standard
-deviations of its posterior mean.
+300 rows. Its posterior means should meet the same 0.3 tolerance against the
+truth and agree with the SVI posterior means to within 0.15, since the two
+methods target one posterior.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -209,7 +210,8 @@ for k in ("beta_0", "beta_1"):
     s = result.samples[k].reshape(-1, D)
     mean, sd = s.mean(0), s.std(0)
     print(f"{k}: mean {mean.numpy().round(2)}, sd {sd.numpy().round(2)}")
-    assert ((mean - truth[k]).abs() < 3 * sd).all()
+    assert (mean - truth[k]).abs().max() < 0.3
+    assert (mean - post[k]).abs().max() < 0.15
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
