@@ -42,6 +42,7 @@ from quivers.continuous._zip_hurdle import (
     ZeroInflatedPoisson,
     ZeroOneInflatedBeta,
 )
+from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous.family_spec import (
     FamilySpec,
@@ -2449,7 +2450,10 @@ class ConditionalLKJCholesky(ContinuousMorphism):
     matrices on the LKJ distribution (Lewandowski-Kurowicka-Joe
     2009, doi:10.1016/j.jmva.2009.04.008). The matrix dimension
     is taken from ``codomain.dim``; only the concentration parameter
-    is learnable.
+    is learnable. Draws use the onion method of that paper (section
+    3.2), the construction the QIEC reference machine also draws by,
+    so every off-diagonal correlation ``r`` in dimension ``d`` has
+    ``(r + 1) / 2 ~ Beta(eta - 1 + d / 2, eta - 1 + d / 2)``.
 
     Parameters
     ----------
@@ -2459,11 +2463,20 @@ class ConditionalLKJCholesky(ContinuousMorphism):
         Target space; ``codomain.dim`` is the correlation-matrix size.
     hidden_dim : int
         Hidden layer width for the parameter source.
+    param_source : ParamSource or None
+        A prebuilt source of the concentration's raw value.
+    param_source_option : str or None
+        The named parameter-source kind to build.
+
+    Raises
+    ------
+    TypeError
+        If ``codomain.dim`` is not an integer.
     """
 
-    arg_constraints: dict[str, _constraints.Constraint] = dict(
-        D.LKJCholesky.arg_constraints
-    )
+    arg_constraints: dict[str, _constraints.Constraint] = {
+        "concentration": _constraints.positive
+    }
     support: _constraints.Constraint = _constraints.corr_cholesky  # type: ignore[assignment]
 
     def __init__(
@@ -2475,7 +2488,13 @@ class ConditionalLKJCholesky(ContinuousMorphism):
         param_source_option: str | None = None,
     ) -> None:
         super().__init__(domain, codomain)
-        self._matrix_dim = codomain.dim
+        matrix_dim = codomain.dim
+        if not isinstance(matrix_dim, int):
+            raise TypeError(
+                "ConditionalLKJCholesky needs a codomain with an integer "
+                f"dimension, got {matrix_dim!r}"
+            )
+        self._matrix_dim = matrix_dim
         self.param_source = _make_source(
             domain,
             1,
@@ -2484,10 +2503,23 @@ class ConditionalLKJCholesky(ContinuousMorphism):
             param_source_option=param_source_option,
         )
 
-    def _get_dist(self, x: torch.Tensor) -> D.LKJCholesky:
+    def _get_dist(self, x: torch.Tensor) -> OnionLKJCholesky:
+        """The LKJ distribution at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input the concentration is computed from.
+
+        Returns
+        -------
+        OnionLKJCholesky
+            The prior over ``dim``-by-``dim`` Cholesky factors, one batch
+            entry per input row.
+        """
         raw = self.param_source(x)
         concentration = F.softplus(raw.squeeze(-1)) + 0.1
-        return D.LKJCholesky(dim=self._matrix_dim, concentration=concentration)
+        return OnionLKJCholesky(dim=self._matrix_dim, concentration=concentration)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
@@ -2498,8 +2530,25 @@ class ConditionalLKJCholesky(ContinuousMorphism):
         x: torch.Tensor,
         sample_shape: torch.Size = torch.Size(),
     ) -> torch.Tensor:
+        """Draw one Cholesky factor per input row, by the onion method.
+
+        The factors are differentiable in the concentration, and so in the
+        parameter source, through implicitly reparameterized Beta draws.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input the concentration is computed from.
+        sample_shape : torch.Size
+            Leading sample dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Factors of shape ``(*sample_shape, batch, dim, dim)``.
+        """
         dist = self._get_dist(x)
-        return dist.sample(sample_shape)
+        return dist.rsample(sample_shape)
 
 
 # ============================================================================
@@ -3285,7 +3334,7 @@ _register_family(
 _register_family(
     FamilySpec(
         name="LKJCholesky",
-        dist_class=D.LKJCholesky,
+        dist_class=OnionLKJCholesky,
         params=(ParamSpec(name="concentration", transform="softplus_shifted"),),
         support=_constraints.corr_cholesky,
         output_kind="matrix",
@@ -3642,9 +3691,13 @@ class LKJCorrelationFactor(ContinuousMorphism):
     A higher concentration :math:`\\eta > 1` pulls toward the
     identity correlation; :math:`\\eta = 1` is uniform on
     correlations. Sampling uses the *onion method* of
-    Lewandowski-Kurowicka-Joe 2009: draw row-norm partial
-    correlations from Beta distributions and form :math:`L`
-    row-by-row.
+    Lewandowski-Kurowicka-Joe 2009 (section 3.2,
+    doi:10.1016/j.jmva.2009.04.008): row :math:`k` (zero-based) of
+    :math:`L` is :math:`(\\sqrt{y}\\, u, \\sqrt{1 - y})` for
+    :math:`y \\sim \\mathrm{Beta}(k/2, \\eta + (K - 1 - k)/2)` and
+    :math:`u` uniform on the unit sphere in :math:`\\mathbb{R}^k`. The
+    construction is shared with the QIEC reference machine, and the
+    draws are differentiable in :math:`\\eta`.
 
     Parameters
     ----------
@@ -3679,7 +3732,7 @@ class LKJCorrelationFactor(ContinuousMorphism):
         self._dim = dim
         self._eta = float(eta)
 
-    def _distribution(self, x: torch.Tensor) -> D.LKJCholesky:
+    def _distribution(self, x: torch.Tensor) -> OnionLKJCholesky:
         """The LKJ distribution, on the input's device and float dtype.
 
         Parameters
@@ -3689,12 +3742,12 @@ class LKJCorrelationFactor(ContinuousMorphism):
 
         Returns
         -------
-        torch.distributions.LKJCholesky
+        OnionLKJCholesky
             The prior over ``dim``-by-``dim`` Cholesky factors.
         """
         dtype = x.dtype if x.is_floating_point() else torch.get_default_dtype()
         concentration = torch.tensor(self._eta, device=x.device, dtype=dtype)
-        return D.LKJCholesky(self._dim, concentration)
+        return OnionLKJCholesky(self._dim, concentration)
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
@@ -3714,7 +3767,7 @@ class LKJCorrelationFactor(ContinuousMorphism):
             Flat factors, shape ``(*sample_shape, batch, dim * dim)``.
         """
         batch = x.shape[0]
-        factors = self._distribution(x).sample(torch.Size(sample_shape) + (batch,))
+        factors = self._distribution(x).rsample(torch.Size(sample_shape) + (batch,))
         return factors.reshape(*factors.shape[:-2], self._dim * self._dim)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

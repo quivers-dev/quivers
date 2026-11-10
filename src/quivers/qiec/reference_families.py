@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 import random
 
+from quivers.qiec._onion import onion_cholesky_rows
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
     Density,
@@ -2914,6 +2915,11 @@ def _lkj_log_normalizer(size: int, concentration: float) -> float:
 def _lkj_sample(size: int, concentration: float, rng: random.Random) -> Matrix:
     """Draw a correlation Cholesky factor by the onion method.
 
+    The construction is ``quivers.qiec._onion.onion_cholesky_rows`` on
+    floats, the implementation the compiled runtime's LKJ families also
+    draw by (Lewandowski, Kurowicka, and Joe 2009, section 3.2,
+    [doi:10.1016/j.jmva.2009.04.008](https://doi.org/10.1016/j.jmva.2009.04.008)).
+
     Parameters
     ----------
     size : int
@@ -2928,17 +2934,15 @@ def _lkj_sample(size: int, concentration: float, rng: random.Random) -> Matrix:
     Matrix
         The lower Cholesky factor of an LKJ correlation matrix.
     """
-    factor = [[0.0] * size for _ in range(size)]
-    factor[0][0] = 1.0
-    for k in range(1, size):
-        beta = concentration + (size - 1 - k) / 2.0
-        radius_squared = rng.betavariate(k / 2.0, beta)
-        direction = [rng.gauss(0.0, 1.0) for _ in range(k)]
-        norm = math.sqrt(math.fsum(item * item for item in direction))
-        for j in range(k):
-            factor[k][j] = math.sqrt(radius_squared) * direction[j] / norm
-        factor[k][k] = math.sqrt(1.0 - radius_squared)
-    return tuple(tuple(row) for row in factor)
+
+    def draw_direction(count: int) -> list[float]:
+        return [rng.gauss(0.0, 1.0) for _ in range(count)]
+
+    rows = onion_cholesky_rows(
+        size, concentration, rng.betavariate, draw_direction, math.sqrt
+    )
+    lower = [[1.0], *rows]
+    return tuple(tuple(row) + (0.0,) * (size - len(row)) for row in lower)
 
 
 def _lkj_dimension(value: object, family: str) -> tuple[Matrix, int]:
