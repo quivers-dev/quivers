@@ -23,13 +23,17 @@ import math
 import pytest
 import torch
 
+import quivers.inference.mcmc.hmc as hmc_module
+from quivers.continuous import Draw, Euclidean, MonadicProgram, make_fixed_normal
+from quivers.core import Unit
 from quivers.dsl import loads
 from quivers.inference.mcmc.adapt import (
     DualAveraging,
     WelfordCovariance,
     find_reasonable_step_size,
 )
-from quivers.inference.mcmc import HMCKernel, MCMC, NUTSKernel
+from quivers.inference.mcmc import HMCKernel, MCMC, NUTSKernel, PotentialFn
+from quivers.inference.mcmc.hmc import MassMatrixKind
 from quivers.inference.registry import LatentRegistry
 
 
@@ -694,3 +698,190 @@ def test_mcmc_init_strategy_guide_with_no_guide_raises() -> None:
     )
     with pytest.raises(ValueError, match="requires a guide"):
         driver.run(model, torch.zeros(1, 1), {"y": y})
+
+
+# ---------------------------------------------------------------------------
+# Target-evaluation budget of the leapfrog integrator
+# ---------------------------------------------------------------------------
+
+
+class _CountingPotential(PotentialFn):
+    """`PotentialFn` that counts every target evaluation it serves."""
+
+    def __init__(
+        self,
+        model: MonadicProgram,
+        registry: LatentRegistry,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+    ) -> None:
+        super().__init__(model, registry, x, observations)
+        self.forward_passes = 0
+        self.forward_with_grad_mode = 0
+        self.gradient_calls = 0
+
+    def log_density(self, z: torch.Tensor) -> torch.Tensor:
+        self.forward_passes += 1
+        self.forward_with_grad_mode += int(torch.is_grad_enabled())
+        return super().log_density(z)
+
+    def value_and_grad(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self.gradient_calls += 1
+        return super().value_and_grad(z)
+
+    def reset(self) -> None:
+        self.forward_passes = 0
+        self.forward_with_grad_mode = 0
+        self.gradient_calls = 0
+
+
+def _standard_normal_program(dim: int) -> MonadicProgram:
+    return MonadicProgram(
+        Unit,
+        Euclidean(name="out", dim=1),
+        steps=[
+            Draw(
+                names=("z",),
+                morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="R", dim=dim)),
+            )
+        ],
+        return_vars=(),
+    )
+
+
+def _count_leapfrog_steps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Wrap the single-step integrator so a test can count its calls."""
+    counter = [0]
+    real_step = hmc_module._leapfrog_step
+
+    def _counted_step(
+        z: torch.Tensor,
+        p: torch.Tensor,
+        grad: torch.Tensor,
+        step_size: float,
+        potential: PotentialFn,
+        mass: hmc_module._MassMatrix,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        counter[0] += 1
+        return real_step(z, p, grad, step_size, potential, mass)
+
+    monkeypatch.setattr(hmc_module, "_leapfrog_step", _counted_step)
+    return counter
+
+
+@pytest.mark.parametrize("mass_matrix", ["identity", "diagonal", "dense"])
+def test_hmc_evaluates_the_target_once_per_leapfrog_step(
+    monkeypatch: pytest.MonkeyPatch, mass_matrix: MassMatrixKind
+) -> None:
+    dim, num_steps, transitions = 6, 7, 25
+    model = _standard_normal_program(dim)
+    registry = LatentRegistry.from_model(model, set())
+    potential = _CountingPotential(model, registry, torch.zeros(1, 1), {})
+    leapfrog_steps = _count_leapfrog_steps(monkeypatch)
+    kernel = HMCKernel(step_size=0.2, num_steps=num_steps, mass_matrix=mass_matrix)
+    kernel._set_generator(torch.Generator().manual_seed(0))
+    state = kernel.init(registry, model, torch.zeros(1, 1), {}, torch.zeros(dim))
+
+    state = kernel.step(state, potential)
+    # The first transition also evaluates the gradient at the start.
+    assert potential.gradient_calls == num_steps + 1
+    assert potential.forward_passes == num_steps + 1
+
+    potential.reset()
+    leapfrog_steps[0] = 0
+    for _ in range(transitions):
+        state = kernel.step(state, potential)
+
+    assert leapfrog_steps[0] == transitions * num_steps
+    assert potential.gradient_calls == transitions * num_steps
+    assert potential.forward_passes == transitions * num_steps
+    assert potential.forward_with_grad_mode == transitions * num_steps
+
+
+@pytest.mark.parametrize("mass_matrix", ["identity", "diagonal", "dense"])
+def test_nuts_evaluates_the_target_once_per_leapfrog_step(
+    monkeypatch: pytest.MonkeyPatch, mass_matrix: MassMatrixKind
+) -> None:
+    dim, transitions = 20, 50
+    model = _standard_normal_program(dim)
+    registry = LatentRegistry.from_model(model, set())
+    potential = _CountingPotential(model, registry, torch.zeros(1, 1), {})
+    leapfrog_steps = _count_leapfrog_steps(monkeypatch)
+    kernel = NUTSKernel(step_size=0.3, max_tree_depth=6, mass_matrix=mass_matrix)
+    kernel._set_generator(torch.Generator().manual_seed(0))
+    state = kernel.init(registry, model, torch.zeros(1, 1), {}, torch.zeros(dim))
+
+    state = kernel.step(state, potential)
+    assert potential.gradient_calls == leapfrog_steps[0] + 1
+
+    potential.reset()
+    leapfrog_steps[0] = 0
+    tree_leaves = 0
+    moved = 0
+    for _ in range(transitions):
+        previous = state.position
+        state = kernel.step(state, potential)
+        tree_leaves += 2 ** state.extras["tree_depth"] - 1
+        moved += int(not torch.equal(previous, state.position))
+
+    # A standard normal target never terminates a subtree early at
+    # this step size, so every tree is complete.
+    assert leapfrog_steps[0] == tree_leaves
+    assert moved > 0
+    assert potential.gradient_calls == tree_leaves
+    assert potential.forward_passes == tree_leaves
+    assert potential.forward_with_grad_mode == tree_leaves
+
+
+@pytest.mark.parametrize("kernel_kind", ["hmc", "nuts"])
+def test_carried_gradient_matches_a_fresh_evaluation(kernel_kind: str) -> None:
+    """The gradient a transition hands to the next one is the
+    gradient of the target at the new position, bit for bit."""
+    dim = 4
+    model = _standard_normal_program(dim)
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    kernel: HMCKernel | NUTSKernel = (
+        HMCKernel(step_size=0.3, num_steps=5)
+        if kernel_kind == "hmc"
+        else NUTSKernel(step_size=0.3, max_tree_depth=5)
+    )
+    kernel._set_generator(torch.Generator().manual_seed(1))
+    state = kernel.init(
+        registry, model, torch.zeros(1, 1), {}, torch.linspace(-1.0, 1.0, dim)
+    )
+    for _ in range(20):
+        state = kernel.step(state, potential)
+        fresh_value, fresh_grad = potential.value_and_grad(state.position)
+        assert torch.equal(state.grad_log_density, fresh_grad)
+        assert torch.equal(state.log_density, fresh_value)
+
+
+def test_value_and_grad_differentiates_inside_no_grad() -> None:
+    model = _standard_normal_program(3)
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    z = torch.tensor([0.5, -1.0, 2.0])
+    expected_value, expected_grad = potential.value_and_grad(z)
+    with torch.no_grad():
+        value, grad = potential.value_and_grad(z)
+    assert torch.isfinite(value)
+    assert torch.equal(value, expected_value)
+    assert torch.equal(grad, expected_grad)
+    assert torch.allclose(grad, -z)
+
+
+def test_leapfrog_rejects_zero_steps() -> None:
+    model = _standard_normal_program(2)
+    registry = LatentRegistry.from_model(model, set())
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {})
+    with pytest.raises(ValueError, match="n_steps must be >= 1"):
+        hmc_module._leapfrog(
+            torch.zeros(2),
+            torch.zeros(2),
+            torch.zeros(2),
+            0.1,
+            0,
+            potential,
+            hmc_module._MassMatrix(2, "identity"),
+        )

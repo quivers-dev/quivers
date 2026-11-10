@@ -147,24 +147,39 @@ class PotentialFn:
     def value_and_grad(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(log_density, grad_log_density)`` for ``z``.
 
-        ``z`` is expected to be a detached tensor; we make a fresh
-        leaf with ``requires_grad=True`` so gradient propagation
-        doesn't leak into the kernel's accumulated state.
+        One call runs one forward pass of `log_density` and one
+        backward pass, and the HMC and NUTS integrators make exactly
+        one call per leapfrog step. The gradient is taken against a
+        fresh leaf copy of ``z`` with autograd enabled, so the call
+        differentiates even inside a ``torch.no_grad()`` block and
+        gradient propagation does not leak into the kernel's state.
 
         For divergent positions (where the log-density is
         ``-inf``), returns a zero gradient: the kernel rejects
         the trajectory in the Metropolis step anyway, and a zero
         gradient keeps the leapfrog integrator from producing NaN
         downstream.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The detached scalar log-density and its detached
+            gradient with respect to ``z`` (shape ``(D,)``).
         """
         z_leaf = z.detach().clone().requires_grad_(True)
         try:
-            ld = self.log_density(z_leaf)
-            if not torch.isfinite(ld):
-                return ld.detach(), torch.zeros_like(z)
-            grad = torch.autograd.grad(
-                ld, z_leaf, create_graph=False, allow_unused=False
-            )[0]
+            with torch.enable_grad():
+                ld = self.log_density(z_leaf)
+                if not torch.isfinite(ld):
+                    return ld.detach(), torch.zeros_like(z)
+                grad = torch.autograd.grad(
+                    ld, z_leaf, create_graph=False, allow_unused=False
+                )[0]
             if grad is None or not torch.isfinite(grad).all():
                 return ld.detach(), torch.zeros_like(z)
             return ld.detach(), grad.detach()

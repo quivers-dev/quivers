@@ -61,9 +61,17 @@ Both
 Nesterov dual-averaging [@hoffman2014nuts]
 step-size adaptation during warmup, and Welford-online mass-matrix
 adaptation when `mass_matrix` is set to `"diagonal"` or `"dense"`
-(the default `"identity"` disables mass-matrix adaptation). Chains
+(`"identity"`, the `HMCKernel` default, disables mass-matrix
+adaptation; `NUTSKernel` defaults to `"diagonal"`). Chains
 run sequentially: the driver loops over `num_chains`, and within
 each chain warmup and sampling advance one leapfrog step at a time.
+Each leapfrog step evaluates the target once, through
+[`PotentialFn.value_and_grad`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.value_and_grad)
+(one forward and one backward pass). The value it returns is the
+endpoint log-density in the Hamiltonian, and NUTS carries the
+selected proposal's gradient into the next transition, so a
+transition costs one target evaluation per leapfrog step and nothing
+more.
 Each chain derives an independent local generator from `seed`; that
 stream controls initialization, momentum, tree direction, subtree
 selection, and acceptance. Thus repeated runs with the same seed are
