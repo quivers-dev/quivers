@@ -412,7 +412,11 @@ class Mixture(Measure):
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         cat = torch.distributions.Categorical(probs=self.weights)
         idx = cat.sample(sample_shape)
-        draws = [c.sample(sample_shape) for c in self.components]
+        # Components may carry smaller batch shapes than the mixture (a
+        # `PointMass` spike has none), so every draw is broadcast to the
+        # mixture's full sample shape before one is selected per entry.
+        shape = torch.Size(sample_shape) + self.batch_shape + self.event_shape
+        draws = [c.sample(sample_shape).expand(shape) for c in self.components]
         stacked = torch.stack(draws, dim=-1)
         return stacked.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 

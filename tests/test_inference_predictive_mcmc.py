@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from quivers.continuous.family_spec import FAMILY_REGISTRY
+from quivers.continuous.inline import _FAMILY_BUILDERS
 from quivers.dsl import loads
 from quivers.inference import (
     AutoNormalGuide,
@@ -13,6 +15,7 @@ from quivers.inference import (
     MCMCResult,
     NUTSKernel,
     Predictive,
+    trace,
 )
 
 
@@ -199,3 +202,95 @@ def test_predictive_rejects_an_mcmc_result_for_another_model() -> None:
     )
     with pytest.raises(ValueError, match="not latent sample sites"):
         Predictive(model, stranger)
+
+
+# ---------------------------------------------------------------------------
+# Every discrete family samples and scores its own draws
+# ---------------------------------------------------------------------------
+
+# Arguments for an observe site of each discrete family, built from
+# `a ~ Normal`, `q = sigmoid(a)`, `r = exp(a)`, a 3-simplex `pc`, and the
+# observed cutpoint plate `cuts`; ``None`` marks a family with no literal form.
+_DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
+    "Bernoulli": ("probs=q", "probs=0.3", [0, 1, 1, 0, 1, 1]),
+    "Categorical": ("probs=pc", "probs=[0.2, 0.3, 0.5]", [0, 1, 2, 1, 0, 2]),
+    "Poisson": ("rate=r", "rate=2.0", [0, 2, 1, 3, 0, 1]),
+    "Geometric": ("probs=q", "probs=0.3", [0, 2, 1, 3, 0, 1]),
+    "Binomial": ("total_count=5.0, probs=q", None, [0, 2, 5, 3, 1, 4]),
+    "NegativeBinomial": (
+        "total_count=3.0, probs=q",
+        "total_count=3.0, probs=0.4",
+        [0, 2, 1, 3, 0, 1],
+    ),
+    "BetaBinomial": (
+        "total_count=5.0, concentration1=r, concentration0=1.0",
+        None,
+        [0, 2, 5, 3, 1, 4],
+    ),
+    "ZeroInflatedPoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
+    "HurdlePoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
+    "OrderedLogistic": ("predictor=a, cutpoints=cuts", None, [0, 1, 2, 1, 0, 2]),
+}
+_HOST = {"cuts": torch.tensor([-1.0, 1.0])}  # observed cutpoints
+
+
+def test_the_discrete_family_table_covers_every_discrete_family() -> None:
+    registered = {name for name, spec in FAMILY_REGISTRY.items() if spec.discrete}
+    inline = {name for name, (_, _, discrete) in _FAMILY_BUILDERS.items() if discrete}
+    assert set(_DISCRETE_ARGUMENTS) == registered | inline
+
+
+def _discrete_program(family: str, arguments: str):
+    return loads(
+        "object Resp : FinSet 6\n"
+        "object Cat : FinSet 3\n"
+        "object Cut : FinSet 2\n"
+        "program p : Resp -> Resp\n"
+        "    sample a <- Normal(loc=0.0, scale=1.0)\n"
+        "    sample cuts <- Normal(loc=0.0, scale=2.0) [over=Cut]\n"
+        "    sample pc : Cat <- Dirichlet(concentration=1.0)\n"
+        "    let q = sigmoid(a)\n"
+        "    let r = exp(a)\n"
+        f"    observe y : Resp <- {family}({arguments})\n"
+        "    return a\n"
+        "export p\n"
+    ).morphism
+
+
+def _cases() -> list[tuple[str, str]]:
+    cases = []
+    for family, (mixed, literal, _) in sorted(_DISCRETE_ARGUMENTS.items()):
+        cases.append((family, mixed))
+        if literal is not None:
+            cases.append((family, literal))
+    return cases
+
+
+@pytest.mark.parametrize(("family", "arguments"), _cases())
+def test_discrete_observe_sites_sample_and_score_their_draws(
+    family: str, arguments: str
+) -> None:
+    model = _discrete_program(family, arguments)
+    x = torch.zeros(1, 1)
+    y = torch.tensor(_DISCRETE_ARGUMENTS[family][2], dtype=torch.get_default_dtype())
+    support = FAMILY_REGISTRY[family].support if family in FAMILY_REGISTRY else None
+    floating = family == "Bernoulli"
+
+    def _check(draws: torch.Tensor) -> None:
+        assert draws.dtype.is_floating_point == floating
+        assert torch.isfinite(draws.double()).all()
+        if support is not None:
+            assert support.check(draws).all()
+
+    model.rsample(x, observations=_HOST)
+    traced = trace(model, x, observations=_HOST)
+    _check(traced.sites["y"].value)
+    assert torch.isfinite(traced.sites["y"].log_prob).all()
+
+    guide = AutoNormalGuide(model, observed_names={"y", "cuts"})
+    _check(Predictive(model, guide, num_samples=3)(x, observations=_HOST)["y"])
+
+    fit = MCMC(
+        NUTSKernel(max_tree_depth=3), num_warmup=5, num_samples=4, num_chains=1, seed=0
+    ).run(model, x, {"y": y, **_HOST})
+    _check(Predictive(model, fit, num_samples=3)(x, observations=_HOST)["y"])
