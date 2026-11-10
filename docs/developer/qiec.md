@@ -572,8 +572,11 @@ semiring (`LogWeight` for `LogProb` and `Viterbi`, `Bool` for `Boolean`,
 `Int` for `Counting`), and a `params` instance of `Param` through which
 learned weights are read under the names the agenda engine keys its
 parameters by: `<name>.lex.<index>` for a lexicon entry and
-`<name>.rule.<rule>:<bindings>` for a rule, the bindings rendered in name
-order by the `<name>__show` computation. The recursive `<name>__derive`
+`<name>.rule.<rule>:<bindings>` for a rule, the bindings of its category
+variables (every variable that is not a chart position) rendered in name
+order by the `<name>__show` computation and joined by `|`. A slot holds a
+position exactly when it is typed `Int`, so positions never enter a weight's
+name and one weight serves a rule at every position. The recursive `<name>__derive`
 computation chooses an axiom or a group of rules with premises of one
 shape, derives each premise by recursion, matches it against the rule's
 pattern by `case` analysis (a shared pattern variable is checked by the

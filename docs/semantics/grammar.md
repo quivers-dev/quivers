@@ -78,32 +78,58 @@ rule r : π_1, …, π_m |- π #[learnable]
 ```
 
 Rather than the default constant log-weight $\beta_r$, the rule's
-contribution is a *bindings-keyed* family of learnable
-parameters: at each firing the matcher produces a binding map
-$\sigma : \mathrm{Vars}(r) \to I$ assigning each free pattern
-variable to a ground item, and the conclusion's weight becomes
+contribution is a learnable parameter keyed by the rule's
+*non-position* bindings. The variables of a rule fall into two
+sorts. A *position variable* fills a chart-position slot: one of
+the first two slots of `span` in a deduction with a lexicon (whose
+axioms are `span(i, i + 1, c)` items), a slot an integer literal
+fills, or any slot a variable shared with a position slot fills in
+the same rule, closed under that last clause. Every other variable
+is a *category variable*: it ranges over categories, logical forms,
+or other structured items. Writing $P(r)$ for the position
+variables and $C(r) = \mathrm{Vars}(r) \setminus P(r)$ for the
+category variables, each firing produces a binding map
+$\sigma : \mathrm{Vars}(r) \to I$ and the conclusion's weight
+becomes
 
 $$
-\beta_r(\sigma) \;=\; \otimes_{\ell=1}^{m} \alpha[\sigma(\pi_\ell)] \;\otimes\; \theta_{r, \sigma},
+\beta_r(\sigma) \;=\; \otimes_{\ell=1}^{m} \alpha[\sigma(\pi_\ell)] \;\otimes\; \theta_{r, \sigma|_{C(r)}},
 $$
 
-where $\theta_{r, \sigma} \in K$ is a learnable scalar
-parameter allocated lazily on the first observation of the
-binding tuple $\sigma$ (one parameter per distinct $\sigma$
-observed at run time, keyed by a canonical string form of
-$\sigma$). The parameters live on a per-deduction `nn.Module`
-side-table that participates in the model's `.parameters()`.
+where $\theta_{r, \kappa} \in K$ is one learnable scalar per
+distinct restriction $\kappa = \sigma|_{C(r)}$ of the binding to
+the category variables, keyed by a canonical string form of
+$\kappa$. Chart positions never enter the key: a rule has the
+same weight at every position of every input, so a weight learned
+on one sentence applies to the same construction anywhere in any
+other, and the parameter set does not grow with input length. The
+parameters live on a per-deduction `nn.Module` side-table that
+participates in the model's `.parameters()`; the weight of a
+category binding is allocated the first time a firing produces it.
 
 Two specializations of the surface deserve explicit names:
 
-* When the rule's conclusion contains no free wildcards (every
-  binding has a unique ground value), $\theta_{r, \sigma}$
-  reduces to a single global rule weight $\theta_r$, recovering
-  the PCFG-style per-production weight.
-* When the rule's conclusion is wildcarded (e.g. `branch : ... |-
-  span(I, J, A)` with $A$ free), each distinct ground value of
-  the wildcard pulls a distinct parameter from the dictionary,
-  recovering the *partial-application weight* of [§2.2](#22-parent-rule-specialization-parent).
+* When the rule has no category variable (every variable is a
+  position, as in `np : span(I, K, Det), span(K, J, N) |- span(I, J, NP)`),
+  $\theta_{r, \kappa}$ reduces to a single global rule weight
+  $\theta_r$, the PCFG-style per-production weight. It is
+  allocated when the deduction is compiled.
+* When the rule has category variables (e.g. `fwd : span(I, K,
+  Fwd(X, Y)), span(K, J, Y) |- span(I, J, X)`), each distinct
+  ground value of $(X, Y)$ pulls a distinct parameter, recovering
+  the *partial-application weight* of
+  [§2.2](#22-parent-rule-specialization-parent).
+
+A lexicon entry marked `#[learnable]` has one weight per entry
+(and, for a wildcard or restricted category, one per candidate
+category), shared across every position at which its word occurs.
+
+The checked QIEC elaboration reads the same weights from its
+`Param` store under the names `<D>.rule.<r>:<κ>` and `<D>.lex.<i>`,
+with $\kappa$ the category bindings rendered in variable-name
+order and joined by `|` (empty for a rule without category
+variables), so both evaluators agree on which firings share a
+weight.
 
 ### 2.2 Parent rule specialization (`parent=`)
 
@@ -115,18 +141,19 @@ rule r' : π'_1, …, π'_m |- π' #[learnable, parent=r]
 ```
 
 The conclusion weight then composes additively in the log semiring
-with the parent's bindings-keyed weight on the *same* bindings:
+with the parent's weight under the *same* category bindings:
 
 $$
 \beta_{r'}(\sigma) \;=\; \otimes_\ell \alpha[\sigma(\pi'_\ell)]
-\;\otimes\; \theta_{r', \sigma}
-\;\otimes\; \theta_{r, \sigma}.
+\;\otimes\; \theta_{r', \kappa}
+\;\otimes\; \theta_{r, \kappa},
+\qquad \kappa = \sigma|_{C(r')}.
 $$
 
 The parent chain is acyclic and terminates at a non-parented
 rule. This recovers a *hierarchical* / *back-off* parametrization
 in which the specialization contributes a correction term over
-the parent's bindings-keyed weight without retraining the parent
+the parent's weight without retraining the parent
 from scratch.
 
 ### 2.3 Bounded rule weights (`bounded`)
@@ -135,12 +162,12 @@ A learnable rule whose pragma additionally lists `bounded` is
 reparameterized to keep its surface log-weight strictly negative:
 
 $$
-\theta_{r, \sigma} \;=\; -\mathrm{softplus}(\mathit{raw}_{r,\sigma})
+\theta_{r, \kappa} \;=\; -\mathrm{softplus}(\mathit{raw}_{r,\kappa})
 \;-\; \log n_b,
 $$
 
 where $n_b$ counts the deduction's bounded rules. The per-firing
-factor $\exp(\theta_{r,\sigma})$ is then strictly below $1 / n_b$,
+factor $\exp(\theta_{r,\kappa})$ is then strictly below $1 / n_b$,
 so the total mass a chart item can push through the deduction's
 bounded rules is strictly below 1. This is the correct
 parameterization when the rules close cycles in the deduction

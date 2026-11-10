@@ -77,6 +77,7 @@ from quivers.dsl.compiler._options import (
     get_option_flag,
     get_option_name,
 )
+from quivers.dsl.compiler._deduction_positions import position_slots
 from quivers.dsl.compiler.deductions import load_lexicon_tsv
 from quivers.stochastic.categories import (
     AtomicCategory,
@@ -1402,10 +1403,11 @@ class _DeductionElaboration:
     def _infer_sorts(self: _Elaborator, system: _System) -> None:
         """Fix each constructor slot's sort from how the system uses it.
 
-        A slot is an integer when a literal fills it or a variable shared
-        with an integer slot does, and a position of ``span`` is an
-        integer by the lexicon's convention; every other slot holds an
-        item.
+        A slot is an integer exactly when it holds a chart position, as
+        `position_slots` infers it for the agenda compiler too: a
+        position of ``span`` under a lexicon, a slot a literal fills, or
+        a slot a variable shared with a position slot fills. Every other
+        slot holds an item.
 
         Parameters
         ----------
@@ -1414,44 +1416,13 @@ class _DeductionElaboration:
         """
         if BOUND in system.symbols:
             system.symbols[BOUND] = ["int"]
-        changed = True
-        while changed:
-            changed = False
-            for rule in system.rules:
-                integral: set[str] = set()
-                occurrences: dict[str, list[tuple[str, int]]] = {}
-
-                def walk(pattern: Pattern) -> None:
-                    """Collect the slots each variable fills.
-
-                    Parameters
-                    ----------
-                    pattern : Pattern
-                        The pattern.
-                    """
-                    if not isinstance(pattern, _App):
-                        return
-                    sorts = system.symbols[pattern.symbol]
-                    for position, argument in enumerate(pattern.args):
-                        if isinstance(argument, _Wild):
-                            occurrences.setdefault(argument.name, []).append(
-                                (pattern.symbol, position)
-                            )
-                            if sorts[position] == "int":
-                                integral.add(argument.name)
-                        elif isinstance(argument, _Lit):
-                            if sorts[position] != "int":
-                                sorts[position] = "int"
-                        else:
-                            walk(argument)
-
-                for pattern in (*rule.premises, rule.conclusion):
-                    walk(pattern)
-                for name in integral:
-                    for symbol, position in occurrences[name]:
-                        if system.symbols[symbol][position] != "int":
-                            system.symbols[symbol][position] = "int"
-                            changed = True
+        for symbol, flags in position_slots(system.decl).items():
+            sorts = system.symbols.get(symbol)
+            if sorts is None:
+                continue
+            for index, positional in enumerate(flags[: len(sorts)]):
+                if positional:
+                    sorts[index] = "int"
 
     def _declare_item_family(self: _Elaborator, system: _System) -> None:
         """Declare the deduction's item family and register it.
@@ -3511,10 +3482,13 @@ class _Context:
     ) -> Computation:
         """Read a rule's learned weight on its bindings, then continue.
 
-        The weight is keyed by the rule's name and its bindings rendered
-        in name order, as the classic engine keys it; a bounded rule's
-        raw parameter is mapped below zero, and a parented rule adds its
-        parent's weight on the same bindings.
+        The weight is keyed by the rule's name and its non-position
+        bindings (categories and logical forms) rendered in name order,
+        which is the keying the agenda engine uses: chart positions
+        never enter the key, so one weight serves the rule at every
+        position and sentence length. A bounded rule's raw parameter is
+        mapped below zero, and a parented rule adds its parent's weight
+        on the same bindings.
 
         Parameters
         ----------
@@ -3532,7 +3506,8 @@ class _Context:
         Computation
             The reads, innermost the continuation.
         """
-        names = sorted(bindings)
+        positions = set(self.position_variables(rule))
+        names = sorted(name for name in bindings if name not in positions)
 
         def render(
             position: int, rendered: list[Value], then: Callable[[Value], Computation]
@@ -3561,12 +3536,6 @@ class _Context:
                     suffix = self.primitive("concat", suffix, part)
                 return then(suffix)
             local = bindings[names[position]]
-            if local.type == INT:
-                return render(
-                    position + 1,
-                    [*rendered, self.primitive("int_to_string", Var(local))],
-                    then,
-                )
             return self.bind(
                 "text",
                 STRING,

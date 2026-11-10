@@ -337,8 +337,10 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
 - **`rule NAME : premises |- conclusion`** is a sequent. Premises
   are comma-separated; arity is arbitrary (unary rules fire on a
   single chart cell, binary on a pair of adjacent cells, etc.). A
-  trailing `#[learnable]` pragma marks the rule's weight as
-  bindings-keyed and learnable.
+  trailing `#[learnable]` pragma gives the rule a learnable weight:
+  one per distinct binding of its category variables, shared across
+  every chart position, so a rule whose variables are all positions
+  has exactly one weight.
 - **`semiring=...`** in the option block selects the scoring
   algebra: `LogProb`, `Viterbi`, `Boolean`, `Counting`.
 - **`start=...`** declares the goal-item predicate (the start atom).
