@@ -3,8 +3,12 @@ encoders, decoders, losses, and the canonical shape sugar.
 """
 
 from __future__ import annotations
+
+import copy
+import pickle
 import textwrap
 
+import didactic.api as dx
 import pytest
 import torch
 
@@ -583,3 +587,161 @@ def test_deduction_with_attached_encoder_exposes_embeddings():
     )
     # The chart-as-presheaf works as before.
     assert chart.chart.get(("atom", "S")) is not None
+
+
+# ---------------------------------------------------------------------------
+# Term equality and hashing
+# ---------------------------------------------------------------------------
+
+
+def _lam(annotation: str, body: Term) -> Term:
+    """``λx : annotation. body`` over the STLC-style signature."""
+    return make_term("Lam", make_term("Base", annotation), body)
+
+
+def test_terms_with_different_data_leaves_are_distinct():
+    f = make_term("Const", "f")
+    plus = make_term("Const", "plus")
+    assert f != plus
+    assert not f == plus
+    assert hash(f) != hash(plus)
+    assert len({f, plus}) == 2
+
+
+def test_equal_terms_built_separately_are_equal_and_hash_alike():
+    def build() -> Term:
+        return _lam("base", make_term("App", make_term("Const", "plus"), bound_var(0)))
+
+    left, right = build(), build()
+    assert left is not right
+    assert left == right
+    assert hash(left) == hash(right)
+    assert len({left, right}) == 1
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        # differing leaf two levels down
+        _lam("base", make_term("App", make_term("Const", "f"), bound_var(0))),
+        # differing nested subterm shape
+        _lam("base", make_term("App", bound_var(0), make_term("Const", "plus"))),
+        # differing binder annotation
+        _lam("other", make_term("App", make_term("Const", "plus"), bound_var(0))),
+        # differing de-Bruijn index
+        _lam("base", make_term("App", make_term("Const", "plus"), bound_var(1))),
+        # differing binder operator over the same arguments
+        make_term(
+            "All",
+            make_term("Base", "base"),
+            make_term("App", make_term("Const", "plus"), bound_var(0)),
+        ),
+        # differing arity
+        _lam("base", make_term("App", make_term("Const", "plus"))),
+    ],
+    ids=["leaf", "nested", "annotation", "index", "binder", "arity"],
+)
+def test_terms_differing_below_the_root_are_distinct(other: Term):
+    base = _lam("base", make_term("App", make_term("Const", "plus"), bound_var(0)))
+    assert base != other
+    assert other != base
+    assert hash(base) != hash(other)
+    assert len({base, other}) == 2
+
+
+def test_data_leaves_compare_by_type_and_value():
+    as_int = make_term("C", 1)
+    as_float = make_term("C", 1.0)
+    as_bool = make_term("C", True)
+    as_str = make_term("C", "1")
+    as_bytes = make_term("C", b"1")
+    variants = [as_int, as_float, as_bool, as_str, as_bytes]
+    for i, left in enumerate(variants):
+        for j, right in enumerate(variants):
+            assert (left == right) is (i == j)
+    assert len(set(variants)) == len(variants)
+
+
+def test_bound_variable_is_distinct_from_an_int_data_leaf():
+    assert bound_var(0) != make_term("Const", 0)
+    assert bound_var(0) == make_term("BoundVar", 0)
+
+
+def test_hash_is_consistent_with_equality_across_a_term_population():
+    leaves = ("f", "x", "plus")
+    population = [
+        _lam(ann, make_term("App", make_term("Const", leaf), bound_var(idx)))
+        for ann in ("base", "other")
+        for leaf in leaves
+        for idx in (0, 1)
+    ]
+    rebuilt = [
+        _lam(ann, make_term("App", make_term("Const", leaf), bound_var(idx)))
+        for ann in ("base", "other")
+        for leaf in leaves
+        for idx in (0, 1)
+    ]
+    for left in population + rebuilt:
+        for right in population + rebuilt:
+            if left == right:
+                assert hash(left) == hash(right)
+    assert len(set(population)) == len(population)
+    assert set(population) == set(rebuilt)
+
+
+def test_terms_work_as_dict_keys():
+    f = make_term("Const", "f")
+    plus = make_term("Const", "plus")
+    table = {f: "f", plus: "plus"}
+    assert len(table) == 2
+    assert table[make_term("Const", "f")] == "f"
+    assert table[make_term("Const", "plus")] == "plus"
+    assert make_term("Const", "x") not in table
+
+
+def test_terms_never_equal_non_terms():
+    term = make_term("Const", "f")
+    assert term != ("Const", "f")
+    assert term != term.to_tuple()
+    assert term != "f"
+
+
+def test_deep_terms_compare_and_hash_without_recursion():
+    depth = 20_000
+    left = list_to_term(list(range(depth)))
+    right = list_to_term(list(range(depth)))
+    changed = list_to_term([*range(depth - 1), -1])
+    assert left == right
+    assert hash(left) == hash(right)
+    assert left != changed
+
+
+def test_copied_and_pickled_terms_keep_their_arguments():
+    term = _lam("base", make_term("App", make_term("Const", b"f"), bound_var(0)))
+    for clone in (
+        copy.copy(term),
+        copy.deepcopy(term),
+        pickle.loads(pickle.dumps(term)),
+    ):
+        assert clone.args == term.args
+        assert clone == term
+        assert hash(clone) == hash(term)
+
+
+def test_with_produces_a_term_with_its_own_structural_hash():
+    term = make_term("Const", "f")
+    hash(term)
+    renamed = term.with_(args=("plus",))
+    assert renamed == make_term("Const", "plus")
+    assert renamed != term
+    assert hash(renamed) == hash(make_term("Const", "plus"))
+
+
+@pytest.mark.parametrize(
+    "args",
+    [[make_term("A")], (make_term("A"), [1]), (None,), (torch.tensor(1.0),)],
+    ids=["list-args", "list-element", "none", "tensor"],
+)
+def test_term_rejects_arguments_outside_term_arg(args):
+    with pytest.raises(dx.ValidationError, match="Term 'C'"):
+        Term(op="C", args=args)

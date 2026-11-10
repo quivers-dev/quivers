@@ -15,14 +15,15 @@ implicit context Γ tracked by the encoder / decoder runtime.
 
 All structured value types in this module are didactic
 `didactic.api.Model` records, matching the quivers
-convention for schema-bearing data; the only fields held opaque
-are runtime-only artefacts that don't round-trip (torch tensors,
-arbitrary Python data leaves).
+convention for schema-bearing data. The one opaque field is
+``Term.args``, whose element type mixes `Term` itself with raw data
+leaves, a recursive shape didactic cannot encode; `Term` supplies its
+own structural equality, hashing, and pickling over that field.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -355,6 +356,18 @@ class Signature(dx.Model):
 # ---------------------------------------------------------------------------
 
 
+_DATA_LEAF_TYPES: tuple[type, ...] = (str, int, float, bytes, bool)
+"""The Python types admitted as non-`Term` arguments of a `Term`."""
+
+type _SlotKey = tuple[type, DataLeaf] | None
+"""The key of one opaque argument slot: ``(type(leaf), leaf)`` for a
+data leaf, ``None`` for a `Term` child (compared separately)."""
+
+type _FieldKey = tuple[_SlotKey, ...] | str
+"""The key of one declared field of a `Term`: the encoded value of a
+typed field, or the slot keys of the opaque ``args`` tuple."""
+
+
 class Term(dx.Model):
     """A closed term over a signature.
 
@@ -366,8 +379,21 @@ class Term(dx.Model):
     `Term`; data positions carry a `DataLeaf` raw
     value; index positions carry a non-negative ``int``. ``args``
     is held opaque (its element type is the open union
-    `TermArg`); the encoder / decoder enforce sort
-    agreement structurally at use time.
+    `TermArg`, which didactic cannot encode because one of its arms
+    is `Term` itself); construction checks that ``args`` is a tuple
+    whose elements are `Term` or `DataLeaf` values, and the encoder /
+    decoder enforce sort agreement at use time.
+
+    Equality and hashing are structural over every declared field,
+    the opaque ``args`` included: two terms are equal exactly when
+    their operators agree and their arguments agree position by
+    position, recursively, so terms that differ in a data leaf, a
+    nested subterm, a binder, or a de-Bruijn index are distinct.
+    Data leaves compare by type as well as value, so ``1``, ``1.0``,
+    and ``True`` at the same position are three different terms.
+    Both operations walk the term with an explicit stack, so deep
+    terms (long ``Cons`` lists) do not exhaust the interpreter's
+    recursion limit; a term's hash is computed once and cached.
 
     No wrapping such as ``Term("Data", …)`` is used at any
     position; raw values appear directly at data positions.
@@ -375,6 +401,141 @@ class Term(dx.Model):
 
     op: str
     args: tuple = dx.field(default=(), opaque=True)
+
+    @dx.model_validator()
+    def _check_args(self) -> None:
+        """Reject arguments outside the `TermArg` union.
+
+        Raises
+        ------
+        TypeError
+            If ``args`` is not a tuple, or if one of its elements is
+            neither a `Term` nor a `DataLeaf`.
+        """
+        if not isinstance(self.args, tuple):
+            raise TypeError(
+                f"Term {self.op!r}: args must be a tuple, got {type(self.args).__name__}"
+            )
+        for position, arg in enumerate(self.args):
+            if not isinstance(arg, Term) and not isinstance(arg, _DATA_LEAF_TYPES):
+                raise TypeError(
+                    f"Term {self.op!r}: argument {position} must be a Term or a "
+                    f"data leaf (str, int, float, bytes, bool), got "
+                    f"{type(arg).__name__}"
+                )
+
+    def _local_key(self) -> tuple[tuple[_FieldKey, ...], tuple[Term, ...]]:
+        """Split this node into its local key and its `Term` children.
+
+        The local key holds one entry per declared field, in
+        declaration order. A typed field contributes its encoded
+        storage value, exactly as in didactic's own equality. The
+        opaque ``args`` field contributes one slot per element: a data
+        leaf becomes the pair ``(type(leaf), leaf)`` and a `Term`
+        element becomes ``None`` and is returned among the children.
+        Every declared field enters the key, so a field added to `Term`
+        takes part in equality and hashing without changes here.
+
+        Returns
+        -------
+        tuple[tuple[_FieldKey, ...], tuple[Term, ...]]
+            The local key and the `Term` children in positional order.
+        """
+        children: list[Term] = []
+        key: list[_FieldKey] = []
+        storage = self.to_storage_dict()
+        for name, spec in type(self).__field_specs__.items():
+            if not spec.is_opaque:
+                key.append(storage[name])
+                continue
+            slots: list[_SlotKey] = []
+            for value in getattr(self, name):
+                if isinstance(value, Term):
+                    children.append(value)
+                    slots.append(None)
+                else:
+                    slots.append((type(value), value))
+            key.append(tuple(slots))
+        return tuple(key), tuple(children)
+
+    def __hash__(self) -> int:
+        """Hash the term structurally, consistently with `__eq__`.
+
+        Hashes are computed bottom-up with an explicit stack and cached
+        on each node, so hashing a term costs time linear in its size
+        once and constant time afterwards.
+
+        Returns
+        -------
+        int
+            A hash of the term's type, local key, and children's hashes.
+        """
+        cached = self.__dict__.get("_structural_hash")
+        if cached is not None:
+            return cached
+        stack: list[tuple[Term, bool]] = [(self, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if "_structural_hash" in node.__dict__:
+                continue
+            key, children = node._local_key()
+            if not expanded:
+                stack.append((node, True))
+                stack.extend(
+                    (c, False) for c in children if "_structural_hash" not in c.__dict__
+                )
+                continue
+            child_hashes = tuple(c.__dict__["_structural_hash"] for c in children)
+            object.__setattr__(
+                node, "_structural_hash", hash((type(node), key, child_hashes))
+            )
+        return self.__dict__["_structural_hash"]
+
+    def __eq__(self, other: Term | DataLeaf) -> bool:  # type: ignore[override]
+        """Compare two terms structurally over every declared field.
+
+        Parameters
+        ----------
+        other : Term or DataLeaf
+            The value to compare against.
+
+        Returns
+        -------
+        bool
+            ``True`` when ``other`` is a term of the same class whose
+            operator and arguments agree with this term's, recursively;
+            ``NotImplemented`` when ``other`` is not of this class.
+        """
+        if not isinstance(other, Term) or type(other) is not type(self):
+            return NotImplemented
+        stack: list[tuple[Term, Term]] = [(self, other)]
+        while stack:
+            left, right = stack.pop()
+            if left is right:
+                continue
+            if type(left) is not type(right) or hash(left) != hash(right):
+                return False
+            left_key, left_children = left._local_key()
+            right_key, right_children = right._local_key()
+            if left_key != right_key:
+                return False
+            stack.extend(zip(left_children, right_children, strict=True))
+        return True
+
+    def __reduce__(self) -> tuple[Callable[..., Term], tuple[str | TermArg, ...]]:
+        """Rebuild the term through `make_term` when copied or pickled.
+
+        didactic's storage-based pickle hooks do not carry opaque
+        fields, so without this hook a copied or unpickled term would
+        lose its ``args``.
+
+        Returns
+        -------
+        tuple[Callable[..., Term], tuple[str | TermArg, ...]]
+            `make_term` and the arguments ``(op, *args)`` that rebuild
+            an equal term.
+        """
+        return (make_term, (self.op, *self.args))
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         if not self.args:
@@ -449,6 +610,8 @@ def make_term(op: str, *args) -> Term:
     ------
     TypeError
         If ``op`` is not a string.
+    didactic.api.ValidationError
+        If an argument is neither a `Term` nor a `DataLeaf`.
     """
     if not isinstance(op, str):
         raise TypeError(f"make_term requires a string op, got {type(op).__name__}")
