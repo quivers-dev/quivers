@@ -61,6 +61,7 @@ from quivers.inference.estimators import (
     Reparameterized,
     ScoreFunction,
     StickingTheLanding,
+    leave_one_out_log_scale,
     power_mean_bound,
 )
 from quivers.inference.objectives import (
@@ -149,6 +150,7 @@ __all__ = [
     "GradientEstimator",
     "ParticleLogDensities",
     "power_mean_bound",
+    "leave_one_out_log_scale",
     "Reparameterized",
     "StickingTheLanding",
     "DoublyReparameterized",

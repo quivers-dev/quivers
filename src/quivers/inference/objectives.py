@@ -5,8 +5,8 @@ An `Objective` is a torch.nn.Module-callable that, given
 ``backward()`` produces a gradient on the model and guide
 parameters.
 
-`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `ChiVI` and
-`DReGsBound` are Monte Carlo power-mean bounds of the per-draw log
+`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound` and `DReGsBound`
+are Monte Carlo power-mean lower bounds of the per-draw log
 importance ratios :math:`\ell_n = \log p(z_n, y) - \log q_\phi(z_n)`:
 
 .. math::
@@ -14,13 +14,16 @@ importance ratios :math:`\ell_n = \log p(z_n, y) - \log q_\phi(z_n)`:
     B_a = \frac{1}{a} \log \sum_n \omega_n e^{a \ell_n}, \qquad
     B_0 = \sum_n \omega_n \ell_n,
 
-with exponent ``a = 0`` (ELBO), ``1`` (IWAE), ``1 - alpha`` (Rényi and
-VR-IWAE) or ``n`` (`ChiVI`), and particle weights :math:`\omega_n`.
+with exponent ``a = 0`` (ELBO), ``1`` (IWAE) or ``1 - alpha`` (Rényi
+and VR-IWAE), and particle weights :math:`\omega_n`.
 Each takes a [`quivers.inference.estimators.GradientEstimator`][quivers.inference.estimators.GradientEstimator]
 that estimates :math:`\nabla \mathbb{E}[B_a]` for the model and
 variational parameters, and checks at construction and on each call
 that the estimator is valid for the bound; a pair without a valid
-estimator raises `ValueError` naming one that is. `RWS` is not a
+estimator raises `ValueError` naming one that is. `ChiVI` minimizes
+the exponentiated upper bound :math:`\exp(n\, \mathrm{CUBO}_n)` of
+Dieng et al. (2017), whose Monte Carlo estimate is unbiased, and
+reports the :math:`K`-sample CUBO estimate. `RWS` is not a
 bound and takes no estimator: it implements the wake-phase updates of
 reweighted wake-sleep.
 
@@ -67,6 +70,7 @@ from quivers.inference.estimators import (
     GradientEstimator,
     ParticleLogDensities,
     Reparameterized,
+    power_mean_bound,
 )
 from quivers.inference.guides import Guide, GuideDraw
 
@@ -220,6 +224,7 @@ def _draw_particles(
             torch.stack(log_p_fixed_parts, dim=0) if needs_fixed_log_p else None
         ),
         stratified=num_strata is not None and num_strata > 1,
+        num_particles=num_particles,
     )
 
 
@@ -236,9 +241,6 @@ class _PowerMeanBound(Objective):
         Number of particles per step.
     estimator : GradientEstimator
         The gradient estimator.
-    minimize : bool
-        Whether the loss is the bound itself (an upper bound to
-        minimise) rather than its negation.
 
     Raises
     ------
@@ -255,8 +257,6 @@ class _PowerMeanBound(Objective):
         power: float,
         num_particles: int,
         estimator: GradientEstimator,
-        *,
-        minimize: bool = False,
     ) -> None:
         super().__init__()
         if num_particles < 1:
@@ -264,7 +264,6 @@ class _PowerMeanBound(Objective):
         self.num_particles = num_particles
         self.power = float(power)
         self.estimator = estimator
-        self._minimize = minimize
         estimator.check(self.power, num_particles, stratified=False)
 
     def forward(
@@ -286,8 +285,7 @@ class _PowerMeanBound(Objective):
         self.estimator.check(
             self.power, int(particles.log_p.shape[0]), particles.stratified
         )
-        surrogate = self.estimator.surrogate(self.power, particles).mean()
-        return surrogate if self._minimize else -surrogate
+        return -self.estimator.surrogate(self.power, particles).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -527,31 +525,68 @@ class VRIWAEBound(_PowerMeanBound):
 # ---------------------------------------------------------------------------
 
 
-class ChiVI(_PowerMeanBound):
-    r"""Chi-squared variational upper bound (Dieng et al. 2017).
+class ChiVI(Objective):
+    r"""Chi-squared variational inference, CHIVI (Dieng et al. 2017).
 
-    Minimises the chi-squared divergence
-    :math:`\chi^2(p \| q_\phi)` between the true posterior and the
-    guide via the CUBO
+    Minimises the :math:`\chi^n` divergence from the posterior to the
+    guide through the CUBO
 
     .. math::
 
-        \mathcal{L}_{n\text{-CUBO}}(\phi)
+        \mathrm{CUBO}_n(\phi)
             = \tfrac{1}{n} \log \mathbb{E}_{q_\phi}
               \Bigl[\bigl(p(z, y) / q_\phi(z)\bigr)^{n}\Bigr]
-            \geq \log p(y),
+            \geq \log p(y) \qquad (n > 1).
 
-    estimated with ``num_particles`` draws as
-    :math:`\tfrac{1}{n} \log \frac{1}{K} \sum_k (p_k / q_k)^n`
-    (exponent ``a = n``) and returned without negation, so minimising
-    the loss minimises the estimate. By Jensen's inequality the
-    estimate's expectation lies below the CUBO, so it is not itself
-    guaranteed to be an upper bound on :math:`\log p(y)`; it
-    approaches the CUBO as :math:`K` grows. The estimators target the
-    gradient of the estimate's expectation; `DoublyReparameterized`
-    uses the same reparameterization identity as for the lower bounds,
-    and `StickingTheLanding` is biased here and is rejected when
-    ``num_particles > 1``.
+    **What is minimised.** Following Dieng, Tran, Ranganath, Paisley
+    and Blei (2017, Section 2.2), the objective minimises the
+    exponentiated bound :math:`L_n = \exp(n\, \mathrm{CUBO}_n) =
+    \mathbb{E}_q[(p/q)^n]`, which has the same minimisers (``exp`` is
+    increasing) and an unbiased Monte Carlo estimate
+    :math:`\hat L_n = \frac{1}{K}\sum_k (p_k/q_k)^n`, so its gradient
+    estimate is unbiased too. The log of :math:`\hat L_n`, by contrast,
+    is biased downward by Jensen's inequality, and so is its gradient.
+
+    **Stabilisation.** :math:`(p/q)^n` overflows for moderate log
+    weights, so particle :math:`k`'s term is divided by
+    :math:`e^{m_{-k}}`, where :math:`m_{-k} = \max_{j \neq k} n \log
+    w_j` is the largest scaled log weight among the *other* particles
+    (`quivers.inference.estimators.leave_one_out_log_scale`). This
+    is the max-subtraction of Dieng et al.'s Algorithm 1 with the
+    particle's own draws left out: :math:`m_{-k}` is independent of
+    particle :math:`k`'s draws, so the expected update is
+    :math:`c\, \nabla L_n` with :math:`c = \mathbb{E}[e^{-m_{-k}}] > 0`,
+    the same for every particle. The stabilisation therefore rescales
+    the gradient by a positive, parameter-dependent factor (an
+    adaptive step size) and leaves its direction unbiased and the
+    stationary points of :math:`L_n` unchanged; subtracting the
+    maximum over *all* draws would correlate the scale with the
+    gradient and bias its direction. It requires at least two
+    particles. The estimate's variance is finite only when
+    :math:`\mathbb{E}_q[(p/q)^{2n}]` is, that is, when the guide's tails
+    are at least as heavy as the posterior's to that order, so start
+    from a guide wider than the posterior.
+
+    **What is reported.** The returned tensor's *value* is the
+    :math:`K`-sample estimate
+    :math:`\widehat{\mathrm{CUBO}}_n = \tfrac{1}{n} \log \hat L_n`,
+    averaged over the batch, directly comparable to the negated
+    `ELBO` loss for the sandwich :math:`\mathrm{ELBO} \le \log p(y)
+    \le \mathrm{CUBO}_n`. Its *gradient* is the stabilised gradient of
+    :math:`\hat L_n` above, not the gradient of the reported value.
+    The reported estimate is biased downward at finite :math:`K`
+    (:math:`\mathbb{E}[\widehat{\mathrm{CUBO}}_n] \le
+    \mathrm{CUBO}_n`), so for small :math:`K` it can fall below
+    :math:`\log p(y)`; the bias vanishes as :math:`K` grows.
+
+    **Estimators.** `Reparameterized` gives Dieng et al.'s Eq. 3,
+    :math:`\frac{n}{K}\sum_k w_k^n \nabla \log w_k`, and
+    `ScoreFunction` their score-function form (Algorithm 1),
+    :math:`(1 - n)\, w^n \nabla_\phi \log q_\phi` for the guide and
+    :math:`n\, w^n \nabla_\theta \log p_\theta` for the model, at fixed
+    draws. `StickingTheLanding` and `DoublyReparameterized` are rejected.
+    With an `AutoMixtureGuide` the stratified draws weight each term by
+    its stratum weight, and :math:`\hat L_n` stays unbiased.
 
     Reference:
     [Dieng, Tran, Ranganath, Paisley and Blei 2017](https://doi.org/10.48550/arXiv.1611.00328).
@@ -559,19 +594,24 @@ class ChiVI(_PowerMeanBound):
     Parameters
     ----------
     n : float
-        Divergence order (``n = 2`` for standard chi-squared).
-        Must be ``> 0``.
+        Order of the divergence (``n = 2`` for chi-squared); must be
+        ``> 1``, since :math:`\mathrm{CUBO}_n` is an upper bound only for
+        :math:`n \geq 1` and is the constant :math:`\log p(y)` at
+        :math:`n = 1`.
     num_particles : int
-        Number of guide samples per step. Default ``8``.
+        Number of independent guide samples ``K`` per step; at least 2.
+        Default ``8``.
     estimator : GradientEstimator, optional
-        Gradient-estimator strategy. Default `Reparameterized`.
+        `Reparameterized` (default) or `ScoreFunction`.
 
     Raises
     ------
     ValueError
-        If ``n <= 0``, ``num_particles < 1``, or the estimator is
-        `StickingTheLanding` with ``num_particles > 1``.
+        If ``n <= 1``, ``num_particles < 2``, or the estimator is not one
+        of the two above.
     """
+
+    estimator: GradientEstimator
 
     def __init__(
         self,
@@ -579,16 +619,42 @@ class ChiVI(_PowerMeanBound):
         num_particles: int = 8,
         estimator: GradientEstimator | None = None,
     ) -> None:
-        if n <= 0.0:
-            raise ValueError(f"ChiVI: n must be > 0, got {n}")
-        super().__init__(
-            "ChiVI",
-            float(n),
-            num_particles,
-            estimator if estimator is not None else Reparameterized(),
-            minimize=True,
-        )
+        super().__init__()
+        if n <= 1.0:
+            raise ValueError(
+                f"ChiVI: n must be > 1 for CUBO_n to be an upper bound, got {n}"
+            )
+        if num_particles < 2:
+            raise ValueError(
+                "ChiVI: num_particles must be >= 2, since each particle's term "
+                f"is stabilised by the other particles' weights; got {num_particles}"
+            )
         self.n = float(n)
+        self.num_particles = num_particles
+        self.estimator = estimator if estimator is not None else Reparameterized()
+        self.estimator.check_moment(self.n, num_particles, stratified=False)
+
+    def forward(
+        self,
+        model: MonadicProgram,
+        guide: Guide,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        particles = _draw_particles(
+            model,
+            guide,
+            x,
+            observations,
+            self.num_particles,
+            self.estimator,
+            self.n,
+        )
+        self.estimator.check_moment(self.n, self.num_particles, particles.stratified)
+        log_ratio = (particles.log_p - particles.log_q).detach()
+        cubo = power_mean_bound(log_ratio, particles.log_weights.detach(), self.n)
+        surrogate = self.estimator.moment_surrogate(self.n, particles)
+        return (cubo + surrogate - surrogate.detach()).mean()
 
 
 # ---------------------------------------------------------------------------

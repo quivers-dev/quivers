@@ -1,7 +1,7 @@
 r"""Gradient estimators for variational objectives.
 
-Every Monte Carlo objective in [`quivers.inference.objectives`][quivers.inference.objectives]
-is a *power-mean bound* of the per-draw log importance ratios
+The lower-bound objectives in [`quivers.inference.objectives`][quivers.inference.objectives]
+are *power-mean bounds* of the per-draw log importance ratios
 :math:`\ell_n = \log p(z_n, y) - \log q_\phi(z_n)` with particle
 weights :math:`\omega_n` (``1/K`` for independent draws, the stratum
 weights for stratified ones):
@@ -12,8 +12,8 @@ weights for stratified ones):
     \quad (a \neq 0), \qquad
     B_0 = \sum_n \omega_n \ell_n.
 
-``a = 0`` is the ELBO, ``a = 1`` the IWAE bound, ``a = 1 - \alpha``
-the Rényi / VR-IWAE bound, and ``a = n`` the CUBO of `ChiVI`. A
+``a = 0`` is the ELBO, ``a = 1`` the IWAE bound, and ``a = 1 - \alpha``
+the Rényi / VR-IWAE bound. A
 `GradientEstimator` turns the per-draw log-densities into a surrogate
 whose value is :math:`B_a` and whose gradient is an estimate of
 :math:`\nabla \mathbb{E}[B_a]`, the gradient of the expected Monte
@@ -36,6 +36,14 @@ the model parameters :math:`\theta`:
   the draws held fixed, so it applies to guides whose draws are not
   differentiable.
 
+`ChiVI` instead minimizes the exponentiated upper bound
+:math:`L_n = \mathbb{E}_q[(p/q)^n] = \exp(n\, \mathrm{CUBO}_n)` of Dieng,
+Tran, Ranganath, Paisley and Blei (2017), whose Monte Carlo estimate is
+unbiased; it calls `GradientEstimator.check_moment` and
+`GradientEstimator.moment_surrogate`, which `Reparameterized` (their
+Eq. 3) and `ScoreFunction` (their Algorithm 1) implement and the other
+estimators reject.
+
 Estimators are stateless strategies. `Objective` implementations call
 `GradientEstimator.check` with their bound and draw count, so an
 (objective, estimator) pair without a valid estimator raises before
@@ -50,6 +58,7 @@ References
 - DReG: [Tucker, Lawson, Gu and Maddison 2019](https://doi.org/10.48550/arXiv.1810.04152).
 - Generalized DReG for VR-IWAE: [Daudel, Benton, Shi and Doucet 2023](https://doi.org/10.48550/arXiv.2210.06226).
 - Score function: [Ranganath, Gerrish and Blei 2014](https://doi.org/10.48550/arXiv.1401.0118).
+- CHIVI: [Dieng, Tran, Ranganath, Paisley and Blei 2017](https://doi.org/10.48550/arXiv.1611.00328).
 """
 
 from __future__ import annotations
@@ -94,6 +103,9 @@ class ParticleLogDensities(ValueModel):
     stratified
         Whether the draws are stratified rather than independent draws
         from the guide.
+    num_particles
+        Number of independent particles ``K``; the ``N`` draws are
+        ``K`` consecutive groups of ``N / K`` strata.
     """
 
     log_p: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -104,6 +116,7 @@ class ParticleLogDensities(ValueModel):
     )
     log_p_fixed: torch.Tensor | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     stratified: bool
+    num_particles: int
 
 
 def power_mean_bound(
@@ -130,6 +143,77 @@ def power_mean_bound(
     if power == 0.0:
         return (log_weights.exp() * log_ratio).sum(dim=0)
     return torch.logsumexp(log_weights + power * log_ratio, dim=0) / power
+
+
+def leave_one_out_log_scale(
+    scaled_log_ratio: torch.Tensor, num_particles: int
+) -> torch.Tensor:
+    """Per-draw stabilizing log-scale from the other particles' draws.
+
+    For a draw in particle :math:`k` the scale is
+    :math:`m_{-k} = \\max_{j \\notin k} n \\ell_j`, the largest scaled
+    log ratio among the draws of the other particles. It is independent
+    of particle :math:`k`'s own draws, so dividing particle :math:`k`'s
+    term by :math:`e^{m_{-k}}` rescales its expected gradient by the
+    positive constant :math:`\\mathbb{E}[e^{-m_{-k}}]` without biasing
+    its direction.
+
+    Parameters
+    ----------
+    scaled_log_ratio : torch.Tensor
+        :math:`n \\ell`, shape ``(K * S, batch)`` in particle-major order.
+    num_particles : int
+        ``K``; at least 2.
+
+    Returns
+    -------
+    torch.Tensor
+        Detached, shape ``(K * S, batch)``.
+
+    Raises
+    ------
+    ValueError
+        If ``num_particles < 2``.
+    """
+    if num_particles < 2:
+        raise ValueError(
+            f"leave_one_out_log_scale: needs at least 2 particles, got {num_particles}"
+        )
+    values = scaled_log_ratio.detach()
+    per_draw = values.shape[0] // num_particles
+    grouped = values.reshape(num_particles, per_draw, *values.shape[1:])
+    particle_max = grouped.amax(dim=1)  # (K, batch)
+    top = particle_max.topk(2, dim=0)
+    first, second = top.values[0], top.values[1]
+    index = torch.arange(num_particles, device=values.device).reshape(
+        num_particles, *([1] * (particle_max.dim() - 1))
+    )
+    other = torch.where(index == top.indices[0], second, first)  # (K, batch)
+    return other.unsqueeze(1).expand_as(grouped).reshape(values.shape)
+
+
+def _moment_terms(order: float, particles: ParticleLogDensities) -> torch.Tensor:
+    """Detached per-draw coefficients ``omega_n (p_n/q_n)^n / e^{m_{-k}}``.
+
+    Raises
+    ------
+    RuntimeError
+        If a coefficient overflows, which happens only when one
+        particle's scaled log weight exceeds every other particle's by
+        more than the floating-point exponent range.
+    """
+    log_ratio = (particles.log_p - particles.log_q).detach()
+    scaled = order * log_ratio
+    shift = leave_one_out_log_scale(scaled, particles.num_particles)
+    terms = torch.exp(particles.log_weights.detach() + scaled - shift)
+    if not torch.isfinite(terms).all():
+        raise RuntimeError(
+            "ChiVI: a scaled importance weight overflowed, because one "
+            "particle's weight exceeds all others' by more than the "
+            "floating-point range; the Monte Carlo estimate of E[(p/q)^n] is "
+            "degenerate here. Use more particles or a wider guide."
+        )
+    return terms
 
 
 def _require_detached(estimator: str, particles: ParticleLogDensities) -> torch.Tensor:
@@ -198,6 +282,63 @@ class GradientEstimator(ABC):
         """
         del power, num_draws, stratified
 
+    def check_moment(self, order: float, num_particles: int, stratified: bool) -> None:
+        """Raise unless this estimator applies to the exponentiated CUBO.
+
+        `ChiVI` minimizes :math:`L_n = \\mathbb{E}_q[(p/q)^n]` and calls
+        this at construction and on each call. The default rejects:
+        an estimator supports :math:`L_n` only if it implements
+        `moment_surrogate`.
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        num_particles : int
+            Particles per batch row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            Always, naming the estimators that apply.
+        """
+        del order, num_particles, stratified
+        raise ValueError(
+            f"{type(self).__name__} has no unbiased estimator for the "
+            f"exponentiated CUBO exp(n * CUBO_n) that ChiVI minimizes. Use "
+            f"estimator=Reparameterized() (Dieng et al. 2017, Eq. 3) or "
+            f"estimator=ScoreFunction() (their Algorithm 1)."
+        )
+
+    def moment_surrogate(
+        self, order: float, particles: ParticleLogDensities
+    ) -> torch.Tensor:
+        """Surrogate whose gradient estimates :math:`\\nabla L_n`, scaled.
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``. Its gradient's expectation is
+            :math:`c\\, \\nabla L_n` for a positive constant :math:`c`
+            (see `ChiVI`); its value is not meaningful.
+
+        Raises
+        ------
+        ValueError
+            For an estimator that does not support :math:`L_n`.
+        """
+        self.check_moment(order, particles.num_particles, particles.stratified)
+        raise ValueError(f"{type(self).__name__} does not support ChiVI")
+
     @abstractmethod
     def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
         """Surrogate for the bound :math:`B_a`.
@@ -235,6 +376,21 @@ class Reparameterized(GradientEstimator):
         return power_mean_bound(
             particles.log_p - particles.log_q, particles.log_weights, power
         )
+
+    def check_moment(self, order: float, num_particles: int, stratified: bool) -> None:
+        del order, num_particles, stratified
+
+    def moment_surrogate(
+        self, order: float, particles: ParticleLogDensities
+    ) -> torch.Tensor:
+        # Dieng et al. Eq. 3: grad (p/q)^n = n (p/q)^n grad log(p/q), each
+        # term divided by the other particles' largest weight.
+        log_ratio = particles.log_p - particles.log_q
+        terms = _moment_terms(order, particles)
+        log_weights = particles.log_weights
+        pathwise = terms * order * (log_ratio - log_ratio.detach())
+        weight_path = terms * (log_weights - log_weights.detach())
+        return (pathwise + weight_path).sum(dim=0)
 
 
 class StickingTheLanding(GradientEstimator):
@@ -404,11 +560,29 @@ class ScoreFunction(GradientEstimator):
         bound = power_mean_bound(particles.log_p - log_q, log_weights, power)
         return bound + bound.detach() * score.sum(dim=0)
 
+    def check_moment(self, order: float, num_particles: int, stratified: bool) -> None:
+        self.check(order, num_particles, stratified)
+
+    def moment_surrogate(
+        self, order: float, particles: ParticleLogDensities
+    ) -> torch.Tensor:
+        # Dieng et al. Algorithm 1 and Appendix C: at fixed draws,
+        # grad_phi E[(p/q)^n] = (1 - n) E[(p/q)^n grad log q] and
+        # grad_theta E[(p/q)^n] = n E[(p/q)^n grad log p].
+        self.check_moment(order, particles.num_particles, particles.stratified)
+        terms = _moment_terms(order, particles)
+        log_p, log_q = particles.log_p, particles.log_q
+        per_draw = order * (log_p - log_p.detach()) + (1.0 - order) * (
+            log_q - log_q.detach()
+        )
+        return (terms * per_draw).sum(dim=0)
+
 
 __all__ = [
     "GradientEstimator",
     "ParticleLogDensities",
     "power_mean_bound",
+    "leave_one_out_log_scale",
     "Reparameterized",
     "StickingTheLanding",
     "DoublyReparameterized",

@@ -10,6 +10,8 @@ Gradient-estimator strategies for [Objectives](elbo.md):
 `StickingTheLanding` reduces variance near convergence;
 `DoublyReparameterized` supplies DReG for `IWAEBound` at large K; and
 `ScoreFunction` supplies REINFORCE with the draws held fixed, for guides
-whose draws are not differentiable.
+whose draws are not differentiable. `ChiVI` accepts `Reparameterized`
+and `ScoreFunction`, which estimate the gradient of the exponentiated
+CUBO through `GradientEstimator.moment_surrogate` [@dieng2017chi].
 
 ::: quivers.inference.estimators

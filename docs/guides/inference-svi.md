@@ -204,21 +204,39 @@ objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objective
 | `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ [@burda2016iwae] |
 | `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE [@daudel2023vriwae] | Controls the tradeoff between computation and approximation |
-| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [@dieng2017chi]) | Over-covering approximation; the $K$-sample estimate's expectation lies below the CUBO, so treat it as an upper bound only as $K$ grows |
+| `ChiVI(n, K)` | $\chi^n$ upper bound $\mathrm{CUBO}_n = \tfrac{1}{n}\log \mathbb{E}_q[(p/q)^n]$ [@dieng2017chi] | Over-covering approximation; minimizes $\exp(n\,\mathrm{CUBO}_n)$ with an unbiased gradient and reports the $K$-sample CUBO estimate for the sandwich $\mathrm{ELBO} \le \log p(y) \le \mathrm{CUBO}_n$ |
 | `RWS(K)` | Reweighted wake-sleep, wake phase [@bornschein2015rws] | Importance-weighted wake updates with the draws held fixed; not a bound, takes no estimator |
 | `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient [@tucker2019dreg] | Switch the IWAE bound and DReG estimator together |
 
-The first five are Monte Carlo *power-mean bounds* of the per-draw log
-importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$,
+`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, and `DReGsBound` are
+Monte Carlo *power-mean bounds* of the per-draw log importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$,
 
 $$B_a = \frac{1}{a}\log \frac{1}{K}\sum_{k=1}^{K} e^{a \ell_k},$$
 
 with exponent $a = 0$ (the ELBO, read as the mean of $\ell_k$), $a = 1$
-(IWAE), $a = 1 - \alpha$ (Rényi and VR-IWAE), or $a = n$ (`ChiVI`). Each
-accepts an `estimator=` strategy, which estimates the gradient of
-$\mathbb{E}[B_a]$ for both the guide and the model parameters.
-`DReGsBound` fixes the strategy to `DoublyReparameterized`, and `RWS`
-takes none:
+(IWAE), or $a = 1 - \alpha$ (Rényi and VR-IWAE). Each accepts an
+`estimator=` strategy, which estimates the gradient of $\mathbb{E}[B_a]$
+for both the guide and the model parameters. `DReGsBound` fixes the
+strategy to `DoublyReparameterized`, and `RWS` takes none.
+
+`ChiVI` is an upper bound, and the log of a Monte Carlo average is
+biased *downward* by Jensen's inequality, so minimizing the $K$-sample
+estimate $\tfrac{1}{n}\log \tfrac{1}{K}\sum_k w_k^n$ would neither
+keep the bounding property nor give an unbiased gradient. Following
+Dieng et al. [@dieng2017chi], `ChiVI` minimizes the exponentiated bound
+$L_n = \exp(n\,\mathrm{CUBO}_n) = \mathbb{E}_q[w^n]$, which has the same
+minimizers and the unbiased estimate $\tfrac{1}{K}\sum_k w_k^n$. To
+avoid overflow, particle $k$'s term is divided by $e^{m_{-k}}$, where
+$m_{-k}$ is the largest $n \log w_j$ among the *other* particles; that
+scale is independent of particle $k$'s draws, so the expected update is
+a positive multiple of $\nabla L_n$ and the stationary points are
+unchanged. `ChiVI` therefore needs `num_particles >= 2` and an order
+$n > 1$. The value it returns is the $K$-sample CUBO estimate, directly
+comparable with the negated `ELBO` loss; it is biased downward at finite
+$K$, so for small $K$ it can fall below $\log p(y)$, and the bias
+vanishes as $K$ grows. Start `ChiVI` from a guide wider than the
+posterior: the gradient's variance is finite only when
+$\mathbb{E}_q[w^{2n}]$ is.
 
 | Estimator | What it does |
 |---|---|
@@ -236,7 +254,8 @@ estimator instead of silently using another one:
 | Objective | `Reparameterized` | `StickingTheLanding` | `DoublyReparameterized` | `ScoreFunction` |
 |---|---|---|---|---|
 | `ELBO` | yes | yes | yes (equals sticking the landing) | yes |
-| `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `ChiVI` | yes | only with `num_particles=1` | yes | yes |
+| `IWAEBound`, `RenyiBound`, `VRIWAEBound` | yes | only with `num_particles=1` | yes | yes |
+| `ChiVI` | yes (Dieng et al., Eq. 3) | no | no | yes (their Algorithm 1) |
 | any of the above with an `AutoMixtureGuide` | yes | `ELBO` only | `ELBO` only | yes (independent draws) |
 
 <!-- python: skip -->

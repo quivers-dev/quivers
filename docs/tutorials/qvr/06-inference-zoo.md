@@ -79,7 +79,7 @@ The benchmark grid in `tests/benchmarks/` walks these against synthetic posterio
 | `IWAEBound(K)` | Importance-weighted bound | Tighter than ELBO for `K > 1`. |
 | `RenyiBound(alpha, K)` | Rényi divergence bound | Interpolates ELBO (α=1) and IWAE (α=0). |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE | Mass-covering vs mode-seeking knob via α; tight via K. |
-| `ChiVI(num_particles=K)` | $\chi$-divergence objective | Alternative mass-covering variational objective. |
+| `ChiVI(n, num_particles=K)` | $\chi^n$ upper bound (CUBO) | Mass-covering objective; minimizes $\exp(n\,\mathrm{CUBO}_n)$ with an unbiased gradient and reports the CUBO estimate, which with the ELBO brackets $\log p(y)$. Needs `K >= 2`, $n > 1$, and a guide that starts wider than the posterior. |
 | `RWS(num_particles=K)` | Reweighted wake-sleep (wake phase) | Separate model and guide updates from importance weights, with the draws held fixed; takes no estimator. |
 | `DReGsBound(num_particles=K)` | Doubly reparameterized bound | Importance-weighted objective with DReG guide gradients. |
 

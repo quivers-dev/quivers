@@ -22,6 +22,7 @@ from quivers.inference.estimators import (
     Reparameterized,
     ScoreFunction,
     StickingTheLanding,
+    leave_one_out_log_scale,
     power_mean_bound,
 )
 
@@ -64,6 +65,7 @@ def _particles(phi: torch.Tensor, theta: torch.Tensor) -> ParticleLogDensities:
         log_q_detached=log_q_detached,
         log_p_fixed=log_p_fixed,
         stratified=False,
+        num_particles=3,
     )
 
 
@@ -155,6 +157,7 @@ def _fixed_draw_particles(
         log_q_detached=None,
         log_p_fixed=None,
         stratified=False,
+        num_particles=3,
     )
 
 
@@ -217,6 +220,7 @@ def test_estimators_needing_detached_densities_raise_without_them() -> None:
         log_q_detached=None,
         log_p_fixed=None,
         stratified=False,
+        num_particles=2,
     )
     with pytest.raises(RuntimeError, match="log_q_detached"):
         StickingTheLanding().surrogate(0.0, particles)
@@ -235,6 +239,7 @@ def test_stratified_weights_carry_gradient_in_reparameterized_elbo() -> None:
         log_q_detached=None,
         log_p_fixed=None,
         stratified=True,
+        num_particles=1,
     )
     Reparameterized().surrogate(0.0, particles).sum().backward()
     pi = torch.softmax(logits.detach(), dim=0)
@@ -242,3 +247,88 @@ def test_stratified_weights_carry_gradient_in_reparameterized_elbo() -> None:
     expected = pi * (values - (pi * values).sum())
     assert logits.grad is not None
     assert torch.allclose(logits.grad, expected, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# The exponentiated CUBO (ChiVI)
+# ---------------------------------------------------------------------------
+
+
+def test_leave_one_out_log_scale_excludes_the_particle_itself() -> None:
+    # Three particles of two strata each, one batch row.
+    scaled = torch.tensor([[1.0], [4.0], [2.0], [0.5], [3.0], [-1.0]])
+    shift = leave_one_out_log_scale(scaled, 3)
+    # Particle maxima are 4, 2, 3: each particle gets the max of the others.
+    assert torch.equal(shift, torch.tensor([[3.0], [3.0], [4.0], [4.0], [4.0], [4.0]]))
+
+
+def test_leave_one_out_log_scale_needs_two_particles() -> None:
+    with pytest.raises(ValueError, match="at least 2"):
+        leave_one_out_log_scale(torch.zeros(3, 1), 1)
+
+
+def _moment_case(
+    phi: torch.Tensor, theta: torch.Tensor, fixed: bool
+) -> ParticleLogDensities:
+    log_p = theta * _A if fixed else theta * _A + phi * _B
+    return ParticleLogDensities(
+        log_p=log_p,
+        log_q=phi * _C,
+        log_weights=_UNIFORM,
+        log_q_detached=None,
+        log_p_fixed=None,
+        stratified=False,
+        num_particles=3,
+    )
+
+
+def _scaled_terms(order: float) -> torch.Tensor:
+    log_ratio = _THETA * _A + _PHI * _B - _PHI * _C
+    shift = leave_one_out_log_scale(order * log_ratio, 3)
+    return torch.exp(_UNIFORM + order * log_ratio - shift)
+
+
+@pytest.mark.parametrize("order", [2.0, 3.0])
+def test_reparameterized_moment_surrogate_is_dieng_eq_3(order: float) -> None:
+    """Gradient: sum_k T_k * n * grad log w_k, with T_k the scaled terms."""
+    phi = torch.tensor(_PHI, requires_grad=True)
+    theta = torch.tensor(_THETA, requires_grad=True)
+    Reparameterized().moment_surrogate(
+        order, _moment_case(phi, theta, fixed=False)
+    ).sum().backward()
+    terms = _scaled_terms(order)
+    assert phi.grad is not None and theta.grad is not None
+    expected_phi = float((terms * order * (_B - _C)).sum())
+    expected_theta = float((terms * order * _A).sum())
+    assert math.isclose(float(phi.grad), expected_phi, rel_tol=1e-10)
+    assert math.isclose(float(theta.grad), expected_theta, rel_tol=1e-10)
+
+
+@pytest.mark.parametrize("order", [2.0, 3.0])
+def test_score_function_moment_surrogate_is_dieng_algorithm_1(order: float) -> None:
+    """Guide gradient (1 - n) T grad log q, model gradient n T grad log p."""
+    phi = torch.tensor(_PHI, requires_grad=True)
+    theta = torch.tensor(_THETA, requires_grad=True)
+    ScoreFunction().moment_surrogate(
+        order, _moment_case(phi, theta, fixed=True)
+    ).sum().backward()
+    log_ratio = _THETA * _A - _PHI * _C
+    shift = leave_one_out_log_scale(order * log_ratio, 3)
+    terms = torch.exp(_UNIFORM + order * log_ratio - shift)
+    assert phi.grad is not None and theta.grad is not None
+    assert math.isclose(
+        float(phi.grad), float((terms * (1.0 - order) * _C).sum()), rel_tol=1e-10
+    )
+    assert math.isclose(
+        float(theta.grad), float((terms * order * _A).sum()), rel_tol=1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    "estimator", [StickingTheLanding(), DoublyReparameterized()], ids=["stl", "dreg"]
+)
+def test_other_estimators_reject_the_exponentiated_cubo(
+    estimator: GradientEstimator,
+) -> None:
+    with pytest.raises(ValueError, match="ScoreFunction"):
+        estimator.check_moment(2.0, 4, stratified=False)

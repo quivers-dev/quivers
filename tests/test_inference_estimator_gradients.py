@@ -28,15 +28,19 @@ import torch.distributions as D
 from quivers.continuous import Draw, Euclidean, MonadicProgram
 from quivers.continuous.inline import FixedDistribution
 from quivers.core import Unit
+from quivers.dsl import loads
 from quivers.inference import (
     ELBO,
     RWS,
+    SVI,
     AutoNormalGuide,
     ChiVI,
     DoublyReparameterized,
     DReGsBound,
+    GradientEstimator,
     IWAEBound,
     Objective,
+    ParticleLogDensities,
     Reparameterized,
     RenyiBound,
     ScoreFunction,
@@ -288,7 +292,6 @@ for _label, _make, _power, _sign in [
     ("renyi-0.5", lambda e: RenyiBound(0.5, num_particles=2, estimator=e), 0.5, -1.0),
     ("renyi-neg1", lambda e: RenyiBound(-1.0, num_particles=2, estimator=e), 2.0, -1.0),
     ("vriwae-0.3", lambda e: VRIWAEBound(0.3, num_particles=2, estimator=e), 0.7, -1.0),
-    ("chivi-2", lambda e: ChiVI(2.0, num_particles=2, estimator=e), 2.0, 1.0),
 ]:
     for _estimator_label, _estimator in [
         ("rep", _REP),
@@ -348,9 +351,8 @@ def test_estimator_gradient_matches_quadrature(
         lambda: IWAEBound(num_particles=2, estimator=StickingTheLanding()),
         lambda: RenyiBound(0.5, num_particles=2, estimator=StickingTheLanding()),
         lambda: VRIWAEBound(0.3, num_particles=2, estimator=StickingTheLanding()),
-        lambda: ChiVI(2.0, num_particles=2, estimator=StickingTheLanding()),
     ],
-    ids=["iwae", "renyi", "vriwae", "chivi"],
+    ids=["iwae", "renyi", "vriwae"],
 )
 def test_sticking_the_landing_is_rejected_for_multi_draw_bounds(
     make: Callable[[], Objective],
@@ -452,3 +454,171 @@ def test_rws_guide_gradient_targets_the_inclusive_kl() -> None:
 def test_rws_takes_no_estimator() -> None:
     with pytest.raises(TypeError):
         RWS(num_particles=4, estimator=Reparameterized())  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# ChiVI: the exponentiated CUBO of Dieng et al. (2017)
+# ---------------------------------------------------------------------------
+
+_CHI_MU = (0.4, -0.2)
+_CHI_SIGMA = (1.1, 1.05)
+_ORDER = 2.0
+
+
+def _quadrature_chivi(nodes: int = 40) -> tuple[float, torch.Tensor, float]:
+    """``CUBO_n``, ``grad L_n`` and ``E_q[w^{-n}]`` for the ChiVI problem.
+
+    ``L_n = E_q[(p/q)^n] = exp(n CUBO_n)``; gradients are with respect to
+    ``(mu_1, mu_2, log sigma_1, log sigma_2, theta)``.
+    """
+    abscissae, weights = hermite.hermegauss(nodes)
+    eps = torch.tensor(abscissae)
+    node_weights = torch.tensor(weights) / math.sqrt(2.0 * math.pi)
+    e1, e2 = torch.meshgrid(eps, eps, indexing="ij")
+    grid = torch.stack([e1.reshape(-1), e2.reshape(-1)], dim=-1)
+    grid_weights = (node_weights[:, None] * node_weights[None, :]).reshape(-1)
+    mu = torch.tensor(_CHI_MU, requires_grad=True)
+    log_sigma = torch.log(torch.tensor(_CHI_SIGMA)).requires_grad_(True)
+    theta = torch.tensor(_THETA, requires_grad=True)
+    z = mu + log_sigma.exp() * grid
+    log_ratio = D.Normal(theta, 1.0).log_prob(z).sum(-1) - D.Normal(
+        mu, log_sigma.exp()
+    ).log_prob(z).sum(-1)
+    moment = (grid_weights * torch.exp(_ORDER * log_ratio)).sum()
+    inverse_moment = float((grid_weights * torch.exp(-_ORDER * log_ratio)).sum())
+    moment.backward()
+    assert mu.grad is not None and log_sigma.grad is not None
+    assert theta.grad is not None
+    gradient = torch.cat([mu.grad, log_sigma.grad, theta.grad.reshape(1)])
+    return float(torch.log(moment.detach())) / _ORDER, gradient, inverse_moment
+
+
+class _LogOfMeanChiVI(Reparameterized):
+    """The log-of-mean surrogate: the gradient of the reported CUBO
+    estimate, which Dieng et al. show is biased."""
+
+    def moment_surrogate(
+        self, order: float, particles: ParticleLogDensities
+    ) -> torch.Tensor:
+        return power_mean_bound(
+            particles.log_p - particles.log_q, particles.log_weights, order
+        )
+
+
+def _chivi_gradient_check(estimator: GradientEstimator) -> bool:
+    """Whether the ChiVI surrogate's mean gradient matches the
+    quadrature reference within 4.5 standard errors.
+
+    With two particles the stabilising scale of particle ``k`` is the
+    other particle's ``w^n``, independent of particle ``k``, so the
+    expected surrogate gradient is ``E_q[w^{-n}] * grad L_n`` exactly.
+    """
+    torch.manual_seed(0)
+    problem = _Problem(theta=_THETA, mu=_CHI_MU, sigma=_CHI_SIGMA)
+    mean, se, _ = _gradient_of_bound(
+        problem,
+        problem.guide,
+        ChiVI(_ORDER, num_particles=2, estimator=estimator),
+        sign=1.0,
+        batch=2000,
+        repeats=16,
+    )
+    _, grad_moment, inverse_moment = _quadrature_chivi()
+    expected = inverse_moment * grad_moment
+    return bool(torch.all((mean - expected).abs() <= 4.5 * se))
+
+
+@pytest.mark.parametrize(
+    "estimator", [Reparameterized(), ScoreFunction()], ids=["rep", "score"]
+)
+def test_chivi_gradient_is_unbiased_for_the_exponentiated_cubo(
+    estimator: GradientEstimator,
+) -> None:
+    """Guide and model gradients match ``E_q[w^{-n}] * grad L_n`` from
+    quadrature within 4.5 standard errors."""
+    assert _chivi_gradient_check(estimator)
+
+
+def test_chivi_gradient_check_rejects_the_log_of_mean_surrogate() -> None:
+    """Mutation check: the log-of-mean surrogate fails the same test."""
+    assert not _chivi_gradient_check(_LogOfMeanChiVI())
+
+
+def test_chivi_reports_a_cubo_estimate_biased_downward_at_finite_k() -> None:
+    """The reported value is (1/n) log mean_k w_k^n. Its expectation lies
+    below CUBO_n (Jensen) and rises toward it as K grows."""
+    torch.manual_seed(1)
+    problem = _Problem(theta=_THETA, mu=_CHI_MU, sigma=_CHI_SIGMA)
+    cubo, _, _ = _quadrature_chivi()
+    x = torch.zeros(2000, 1)
+    means: list[float] = []
+    for k in (2, 8, 64):
+        objective = ChiVI(_ORDER, num_particles=k)
+        with torch.no_grad():
+            values = torch.tensor(
+                [
+                    float(objective(problem.model, problem.guide, x, {}))
+                    for _ in range(4)
+                ]
+            )
+        means.append(float(values.mean()))
+    # 8000 replicates per K; the per-replicate sd is below 0.5.
+    assert means[0] < means[1] < means[2] < cubo + 0.02, (means, cubo)
+    assert cubo - means[0] > 0.02, (means, cubo)
+    assert abs(means[2] - cubo) < 0.02, (means, cubo)
+
+
+def test_chivi_rejects_invalid_configurations() -> None:
+    with pytest.raises(ValueError, match="n must be > 1"):
+        ChiVI(1.0)
+    with pytest.raises(ValueError, match="num_particles must be >= 2"):
+        ChiVI(2.0, num_particles=1)
+    for estimator in (StickingTheLanding(), DoublyReparameterized()):
+        with pytest.raises(ValueError, match="ScoreFunction"):
+            ChiVI(2.0, estimator=estimator)
+
+
+def test_chivi_sandwiches_the_evidence_of_a_conjugate_model() -> None:
+    """``z ~ N(0, 1)``, ``y ~ N(z, 0.5^2)``, ``y = 0.8``: after fitting
+    the guide with ChiVI, ELBO <= log p(y) <= CUBO_2 within Monte Carlo
+    error, and the guide is near the exact posterior N(0.64, 0.2). The
+    guide starts wider than the posterior, where the gradient estimate
+    has finite variance."""
+    model = loads(
+        "object One : FinSet 1\n"
+        "program p : One -> One\n"
+        "    sample z <- Normal(loc=0.0, scale=1.0)\n"
+        "    observe y : One <- Normal(loc=z, scale=0.5)\n"
+        "    return z\n"
+        "export p\n"
+    ).morphism
+    assert isinstance(model, MonadicProgram)
+    observations = {"y": torch.tensor([0.8])}
+    log_evidence = float(D.Normal(0.0, math.sqrt(1.25)).log_prob(torch.tensor(0.8)))
+    torch.manual_seed(2)
+    guide = AutoNormalGuide(model, observed_names={"y"})
+    with torch.no_grad():
+        getattr(guide, "log_scale_z").fill_(math.log(1.5))
+    optim = torch.optim.Adam(guide.parameters(), lr=0.02)
+    svi = SVI(model, guide, optim, ChiVI(2.0, num_particles=16))
+    x = torch.zeros(1, 1)
+    for _ in range(200):
+        svi.step(x, observations)
+    with torch.no_grad():
+        assert abs(float(getattr(guide, "loc_z")) - 0.64) < 0.1
+        assert abs(float(getattr(guide, "log_scale_z").exp()) - math.sqrt(0.2)) < 0.07
+
+    with torch.no_grad():
+        elbos = torch.tensor(
+            [-float(ELBO()(model, guide, x, observations)) for _ in range(2000)]
+        )
+        cubos = torch.tensor(
+            [
+                float(ChiVI(2.0, num_particles=256)(model, guide, x, observations))
+                for _ in range(8)
+            ]
+        )
+    elbo_se = float(elbos.std()) / math.sqrt(len(elbos))
+    cubo_se = float(cubos.std()) / math.sqrt(len(cubos))
+    assert float(elbos.mean()) <= log_evidence + 4.0 * elbo_se
+    assert float(cubos.mean()) >= log_evidence - 4.0 * cubo_se - 1e-3
