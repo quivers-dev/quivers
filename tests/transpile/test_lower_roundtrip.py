@@ -123,7 +123,6 @@ _EXPECTED_LOWER_REFUSAL: dict[str, str] = {
     "montague_nli": "qiec:capability:search",
     "multimodal_tlg": "qiec:capability:search",
     "pmcfg": "qiec:capability:search",
-    "pmf": "program:absent",
     "quantifier_scope": "qiec:capability:search",
     "schema_chart_parser": "qiec:capability:search",
     "seq2seq": "param-source:mlp",

@@ -158,15 +158,14 @@ def export_atol(reference: float) -> float:
 # entry cannot outlive the gap it describes.
 _NO_EXPORTED_PROGRAM: dict[str, str] = {
     # No `program` block at all: the module exports a `define`d
-    # composition morphism (`U.dagger >> V`, `bilinear_score(...)`),
-    # which denotes a linear map rather than a Markov kernel. There is
-    # no `return` clause, and `exported_return_names` raises rather
-    # than inventing one. Both carry a synthetic-data block and a
-    # pinned joint, so the density tier scores them; what they lack is
-    # a codomain for this tier to compare, and every one of their
-    # `(backend, example)` cells sits in the gallery tier's
-    # `_EXPECTED_TRANSPILE_RAISES` under `composition_decl`.
-    "pmf": "structural: composition morphism, no program block",
+    # contraction morphism (`bilinear_score(...)`), which denotes a
+    # linear map rather than a Markov kernel. There is no `return`
+    # clause, and `exported_return_names` raises rather than inventing
+    # one. It carries a synthetic-data block and a pinned joint, so the
+    # density tier scores it; what it lacks is a codomain for this tier
+    # to compare, and every one of its `(backend, example)` cells sits
+    # in the gallery tier's `_EXPECTED_TRANSPILE_RAISES` under
+    # `composition_decl`.
     "tensor_contraction": ("structural: contraction morphism, no program block"),
 }
 

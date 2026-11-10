@@ -120,8 +120,8 @@ _SYNTAX_CHECKS: dict[str, tuple[str, list[str], str | None]] = {
 #
 # Five boundary classes are represented:
 #
-# 1. Composition and contraction declarations still have no executable
-#    QIEC entry, so those examples fail before target capability analysis.
+# 1. Contraction declarations still have no executable QIEC entry, so
+#    that example fails before target capability analysis.
 # 2. Executable search computations (`schema_chart_parser` and the
 #    deduction calls in `montague_nli`, `multimodal_tlg`,
 #    `quantifier_scope`, and `type_logical`) reach the QIEC boundary,
@@ -149,14 +149,6 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
     ("stan", "schema_chart_parser"): "qiec:capability:search",
     ("turing", "schema_chart_parser"): "qiec:capability:search",
     ("webppl", "schema_chart_parser"): "qiec:capability:search",
-    ("edward2", "pmf"): "composition_decl",
-    ("gen", "pmf"): "composition_decl",
-    ("numpyro", "pmf"): "composition_decl",
-    ("pymc", "pmf"): "composition_decl",
-    ("pyro", "pmf"): "composition_decl",
-    ("stan", "pmf"): "composition_decl",
-    ("turing", "pmf"): "composition_decl",
-    ("webppl", "pmf"): "composition_decl",
     ("edward2", "tensor_contraction"): "composition_decl",
     ("gen", "tensor_contraction"): "composition_decl",
     ("numpyro", "tensor_contraction"): "composition_decl",
@@ -277,6 +269,21 @@ for _ungrouped_backend in (
             _EXPECTED_UNSUPPORTED[(_ungrouped_backend, _ungrouped_example)] = (
                 "marginalize:ungrouped-over-plate"
             )
+
+# 7. `lda` draws each token's topic from a document row gathered by a
+#    `let` (`theta_tok = theta[doc_idx]`). The Gen and Turing
+#    emissions size a Categorical marginalization from its `probs`
+#    argument, and a gathered `let` carries no static support size
+#    there, so both refuse rather than guess the topic count.
+for _gather_backend in ("gen", "turing"):
+    _EXPECTED_UNSUPPORTED[(_gather_backend, "lda")] = (
+        "marginalize:unknown-cardinality:Categorical"
+    )
+
+# 8. `tree_categorical` builds its leaf table with a `factor` over the
+#    `Class` axis, which no plate of the program carries; the Gen
+#    helper reads factor extents from plate cardinalities and refuses.
+_EXPECTED_UNSUPPORTED[("gen", "tree_categorical")] = "let-expr:LetExprFactor:gen"
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)

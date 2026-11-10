@@ -705,7 +705,7 @@ def _reconstruct_mixture_model(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`mixture_model.qvr`, instantiated at `gmm(alpha=1.0)`:
+    """`mixture_model.qvr`, instantiated at `gmm(alpha=2.0)`:
 
         sample probs <- Dirichlet(concentration=alpha) [over=Component]
         sample mu    : Component <- Normal(loc=0.0, scale=5.0)
@@ -773,48 +773,46 @@ def _reconstruct_parametric_pooling(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`parametric_pooling.qvr`, exporting `pooled_tight`:
+    """`parametric_pooling.qvr`, exporting the adaptive host `pooled`:
 
-        sample z : K <- Normal(loc=0.0, scale=1.0)      (inside school_effects)
-        let effect = spread * z               (spread = 0.6)
-        sample sigma <- LogNormal(loc=0.0, scale=0.5)
-        let total_effect = sum(theta)
-        score centering = -50.0 * total_effect * total_effect
-        observe y : School <- Normal(loc=theta, scale=sigma)
+        sample mu <- Normal(loc=0.0, scale=10.0)
+        sample tau <- HalfCauchy(scale=5.0)
+        sample z : K <- Normal(loc=0.0, scale=1.0)   (inside school_effects)
+        let effect = spread * z                       (spread = tau)
+        let school_mean = mu + theta
+        observe y : School <- Normal(loc=school_mean, scale=se)
 
-    Wholly reconstructible. The `score` step is a log-density summand
-    in its own right, not a normalised family: it enters the joint as
-    its own value. `theta` and `total_effect` are deterministic `let`
-    bindings and score zero.
+    Wholly reconstructible. `se` is host data, the known per-school
+    standard errors of Rubin's parallel-experiments model. `theta` and
+    `school_mean` are deterministic `let` bindings and score zero.
     """
     del dataset, weights
-    z, sigma, y = values["theta$z"], values["sigma"], values["y"]
-    # `sample theta <- school_effects(0.6, School)` instantiates the
-    # template's `spread` at 0.6.
-    spread = 1.0 if variant == "ignore_spread" else 0.6
+    z, mu, tau = values["theta$z"], values["mu"], values["tau"]
+    y, se = values["y"], values["se"]
+
+    spread = torch.ones_like(tau) if variant == "ignore_spread" else tau
     theta = spread * z
-
-    z_term = td.Normal(0.0, 1.0).log_prob(z).sum()
-
-    sigma_term = td.LogNormal(0.0, 0.5).log_prob(sigma).sum()
-    if variant == "unconstrain_sigma":
-        sigma_term = sigma_term + sigma.log().sum()
-
-    total_effect = theta.sum()
-    if variant == "drop_centering_score":
-        centering = torch.zeros(())
-    elif variant in ("", "ignore_spread", "unconstrain_sigma", "plate_mean"):
-        centering = -50.0 * total_effect * total_effect
+    if variant == "drop_common_mean":
+        school_mean = theta
+    elif variant in ("", "ignore_spread", "unconstrain_tau", "unit_standard_error", "plate_mean"):
+        school_mean = mu + theta
     else:
         raise _unknown_variant("parametric_pooling", variant)
 
-    per_school = td.Normal(theta, sigma).log_prob(y)
+    tau_term = td.HalfCauchy(5.0).log_prob(tau).sum()
+    if variant == "unconstrain_tau":
+        # Scoring the positive spread in log space adds a
+        # `log |d tau / d log tau| = log tau` Jacobian.
+        tau_term = tau_term + tau.log().sum()
+
+    scale = torch.ones_like(se) if variant == "unit_standard_error" else se
+    per_school = td.Normal(school_mean, scale).log_prob(y)
     y_term = per_school.mean() if variant == "plate_mean" else per_school.sum()
 
     return {
-        "theta$z": z_term,
-        "sigma": sigma_term,
-        "centering": centering,
+        "mu": td.Normal(0.0, 10.0).log_prob(mu).sum(),
+        "tau": tau_term,
+        "theta$z": td.Normal(0.0, 1.0).log_prob(z).sum(),
         "y": y_term,
     }
 
@@ -825,52 +823,46 @@ def _reconstruct_pmf(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`pmf.qvr`, an algebra-level example whose source declares a
-    mean surface rather than a measure:
+    """`pmf.qvr`:
 
         object LatentDim : FinSet 2
-        object User, Movie : FinSet 8
-        morphism U : LatentDim -> User   [role=latent]
-        morphism V : LatentDim -> Movie  [role=latent]
-        define pmf = U.dagger >> V
+        object User : FinSet 50
+        object Movie : FinSet 40
+        sample sigma <- HalfCauchy(scale=2.5)
+        sample U : User  <- Normal(0, 1) [over=LatentDim, iid_over=User]
+        sample V : Movie <- Normal(0, 1) [over=LatentDim, iid_over=Movie]
+        let score = sum(U[user_idx] * V[movie_idx])
+        observe r : Rating <- Normal(loc=score, scale=sigma)
 
-    The `.md` snippet supplies the probabilistic surface the source
-    leaves open, and it is the standard PMF one: an entrywise
-    `Normal(0, 1)` prior over each factor matrix, and a
-    `Normal(S, 0.5)` likelihood over every cell of the dense rating
-    matrix, with `S` rebuilt from the sampled factors by the same
-    composition the source names.
-
-    Wholly reconstructible. An arrow's tensor is indexed
-    `(domain, codomain)`, so each factor is `(2, 8)`, and
-    `U.dagger >> V` under the `real` algebra contracts the shared
-    `LatentDim` index: the `(u, m)` entry is
-    `sum_k U[k, u] * V[k, m]`, written here as an `einsum` rather
-    than through the compiled composition, which is the code under
-    test. `mu` is a deterministic `let` and scores zero.
+    Wholly reconstructible. Each factor table is indexed `(row,
+    LatentDim)`, so the flat payloads inflate as `(50, 2)` and
+    `(40, 2)`, and the score of observed rating `n` is the inner
+    product of its user's and its movie's rows, written here as an
+    `einsum` over the gathered rows. `user_idx` and `movie_idx` are
+    host data; `score` is a deterministic `let` and scores zero.
     """
     del dataset, weights
-    if variant == "factors_read_column_major":
-        # The wire payload arrives flat; inflating it as `(User,
-        # LatentDim)` and transposing keeps every entry and every
-        # shape while permuting which factor coordinate meets which.
-        user_factor = values["U"].reshape(8, 2).transpose(0, 1)
-        movie_factor = values["V"].reshape(8, 2).transpose(0, 1)
+    if variant == "factors_read_transposed":
+        # The flat payload inflated as `(LatentDim, User)` and
+        # transposed: every entry and every shape survives, but the
+        # latent coordinates meet the wrong users.
+        user_factor = values["U"].reshape(2, 50).transpose(0, 1)
+        movie_factor = values["V"].reshape(2, 40).transpose(0, 1)
     elif variant in (
         "",
-        "score_transposed",
         "drop_movie_factor_prior",
         "unit_rating_scale",
         "plate_mean",
     ):
-        user_factor = values["U"].reshape(2, 8)
-        movie_factor = values["V"].reshape(2, 8)
+        user_factor = values["U"].reshape(50, 2)
+        movie_factor = values["V"].reshape(40, 2)
     else:
         raise _unknown_variant("pmf", variant)
 
-    score = torch.einsum("ku,km->um", user_factor, movie_factor)
-    if variant == "score_transposed":
-        score = score.transpose(0, 1)
+    sigma = values["sigma"]
+    user_idx = values["user_idx"].long()
+    movie_idx = values["movie_idx"].long()
+    score = torch.einsum("nk,nk->n", user_factor[user_idx], movie_factor[movie_idx])
 
     unit = td.Normal(0.0, 1.0)
     movie_term = (
@@ -878,15 +870,15 @@ def _reconstruct_pmf(
         if variant == "drop_movie_factor_prior"
         else unit.log_prob(movie_factor).sum()
     )
-    # `sigma = 0.5` in the snippet: the source fixes the mean surface
-    # and says nothing about the observation scale.
-    scale = 1.0 if variant == "unit_rating_scale" else 0.5
-    per_cell = td.Normal(score, scale).log_prob(values["rating"])
+    sigma_term = td.HalfCauchy(2.5).log_prob(sigma).sum()
+    scale = torch.ones_like(sigma) if variant == "unit_rating_scale" else sigma
+    per_rating = td.Normal(score, scale).log_prob(values["r"])
 
     return {
+        "sigma": sigma_term,
         "U": unit.log_prob(user_factor).sum(),
         "V": movie_term,
-        "rating": (per_cell.mean() if variant == "plate_mean" else per_cell.sum()),
+        "r": per_rating.mean() if variant == "plate_mean" else per_rating.sum(),
     }
 
 
@@ -909,9 +901,9 @@ def _reconstruct_tensor_contraction(
         )
 
     The `.md` snippet gives each declared arrow an entrywise
-    `Normal(0, 1)` prior and scores the judgment plate under
-    `Normal(S, 0.5)`, with `S` the contraction of the three sampled
-    tensors.
+    `Normal(0, 1)` prior and scores 50 replicate judgments of every
+    `(Item, Judgment)` cell under `Normal(S, 0.5)`, with `S` the
+    contraction of the three sampled tensors.
 
     Wholly reconstructible. The contraction's wiring is fixed by the
     typed signature rather than spelled out: `PredDim` and `ArgDim`
@@ -949,7 +941,8 @@ def _reconstruct_tensor_contraction(
         else unit.log_prob(interaction).sum()
     )
     scale = 1.0 if variant == "unit_judgment_scale" else 0.5
-    per_cell = td.Normal(score, scale).log_prob(values["judgment"])
+    judgment = values["judgment"].reshape(-1, *score.shape)
+    per_cell = td.Normal(score, scale).log_prob(judgment)
 
     return {
         "pred_embed": unit.log_prob(pred).sum(),
@@ -967,82 +960,64 @@ def _reconstruct_tree_categorical(
 ) -> dict[str, Tensor]:
     """`tree_categorical.qvr`:
 
-        sample p_root, p_left, p_right <- Beta(concentration1=1.0, concentration0=1.0)
-        let leaf_log = factor cls : Class in { 0 -> log(1 - p_root) + log(1 - p_left), ... }
+        sample a_root, a_left, a_right <- Normal(loc=0.0, scale=1.5)
         sample sigma_v <- HalfNormal(scale=1.0)
-        sample delta : Verb <- Normal(loc=0.0, scale=sigma_v)
-        sample mu : Class <- Normal(loc=0.0, scale=1.0)
-        let cell_score = factor v : Verb, cls : Class in delta[v] + mu[cls] + leaf_log[cls]
-        let cell0 = cell_score[0, 0]
-        observe y : Resp <- Normal(loc=cell0, scale=0.5)
+        sample e_root, e_left, e_right : Verb <- Normal(loc=0.0, scale=1.0)
+        let eta_s = a_s + sigma_v * e_s                  (s = root, left, right)
+        let leaf_prob[v, c] = sigmoid(root_side[c] * eta_root[v])
+                              * sigmoid(inner_side[c] * eta_inner(c)[v])
+        observe y : Resp <- Categorical(probs=leaf_prob[verb_idx])
 
-    Wholly reconstructible. Only cell `(0, 0)` of the rank-2 factor
-    reaches the likelihood, so the reconstruction evaluates that one
-    cell: `delta[0] + mu[0] + leaf_log[0]`, with
-    `leaf_log[0] = log(1 - p_root) + log(1 - p_left)` from the case
-    table's `0 ->` arm. The three `Beta(1, 1)` sites score exactly
-    zero, which
-    [`test_zero_scoring_sites_are_zero_by_identity`][tests.transpile.test_oracle_reference_strength.test_zero_scoring_sites_are_zero_by_identity]
-    asserts is an identity rather than a coincidence.
-
-    `y` carries one response per element of `object Resp : FinSet
-    200`, every one of them scored against the same `cell0` location,
-    so the likelihood is a 200-term sum over a plate of width 200.
+    with `root_side = (-1, -1, 1, 1)`, `inner_side = (-1, 1, -1, 1)`,
+    and the inner split of classes 0 and 1 the left one, of classes 2
+    and 3 the right one. Wholly reconstructible. The leaf
+    probabilities are written out here leaf by leaf, as products of
+    branch probabilities along each path, rather than through the
+    sign tables the source uses; `verb_idx` is host data, and every
+    `let` scores zero.
     """
     del dataset, weights
-    p_root, p_left, p_right = (
-        values["p_root"],
-        values["p_left"],
-        values["p_right"],
-    )
-    sigma_v, delta, mu, y = (
-        values["sigma_v"],
-        values["delta"],
-        values["mu"],
-        values["y"],
-    )
-    unit = td.Beta(1.0, 1.0)
+    a_root, a_left, a_right = values["a_root"], values["a_left"], values["a_right"]
+    sigma_v = values["sigma_v"]
+    e_root, e_left, e_right = values["e_root"], values["e_left"], values["e_right"]
 
     if variant == "delta_unit_scale":
-        delta_scale = torch.ones_like(sigma_v)
-    elif variant in (
-        "",
-        "wrong_leaf_branch",
-        "drop_leaf_offset",
-        "plate_mean",
-    ):
-        delta_scale = sigma_v
+        spread = torch.ones_like(sigma_v)
+    elif variant in ("", "wrong_leaf_branch", "inner_splits_swapped", "plate_mean"):
+        spread = sigma_v
     else:
         raise _unknown_variant("tree_categorical", variant)
 
+    rho = torch.sigmoid(a_root + spread * e_root)
+    lam = torch.sigmoid(a_left + spread * e_left)
+    kappa = torch.sigmoid(a_right + spread * e_right)
+    if variant == "inner_splits_swapped":
+        lam, kappa = kappa, lam
     if variant == "wrong_leaf_branch":
-        leaf_zero = torch.log(p_root) + torch.log(p_left)
+        # Leaf 0 reads the root's right branch instead of its left one,
+        # the classic tree-traversal polarity error.
+        leaf_zero = rho * (1.0 - lam)
     else:
-        leaf_zero = torch.log(1.0 - p_root) + torch.log(1.0 - p_left)
-    cell_zero = delta[0] + mu[0]
-    if variant != "drop_leaf_offset":
-        cell_zero = cell_zero + leaf_zero
+        leaf_zero = (1.0 - rho) * (1.0 - lam)
+    leaf = torch.stack(
+        [leaf_zero, (1.0 - rho) * lam, rho * (1.0 - kappa), rho * kappa],
+        dim=-1,
+    )
+    verb_idx = values["verb_idx"].long()
+    picked = leaf[verb_idx, values["y"].long()]
+    per_row = picked.log()
 
-    # `y` is summed, never averaged: the joint is a product over the
-    # 200-element `Resp` plate. Every response is scored against the
-    # same `cell0`, so an averaged plate returns the per-response
-    # density itself and the defect is worth two orders of magnitude.
-    per_response = td.Normal(cell_zero, 0.5).log_prob(y)
-    y_term = per_response.mean() if variant == "plate_mean" else per_response.sum()
-
+    normal_a = td.Normal(0.0, 1.5)
+    unit = td.Normal(0.0, 1.0)
     return {
-        "p_root": unit.log_prob(p_root).sum(),
-        "p_left": unit.log_prob(p_left).sum(),
-        "p_right": unit.log_prob(p_right).sum(),
+        "a_root": normal_a.log_prob(a_root).sum(),
+        "a_left": normal_a.log_prob(a_left).sum(),
+        "a_right": normal_a.log_prob(a_right).sum(),
         "sigma_v": td.HalfNormal(1.0).log_prob(sigma_v).sum(),
-        "delta": td.Normal(
-            torch.zeros_like(delta),
-            delta_scale,
-        )
-        .log_prob(delta)
-        .sum(),
-        "mu": td.Normal(0.0, 1.0).log_prob(mu).sum(),
-        "y": y_term,
+        "e_root": unit.log_prob(e_root).sum(),
+        "e_left": unit.log_prob(e_left).sum(),
+        "e_right": unit.log_prob(e_right).sum(),
+        "y": per_row.mean() if variant == "plate_mean" else per_row.sum(),
     }
 
 
@@ -1378,73 +1353,72 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "mixture_model",
         "likelihood_mean",
-        "the 100-row `Resp` plate is averaged instead of summed.",
+        "the 200-row `Resp` plate is averaged instead of summed.",
         100.0,
     ),
     _Mutant(
         "parametric_pooling",
-        "drop_centering_score",
-        "the soft sum-to-zero `score` factor is dropped. Its value is "
-        "~0 at the ground truth, where the snippet centres the group "
-        "effects exactly, so this mutant is invisible at point 0 and "
-        "only the perturbed points reject it.",
-        5.0,
-    ),
-    _Mutant(
-        "parametric_pooling",
         "ignore_spread",
-        "the template's `spread = 0.6` scaling is dropped, so the "
+        "the template's `spread = tau` scaling is dropped, so the "
         "non-centred parameterisation collapses to `theta = z`.",
-        10.0,
+        9.0,
     ),
     _Mutant(
         "parametric_pooling",
-        "unconstrain_sigma",
-        "the `LogNormal` observation scale is scored in log space, "
-        "adding a `log sigma` Jacobian.",
-        0.5,
+        "drop_common_mean",
+        "the common mean `mu` is left out of the school means, so "
+        "every school effect is pulled toward zero rather than toward "
+        "`mu`.",
+        23.0,
+    ),
+    _Mutant(
+        "parametric_pooling",
+        "unconstrain_tau",
+        "the `HalfCauchy` spread is scored in log space, adding a "
+        "`log tau` Jacobian.",
+        1.8,
+    ),
+    _Mutant(
+        "parametric_pooling",
+        "unit_standard_error",
+        "the known per-school standard errors are ignored and every "
+        "estimate is scored at unit scale.",
+        2400.0,
     ),
     _Mutant(
         "parametric_pooling",
         "plate_mean",
-        "the 8-school plate is averaged instead of summed.",
-        2.0,
+        "the 40-school plate is averaged instead of summed.",
+        150.0,
     ),
     _Mutant(
         "pmf",
-        "score_transposed",
-        "the rating mean is read as `S[m, u]` rather than `S[u, m]`, "
-        "the orientation error a mis-taken dagger produces. The score "
-        "matrix is square, so no shape check objects.",
-        1000.0,
-    ),
-    _Mutant(
-        "pmf",
-        "factors_read_column_major",
-        "each flat factor payload is inflated as `(User, LatentDim)` "
-        "and transposed rather than read as `(LatentDim, User)`, "
-        "permuting which latent coordinate meets which user while "
-        "leaving both entrywise priors, and every shape, untouched.",
-        1000.0,
+        "factors_read_transposed",
+        "each flat factor payload is inflated as `(LatentDim, row)` "
+        "and transposed rather than read as `(row, LatentDim)`, "
+        "permuting which latent coordinate meets which user or movie "
+        "while leaving both entrywise priors, and every shape, "
+        "untouched.",
+        18000.0,
     ),
     _Mutant(
         "pmf",
         "drop_movie_factor_prior",
-        "the entrywise `Normal(0, 1)` prior on the movie factor matrix is dropped.",
-        27.0,
+        "the entrywise `Normal(0, 1)` prior on the movie factor table is dropped.",
+        105.0,
     ),
     _Mutant(
         "pmf",
         "unit_rating_scale",
-        "the rating likelihood is scored at unit scale instead of at "
-        "the snippet's `sigma = 0.5`.",
-        18.0,
+        "the ratings are scored at unit scale instead of at the sampled "
+        "`sigma`.",
+        600.0,
     ),
     _Mutant(
         "pmf",
         "plate_mean",
-        "the 64-cell `(User, Movie)` rating plate is averaged instead of summed.",
-        85.0,
+        "the 800-rating `Rating` plate is averaged instead of summed.",
+        1150.0,
     ),
     _Mutant(
         "tensor_contraction",
@@ -1459,7 +1433,7 @@ _MUTANTS: tuple[_Mutant, ...] = (
         "drop_interaction_prior",
         "the entrywise `Normal(0, 1)` prior on the third-order "
         "interaction tensor is dropped.",
-        19.0,
+        14.0,
     ),
     _Mutant(
         "tensor_contraction",
@@ -1473,36 +1447,36 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "tensor_contraction",
         "plate_mean",
-        "the 12-cell `(Item, Judgment)` plate is averaged instead of summed.",
+        "the 600 replicate judgments are averaged instead of summed.",
         24.0,
     ),
     _Mutant(
         "tree_categorical",
         "wrong_leaf_branch",
-        "leaf 0 of the case table reads the `p_root` / `p_left` arm "
-        "instead of its complement, the classic tree-traversal "
-        "polarity error.",
-        40.0,
+        "leaf 0 reads the root's right branch instead of its left one, "
+        "the classic tree-traversal polarity error.",
+        350.0,
     ),
     _Mutant(
         "tree_categorical",
         "delta_unit_scale",
-        "the per-verb effects are scored at unit scale instead of at "
-        "the sampled `sigma_v`, severing the hierarchy.",
-        1.5,
+        "the per-verb effects enter the split logits at unit scale "
+        "instead of at the sampled `sigma_v`, severing the hierarchy.",
+        140.0,
     ),
     _Mutant(
         "tree_categorical",
-        "drop_leaf_offset",
-        "the tree-structured leaf log-probability is dropped from the "
-        "score cell, leaving `delta[0] + mu[0]`.",
-        400.0,
+        "inner_splits_swapped",
+        "the left and right inner splits trade places, so classes 0 "
+        "and 1 are scored under the right split's logit; every shape "
+        "stays valid.",
+        580.0,
     ),
     _Mutant(
         "tree_categorical",
         "plate_mean",
-        "the 200-response `Resp` plate is averaged instead of summed.",
-        100.0,
+        "the 2400-response `Resp` plate is averaged instead of summed.",
+        3500.0,
     ),
 )
 
@@ -1857,14 +1831,7 @@ def test_reconstruction_matches_the_pinned_reference(
 #: What has to be pinned is where the vanishing happens: a term that
 #: starts vanishing at a point not listed here, or stops vanishing at
 #: one that is, has changed, whether or not the joint still matches.
-_PARTIALLY_INVISIBLE_SITES: dict[str, dict[str, tuple[int, ...]]] = {
-    # `centering` scores `-50 * sum(theta)**2`, and the ground-truth
-    # `theta` is a centered vector. Points 0, 2 and 5 leave the latents
-    # at ground truth and perturb the data alone, so the penalty is
-    # zero there; at 1, 3 and 4, which perturb the latents, it reaches
-    # 1.85, 2.09 and 10.88 nats.
-    "parametric_pooling": {"centering": (0, 2, 5)},
-}
+_PARTIALLY_INVISIBLE_SITES: dict[str, dict[str, tuple[int, ...]]] = {}
 
 
 @pytest.mark.parametrize(
@@ -1937,29 +1904,12 @@ def test_zero_scoring_sites_are_zero_by_identity(example: str) -> None:
             f"nowhere by much is a term the pins barely constrain."
         )
 
-    if example != "tree_categorical":
-        assert not everywhere, (
-            f"{example!r}: {everywhere!r} contribute nothing to the "
-            f"joint at every point, so dropping them from the "
-            f"reconstruction would be undetectable. Only "
-            f"`tree_categorical`'s `Beta(1, 1)` splits are flat by "
-            f"identity; state why these are, or the check is weaker "
-            f"than its site count suggests."
-        )
-        return
-
-    assert everywhere == ["p_left", "p_right", "p_root"], (
-        f"tree_categorical: expected exactly the three `Beta(1, 1)` "
-        f"splits to score zero; got {everywhere!r}."
-    )
-    grid = torch.linspace(0.05, 0.95, 19)
-    flat = td.Beta(1.0, 1.0).log_prob(grid)
-    assert torch.equal(flat, torch.zeros_like(flat)), (
-        f"`Beta(1, 1)` is not flat across (0, 1) under this torch "
-        f"build ({flat.tolist()!r}), so the three splits scoring zero "
-        f"is a coincidence of the fixture's values rather than an "
-        f"identity, and dropping one of them would be an undetected "
-        f"defect."
+    assert not everywhere, (
+        f"{example!r}: {everywhere!r} contribute nothing to the joint "
+        f"at every point, so dropping them from the reconstruction "
+        f"would be undetectable. No reconstructed site is flat by "
+        f"identity; state why these are, or the check is weaker than "
+        f"its site count suggests."
     )
 
 
@@ -1969,11 +1919,10 @@ reconstruction makes at any point, in nats.
 
 Each site is taken at its largest contribution across the six points,
 and the floor bounds the smallest of those peaks over every site of
-every reconstruction. Measured: 0.3827 nats, `tree_categorical`'s
-`sigma_v` under `HalfNormal(1)`. The pin tolerance at that example's
-magnitude is 7.63e-06, so even the least visible site the
-reconstruction checks sits about 50000 times above the noise the
-comparison tolerates. The floor sits just under the measurement so
+every reconstruction. Measured: 0.4474 nats, `bnn`'s `sigma`; the
+next is 0.7500 nats, `tree_categorical`'s `sigma_v` under
+`HalfNormal(1)`. Even the least visible site the reconstruction checks
+thus sits far above the noise the comparison tolerates. The floor sits just under the measurement so
 that a term shrinking toward the tolerance trips here first."""
 
 
@@ -2084,11 +2033,10 @@ _TIGHTEST_MUTANT_MARGIN_IN_TOLERANCES = 4000.0
 """Floor on the *tightest* rejection in the mutant catalogue, measured
 in multiples of the reference pin tolerance at the rejecting point.
 
-Measured: 5678, `mixture_model`'s dropped `Dirichlet(1, 1, 1)` prior,
-which shifts the joint by exactly `log Gamma(3) = 0.6931` nats against
-a 1.221e-04 tolerance. The next-narrowest is 9122
-(`continuous_hmm`'s emission conditioned on the wrong state) and the
-catalogue runs out to 1.0e09 (`bnn`'s network stripped of its `tanh`).
+Measured: 5932, `mixture_model`'s dropped `Dirichlet(2, 2, 2)` prior,
+which shifts the joint by at most 1.448 nats across the point set. The
+next-narrowest is 10822 (`mixture_model`'s scale scored in log space),
+and the catalogue runs out past 1.0e07.
 Declaring the tightest one is what keeps the catalogue from decaying
 into a set of enormous, uninformative deviations while the small,
 realistic defect quietly stops being covered."""

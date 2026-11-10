@@ -87,33 +87,23 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # BUGS lower family registry has no target name for. Every other
     # backend resolves it and its cell is live.
     ("bugs", "mixture_model"): "family:MixtureNormal",
-    # pmf / tensor_contraction carry `composition` (and `contraction`)
-    # declarations; no PPL backend has a surface for them. Both
-    # examples still score a joint, because their `.md` snippets wrap
-    # the compiled composition in a `MonadicProgram`, so both carry a
-    # `_QVR_REFERENCE_JOINT` row. Every one of their cells being a
-    # pinned raise means no container re-derives that row, and the
-    # witness therefore has to come from the raw-`torch.distributions`
-    # side in `test_oracle_reference_strength.py`.
-    ("bugs", "pmf"): "composition_decl",
+    # tensor_contraction carries `composition` and `contraction`
+    # declarations; no PPL backend has a surface for them. The example
+    # still scores a joint, because its `.md` snippet wraps the
+    # compiled contraction in a `MonadicProgram`, so it carries a
+    # `_QVR_REFERENCE_JOINT` row. Every one of its cells being a pinned
+    # raise means no container re-derives that row, and the witness
+    # therefore has to come from the raw-`torch.distributions` side in
+    # `test_oracle_reference_strength.py`.
     ("bugs", "tensor_contraction"): "composition_decl",
-    ("edward2", "pmf"): "composition_decl",
     ("edward2", "tensor_contraction"): "composition_decl",
-    ("gen", "pmf"): "composition_decl",
     ("gen", "tensor_contraction"): "composition_decl",
-    ("jags", "pmf"): "composition_decl",
     ("jags", "tensor_contraction"): "composition_decl",
-    ("numpyro", "pmf"): "composition_decl",
     ("numpyro", "tensor_contraction"): "composition_decl",
-    ("pymc", "pmf"): "composition_decl",
     ("pymc", "tensor_contraction"): "composition_decl",
-    ("pyro", "pmf"): "composition_decl",
     ("pyro", "tensor_contraction"): "composition_decl",
-    ("stan", "pmf"): "composition_decl",
     ("stan", "tensor_contraction"): "composition_decl",
-    ("turing", "pmf"): "composition_decl",
     ("turing", "tensor_contraction"): "composition_decl",
-    ("webppl", "pmf"): "composition_decl",
     ("webppl", "tensor_contraction"): "composition_decl",
     # kumaraswamy_bounded_outcome names `Kumaraswamy`, which has no
     # JAGS or BUGS target name. The two engines part company: the JAGS
@@ -196,6 +186,20 @@ for _scan_model in (
     for _scan_backend in _BACKENDS_WITH_IMAGES:
         _EXPECTED_TRANSPILE_RAISES[(_scan_backend, _scan_model)] = "scan:no-lowering"
 
+# lda draws each token's topic from a document row gathered by a
+# `let` (`theta_tok = theta[doc_idx]`). The Gen and Turing emissions
+# size a Categorical marginalization from its `probs` argument, where a
+# gathered `let` carries no static support size, so both refuse.
+for _gather_backend in ("gen", "turing"):
+    _EXPECTED_TRANSPILE_RAISES[(_gather_backend, "lda")] = (
+        "marginalize:unknown-cardinality:Categorical"
+    )
+
+# tree_categorical builds its leaf table with a `factor` over the
+# `Class` axis, which no plate of the program carries; the Gen helper
+# reads factor extents from plate cardinalities and refuses.
+_EXPECTED_TRANSPILE_RAISES[("gen", "tree_categorical")] = "let-expr:LetExprFactor:gen"
+
 for _neural_model in (
     "deep_markov",
     "seq2seq",
@@ -212,12 +216,12 @@ for _neural_model in (
 # dict). Numeric evaluation has no point set, so the cell skips.
 #
 # The registry is empty: every gallery example's snippet executes and
-# leaves an `observations` dict behind, including the two structural
-# algebra examples (`pmf`, `tensor_contraction`), whose snippets wrap
-# the compiled composition in a `MonadicProgram` with entrywise
+# leaves an `observations` dict behind, including the structural
+# algebra example `tensor_contraction`, whose snippet wraps the
+# compiled contraction in a `MonadicProgram` with entrywise
 # `Normal(0, 1)` priors over each declared arrow and a
-# `Normal(score, 0.5)` likelihood over the contraction. Their joints
-# are pinned like every other example's. Keeping the registry (rather
+# `Normal(score, 0.5)` likelihood over replicate judgments. Its joint
+# is pinned like every other example's. Keeping the registry (rather
 # than deleting it) keeps the skip path a named, testable branch, so a
 # snippet that stops executing is recorded here rather than turning
 # into a bare load failure.
@@ -392,12 +396,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -21.73342514038086,
     ),
     "factor_analysis": (
-        -132.61660766601562,
-        -214.58114624023438,
-        -162.3575897216797,
-        -226.3590087890625,
-        -187.85678100585938,
-        -168.95579528808594,
+        -3338.30810546875,
+        -4454.0234375,
+        -3609.645263671875,
+        -4188.2109375,
+        -3860.51318359375,
+        -3656.01806640625,
     ),
     "gamma_regression": (
         -296.97430419921875,
@@ -448,12 +452,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         15.959518432617188,
     ),
     "lda": (
-        -18.173583984375,
-        -18.84844970703125,
-        -444.3291015625,
-        -437.18743896484375,
-        -20.41473388671875,
-        -442.911376953125,
+        -32370.158203125,
+        -32505.0,
+        -35812.62109375,
+        -36593.2109375,
+        -32460.607421875,
+        -36056.83203125,
     ),
     "linear_gaussian_ssm": (
         -6.176448822021484,
@@ -472,12 +476,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -84.29177856445312,
     ),
     "mixture_model": (
-        -189.3568115234375,
-        -197.78488159179688,
-        -197.35861206054688,
-        -214.3572998046875,
-        -197.0948486328125,
-        -196.84445190429688,
+        -391.03955078125,
+        -424.0065002441406,
+        -408.49810791015625,
+        -417.8617248535156,
+        -435.7660217285156,
+        -400.8327331542969,
     ),
     "negbin_regression": (
         -687.5454711914062,
@@ -488,12 +492,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -719.3248901367188,
     ),
     "parametric_pooling": (
-        -16.053003311157227,
-        -21.250812530517578,
-        -15.52226448059082,
-        -19.705469131469727,
-        -26.930932998657227,
-        -18.749011993408203,
+        -210.12452697753906,
+        -212.90829467773438,
+        -210.09971618652344,
+        -210.6964111328125,
+        -211.61328125,
+        -210.4910430908203,
     ),
     "pcfg": (
         -23.014850616455078,
@@ -504,20 +508,20 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -27.879863739013672,
     ),
     "pmf": (
-        -96.90896606445312,
-        -128.39248657226562,
-        -98.03665161132812,
-        -123.15997314453125,
-        -137.48460388183594,
-        -100.93830871582031,
+        -409.01629638671875,
+        -902.4696044921875,
+        -596.490234375,
+        -1430.7745361328125,
+        -952.38037109375,
+        -595.33740234375,
     ),
     "ppca": (
-        -67.73426818847656,
-        -231.67868041992188,
-        -105.8104476928711,
-        -274.6122741699219,
-        -188.58070373535156,
-        -141.64019775390625,
+        -2898.3642578125,
+        -3589.615234375,
+        -3093.763427734375,
+        -3519.74853515625,
+        -3539.537841796875,
+        -3080.2548828125,
     ),
     "stochastic_volatility": (
         -307.8003845214844,
@@ -536,20 +540,20 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -159.7487335205078,
     ),
     "tensor_contraction": (
-        -52.925621032714844,
-        -64.15614318847656,
-        -52.4114875793457,
-        -61.599327087402344,
-        -67.39108276367188,
-        -52.22042465209961,
+        -482.0543212890625,
+        -804.6907958984375,
+        -516.5264282226562,
+        -971.0435791015625,
+        -1093.5211181640625,
+        -514.5181274414062,
     ),
     "tree_categorical": (
-        -155.84384155273438,
-        -278.3675842285156,
-        -167.4322967529297,
-        -167.1120147705078,
-        -157.07876586914062,
-        -171.585205078125,
+        -2984.506103515625,
+        -3060.587646484375,
+        -3399.37646484375,
+        -3582.632568359375,
+        -2993.26953125,
+        -3461.560546875,
     ),
     "zip_regression": (
         -583.2901611328125,

@@ -235,12 +235,13 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "factor_analysis",
             "item_idx",
-            "Gathers the per-item latent code row of Z_mat over the Item plate",
+            "Gathers the per-item factor-score row of Z over the Item plate",
         ),
         (
             "factor_analysis",
             "obs_idx",
-            "Gathers the loading row of W_mat over the ObsDim plate",
+            "Gathers the loading row of W and the uniqueness psi over the "
+            "ObsDim plate",
         ),
         (
             "gamma_regression",
@@ -264,10 +265,15 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         ),
         (
             "lda",
-            "word_idx",
-            "Names the fibration from each word position into its "
-            "document, selecting the theta row the per-word mixture "
-            "marginal is scored under",
+            "doc_idx",
+            "Maps each token position to its document, gathering the "
+            "theta row the token's topic is drawn from",
+        ),
+        (
+            "lda",
+            "token_idx",
+            "Names the identity fibration of the Token plate onto itself, "
+            "so that the marginalized topic is grouped one token per group",
         ),
         (
             "negbin_regression",
@@ -275,14 +281,30 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
             "Gathers beta_0, beta_1 and dispersion over the Out plate",
         ),
         (
+            "pmf",
+            "movie_idx",
+            "Gathers the movie factor row of V over the Movie plate",
+        ),
+        (
+            "pmf",
+            "user_idx",
+            "Gathers the user factor row of U over the User plate",
+        ),
+        (
             "ppca",
             "item_idx",
-            "Gathers the per-item latent code row of Z_mat over the Item plate",
+            "Gathers the per-item latent code row of Z over the Item plate",
         ),
         (
             "ppca",
             "obs_idx",
-            "Gathers the loading row of W_mat over the ObsDim plate",
+            "Gathers the loading row of W over the ObsDim plate",
+        ),
+        (
+            "tree_categorical",
+            "verb_idx",
+            "Gathers each response's row of leaf probabilities over the "
+            "Verb plate",
         ),
         (
             "zip_regression",

@@ -52,6 +52,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _FAMILIES = _REPO_ROOT / "tests" / "transpile" / "fixtures" / "families"
 _AUDIT = _REPO_ROOT / "tests" / "transpile" / "fixtures" / "audit"
 _GALLERY = _REPO_ROOT / "docs" / "examples" / "source"
+_TOPIC_MIXTURE = _REPO_ROOT / "tests" / "fixtures" / "qvr" / "grouped_topic_mixture.qvr"
 _RUNTIME = _REPO_ROOT / "src" / "quivers" / "transpile" / "runtime_church.scm"
 
 
@@ -182,19 +183,19 @@ def test_deterministic_via_gather_indexes_row_variable() -> None:
 
 def test_sample_event_dims_wrap_inner_map() -> None:
     """A scalar Normal stamped with an event axis via ``over=`` wraps an
-    inner `map` so each of the 32 items is a length-2 vector, not a
+    inner `map` so each of the 400 items is a length-2 vector, not a
     flat scalar."""
     model = _nospace(_model(_church_file(_GALLERY / "factor_analysis.qvr")))
     assert (
-        "(defineZ_mat(map(lambda(m_Item)"
-        "(map(lambda(m_LatentDim)(sample(gaussian01)))(iota2)))(iota32)))"
+        "(defineZ(map(lambda(m_Item)"
+        "(map(lambda(m_LatentDim)(sample(gaussian01)))(iota2)))(iota400)))"
     ) in model
 
 
 def test_intrinsic_vector_family_has_no_inner_event_map() -> None:
     """A Dirichlet draws its simplex natively, so an ``over=`` event
     axis carries intrinsically with no inner per-event map."""
-    model = _nospace(_model(_church_file(_GALLERY / "lda.qvr")))
+    model = _nospace(_model(_church_file(_TOPIC_MIXTURE)))
     assert "(definetheta(map(lambda(m_Doc)(sample(dirichlet" in model
     assert "m_Topic)(sample" not in model.split("definephi")[0]
 
@@ -208,7 +209,7 @@ def test_marginalize_latent_reads_its_prior_through_the_fibration() -> None:
     """The marginalized categorical declares no site: its per-document
     topic mixture is gathered one row per token through the ``via``
     fibration and read as the log-weight of each atom."""
-    model = _nospace(_model(_church_file(_GALLERY / "lda.qvr")))
+    model = _nospace(_model(_church_file(_TOPIC_MIXTURE)))
     assert "(sample(categorical" not in model
     assert (
         "(define__marg_z_w(broadcast1log(map(lambda(i)(list-refthetai))word_idx)))"
@@ -228,7 +229,7 @@ def test_via_fibration_threads_through_group_plate() -> None:
     document, whose prior weights the atoms; `phi` reads the pinned
     topic's distribution over `Vocab`.
     """
-    model = _nospace(_model(_church_file(_GALLERY / "lda.qvr")))
+    model = _nospace(_model(_church_file(_TOPIC_MIXTURE)))
     for atom in range(3):
         assert (
             f"(define(__marg_z_atom_{atom})(map(lambda(m_Token)(dist-score"
@@ -415,7 +416,7 @@ def test_emitted_church_reparses_to_a_fixed_point() -> None:
         _FAMILIES / "gp.qvr",
         _GALLERY / "bayesian_regression.qvr",
         _GALLERY / "factor_analysis.qvr",
-        _GALLERY / "lda.qvr",
+        _TOPIC_MIXTURE,
         _GALLERY / "negbin_regression.qvr",
         _GALLERY / "beta_regression.qvr",
     )
