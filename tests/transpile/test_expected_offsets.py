@@ -651,17 +651,17 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    # horseshoe_regression: 6 HalfCauchy folded factor(s).
-    ("bugs", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("edward2", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("gen", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
-    ("jags", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("numpyro", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("pymc", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("pyro", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("stan", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
-    ("turing", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("webppl", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
+    # horseshoe_regression: 22 HalfCauchy folded factor(s).
+    ("bugs", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("edward2", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("gen", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
+    ("jags", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("numpyro", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("pymc", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("pyro", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("stan", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
+    ("turing", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("webppl", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
     # irt_2pl: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("bugs", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),

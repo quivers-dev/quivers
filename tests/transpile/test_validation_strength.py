@@ -253,11 +253,6 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
             "Gathers the per-group offset u over the Group plate",
         ),
         (
-            "horseshoe_regression",
-            "coef_idx",
-            "Gathers lambda_local and z_raw over the Coef plate",
-        ),
-        (
             "irt_2pl",
             "item_idx",
             "Gathers difficulty and discrim over the Item plate",
