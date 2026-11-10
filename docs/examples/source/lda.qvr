@@ -4,8 +4,8 @@
 # distribution, and every token draws its own topic from its
 # document's weights before drawing a word from that topic:
 #
-#   theta_d ~ Dirichlet(0.5)                 per-document topic weights
-#   phi_k   ~ Dirichlet(0.2)                 per-topic word distribution
+#   theta_d ~ Dirichlet(1.0)                 per-document topic weights
+#   phi_k   ~ Dirichlet(0.5)                 per-topic word distribution
 #   z_n     ~ Categorical(theta_{d[n]})      per-token topic
 #   w_n     ~ Categorical(phi_{z_n})         observed word
 #
@@ -30,12 +30,12 @@ composition log_prob [level=algebra]
 object Doc : FinSet 100
 object Topic : FinSet 3
 object Vocab : FinSet 30
-object Token : FinSet 5000
+object Token : FinSet 10000
 object Mix : Real 3
 
 program lda : Token -> Mix
-    sample theta : Doc <- Dirichlet(concentration=0.5) [over=Topic, iid_over=Doc]
-    sample phi : Topic <- Dirichlet(concentration=0.2) [over=Vocab, iid_over=Topic]
+    sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=0.5) [over=Vocab, iid_over=Topic]
     let theta_tok = theta[doc_idx]
 
     marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
