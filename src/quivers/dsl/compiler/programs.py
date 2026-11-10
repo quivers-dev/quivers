@@ -2635,6 +2635,44 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+                annotated_event = self._annotation_is_event_axis(
+                    step, idx_space, bound_vars
+                )
+                if annotated_event is not None:
+                    if step.name in bound_vars:
+                        raise CompileError(
+                            f"variable {step.name!r} already bound in program",
+                            step.line,
+                            step.col,
+                        )
+                    family, step_args = self._resolve_draw_morphism(
+                        DrawStep(
+                            vars=(step.name,),
+                            morphism=step.morphism,
+                            args=step.args,
+                            is_observed=False,
+                            axes=AxisSpec(over=(annotated_event,)),
+                            line=step.line,
+                            col=step.col,
+                        ),
+                        bound_vars,
+                        idx_space,
+                    )
+                    if getattr(family.codomain, "dim", None) != idx_space.size:
+                        raise CompileError(
+                            f"{step.morphism} draw of {step.name!r} is one variate "
+                            f"over {annotated_event!r} ({idx_space.size} entries), "
+                            f"but the runtime builds this family at "
+                            f"{getattr(family.codomain, 'dim', None)} entries; state "
+                            f"the event's size through the family's own arguments",
+                            step.line,
+                            step.col,
+                        )
+                    bound_vars[step.name] = family.codomain
+                    steps.append(
+                        Draw(names=(step.name,), morphism=family, args=step_args)
+                    )
+                    continue
                 array = self._independent_over_axes(
                     step.morphism, getattr(step, "axes", None), step.line, step.col
                 )
@@ -4265,6 +4303,68 @@ class _ProgramsMixin:
                 spaces[parameter.name] = space
         return spaces
 
+    def _annotation_is_event_axis(
+        self,
+        step: PlateDrawStep,
+        index: SetObject,
+        bound_vars: Mapping[str, AnySpace | None],
+    ) -> str | None:
+        """The object an index annotation names as a vector family's event axis.
+
+        A vector family's draw annotated ``w : K`` with no axis-role
+        clause is one variate over ``K`` unless its arguments fix an
+        event of another size, as the checked elaboration reads it:
+        ``Dirichlet(concentration=1.0)`` annotated ``: K`` is one point
+        of the ``K``-simplex, while ``Dirichlet(concentration=[1.0, 2.0,
+        3.0])`` annotated ``: Item`` is one three-simplex point per item.
+        An argument fixes the event when it is a list, whose length is
+        the event's size, or a name bound to a vector.
+
+        Parameters
+        ----------
+        step : PlateDrawStep
+            The annotated draw.
+        index : SetObject
+            The annotation's object.
+        bound_vars : Mapping[str, AnySpace | None]
+            The spaces of the names bound so far.
+
+        Returns
+        -------
+        str | None
+            The annotation's object name when it is the event axis;
+            ``None`` when it is the plate, when the family has no event
+            axis of rank one, or when the draw states its axes.
+        """
+        record = FAMILIES.get(step.morphism)
+        if (
+            record is None
+            or record.event_rank != 1
+            or get_inline_param_names(step.morphism) is None
+            or getattr(step, "axes", None) is not None
+            or not isinstance(step.index, TypeName)
+        ):
+            return None
+        sizes: set[int] = set()
+        for argument in step.args or ():
+            value = argument.value if isinstance(argument, DrawArgNamed) else argument
+            if isinstance(value, DrawArgList) and value.items:
+                sizes.add(len(value.items))
+            elif isinstance(value, DrawArgName):
+                space = bound_vars.get(value.text)
+                if isinstance(space, Euclidean) and space.plate_rows is None:
+                    if space.dim > 1:
+                        sizes.add(space.dim)
+                elif isinstance(space, ContinuousSpace) and not isinstance(
+                    space, Euclidean
+                ):
+                    dim = getattr(space, "dim", None)
+                    if isinstance(dim, int) and dim > 1:
+                        sizes.add(dim)
+        if sizes and sizes != {int(index.size)}:
+            return None
+        return step.index.name
+
     def _independent_over_axes(
         self, family: str, axes: AxisSpec | None, line: int, col: int
     ) -> tuple[tuple[int, ...], AxisSpec | None] | None:
@@ -4632,7 +4732,8 @@ class _ProgramsMixin:
             # * ``Dirichlet(alpha)`` with a single scalar literal →
             #   simplex dimension comes from the program's declared
             #   codomain (``dim`` for a ContinuousSpace,
-            #   ``cardinality`` for a SetObject), defaulting to 2.
+            #   ``cardinality`` for a SetObject) of at least two; a
+            #   draw that fixes none is refused.
             sim_dim: int | None = None
             n_literals = sum(
                 1
@@ -4656,8 +4757,32 @@ class _ProgramsMixin:
                 # k-simplex of class probabilities.
                 sim_dim = getattr(program_codomain, "cardinality", None)
             if sim_dim is None or sim_dim < 2:
-                sim_dim = 2
+                raise CompileError(
+                    f"Dirichlet draw of {var_names[0]!r} fixes no simplex "
+                    f"dimension: give the concentration as a list, annotate "
+                    f"the draw with the simplex's object "
+                    f"(``{var_names[0]} : K <- Dirichlet(...)``), or name it "
+                    f"with ``[over=K]``",
+                    line,
+                    col,
+                )
             return Simplex(name=f"_{var_names[0]}", dim=sim_dim)
+        elif family == "OneHotCategorical":
+            values = argument_by_name.get("probs", argument_by_name.get("logits"))
+            width = (
+                len(values.items)
+                if isinstance(values, DrawArgList) and values.items
+                else event_size
+            )
+            if width is None:
+                raise CompileError(
+                    f"OneHotCategorical draw of {var_names[0]!r} fixes no number "
+                    f"of classes: give its probabilities as a list or name the "
+                    f"classes' object with ``[over=K]``",
+                    line,
+                    col,
+                )
+            return Euclidean(name=f"_{var_names[0]}", dim=width)
         elif family == "Categorical":
             values = argument_by_name.get("probs", argument_by_name.get("logits"))
             if isinstance(values, DrawArgList) and values.items:

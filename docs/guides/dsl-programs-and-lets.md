@@ -392,7 +392,9 @@ Dirichlet(concentration=[1.0, 2.0, 3.0])` draws one three-simplex point per item
 A vector family's single parameter is named like every other family parameter.
 Write `Dirichlet(concentration=[1.0, 2.0, 3.0])` for an explicit vector or
 `Dirichlet(concentration=1.0)` for a symmetric concentration at the dimension
-fixed by the step's plate or the program's declared codomain.
+fixed by the step's annotation, its `over` axis, or the program's declared
+codomain; a draw that fixes no simplex dimension is refused at compile time
+with its location.
 
 **Axis names.** Names resolve against the named factors of the
 surrounding morphism's dom and cod (or the type annotation `: T`
