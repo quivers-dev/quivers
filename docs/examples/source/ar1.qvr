@@ -1,22 +1,26 @@
 # First-Order Autoregressive Model
 #
-# A first-order autoregressive time series with Normal noise.
-# Conditioning on an observed series indexed by Step gives a
-# posterior over (alpha, phi, sigma); this is
-# the canonical reference point for the more elaborate
-# state-space models in the gallery.
+# A stationary first-order autoregressive series with Normal
+# innovations, scored under its exact likelihood: the first value
+# is drawn from the stationary distribution and every later value
+# from the one-step transition given its predecessor. This is the
+# reference point for the latent-state time-series models in the
+# gallery.
 #
 # Generative structure:
 #
-#   alpha  ~ Normal(0, 5)
-#   phi    ~ Uniform(-1, 1)                       stationarity constraint
-#   sigma  ~ HalfCauchy(1)
-#   y_t    ~ Normal(alpha + phi * y_{t-1}, sigma) per-step observation
+#   alpha  ~ Normal(0, 5)                         intercept
+#   phi    ~ Uniform(-1, 1)                       stationary region
+#   sigma  ~ HalfCauchy(1)                        innovation scale
+#   y_0    ~ Normal(alpha / (1 - phi), sigma / sqrt(1 - phi^2))
+#   y_t    ~ Normal(alpha + phi * y_{t-1}, sigma) for t >= 1
 #
-# The Uniform(-1, 1) prior on phi enforces the AR stationarity
-# condition. A stationary initialization would have mean
-# alpha / (1 - phi) and variance sigma^2 / (1 - phi^2); the
-# runnable example instead conditions on an explicit lag vector.
+# The observe step scores every y_t under the stationary marginal.
+# The transition score then replaces that factor at each t >= 1 with
+# the transition density: it adds log N(y_t | alpha + phi * y_{t-1},
+# sigma) - log N(y_t | stationary), so the total is the exact joint
+# log density. The lag y_{t-1} is read from the observed series
+# itself through a shifted factor expression.
 
 object Step : FinSet 64
 object Val : Real 1
@@ -26,9 +30,16 @@ program ar1 : Step -> Val
     sample phi <- Uniform(low=-1.0, high=1.0)
     sample sigma <- HalfCauchy(scale=1.0)
 
-    let mu = alpha + phi * y_prev
+    let stationary_mean = alpha / (1.0 - phi)
+    let stationary_scale = sigma / sqrt(1.0 - phi * phi)
 
-    observe y : Step <- Normal(loc=mu, scale=sigma)
+    observe y : Step <- Normal(loc=stationary_mean, scale=stationary_scale)
+
+    let y_lag = factor t : Step in y[max(t - 1, 0)]
+    let is_transition = factor t : Step in real(min(t, 1))
+    let z_transition = (y - alpha - phi * y_lag) / sigma
+    let z_stationary = (y - stationary_mean) / stationary_scale
+    score transition = sum(is_transition * (0.5 * z_stationary * z_stationary - 0.5 * z_transition * z_transition + log(stationary_scale) - log(sigma)))
     return phi
 
 export ar1
