@@ -384,10 +384,8 @@ program m : Resp -> Resp
 export m
 """)
     y = torch.tensor([0, 1, 2, 0]).long()
-    # `pi` and `rate` fill scalar family parameters directly, so the
-    # checked program reads each as one value shared by every row.
-    pi = torch.tensor(0.3)
-    rate = torch.tensor(1.5)
+    pi = torch.tensor([0.3, 0.3, 0.3, 0.3])
+    rate = torch.tensor([1.5, 1.5, 1.5, 1.5])
     tr = trace(
         program.morphism,
         torch.zeros(4, 1),

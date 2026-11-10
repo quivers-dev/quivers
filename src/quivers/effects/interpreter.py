@@ -1071,7 +1071,9 @@ def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
 
 
 def check_host_data(
-    program: MonadicProgram, data: Mapping[str, torch.Tensor | float | int]
+    program: MonadicProgram,
+    data: Mapping[str, torch.Tensor | float | int],
+    runs: int | None = None,
 ) -> None:
     """Refuse host data that does not inhabit the program's checked types.
 
@@ -1081,7 +1083,9 @@ def check_host_data(
     a model the checked module does not describe, so it is refused. A
     dimension the checked type leaves as an extent variable takes the
     length of the first datum it shapes, and every later datum it shapes
-    must agree.
+    must agree. A run over an input batch replicates the whole program
+    once per batch entry, so a datum may also carry one leading axis of
+    the batch's length, one value of its checked type per run.
 
     Parameters
     ----------
@@ -1089,6 +1093,9 @@ def check_host_data(
         The program, whose ``host_data_types`` give the checked types.
     data : Mapping[str, torch.Tensor | float | int]
         The supplied host data, by name.
+    runs : int | None
+        The length of the input batch, whose axis a datum may lead with;
+        ``None`` admits no such axis.
 
     Raises
     ------
@@ -1106,17 +1113,24 @@ def check_host_data(
         split = tensor_shape(expected)
         element, dimensions = (expected, ()) if split is None else split
         rendered = render_static(expected)
-        actual = tuple(value.shape)
-        if len(actual) != len(dimensions) or any(
+        supplied = tuple(value.shape)
+        per_run = supplied
+        if (
+            runs is not None
+            and len(supplied) == len(dimensions) + 1
+            and supplied[0] == runs
+        ):
+            per_run = supplied[1:]
+        if len(per_run) != len(dimensions) or any(
             isinstance(dimension, IndexLiteral) and dimension.value != extent
-            for dimension, extent in zip(dimensions, actual)
+            for dimension, extent in zip(dimensions, per_run)
         ):
             raise ValueError(
-                f"host datum {name!r} has shape {actual}, but the checked "
+                f"host datum {name!r} has shape {supplied}, but the checked "
                 f"program reads it at type {rendered}, of shape "
                 f"{_rendered_shape(dimensions)}; supply data of that shape"
             )
-        for dimension, extent in zip(dimensions, actual):
+        for dimension, extent in zip(dimensions, per_run):
             if not isinstance(dimension, IndexVariable):
                 continue
             fixed = extents.setdefault(dimension.name, (extent, name))
@@ -1183,7 +1197,7 @@ def run_program(
         never reaches.
     """
     sites, supplied, data = _split_observations(program, observations or {})
-    check_host_data(program, data)
+    check_host_data(program, data, runs=int(x.shape[0]) if x.dim() else None)
     kernel = _cached_kernel(program, tuple(sorted(data)))
     _check_sequence_layouts(kernel, observations or {})
     run = RunContext(kernel, host_value, observations=dict(sites), supplied=supplied)

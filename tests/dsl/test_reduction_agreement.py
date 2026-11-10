@@ -447,7 +447,7 @@ def test_an_integer_tensor_for_real_data_is_refused() -> None:
         program.morphism.log_joint(torch.zeros(1, 1), point)
 
 
-def test_a_scalar_datum_given_a_vector_is_refused() -> None:
+def test_a_name_filling_a_plated_draws_parameter_is_one_value_per_row() -> None:
     program = loads(
         """
 object Resp : FinSet 4
@@ -457,15 +457,39 @@ program m : Resp -> Resp
 export m
 """
     )
-    with pytest.raises(ValueError, match=r"host datum 'mu' has shape \(4,\)"):
-        program.morphism.log_joint(
-            torch.zeros(1, 1), {"mu": torch.zeros(4), "y": torch.zeros(4)}
-        )
+    (entry,) = program.entry_points()
+    types = {parameter.name: parameter.type for parameter in entry.parameters}
+    assert types["mu"] == "Tensor[Real]([4])"
+    mu = torch.tensor([0.5, -1.0, 2.0, 0.0])
     joint = program.morphism.log_joint(
-        torch.zeros(1, 1), {"mu": torch.tensor(0.5), "y": torch.zeros(4)}
+        torch.zeros(1, 1), {"mu": mu, "y": torch.zeros(4)}
     )
-    expected = torch.distributions.Normal(0.5, 1.0).log_prob(torch.zeros(4)).sum()
+    expected = torch.distributions.Normal(mu, 1.0).log_prob(torch.zeros(4)).sum()
     assert float(joint.reshape(-1)[0]) == pytest.approx(float(expected), rel=1e-6)
+    with pytest.raises(ValueError, match=r"host datum 'mu' has shape \(\)"):
+        program.morphism.log_joint(
+            torch.zeros(1, 1), {"mu": torch.tensor(0.5), "y": torch.zeros(4)}
+        )
+
+
+def test_a_datum_may_lead_with_the_input_batch_axis() -> None:
+    program = loads(
+        """
+object Resp : FinSet 4
+program m : Resp -> Resp
+    observe y : Resp <- Normal(loc=mu, scale=1.0)
+    return y
+export m
+"""
+    )
+    # The datum's shape inhabits the checked type once per run; how a run
+    # reads its row of the datum is the input batch's own contract.
+    mu = torch.tensor([[0.5, -1.0, 2.0, 0.0]])
+    program.morphism.log_joint(torch.zeros(1, 1), {"mu": mu, "y": torch.zeros(4)})
+    with pytest.raises(ValueError, match=r"host datum 'mu' has shape \(2, 4\)"):
+        program.morphism.log_joint(
+            torch.zeros(1, 1), {"mu": mu.expand(2, 4), "y": torch.zeros(4)}
+        )
 
 
 def test_an_open_extent_must_agree_across_the_data_it_shapes() -> None:

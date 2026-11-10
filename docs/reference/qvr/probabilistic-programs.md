@@ -75,8 +75,9 @@ says how many entries it has. State its extent by combining it elementwise with
 a value over the intended object, or by reading it entrywise in a factor, as in
 `sum(factor i : Item in weight[i] * resid[i])`. Uses that fix two different
 shapes for one name are refused the same way. A free name filling a scalar
-family parameter directly, as in `Normal(loc=mu, scale=1.0)`, is one value the
-draw's plate shares.
+family parameter of a plated draw directly, as in
+`observe y : School <- Normal(loc=theta, scale=sigma_j)`, holds one value per
+row of the plate, as a name a let feeds to the draw does.
 
 A run supplies each input at its checked type. The reference machine validates
 every argument, and the compiled runtime (`log_joint`, `trace`, `rsample`, and

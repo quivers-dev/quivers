@@ -5085,8 +5085,11 @@ class _ProgramElaboration:
 
         A bound name is read; a morphism with a distribution initializer
         is that distribution when a sampleable is expected; any other
-        name is a data input of the parameter's element type, which a
-        plate or a tensor parameter broadcasts.
+        name is a data input. Filling a scalar parameter of a plated
+        draw, it is a vector over the plate's first batch axis, one value
+        per row; filling a tensor parameter of a draw with no plate, it
+        is a tensor of open extents; otherwise it is one value of the
+        parameter's element type, which a tensor parameter broadcasts.
 
         Parameters
         ----------
@@ -5144,6 +5147,22 @@ class _ProgramElaboration:
                     node,
                 )
             )
+        if rank == 0 and plate.batch:
+            # A scalar parameter of a plated draw takes one value per row,
+            # as a name a let feeds to the draw does: the host datum is a
+            # vector over the plate's first batch axis.
+            axis = plate.batch[0]
+            local = self._declare_parameter(
+                name,
+                tensor_type(element, (axis.size,)),
+                "data",
+                scope,
+                state,
+                node,
+                axes=(axis.name,),
+            )
+            state.batch_shapes[name] = (axis.size,)
+            return Var(local)
         return Var(self._declare_parameter(name, element, "data", scope, state, node))
 
     def _indexed_argument(

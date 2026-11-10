@@ -10,7 +10,7 @@
 #
 #   conc1_j ~ HalfCauchy(2)              per-arm success concentration
 #   conc0_j ~ HalfCauchy(2)              per-arm failure concentration
-#   y_n     ~ BetaBinomial(n_trials, conc1_{j(n)}, conc0_{j(n)})
+#   y_n     ~ BetaBinomial(n_trials_n, conc1_{j(n)}, conc0_{j(n)})
 #
 # The Beta-Binomial marginalises the latent conversion rate
 # analytically. Each batch has an implicit Beta-distributed rate,
@@ -21,7 +21,7 @@
 # Arm is the plate the concentrations are allocated over and Batch
 # is the plate the counts are observed over; the per-row arm
 # assignment reaches the model through the standard plate-gather
-# idiom (conc1[arm_idx]). The trial count n_trials is exogenous
+# idiom (conc1[arm_idx]). The per-batch trial count n_trials is exogenous
 # data supplied at fit time through the observations dict, and Val
 # is the value space of the returned per-row success
 # concentration.
