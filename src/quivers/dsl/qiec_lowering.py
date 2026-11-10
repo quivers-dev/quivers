@@ -3823,10 +3823,9 @@ class _Elaborator(
             If neither a source parameter nor the expected type fixes
             the event shape.
         """
-        source_name = record.event_source
-        source = next((value for name, value in arguments if name == source_name), None)
-        if source is not None:
-            shape = tensor_shape(self._value_type(source, context, authored))
+        supplied = record.event_argument(arguments)
+        if supplied is not None:
+            shape = tensor_shape(self._value_type(supplied[1], context, authored))
             if shape is not None and len(shape[1]) >= record.event_rank:
                 event = shape[1][len(shape[1]) - record.event_rank :]
                 return tensor_type(record.element, event)
@@ -3838,10 +3837,11 @@ class _Elaborator(
             and len(expected_shape[1]) == record.event_rank
         ):
             return tensor_type(record.element, expected_shape[1])
-        if source_name is not None:
+        if record.event_sources:
             self._fail(
                 authored,
-                f"family {record.name!r} needs parameter {source_name!r} as a "
+                f"family {record.name!r} needs parameter "
+                f"{' or '.join(repr(name) for name in record.event_sources)} as a "
                 "Tensor to fix its event shape",
                 code="qiec-distribution",
             )

@@ -2110,7 +2110,8 @@ def _onehotcategorical_sample(a: Mapping[str, object], rng: random.Random) -> ob
     Returns
     -------
     object
-        The drawn indicator vector.
+        The drawn indicator vector, its entries the integers 0 and 1 of
+        the family's `Int` sample element.
     """
     probabilities = simplex(a, "OneHotCategorical")
     uniform = rng.random()
@@ -2121,7 +2122,7 @@ def _onehotcategorical_sample(a: Mapping[str, object], rng: random.Random) -> ob
         if uniform < total:
             chosen = index
             break
-    return tuple(1.0 if index == chosen else 0.0 for index in range(len(probabilities)))
+    return tuple(1 if index == chosen else 0 for index in range(len(probabilities)))
 
 
 def _onehotcategorical_density(a: Mapping[str, object], value: object) -> float:
@@ -2675,7 +2676,9 @@ def _wishart_sample(a: Mapping[str, object], rng: random.Random) -> object:
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters.
+        The family's named parameters: ``df`` and the scale matrix as
+        whichever of ``scale_tril``, ``covariance_matrix``, or
+        ``precision_matrix`` the source wrote.
     rng : random.Random
         The generator to draw from.
 
@@ -2686,9 +2689,7 @@ def _wishart_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """
     return _wishart_sample_at(
         real_parameter(a, "df", "Wishart"),
-        _cholesky(
-            _matrix_parameter(a, "covariance_matrix", "Wishart"), "scale of Wishart"
-        ),
+        _covariance_factor(a, "Wishart"),
         rng,
     )
 
@@ -2699,7 +2700,9 @@ def _wishart_density(a: Mapping[str, object], value: object) -> float:
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters.
+        The family's named parameters: ``df`` and the scale matrix as
+        whichever of ``scale_tril``, ``covariance_matrix``, or
+        ``precision_matrix`` the source wrote.
     value : object
         The matrix evaluated.
 
@@ -2710,9 +2713,7 @@ def _wishart_density(a: Mapping[str, object], value: object) -> float:
     """
     return _wishart_log_prob(
         real_parameter(a, "df", "Wishart"),
-        _cholesky(
-            _matrix_parameter(a, "covariance_matrix", "Wishart"), "scale of Wishart"
-        ),
+        _covariance_factor(a, "Wishart"),
         _as_matrix(value, "Wishart point"),
     )
 

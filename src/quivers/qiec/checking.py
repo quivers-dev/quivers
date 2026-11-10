@@ -1854,14 +1854,12 @@ def _plated_sample_type(
     )
     plate = value.plate
     natural: tuple[IndexTerm, ...] | None = None
-    if family.event_source is not None and family.event_rank > 0:
-        source = argument_types.get(family.event_source)
-        if source is not None:
-            source_shape = tensor_shape(source)
-            if source_shape is not None and len(source_shape[1]) >= family.event_rank:
-                natural = tuple(
-                    source_shape[1][len(source_shape[1]) - family.event_rank :]
-                )
+    supplied = family.event_argument(argument_types.items())
+    source_name = supplied[0] if supplied is not None else None
+    if supplied is not None and family.event_rank > 0:
+        source_shape = tensor_shape(supplied[1])
+        if source_shape is not None and len(source_shape[1]) >= family.event_rank:
+            natural = tuple(source_shape[1][len(source_shape[1]) - family.event_rank :])
     event_axes = tuple(axis.size for axis in plate.event)
     if family.event_rank > 0:
         if len(event_axes) >= family.event_rank:
@@ -1869,7 +1867,7 @@ def _plated_sample_type(
             if natural is not None and tuple(natural) != tuple(trailing):
                 raise KernelError(
                     f"family {value.name!r} samples the trailing shape of "
-                    f"{family.event_source!r}, {natural!r}, but its plate's "
+                    f"{source_name!r}, {natural!r}, but its plate's "
                     f"event axes end in {trailing!r}",
                     "qiec-distribution",
                 )
@@ -1883,7 +1881,7 @@ def _plated_sample_type(
                 shape is None
                 or shape[0] != element
                 or len(shape[1]) != len(plate.batch) + family.event_rank
-                or family.event_source is not None
+                or family.event_sources
             ):
                 raise KernelError(
                     f"family {value.name!r} samples a Tensor[{element_name}] of "

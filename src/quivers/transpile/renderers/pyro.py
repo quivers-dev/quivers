@@ -1218,9 +1218,15 @@ class PyroRenderer(RendererBase):
         (see [`_build_dist_args`][PyroRenderer._build_dist_args]); this
         helper handles per-arg structural dispatch only.
         """
-        del meta, arg_name
         if isinstance(arg, IRArgNumber):
-            return number_literal(pctx, arg.value)
+            literal = number_literal(pctx, arg.value)
+            if (meta.qvr_name, arg_name) in _PYRO_TENSOR_SCALARS:
+                return call(
+                    pctx,
+                    attribute(pctx, ("torch", "tensor")),
+                    positional=(literal,),
+                )
+            return literal
         if isinstance(arg, IRArgRef):
             return _arg_ref_vid(pctx, arg)
         if isinstance(arg, IRArgBroadcast):
@@ -1749,6 +1755,17 @@ _PYRO_LEADING_DIM_FAMILIES = frozenset(
 #: family is emitted as a keyword argument, which is order-free. The
 #: map is `qvr arg name -> pyro keyword`; identity entries are kept
 #: explicit so a reader can check the whole signature in one place.
+#: Scalar parameters a Pyro class reads as a tensor: the relaxed
+#: families scale their log density by ``temperature`` through
+#: ``torch.full_like``, which takes no Python number.
+_PYRO_TENSOR_SCALARS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("RelaxedBernoulli", "temperature"),
+        ("RelaxedOneHotCategorical", "temperature"),
+    }
+)
+
+
 _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
     "Categorical": {
         "logits": "logits",

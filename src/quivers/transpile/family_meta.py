@@ -1073,7 +1073,6 @@ FAMILY_META: dict[str, FamilyMeta] = {
         distribution_class=td.RelaxedOneHotCategorical,
         quivers_class=ConditionalRelaxedOneHotCategorical,
         target_names={
-            "numpyro": "RelaxedOneHotCategorical",
             "pyro": "RelaxedOneHotCategorical",
             "edward2": "RelaxedOneHotCategorical",
         },
@@ -1089,12 +1088,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "numpyro": "Wishart",
             "pyro": "Wishart",
             "pymc": "Wishart",
-            "edward2": "Wishart",
             "turing": "Wishart",
             "bugs": "dwish",
             "jags": "dwish",
         },
         arg_aliases={
+            "numpyro": {"df": "concentration", "covariance_matrix": "scale_matrix"},
             "pymc": {"df": "nu", "covariance_matrix": "V"},
         },
     ),

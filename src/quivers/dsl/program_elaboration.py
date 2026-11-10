@@ -170,7 +170,7 @@ from quivers.qiec.types import (
 )
 from quivers.dsl.composite_lets import expand_composite_lets, scan_let_call
 from quivers.dsl.family_schemas import (
-    family_parameter_names,
+    PARAMETER_ALIASES,
     family_parameterizations,
     render_parameterizations,
 )
@@ -4626,18 +4626,16 @@ class _ProgramElaboration:
             or isinstance(step, MarginalizeStep)
             or step.axes is not None
             or record.event_rank == 0
-            or record.event_source is None
+            or not record.event_sources
             or _option_axes(step.options, "over")
             or _option_axes(step.options, "iid_over")
             or (morphism is not None and _option_axes(morphism.options, "over"))
         ):
             return plate
-        source = next(
-            (value for name, value in arguments if name == record.event_source), None
-        )
-        if source is None:
+        supplied = record.event_argument(arguments)
+        if supplied is None:
             return plate
-        shape = tensor_shape(self._value_type(source, scope.context(), step))
+        shape = tensor_shape(self._value_type(supplied[1], scope.context(), step))
         if shape is None or len(shape[1]) < record.event_rank:
             return plate
         natural = tuple(shape[1][len(shape[1]) - record.event_rank :])
@@ -6947,21 +6945,34 @@ def _semantic_family_parameter(
 ) -> FamilyParameter:
     """Resolve a QVR keyword to the semantic registry parameter it fills.
 
-    Most names coincide. A few historical surface families use different
-    terminology (for instance ``LogitNormal(mu=..., sigma=...)`` while the
-    semantic record uses ``loc`` and ``scale``); those retain the established
-    positional correspondence without exposing positions in source.
+    Most names coincide. A few surface families name a parameter
+    differently from the registry record (``LogitNormal(mu=..., sigma=...)``
+    fills ``loc`` and ``scale``); `PARAMETER_ALIASES` states each such
+    correspondence, so a keyword always fills the parameter meaning the
+    same quantity, never one at the same position.
+
+    Parameters
+    ----------
+    record : DistributionFamily
+        The family's registry record.
+    surface_name : str
+        The keyword the source wrote.
+    surface_family : str | None
+        The family name the source wrote, when it is an alias of
+        ``record``.
+
+    Returns
+    -------
+    FamilyParameter
+        The registry parameter the keyword fills.
+
+    Raises
+    ------
+    KeyError
+        If the keyword names no parameter of the family.
     """
-    try:
-        return record.parameter(surface_name)
-    except KeyError:
-        surface = family_parameter_names(surface_family or record.name) or ()
-        if surface_name not in surface:
-            raise
-        position = surface.index(surface_name)
-        if position >= len(record.parameters):
-            raise
-        return record.parameters[position]
+    aliases = PARAMETER_ALIASES.get(surface_family or record.name, {})
+    return record.parameter(aliases.get(surface_name, surface_name))
 
 
 def _structured(

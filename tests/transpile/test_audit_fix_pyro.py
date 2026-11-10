@@ -256,13 +256,16 @@ def test_inversewishart_sampler_mean_matches_theory() -> None:
 
 def test_relaxed_families_place_temperature_first() -> None:
     """The relaxed families take `temperature` as their leading
-    constructor slot; the QVR call's first argument lands there and the
-    probability argument follows."""
+    constructor slot, as a tensor since their log density scales by it
+    through `torch.full_like`; the QVR call's first argument lands there
+    and the probability argument follows."""
     text, stripped = _emit(_RELAXED_SOURCE)
-    assert "pyro.distributions.RelaxedBernoulli(0.5,0.3)" in stripped, text
+    assert "pyro.distributions.RelaxedBernoulli(torch.tensor(0.5),0.3)" in stripped, (
+        text
+    )
     assert (
         "pyro.distributions.RelaxedOneHotCategorical("
-        "0.25,torch.tensor([0.1,0.2,0.3,0.4]))" in stripped
+        "torch.tensor(0.25),torch.tensor([0.1,0.2,0.3,0.4]))" in stripped
     ), text
 
 

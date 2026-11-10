@@ -154,24 +154,21 @@ CASES: dict[str, tuple[str, dict[str, Value], dict[str, Value], Oracle]] = {
             .sum()
         ),
     ),
-}
-
-#: Cases the compiled runtime scores whose reference-machine score is not
-#: the oracle's; the compiled runtime is pinned to the oracle alone.
-RUNTIME_ONLY: dict[str, tuple[str, dict[str, Value], Oracle]] = {
     "OneHotCategorical": (
         "program p : One -> One\n"
         "    sample v <- OneHotCategorical(probs=[0.2, 0.3, 0.5]) [over=K]\n"
         "    return v",
-        {"v": [0.0, 1.0, 0.0]},
+        {},
+        {"v": [0, 1, 0]},
         lambda v: D.OneHotCategorical(probs=torch.tensor([0.2, 0.3, 0.5])).log_prob(
-            v["v"]
+            v["v"].float()
         ),
     ),
     "Wishart": (
         "program p : One -> One\n"
         "    sample v : Two <- Wishart(df=4.0, scale_tril=[[1.0, 0.0], [0.5, 1.0]])\n"
         "    return v",
+        {},
         {"v": [[2.0, 0.3], [0.3, 1.0]]},
         lambda v: D.Wishart(df=torch.tensor(4.0), scale_tril=torch.tensor(_L)).log_prob(
             v["v"]
@@ -253,17 +250,6 @@ def test_a_list_literal_scores_the_oracle_on_both_paths(case: str) -> None:
         sites={name: _nested(value) for name, value in sites.items()},
     )
     assert run.log_joint == pytest.approx(expected, rel=1e-5)
-
-
-@pytest.mark.parametrize("case", sorted(RUNTIME_ONLY))
-def test_a_list_literal_scores_the_oracle_on_the_compiled_runtime(case: str) -> None:
-    body, sites, oracle = RUNTIME_ONLY[case]
-    program = _program(body)
-    expected = float(
-        oracle({name: torch.tensor(value) for name, value in sites.items()})
-    )
-    joint = program.morphism.log_joint(torch.zeros(1, 1), _runtime_values({}, sites))
-    assert float(joint.sum()) == pytest.approx(expected, rel=1e-5)
 
 
 @pytest.mark.parametrize(

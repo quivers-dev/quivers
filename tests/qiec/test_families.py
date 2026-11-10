@@ -21,7 +21,7 @@ from quivers.transpile.family_meta import FAMILY_META
 
 _MANUAL_PARAMETERS = {
     "Uniform": ("low", "high"),
-    "Wishart": ("df", "covariance_matrix"),
+    "Wishart": ("df", "covariance_matrix", "precision_matrix", "scale_tril"),
 }
 
 #: Families whose torch classes constrain only some of their parameters:
@@ -176,8 +176,8 @@ def test_sample_elements_follow_discreteness() -> None:
             assert record.element == INT, record.name
         else:
             assert record.element == REAL, record.name
-        if record.event_source is not None:
-            assert record.parameter(record.event_source).rank == record.event_rank
+        for source in record.event_sources:
+            assert record.parameter(source).rank == record.event_rank
 
 
 def test_lookup_rejects_unknown_families() -> None:

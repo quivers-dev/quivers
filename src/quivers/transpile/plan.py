@@ -1490,6 +1490,8 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
+        if distribution.name == "Wishart" and "scale_tril" in names:
+            self._wishart_scale(pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
         if set(ordered) >= set(names) and len(ordered) >= len(names):
             order = {name: index for index, name in enumerate(ordered)}
@@ -1511,6 +1513,59 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _wishart_scale(self, pre: list[IRArg], names: list[str]) -> None:
+        """Hand a Wishart's Cholesky factor to the target as it reads it.
+
+        A source writes the scale of a Wishart as its lower Cholesky
+        factor ``L``; most targets take the scale matrix ``L L^T``
+        itself, and no target's plan can size a factor known only at
+        run time. A literal factor is multiplied out here, in place, so
+        every target receives the scale matrix under
+        ``covariance_matrix``.
+
+        Parameters
+        ----------
+        pre : list[IRArg]
+            The call's wire arguments, rewritten in place.
+        names : list[str]
+            The parameter each argument fills, rewritten in place.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the factor is not a literal.
+        """
+        position = names.index("scale_tril")
+        factor = pre[position]
+        if isinstance(factor, IRArgMatrix) and all(
+            isinstance(entry, IRArgNumber)
+            for row in factor.rows
+            for entry in row.elements
+        ):
+            rows = [
+                [cast(IRArgNumber, entry).value for entry in row.elements]
+                for row in factor.rows
+            ]
+            scale = [
+                [sum(a * b for a, b in zip(left, right, strict=True)) for right in rows]
+                for left in rows
+            ]
+            pre[position] = IRArgMatrix(
+                rows=tuple(
+                    IRArgList(elements=tuple(IRArgNumber(value=v) for v in row))
+                    for row in scale
+                )
+            )
+            names[position] = "covariance_matrix"
+            return
+        raise UnsupportedConstruct(
+            f"qvr-{self.planner.target}",
+            [
+                "family:Wishart:scale_tril: the Wishart's scale is a Cholesky "
+                "factor known only at run time; write it as a matrix literal"
+            ],
+        )
 
     def _arg(
         self, value: Value, site: str, head: str, plate: Plate, morphism: str

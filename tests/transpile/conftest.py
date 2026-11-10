@@ -85,6 +85,7 @@ PROBE_MODULES = frozenset(
         "test_export_equivalence",
         "test_gallery_numeric_equivalence",
         "test_marginalize_numeric",
+        "test_matrix_family_numeric",
         "test_numeric_equivalence",
         "test_over_array_numeric",
         "test_qiec_call_equivalence",

@@ -204,6 +204,44 @@ _EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data"
     "family:OrderedLogistic"
 )
 
+# Vector- and matrix-valued families a target ships no class for, or
+# whose literal arguments it cannot take, are refused by name.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_wishart_factor"): "arg:matrix-literal",
+        ("jags", "steps", "sample_wishart_factor"): "arg:matrix-literal",
+        ("church", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("edward2", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("gen", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("webppl", "steps", "sample_wishart_factor"): "family:no-webppl-target:Wishart",
+        ("bugs", "steps", "sample_onehot_probs"): "arg:list-literal",
+        ("church", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("gen", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("jags", "steps", "sample_onehot_probs"): "family:no-target-name",
+        ("pymc", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("stan", "steps", "sample_onehot_probs"): "family:no-stan-target",
+        ("turing", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("webppl", "steps", "sample_onehot_probs"): "family:no-webppl-target",
+        ("bugs", "steps", "sample_relaxed_onehot_probs"): "arg:list-literal",
+        ("church", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("gen", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("jags", "steps", "sample_relaxed_onehot_probs"): "family:no-target-name",
+        ("numpyro", "steps", "sample_relaxed_onehot_probs"): "family:no-target-name",
+        ("pymc", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("stan", "steps", "sample_relaxed_onehot_probs"): "declare:simplex",
+        ("turing", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("webppl", "steps", "sample_relaxed_onehot_probs"): "family:no-webppl-target",
+    }
+)
+
 # A site drawn over more `over` axes than its family's event rank is
 # plated over several axes, and a WebPPL draw carries one batch axis.
 for _fixture in ("scalar_independent_array", "vector_independent_array"):
