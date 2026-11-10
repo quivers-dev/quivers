@@ -58,7 +58,7 @@ export ppca
 
 PPCA describes many correlated measurements using a shorter latent code. The loading matrix expands that code back to observation space, and one shared noise scale describes the residual variation in every direction. With fewer latent than observed coordinates, the reconstructed means lie in a $K$-dimensional subspace, and the noise accounts for everything off it.
 
-Rotating the latent coordinates and applying the inverse rotation to the loadings leaves every reconstructed mean, and thus the likelihood, unchanged. Two fits can therefore have quite different loading entries and still describe the same distribution. The quantities that do not move under rotation are the implied covariance $W W^\top + \sigma^2 I$ and the column space of $W$, and these are what the fit below is compared on.
+Rotating the latent coordinates and applying the inverse rotation to the loadings leaves every reconstructed mean, and thus the likelihood, unchanged. Two fits can thus have quite different loading entries and still describe the same distribution. The quantities that do not move under rotation are the implied covariance $W W^\top + \sigma^2 I$ and the column space of $W$, and these are what the fit below is compared on.
 
 ## Walkthrough
 
