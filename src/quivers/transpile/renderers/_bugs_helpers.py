@@ -1847,6 +1847,90 @@ def build_decl_plates(ir: IRProgram) -> dict[str, Plate]:
     return out
 
 
+def hoist_list_operands(
+    node: IRDeterministic, taken: frozenset[str]
+) -> tuple[tuple[IRDeterministic, ...], IRDeterministic]:
+    """Bind each list-literal operand of a plated binding to a name.
+
+    A plated binding is emitted as a loop whose body reads each plated
+    operand at the loop's row. BUGS and JAGS have no subscript on a
+    literal (`c(2.5, 0.5)[i]`), so a list literal combined elementwise
+    with a plated value, as in `ys + [2.5, 0.5, 3.5, 1.0]`, is bound to
+    a fresh name over the plate's trailing axes (QVR aligns an operand
+    of lower rank with the trailing axes), emitted cell by cell like any
+    list `let`, and read at the row through that name.
+
+    Parameters
+    ----------
+    node : IRDeterministic
+        The plated binding.
+    taken : frozenset[str]
+        The names the program already binds.
+
+    Returns
+    -------
+    tuple[tuple[IRDeterministic, ...], IRDeterministic]
+        The bindings that name the literals, in the order they must be
+        emitted, and the binding with each literal replaced by its name.
+    """
+    hoisted: list[IRDeterministic] = []
+    used = set(taken)
+
+    def bind(expr: LetExprNode) -> LetExprNode:
+        """Replace the list literals among an expression's operands.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        LetExprNode
+            The expression reading each literal through its name.
+        """
+        if isinstance(expr, LetExprList):
+            rank = len(list_sizes(expr))
+            if 0 < rank <= len(node.plate.batch_dims):
+                serial = 0
+                name = f"{node.name}_lit{serial}"
+                while name in used:
+                    serial += 1
+                    name = f"{node.name}_lit{serial}"
+                used.add(name)
+                hoisted.append(
+                    IRDeterministic(
+                        name=name,
+                        expr=expr,
+                        constraint=node.constraint,
+                        plate=Plate(
+                            event_dims=(), batch_dims=node.plate.batch_dims[-rank:]
+                        ),
+                    )
+                )
+                return LetExprVar(name=name)
+            return expr
+        if isinstance(expr, LetExprBinOp):
+            return LetExprBinOp(
+                op=expr.op, left=bind(expr.left), right=bind(expr.right)
+            )
+        if isinstance(expr, LetExprUnaryOp):
+            return LetExprUnaryOp(op=expr.op, operand=bind(expr.operand))
+        if isinstance(expr, LetExprCall):
+            return LetExprCall(func=expr.func, args=tuple(bind(a) for a in expr.args))
+        return expr
+
+    if not node.plate.batch_dims or isinstance(node.expr, (LetExprList, LetExprFactor)):
+        return (), node
+    rewritten = bind(node.expr)
+    return tuple(hoisted), IRDeterministic(
+        name=node.name,
+        expr=rewritten,
+        constraint=node.constraint,
+        plate=node.plate,
+    )
+
+
 def index_letexpr_refs(
     expr: LetExprNode,
     decl_plates: dict[str, Plate],
@@ -1948,6 +2032,7 @@ def _index_letexpr_refs_inner(
 
 
 __all__ = [
+    "hoist_list_operands",
     "axis_rank",
     "build_decl_plates",
     "collect_irargref_names",

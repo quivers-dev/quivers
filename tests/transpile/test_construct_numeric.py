@@ -21,9 +21,11 @@ import math
 import pathlib
 
 import pytest
+from _pytest.mark import ParameterSet
 import torch
 import torch.distributions as D
 
+from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.transpile import UnsupportedConstruct, transpile
@@ -43,7 +45,7 @@ _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 #: The image-backed targets this module scores: the statically typed
 #: and one-based ones, whose emission these constructs exercise. Church
 #: runs in-process.
-_TARGETS: tuple[str, ...] = ("bugs", "gen", "jags", "stan", "turing")
+_TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
 
 #: The fixtures that marginalize one latent shared by every row of a
 #: plated observe.
@@ -330,8 +332,33 @@ def _host_matrix_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _plated_list_operand(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A Normal mean scaled per row by a literal, and a score over a let
+    that adds a literal row by row.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    mu, y = v["mu"], v["y"]
+    weights = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    total = weights * mu + torch.tensor([2.5, 0.5, 3.5, 1.0])
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu)
+        + D.Normal(mu * weights, 1.0).log_prob(y).sum()
+        + (total * total).sum()
+    )
+
+
 #: Each fixture's data inputs, as flat lists.
 _DATA: dict[str, dict[str, Host]] = {
+    "let_expressions/let_plated_list_operand": {"y": [0.5, 1.0, 2.5, 2.0]},
     "steps/marginalize_let_probs": {"y": [4, 6, 5]},
     "steps/marginalize_let_vector_probs": {"y": [0.4, -1.2, 2.1]},
     "steps/marginalize_body_let_chain": {"y": [1, 3, 4]},
@@ -354,6 +381,7 @@ _DATA: dict[str, dict[str, Host]] = {
 
 #: Each fixture's clamped points; every site varies across them.
 _POINTS: dict[str, list[dict[str, Host]]] = {
+    "let_expressions/let_plated_list_operand": [{"mu": -0.6}, {"mu": 0.7}, {"mu": 1.3}],
     "steps/marginalize_let_probs": [{"r": 0.7}, {"r": 1.5}, {"r": 2.6}],
     "steps/marginalize_let_vector_probs": [{"s": 0.6}, {"s": 1.0}, {"s": 2.2}],
     "steps/marginalize_body_let_chain": [
@@ -401,6 +429,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
 
 #: The shape of every name a point carries; a scalar's is empty.
 _SHAPES: dict[str, dict[str, list[int]]] = {
+    "let_expressions/let_plated_list_operand": {"mu": [], "y": [4]},
     "steps/marginalize_let_probs": {"r": [], "y": [3]},
     "steps/marginalize_let_vector_probs": {"s": [], "y": [3]},
     "steps/marginalize_body_let_chain": {"r": [], "prior": [4], "y": [3]},
@@ -448,6 +477,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_row_gather": _row_gather,
     "let_expressions/let_row_gather_sampled": _row_gather_sampled,
     "let_expressions/let_host_matrix_row": _host_matrix_row,
+    "let_expressions/let_plated_list_operand": _plated_list_operand,
 }
 
 #: The refusals each target states for a fixture it cannot render, by
@@ -483,6 +513,41 @@ _UNPROBED: dict[tuple[str, str], str] = {
         for backend in ("bugs", "gen", "jags", "turing")
     },
 }
+
+
+#: Cells a target renders but scores wrongly today, each with the defect.
+#: They run as strict expected failures, so a fix surfaces as an
+#: unexpected pass and the entry must then be removed.
+_KNOWN_DEFECTS: dict[tuple[str, str], str] = {
+    **{
+        ("let_expressions/let_plated_list_operand", backend): (
+            "a list literal in let arithmetic renders as a Python list, so "
+            "`ys * mu` and `+ [2.5, ...]` are list operations rather than "
+            "elementwise array arithmetic"
+        )
+        for backend in ("numpyro", "pyro")
+    },
+}
+
+
+def _target_cell(fixture: str, backend: str) -> ParameterSet:
+    """One probe cell, marked as a strict expected failure when known wrong.
+
+    Parameters
+    ----------
+    fixture : str
+        ``<category>/<stem>``.
+    backend : str
+        The target.
+
+    Returns
+    -------
+    ParameterSet
+        The `pytest.param` for the cell.
+    """
+    defect = _KNOWN_DEFECTS.get((fixture, backend))
+    marks = () if defect is None else (pytest.mark.xfail(strict=True, reason=defect),)
+    return pytest.param(fixture, backend, marks=marks, id=f"{fixture}-{backend}")
 
 
 def _source(fixture: str) -> str:
@@ -575,6 +640,7 @@ def _reference(fixture: str) -> list[float]:
         fixture's independent oracle.
     """
     model = loads(_source(fixture)).morphism
+    assert isinstance(model, MonadicProgram)
     densities: list[float] = []
     for point in _POINTS[fixture]:
         values = _shaped(fixture, {**_DATA[fixture], **point})
@@ -612,7 +678,7 @@ def test_reference_matches_the_independent_joint(fixture: str) -> None:
 @pytest.mark.parametrize(
     ("fixture", "backend"),
     [
-        (fixture, backend)
+        _target_cell(fixture, backend)
         for fixture in sorted(_ORACLES)
         for backend in _TARGETS
         if (fixture, backend) not in _REFUSED and (fixture, backend) not in _UNPROBED

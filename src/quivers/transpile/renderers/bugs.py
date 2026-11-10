@@ -87,6 +87,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     factor_axis_sizes,
     factor_cells,
     half_support_truncation,
+    hoist_list_operands,
     index_letexpr_refs,
     list_cells,
     list_sizes,
@@ -500,6 +501,13 @@ class BUGSRenderer(RendererBase):
                 self._check_factor_plate(node, list_sizes(node.expr))
                 self._emit_cells(ctx, node, list_cells(node.expr, ()))
                 return
+            literals, node = hoist_list_operands(node, frozenset(ctx.decl_plates))
+            for literal in literals:
+                cells = literal.expr
+                assert isinstance(cells, LetExprList)
+                ctx.decl_plates[literal.name] = literal.plate
+                self._check_factor_plate(literal, list_sizes(cells))
+                self._emit_cells(ctx, literal, list_cells(cells, ()))
             self._emit_deterministic_node(ctx, node)
             return
         if isinstance(node, IRScore):

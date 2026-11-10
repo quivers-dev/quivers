@@ -78,6 +78,7 @@ def _int(value: int) -> LetExprLiteral:
 _FIXTURE_NAMES: tuple[str, ...] = (
     "let_expressions/let_factor_index_arithmetic",
     "let_expressions/let_host_matrix_row",
+    "let_expressions/let_plated_list_operand",
     "let_expressions/let_real_division",
     "let_expressions/let_row_gather",
     "let_expressions/let_row_gather_sampled",
@@ -207,3 +208,9 @@ def test_a_row_is_pushed_to_the_operands_that_carry_it() -> None:
     assert take_row(factor, row, ranks, "stan") == LetExprBinOp(
         op="*", left=LetExprVar(name="a"), right=row
     )
+
+
+def test_a_list_literal_operand_is_read_at_the_loops_row() -> None:
+    program = _stan("let_expressions/let_plated_list_operand")
+    assert "total[m_Step] = (ys[m_Step]*mu)+{" in program
+    assert "}[m_Step];" in program
