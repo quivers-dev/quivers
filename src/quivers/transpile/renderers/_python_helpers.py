@@ -1065,10 +1065,18 @@ def render_let_expr_python(
         c = ctx.v(ctx.fresh("call"), "call")
         ctx.e(c, fn, "function")
         args = ctx.v(ctx.fresh("args"), "argument_list")
+        # torch's functions take tensors only, so every operand of a
+        # builtin Pyro spells as one is converted: a constant, or the
+        # Python number an unrolled factor binder becomes, is a tensor of
+        # its own type (`float` to the default dtype, `int` to `int64`).
+        # `jnp.maximum` and its kind reject a Python list operand.
         operand = (
             _POINTWISE_OPERAND_SYMBOLS.get(ctx.target)
-            if len(expr.args) == 2
-            and expr.func in _BINARY_POINTWISE_SYMBOLS[ctx.target]
+            if (ctx.target == "pyro" and expr.func in _LET_CALL_SYMBOLS["pyro"])
+            or (
+                len(expr.args) == 2
+                and expr.func in _BINARY_POINTWISE_SYMBOLS[ctx.target]
+            )
             else None
         )
         for a in expr.args:
