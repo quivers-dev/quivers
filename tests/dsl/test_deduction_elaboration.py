@@ -531,7 +531,7 @@ export builtin_parser
     [
         ("pcfg", "PCFG", "the dog runs"),
         ("ccg", "CCG", "the cat sleeps"),
-        ("type_logical", "Lambek", "every dog barks"),
+        ("type_logical", "Lambek", "Kim admires Lee"),
         ("montague_nli", "Montague", "every dog is an animal"),
     ],
 )
