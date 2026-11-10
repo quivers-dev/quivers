@@ -306,6 +306,8 @@ $$
 
 At runtime the input tensor carries an implicit time axis. `ScanMorphism` initializes $h_0$ with zeros or a learned vector, applies $h_t=e(x_t,h_{t-1})$, and returns the final state $h_T$. Its time index controls the sequence of recurrent updates. In contrast, `.trace(...)` contracts matching input and output coordinates in one morphism.
 
+When the cell is a program drawn inside another program, its steps are steps of that program, run once per position: the joint is $\sum_t \sum_{s} \log p(s_t \mid \cdot)$ over every site $s$ of the cell, with the $t$-th occurrence of a site addressed `s@t` and an observation inside the cell scored against the $t$-th entry of an observation sequence. The [scans reference](../reference/qvr/probabilistic-programs.md#scans) states the scoping and addressing rules.
+
 The runtime artefact [`ScanMorphism`](../api/continuous/scan.md) exposes a `log_joint(x, hidden_states)` method whose second argument is the full state trajectory of shape $(\mathrm{batch}, \mathrm{seq\_len}, \dim S)$. The argument accepts either a positional tensor of that shape or a dict $\{k \mapsto \mathrm{tensor}\}$ keyed by `state_key` (default `"h"`); both forms denote the same Kleisli arrow with log-density $\sum_{t} \log p(h_{t} \mid x_{t}, h_{t-1})$. The dict form is a transparent re-keying so that the inference layer's standard `log_joint(x, observations: dict)` contract dispatches without an adapter.
 
 ## 4. Parser combinators

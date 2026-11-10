@@ -2257,7 +2257,7 @@ class _ProgramElaboration:
     def _check_scan_site_labels(
         self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
     ) -> None:
-        """Refuse a scan whose step shares a site label with its program.
+        """Refuse a scan of a program cell sharing a site label with its program.
 
         A site the step reaches is addressed by its label and its
         occurrence, ``"<label>@<n>"``, counted over the run. A label
@@ -2279,6 +2279,11 @@ class _ProgramElaboration:
         QiecDiagnosticError
             If a label is shared.
         """
+        step = self._program_declarations.get(step_name)
+        if step is None or not any(isinstance(item, CallStep) for item in step.draws):
+            # A step drawing from a cell morphism keeps the address its
+            # synthesized draw has always had.
+            return
         shared = sorted(
             reached_site_labels(step_name, self._program_declarations)
             & _own_site_labels(state.declaration.draws)

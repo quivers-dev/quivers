@@ -91,6 +91,7 @@ from quivers.dsl.ast_nodes import (
     CallStep,
     ScoreStep,
     MarginalizeStep,
+    Module,
     GroupedMarginalizeStep,
     MorphismParam,
     ObjectParam,
@@ -574,6 +575,10 @@ class _ProgramsMixin:
     _transformations: dict
     _trans_singletons: dict
     _trans_constructors: dict
+    _module: Module
+    _scan_step_declarations: dict[str, ProgramDecl]
+    _scan_step_programs: dict[str, MonadicProgram]
+    _scan_initial_states: dict[str, torch.nn.Parameter]
 
     # ``_resolve_type``, ``_resolve_any_space``, ``_resolve_index_size``
     # come from `_ResolutionMixin` via the ``Compiler`` MRO.

@@ -580,8 +580,13 @@ hidden state `H` across a sequence:
   The sequence dimension is implicit in the tensor's second
   dimension.
 - **Works with both forms.** Parametric kernels (`morphism cell : A *
-  H -> H ~ Normal`) and `MonadicPrograms` (`program cell(x, h) : A *
-  H -> H` with bind / let / return).
+  H -> H ~ Normal`) and programs (`program cell(x, h) : A * H -> H`).
+  A program cell's steps run once per position inside the program
+  that draws the scan: they read that program's bindings made before
+  the scan, their sites are addressed `s@0`, `s@1`, ..., and an
+  `observe` in the cell scores one observation per position. The
+  [scans reference](../reference/qvr/probabilistic-programs.md#scans)
+  states the rules.
 
 **Example: vanilla RNN.**
 

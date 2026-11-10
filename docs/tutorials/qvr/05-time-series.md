@@ -21,7 +21,9 @@ an emission describes the noisy sensor reading from that temperature.
 Read every sequence example by asking what is threaded, what is observed,
 and what is returned. In the current `scan` interface, the returned value is
 the terminal state. Following it with an emission scores or generates from
-that state; it does not automatically expose an entire observation trajectory.
+that state only. To score an observation at every position, put the
+`observe` inside a program cell: the cell runs once per position, and the
+program that draws the scan takes the whole observation sequence.
 
 ## Plates revisited
 
@@ -149,6 +151,42 @@ Gaussian kernel. It is not the closed-form Kalman filter
 [@kalman1960filtering], and `ScanMorphism.log_prob`
 does not supply the marginal density of the final state. Use
 `log_joint(x, hidden_states)` when scoring a supplied full trajectory.
+
+A state-space model that scores the whole observation sequence writes the
+emission inside a program cell:
+
+<!-- compile: qiec -->
+```qvr
+object Driver : Real 2
+object State : Real 3
+object Obs : Real 2
+
+morphism transition : Driver * State -> State ~ Normal
+morphism emission : State -> Obs ~ Normal
+
+program step(u_t, s_prev) : Driver * State -> State
+    sample s <- transition(u_t, s_prev)
+    observe o <- emission(s)
+    return s
+
+define run_all = scan(step)
+
+program ssm : Driver -> State
+    sample h <- run_all
+    return h
+
+export ssm
+```
+
+Each position draws a latent state, addressed `s@0`, `s@1`, and so on, and
+scores that position's observation. The program takes the observations as
+one sequence `o`, shaped `(batch, T, 2)` for a batch of driver sequences of
+shape `(batch, T, 2)`, and its log joint sums the transition and emission
+densities over the positions. A trace records each position's state and
+observation under `s@t` and `o@t`. The cell may also read bindings that
+`ssm` makes before the scan, such as a sampled noise scale. The
+[scans reference](../../reference/qvr/probabilistic-programs.md#scans) states
+the scoping and addressing rules.
 
 For a fully nonlinear (deep) variant where transition and emission are neural Gaussians, see `docs/examples/source/continuous_hmm.qvr` and `docs/examples/source/deep_markov.qvr`.
 

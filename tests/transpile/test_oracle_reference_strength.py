@@ -37,8 +37,6 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch import distributions as td
 
-from quivers.continuous.morphisms import SampledComposition
-from quivers.continuous.scan import ScanMorphism
 from quivers.dsl.ast_nodes.declarations import ProgramDecl
 from quivers.dsl.parser import parse
 from quivers.effects.trace_types import Trace
@@ -2425,12 +2423,12 @@ def test_reference_pin_exemptions_are_each_covered_by_a_check() -> None:
     )
 
     assert nondeterministic, (
-        "the non-deterministic exemption category is empty, so "
-        "`test_quadrature_exempt_examples_have_a_rule_dependent_joint` "
-        "and `test_flat_latent_exempt_examples_carry_no_density_for_it` "
-        "parametrize over nothing. Every composition-bound example "
-        "gained a pinnable joint, which is a real change worth "
-        "reading the measurements for, not a green run."
+        "the unwitnessed exemption category is empty, so "
+        "`test_unwitnessable_exempt_examples_have_no_independent_source` "
+        "and `test_unwitnessable_exempt_examples_sum_each_site_once` "
+        "parametrize over nothing. Every sequence model gained a "
+        "witnessed joint, which is a real change worth reading the "
+        "measurements for, not a green run."
     )
 
 
@@ -2499,60 +2497,41 @@ def test_program_free_examples_are_exempt_or_pinned(example: str) -> None:
 
 
 # ---------------------------------------------------------------------
-# The composition exemptions.
+# The sequence-model exemptions.
 #
-# The eight sequence models each bind a latent to a
-# `SampledComposition`. That kernel integrates the chain's
-# intermediates, which no trace site records, and the two ways it can
-# do so are the two ways an oracle joint can fail to be a value worth
-# pinning:
-#
-# 1. A **rule-dependent** joint. Where the intermediate is stochastic
-#    and reparameterised, the integral is a deterministic quadrature
-#    over a finite node set, so its value is an approximation whose
-#    error is a property of the rule. Pinning it would enshrine that
-#    error as the reference, which is the one thing a reference pin
-#    exists to catch, since Theorem 4.1's quotient cannot see a
-#    point-independent oracle error.
-# 2. A **flat** latent. Where the chain returns no density at all, the
-#    site scores exactly zero whatever its value, so the joint is
-#    missing the prior on the only latent the program declares. There
-#    is nothing to pin because there is no density.
-#
-# Which of the two holds for which example is measured below, per
-# point, and declared here rather than inferred, so an example that
-# changes ground fails instead of sliding quietly from one to the
-# other.
+# The five sequence models score a joint no pin can be held to, for
+# want of a second source rather than of a density.
+# `bidirectional_rnn_lm` and `transformer_lm` bind a latent to a
+# `SampledComposition` whose factors are each scored once along the
+# canonical path. `gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` scan a
+# program cell, whose embedding and cell draws are sites of the
+# program at every position, so their joint is the sum of every
+# position's densities and the emission's. Every backend refuses the
+# scan or the composition, and no reconstruction re-derives these
+# joints, which is measured below per example.
 # ---------------------------------------------------------------------
 
-
-_QUADRATURE_PROBE_NODES = 37
-"""Node count the rule-dependence probe re-scores the joint at.
-
-Any value other than
-[`SampledComposition`][quivers.continuous.morphisms.SampledComposition]'s
-default would do; a prime well below it, and coprime to it, makes the
-two rules resolve the integrand at genuinely different nodes, so a
-joint that agrees across them agrees because the quadrature has
-converged rather than because the two node sets overlapped."""
 
 _UNWITNESSABLE_JOINT: frozenset[str] = frozenset(
     {
         "bidirectional_rnn_lm",
+        "gru_lm",
+        "lstm_lm",
         "transformer_lm",
+        "vanilla_rnn_lm",
     }
 )
 """Exempt examples whose joint a pin could hold, but which nothing
 outside the oracle reproduces.
 
-Every factor of each composition carries a conditional density and is
-scored once along the canonical path, so the joint is exact, needs no
-quadrature rule, and is bitwise reproducible. What is missing is a
-second source for the number. All three refuse on every backend, so no
-container re-derives them, and none carries a reconstruction here.
+Every factor of each composition, and every site a scan reaches at
+each position, carries a density scored once, so the joint is exact,
+needs no quadrature rule, and is bitwise reproducible. What is missing
+is a second source for the number. All five refuse on every backend, so
+no container re-derives them, and none carries a reconstruction here.
 
-A reconstruction is what closes each row, and for these two it is not
-merely unwritten. Their chains run through a scan whose cell
+A reconstruction is what closes each row, and for the two compositions
+it is not merely unwritten. Their chains run through a scan whose cell
 carries its own density, so the prefix is a recurrence, and as
 [`ScanMorphism.log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
 records, a perturbation of the state grows by roughly an order of
@@ -2598,87 +2577,14 @@ test, which is mirroring rather than witnessing: a pin resting on it
 would certify the implementation against itself. What would close
 these rows is the joint's conditioning improved, so that what a factor
 scores lies within reach of what it predicts, or the comparison recast
-onto the per-factor terms, each of which does agree exactly."""
+onto the per-factor terms, each of which does agree exactly.
 
-_FLAT_COMPOSITE_LATENT: dict[str, str] = {
-    "gru_lm": "h",
-    "lstm_lm": "h",
-    "vanilla_rnn_lm": "h",
-}
-"""Exempt examples whose recurrent factor carries no density, and the
-site the composition is bound at.
-
-All three bind the hidden state to `tok_embed >> scan(cell)` where
-`cell` is a program rather than a family. A program has no conditional
-density
-([`has_conditional_density`][quivers.continuous.morphisms.ContinuousMorphism.has_conditional_density]
-returns `False`), so
-[`ScanMorphism.log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
-keeps the deterministic-recurrence reading and the state carries a
-Dirac's zero: the scan factor scores exactly `0` at every point.
-
-The site itself is *not* zero, and reading it as the measurement would
-miss the defect. Its value is the stochastic `Embed` factor's own
-density at the canonical path, which the composition scores alongside
-the scan. What the joint omits is the transition density the source
-declares at every step, which is the whole of a recurrent model apart
-from its emission, so the scan factor is the object this measures."""
-
-_PLATE_INFLATED_EMISSION: dict[str, str] = {
-    "gru_lm": "next_token",
-    "lstm_lm": "next_token",
-    "vanilla_rnn_lm": "next_token",
-}
-"""Flat-latent exempt examples whose joint counts their emission site
-once per plate row, and the site it counts.
-
-A second defect, riding on the first. The emission site reduces to a
-scalar log-density, while the flat latent bound to the composition
-carries a plate-shaped tensor of zeros, so adding the two broadcasts
-the scalar across the plate: the joint is the emission likelihood
-times the number of scored rows. The registry is a refinement of
-`_FLAT_COMPOSITE_LATENT` rather than a third ground, and
-`test_plate_inflation_registry_refines_the_flat_latent_ground`
-requires it to cover that ground exactly."""
-
-_PLATE_INFLATION_SPREAD_FLOOR: dict[str, float] = {
-    "gru_lm": 3.0e6,
-    "lstm_lm": 3.0e6,
-    "vanilla_rnn_lm": 2.5e8,
-}
-"""Floor on how far the inflation moves *between* points, in multiples
-of the equivalence tolerance at the example's observation count.
-
-This is what separates an unpinnable oracle from an unusable one.
-Theorem 4.1's quotient absorbs an oracle error that is the same at
-every point, so an inflation of constant size would leave the backend
-comparison green and only the pin would object. The inflation here is
-`(rows - 1)` times a likelihood that moves with the data, so it moves
-with the data too, and a cell un-exempted on the strength of the
-determinism measurement alone would fail rather than pass.
-
-Measured spread of the residual across the six points, over
-`adaptive_atol` at 32 observations: `vanilla_rnn_lm` 2.7e08, `gru_lm`
-3.2e06, `lstm_lm` 3.2e06. Each floor sits below its measurement, so an
-inflation shrinking toward the tolerance surfaces here rather than
-silently becoming a cell that could be recovered."""
-
-_FLATNESS_PROBE_SHIFT = 5.0
-"""Offset added to a flat latent to show that its value is read.
-
-Large enough that the downstream likelihood cannot absorb it, so a
-site scoring zero before and after the shift is scoring zero because
-its family is flat and not because the shift never reached it."""
-
-_FLATNESS_DOWNSTREAM_FLOOR = 100.0
-"""Floor on how far the shifted latent moves the rest of the joint, in
-nats.
-
-Measured under a shift of 5.0: `gru_lm` 1149.5, `lstm_lm` 1197.2,
-`vanilla_rnn_lm` 206.5. A shift that stopped moving the downstream
-sites would mean the latent had dropped out of the computation, at
-which point its flat density would be unremarkable rather than a
-defect, and the exemption would need re-deriving."""
+`gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` carry no reconstruction yet,
+and their case is different. A scan of a program cell scores every
+position's embedding and cell draw at its own value, so each term is
+evaluated where it was drawn and a reconstruction from raw
+`torch.distributions` is within reach; until one lands, these rows rest
+on the missing witness alone."""
 
 
 @functools.cache
@@ -2713,114 +2619,29 @@ def _exempt_traces(example: str, point: Point) -> list[Trace]:
     )
 
 
-def _compositions(example: str) -> list[SampledComposition]:
-    """Every `SampledComposition` inside one example's compiled module."""
-    fixture = _fixture(example)
-    monadic = fixture.dataset.monadic
-    if monadic is None:
-        raise AssertionError(
-            f"{example!r}: the synthetic-data block bound no compiled `MonadicProgram`."
-        )
-    found = [
-        module for module in monadic.modules() if isinstance(module, SampledComposition)
-    ]
-    if not found:
-        raise AssertionError(
-            f"{example!r} is exempt from the reference pin on the "
-            f"grounds that it integrates a composition's intermediates, "
-            f"but its compiled module contains no "
-            f"`SampledComposition` at all. The exemption names the "
-            f"wrong example, or the program lost the composition and "
-            f"can now be pinned."
-        )
-    return found
-
-
-def _composite_sites(example: str, index: int) -> list[str]:
-    """Sites of one example drawn from a `SampledComposition`."""
-    return sorted(
-        name
-        for name, site in _exempt_trace(example, index).sites.items()
-        if isinstance(site.morphism, SampledComposition)
-    )
-
-
-def _joint_at_nodes(example: str, index: int, nodes: int) -> float:
-    """The joint at one point, with every composition re-ruled to `nodes`.
-
-    The node count is restored before returning, so the memoised
-    fixture the rest of the module reads keeps scoring against the
-    default rule.
-    """
-    compositions = _compositions(example)
-    original = [composition.n_intermediate for composition in compositions]
-    try:
-        for composition in compositions:
-            composition.n_intermediate = nodes
-        traced = _exempt_traces(example, _fixture(example).points[index])[0]
-        joint = traced.log_joint
-        if joint is None:
-            raise AssertionError(
-                f"{example!r} point {index}: the trace returned no "
-                f"`log_joint` under a {nodes}-node rule."
-            )
-        return float(joint.sum().item())
-    finally:
-        for composition, count in zip(compositions, original):
-            composition.n_intermediate = count
-
-
-def _shifted_point(point: Point, name: str, offset: float) -> Point:
-    """`point` with the `name` latent moved by `offset`."""
-    value = point.params[name]
-    moved: float | list[float] = (
-        float(value) + offset
-        if isinstance(value, (int, float))
-        else [float(entry) + offset for entry in value]
-    )
-    return Point(
-        params={**point.params, name: moved},
-        data=dict(point.data),
-    )
-
-
 def test_composition_exemption_grounds_partition_the_registry() -> None:
-    """Assign each composition exemption exactly one measured ground."""
+    """Assign every composition exemption its measured ground."""
     declared = set(_exempt_by(_gallery_tier._SKIP_QVR_INCOMPATIBLE))
-    rule_dependent = set(_UNWITNESSABLE_JOINT)
-    flat = set(_FLAT_COMPOSITE_LATENT)
+    unwitnessed = set(_UNWITNESSABLE_JOINT)
 
-    unchecked = sorted(declared - rule_dependent - flat)
+    unchecked = sorted(declared - unwitnessed)
     assert not unchecked, (
-        f"{unchecked!r} are exempt from the reference pin because "
-        f"their oracle integrates a composition's intermediates, but "
-        f"neither check below establishes what goes wrong with the "
-        f"resulting value. Measure the example: if its joint moves "
-        f"with the quadrature node count, add it to "
-        f"`_UNWITNESSABLE_JOINT` with its measured floor; if "
-        f"its composite site scores exactly zero, add it to "
-        f"`_FLAT_COMPOSITE_LATENT`; if neither holds, the joint is a "
-        f"value and the example wants a `_QVR_REFERENCE_JOINT` row "
-        f"rather than an exemption."
+        f"{unchecked!r} are exempt from the reference pin, but no "
+        f"check below establishes why their joint carries no pin. "
+        f"Measure the example: if nothing outside the oracle "
+        f"re-derives its joint, add it to `_UNWITNESSABLE_JOINT`; "
+        f"otherwise the joint is a value and the example wants a "
+        f"`_QVR_REFERENCE_JOINT` row rather than an exemption."
     )
-    stale = sorted((rule_dependent | flat) - declared)
+    stale = sorted(unwitnessed - declared)
     assert not stale, (
         f"{stale!r} carry a ground for exemption but are not exempt: "
         f"either they left `_SKIP_QVR_INCOMPATIBLE` or the ground "
         f"names the wrong example."
     )
-    both = sorted(rule_dependent & flat)
-    assert not both, (
-        f"{both!r} claim both grounds at once. A joint that moves when "
-        f"the quadrature changes is not a joint whose composite site "
-        f"contributes nothing, so one of the two measurements is "
-        f"wrong."
-    )
-    assert rule_dependent and flat, (
-        f"one of the two grounds is empty (rule-dependent="
-        f"{sorted(rule_dependent)!r}, flat={sorted(flat)!r}), so one of "
-        f"the checks below parametrizes over nothing and passes "
-        f"vacuously."
+    assert unwitnessed, (
+        "the unwitnessed ground is empty, so the checks below "
+        "parametrize over nothing and pass vacuously."
     )
 
 
@@ -2870,206 +2691,19 @@ def test_unwitnessable_exempt_examples_have_no_independent_source(
     )
 
 
-def _scan_factor_log_prob(
-    traced: Trace,
-    name: str,
-    x_input: Tensor,
-) -> Tensor:
-    """The score the scan factor of a composition site contributes.
-
-    The site's own value adds the other factors' densities to this
-    one, so reading the site would report a number the recurrence had
-    no part in. This reaches past them to the `ScanMorphism` and
-    scores it along the same canonical path the composition uses: the
-    factors before it pushed from the base measure's origin, the
-    site's value as its endpoint.
-    """
-    site = traced.sites[name]
-    composition = site.morphism
-    assert isinstance(composition, SampledComposition), (
-        f"site {name!r} is bound to a "
-        f"{type(composition).__name__}, not a composition, so it has "
-        f"no scan factor to read."
-    )
-    scans = [f for f in composition.factors if isinstance(f, ScanMorphism)]
-    assert len(scans) == 1, (
-        f"site {name!r} is bound to a composition carrying "
-        f"{len(scans)} scan factors; this reads exactly one."
-    )
-    scan = scans[0]
-    prefix = composition.factors[: composition.factors.index(scan)]
-    current = x_input
-    for factor in prefix:
-        width = factor.base_dimension(current)
-        origin = torch.zeros(
-            current.shape[0],
-            width,
-            dtype=torch.get_default_dtype(),
-        )
-        current = factor.push_base(current, origin)
-    return scan.log_prob(current, site.value)
-
-
 @pytest.mark.parametrize(
     "example",
-    sorted(_FLAT_COMPOSITE_LATENT),
+    sorted(_UNWITNESSABLE_JOINT),
     ids=lambda name: name,
 )
-def test_flat_latent_exempt_examples_carry_no_density_for_it(
-    example: str,
-) -> None:
-    """Confirm that each flat composition-bound latent scores zero.
-
-    The check varies the latent across the point set and by an additional
-    fixed shift while requiring other joint terms to move. This separates
-    a flat site density from a zero reached at one value.
-    """
-    name = _FLAT_COMPOSITE_LATENT[example]
-    fixture = _fixture(example)
-    labels = _gallery_data.perturbation_labels(len(fixture.points))
-
-    values: list[tuple[float, ...]] = []
-    for index in range(len(fixture.points)):
-        traced = _exempt_trace(example, index)
-        assert name in _composite_sites(example, index), (
-            f"{example!r} point {index} ({labels[index]}): site "
-            f"{name!r} is not drawn from a `SampledComposition` "
-            f"(composite sites: {_composite_sites(example, index)!r}), "
-            f"so whatever it scores says nothing about a composition's "
-            f"marginalisation."
-        )
-        log_prob = _scan_factor_log_prob(
-            traced,
-            name,
-            fixture.dataset.x_input,
-        )
-        assert torch.equal(log_prob, torch.zeros_like(log_prob)), (
-            f"{example!r} point {index} ({labels[index]}): the scan "
-            f"factor bound at site {name!r} contributes "
-            f"{float(log_prob.sum().item())!r} nats, so the recurrence "
-            f"is scored after all and the flat-latent ground no longer "
-            f"holds. Re-derive the exemption, or pin the joint."
-        )
-        entry = fixture.points[index].params[name]
-        values.append(
-            (float(entry),)
-            if isinstance(entry, (int, float))
-            else tuple(float(v) for v in entry)
-        )
-
-    assert len(set(values)) > 1, (
-        f"{example!r}: the point set clamps {name!r} to the same value "
-        f"at all {len(values)} points, so scoring zero everywhere is a "
-        f"statement about one value rather than about the family. The "
-        f"perturbation schedule must move this latent."
-    )
-
-    base_point = fixture.points[0]
-    shifted = _shifted_point(base_point, name, _FLATNESS_PROBE_SHIFT)
-    traced = _exempt_traces(example, shifted)[0]
-    shifted_log_prob = _scan_factor_log_prob(
-        traced,
-        name,
-        fixture.dataset.x_input,
-    )
-    assert torch.equal(
-        shifted_log_prob,
-        torch.zeros_like(shifted_log_prob),
-    ), (
-        f"{example!r}: moving {name!r} by {_FLATNESS_PROBE_SHIFT} gives "
-        f"it a log-density of "
-        f"{float(shifted_log_prob.sum().item())!r}, so the composition "
-        f"scores it after all and the ground for this exemption is "
-        f"gone."
-    )
-
-    baseline = fixture.sites[0]
-    downstream = 0.0
-    for other, site in traced.sites.items():
-        if other == name:
-            continue
-        if other not in baseline:
-            raise AssertionError(
-                f"{example!r}: shifting {name!r} produced a trace "
-                f"recording site {other!r}, which the unshifted trace "
-                f"does not, so the two are densities of different "
-                f"models and the comparison below is meaningless."
-            )
-        downstream += abs(float(site.log_prob.sum().item()) - baseline[other])
-    assert downstream >= _FLATNESS_DOWNSTREAM_FLOOR, (
-        f"{example!r}: moving {name!r} by {_FLATNESS_PROBE_SHIFT} "
-        f"changed the rest of the joint by only {downstream:.6g} nats, "
-        f"below the {_FLATNESS_DOWNSTREAM_FLOOR:.6g} floor. The latent "
-        f"is barely reaching the computation, so its flat density is "
-        f"no longer evidence that a real prior factor is missing. "
-        f"Re-derive the exemption rather than lowering the floor."
-    )
-
-    for index in range(len(fixture.points)):
-        shift = abs(
-            _joint_at_nodes(example, index, _QUADRATURE_PROBE_NODES)
-            - fixture.joints[index]
-        )
-        assert shift == 0.0, (
-            f"{example!r} point {index} ({labels[index]}): the joint "
-            f"moves by {shift:.6g} nats under a "
-            f"{_QUADRATURE_PROBE_NODES}-node rule, so this example is "
-            f"rule-dependent as well and the two grounds are not the "
-            f"partition "
-            f"`test_composition_exemption_grounds_partition_the_registry` "
-            f"asserts."
-        )
-
-
-def test_plate_inflation_registry_refines_the_flat_latent_ground() -> None:
-    """Require the plate-inflation registry to match flat-latent exemptions."""
-    flat = set(_FLAT_COMPOSITE_LATENT)
-    inflated = set(_PLATE_INFLATED_EMISSION)
-
-    unmeasured = sorted(flat - inflated)
-    assert not unmeasured, (
-        f"{unmeasured!r} are exempt on flat-latent grounds but carry "
-        f"no measurement of what their joint does to the emission "
-        f"likelihood. Measure the residual `joint - sum(site "
-        f"log-densities)` at every point: if it is `(rows - 1)` times "
-        f"the emission, register the site here with its measured "
-        f"spread floor; if it is zero, the joint is the emission "
-        f"likelihood exactly and the exemption rests on the missing "
-        f"transition density alone, which wants its own stated ground."
-    )
-    stale = sorted(inflated - flat)
-    assert not stale, (
-        f"{stale!r} carry an inflation measurement but are not exempt "
-        f"on flat-latent grounds: either they left "
-        f"`_FLAT_COMPOSITE_LATENT` or this registry names the wrong "
-        f"example."
-    )
-    missing_floor = sorted(inflated - set(_PLATE_INFLATION_SPREAD_FLOOR))
-    assert not missing_floor, (
-        f"{missing_floor!r} name an inflated emission site with no "
-        f"entry in `_PLATE_INFLATION_SPREAD_FLOOR`, so the check below "
-        f"would read the inflation without bounding how far it moves "
-        f"across the point set."
-    )
-    surplus_floor = sorted(set(_PLATE_INFLATION_SPREAD_FLOOR) - inflated)
-    assert not surplus_floor, (
-        f"{surplus_floor!r} declare an inflation floor for an example "
-        f"with no inflated emission site, so the floor bounds nothing."
-    )
-
-
-@pytest.mark.parametrize(
-    "example",
-    sorted(_PLATE_INFLATED_EMISSION),
-    ids=lambda name: name,
-)
-def test_flat_latent_exempt_examples_sum_each_site_once(
+def test_unwitnessable_exempt_examples_sum_each_site_once(
     example: str,
 ) -> None:
     """Require the joint to add each site density once.
 
-    Plate-shaped zero terms must not broadcast a scalar emission density
-    across the plate before reduction.
+    Plate-shaped terms must not broadcast a scalar density across the
+    plate before reduction, and a scan's per-position sites must each
+    reach the joint once.
     """
     fixture = _fixture(example)
     labels = _gallery_data.perturbation_labels(len(fixture.points))
@@ -3087,8 +2721,8 @@ def test_flat_latent_exempt_examples_sum_each_site_once(
             f"densities {per_site!r} by {abs(joint - per_site)!r} "
             f"nats, more than the {tolerance!r} round-off this "
             f"magnitude allows. A site is being counted more than "
-            f"once, or not at all: the flat latent's plate-shaped "
-            f"zeros broadcasting the scalar emission across the row "
-            f"plate is how that happened before. Find the reduction "
-            f"that widened rather than widening this tolerance."
+            f"once, or not at all: a plate-shaped term broadcasting a "
+            f"scalar density across the row plate is one way that "
+            f"happens. Find the reduction that widened rather than "
+            f"widening this tolerance."
         )

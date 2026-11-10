@@ -522,12 +522,31 @@ elaborates to a helper computation `<program>__<h>_scan(t, xs, h, ...)`
 that answers `h` once `t` reaches the sequence's length and otherwise
 calls the step at `xs[t]` and recurs at `t + 1`, carrying the step's
 inputs along; the initial state is zero, or, under `init=learned`, a
-`weight` input `<cell>_scan_init`. The step's sites are reached
-once per position, and `run_program` replays the `n`-th occurrence of
-a site from the value keyed `"<site>@<n>"`, so the reference machine
-scores the trajectory the torch runtime's `ScanMorphism.log_joint`
-scores. No transpile target has a lowering that keeps the measure, since
-the sequence axis is not an object the module declares, and the
+`weight` input `<cell>_scan_init`. A step input the step reads without
+binding resolves to the scanning program's binding of that name at the
+scan, else becomes an input of the scanning program under the step's
+name and role. An `observation` input is the exception: the cell
+observes one value per position, so the scanning program takes
+`Tensor[A]([<input>_extent, ...])` and the helper passes the step the
+entry `obs[t]`. The step's sites are reached once per position, and
+`run_program` replays the `n`-th occurrence of a site from the value
+keyed `"<site>@<n>"`; a site label the step shares with the scanning
+program is refused, since its occurrences would not number the
+positions.
+
+The torch runtime compiles the same expansion. The scanning program's
+`let h = scan(<step>, xs)` becomes a
+[`Scan`][quivers.continuous.Scan] step over the compiled step program,
+whose call of the cell becomes a [`Call`][quivers.continuous.Call] step.
+The program's kernel encoding runs a scan as a recursive helper
+computation and a call as the callee's steps in a nested frame of the
+caller, so a cell's free names read the caller's bindings and its sites
+are requests of the same run. A site inside a scan carries the address
+`"<site>@<n>"`, which a host step supplies from the run's occurrence
+count; handlers, traces, and conditioning see the same keys the
+reference machine replays, and the two paths score one trajectory
+identically. No transpile target has a lowering that keeps the measure,
+since the sequence axis is not an object the module declares, and the
 boundary refuses the scan with `scan:no-lowering:<cell>`.
 
 Logic programming uses the same handler and resumption rules:

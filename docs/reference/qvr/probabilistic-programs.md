@@ -210,11 +210,83 @@ recursive helper over the open sequence extent:
 sample hidden <- token_embedding >> scan(cell)
 ```
 
-The reference machine replays the `n`-th occurrence of a step site from
-`"site@n"`, which makes a trajectory's addressing stable. `init=learned`
-adds a learned initial-state input; the default initial state is zero. Current
-transpile targets refuse scans with `scan:no-lowering:<cell>` because the open
-sequence extent is not a declared categorical object.
+The step program takes one position's entry and the previous state, draws the
+chain's elements before the scan at the entry, and applies the cell. The
+binding, here `hidden`, is the final state. `init=learned` adds a learned
+initial-state input; the default initial state is zero. The scan returns only
+the final state. A program reads per-position values through the cell's own
+sites and observations, described below.
+
+A cell may be a program. Its steps are then steps of the scanning program, run
+once per position, and three rules fix what they read and how they are
+addressed. The compiled runtime and the reference machine apply the same
+rules.
+
+1. **Scope.** A name the cell reads without binding it is the scanning
+   program's binding of that name *before* the scan: a sampled site, a `let`,
+   or a program input. A name the scanning program does not bind before the
+   scan is host data of the scanning program, supplied under that name, and the
+   scanning program cannot bind it afterwards. A name the cell binds itself
+   shadows the scanning program's binding inside the cell and is not visible
+   after the scan. Gradients flow through the bindings the cell reads.
+2. **Sites.** Every site the cell reaches, its own and those of the chain's
+   elements before the scan, is reached once per position. The `n`-th
+   occurrence of a site labelled `s` has the address `"s@n"`, counted from zero
+   over the run. For a single scan, `n` is the position. A trace records `s@0`,
+   `s@1`, and so on; a replay, a clamp, or a joint density addresses them by
+   these keys. A `let` or `score` in the cell appears in a trace as `name@n`, and
+   each position's `score` joins the log joint. A label shared by the cell and
+   the scanning program would make `s@0` ambiguous, so it is refused.
+3. **Observations.** An `observe y` in the cell observes one value per
+   position. The scanning program takes the whole sequence as its observation
+   input `y`, with the position axis first: the checked elaboration types it
+   `Tensor[A]([<input>_extent, ...])` when one position's value is `A[...]`.
+   The compiled runtime takes a batch of sequences with the position axis
+   after the batch axis, `(batch, seq_len, ...)`; entry `[:, t]` is the
+   observation at position `t`, scored at site `y@t`. A single position may be
+   given instead as `y@t`, shaped `(batch, ...)`. Giving a position twice, a
+   value past the sequence's end, or a value for the scan's final state is
+   refused. The scanning program cannot also bind `y`.
+
+The log joint is the sum over positions of every site's density, every
+observation's likelihood, and every score. For a state-space model whose cell
+draws `s` and observes `o`, it is
+`sum_t log p(s_t | u_t, s_{t-1}) + log p(o_t | s_t)`.
+
+<!-- compile: qiec -->
+```qvr
+object Driver : Real 2
+object State : Real 3
+object Obs : Real 2
+
+morphism transition : Driver * State -> State ~ Normal
+morphism emission : State -> Obs ~ Normal
+
+program step(u_t, s_prev) : Driver * State -> State
+    sample s <- transition(u_t, s_prev)
+    observe o <- emission(s)
+    return s
+
+define run_all = scan(step)
+
+program ssm : Driver -> State
+    sample h <- run_all
+    return h
+
+export ssm
+```
+
+Here `ssm.log_joint(u, {"s@0": ..., "s@1": ..., "o": o})` scores a driver
+sequence `u` of shape `(batch, T, 2)` with `T` latent states and the
+observations `o` of shape `(batch, T, 2)`.
+
+A program composes with another through `sample y <- p(x)`, or runs at every
+position as the cell of `scan(p)`. A program used in `>>`, `repeat`, `stack`,
+`fan`, or `@` is refused on both paths, since the chain would treat it as a
+host function of its input.
+
+Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
+the open sequence extent is not a declared categorical object.
 
 ## Network kernels
 

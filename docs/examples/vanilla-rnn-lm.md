@@ -110,7 +110,7 @@ flowchart LR
 
 ### Generating synthetic data
 
-Trace the fixed vanilla recurrence once to obtain its terminal `h` and target. Reuse `true_h` in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation resamples `h`. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
+Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `x_in@t` and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
 
 ```python
 import torch
@@ -131,24 +131,32 @@ rows, seq_len, vocab = 32, 8, 256
 prompts = torch.randint(0, vocab, (rows, seq_len))
 with torch.no_grad():
     forward = trace(model, prompts)
-true_h = forward.sites["h"].value.detach()
+# Every position's embedding and cell draws, `x_in@t` and the cell's own
+# sites at `@t`, are the latent trajectory the terminal state is a
+# function of.
+trajectory = {
+    name: site.value.detach()
+    for name, site in forward.sites.items()
+    if "@" in name and not site.is_deterministic
+}
 next_token = forward.sites["next_token"].value.detach()
 
 x_in = prompts
-observations = {"next_token": next_token, "h": true_h}
+observations = {"next_token": next_token, **trajectory}
 print("prompts:", prompts.shape, prompts.dtype)
-print("true_h:", true_h.shape)
+print("trajectory sites:", len(trajectory))
 print("next_token:", next_token.shape, next_token.dtype)
 ```
 
 ### SVI fit
 
-Reinitialize `tok_embed`, the recurrent `cell`, and `lm_head`, then fit their latent parameters with an [`AutoNormalGuide`](../api/inference/guide.md) and [`SVI`](../api/inference/svi.md). The [`ELBO`](../api/inference/elbo.md) scores the Categorical `next_token` site for each prompt.
+Reinitialize `tok_embed`, the recurrent `cell`, and `lm_head`, then fit a mean-field posterior over their parameters and the latent trajectory with an [`AutoNormalGuide`](../api/inference/guide.md) and [`SVI`](../api/inference/svi.md). The scan draws the embedding and the cell's sites at every position, so the trajectory is lifted beside the parameters with [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters), each label stacked over positions. The [`ELBO`](../api/inference/elbo.md) scores the Categorical `next_token` site for each prompt.
 
 ```python
 import torch
 from quivers.dsl import load
-from quivers.inference import AutoNormalGuide, ELBO, SVI
+from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
+from quivers.inference.trace import trace
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/vanilla_rnn_lm.qvr")
@@ -168,15 +176,32 @@ torch.manual_seed(1)
 for _, p in model.named_parameters():
     p.data.copy_(torch.randn_like(p) * 0.3)
 
-guide = AutoNormalGuide(model, observed_names={"next_token"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
+# The scan's draws at every position are latents too: collect each
+# label, stacked as (rows, seq_len, ...), and lift it beside the
+# kernel parameters so the guide covers the whole trajectory.
+forward = trace(model, prompts, observations)
+per_position: dict[str, list[torch.Tensor]] = {}
+for name, site in forward.sites.items():
+    label, at, _ = name.partition("@")
+    if at and not site.is_deterministic and not site.is_observed:
+        per_position.setdefault(label, []).append(site.value)
+trajectory_shapes = {
+    label: tuple(torch.stack(values, dim=1).shape)
+    for label, values in per_position.items()
+}
+lifted, lx, lobs = bayesian_lift_parameters(
+    model, prompts, observations,
+    prior_scale=1.0,
+    additional_latents=trajectory_shapes,
 )
-svi = SVI(model, guide, optim, ELBO(num_particles=1))
 
-losses = [svi.step(prompts, observations)]
+guide = AutoNormalGuide(lifted, observed_names=set(lobs))
+optim = torch.optim.Adam(guide.parameters(), lr=1e-2)
+svi = SVI(lifted, guide, optim, ELBO(num_particles=1))
+
+losses = [svi.step(lx, lobs)]
 for _ in range(30):
-    losses.append(svi.step(prompts, observations))
+    losses.append(svi.step(lx, lobs))
 
 print(f"initial loss: {losses[0]:.2f}")
 print(f"final loss:   {losses[-1]:.2f}")
@@ -184,12 +209,13 @@ print(f"final loss:   {losses[-1]:.2f}")
 
 ### NUTS posterior
 
-The lifted Bayesian model treats both the parameters $\theta$ and the per-token hidden state $h$ as latents: $p(\theta, h \mid x, y) \propto p(\theta) \, p(h \mid x, \theta) \, p(y \mid h, \theta)$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts the intermediate `sample h` site as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(h, y \mid x, \theta)$. Given the full $(\theta, h)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
+The lifted Bayesian model treats both the parameters $\theta$ and the latent trajectory $z$ as latents: $p(\theta, z \mid x, y) \propto p(\theta) \, p(z \mid x, \theta) \, p(y \mid z, \theta)$, where $z$ collects every draw the scan makes at every position, the embedding `x_in@t` and the cell's own sites, and the terminal state is a function of $z$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts each per-position label, stacked over positions as `(rows, seq_len, ...)`, as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(z, y \mid x, \theta)$. Given the full $(\theta, z)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
 
 ```python
 import torch
 from quivers.dsl import load
 from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
+from quivers.inference.trace import trace
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/vanilla_rnn_lm.qvr")
@@ -201,11 +227,23 @@ prompts = torch.randint(0, vocab, (rows, seq_len))
 targets = model.rsample(prompts)
 observations = {"next_token": targets}
 
-h_shape = tuple(model._step_h.rsample(prompts).shape)
+# The latent trajectory: each label the scan reaches per position,
+# stacked as (rows, seq_len, ...), the layout a scanned site's values
+# take under its bare label.
+forward = trace(model, prompts, observations)
+per_position: dict[str, list[torch.Tensor]] = {}
+for name, site in forward.sites.items():
+    label, at, _ = name.partition("@")
+    if at and not site.is_deterministic and not site.is_observed:
+        per_position.setdefault(label, []).append(site.value)
+trajectory_shapes = {
+    label: tuple(torch.stack(values, dim=1).shape)
+    for label, values in per_position.items()
+}
 lifted, lx, lobs = bayesian_lift_parameters(
     model, prompts, observations,
     prior_scale=1.0,
-    additional_latents={"h": h_shape},
+    additional_latents=trajectory_shapes,
 )
 kernel = NUTSKernel(step_size=0.005, max_tree_depth=3, target_accept=0.8)
 mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
