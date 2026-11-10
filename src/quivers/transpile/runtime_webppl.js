@@ -121,6 +121,8 @@ var _qvr_bcast = function(op, a, b) {
       : op === "*" ? a * b
       : op === "/" ? a / b
       : op === "^" ? Math.pow(a, b)
+      : op === "max" ? Math.max(a, b)
+      : op === "min" ? Math.min(a, b)
       : NaN;
   }
   var n = a_arr ? a.length : b.length;
@@ -308,6 +310,21 @@ var sqrt = function(x) {
 
 var abs = function(x) {
   return Array.isArray(x) ? map(abs, x) : Math.abs(x);
+};
+
+// QVR `max` / `min` reduce the innermost axis of one argument and are
+// pointwise over two, broadcasting a scalar across an array; `pow` is
+// pointwise. WebPPL has no globals of these names.
+var max = function(a, b) {
+  return b === undefined ? _qvr_max_last(a) : _qvr_bcast("max", a, b);
+};
+
+var min = function(a, b) {
+  return b === undefined ? _qvr_min_last(a) : _qvr_bcast("min", a, b);
+};
+
+var pow = function(a, b) {
+  return _qvr_bcast("^", a, b);
 };
 
 var Logistic = function(params) {

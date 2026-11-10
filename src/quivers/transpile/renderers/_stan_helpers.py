@@ -55,6 +55,44 @@ from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 
+#: The pointwise two-argument builtins whose Stan spelling for real
+#: operands differs from the integer one.
+_REAL_POINTWISE: dict[str, str] = {"max": "fmax", "min": "fmin"}
+
+
+def _integral(expr: LetExprNode) -> bool:
+    """Whether an expression is integer-valued by its form.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        ``True`` for an integral literal, integer arithmetic on
+        integral operands, and a ``max`` / ``min`` of integral operands;
+        ``False`` for anything whose integrality the form does not
+        show, which then takes the real spelling.
+    """
+    if isinstance(expr, LetExprLiteral):
+        return expr.integral
+    if isinstance(expr, LetExprBinOp):
+        return expr.op in ("+", "-", "*", "%") and (
+            _integral(expr.left) and _integral(expr.right)
+        )
+    if isinstance(expr, LetExprUnaryOp):
+        return _integral(expr.operand)
+    if isinstance(expr, LetExprCall):
+        return (
+            expr.func in _REAL_POINTWISE
+            and len(expr.args) == 2
+            and all(_integral(arg) for arg in expr.args)
+        )
+    return False
+
+
 def render_let_expr_stan(ctx, expr: LetExprNode) -> str:
     """Build a Stan expression schema for `expr` in `ctx`. Returns
     the root vertex id.
@@ -94,6 +132,14 @@ def _render(ctx, expr: LetExprNode) -> tuple[str, str]:
             return _emit_function_expression(
                 ctx, "dot_product", (inner.left, inner.right)
             )
+        if (
+            expr.func in _REAL_POINTWISE
+            and len(expr.args) == 2
+            and not all(_integral(arg) for arg in expr.args)
+        ):
+            # Stan's `max` / `min` of two scalars take integers only;
+            # the pointwise real forms are `fmax` / `fmin`.
+            return _emit_function_expression(ctx, _REAL_POINTWISE[expr.func], expr.args)
         return _emit_function_expression(ctx, expr.func, expr.args)
     if isinstance(expr, LetExprIndex):
         return _emit_indexed(ctx, expr)

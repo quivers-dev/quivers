@@ -670,11 +670,82 @@ _LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
 }
 
 
+#: ``target -> {builtin name -> lowering}`` for the pointwise two-argument
+#: builtins. QVR's ``max(a, b)`` and ``min(a, b)`` are pointwise, while
+#: their one-argument forms reduce an axis, and every target's reduction
+#: (``jnp.max``, ``torch.amax``, ``pymc.math.max``, ``tf.reduce_max``)
+#: reads a second positional argument as an axis, so the binary form
+#: takes the target's elementwise function instead. ``pow`` has only the
+#: binary form.
+_BINARY_POINTWISE_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
+    "pyro": {
+        "max": _torch("maximum"),
+        "min": _torch("minimum"),
+        "pow": _torch("pow"),
+    },
+    "numpyro": {
+        "max": _jnp("maximum"),
+        "min": _jnp("minimum"),
+        "pow": _jnp("power"),
+    },
+    "pymc": {
+        "max": _pmath("maximum"),
+        "min": _pmath("minimum"),
+        "pow": _pmath("pow"),
+    },
+    "edward2": {
+        "max": _tfmath("maximum"),
+        "min": _tfmath("minimum"),
+        "pow": _tfmath("pow"),
+    },
+}
+
+#: The array constructor each target's pointwise binary call converts its
+#: operands with, for the targets whose elementwise functions reject a
+#: host operand: ``torch.maximum`` takes tensors only, and ``jnp.maximum``
+#: rejects a Python list, such as a list-literal `let`. An operand may
+#: also be a Python number, such as an unrolled factor binder.
+_POINTWISE_OPERAND_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "pyro": ("torch", "as_tensor"),
+    "numpyro": ("jnp", "asarray"),
+}
+
+#: The conversion PyMC subscripts a host array through when an index is a
+#: symbolic expression, such as a pointwise ``max`` in index arithmetic:
+#: a Python list or a NumPy array cannot be indexed by a tensor.
+_PYMC_TENSOR: tuple[str, ...] = ("pymc", "pytensorf", "pt", "as_tensor_variable")
+
+
+def _symbolic_index(expr: LetExprNode) -> bool:
+    """Whether an index expression calls a builtin, so PyMC builds it as a tensor.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The index expression.
+
+    Returns
+    -------
+    bool
+        ``True`` if a call occurs anywhere in it.
+    """
+    if isinstance(expr, LetExprCall):
+        return True
+    if isinstance(expr, LetExprBinOp):
+        return _symbolic_index(expr.left) or _symbolic_index(expr.right)
+    if isinstance(expr, LetExprUnaryOp):
+        return _symbolic_index(expr.operand)
+    if isinstance(expr, LetExprIndex):
+        return _symbolic_index(expr.array) or any(
+            _symbolic_index(index) for index in expr.indices
+        )
+    return False
+
 #: Eager builtin names come from the same capability registry as the compiler.
 _MATH_BUILTIN_NAMES = EAGER_BUILTIN_NAMES
 
 
-def _resolve_python_call(ctx: PyCtx, func: str) -> str:
+def _resolve_python_call(ctx: PyCtx, func: str, arity: int = 1) -> str:
     """Emit the callee vertex for a ``LetExprCall`` to ``func``.
 
     When ``func`` is one of the target's mapped math builtins, emit its
@@ -685,10 +756,36 @@ def _resolve_python_call(ctx: PyCtx, func: str) -> str:
     `UnsupportedConstruct`
     rather than emit an undefined name. Any other callee (a domain
     function such as a chart-parser ``parse``, or a user helper) is
-    emitted verbatim, as before.
+    emitted verbatim.
+
+    A two-argument ``max``, ``min``, or ``pow`` is pointwise and
+    resolves through the target's elementwise function, never a
+    reduction.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        The emit context, whose target selects the symbol table and
+        whose imports collect the symbol's import.
+    func : str
+        The called name.
+    arity : int
+        The number of arguments the call passes.
+
+    Returns
+    -------
+    str
+        The callee vertex.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If ``func`` is a math builtin with no symbol on the target.
     """
     table = _LET_CALL_SYMBOLS.get(ctx.target, {})
     entry = table.get(func)
+    if arity == 2:
+        entry = _BINARY_POINTWISE_SYMBOLS.get(ctx.target, {}).get(func, entry)
     if entry is not None:
         segments, import_spec = entry
         if import_spec is not None:
@@ -755,11 +852,13 @@ def render_let_expr_python(
 
     `index_slot` marks the subscript position. A
     [`LetExprLiteral`][quivers.dsl.ast_nodes.LetExprLiteral] carries a
-    `float` payload, so a source-level index (`cell_score[0, 0]`) and
-    every index a factor unroll synthesises arrive as ``0.0``; Python
-    subscripts reject a float, so an index-slot literal emits as an
-    integer. A genuinely fractional index has no integer spelling and
-    raises instead.
+    `float` payload, so a source-level index (`cell_score[0, 0]`)
+    arrives as ``0.0``; Python subscripts reject a float, so an
+    index-slot literal emits as an integer. A genuinely fractional index
+    has no integer spelling and raises instead. Outside a subscript, an
+    `integral` literal, such as the value a factor unroll substitutes
+    for its `Int` binder, emits as an integer, so index arithmetic built
+    from it stays integer-valued wherever it is used.
     """
     if isinstance(expr, LetExprLiteral):
         if index_slot:
@@ -849,12 +948,21 @@ def render_let_expr_python(
                     attribute(ctx, ("tf", "cast")),
                     positional=(argument, attribute(ctx, ("tf", "int32"))),
                 )
-        fn = _resolve_python_call(ctx, expr.func)
+        fn = _resolve_python_call(ctx, expr.func, len(expr.args))
         c = ctx.v(ctx.fresh("call"), "call")
         ctx.e(c, fn, "function")
         args = ctx.v(ctx.fresh("args"), "argument_list")
+        operand = (
+            _POINTWISE_OPERAND_SYMBOLS.get(ctx.target)
+            if len(expr.args) == 2
+            and expr.func in _BINARY_POINTWISE_SYMBOLS[ctx.target]
+            else None
+        )
         for a in expr.args:
-            ctx.e(args, render_let_expr_python(ctx, a), "child_of")
+            rendered = render_let_expr_python(ctx, a)
+            if operand is not None:
+                rendered = call(ctx, attribute(ctx, operand), positional=(rendered,))
+            ctx.e(args, rendered, "child_of")
         # A reducing primitive (``sum``, ``mean``, ...) collapses the
         # last axis of its argument. The renamed callee already targets
         # the target's array-aware aggregator, so an argument with an
@@ -915,6 +1023,8 @@ def render_let_expr_python(
                 )
                 current = s
             return current
+        if ctx.target == "pymc" and any(_symbolic_index(i) for i in expr.indices):
+            array_vid = call(ctx, attribute(ctx, _PYMC_TENSOR), positional=(array_vid,))
         s = ctx.v(ctx.fresh("subs"), "subscript")
         ctx.e(s, array_vid, "value")
         for idx in expr.indices:
@@ -1110,7 +1220,7 @@ def _infer_event_rank(ctx: PyCtx, expr: LetExprNode) -> int:
     if isinstance(expr, LetExprUnaryOp):
         return _infer_event_rank(ctx, expr.operand)
     if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS:
+        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
             return 0
         return max(
             (_infer_event_rank(ctx, a) for a in expr.args),
@@ -1259,7 +1369,7 @@ def _vector_binding_coordinates(
         (binder,) = expr.binders
         coordinates: list[LetExprNode] = []
         for index in range(_card_for(ctx, binder)):
-            literal = LetExprLiteral(value=index)
+            literal = LetExprLiteral(value=index, integral=True)
             coordinates.append(
                 _substitute_let_expr(
                     expr.body,
@@ -1481,7 +1591,7 @@ def _build_nested_python(
     if len(fixed) == len(binders):
         subst = body
         for binder, value in zip(binders, fixed, strict=True):
-            literal = LetExprLiteral(value=value)
+            literal = LetExprLiteral(value=value, integral=True)
             subst = _substitute_let_expr(
                 subst,
                 binder.var,

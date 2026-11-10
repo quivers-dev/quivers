@@ -252,6 +252,11 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
 }
 
 
+#: QVR builtins whose two-argument form is pointwise, which Julia spells
+#: as a broadcast call.
+_BINARY_POINTWISE_CALLS: frozenset[str] = frozenset({"max", "min"})
+
+
 def render_let_expr_julia(
     ctx: _JlEmitCtx,
     expr: LetExprNode,
@@ -355,7 +360,7 @@ def infer_array_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
         return infer_array_rank(ctx, expr.operand)
     if isinstance(expr, LetExprCall):
         inner = max((infer_array_rank(ctx, a) for a in expr.args), default=0)
-        if expr.func in _AXIS_REDUCING_CALLS:
+        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
             return max(0, inner - 1)
         return inner
     if isinstance(expr, LetExprIndex):
@@ -398,7 +403,7 @@ def _infer_event_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
     if isinstance(expr, LetExprUnaryOp):
         return _infer_event_rank(ctx, expr.operand)
     if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS:
+        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
             return 0
         return max((_infer_event_rank(ctx, a) for a in expr.args), default=0)
     if isinstance(expr, LetExprIndex):
@@ -669,6 +674,7 @@ def _emit_call(
     `_emit_axis_reduction`, which names that axis; a nested tower
     reduces each of its rows; a vector reduces whole, which is the
     same.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
@@ -692,7 +698,11 @@ def _emit_call(
     rendered = tuple(_render(ctx, a) for a in args)
     callee_vid, _callee_kind = _emit_identifier(ctx, func)
     al_vid = _emit_argument_list(ctx, rendered)
-    kind = "broadcast_call_expression" if ctx.dotted else "call_expression"
+    # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
+    # `max(a, b)` of two arrays compares them as wholes and returns one,
+    # so the binary form always broadcasts.
+    pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
+    kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
     ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
     ctx.e(vid, callee_vid, "child_of")
@@ -1334,7 +1344,9 @@ def _build_nested_vector(
     if len(fixed) == len(binders):
         subst = body
         for binder, value in zip(binders, fixed, strict=True):
-            subst = _substitute(subst, binder.var, LetExprLiteral(value=value))
+            subst = _substitute(
+                subst, binder.var, LetExprLiteral(value=value, integral=True)
+            )
         return _render(ctx, subst)
     level = len(fixed)
     rendered: list[tuple[str, str]] = []

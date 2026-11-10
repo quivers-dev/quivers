@@ -476,7 +476,11 @@ builtins this way. For a
 
 **Arithmetic and comparisons**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`,
 `<=`, `>`, `>=`, `&&`, `||`; and the call forms `pow`, `abs`, `min`, and
-`max`.
+`max`. The two-argument `min(a, b)` and `max(a, b)` are pointwise, unlike
+the one-argument reductions below: two tensors compare entry by entry, a
+scalar broadcasts against a tensor, and two `Int` operands give an `Int`,
+so `ys[max(t - 1, 0)]` clamps an index arithmetic expression into range
+on every target.
 
 **Pointwise transcendentals**: `exp`, `expm1`, `log`, `log1p`,
 `log2`, `log10`, `sqrt`, `rsqrt`, `square`, `abs`, `sign`,

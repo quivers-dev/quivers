@@ -2770,7 +2770,7 @@ def _js_event_rank(expr: LetExprNode, ranks: dict[str, int]) -> int:
     if isinstance(expr, LetExprUnaryOp):
         return _js_event_rank(expr.operand, ranks)
     if isinstance(expr, LetExprCall):
-        if expr.func in _REDUCTION_FUNCS:
+        if expr.func in _REDUCTION_FUNCS and len(expr.args) == 1:
             return 0
         return max((_js_event_rank(a, ranks) for a in expr.args), default=0)
     if isinstance(expr, LetExprIndex):
@@ -2992,7 +2992,7 @@ def _let_expr_is_array_valued(expr: LetExprNode, array_names: frozenset[str]) ->
     if isinstance(expr, LetExprIndex):
         return False
     if isinstance(expr, LetExprCall):
-        if expr.func in _REDUCTION_FUNCS:
+        if expr.func in _REDUCTION_FUNCS and len(expr.args) == 1:
             return False
         return any(_let_expr_is_array_valued(a, array_names) for a in expr.args)
     if isinstance(expr, LetExprList):
@@ -3136,9 +3136,10 @@ def _ir_emits_qvr_bcast(ir: IRProgram, array_names: frozenset[str]) -> bool:
 
 #: QVR math primitives the WebPPL runtime supplies as elementwise
 #: globals (`Math` has no bare `sigmoid` / `exp` / `log` / `sqrt` /
-#: `abs`).
+#: `abs`, and WebPPL no `max` / `min` / `pow`, whose two-argument forms
+#: are pointwise).
 _WEBPPL_MATH_HELPERS: frozenset[str] = frozenset(
-    {"sigmoid", "exp", "log", "sqrt", "abs"}
+    {"sigmoid", "exp", "log", "sqrt", "abs", "max", "min", "pow"}
 )
 
 

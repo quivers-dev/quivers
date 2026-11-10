@@ -522,7 +522,7 @@ def _build_nested_array(
     if len(fixed) == len(binders):
         subst = body
         for binder, value in zip(binders, fixed, strict=True):
-            literal = LetExprLiteral(value=value)
+            literal = LetExprLiteral(value=value, integral=True)
             subst = _substitute_let_expr(
                 subst,
                 binder.var,
