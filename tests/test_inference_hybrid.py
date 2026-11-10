@@ -84,6 +84,25 @@ def test_dais_rsample_matches_autonormal_shapes() -> None:
         assert s_normal[name].shape == s_dais[name].shape
 
 
+def test_dais_rsample_follows_the_input_batch_axis() -> None:
+    """One trajectory is shared across the batch, in the trace-side
+    shapes every guide returns and matching `log_prob`'s batch."""
+    torch.manual_seed(0)
+    model = _hierarchical_model()
+    obs = _make_hier_obs()
+    base = AutoNormalGuide(model, observed_names={"r"})
+    dais = AutoDAIS(base, model, observations=obs, num_steps=2)
+    x = torch.zeros(3, 1)
+    s_normal = AutoNormalGuide(model, observed_names={"r"}).rsample(x)
+    s_dais = dais.rsample(x)
+    for name in s_normal:
+        assert s_dais[name].shape == s_normal[name].shape
+    assert s_dais["sigma"].shape == (3,)
+    assert s_dais["by_subj"].shape == (4,)
+    assert torch.equal(s_dais["sigma"], s_dais["sigma"][:1].expand(3))
+    assert dais.log_prob(x, s_dais).shape == (3,)
+
+
 def test_dais_gradients_flow_to_step_size_and_temperatures() -> None:
     torch.manual_seed(0)
     model = _hierarchical_model()

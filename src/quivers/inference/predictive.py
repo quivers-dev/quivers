@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import torch
 
+from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.guides import Guide
 from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
 
@@ -24,6 +26,15 @@ class Predictive:
     Variational case: draws ``num_samples`` fresh guide samples.
     MCMC case: iterates over the recorded posterior draws (one
     forward trace per draw, up to ``num_samples`` if specified).
+
+    Both cases trace the model with trace-side latent values. A
+    guide's `Guide.rsample` already returns them: non-plate sites at
+    ``(batch, *constrained_shape)`` and plate sites at
+    ``constrained_shape``. An MCMC draw has shape
+    `LatentSite.constrained_shape`, so each draw is lifted by
+    `LatentRegistry.trace_values`, which expands non-plate sites
+    across the input's batch axis; every input row then sees the
+    same posterior draw.
 
     Parameters
     ----------
@@ -37,6 +48,15 @@ class Predictive:
         recorded posterior draws). If supplied as an explicit
         integer for an MCMC result it is capped at the available
         draw count.
+
+    Raises
+    ------
+    TypeError
+        If ``posterior`` is neither a `Guide` nor an `MCMCResult`.
+    ValueError
+        If the resolved ``num_samples`` is less than one, or an
+        `MCMCResult` holds samples for a site that is not a latent
+        sample site of ``model``.
     """
 
     def __init__(
@@ -52,7 +72,23 @@ class Predictive:
             )
         self.model = model
         self.posterior = posterior
+        self._mcmc_registry: LatentRegistry | None = None
         if isinstance(posterior, MCMCResult):
+            sampled = set(posterior.samples)
+            not_sampled = {
+                name
+                for step in model.steps
+                if isinstance(step, Draw | Observe)
+                for name in step.names
+                if name not in sampled
+            }
+            self._mcmc_registry = LatentRegistry.from_model(model, not_sampled)
+            missing = sampled - set(self._mcmc_registry.names)
+            if missing:
+                raise ValueError(
+                    f"Predictive: MCMCResult samples sites {sorted(missing)} "
+                    f"that are not latent sample sites of the model"
+                )
             available = posterior.num_chains * posterior.num_samples
             self.num_samples = (
                 min(num_samples, available) if num_samples is not None else available
@@ -64,10 +100,24 @@ class Predictive:
                 f"Predictive: num_samples must be >= 1, got {self.num_samples}"
             )
 
-    def _iter_mcmc_latents(self) -> list[dict[str, torch.Tensor]]:
-        """Yield ``num_samples`` per-draw latent dicts from the
-        MCMC result, flattening the chain × sample axes."""
+    def _iter_mcmc_latents(self, batch_size: int) -> list[dict[str, torch.Tensor]]:
+        """Return ``num_samples`` per-draw trace-side latent dicts
+        from the MCMC result, flattening the chain and sample axes.
+
+        Parameters
+        ----------
+        batch_size : int
+            Size of the program input's leading batch axis; each
+            non-plate draw is expanded across it.
+
+        Returns
+        -------
+        list[dict[str, torch.Tensor]]
+            One dict per selected draw, shaped by
+            `LatentRegistry.trace_values`.
+        """
         assert isinstance(self.posterior, MCMCResult)
+        assert self._mcmc_registry is not None
         samples = self.posterior.samples
         chain_samples = self.posterior.num_chains * self.posterior.num_samples
         # Random selection without replacement (when num_samples
@@ -77,7 +127,8 @@ class Predictive:
         for idx in perm.tolist():
             chain = idx // self.posterior.num_samples
             step = idx % self.posterior.num_samples
-            out.append({name: draws[chain, step] for name, draws in samples.items()})
+            draw = {name: draws[chain, step] for name, draws in samples.items()}
+            out.append(self._mcmc_registry.trace_values(draw, batch_size))
         return out
 
     @torch.no_grad()
@@ -98,9 +149,12 @@ class Predictive:
         Returns
         -------
         dict[str, torch.Tensor]
-            One key per site, value of shape
-            ``(num_samples, batch, ...)`` (or the trace-side shape
-            for plate sites).
+            One key per site, holding the stacked trace-side values:
+            ``(num_samples, batch, *constrained_shape)`` for a
+            non-plate latent site, ``(num_samples, *constrained_shape)``
+            for a plate latent site, and ``num_samples`` stacked
+            trace values for every other stochastic site. Guide and
+            MCMC posteriors produce the same shapes.
         """
         observations = observations if observations is not None else {}
         if isinstance(self.posterior, Guide):
@@ -108,7 +162,7 @@ class Predictive:
                 self.posterior.rsample(x) for _ in range(self.num_samples)
             ]
         else:
-            latents_iter = self._iter_mcmc_latents()
+            latents_iter = self._iter_mcmc_latents(int(x.shape[0]))
 
         collected: dict[str, list[torch.Tensor]] = {}
         for latents in latents_iter:

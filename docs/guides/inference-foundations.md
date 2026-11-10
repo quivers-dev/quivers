@@ -110,6 +110,44 @@ A `SampleSite` records:
 - `is_observed`: whether the site was clamped to an observed value
 - `is_deterministic`: whether the site is a deterministic `let` binding
 
+## Latent site shapes
+
+Two shape conventions meet in the inference layer, and each has one
+job. A *draw* is one value of a latent site on its constrained
+support. Its shape is the site's
+[`LatentSite.constrained_shape`](../api/inference/guide.md#quivers.inference.registry.LatentSite.constrained_shape):
+`()` for a scalar site, `(d,)` for a `d`-dimensional site, `(d, d)`
+for a correlation-Cholesky factor, and `(|A|, ...)` for a plate site
+over `A`. A *trace-side value* is what a program exchanges with its
+callers: the values
+[`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
+scores, the values a trace records, and the values a guide's `rsample`
+returns and its `log_prob` scores. Trace-side values follow the
+program's `(batch, ...)` input convention, so a non-plate site carries
+the input's leading batch axis, `(batch, *constrained_shape)`. A plate
+site carries no batch axis and appears at `constrained_shape` on both
+sides.
+
+| Surface | Non-plate site | Plate site |
+|---|---|---|
+| One draw (`constrained_shape`) | `()`, `(d,)` | `(n,)`, `(n, d)` for a plate of size `n` |
+| [`MCMCResult.samples`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMCResult) | `(chains, draws, *constrained_shape)` | `(chains, draws, *constrained_shape)` |
+| `MCMCResult.r_hat`, `MCMCResult.ess` | `constrained_shape` | `constrained_shape` |
+| `log_joint` input, trace values, `Guide.rsample` | `(batch, *constrained_shape)` | `constrained_shape` |
+| [`PotentialFn`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn) input to `log_joint` | `(1, *constrained_shape)` | `constrained_shape` |
+| [`Predictive`](../api/inference/predictive.md) output | `(num_samples, batch, *constrained_shape)` | `(num_samples, *constrained_shape)` |
+
+[`LatentRegistry.trace_values`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_values)
+lifts one draw to trace-side values by expanding each non-plate site
+across the batch axis. MCMC uses it with a batch of one when it scores
+a position, so a custom density reached through `log_joint` sees a
+leading axis of size one on every non-plate site. `Predictive` uses it
+with the input's batch size, so a guide posterior and an MCMC posterior
+produce predictive draws of the same shape.
+[`LatentRegistry.trace_row`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_row)
+reads one row back as a draw per site, which is how a guide sample
+seeds an MCMC chain.
+
 ## Conditioning on observations
 
 To *clamp* a site is to reuse a supplied value whenever execution reaches

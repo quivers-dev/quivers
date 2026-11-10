@@ -151,22 +151,34 @@ class AutoDAIS(Guide):
     def _target_log_density(self, z_flat: torch.Tensor) -> torch.Tensor:
         """Unconstrained-space log-density of the target (model
         joint + Jacobian)."""
+        trace_side, log_det_total = self._trace_side_with_log_det(z_flat)
+        log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
+        return log_p.sum() + log_det_total
+
+    def _trace_side_with_log_det(
+        self, z_flat: torch.Tensor
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Map a flat unconstrained point to batch-of-one trace-side
+        values and the summed log-Jacobian of the bijectors.
+
+        Parameters
+        ----------
+        z_flat : torch.Tensor
+            Flat unconstrained point, shape ``(D,)``.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], torch.Tensor]
+            The values `LatentRegistry.trace_values` produces with a
+            batch of one, and the scalar total
+            ``log |det dT/dz|`` over every site.
+        """
         per_site_unc = self._registry.unflatten_unconstrained(z_flat)
-        constrained: dict[str, torch.Tensor] = {}
+        constrained, log_abs_dets = self._registry.to_constrained(per_site_unc)
         log_det_total = torch.zeros((), device=z_flat.device, dtype=z_flat.dtype)
         for site in self._registry.sites.values():
-            z_site = per_site_unc[site.name]
-            if not site.is_plate:
-                z_site = z_site.unsqueeze(0)
-            v = site.bijector(z_site)
-            log_det_total = log_det_total + (
-                site.bijector.log_abs_det_jacobian(z_site, v).sum()
-            )
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
-            constrained[site.name] = v
-        log_p = self._model.log_joint(self._x, {**constrained, **self._observations})
-        return log_p.sum() + log_det_total
+            log_det_total = log_det_total + log_abs_dets[site.name].sum()
+        return self._registry.trace_values(constrained, batch_size=1), log_det_total
 
     def _grad_target(self, z_flat: torch.Tensor) -> torch.Tensor:
         z = z_flat.detach().clone().requires_grad_(True)
@@ -183,24 +195,10 @@ class AutoDAIS(Guide):
         """Log-density of the annealed bridge at inverse temperature
         ``beta``: :math:`q_0(z)^{1 - \\beta} \\pi(z)^\\beta` in
         log-space."""
-        # Base log-density expects per-site constrained sites; for
-        # bridging we operate on flat z directly. The base guide's
-        # log_prob takes constrained sites, so we materialise them.
-        per_site_unc = self._registry.unflatten_unconstrained(z_flat)
-        constrained: dict[str, torch.Tensor] = {}
-        base_log_det = torch.zeros((), device=z_flat.device, dtype=z_flat.dtype)
-        for site in self._registry.sites.values():
-            z_site = per_site_unc[site.name]
-            if not site.is_plate:
-                z_site = z_site.unsqueeze(0)
-            v = site.bijector(z_site)
-            base_log_det = base_log_det + (
-                site.bijector.log_abs_det_jacobian(z_site, v).sum()
-            )
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
-            constrained[site.name] = v
-        log_q0 = self.base.log_prob(self._x, constrained).sum()
+        # The bridge operates on flat z; the base guide's log_prob
+        # takes trace-side site values, so we materialise them.
+        trace_side = self._materialise_constrained(z_flat)
+        log_q0 = self.base.log_prob(self._x, trace_side).sum()
         log_pi = self._target_log_density(z_flat)
         return (1.0 - beta) * log_q0 + beta * log_pi
 
@@ -216,20 +214,23 @@ class AutoDAIS(Guide):
     def _flatten_constrained_sample(
         self, base_sample: dict[str, torch.Tensor]
     ) -> torch.Tensor:
-        """Convert the base guide's constrained per-site sample into
-        a single flat unconstrained vector."""
-        unc: dict[str, torch.Tensor] = {}
-        for site in self._registry.sites.values():
-            v = base_sample[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
-                v_e = v.unsqueeze(-1)
-            else:
-                v_e = v
-            if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-                v_e = v_e[0]
-            z = site.bijector.inv(v_e)
-            unc[site.name] = z
-        return self._registry.flatten_unconstrained(unc)
+        """Convert the base guide's batch-of-one trace-side sample
+        into a single flat unconstrained vector.
+
+        Parameters
+        ----------
+        base_sample : dict[str, torch.Tensor]
+            The base guide's `Guide.rsample` output for a batch of one.
+
+        Returns
+        -------
+        torch.Tensor
+            The flat unconstrained point, shape ``(D,)``.
+        """
+        unconstrained, _ = self._registry.to_unconstrained(
+            self._registry.trace_row(base_sample)
+        )
+        return self._registry.flatten_unconstrained(unconstrained)
 
     def _trajectory(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the annealed trajectory; return the flat unconstrained
@@ -238,14 +239,30 @@ class AutoDAIS(Guide):
         The log-weight is :math:`\\sum_t (\\beta_t - \\beta_{t-1})
         (\\log \\pi(z_t) - \\log q_0(z_t))` plus the momentum
         bookkeeping (zero in expectation for our momentum-resampling
-        leapfrog variant)."""
-        base_sample = self.base.rsample(x)
+        leapfrog variant).
+
+        The trajectory is one point, so the base guide is sampled
+        and scored on the first row of ``x`` alone.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input, shape ``(batch, ...)``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The flat endpoint, shape ``(D,)``, and the scalar
+            log-weight.
+        """
+        x_one = x[:1]
+        base_sample = self.base.rsample(x_one)
         z = self._flatten_constrained_sample(base_sample)
         betas = self._betas()
         log_weight = torch.zeros((), device=z.device, dtype=z.dtype)
         # Initial log-weight: target_at_z minus base_at_z, scaled by
         # the first beta increment.
-        log_q0_z = self.base.log_prob(x, base_sample).sum()
+        log_q0_z = self.base.log_prob(x_one, base_sample).sum()
         log_pi_z = self._target_log_density(z)
         log_weight = log_weight + betas[0] * (log_pi_z - log_q0_z)
         for t in range(self._num_steps):
@@ -261,31 +278,59 @@ class AutoDAIS(Guide):
                 p = p + 0.5 * eps * g
             if t < self._num_steps - 1:
                 next_beta = betas[t + 1]
-                log_q0_z = self.base.log_prob(x, self._materialise_constrained(z)).sum()
+                log_q0_z = self.base.log_prob(
+                    x_one, self._materialise_constrained(z)
+                ).sum()
                 log_pi_z = self._target_log_density(z)
                 log_weight = log_weight + (next_beta - beta_t) * (log_pi_z - log_q0_z)
         return z, log_weight
 
-    def _materialise_constrained(self, z_flat: torch.Tensor) -> dict[str, torch.Tensor]:
-        per_site_unc = self._registry.unflatten_unconstrained(z_flat)
-        out: dict[str, torch.Tensor] = {}
-        for site in self._registry.sites.values():
-            z_site = per_site_unc[site.name]
-            if not site.is_plate:
-                z_site = z_site.unsqueeze(0)
-            v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
-            out[site.name] = v
-        return out
+    def _materialise_constrained(
+        self, z_flat: torch.Tensor, batch_size: int = 1
+    ) -> dict[str, torch.Tensor]:
+        """Map a flat unconstrained point to trace-side site values.
+
+        Parameters
+        ----------
+        z_flat : torch.Tensor
+            Flat unconstrained point, shape ``(D,)``.
+        batch_size : int
+            Batch axis the non-plate sites are expanded across.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The values `LatentRegistry.trace_values` produces.
+        """
+        constrained, _ = self._registry.to_constrained(
+            self._registry.unflatten_unconstrained(z_flat)
+        )
+        return self._registry.trace_values(constrained, batch_size)
 
     # ------------------------------------------------------------------
     # Guide contract
     # ------------------------------------------------------------------
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Endpoint of one annealed trajectory, as trace-side values.
+
+        One trajectory is run per call and shared by every row of
+        ``x``'s batch axis, matching `log_prob`, which returns the
+        trajectory's density expanded to ``(batch,)``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input, shape ``(batch, ...)``.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Non-plate sites at ``(batch, *constrained_shape)`` and
+            plate sites at ``constrained_shape``.
+        """
         z_final, _ = self._trajectory(x)
-        return self._materialise_constrained(z_final)
+        return self._materialise_constrained(z_final, int(x.shape[0]))
 
     def log_prob(
         self,

@@ -885,3 +885,162 @@ def test_leapfrog_rejects_zero_steps() -> None:
             potential,
             hmc_module._MassMatrix(2, "identity"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Site shapes: posterior containers versus trace-side values
+# ---------------------------------------------------------------------------
+
+
+def _vector_and_scalar_program() -> MonadicProgram:
+    return MonadicProgram(
+        Unit,
+        Euclidean(name="out", dim=1),
+        steps=[
+            Draw(
+                names=("v",),
+                morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="R3", dim=3)),
+            ),
+            Draw(
+                names=("s",),
+                morphism=make_fixed_normal(0.0, 1.0, Euclidean(name="R1", dim=1)),
+            ),
+        ],
+        return_vars=(),
+    )
+
+
+def _plate_program():
+    return loads(
+        "object Subj : FinSet 4\n"
+        "object Resp : FinSet 12\n"
+        "program p : Resp -> Resp\n"
+        "    sample sigma <- HalfNormal(scale=1.0)\n"
+        "    sample by_subj : Subj <- Normal(loc=0.0, scale=sigma)\n"
+        "    let mu = by_subj[subj_idx]\n"
+        "    observe r : Resp <- Normal(loc=mu, scale=1.0)\n"
+        "    return mu\n"
+        "export p\n"
+    ).morphism
+
+
+_PLATE_OBSERVATIONS = {
+    "subj_idx": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]),
+    "r": torch.linspace(-1.0, 1.0, 12),
+}
+
+
+def test_potential_hands_log_joint_a_batch_of_one_on_non_plate_sites() -> None:
+    for model, observations, expected in (
+        (_vector_and_scalar_program(), {}, {"v": (1, 3), "s": (1,)}),
+        (_plate_program(), _PLATE_OBSERVATIONS, {"sigma": (1,), "by_subj": (4,)}),
+    ):
+        registry = LatentRegistry.from_model(model, set(observations) - {"subj_idx"})
+        seen: dict[str, tuple[int, ...]] = {}
+        original = model.log_joint
+
+        def _recording_log_joint(
+            x: torch.Tensor, values: dict[str, torch.Tensor]
+        ) -> torch.Tensor:
+            seen.update({k: tuple(v.shape) for k, v in values.items()})
+            return original(x, values)
+
+        model.log_joint = _recording_log_joint  # type: ignore[method-assign]
+        try:
+            PotentialFn(model, registry, torch.zeros(1, 1), observations).log_density(
+                torch.zeros(registry.total_unconstrained_dim)
+            )
+        finally:
+            del model.log_joint
+        assert {k: seen[k] for k in expected} == expected
+        for name, site in registry.sites.items():
+            batch_axis = () if site.is_plate else (1,)
+            assert seen[name] == (*batch_axis, *site.constrained_shape)
+
+
+@pytest.mark.parametrize("plate", [False, True])
+def test_mcmc_result_shapes_match_constrained_shape(plate: bool) -> None:
+    model = _plate_program() if plate else _vector_and_scalar_program()
+    observations = _PLATE_OBSERVATIONS if plate else {}
+    registry = LatentRegistry.from_model(model, {"r"} if plate else set())
+    result = MCMC(
+        NUTSKernel(max_tree_depth=4),
+        num_warmup=10,
+        num_samples=6,
+        num_chains=2,
+        seed=0,
+    ).run(model, torch.zeros(1, 1), observations)
+
+    assert set(result.samples) == set(registry.names)
+    for name, site in registry.sites.items():
+        assert result.samples[name].shape == (2, 6, *site.constrained_shape)
+        assert result.r_hat[name].shape == site.constrained_shape
+        assert result.ess[name].shape == site.constrained_shape
+    if plate:
+        assert result.samples["sigma"].shape == (2, 6)
+        assert result.samples["by_subj"].shape == (2, 6, 4)
+        assert (result.samples["sigma"] > 0).all()
+    else:
+        assert result.samples["v"].shape == (2, 6, 3)
+        assert result.samples["s"].shape == (2, 6)
+        assert result.r_hat["s"].shape == ()
+
+
+def test_mcmc_draws_score_like_the_chain_position() -> None:
+    """Lifting a recorded draw to trace-side values reproduces the
+    log-density the chain recorded for it."""
+    model = _plate_program()
+    registry = LatentRegistry.from_model(model, {"r"})
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), _PLATE_OBSERVATIONS)
+    result = MCMC(
+        NUTSKernel(max_tree_depth=4), num_warmup=5, num_samples=3, num_chains=1, seed=2
+    ).run(model, torch.zeros(1, 1), _PLATE_OBSERVATIONS)
+    for step in range(3):
+        draw = {name: draws[0, step] for name, draws in result.samples.items()}
+        unconstrained, _ = registry.to_unconstrained(draw)
+        position = registry.flatten_unconstrained(unconstrained)
+        assert torch.allclose(
+            potential.log_density(position),
+            result.log_densities[0, step],
+            atol=1e-4,
+        )
+
+
+def test_guide_initialisation_reads_trace_side_guide_samples() -> None:
+    class _FixedGuide:
+        def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+            return {
+                "v": torch.tensor([[0.5, -0.5, 1.0]]).expand(x.shape[0], 3),
+                "s": torch.full((x.shape[0],), 0.25),
+            }
+
+    model = _vector_and_scalar_program()
+    registry = LatentRegistry.from_model(model, set())
+    driver = MCMC(
+        HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
+    )
+    position = driver._initial_position(
+        registry,
+        _FixedGuide(),  # type: ignore[arg-type]
+        torch.Generator().manual_seed(0),
+    )
+    assert torch.equal(position, torch.tensor([0.5, -0.5, 1.0, 0.25]))
+
+
+def test_guide_initialisation_rejects_a_guide_without_the_batch_axis() -> None:
+    class _UnbatchedGuide:
+        def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+            del x
+            return {"v": torch.zeros(3), "s": torch.zeros(())}
+
+    model = _vector_and_scalar_program()
+    registry = LatentRegistry.from_model(model, set())
+    driver = MCMC(
+        HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
+    )
+    with pytest.raises(ValueError, match="expected the trace-side shape"):
+        driver._initial_position(
+            registry,
+            _UnbatchedGuide(),  # type: ignore[arg-type]
+            torch.Generator().manual_seed(0),
+        )

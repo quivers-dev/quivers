@@ -82,7 +82,7 @@ conditioned = condition(model, observations)
 guide = AutoNormalGuide(conditioned.model, observed_names=set(observations))
 
 # Sample latents from guide (each lives in its prior's support)
-latents = guide.rsample(x)  # dict {name: tensor}
+latents = guide.rsample(x)  # {name: (batch, *constrained_shape)}; plates: constrained_shape
 
 # Log probability under guide (with Jacobian correction)
 log_q = guide.log_prob(x, latents)

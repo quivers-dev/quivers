@@ -42,6 +42,7 @@ site in declaration order.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import cast
 
 import torch
@@ -83,6 +84,35 @@ def _unconstrained_event_dim(
     if support is _constraints.corr_cholesky:
         return max(1, constrained_dim * (constrained_dim - 1) // 2)
     return constrained_dim
+
+
+def _apply_transform(transform: Transform, value: torch.Tensor) -> torch.Tensor:
+    """Apply a `torch.distributions` transform and return its tensor.
+
+    Parameters
+    ----------
+    transform : Transform
+        The bijector (or its inverse) to apply.
+    value : torch.Tensor
+        The input point.
+
+    Returns
+    -------
+    torch.Tensor
+        ``transform(value)``.
+
+    Raises
+    ------
+    TypeError
+        If the transform returns something other than a tensor.
+    """
+    out = transform(value)
+    if not isinstance(out, torch.Tensor):
+        raise TypeError(
+            f"LatentRegistry: transform {transform!r} returned "
+            f"{type(out).__name__}, not a tensor"
+        )
+    return out
 
 
 @dataclass(frozen=True)
@@ -137,15 +167,38 @@ class LatentSite:
 
     @property
     def constrained_shape(self) -> tuple[int, ...]:
-        """The trace-side shape of this site's value (after
-        bijector forward / squeezing scalar event dims)."""
+        """The shape of one draw of this site on its constrained
+        support (after the bijector, with a length-one event axis
+        squeezed off).
+
+        Plate sites have shape ``(|A|,)`` or ``(|A|, d)``; non-plate
+        sites have shape ``()`` for a scalar event and ``(d,)``
+        otherwise. Posterior containers index draws by this shape:
+        `MCMCResult.samples` holds ``(num_chains, num_samples,
+        *constrained_shape)`` and `MCMCResult.r_hat` and
+        `MCMCResult.ess` hold ``constrained_shape``.
+
+        The values a program's `MonadicProgram.log_joint`, a trace,
+        and a guide exchange are *trace-side* values, which add the
+        program's ``(batch, ...)`` input axis to non-plate sites:
+        ``(batch, *constrained_shape)``. Plate sites carry no batch
+        axis and appear at ``constrained_shape`` on both sides.
+        `LatentRegistry.trace_values` performs that lift.
+
+        A correlation-Cholesky site's draw is a lower-triangular
+        ``(d, d)`` factor, so its event shape is ``(d, d)`` rather
+        than ``(d,)``.
+        """
+        event: tuple[int, ...]
+        if self.support is _constraints.corr_cholesky:
+            event = (self.constrained_dim, self.constrained_dim)
+        elif self.constrained_dim == 1:
+            event = ()
+        else:
+            event = (self.constrained_dim,)
         if self.is_plate:
-            if self.constrained_dim == 1:
-                return (self.plate_index_size,)
-            return (self.plate_index_size, self.constrained_dim)
-        if self.constrained_dim == 1:
-            return ()
-        return (self.constrained_dim,)
+            return (self.plate_index_size, *event)
+        return event
 
     @property
     def unconstrained_shape(self) -> tuple[int, ...]:
@@ -173,6 +226,11 @@ class LatentRegistry:
       (`unflatten_unconstrained`, `flatten_constrained`).
     * Bijector forward / inverse with Jacobian accumulation
       (`to_constrained`, `to_unconstrained`).
+    * Conversion between one draw per site, at
+      `LatentSite.constrained_shape`, and the trace-side values a
+      program's ``log_joint`` and the guides exchange, which add the
+      ``(batch, ...)`` axis to non-plate sites (`trace_values`,
+      `trace_row`).
 
     All operations are vectorized, with no per-site Python loops on
     the hot path beyond the construction-time setup.
@@ -240,7 +298,7 @@ class LatentRegistry:
                     inner = plate.family
                     inner_cod = inner.codomain
                     if isinstance(inner_cod, ContinuousSpace):
-                        constrained_dim = max(1, int(inner_cod.dim))
+                        constrained_dim = max(1, math.prod(inner_cod.event_shape))
                     else:
                         constrained_dim = 1
                     support = inner.support
@@ -248,7 +306,7 @@ class LatentRegistry:
                 else:
                     cod = morph_cm.codomain
                     if isinstance(cod, ContinuousSpace):
-                        total_dim = int(cod.dim)
+                        total_dim = math.prod(cod.event_shape)
                         constrained_dim = max(1, total_dim // max(1, len(spec.names)))
                     else:
                         constrained_dim = 1
@@ -434,7 +492,7 @@ class LatentRegistry:
                     f"LatentRegistry.to_constrained: missing site {site.name!r}"
                 )
             z = unconstrained[site.name]
-            v = site.bijector(z)
+            v = _apply_transform(site.bijector, z)
             log_abs_dets[site.name] = site.bijector.log_abs_det_jacobian(z, v)
             if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
                 v = v.squeeze(-1)
@@ -455,10 +513,131 @@ class LatentRegistry:
             v = constrained[site.name]
             if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 0):
                 v = v.unsqueeze(-1)
-            z = site.bijector.inv(v)
+            z = _apply_transform(site.bijector.inv, v)
             log_abs_dets[site.name] = site.bijector.inv.log_abs_det_jacobian(v, z)
             unconstrained[site.name] = z
         return unconstrained, log_abs_dets
+
+    def trace_values(
+        self, constrained: dict[str, torch.Tensor], batch_size: int
+    ) -> dict[str, torch.Tensor]:
+        """Lift single constrained draws to trace-side values.
+
+        A trace-side value is what `MonadicProgram.log_joint`, a
+        trace, and `Guide.rsample` exchange: each non-plate site
+        carries the program's leading batch axis, shape
+        ``(batch_size, *constrained_shape)``, and each plate site
+        keeps ``constrained_shape``. The lift expands the one draw
+        across the batch axis, so every input row sees the same
+        latent value.
+
+        Parameters
+        ----------
+        constrained : dict[str, torch.Tensor]
+            One draw per latent site, each of shape
+            `LatentSite.constrained_shape` (as in one entry of
+            `MCMCResult.samples` or the output of `to_constrained`
+            on an unbatched unconstrained vector). Keys that name no
+            latent site are passed through unchanged.
+        batch_size : int
+            Size of the program input's leading batch axis.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The trace-side values, keyed as ``constrained``.
+
+        Raises
+        ------
+        ValueError
+            If ``batch_size`` is less than one, or a latent site's
+            value does not have shape `LatentSite.constrained_shape`.
+        """
+        if batch_size < 1:
+            raise ValueError(
+                f"LatentRegistry.trace_values: batch_size must be >= 1, "
+                f"got {batch_size}"
+            )
+        out: dict[str, torch.Tensor] = {}
+        for name, value in constrained.items():
+            site = self._sites.get(name)
+            if site is None:
+                out[name] = value
+                continue
+            if tuple(value.shape) != site.constrained_shape:
+                raise ValueError(
+                    f"LatentRegistry.trace_values: site {name!r} has shape "
+                    f"{tuple(value.shape)}; expected its constrained shape "
+                    f"{site.constrained_shape}"
+                )
+            if site.is_plate:
+                out[name] = value
+            else:
+                out[name] = value.unsqueeze(0).expand(batch_size, *value.shape)
+        return out
+
+    def trace_row(
+        self, trace_side: dict[str, torch.Tensor], row: int = 0
+    ) -> dict[str, torch.Tensor]:
+        """Read one draw per latent site out of trace-side values.
+
+        The inverse of `trace_values` for one batch row: each
+        non-plate site, of shape ``(batch, *constrained_shape)``,
+        contributes its row ``row``, and each plate site, of shape
+        ``constrained_shape``, is returned as is. A guide's
+        `Guide.rsample` output is a valid input.
+
+        Parameters
+        ----------
+        trace_side : dict[str, torch.Tensor]
+            Trace-side values for every latent site. Keys that name
+            no latent site are ignored.
+        row : int
+            Index into the batch axis of the non-plate sites.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            One draw per latent site, each of shape
+            `LatentSite.constrained_shape`, in declaration order.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``trace_side``.
+        ValueError
+            If a site's value is not trace-side shaped, or ``row`` is
+            outside a non-plate site's batch axis.
+        """
+        out: dict[str, torch.Tensor] = {}
+        for site in self._sites.values():
+            if site.name not in trace_side:
+                raise KeyError(f"LatentRegistry.trace_row: missing site {site.name!r}")
+            value = trace_side[site.name]
+            if site.is_plate:
+                if tuple(value.shape) != site.constrained_shape:
+                    raise ValueError(
+                        f"LatentRegistry.trace_row: plate site {site.name!r} "
+                        f"has shape {tuple(value.shape)}; expected "
+                        f"{site.constrained_shape}"
+                    )
+                out[site.name] = value
+                continue
+            if value.dim() != len(site.constrained_shape) + 1 or (
+                tuple(value.shape[1:]) != site.constrained_shape
+            ):
+                raise ValueError(
+                    f"LatentRegistry.trace_row: site {site.name!r} has shape "
+                    f"{tuple(value.shape)}; expected the trace-side shape "
+                    f"(batch, *{site.constrained_shape})"
+                )
+            if not 0 <= row < value.shape[0]:
+                raise ValueError(
+                    f"LatentRegistry.trace_row: row {row} is outside the "
+                    f"batch axis of size {value.shape[0]} on site {site.name!r}"
+                )
+            out[site.name] = value[row]
+        return out
 
     @staticmethod
     def aggregate_log_abs_det(

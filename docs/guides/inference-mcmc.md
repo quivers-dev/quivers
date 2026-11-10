@@ -52,7 +52,7 @@ print(result.r_hat)             # rank-normalized folded split R-hat
 print(result.ess)               # rank-normalized bulk ESS
 print(result.divergence_counts) # per-chain divergence count
 print(result.total_divergences) # sum across chains
-samples = result.samples        # dict[str, Tensor] of shape (chains, draws, ...)
+samples = result.samples        # dict[str, Tensor]: (chains, draws, *constrained_shape)
 ```
 
 Both
@@ -81,9 +81,15 @@ advance a caller-owned stream. `seed` and `generator` are mutually
 exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
-The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site convergence and effective sample size diagnostics
+The [`MCMCResult`](../api/inference/mcmc.md) holds each site's draws at
+`(num_chains, num_samples, *constrained_shape)`, where
+`constrained_shape` is the shape of one draw: `()` for a scalar site,
+`(d,)` for a vector site, and `(n, ...)` for a plate of size `n`. It exposes per-site convergence and effective sample size diagnostics
 [@vehtari2021rhat] via
-`r_hat` and `ess`. Each `r_hat` coordinate is the conservative
+`r_hat` and `ess`, each of shape `constrained_shape` (zero-dimensional
+for a scalar site). [Latent site shapes](inference-foundations.md#latent-site-shapes)
+relates these shapes to the `(batch, ...)` values that `log_joint`
+and the guides exchange. Each `r_hat` coordinate is the conservative
 maximum of the rank-normalized and folded split statistics, while
 `ess` is the rank-normalized cross-chain bulk ESS. The result also
 exposes per-chain divergence counts via `divergence_counts` (with
@@ -165,7 +171,9 @@ the observations gives a [posterior predictive check](analysis-fitting-and-diagn
 [`Guide`](../api/inference/guide.md) or an
 [`MCMCResult`](../api/inference/mcmc.md). With an
 `MCMCResult`, it iterates over posterior samples instead of calling
-`guide.rsample`.
+`guide.rsample`, expanding each non-plate draw across the input's
+batch axis, so both posteriors yield predictive draws of shape
+`(num_samples, batch, ...)` for non-plate sites.
 
 <!-- python: skip -->
 ```python

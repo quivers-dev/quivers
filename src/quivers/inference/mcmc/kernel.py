@@ -82,6 +82,14 @@ class PotentialFn:
     :math:`\\nabla U(z)`. The two are computed in a single
     autograd pass and cached on the kernel state.
 
+    The position ``z`` is the registry's flat unconstrained vector.
+    Inside `log_density` each latent site is mapped to one
+    constrained draw of shape `LatentSite.constrained_shape` and
+    then handed to `MonadicProgram.log_joint` as a trace-side value:
+    non-plate sites at ``(1, *constrained_shape)``, with the leading
+    axis being the program's batch axis, and plate sites at
+    ``constrained_shape``.
+
     Parameters
     ----------
     model : MonadicProgram
@@ -109,6 +117,18 @@ class PotentialFn:
     def log_density(self, z: torch.Tensor) -> torch.Tensor:
         """Unconstrained-space log-density (Jacobian-corrected).
 
+        ``z`` is unflattened into per-site unconstrained tensors,
+        pushed through each site's bijector to one draw of shape
+        `LatentSite.constrained_shape`, and lifted to trace-side
+        values by `LatentRegistry.trace_values` with a batch of one.
+        `MonadicProgram.log_joint` thus receives every non-plate site
+        at ``(1, *constrained_shape)`` (the program's ``(batch, ...)``
+        input convention, which broadcasts against the input ``x``)
+        and every plate site at ``constrained_shape``. A custom
+        density reached through ``log_joint`` should index that
+        leading axis accordingly; the shapes reported by
+        `MCMCResult` carry no such axis.
+
         Trajectories that wander to the edge of a constrained
         support can produce values that fall outside
         `torch.distributions`' validation envelope (e.g. exact
@@ -118,25 +138,31 @@ class PotentialFn:
         returns ``-inf`` for those positions; the kernel reads
         non-finite log-densities as divergent transitions and
         rejects them in the Metropolis step.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar Jacobian-corrected log-density, or ``-inf`` where
+            the program rejects the position.
+
+        Raises
+        ------
+        ValueError
+            If ``z`` does not have the registry's flat length.
         """
+        per_site_unc = self._registry.unflatten_unconstrained(z)
+        constrained, log_abs_dets = self._registry.to_constrained(per_site_unc)
+        log_det_total = torch.zeros((), device=z.device, dtype=z.dtype)
+        for site in self._registry.sites.values():
+            log_det_total = log_det_total + log_abs_dets[site.name].sum()
+        trace_side = self._registry.trace_values(constrained, batch_size=1)
         try:
-            per_site_unc = self._registry.unflatten_unconstrained(z)
-            constrained: dict[str, torch.Tensor] = {}
-            log_det_total = torch.zeros((), device=z.device, dtype=z.dtype)
-            for site in self._registry.sites.values():
-                z_site = per_site_unc[site.name]
-                if not site.is_plate:
-                    z_site = z_site.unsqueeze(0)
-                v = site.bijector(z_site)
-                log_det_total = log_det_total + (
-                    site.bijector.log_abs_det_jacobian(z_site, v).sum()
-                )
-                if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                    v = v.squeeze(-1)
-                constrained[site.name] = v
-            log_p = self._model.log_joint(
-                self._x, {**constrained, **self._observations}
-            )
+            log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
             result = log_p.sum() + log_det_total
         except ValueError:
             return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
