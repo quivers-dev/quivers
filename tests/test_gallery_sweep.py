@@ -48,7 +48,14 @@ from quivers.stochastic.deduction import (
 # deduction's name and the sentences its rules and lexicon license.
 _DEDUCTION_CORPORA: dict[str, tuple[str, list[list[str]]]] = {
     "ccg": ("CCG", [["the", "cat", "sleeps"]]),
-    "custom_rules": ("AB", [["the", "dog", "runs"]]),
+    "custom_rules": (
+        "AB",
+        [
+            ["the", "dog", "runs"],
+            ["the", "dog", "whom", "Mary", "saw", "runs"],
+            ["the", "dog", "that", "runs", "today", "barks"],
+        ],
+    ),
     "multimodal_tlg": ("MMTLG", [["the", "dog", "barks"]]),
     "type_logical": ("Lambek", [["every", "dog", "barks"]]),
     "pcfg": ("PCFG", [["the", "cat", "sleeps"]]),
