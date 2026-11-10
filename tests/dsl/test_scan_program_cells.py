@@ -18,6 +18,14 @@ from quivers.continuous import Draw, MonadicProgram, Scan, ScanMorphism
 from quivers.continuous.families import ConditionalNormal
 from quivers.dsl import CompileError, loads, parse
 from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec
+from quivers.inference import (
+    ELBO,
+    MCMC,
+    SVI,
+    AutoNormalGuide,
+    NUTSKernel,
+    bayesian_lift_parameters,
+)
 from quivers.inference.trace import trace
 from quivers.qiec import QiecModule
 from quivers.qiec.program_runtime import program_entry, run_program
@@ -313,6 +321,38 @@ def test_gradients_reach_the_cells_kernels() -> None:
     for path in (_TRANSITION, _EMISSION):
         weight = program.get_submodule(path).get_submodule("param_source.linear").weight
         assert weight.grad is not None and bool(weight.grad.abs().sum() > 0)
+
+
+def test_inference_runs_over_the_latent_trajectory() -> None:
+    torch.manual_seed(7)
+    program = _program(STATE_SPACE)
+    drivers = torch.randn(1, 4, 2)
+    observations = {"o": torch.randn(1, 4, 2)}
+    lifted, lx, lobs = bayesian_lift_parameters(
+        program,
+        drivers,
+        observations,
+        prior_scale=1.0,
+        additional_latents={"s": (1, 4, 3)},
+    )
+    result = MCMC(
+        NUTSKernel(step_size=0.01, max_tree_depth=3),
+        num_warmup=5,
+        num_samples=5,
+        num_chains=1,
+    ).run(lifted, lx, lobs)
+    trajectory = result.samples["latent__s"]
+    assert trajectory.shape[-1] == 12
+    assert bool(torch.isfinite(trajectory).all())
+    guide = AutoNormalGuide(lifted, observed_names=set(lobs))
+    svi = SVI(
+        lifted,
+        guide,
+        torch.optim.Adam(guide.parameters(), lr=1e-2),
+        ELBO(num_particles=1),
+    )
+    losses = [svi.step(lx, lobs) for _ in range(3)]
+    assert all(torch.isfinite(torch.tensor(loss)) for loss in losses)
 
 
 # ---------------------------------------------------------------------
