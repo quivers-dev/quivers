@@ -65,12 +65,18 @@ _DEDUCTION_CORPORA: dict[str, tuple[str, list[list[str]]]] = {
             ["the", "dog", "that", "runs", "today", "barks"],
         ],
     ),
-    "multimodal_tlg": ("MMTLG", [["the", "dog", "barks"]]),
-    "type_logical": ("Lambek", [["every", "dog", "barks"]]),
+    "multimodal_tlg": ("MMTLG", [["every", "linguist", "that", "admires", "Kim", "sleeps"]]),
+    "type_logical": ("Lambek", [["Kim", "gives", "Lee", "books"]]),
     "pcfg": ("PCFG", [["the", "cat", "sleeps"]]),
-    "pmcfg": ("PMCFG", [["the", "man", "who", "Mary", "saw"]]),
+    "pmcfg": (
+        "PMCFG",
+        [
+            ["mer", "em", "Hans", "es", "huus", "hälfed", "aastriiche"],
+            ["mer", "d'chind", "em", "Hans", "es", "huus", "lönd", "hälfe", "aastriiche"],
+        ],
+    ),
     "montague_nli": ("Montague", [["every", "dog", "barks"]]),
-    "quantifier_scope": ("QScope", [["every", "dog", "barks"]]),
+    "quantifier_scope": ("QScope", [["every", "linguist", "admires", "some", "model"]]),
 }
 
 
