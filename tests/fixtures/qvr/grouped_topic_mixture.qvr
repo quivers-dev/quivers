@@ -1,0 +1,34 @@
+# Grouped topic mixture: a fixture for the REPL and analysis tooling
+#
+# Each document draws topic weights, each topic draws a vocabulary
+# distribution, and a grouped marginalize block sums over one topic
+# shared by every observed token of a document:
+#
+#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
+#
+# This is a mixture of unigrams, not latent Dirichlet allocation (see
+# docs/examples/source/lda.qvr for the per-token model). The module
+# exercises typed program parameters, a grouped marginalize block with
+# a via fibration, and nested plates, which the scope resolver, the
+# plate-graph builder, and the REPL commands are tested against. The
+# program is named lda because those tests address its sites by the
+# paths lda::theta, lda::z, and lda::z::w.
+
+composition log_prob [level=algebra]
+
+object Doc : FinSet 20
+object Topic : FinSet 3
+object Vocab : FinSet 50
+object Token : FinSet 200
+object Mix : Real 3
+
+program lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+
+    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+
+    return theta
+
+export lda

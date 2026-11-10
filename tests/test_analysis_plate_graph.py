@@ -56,7 +56,7 @@ def lda_graph():
     from quivers.cli.repl_session import ReplSession
 
     s = ReplSession()
-    s.load_file("docs/examples/source/lda.qvr")
+    s.load_file("tests/fixtures/qvr/grouped_topic_mixture.qvr")
     g = build_plate_graph(s._compiler, "lda")
     assert g is not None
     return g
