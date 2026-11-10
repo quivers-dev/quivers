@@ -1,12 +1,18 @@
-# Amortized Bayesian Semantics
+# Bayesian Semantics Case Study
 #
-# A joint psycholinguistic model with four computational views of one
+# One checked module holding four computational views of a reading
 # experiment:
 #
-#   1. a learnable categorial grammar sums over sentence derivations;
-#   2. a structural autoencoder learns continuous logical-form codes;
-#   3. an indexed computation separates observed and missing measurements;
-#   4. a hierarchical response-time model integrates item-level analyses.
+#   1. a learnable categorial grammar sums over sentence derivations
+#      with forward and backward application and harmonic forward
+#      composition (X/Y, Y/Z |- X/Z), so word order matters;
+#   2. a structural autoencoder learns continuous logical-form codes
+#      under its own reconstruction loss; no other entry reads them;
+#   3. an indexed computation separates observed and missing
+#      measurements under a 95/5 Normal/Student-t contamination measure;
+#   4. a hierarchical reading-time program places a prior on the
+#      intercept through an authored scale handler, pools participant
+#      and item effects, and marginalizes an item-level analysis exactly.
 
 object Atoms : {N, NP, S}
 object Cat : FreeResiduated(Atoms)
@@ -14,9 +20,9 @@ object Token : {every, some, linguist, model, predicts, surprises}
 
 schema fwd_app (X, Y : Cat) : (X / Y) * Y -> X
 schema bwd_app (X, Y : Cat) : Y * (X \ Y) -> X
-schema harmonic (X, Y : Cat) : X / Y -> X \ Y
+schema fwd_comp (X, Y, Z : Cat) : (X / Y) * (Y / Z) -> X / Z
 
-bundle semantic_rules : [fwd_app, bwd_app, harmonic]
+bundle semantic_rules : [fwd_app, bwd_app, fwd_comp]
 
 define semantic_parser = parser(rules=[semantic_rules], terminal=Token, start=S, depth=1)
 
@@ -66,25 +72,27 @@ define complete[s : Availability](measurement : Measurement(s), location : Real,
             let value <- perform random.sample[Real](site("held_out_reading_time"), likelihood)
             return value
 
-effect Robust
-    shrink : Real -> Real
+# The intercept is drawn on a standardized scale; the request
+# ``locate`` asks the active handler to place it on the measurement
+# scale. ``log_milliseconds`` answers with 6.0 + 0.5 * z, which makes
+# the intercept Normal(6.0, 0.5) on the log-millisecond scale: a prior
+# centred near exp(6.0), about 403 ms. Swapping the handler changes
+# the measurement scale without touching the model that requests it.
+effect Scale
+    locate : Real -> Real
 
-instance robust : Robust
+instance scale : Scale
 
-handler half_weight for Robust : Real -> Real [coverage=total, forwards=none, implementation=authored]
+handler log_milliseconds for Scale : Real -> Real [coverage=total, forwards=none, implementation=authored]
     return x =>
         return x
-    shrink(x : Real) resumes 1 =>
-        resume(0.5 * x)
+    locate(z : Real) resumes 1 =>
+        resume(6.0 + 0.5 * z)
 
-define robust_request(x : Real) : Real !{robust | rho lacks robust} =
-    let adjusted <- perform robust.shrink(x)
-    return adjusted
-
-define robustify(x : Real) : Real !{} =
-    handle robust with half_weight in
-        let adjusted <- perform robust.shrink(x)
-        return adjusted
+define locate_intercept(z : Real) : Real !{} =
+    handle scale with log_milliseconds in
+        let located <- perform scale.locate(z)
+        return located
 
 composition log_prob [level=algebra]
 
@@ -109,15 +117,16 @@ program reading_times(concentration : Real) : Trial -> ReadingTime
 
     let participant_effect = participant_scale * participant_raw[participant_idx]
     let item_effect = item_scale * item_raw[item_idx]
-    let robust_intercept <- robustify(grand_mean)
-    let mean_log_rt = robust_intercept + participant_effect + item_effect
+    sample intercept_raw <- Normal(loc=0.0, scale=1.0)
+    let intercept <- locate_intercept(intercept_raw)
+    let mean_log_rt = intercept + participant_effect + item_effect
 
     observe log_rt : Trial <- Normal(loc=mean_log_rt, scale=residual_scale)
 
     marginalize analysis : Analysis <- Categorical(probs=analysis_prob) [over=Item, reduction=logsumexp]
         observe ambiguity_rating : Trial <- Normal(loc=analysis_shift[analysis], scale=residual_scale) [via=item_idx]
 
-    let held_out <- complete[Missing](construct Absent() as Measurement(Missing), robust_intercept, residual_scale)
+    let held_out <- complete[Missing](construct Absent() as Measurement(Missing), intercept, residual_scale)
     return held_out
 
 export semantic_parser
