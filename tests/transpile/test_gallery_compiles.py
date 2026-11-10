@@ -273,9 +273,10 @@ for _ungrouped_backend in (
     "turing",
 ):
     if _ungrouped_backend in _SYNTAX_CHECKS:
-        _EXPECTED_UNSUPPORTED[(_ungrouped_backend, "hmm")] = (
-            "marginalize:ungrouped-over-plate"
-        )
+        for _ungrouped_example in ("changepoint", "hmm"):
+            _EXPECTED_UNSUPPORTED[(_ungrouped_backend, _ungrouped_example)] = (
+                "marginalize:ungrouped-over-plate"
+            )
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)
