@@ -116,6 +116,11 @@ class RunContext:
     supplied
         Values standing in for let bindings, by name, which their steps
         read rather than compute.
+    occurrences
+        How many times the run has reached each site a scan reaches once
+        per position, by label.
+    reached
+        The addresses ``"<label>@<n>"`` of the occurrences reached.
     """
 
     kernel: ProgramKernel
@@ -126,6 +131,8 @@ class RunContext:
     parameters: dict[str, torch.Tensor] = field(default_factory=dict)
     observations: dict[str, torch.Tensor] = field(default_factory=dict)
     supplied: dict[str, torch.Tensor] = field(default_factory=dict)
+    occurrences: dict[str, int] = field(default_factory=dict)
+    reached: set[str] = field(default_factory=set)
 
     @property
     def result_type(self) -> TypeExpr:

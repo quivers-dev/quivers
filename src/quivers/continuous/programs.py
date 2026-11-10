@@ -55,16 +55,23 @@ from typing import Protocol, cast
 import torch
 from torch import nn
 
-from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
+from quivers.continuous.morphisms import (
+    AnySpace,
+    ContinuousMorphism,
+    SampledComposition,
+)
 from quivers.continuous.program_steps import (
+    Call,
     Draw,
     Indexed,
     Let,
     Observe,
+    Scan,
     Score,
     Step,
     StepArgument,
 )
+from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import as_torch_module
 
 
@@ -122,9 +129,109 @@ def _bound_names(step: Step) -> tuple[str, ...]:
     """
     if isinstance(step, Draw | Observe):
         return step.names
-    if isinstance(step, Let | Score):
+    if isinstance(step, Let | Score | Call | Scan):
         return (step.name,)
     raise TypeError(f"{type(step).__name__} is not a program step")
+
+
+def _scans_a_program(morphism: object) -> bool:
+    """Whether a morphism runs a scan whose cell is a program.
+
+    Parameters
+    ----------
+    morphism : object
+        A draw's morphism.
+
+    Returns
+    -------
+    bool
+        ``True`` for a [`ScanMorphism`][quivers.continuous.ScanMorphism]
+        over a [`MonadicProgram`][quivers.continuous.MonadicProgram], or
+        a composition with one among its factors.
+    """
+    if isinstance(morphism, ScanMorphism):
+        return isinstance(morphism.cell, MonadicProgram)
+    if isinstance(morphism, SampledComposition):
+        return any(_scans_a_program(factor) for factor in morphism.factors)
+    return False
+
+
+def _check_call(step: Call) -> MonadicProgram:
+    """Check a call step's callee against its arguments.
+
+    Parameters
+    ----------
+    step : Call
+        The step.
+
+    Returns
+    -------
+    MonadicProgram
+        The callee.
+
+    Raises
+    ------
+    ValueError
+        If the callee is not a program returning one value, or the
+        arguments do not match its parameters.
+    """
+    callee = step.program
+    if not isinstance(callee, MonadicProgram) or not callee._return_is_single:
+        raise ValueError(
+            f"call {step.name!r}: the callee must be a MonadicProgram returning "
+            f"one value"
+        )
+    arity = len(callee._params) if callee._params is not None else 1
+    if len(step.args) != arity:
+        raise ValueError(
+            f"call {step.name!r}: the callee takes {arity} argument(s), "
+            f"got {len(step.args)}"
+        )
+    return callee
+
+
+def _check_scan(step: Scan) -> MonadicProgram:
+    """Check a scan step's step program and initial state.
+
+    Parameters
+    ----------
+    step : Scan
+        The step.
+
+    Returns
+    -------
+    MonadicProgram
+        The step program.
+
+    Raises
+    ------
+    ValueError
+        If the step program is not a program of an entry and a state
+        returning one value, or the initial state is not a vector of
+        the state's width.
+    """
+    body = step.step
+    if (
+        not isinstance(body, MonadicProgram)
+        or body._params is None
+        or len(body._params) != 2
+        or not body._return_is_single
+    ):
+        raise ValueError(
+            f"scan {step.name!r}: the step must be a MonadicProgram of two "
+            f"parameters, the entry and the previous state, returning the "
+            f"next state"
+        )
+    if step.initial is not None:
+        width = getattr(body.codomain, "dim", None)
+        if step.initial.dim() != 1 or (
+            width is not None and int(step.initial.shape[0]) != int(width)
+        ):
+            raise ValueError(
+                f"scan {step.name!r}: the initial state has shape "
+                f"{tuple(step.initial.shape)}, not the ({width},) of the state"
+            )
+    return body
 
 
 def _parameter_dtype(parts: Sequence[torch.Tensor]) -> torch.dtype:
@@ -366,10 +473,24 @@ class MonadicProgram(ContinuousMorphism):
                         f"two {step.kind} steps bind {step.names[0]!r}; each "
                         f"draw or observe binds a name no other one does"
                     )
+                if _scans_a_program(step.morphism):
+                    # Drawn as one opaque sample, the scan's per-position
+                    # sites would be neither traced nor scored.
+                    raise ValueError(
+                        f"{step.kind} {step.names[0]!r} draws from a scan whose "
+                        f"cell is a program; bind it with a Scan step, which "
+                        f"runs the cell's sites as sites of this program"
+                    )
                 # A backend-agnostic `Morphism` registers through its
                 # parameter container, which keeps the morphism under
                 # ``_morphism`` for `extract_morphism`.
                 self.add_module(key, as_torch_module(step.morphism))
+            elif isinstance(step, Call):
+                self.add_module(f"_call_{step.name}", _check_call(step))
+            elif isinstance(step, Scan):
+                self.add_module(f"_scan_{step.name}", _check_scan(step))
+                if isinstance(step.initial, nn.Parameter):
+                    self.register_parameter(f"_scan_{step.name}_init", step.initial)
         self._steps: tuple[Step, ...] = tuple(steps)
 
     @property
@@ -701,14 +822,23 @@ class MonadicProgram(ContinuousMorphism):
 
     @property
     def observed_names(self) -> set[str]:
-        """Return the set of variable names marked as observed in the DSL."""
-        names = set()
+        """The names the program's observations are supplied under.
 
+        Returns
+        -------
+        set[str]
+            The names of the program's ``observe`` steps, with those of
+            the programs its [`Call`][quivers.continuous.Call] and
+            [`Scan`][quivers.continuous.Scan] steps run in place.
+        """
+        names: set[str] = set()
         for spec in self._steps:
             if isinstance(spec, Observe):
-                for v in spec.names:
-                    names.add(v)
-
+                names.update(spec.names)
+            elif isinstance(spec, Call):
+                names |= _check_call(spec).observed_names
+            elif isinstance(spec, Scan):
+                names |= _check_scan(spec).observed_names
         return names
 
     def rsample(  # type: ignore[override]
@@ -873,6 +1003,11 @@ class MonadicProgram(ContinuousMorphism):
         for s in self._steps:
             if isinstance(s, Score):
                 parts.append(f"score {s.name} = {s.score}")
+            elif isinstance(s, Call):
+                parts.append(f"let {s.name} <- call({', '.join(s.args)})")
+            elif isinstance(s, Scan):
+                source = s.source if s.source is not None else "input"
+                parts.append(f"let {s.name} = scan({source})")
             elif isinstance(s, Let):
                 parts.append(f"let {s.name} = {s.value}")
             elif isinstance(s, Draw | Observe):

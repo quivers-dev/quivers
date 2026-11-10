@@ -150,6 +150,17 @@ class ScanMorphism(ContinuousMorphism):
                 f"unknown init strategy {init!r}; expected 'zeros' or 'learned'"
             )
 
+    @property
+    def cell(self) -> ContinuousMorphism:
+        """The recurrent cell the scan applies at every position.
+
+        Returns
+        -------
+        ContinuousMorphism
+            The cell ``A * H -> H``.
+        """
+        return self._cell
+
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
     ) -> torch.Tensor:

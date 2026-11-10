@@ -1,6 +1,6 @@
 """The steps a `MonadicProgram` is a sequence of.
 
-A program is built from four kinds of step, each a record of the
+A program is built from six kinds of step, each a record of the
 [`Step`][quivers.continuous.program_steps.Step] union:
 
 - [`Draw`][quivers.continuous.program_steps.Draw] binds names to a
@@ -12,7 +12,12 @@ A program is built from four kinds of step, each a record of the
   deterministically, to a constant, an alias, or a function of earlier
   bindings;
 - [`Score`][quivers.continuous.program_steps.Score] binds a name to a
-  function of earlier bindings whose value also joins the log joint.
+  function of earlier bindings whose value also joins the log joint;
+- [`Call`][quivers.continuous.program_steps.Call] runs a sub-program's
+  steps in place and binds what it returns;
+- [`Scan`][quivers.continuous.program_steps.Scan] runs a step program
+  at every position of a sequence, threading a state, and binds the
+  final state.
 
 These are the records the DSL compiler emits, so a program assembled
 from them in Python is the program the compiler would build from the
@@ -125,8 +130,10 @@ class Step(dx.TaggedUnion, discriminator="kind"):
 
     The variants are [`Draw`][quivers.continuous.program_steps.Draw],
     [`Observe`][quivers.continuous.program_steps.Observe],
-    [`Let`][quivers.continuous.program_steps.Let], and
-    [`Score`][quivers.continuous.program_steps.Score].
+    [`Let`][quivers.continuous.program_steps.Let],
+    [`Score`][quivers.continuous.program_steps.Score],
+    [`Call`][quivers.continuous.program_steps.Call], and
+    [`Scan`][quivers.continuous.program_steps.Scan].
     """
 
 
@@ -235,13 +242,90 @@ class Score(Step):
     kind: Literal["score"] = "score"
 
 
+class Call(Step):
+    """Bind a name to what a sub-program returns, its steps run in place.
+
+    In source, ``let y <- p(a, b)`` with ``p`` a program. The callee's
+    steps run as steps of the caller: its parameters are bound to the
+    arguments, its sites are sites of the caller under their own labels,
+    and a name it reads without binding it is read from the caller's
+    bindings, else from the caller's host data. Nothing the callee binds
+    is visible to the caller apart from the value bound to ``name``.
+
+    Attributes
+    ----------
+    name : str
+        The name bound to the callee's return value.
+    program : ContinuousMorphism
+        The callee, a [`MonadicProgram`][quivers.continuous.MonadicProgram]
+        with a single return variable.
+    args : tuple[str, ...]
+        The bindings passed for the callee's parameters, in order: one
+        per declared parameter, or one for a callee without named
+        parameters, which reads it as its input.
+    kind : Literal["call"]
+        The variant tag.
+    """
+
+    name: str
+    program: ContinuousMorphism = dx.field(opaque=True)
+    args: tuple[str, ...] = ()
+    kind: Literal["call"] = "call"
+
+
+class Scan(Step):
+    """Bind a name to the final state of a step program run along a sequence.
+
+    In source, ``sample h <- f >> scan(cell)`` with ``cell`` a program.
+    The step program takes one position's entry and the previous state,
+    ``(x_t, h_prev)``, and returns the next state; the scan runs it at
+    every position of the sequence, left to right, from the initial
+    state, and binds the last state. The step program's steps are steps
+    of the enclosing program, reached once per position: the ``n``-th
+    time a run reaches a site labelled ``s`` it is the site ``"s@n"``,
+    which a trace records and an observation, a clamp, or a joint
+    density addresses. A name the step program reads without binding
+    it is the enclosing program's binding of that name before the scan,
+    else host data.
+
+    Attributes
+    ----------
+    name : str
+        The name bound to the final state.
+    step : ContinuousMorphism
+        The step program, a
+        [`MonadicProgram`][quivers.continuous.MonadicProgram] with two
+        parameters, the entry and the previous state, over
+        ``A * H -> H``.
+    source : str | None
+        The binding holding the sequence, or ``None`` for the program
+        input. A discrete entry's sequence is ``(batch, seq_len)``; a
+        continuous entry's is ``(batch, seq_len, dim)`` or the folded
+        ``(batch, seq_len * dim)``.
+    initial : torch.Tensor | None
+        The initial state, of shape ``(dim H,)`` and shared by every
+        row, or ``None`` to start from zero. A learned initial state is
+        an ``nn.Parameter``, which the enclosing program registers.
+    kind : Literal["scan"]
+        The variant tag.
+    """
+
+    name: str
+    step: ContinuousMorphism = dx.field(opaque=True)
+    source: str | None = None
+    initial: torch.Tensor | None = dx.field(default=None, opaque=True)
+    kind: Literal["scan"] = "scan"
+
+
 __all__ = [
     "READS",
+    "Call",
     "Draw",
     "Environment",
     "Indexed",
     "Let",
     "Observe",
+    "Scan",
     "Score",
     "Step",
     "StepArgument",

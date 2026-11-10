@@ -31,7 +31,7 @@ import torch
 
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import extract_morphism
-from quivers.continuous.program_steps import Draw, Let, Observe, Score
+from quivers.continuous.program_steps import Draw, Let, Observe, Scan, Score
 from quivers.continuous.programs import install_evaluator
 
 from quivers.continuous.programs import MonadicProgram
@@ -43,9 +43,16 @@ from quivers.effects.base import (
     _handler_stack,
 )
 from quivers.effects.program_module import (
+    INPUT_NAME,
+    SCAN_POSITION,
+    SCAN_SEQUENCE,
     HostStep,
     ProgramKernel,
+    derived_bindings,
+    once_sites,
     program_kernel,
+    scanned_sites,
+    site_label,
 )
 from quivers.effects.sites import TorchSampleable
 from quivers.effects.trace_handler import TraceHandler
@@ -252,6 +259,13 @@ def _split_observations(
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Split observations into site values and host data.
 
+    A site a scan reaches once per position takes its value at the
+    ``n``-th occurrence under ``"<label>@<n>"``, of shape ``(batch,
+    ...)``; or, for every position at once, under ``"<label>"``, with
+    the positions on the axis after the batch, ``(batch, seq_len,
+    ...)``, entry ``[:, n]`` being the value at the ``n``-th
+    occurrence.
+
     Parameters
     ----------
     program : MonadicProgram
@@ -262,7 +276,7 @@ def _split_observations(
     Returns
     -------
     tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor]]
-        The values at declared sites, keyed by site label; the values
+        The values at declared sites, keyed by site address; the values
         standing in for let bindings, by name, which their steps read
         rather than compute; and the remaining entries, which are host
         data the program's steps read by name.
@@ -270,34 +284,63 @@ def _split_observations(
     Raises
     ------
     ValueError
-        If an observation names one variable of a destructuring draw.
+        If an observation names one variable of a destructuring draw,
+        gives a scanned site's value both for every position and for
+        one, lays a scanned site's values out with no position axis, or
+        names a binding a scan or a call computes.
     """
     declared: dict[str, str] = {}
     computed: set[str] = set()
     for spec in program.steps:
         if isinstance(spec, Let | Score):
             computed.add(spec.name)
-        elif isinstance(spec, Draw | Observe):
-            label = ",".join(spec.names)
-            for name in spec.names:
-                declared[name] = label
+    for label in once_sites(program):
+        for name in label.split(","):
+            declared[name] = label
+    scanned = scanned_sites(program)
+    derived, per_position = derived_bindings(program)
     sites: dict[str, torch.Tensor] = {}
     supplied: dict[str, torch.Tensor] = {}
     data: dict[str, torch.Tensor] = {}
+    stacked: dict[str, torch.Tensor] = {}
     for name, value in observations.items():
+        base, at, occurrence = name.rpartition("@")
         if name in computed:
             supplied[name] = value
-            continue
-        label = declared.get(name)
-        if label is None:
-            data[name] = value
-        elif label == name:
+        elif name in scanned:
+            if value.dim() < 2:
+                raise ValueError(
+                    f"observation {name!r} is a site reached once per scan "
+                    f"position, so its values are laid out (batch, seq_len, "
+                    f"...); got shape {tuple(value.shape)}"
+                )
+            for index, entry in enumerate(value.unbind(1)):
+                stacked[site_label(name, index)] = entry
+        elif at and occurrence.isdigit() and base in scanned:
             sites[name] = value
-        else:
+        elif name in derived or (at and occurrence.isdigit() and base in per_position):
             raise ValueError(
-                f"observation {name!r} names one variable of the destructuring "
-                f"draw {label!r}; observe the draw as a whole"
+                f"{name!r} is computed by a scan or a call from the sites it "
+                f"reaches, so it cannot be supplied; supply those sites instead"
             )
+        else:
+            label = declared.get(name)
+            if label is None:
+                data[name] = value
+            elif label == name:
+                sites[name] = value
+            else:
+                raise ValueError(
+                    f"observation {name!r} names one variable of the destructuring "
+                    f"draw {label!r}; observe the draw as a whole"
+                )
+    for address, value in stacked.items():
+        if address in sites:
+            raise ValueError(
+                f"site {address!r} is given both on its own and in the sequence "
+                f"of every position's values; give it once"
+            )
+        sites[address] = value
     return sites, supplied, data
 
 
@@ -328,13 +371,39 @@ def _environment(step: HostStep, argument: object) -> dict[str, torch.Tensor]:
     return dict(zip(step.environment, argument, strict=True))
 
 
-def _canonical(morphism: ContinuousMorphism, value: torch.Tensor) -> torch.Tensor:
+def _site_morphism(kernel: ProgramKernel, address: str) -> ContinuousMorphism | None:
+    """The morphism a site address draws from.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding.
+    address : str
+        A site's label, or ``"<label>@<n>"`` for an occurrence of a site
+        a scan reaches once per position.
+
+    Returns
+    -------
+    ContinuousMorphism | None
+        The morphism, or ``None`` for a label no sample request uses.
+    """
+    morphism = kernel.site_morphisms.get(address)
+    if morphism is not None:
+        return morphism
+    label = address.rpartition("@")[0]
+    return kernel.site_morphisms.get(label) if label in kernel.scanned else None
+
+
+def _canonical(
+    morphism: ContinuousMorphism | None, value: torch.Tensor
+) -> torch.Tensor:
     """Restore a clamped plate latent's structured shape.
 
     Parameters
     ----------
-    morphism : ContinuousMorphism
-        The site's morphism.
+    morphism : ContinuousMorphism | None
+        The site's morphism, or ``None`` when no sample request uses
+        the site.
     value : torch.Tensor
         The clamped value, which may arrive flattened.
 
@@ -348,6 +417,53 @@ def _canonical(morphism: ContinuousMorphism, value: torch.Tensor) -> torch.Tenso
     if canonical is not None:
         return canonical(value)
     return value
+
+
+def _sequence(step: Scan, value: torch.Tensor) -> torch.Tensor:
+    """A scan's sequence with its positions on the axis after the batch.
+
+    Parameters
+    ----------
+    step : Scan
+        The scan.
+    value : torch.Tensor
+        The sequence as bound: ``(batch, seq_len)`` for a discrete
+        entry, else ``(batch, seq_len, dim)`` or the folded
+        ``(batch, seq_len * dim)``.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(batch, seq_len)`` for a discrete entry, else
+        ``(batch, seq_len, dim)``.
+
+    Raises
+    ------
+    ValueError
+        If the value has no position axis the step's entry width reads.
+    """
+    body = step.step
+    assert isinstance(body, MonadicProgram)
+    assert body._param_dims is not None and body._param_is_continuous is not None
+    width = body._param_dims[0]
+    if not body._param_is_continuous[0]:
+        if value.dim() == 3 and int(value.shape[-1]) == 1:
+            value = value.squeeze(-1)
+        if value.dim() != 2:
+            raise ValueError(
+                f"scan {step.name!r}: a sequence of discrete entries is laid "
+                f"out (batch, seq_len); got shape {tuple(value.shape)}"
+            )
+        return value
+    if value.dim() == 3 and int(value.shape[-1]) == width:
+        return value
+    if value.dim() == 2 and int(value.shape[-1]) % width == 0:
+        return value.reshape(value.shape[0], -1, width)
+    raise ValueError(
+        f"scan {step.name!r}: a sequence of {width}-wide entries is laid out "
+        f"(batch, seq_len, {width}) or (batch, seq_len * {width}); got shape "
+        f"{tuple(value.shape)}"
+    )
 
 
 class _HostSteps:
@@ -397,6 +513,18 @@ class _HostSteps:
             return lambda argument, _context: self._let(step, argument)
         if step.kind == "score":
             return lambda argument, _context: self._score(step, argument)
+        if step.kind == "pack":
+            return lambda argument, _context: self._pack(step, argument)
+        if step.kind == "site":
+            return lambda _argument, _context: self._site(step)
+        if step.kind == "scan_length":
+            return lambda argument, _context: self._scan_length(step, argument)
+        if step.kind == "scan_initial":
+            return lambda argument, _context: self._scan_initial(step, argument)
+        if step.kind == "scan_entry":
+            return lambda argument, _context: self._scan_entry(step, argument)
+        if step.kind == "scan_state":
+            return lambda argument, _context: self._scan_state(step, argument)
         raise ValueError(f"unknown host step kind {step.kind!r}")
 
     def _split_input(self, argument: object, _context: ClauseContext) -> object:
@@ -428,6 +556,28 @@ class _HostSteps:
         del argument
         return tuple(parts)
 
+    def _input(
+        self, spec: Draw | Observe, env: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """The input a draw step's morphism reads.
+
+        Parameters
+        ----------
+        spec : Draw | Observe
+            The step.
+        env : dict[str, torch.Tensor]
+            The bindings the step reads; the program's input among them
+            when the step takes no arguments.
+
+        Returns
+        -------
+        torch.Tensor
+            The input of the program the step belongs to when the step
+            takes no arguments; the run's input otherwise, which the
+            arguments replace.
+        """
+        return env[INPUT_NAME] if spec.args is None else self.x
+
     def _draw(self, step: HostStep, argument: object, context: ClauseContext) -> object:
         """Build the sampleable of a draw step.
 
@@ -450,9 +600,9 @@ class _HostSteps:
         spec = step.spec
         assert isinstance(spec, Draw | Observe)
         env = _environment(step, argument)
-        morphism = self.program.step_module(spec)
+        morphism = step.program.step_module(spec)
         assert isinstance(morphism, ContinuousMorphism)
-        inp = self.program._resolve_input(spec, self.x, env)
+        inp = step.program._resolve_input(spec, self._input(spec, env), env)
         assert step.site is not None
         values = self._parameters(step.site, morphism, context)
         if values:
@@ -527,12 +677,12 @@ class _HostSteps:
         spec = step.spec
         assert isinstance(spec, Draw | Observe)
         env = _environment(step, argument)
-        module = self.program.step_module(spec)
+        module = step.program.step_module(spec)
         assert module is not None
         categorical = extract_morphism(module)
         assert categorical is not None
-        inp = self.program._resolve_input(spec, self.x, env)
-        return self.program._apply_categorical_morphism(
+        inp = step.program._resolve_input(spec, self._input(spec, env), env)
+        return step.program._apply_categorical_morphism(
             categorical, inp, self.x.shape[0]
         )
 
@@ -556,7 +706,7 @@ class _HostSteps:
         env = _environment(step, argument)
         result = env[",".join(spec.names)]
         scratch: dict[str, torch.Tensor] = {}
-        self.program._bind_result(spec, result, scratch)
+        step.program._bind_result(spec, result, scratch)
         return tuple(scratch[name] for name in spec.names)
 
     def _let(self, step: HostStep, argument: object) -> object:
@@ -577,9 +727,10 @@ class _HostSteps:
         """
         spec = step.spec
         assert isinstance(spec, Let)
-        supplied = self.run.supplied.get(spec.name)
-        if supplied is not None:
-            return supplied
+        if step.program is self.program:
+            supplied = self.run.supplied.get(spec.name)
+            if supplied is not None:
+                return supplied
         env = _environment(step, argument)
         if isinstance(spec.value, str):
             return env[spec.value]
@@ -605,6 +756,150 @@ class _HostSteps:
         spec = step.spec
         assert isinstance(spec, Score)
         return spec.score(_environment(step, argument))
+
+    def _pack(self, step: HostStep, argument: object) -> object:
+        """Assemble a called program's input from its parameters.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step, of the called program.
+        argument : object
+            The environment tuple, holding the parameters in order.
+
+        Returns
+        -------
+        object
+            The parameters stacked along the feature axis, the layout
+            the program's input split reads.
+        """
+        env = _environment(step, argument)
+        params = step.program._params
+        assert params is not None
+        return step.program._stack_tensors([env[name] for name in params])
+
+    def _site(self, step: HostStep) -> object:
+        """Address the next occurrence of a site reached once per position.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step, naming the site's label.
+
+        Returns
+        -------
+        object
+            ``"<label>@<n>"``, ``n`` counting the run's earlier
+            occurrences of the label from zero.
+        """
+        assert step.site is not None
+        occurrence = self.run.occurrences.get(step.site, 0)
+        self.run.occurrences[step.site] = occurrence + 1
+        address = site_label(step.site, occurrence)
+        self.run.reached.add(address)
+        return address
+
+    def _scan_length(self, step: HostStep, argument: object) -> object:
+        """The number of positions a scan runs over.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : object
+            The environment tuple, holding the sequence.
+
+        Returns
+        -------
+        object
+            The sequence's length.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        (value,) = _environment(step, argument).values()
+        return int(_sequence(spec, value).shape[1])
+
+    def _scan_initial(self, step: HostStep, argument: object) -> object:
+        """A scan's initial state, one row per row of the sequence.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : object
+            The environment tuple, holding the sequence.
+
+        Returns
+        -------
+        object
+            The initial state, ``(batch, dim H)``: the scan's own when it
+            has one, else zero.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        (value,) = _environment(step, argument).values()
+        batch = int(value.shape[0])
+        if spec.initial is not None:
+            return spec.initial.unsqueeze(0).expand(batch, -1)
+        body = spec.step
+        width = getattr(body.codomain, "dim")
+        dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
+        return torch.zeros(batch, int(width), device=value.device, dtype=dtype)
+
+    def _scan_state(self, step: HostStep, argument: object) -> object:
+        """The state a scan's step returned, carried to the next position.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : object
+            The environment tuple, holding the returned state.
+
+        Returns
+        -------
+        object
+            The state, ``(batch, dim H)``.
+
+        Raises
+        ------
+        ValueError
+            If the step returned a value of another width.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        (value,) = _environment(step, argument).values()
+        width = int(getattr(spec.step.codomain, "dim"))
+        if value.dim() == 1 and width == 1:
+            value = value.unsqueeze(-1)
+        if value.dim() != 2 or int(value.shape[-1]) != width:
+            raise ValueError(
+                f"scan {spec.name!r}: the step returned a state of shape "
+                f"{tuple(value.shape)}, not (batch, {width})"
+            )
+        return value
+
+    def _scan_entry(self, step: HostStep, argument: object) -> object:
+        """The entry a scan reads at a position.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : object
+            The environment tuple, holding the sequence and the position.
+
+        Returns
+        -------
+        object
+            ``(batch,)`` for a discrete entry, else ``(batch, dim)``.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        env = _environment(step, argument)
+        position = env[SCAN_POSITION]
+        assert isinstance(position, int)
+        return _sequence(spec, env[SCAN_SEQUENCE])[:, position]
 
 
 def _handle_chain(installations: list[Installation], inner: Computation) -> Computation:
@@ -727,7 +1022,9 @@ def run_program(
     Raises
     ------
     ValueError
-        If an observation names one variable of a destructuring draw.
+        If an observation names one variable of a destructuring draw,
+        or a value is given for an occurrence of a scanned site the run
+        never reaches.
     """
     sites, supplied, data = _split_observations(program, observations or {})
     kernel = _cached_kernel(program, tuple(sorted(data)))
@@ -795,17 +1092,7 @@ def run_program(
     )
     if sites:
         clamped = {
-            label: _canonical(
-                steps.program.step_module(
-                    next(
-                        spec
-                        for spec in program.steps
-                        if isinstance(spec, Draw | Observe)
-                        and ",".join(spec.names) == label
-                    )
-                ),  # type: ignore[arg-type]
-                value,
-            )
+            label: _canonical(_site_morphism(kernel, label), value)
             for label, value in sites.items()
         }
         random_installations.append(
@@ -828,7 +1115,7 @@ def run_program(
         if step.kind != "draw" or step.site is None:
             continue
         assert isinstance(step.spec, Draw | Observe)
-        morphism = program.step_module(step.spec)
+        morphism = step.program.step_module(step.spec)
         assert isinstance(morphism, ContinuousMorphism)
         for name, parameter in morphism.named_parameters():
             store[f"{step.site}.{name}"] = parameter
@@ -920,7 +1207,7 @@ def run_program(
         handlers=tuple(
             installation.runtime.definition for installation in installations
         ),
-        computations=(entry, wrapper),
+        computations=(*kernel.module.computations, wrapper),
     )
     registry = _checked_registry(program, kernel, module)
     attachments = RuntimeAttachments()
@@ -943,6 +1230,17 @@ def run_program(
         )
     finally:
         active.extend(entered)
+    unreached = sorted(
+        address
+        for address in sites
+        if address.rpartition("@")[0] in kernel.scanned and address not in run.reached
+    )
+    if unreached:
+        raise ValueError(
+            f"the run never reached {', '.join(repr(item) for item in unreached)}: "
+            f"a scan reaches its sites once per position of its sequence, and "
+            f"the sequence has fewer positions than the values given"
+        )
     for handler in finishers:
         handler.finish(run, output)
     if program._return_is_single:

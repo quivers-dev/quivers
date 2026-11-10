@@ -7,6 +7,7 @@ expanding composite references inside their scopes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 import didactic.api as dx
@@ -318,8 +319,144 @@ def _copied(
     return tuple(out)
 
 
+def expand_program_cell_scans(
+    declaration: ProgramDecl, module: Module
+) -> tuple[tuple[ProgramStep, ...], dict[str, ProgramDecl]]:
+    """Expand the draws of one program that scan a program cell.
+
+    A ``sample`` or ``observe`` step whose morphism resolves to a chain
+    with a ``scan`` over a program cell is rewritten exactly as
+    [`expand_composite_lets`][quivers.dsl.composite_lets.expand_composite_lets]
+    rewrites it: a ``let h = scan(step, xs)`` over a step program, with
+    the chain's other elements as steps of the step program or of the
+    program. Every other step is kept as written. The expansion draws
+    its fresh names from the serial the module-wide expansion uses, so
+    an expanded step binds the names the checked elaboration binds.
+
+    Parameters
+    ----------
+    declaration : ProgramDecl
+        The program.
+    module : Module
+        The module declaring it, its morphisms, defines, and programs.
+
+    Returns
+    -------
+    tuple[tuple[ProgramStep, ...], dict[str, ProgramDecl]]
+        The program's draws, the input itself when no step scans a
+        program cell; and the step programs the expansion declared, by
+        name, each after the step programs it scans with.
+    """
+    morphisms: dict[str, MorphismDecl] = {
+        name: statement
+        for statement in module.statements
+        if isinstance(statement, MorphismDecl)
+        for name in statement.names
+    }
+    lets: dict[str, Expr] = {
+        statement.name: statement.expr
+        for statement in module.statements
+        if isinstance(statement, DefineDecl)
+    }
+    programs: dict[str, ProgramDecl] = {
+        statement.name: statement
+        for statement in module.statements
+        if isinstance(statement, ProgramDecl)
+    }
+    declared = set(programs)
+    if not _selects(
+        declaration.draws,
+        morphisms,
+        lets,
+        lambda chain: _scans_a_program_cell(chain, declared),
+    ):
+        return declaration.draws, {}
+    program = _Program(
+        morphisms,
+        lets,
+        programs,
+        _domain_names(declaration),
+        _domain_factors(declaration.domain),
+    )
+    draws = _expand_draws(
+        declaration.draws,
+        program,
+        select=lambda chain: _scans_a_program_cell(chain, declared),
+    )
+    steps = {
+        name: decl for name, decl in program.programs.items() if name not in declared
+    }
+    return draws, steps
+
+
+def _selects(
+    draws: tuple[ProgramStep, ...],
+    morphisms: dict[str, MorphismDecl],
+    lets: dict[str, Expr],
+    select: Callable[[tuple[_ChainElem, ...]], bool],
+) -> bool:
+    """Whether some draw of a body resolves to a chain a predicate selects.
+
+    Parameters
+    ----------
+    draws : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes.
+    morphisms : dict[str, MorphismDecl]
+        The morphism table.
+    lets : dict[str, Expr]
+        The define table.
+    select : Callable[[tuple[_ChainElem, ...]], bool]
+        The predicate.
+
+    Returns
+    -------
+    bool
+        ``True`` when a ``sample`` or ``observe`` step's chain is
+        selected.
+    """
+    for step in draws:
+        if isinstance(step, MarginalizeStep):
+            if _selects(step.scope, morphisms, lets, select):
+                return True
+        elif isinstance(step, (SampleStep, ObserveStep)):
+            chain = _resolve_to_chain(
+                step.morphism, morphisms=dict(morphisms), lets=lets
+            )
+            if chain is not None and select(chain):
+                return True
+    return False
+
+
+def _scans_a_program_cell(chain: tuple[_ChainElem, ...], programs: set[str]) -> bool:
+    """Whether a chain scans a cell that is a program.
+
+    Parameters
+    ----------
+    chain : tuple[_ChainElem, ...]
+        The chain.
+    programs : set[str]
+        The names of the module's programs.
+
+    Returns
+    -------
+    bool
+        ``True`` when a scan element, in the chain or in a branch of a
+        parallel element, names a program.
+    """
+    for elem in chain:
+        if isinstance(elem, _ScanLeaf) and elem.name in programs:
+            return True
+        if isinstance(elem, _ParallelLeaf) and any(
+            _scans_a_program_cell(branch, programs) for branch in elem.branches
+        ):
+            return True
+    return False
+
+
 def _expand_draws(
-    draws: tuple[ProgramStep, ...], program: _Program
+    draws: tuple[ProgramStep, ...],
+    program: _Program,
+    select: Callable[[tuple[_ChainElem, ...]], bool] | None = None,
 ) -> tuple[ProgramStep, ...]:
     """Expand every SampleStep / ObserveStep whose morphism slot
     resolves to a composite-let chain.
@@ -337,18 +474,23 @@ def _expand_draws(
         The steps.
     program
         The enclosing program's expansion.
+    select
+        Which chains' expansions replace their steps; ``None`` selects
+        every chain. A chain not selected is still expanded, so the
+        names later expansions draw are the ones a full expansion
+        draws, and its step is kept as written.
 
     Returns
     -------
     tuple[ProgramStep, ...]
-        The steps with every composite draw expanded; the input itself
-        when nothing expanded.
+        The steps with every selected composite draw expanded; the
+        input itself when nothing expanded.
     """
     any_changed = False
     out: list[ProgramStep] = []
     for step in draws:
         if isinstance(step, MarginalizeStep):
-            scope_expanded = _expand_draws(step.scope, program)
+            scope_expanded = _expand_draws(step.scope, program, select)
             if scope_expanded is step.scope:
                 out.append(step)
             else:
@@ -362,9 +504,11 @@ def _expand_draws(
                 lets=program.lets,
             )
             if chain is not None:
-                any_changed = True
-                out.extend(_expand_step(step, chain, program))
-                continue
+                expanded = _expand_step(step, chain, program)
+                if select is None or select(chain):
+                    any_changed = True
+                    out.extend(expanded)
+                    continue
         out.append(step)
     return tuple(out) if any_changed else draws
 
@@ -1397,6 +1541,33 @@ def _derive_chain_args(
     if prev_var is None:
         return head_args if head_args else None
     return (atom_to_draw_arg(prev_var),)
+
+
+def scan_let_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
+    """Read ``scan(step, xs)`` or ``scan(step, xs, init)`` off a let expression.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    tuple[str, str, str | None] | None
+        The step program's name, the sequence's name, and the learned
+        initial state's name when there is one; ``None`` when the
+        expression is not a scan of names.
+    """
+    if not isinstance(expr, LetExprCall) or expr.func != "scan":
+        return None
+    if len(expr.args) not in (2, 3) or not all(
+        isinstance(argument, LetExprVar) for argument in expr.args
+    ):
+        return None
+    names = [
+        argument.name for argument in expr.args if isinstance(argument, LetExprVar)
+    ]
+    return names[0], names[1], names[2] if len(names) == 3 else None
 
 
 __all__ = []

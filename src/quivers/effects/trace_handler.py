@@ -115,6 +115,7 @@ class TraceHandler(EffectHandler):
         self.trace: Trace = Trace()
         self._recorder = TraceRecorder()
         self._steps: dict[object, HostStep] = {}
+        self._occurrences: dict[object, int] = {}
 
     def install(self, run: RunContext) -> tuple[Installation, ...]:
         """Install observers of the sites and of the let and score steps.
@@ -240,10 +241,16 @@ class TraceHandler(EffectHandler):
         step = self._steps[event.instance]
         assert isinstance(step.spec, Let | Score)
         name = step.spec.name
+        if step.scanned:
+            # A binding a scan's step makes once per position is
+            # recorded per occurrence, as its sites are.
+            occurrence = self._occurrences.get(event.instance, 0)
+            self._occurrences[event.instance] = occurrence + 1
+            name = f"{name}@{occurrence}"
         value = event.result
         assert isinstance(value, torch.Tensor)
         if step.kind == "score":
-            log_prob = self._step_contribution(run, step.spec, value)
+            log_prob = self._step_contribution(run, step, event, value)
         else:
             log_prob = torch.zeros((), device=value.device)
         self.trace.sites[name] = SampleSite(
@@ -256,7 +263,11 @@ class TraceHandler(EffectHandler):
         )
 
     def _step_contribution(
-        self, run: RunContext, spec: object, value: torch.Tensor
+        self,
+        run: RunContext,
+        step: HostStep,
+        event: TraceEvent,
+        value: torch.Tensor,
     ) -> torch.Tensor:
         """The contribution a score step's ``Score.add`` made, as accumulated.
 
@@ -264,8 +275,11 @@ class TraceHandler(EffectHandler):
         ----------
         run : RunContext
             The run.
-        spec : object
-            The program's step record.
+        step : HostStep
+            The score step's host part.
+        event : TraceEvent
+            The host part's recorded request, whose dynamic address the
+            ``Score.add`` of the same occurrence shares.
         value : torch.Tensor
             The step's value, which shapes the zero returned when the
             contribution never reached the accumulator.
@@ -275,14 +289,12 @@ class TraceHandler(EffectHandler):
         torch.Tensor
             The contribution after every transformer on the stack.
         """
-        index = next(
-            position
-            for position, step in enumerate(run.kernel.program.steps)
-            if step is spec
-        )
+        frames = event.address[1]
         total: torch.Tensor | None = None
         for item in run.contributions:
-            if tuple(item.path[:3]) == ("steps", index, "score"):
+            if tuple(item.path[:3]) == ("steps", step.position, "score") and (
+                item.key[1] == frames
+            ):
                 total = item.weight if total is None else total + item.weight
         if total is None:
             return torch.zeros_like(value)

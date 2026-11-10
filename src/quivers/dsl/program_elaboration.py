@@ -164,7 +164,7 @@ from quivers.qiec.types import (
     product_type,
     render_static,
 )
-from quivers.dsl.composite_lets import expand_composite_lets
+from quivers.dsl.composite_lets import expand_composite_lets, scan_let_call
 from quivers.dsl.family_schemas import (
     family_parameter_names,
     family_parameterizations,
@@ -431,37 +431,100 @@ def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
         if isinstance(step, MarginalizeStep):
             found |= _scanned_names(step.scope)
         elif isinstance(step, LetStep):
-            scan = _scan_call(step.value)
+            scan = scan_let_call(step.value)
             if scan is not None:
                 found.add(scan[1])
     return frozenset(found)
 
 
-def _scan_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
-    """Read ``scan(step, xs)`` or ``scan(step, xs, init)`` off a let expression.
+def _own_site_labels(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
+    """The labels of the sites a program body draws or observes itself.
 
     Parameters
     ----------
-    expr : LetExprNode
-        The expression.
+    steps : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes but not
+        into the programs they call or scan with.
 
     Returns
     -------
-    tuple[str, str, str | None] | None
-        The step program's name, the sequence's name, and the learned
-        initial state's name when there is one; ``None`` when the
-        expression is not a scan of names.
+    frozenset[str]
+        The label of every ``sample`` and ``observe`` step and of every
+        marginalized latent.
     """
-    if not isinstance(expr, LetExprCall) or expr.func != "scan":
-        return None
-    if len(expr.args) not in (2, 3) or not all(
-        isinstance(argument, LetExprVar) for argument in expr.args
-    ):
-        return None
-    names = [
-        argument.name for argument in expr.args if isinstance(argument, LetExprVar)
-    ]
-    return names[0], names[1], names[2] if len(names) == 3 else None
+    found: set[str] = set()
+    for step in steps:
+        if isinstance(step, SampleStep | ObserveStep):
+            found.add(",".join(step.vars))
+        elif isinstance(step, MarginalizeStep):
+            found.add(step.var)
+            found |= _own_site_labels(step.scope)
+    return frozenset(found)
+
+
+def reached_site_labels(
+    name: str, declarations: Mapping[str, ProgramDecl]
+) -> frozenset[str]:
+    """The labels of every site a program reaches when it runs.
+
+    A program reaches its own sites, the sites of the programs it calls
+    with ``let y <- p(...)``, which keep their labels, and the sites of
+    the step programs it scans with, which it reaches once per position
+    under the same labels.
+
+    Parameters
+    ----------
+    name : str
+        The program's name.
+    declarations : Mapping[str, ProgramDecl]
+        The module's program declarations, step programs included.
+
+    Returns
+    -------
+    frozenset[str]
+        The labels; empty for a name that is not a program.
+    """
+    found: set[str] = set()
+    pending = [name]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        declaration = declarations.get(current)
+        if declaration is None:
+            continue
+        found |= _own_site_labels(declaration.draws)
+        pending.extend(_callees(declaration.draws))
+    return frozenset(found)
+
+
+def _callees(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
+    """The programs a body calls in place or scans with.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The callee of every ``let y <- p(...)`` and the step program
+        of every ``let h = scan(step, xs)``.
+    """
+    found: list[str] = []
+    for step in steps:
+        if isinstance(step, CallStep):
+            found.append(step.call.callee)
+        elif isinstance(step, MarginalizeStep):
+            found.extend(_callees(step.scope))
+        elif isinstance(step, LetStep):
+            scan = scan_let_call(step.value)
+            if scan is not None:
+                found.append(scan[0])
+    return tuple(found)
 
 
 def _zero_of(type_: TypeExpr) -> Value:
@@ -2079,7 +2142,7 @@ class _ProgramElaboration:
             call = self._deduction_call(deduction, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
-        scan = _scan_call(step.value)
+        scan = scan_let_call(step.value)
         if scan is not None:
             call = self._scan_call(scan, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
@@ -2191,6 +2254,45 @@ class _ProgramElaboration:
             ),
         )
 
+    def _check_scan_site_labels(
+        self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
+    ) -> None:
+        """Refuse a scan whose step shares a site label with its program.
+
+        A site the step reaches is addressed by its label and its
+        occurrence, ``"<label>@<n>"``, counted over the run. A label
+        the scanning program also draws or observes under would number
+        that site among the step's occurrences, so ``"<label>@0"``
+        would not name the first position.
+
+        Parameters
+        ----------
+        step_name : str
+            The step program's name.
+        state : _ProgramState
+            The scanning program's accumulating state.
+        node : LetStep
+            The scan's step.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a label is shared.
+        """
+        shared = sorted(
+            reached_site_labels(step_name, self._program_declarations)
+            & _own_site_labels(state.declaration.draws)
+        )
+        if shared:
+            self._fail(
+                node,
+                f"the scan step {step_name!r} reaches site "
+                f"{', '.join(repr(label) for label in shared)} at every position, "
+                f"and the scanning program {state.declaration.name!r} draws or "
+                f"observes under the same label; rename one of them",
+                code="qiec-program",
+            )
+
     def _scan_call(
         self: _Elaborator,
         scan: tuple[str, str, str | None],
@@ -2256,16 +2358,6 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         entry_type, state_type = signature.parameters[:2]
-        # The step's remaining inputs, the numbers of its parameter
-        # maps, pass through the recurrence from the scanning program.
-        passed: list[Local] = []
-        for parameter in step_entry.parameters[2:]:
-            existing = scope.lookup(parameter.name)
-            if existing is None:
-                existing = self._declare_parameter(
-                    parameter.name, parameter.type, parameter.role, scope, state, node
-                )
-            passed.append(existing)
         local = scope.lookup(source)
         if local is None:
             self._fail(
@@ -2292,6 +2384,51 @@ class _ProgramElaboration:
                 f"not the {render_static(entry_type)} it reads",
                 code="qiec-program",
             )
+        self._check_scan_site_labels(step_name, state, node)
+        # The step's remaining inputs pass through the recurrence from
+        # the scanning program. A name the step reads without binding
+        # it is the scanning program's binding of that name before the
+        # scan, else an input of the scanning program. An observation
+        # the step scores is one observation per position: the scanning
+        # program takes the sequence of them, and position ``t`` reads
+        # its ``t``-th entry.
+        passed: list[Local] = []
+        positional: list[bool] = []
+        for parameter in step_entry.parameters[2:]:
+            if parameter.role == "observation":
+                if scope.lookup(parameter.name) is not None:
+                    self._fail(
+                        node,
+                        f"the scan step {step_name!r} observes "
+                        f"{parameter.name!r} at every position, so the "
+                        f"scanning program cannot also bind {parameter.name!r}",
+                        code="qiec-program",
+                    )
+                observed_shape = tensor_shape(parameter.type)
+                sequence_type: TypeExpr = (
+                    tensor_type(parameter.type, (extent,))
+                    if observed_shape is None
+                    else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
+                )
+                passed.append(
+                    self._declare_parameter(
+                        parameter.name,
+                        sequence_type,
+                        parameter.role,
+                        scope,
+                        state,
+                        node,
+                    )
+                )
+                positional.append(True)
+                continue
+            existing = scope.lookup(parameter.name)
+            if existing is None:
+                existing = self._declare_parameter(
+                    parameter.name, parameter.type, parameter.role, scope, state, node
+                )
+            passed.append(existing)
+            positional.append(False)
         name = f"{state.declaration.name}__{node.name}_scan"
         if name in self.computation_signatures:
             self._fail(
@@ -2369,7 +2506,21 @@ class _ProgramElaboration:
                         signature.id,
                         signature.name,
                         (),
-                        (Var(entry), Var(current), *(Var(item) for item in carried)),
+                        (
+                            Var(entry),
+                            Var(current),
+                            *(
+                                Gather(Var(item), Var(position), parameter.type)
+                                if per_step
+                                else Var(item)
+                                for item, per_step, parameter in zip(
+                                    carried,
+                                    positional,
+                                    step_entry.parameters[2:],
+                                    strict=True,
+                                )
+                            ),
+                        ),
                         state_type,
                         signature.effects,
                         _origin_at(self, (*path, "step"), "call", node),

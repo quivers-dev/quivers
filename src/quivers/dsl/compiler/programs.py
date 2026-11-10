@@ -25,10 +25,12 @@ from quivers.core.morphisms import Morphism, ObservedMorphism
 from quivers.continuous.inline import get_inline_param_names, make_inline_distribution
 from quivers.continuous.plate import PlateDraw, VectorisedObserve, marginalize_grouped
 from quivers.continuous.program_steps import (
+    Call,
     Draw,
     Indexed,
     Let,
     Observe,
+    Scan,
     Score,
     Step,
     StepArgument,
@@ -121,7 +123,9 @@ from quivers.dsl.compiler._deduction_terms import (
     variable_term,
 )
 from quivers.dsl.compiler.sugar import desugar_step
+from quivers.dsl.composite_lets import expand_program_cell_scans, scan_let_call
 from quivers.dsl.let_expr_traversal import free_let_names
+from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.stochastic.agenda import DeductionSystem
@@ -206,6 +210,49 @@ def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
         if isinstance(step, MarginalizeStep) and _calls_a_computation(step.scope):
             return True
     return False
+
+
+def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
+    """The step programs a body's scans run.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The step program of every ``let h = scan(step, xs)``.
+    """
+    found: list[str] = []
+    for step in steps:
+        if isinstance(step, MarginalizeStep):
+            found.extend(_scanned_step_programs(step.scope))
+        elif isinstance(step, LetStep):
+            scan = scan_let_call(step.value)
+            if scan is not None:
+                found.append(scan[0])
+    return tuple(found)
+
+
+def _input_name(decl: ProgramDecl) -> str:
+    """The name a program without named parameters reads its input under.
+
+    Parameters
+    ----------
+    decl : ProgramDecl
+        The program.
+
+    Returns
+    -------
+    str
+        Its domain object's name in lowercase, which the expansion of a
+        scan over the input names the sequence by; empty for a product
+        domain.
+    """
+    domain = decl.domain
+    return domain.name.lower() if isinstance(domain, TypeName) else ""
 
 
 def _fibration_index(env: dict[str, torch.Tensor], name: str) -> torch.Tensor:
@@ -575,13 +622,9 @@ class _ProgramsMixin:
         downstream IR walks the single operator vocabulary.
         """
         if isinstance(step, CallStep):
-            raise CompileError(
-                f"`let {step.name} <- {step.call.callee}(...)` calls a named "
-                "computation, which only the QIEC route runs; execute the program "
-                "through its checked module rather than the runtime compiler",
-                step.line,
-                step.col,
-            )
+            # A call reaching the step compiler is a scan's step program
+            # calling its cell, which compiles to a call run in place.
+            return step
         if isinstance(step, (SampleStep, ObserveStep)):
             step = desugar_step(step)
         if isinstance(step, SampleStep):
@@ -1123,7 +1166,10 @@ class _ProgramsMixin:
         return actual
 
     def _verify_effects(
-        self, decl: ProgramDecl, steps: tuple[ProgramStep, ...]
+        self,
+        decl: ProgramDecl,
+        steps: tuple[ProgramStep, ...],
+        scanned: set[str],
     ) -> None:
         """Verify the program body's effects against its declaration.
 
@@ -1132,6 +1178,20 @@ class _ProgramsMixin:
         When it is given, the compiler enforces that the body's
         actual effects are a subset of the declared set; a declared
         ``Pure`` rejects any of ``{Sample, Score, Marginal}``.
+
+        Parameters
+        ----------
+        decl : ProgramDecl
+            The program.
+        steps : tuple[ProgramStep, ...]
+            Its expanded steps.
+        scanned : set[str]
+            The effects the step programs its scans run perform.
+
+        Raises
+        ------
+        CompileError
+            If the body performs an effect the declaration omits.
         """
         declared = get_program_effects(
             decl.options,
@@ -1140,7 +1200,7 @@ class _ProgramsMixin:
         )
         if declared is None:
             return
-        actual = self._infer_effects(steps)
+        actual = self._infer_effects(steps) | scanned
         if "Pure" in declared and actual:
             raise CompileError(
                 f"program {decl.name!r} is declared as Pure but body "
@@ -2155,8 +2215,19 @@ class _ProgramsMixin:
             algebra=rule,
         )
 
-    def _compile_program(self, decl: ProgramDecl) -> None:
+    def _compile_program(
+        self, decl: ProgramDecl, *, step_program: bool = False
+    ) -> MonadicProgram | None:
         """Compile a monadic program block into a MonadicProgram.
+
+        A ``sample`` or ``observe`` step that scans a program cell is
+        expanded first, as the checked elaboration expands it: into a
+        ``let h = scan(step, xs)`` over a step program, which compiles
+        to a [`Scan`][quivers.continuous.Scan] step whose step program
+        runs the cell through a [`Call`][quivers.continuous.Call]. The
+        cell's sites are thus sites of this program, reached once per
+        position, and a name the cell reads without binding it is this
+        program's binding of that name before the scan, else host data.
 
         Parametric programs (those carrying ``type_params``) are not
         compiled into a runtime ``MonadicProgram`` directly. They
@@ -2176,6 +2247,26 @@ class _ProgramsMixin:
         latent names per call site is the syntactic shadow of the
         fact that distinct call sites contribute distinct factors
         to the parent's joint kernel.
+
+        Parameters
+        ----------
+        decl : ProgramDecl
+            The declaration.
+        step_program : bool
+            Whether the declaration is a scan's step program, which is
+            compiled for the scan that runs it rather than registered,
+            and whose calls of programs run in place.
+
+        Returns
+        -------
+        MonadicProgram | None
+            The step program when ``step_program`` is set, else ``None``:
+            the program is registered under its name.
+
+        Raises
+        ------
+        CompileError
+            If the declaration does not compile.
         """
         check_option_keys(
             decl.options,
@@ -2200,7 +2291,7 @@ class _ProgramsMixin:
                     decl.col,
                 )
             self._program_templates[decl.name] = decl
-            return
+            return None
         if decl.name in self._morphisms:
             raise CompileError(
                 f"morphism {decl.name!r} already declared", decl.line, decl.col
@@ -2221,12 +2312,13 @@ class _ProgramsMixin:
                     decl.line,
                     decl.col,
                 )
-        if _calls_a_computation(decl.draws):
+        decl, scan_effects = self._expand_cell_scans(decl)
+        if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
             # computation: the callee's body is a term of the module,
             # which only the reference machine runs.
             self._bind_checked_program(decl, domain, codomain)
-            return
+            return None
         bound_vars: dict[str, AnySpace | None] = {}
         if decl.params is not None:
             if isinstance(domain, (ProductSet, ProductSpace)):
@@ -2243,7 +2335,7 @@ class _ProgramsMixin:
         # Effect-set verification: walk the expanded IR and check
         # that the declared `!` capability set is consistent with
         # the body's actual effect usage.
-        self._verify_effects(decl, ir_draws)
+        self._verify_effects(decl, ir_draws, scan_effects)
         # Then expand parametric-template call sites by inlining the
         # substituted + α-renamed template body. This realises the
         # dependent-kernel application: each call site is a section
@@ -2959,6 +3051,9 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+            if isinstance(step, CallStep):
+                steps.append(self._compile_call(step, bound_vars))
+                continue
             if isinstance(step, LetStep):
                 if step.name in bound_vars:
                     raise CompileError(
@@ -2966,6 +3061,10 @@ class _ProgramsMixin:
                         step.line,
                         step.col,
                     )
+                scan = scan_let_call(step.value)
+                if scan is not None and scan[0] in self._scan_step_declarations:
+                    steps.append(self._compile_scan(step, scan, decl, bound_vars))
+                    continue
                 if isinstance(step.value, LetExprVar) and step.value.name in bound_vars:
                     # Alias of a variable bound earlier in the body:
                     # the binding copies the slot and inherits its
@@ -3045,15 +3144,11 @@ class _ProgramsMixin:
                     raise CompileError(
                         f"variable {v!r} already bound in program", draw.line, draw.col
                     )
+            # An argument naming nothing bound earlier is host data, as
+            # a free name in a let is: the run reads it from the
+            # bindings visible where the program runs, else from the
+            # conditioning data.
             morph, step_args = self._resolve_draw_morphism(draw, bound_vars, codomain)
-            if step_args is not None:
-                for arg_name in step_args:
-                    if arg_name not in bound_vars:
-                        raise CompileError(
-                            f"undefined variable {arg_name!r} in draw step",
-                            draw.line,
-                            draw.col,
-                        )
             if len(draw.vars) == 1:
                 bound_vars[draw.vars[0]] = morph.codomain
             elif isinstance(morph, MonadicProgram) and (not morph._return_is_single):
@@ -3103,9 +3198,11 @@ class _ProgramsMixin:
                     line=decl.line,
                     col=decl.col,
                 )
-                or frozenset(self._infer_effects(expanded_draws))
+                or frozenset(self._infer_effects(expanded_draws) | scan_effects)
             ),
         )
+        if step_program:
+            return prog
         # Posterior-block routing: `[over=M]` programs go to the
         # posterior registry rather than the morphism registry.
         over_model = get_program_over_model(
@@ -3126,6 +3223,171 @@ class _ProgramsMixin:
             self._posteriors[decl.name] = prog
         else:
             self._morphisms[decl.name] = prog
+        return None
+
+    def _expand_cell_scans(self, decl: ProgramDecl) -> tuple[ProgramDecl, set[str]]:
+        """Expand the steps of a program that scan a program cell.
+
+        Parameters
+        ----------
+        decl : ProgramDecl
+            The program.
+
+        Returns
+        -------
+        tuple[ProgramDecl, set[str]]
+            The program with each such step rewritten to its step
+            program's scan, and the effects the step programs its scans
+            run perform. Every step program the expansion declares is
+            recorded for the scans that run it.
+
+        Raises
+        ------
+        CompileError
+            If the expansion fails.
+        """
+        try:
+            draws, declared = expand_program_cell_scans(decl, self._module)
+        except StepResolutionError as error:
+            raise CompileError("; ".join(error.kinds), decl.line, decl.col) from error
+        if draws is decl.draws:
+            return decl, set()
+        self._scan_step_declarations.update(declared)
+        effects: set[str] = set()
+        for name in _scanned_step_programs(draws):
+            effects |= self._scan_step(name).effect_set or set()
+        return decl.with_(draws=draws), effects
+
+    def _scan_step(self, name: str) -> MonadicProgram:
+        """The compiled step program of a scan.
+
+        Parameters
+        ----------
+        name : str
+            The step program's name.
+
+        Returns
+        -------
+        MonadicProgram
+            The step program, compiled once.
+        """
+        compiled = self._scan_step_programs.get(name)
+        if compiled is None:
+            compiled = self._compile_program(
+                self._scan_step_declarations[name], step_program=True
+            )
+            assert compiled is not None
+            self._scan_step_programs[name] = compiled
+        return compiled
+
+    def _compile_scan(
+        self,
+        step: LetStep,
+        scan: tuple[str, str, str | None],
+        decl: ProgramDecl,
+        bound_vars: dict[str, AnySpace | None],
+    ) -> Scan:
+        """Compile ``let h = scan(step, xs)`` over a scan's step program.
+
+        Parameters
+        ----------
+        step : LetStep
+            The let.
+        scan : tuple[str, str, str | None]
+            The step program's name, the sequence's name, and the
+            learned initial state's name when there is one.
+        decl : ProgramDecl
+            The program the let belongs to.
+        bound_vars : dict[str, AnySpace | None]
+            The names bound so far; gains the let's.
+
+        Returns
+        -------
+        Scan
+            The scan step.
+
+        Raises
+        ------
+        CompileError
+            If the sequence is neither bound nor the program's input.
+        """
+        step_name, source_name, init = scan
+        body = self._scan_step(step_name)
+        source: str | None
+        if source_name in bound_vars:
+            source = source_name
+        elif decl.params is None and source_name == _input_name(decl):
+            source = None
+        else:
+            raise CompileError(
+                f"scan runs over {source_name!r}, which is neither bound nor the "
+                f"program's input",
+                step.line,
+                step.col,
+            )
+        initial: torch.nn.Parameter | None = None
+        if init is not None:
+            initial = self._scan_initial_states.get(init)
+            if initial is None:
+                width = getattr(body.codomain, "dim")
+                initial = torch.nn.Parameter(torch.zeros(int(width)))
+                self._scan_initial_states[init] = initial
+        bound_vars[step.name] = body.codomain
+        return Scan(name=step.name, step=body, source=source, initial=initial)
+
+    def _compile_call(
+        self, step: CallStep, bound_vars: dict[str, AnySpace | None]
+    ) -> Call:
+        """Compile ``let y <- p(a, b)`` of a program into a call run in place.
+
+        Parameters
+        ----------
+        step : CallStep
+            The call.
+        bound_vars : dict[str, AnySpace | None]
+            The names bound so far; gains the call's.
+
+        Returns
+        -------
+        Call
+            The call step.
+
+        Raises
+        ------
+        CompileError
+            If the callee is not a compiled program or an argument is
+            not a bound name.
+        """
+        callee = self._morphisms.get(step.call.callee)
+        if not isinstance(callee, MonadicProgram):
+            raise CompileError(
+                f"`let {step.name} <- {step.call.callee}(...)` calls a named "
+                "computation, which only the QIEC route runs; execute the program "
+                "through its checked module rather than the runtime compiler",
+                step.line,
+                step.col,
+            )
+        arguments: list[str] = []
+        for argument in step.call.arguments:
+            if not isinstance(argument, LetExprVar) or argument.name not in bound_vars:
+                raise CompileError(
+                    f"`let {step.name} <- {step.call.callee}(...)` passes an "
+                    f"argument that is not a name bound earlier in the program",
+                    step.line,
+                    step.col,
+                )
+            arguments.append(argument.name)
+        if step.name in bound_vars:
+            raise CompileError(
+                f"variable {step.name!r} already bound in program",
+                step.line,
+                step.col,
+            )
+        bound_vars[step.name] = callee.codomain
+        try:
+            return Call(name=step.name, program=callee, args=tuple(arguments))
+        except ValueError as error:
+            raise CompileError(str(error), step.line, step.col) from error
 
     def _bind_checked_program(
         self,

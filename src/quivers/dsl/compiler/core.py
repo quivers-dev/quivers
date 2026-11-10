@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import torch.nn as nn
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.continuous.programs import MonadicProgram
 from quivers.core.objects import SetObject
 from quivers.program import Program
 from quivers.dsl.ast_nodes import (
@@ -135,6 +136,13 @@ class Compiler(
         # compiled `EinsumWiring` plus the declared domain /
         # codomain typing for shape-checking at invocation time.
         self._contractions: dict[str, "_CompiledContraction"] = {}
+        # The step programs the expansion of a scan over a program cell
+        # declares, their compiled forms, and the learned initial state
+        # of each scan that declares one, shared by name as the checked
+        # elaboration shares its `weight` input.
+        self._scan_step_declarations: dict[str, ProgramDecl] = {}
+        self._scan_step_programs: dict[str, MonadicProgram] = {}
+        self._scan_initial_states: dict[str, nn.Parameter] = {}
 
     @property
     def categories(self) -> list[str]:
