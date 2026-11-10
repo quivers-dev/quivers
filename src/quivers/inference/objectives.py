@@ -68,7 +68,7 @@ from quivers.inference.estimators import (
     ParticleLogDensities,
     Reparameterized,
 )
-from quivers.inference.guides import Guide
+from quivers.inference.guides import Guide, GuideDraw
 
 
 class Objective(nn.Module, ABC):
@@ -124,10 +124,11 @@ def _draw_particles(
     """Draw ``num_particles`` particles and score them for ``estimator``.
 
     With ``estimator.fixed_draws`` each particle is one independent
-    `Guide.rsample` draw, detached before it is scored, with weight
-    ``1/K``. Otherwise each particle is a call to
-    `Guide.rsample_strata`, whose ``S`` strata become ``S`` draws with
-    log-weight :math:`\\log \\omega_s - \\log K`. The detached-parameter
+    `Guide.rsample` draw, detached before it is scored by
+    `Guide.log_prob`, with weight ``1/K``. Otherwise each particle is a
+    call to `Guide.rsample_strata`, whose ``S`` weighted draws enter
+    with log-weight :math:`\\log \\omega_s - \\log K` and are scored
+    by the density each `GuideDraw` carries. The detached-parameter
     guide density and the model log-joint at detached draws are
     computed only when the estimator reads them.
 
@@ -173,22 +174,29 @@ def _draw_particles(
     num_strata: int | None = None
     for _ in range(num_particles):
         if estimator.fixed_draws:
-            draw = guide.rsample(x)
-            stratum_log_weights = torch.zeros(1, device=x.device)
-            stratum_draws = [{name: value.detach() for name, value in draw.items()}]
+            fixed = {name: value.detach() for name, value in guide.rsample(x).items()}
+            draws: tuple[GuideDraw, ...] = (
+                GuideDraw(
+                    sites=fixed,
+                    log_density=guide.log_prob(x, fixed),
+                    log_weight=torch.zeros((), device=x.device),
+                ),
+            )
         else:
-            stratum_log_weights, stratum_draws = guide.rsample_strata(x)
+            draws = guide.rsample_strata(x)
         if num_strata is None:
-            num_strata = len(stratum_draws)
-        elif len(stratum_draws) != num_strata:
+            num_strata = len(draws)
+        elif len(draws) != num_strata:
             raise ValueError(
                 f"{type(guide).__name__}.rsample_strata returned "
-                f"{len(stratum_draws)} strata after returning {num_strata}; "
+                f"{len(draws)} strata after returning {num_strata}; "
                 f"the stratum count must not vary between particles"
             )
-        for stratum_log_weight, latents in zip(stratum_log_weights, stratum_draws):
+        for draw in draws:
+            latents = draw.sites
+            stratum_log_weight = draw.log_weight
             log_p = model.log_joint(x, {**latents, **observations})
-            log_q = guide.log_prob(x, latents)
+            log_q = draw.log_density
             log_p_parts.append(log_p)
             log_q_parts.append(log_q)
             log_weight_parts.append(
@@ -646,9 +654,9 @@ class RWS(Objective):
         log_q_parts: list[torch.Tensor] = []
         log_weight_parts: list[torch.Tensor] = []
         for _ in range(self.num_particles):
-            stratum_log_weights, stratum_draws = guide.rsample_strata(x)
-            for stratum_log_weight, latents in zip(stratum_log_weights, stratum_draws):
-                fixed = {name: value.detach() for name, value in latents.items()}
+            for draw in guide.rsample_strata(x):
+                stratum_log_weight = draw.log_weight
+                fixed = {name: value.detach() for name, value in draw.sites.items()}
                 log_p = model.log_joint(x, {**fixed, **observations})
                 log_q = guide.log_prob(x, fixed)
                 log_p_parts.append(log_p)

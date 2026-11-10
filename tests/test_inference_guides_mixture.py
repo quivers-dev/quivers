@@ -306,11 +306,15 @@ def test_rsample_strata_enumerate_components_with_log_mixture_weights() -> None:
     torch.manual_seed(0)
     model = _standard_normal_model()
     guide = _mixture(model, (-5.0, 5.0), (0.1, 0.1), weights=(0.3, 0.7))
-    log_weights, draws = guide.rsample_strata(_X)
+    draws = guide.rsample_strata(_X)
     assert len(draws) == 2
+    log_weights = torch.stack([draw.log_weight for draw in draws])
     assert torch.allclose(log_weights, torch.log(torch.tensor([0.3, 0.7])))
-    assert float(draws[0]["z"].detach().reshape(-1)[0]) < 0.0
-    assert float(draws[1]["z"].detach().reshape(-1)[0]) > 0.0
+    assert float(draws[0].sites["z"].detach().reshape(-1)[0]) < 0.0
+    assert float(draws[1].sites["z"].detach().reshape(-1)[0]) > 0.0
+    # Each draw is scored by the mixture density, not its component's.
+    for draw in draws:
+        assert torch.allclose(draw.log_density, guide.log_prob(_X, draw.sites))
     log_weights.sum().backward()
     assert guide.mixture_logits.grad is not None
 
@@ -539,10 +543,10 @@ def test_rws_weights_are_the_stratified_importance_weights() -> None:
     expected = 0.0
     with torch.no_grad():
         for _ in range(num_particles):
-            log_weights, draws = guide.rsample_strata(_X)
-            for log_weight, draw in zip(log_weights, draws):
-                log_q = float(guide.log_prob(_X, draw).sum())
-                expected += -2.0 * math.exp(float(log_weight)) / num_particles * log_q
+            for draw in guide.rsample_strata(_X):
+                log_q = float(guide.log_prob(_X, draw.sites).sum())
+                weight = math.exp(float(draw.log_weight))
+                expected += -2.0 * weight / num_particles * log_q
     assert abs(loss - expected) < 1e-9
 
 
@@ -559,9 +563,10 @@ def test_nested_mixture_enumerates_inner_components() -> None:
     outer = AutoMixtureGuide([inner_a, inner_b])
     with torch.no_grad():
         outer.mixture_logits.copy_(torch.log(torch.tensor([0.4, 0.6])))
-    log_weights, draws = outer.rsample_strata(_X)
+    draws = outer.rsample_strata(_X)
     assert len(draws) == 4
     expected = torch.tensor([0.4 * 0.25, 0.4 * 0.75, 0.6 * 0.6, 0.6 * 0.4])
+    log_weights = torch.stack([draw.log_weight for draw in draws])
     assert torch.allclose(log_weights.exp(), expected)
 
     exact = float(
@@ -595,10 +600,14 @@ def test_mixture_inside_guide_list_is_enumerated() -> None:
     _set_normal(exact_part, 0.0, 1.0, site="b")
     guide = AutoGuideList({"a": AutoMixtureGuide(mixture_components), "b": exact_part})
 
-    log_weights, draws = guide.rsample_strata(_X)
+    draws = guide.rsample_strata(_X)
     assert len(draws) == 2
-    assert abs(float(torch.logsumexp(log_weights.detach(), dim=0))) < 1e-12
-    assert all(set(draw) == {"a", "b"} for draw in draws)
+    log_weights = torch.stack([draw.log_weight.detach() for draw in draws])
+    assert abs(float(torch.logsumexp(log_weights, dim=0))) < 1e-12
+    assert all(set(draw.sites) == {"a", "b"} for draw in draws)
+    # The joint density of each draw is the product over the parts.
+    for draw in draws:
+        assert torch.allclose(draw.log_density, guide.log_prob(_X, draw.sites))
 
     with torch.no_grad():
         a_draws = torch.cat([guide.rsample(_X)["a"].reshape(-1) for _ in range(2000)])

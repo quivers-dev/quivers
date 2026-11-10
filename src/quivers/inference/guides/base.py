@@ -10,13 +10,14 @@ ABC fixes a uniform contract:
   ``(batch, *B.shape)`` or ``(batch,)`` for scalar event shape).
 * `Guide.log_prob` evaluates the variational density of a
   per-site dict and returns a ``(batch,)``-shaped tensor.
-* `Guide.rsample_strata` returns a stratified set of draws whose
-  weighted average estimates expectations under the same density
-  that `Guide.log_prob` scores. The variational objectives consume
-  this method, so a guide whose draws are not reparameterizable as a
-  whole (a finite mixture, whose component choice is discrete) can
-  still be trained with pathwise gradients by enumerating its
-  discrete part exactly.
+* `Guide.rsample_strata` returns weighted draws, each a `GuideDraw`
+  carrying its own guide log-density, whose weighted average
+  estimates expectations under the guide. The variational objectives
+  consume this method. A guide whose draws are not reparameterizable
+  as a whole (a finite mixture, whose component choice is discrete)
+  enumerates its discrete part exactly, and a guide whose density is
+  defined only along the path that produced a draw (`AutoDAIS`)
+  returns that path's density with the draw.
 
 Every concrete subclass under [`quivers.inference.guides`][quivers.inference.guides] is
 constructed against a `quivers.inference.registry.LatentRegistry`,
@@ -29,11 +30,39 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.registry import LatentRegistry
+
+
+class GuideDraw(ValueModel):
+    """One weighted draw from a guide, scored by the guide.
+
+    The site tensors, density, and weight compare by identity: two
+    draws are equal exactly when they hold the same tensor objects.
+
+    Parameters
+    ----------
+    sites
+        Per-site constrained values, shaped as `Guide.rsample`'s output.
+    log_density
+        The guide log-density of this draw, shape ``(batch,)``, with
+        gradients to the variational parameters through the draw and
+        directly. For most guides it is `Guide.log_prob` at ``sites``;
+        for `AutoDAIS` it is the extended-space density of the
+        trajectory that produced the draw.
+    log_weight
+        Scalar log-weight :math:`\\log \\omega` of the stratum the draw
+        represents; zero for a guide that is not stratified.
+    """
+
+    sites: dict[str, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_weight: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 class Guide(nn.Module, ABC):
@@ -85,27 +114,28 @@ class Guide(nn.Module, ABC):
         """
         ...
 
-    def rsample_strata(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
-        """Stratified reparameterized draws from :math:`q_\\phi(z \\mid x)`.
+    def rsample_strata(self, x: torch.Tensor) -> tuple[GuideDraw, ...]:
+        """Weighted reparameterized draws from :math:`q_\\phi(z \\mid x)`.
 
-        Returns log-weights :math:`\\log \\omega_s` and one draw
-        :math:`z_s \\sim q_s` per stratum :math:`s` such that the
-        strata partition the guide's density,
+        Returns one `GuideDraw` per stratum :math:`s`, with log-weight
+        :math:`\\log \\omega_s` and a draw :math:`z_s \\sim q_s`, such
+        that the strata partition the guide's density,
         :math:`q_\\phi = \\sum_s \\omega_s\\, q_s` with
         :math:`\\sum_s \\omega_s = 1`. Thus
         :math:`\\sum_s \\omega_s f(z_s)` is an unbiased estimate of
         :math:`\\mathbb{E}_{q_\\phi}[f(z)]` for every ``f``, and
         :math:`\\sum_s \\omega_s\\, p(z_s) / q_\\phi(z_s)` is an
-        unbiased estimate of :math:`\\int p`. Gradients reach the
-        variational parameters through the reparameterized draws and
-        through the log-weights.
+        unbiased estimate of :math:`\\int p`. Each draw carries the guide
+        log-density the objectives pair it with. Gradients reach the
+        variational parameters through the reparameterized draws, the
+        densities, and the log-weights.
 
-        A guide whose `rsample` is reparameterized returns a single
-        stratum with log-weight zero, which is this default. A guide
-        with a discrete choice inside its sampler (such as
-        `AutoMixtureGuide`) overrides it to enumerate that choice.
+        The default returns a single draw from `rsample` with log-weight
+        zero, scored by `log_prob`. A guide with a discrete choice inside
+        its sampler (such as `AutoMixtureGuide`) overrides it to
+        enumerate that choice; a guide without a density at arbitrary
+        points (such as `AutoDAIS`) overrides it to return the density
+        of the path that produced the draw.
 
         Parameters
         ----------
@@ -114,13 +144,19 @@ class Guide(nn.Module, ABC):
 
         Returns
         -------
-        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
-            The stratum log-weights, shape ``(S,)`` with
-            ``logsumexp == 0``, and the ``S`` per-site draws, each
-            shaped as `rsample`'s output.
+        tuple[GuideDraw, ...]
+            The ``S`` weighted draws; their log-weights have
+            ``logsumexp == 0``.
         """
-        log_weights = torch.zeros(1, device=x.device, dtype=torch.get_default_dtype())
-        return log_weights, [self.rsample(x)]
+        sites = self.rsample(x)
+        log_density = self.log_prob(x, sites)
+        return (
+            GuideDraw(
+                sites=sites,
+                log_density=log_density,
+                log_weight=torch.zeros((), device=x.device, dtype=log_density.dtype),
+            ),
+        )
 
     @abstractmethod
     def log_prob(
@@ -145,4 +181,4 @@ class Guide(nn.Module, ABC):
         ...
 
 
-__all__ = ["Guide"]
+__all__ = ["Guide", "GuideDraw"]

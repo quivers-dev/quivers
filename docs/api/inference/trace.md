@@ -32,6 +32,7 @@ pages document each class in full.
       filters: ["!.*"]
       members:
         - Guide
+        - GuideDraw
         - AutoNormalGuide
         - AutoMultivariateNormalGuide
         - AutoLowRankMultivariateNormalGuide

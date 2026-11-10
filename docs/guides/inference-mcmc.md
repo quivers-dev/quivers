@@ -125,10 +125,33 @@ distribution or choose initial chain values, as specified below.
 ### AutoDAIS
 
 Differentiable annealed importance
-sampling [@zhang2021dais] wraps a base
-guide with $K$ HMC trajectories along an annealing path between
-base and target. The base mean and scale, step size, and inverse
-temperatures are jointly trained via SVI.
+sampling [@zhang2021dais; @geffner2021uha] wraps a base
+guide with $K$ uncorrected Hamiltonian transitions along an annealing
+path between base and target: each transition draws a fresh momentum
+and takes leapfrog steps on the bridge
+$q_0^{1-\beta_k}\, p^{\beta_k}$, with no Metropolis correction. The
+base mean and scale, step sizes, and inverse temperatures are jointly
+trained via SVI, differentiating through the whole trajectory.
+
+Each draw comes with the log importance weight of its own trajectory,
+
+$$\log w = \log p(u_K, y) - \log q_0(u_0)
+  + \sum_{k=1}^{K}\bigl[\log \mathcal{N}(\hat v_k) - \log \mathcal{N}(v_{k-1})\bigr],$$
+
+where $v_{k-1}$ and $\hat v_k$ are the momenta before and after
+transition $k$ and both densities are taken in the unconstrained space
+the chain runs in (Eq. 15 of [@zhang2021dais]). Because leapfrog preserves
+volume, $\mathbb{E}[w] = p(y)$, so `ELBO` with this guide estimates
+$\mathbb{E}[\log w] \le \log p(y)$, a valid lower bound, and
+`IWAEBound` gives the importance-weighted bound from the same weights.
+The bridges and step sizes shape the chain, not the validity of the
+bound. The bound is not guaranteed to exceed the base guide's ELBO.
+
+The endpoint has no closed-form density, so `AutoDAIS.log_prob` raises.
+Use the `Reparameterized` estimator: `StickingTheLanding`,
+`DoublyReparameterized` (the `IWAEBound` default), `ScoreFunction`, and
+`RWS` need the guide density at a fixed point and raise with this
+guide.
 
 <!-- python: skip -->
 ```python
@@ -143,7 +166,7 @@ guide = AutoDAIS(
     init_step_size=0.05,
     init_temperature=0.1,
 )
-# Plug into SVI exactly like any other guide.
+# Plug into SVI with ELBO() or IWAEBound(estimator=Reparameterized()).
 ```
 
 ### WarmupThenHMC

@@ -152,7 +152,7 @@ Diagnostics to check before trusting the run:
 Two configurations sit between VI and pure MCMC:
 
 - `WarmupThenHMC(guide, kernel, svi_steps, mcmc_warmup, mcmc_samples)` runs `svi_steps` of variational warm-up and then launches MCMC chains initialized from the trained guide. Useful when HMC's warmup wastes a lot of compute exploring tails the guide already knows are empty.
-- `AutoDAIS(base, model, observations, num_steps=..., init_step_size=...)` wraps a base guide with `num_steps` annealed HMC trajectories. It can represent posteriors that a simple mean-field guide misses, at additional cost.
+- `AutoDAIS(base, model, observations, num_steps=..., init_step_size=...)` wraps a base guide with `num_steps` uncorrected Hamiltonian transitions along an annealing path. Each draw carries its own trajectory's importance weight, so `ELBO()` estimates a valid lower bound on the log evidence. It can represent posteriors that a simple mean-field guide misses, at additional cost; use the default `Reparameterized` estimator, since the guide has no density at arbitrary points.
 
 <!-- python: skip -->
 ```python

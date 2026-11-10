@@ -4,8 +4,9 @@ Two hybrid strategies:
 
 * :class:`AutoDAIS` wraps a base guide in an annealed-importance-
   sampling trajectory whose step size and inverse-temperature
-  schedule are learnable. Per Geffner-Domke 2021, the DAIS bound
-  strictly dominates the base ELBO for ``num_steps >= 1``.
+  schedule are learnable. Its draws carry their trajectory's
+  importance weight, so ELBO with it is a valid lower bound; the
+  bound need not exceed the base guide's ELBO.
 * :class:`WarmupThenHMC` runs SVI to convergence, then seeds an
   MCMC chain from the fitted guide's posterior mean.
 
@@ -86,7 +87,8 @@ def test_dais_rsample_matches_autonormal_shapes() -> None:
 
 def test_dais_rsample_follows_the_input_batch_axis() -> None:
     """One trajectory is shared across the batch, in the trace-side
-    shapes every guide returns and matching `log_prob`'s batch."""
+    shapes every guide returns, and the density `rsample_strata`
+    carries with the draw has the batch shape."""
     torch.manual_seed(0)
     model = _hierarchical_model()
     obs = _make_hier_obs()
@@ -100,7 +102,10 @@ def test_dais_rsample_follows_the_input_batch_axis() -> None:
     assert s_dais["sigma"].shape == (3,)
     assert s_dais["by_subj"].shape == (4,)
     assert torch.equal(s_dais["sigma"], s_dais["sigma"][:1].expand(3))
-    assert dais.log_prob(x, s_dais).shape == (3,)
+    (draw,) = dais.rsample_strata(x)
+    for name in s_normal:
+        assert draw.sites[name].shape == s_normal[name].shape
+    assert draw.log_density.shape == (3,)
 
 
 def test_dais_gradients_flow_to_step_size_and_temperatures() -> None:

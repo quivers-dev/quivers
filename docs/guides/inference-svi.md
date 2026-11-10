@@ -480,12 +480,16 @@ class MyGuide(Guide):
         raise NotImplementedError()
 ```
 
-The objectives draw through `Guide.rsample_strata`, whose default
-returns the single stratum `[self.rsample(x)]` with weight one. A guide
-whose sampler makes a discrete choice that `rsample` cannot
-reparameterize overrides it to return weighted strata whose weighted
-average estimates expectations under `log_prob`'s density, as
-`AutoMixtureGuide` does.
+The objectives draw through `Guide.rsample_strata`, which returns
+[`GuideDraw`](../api/inference/guide.md#quivers.inference.guides.GuideDraw)
+records: the sites, the guide log-density the objective pairs with
+them, and a stratum log-weight. Its default returns one draw from
+`rsample`, scored by `log_prob`, with weight one. A guide whose sampler
+makes a discrete choice that `rsample` cannot reparameterize overrides
+it to return weighted strata whose weighted average estimates
+expectations under the guide, as `AutoMixtureGuide` does; a guide
+whose density exists only along the path that produced a draw returns
+that density with the draw, as `AutoDAIS` does.
 
 ## Further reading
 

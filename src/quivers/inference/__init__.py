@@ -52,6 +52,7 @@ from quivers.inference.guides import (
     AutoNormalizingFlow,
     AutoStructured,
     Guide,
+    GuideDraw,
 )
 from quivers.inference.estimators import (
     DoublyReparameterized,
@@ -112,6 +113,7 @@ __all__ = [
     "LatentRegistry",
     "LatentSite",
     "Guide",
+    "GuideDraw",
     "AutoNormalGuide",
     "AutoMultivariateNormalGuide",
     "AutoLowRankMultivariateNormalGuide",

@@ -54,7 +54,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from quivers.inference.guides.base import Guide
+from quivers.inference.guides.base import Guide, GuideDraw
 
 
 class AutoMixtureGuide(Guide):
@@ -147,19 +147,17 @@ class AutoMixtureGuide(Guide):
             )
         return self._component_guides[index].rsample(x)
 
-    def rsample_strata(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+    def rsample_strata(self, x: torch.Tensor) -> tuple[GuideDraw, ...]:
         """Enumerate the components as strata.
 
         Each component contributes its own strata (one for an
         ordinary component, several for a nested mixture), with the
-        component's log mixture weight added to their log-weights.
-        The resulting weights sum to one and the strata partition
-        the mixture density, so
+        component's log mixture weight added to their log-weights and
+        each draw scored by the mixture density. The resulting weights
+        sum to one and the strata partition the mixture density, so
         :math:`\\sum_s \\omega_s f(z_s)` estimates
         :math:`\\mathbb{E}_q[f]` without bias, with gradients to the
-        mixture logits through :math:`\\omega_s`.
+        mixture logits through :math:`\\omega_s` and the density.
 
         Parameters
         ----------
@@ -168,21 +166,22 @@ class AutoMixtureGuide(Guide):
 
         Returns
         -------
-        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
-            Log-weights of shape ``(S,)`` and the ``S`` per-site
-            draws, where ``S`` is the total stratum count over the
+        tuple[GuideDraw, ...]
+            One weighted draw per stratum, ``S`` in total over the
             components.
         """
         log_pi = F.log_softmax(self.mixture_logits, dim=-1)
-        log_weight_parts: list[torch.Tensor] = []
-        draws: list[dict[str, torch.Tensor]] = []
+        draws: list[GuideDraw] = []
         for k, component in enumerate(self._component_guides):
-            component_log_weights, component_draws = component.rsample_strata(x)
-            log_weight_parts.append(
-                log_pi[k] + component_log_weights.to(dtype=log_pi.dtype)
-            )
-            draws.extend(component_draws)
-        return torch.cat(log_weight_parts, dim=0), draws
+            for draw in component.rsample_strata(x):
+                draws.append(
+                    GuideDraw(
+                        sites=draw.sites,
+                        log_density=self.log_prob(x, draw.sites),
+                        log_weight=log_pi[k] + draw.log_weight.to(dtype=log_pi.dtype),
+                    )
+                )
+        return tuple(draws)
 
     # ------------------------------------------------------------------
     # Log-density

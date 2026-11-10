@@ -26,7 +26,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from quivers.inference.guides.base import Guide
+from quivers.inference.guides.base import Guide, GuideDraw
 
 
 class AutoGuideList(Guide):
@@ -101,17 +101,16 @@ class AutoGuideList(Guide):
                 result[name] = tensor
         return result
 
-    def rsample_strata(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+    def rsample_strata(self, x: torch.Tensor) -> tuple[GuideDraw, ...]:
         """Product of the parts' strata.
 
-        The parts are independent, so the joint guide's strata are
-        the Cartesian product of the parts' strata: each joint
-        stratum merges one draw per part and carries the sum of the
-        parts' log-weights. A part that is an `AutoMixtureGuide` thus
-        has its components enumerated inside the list guide, and the
-        weights of the product still sum to one.
+        The parts are independent, so the joint guide's strata are the
+        Cartesian product of the parts' strata: each joint draw merges
+        one draw per part and carries the sums of the parts'
+        log-weights and log-densities. A part that is an
+        `AutoMixtureGuide` thus has its components enumerated inside
+        the list guide, and an `AutoDAIS` part contributes the density
+        of its own trajectory.
 
         Parameters
         ----------
@@ -120,26 +119,27 @@ class AutoGuideList(Guide):
 
         Returns
         -------
-        tuple[torch.Tensor, list[dict[str, torch.Tensor]]]
-            Log-weights of shape ``(S,)``, where ``S`` is the product
-            of the parts' stratum counts, and the ``S`` merged
-            per-site draws.
+        tuple[GuideDraw, ...]
+            ``S`` merged draws, where ``S`` is the product of the parts'
+            stratum counts.
         """
-        joint_log_weights: list[torch.Tensor] = [
-            torch.zeros((), device=x.device, dtype=torch.get_default_dtype())
-        ]
-        joint_draws: list[dict[str, torch.Tensor]] = [{}]
+        joint: list[GuideDraw] | None = None
         for part in self._parts_dict.values():
-            part_log_weights, part_draws = part.rsample_strata(x)
-            next_log_weights: list[torch.Tensor] = []
-            next_draws: list[dict[str, torch.Tensor]] = []
-            for prefix_log_weight, prefix_draw in zip(joint_log_weights, joint_draws):
-                for part_log_weight, part_draw in zip(part_log_weights, part_draws):
-                    next_log_weights.append(prefix_log_weight + part_log_weight)
-                    next_draws.append({**prefix_draw, **part_draw})
-            joint_log_weights = next_log_weights
-            joint_draws = next_draws
-        return torch.stack(joint_log_weights, dim=0), joint_draws
+            part_draws = part.rsample_strata(x)
+            if joint is None:
+                joint = list(part_draws)
+                continue
+            joint = [
+                GuideDraw(
+                    sites={**prefix.sites, **draw.sites},
+                    log_density=prefix.log_density + draw.log_density,
+                    log_weight=prefix.log_weight + draw.log_weight,
+                )
+                for prefix in joint
+                for draw in part_draws
+            ]
+        assert joint is not None
+        return tuple(joint)
 
     def log_prob(
         self,
