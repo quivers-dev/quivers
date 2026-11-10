@@ -52,6 +52,14 @@ def _vector_array(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     return prior + D.Normal(t, 1.0).log_prob(y).sum()
 
 
+def _observe_array(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    mu, y = v["mu"], v["y"]
+    return D.Normal(0.0, 1.0).log_prob(mu) + D.Normal(mu, 1.5).log_prob(y).sum()
+
+
+_Y_ARRAY = [0.3, -0.4, 1.2, 0.0, -0.9, 0.5, 0.8, -1.1, 0.2, 0.6, -0.3, 1.4]
+
+
 def _simplex_rows(seed: int) -> list[float]:
     generator = torch.Generator().manual_seed(seed)
     rows = torch.softmax(torch.randn(2, 2, 3, generator=generator), dim=-1)
@@ -66,21 +74,25 @@ def _normal_cells(seed: int) -> list[float]:
 _DATA: dict[str, dict[str, Host]] = {
     "axes/scalar_independent_array": {"y": _Y},
     "axes/vector_independent_array": {"y": _Y},
+    "axes/observe_independent_array": {"y": _Y_ARRAY},
 }
 
 _POINTS: dict[str, list[dict[str, Host]]] = {
     "axes/scalar_independent_array": [{"w": _normal_cells(seed)} for seed in range(3)],
     "axes/vector_independent_array": [{"p": _simplex_rows(seed)} for seed in range(3)],
+    "axes/observe_independent_array": [{"mu": -0.7}, {"mu": 0.1}, {"mu": 1.3}],
 }
 
 _SHAPES: dict[str, dict[str, list[int]]] = {
     "axes/scalar_independent_array": {"w": [2, 3, 2], "y": [4]},
     "axes/vector_independent_array": {"p": [2, 2, 3], "y": [4]},
+    "axes/observe_independent_array": {"mu": [], "y": [2, 3, 2]},
 }
 
 _ORACLES: dict[str, Oracle] = {
     "axes/scalar_independent_array": _scalar_array,
     "axes/vector_independent_array": _vector_array,
+    "axes/observe_independent_array": _observe_array,
 }
 
 
@@ -231,10 +243,22 @@ def test_church_scores_the_reference_joint(fixture: str, scratch: pathlib.Path) 
     except UnsupportedConstruct as refusal:
         assert refusal.kinds, refusal
         return
+    # The Scheme runtime reads a multi-axis datum as nested lists, one
+    # level per axis, where the container probes take it flat.
+    nested = [
+        _protocol.Point(
+            params=point.params,
+            data={
+                name: torch.tensor(value).reshape(_SHAPES[fixture][name]).tolist()
+                for name, value in point.data.items()
+            },
+        )
+        for point in _points(fixture)
+    ]
     result = ChurchProbe().evaluate(
         source,
         fixture.replace("/", "-"),
-        _points(fixture),
+        nested,
         scratch=scratch / fixture.replace("/", "-") / "church",
     )
     _equivalence.assert_log_density_match(

@@ -4515,13 +4515,14 @@ class _ProgramElaboration:
                 batch_axes = (self._object_axis(step.index, step),)
             rank = record.event_rank
             if (
-                isinstance(step, SampleStep)
+                isinstance(step, SampleStep | ObserveStep)
                 and rank <= 1
                 and len(over) > rank
                 and not (rank == 0 and len(over) == 1)
             ):
                 # The leading axes beyond the family's event rank index
-                # an independent array of variates: ``Normal`` over
+                # an independent array of variates, sampled or observed:
+                # ``Normal`` over
                 # ``[B, C]`` is a ``(B, C)`` array of independent
                 # normals, ``Dirichlet`` over ``[B, K]`` one ``K``-simplex
                 # point per element of ``B``. They are batch axes after

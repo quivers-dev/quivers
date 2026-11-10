@@ -932,13 +932,26 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+            # An observe's axis-role clause arrives as options; read it
+            # as the axes a sample's clause gives.
+            over = get_option_name_list(
+                step.options, "over", line=step.line, col=step.col
+            )
+            iid_over = get_option_name_list(
+                step.options, "iid_over", line=step.line, col=step.col
+            )
+            axes = step.axes
+            if axes is None and (over or iid_over):
+                axes = AxisSpec(
+                    over=over, iid_over=iid_over, line=step.line, col=step.col
+                )
             return BindStep(
                 vars=step.vars,
                 morphism=step.morphism,
                 args=step.args,
                 index=step.index,
                 mode="score",
-                axes=step.axes,
+                axes=axes,
                 via=step.via,
                 via_axes=step.via_axes,
                 line=step.line,
@@ -1071,6 +1084,7 @@ class _ProgramsMixin:
                             response_var=step.vars[0],
                             fibration_var=step.via,
                             fibration_axes=step.via_axes,
+                            axes=step.axes,
                             line=step.line,
                             col=step.col,
                         )
@@ -1931,6 +1945,7 @@ class _ProgramsMixin:
                 morphism=new_morph,
                 args=self._rename_args(step.args, value_subst, rename),
                 response_var=rename.get(step.response_var, step.response_var),
+                axes=step.axes,
                 line=step.line,
                 col=step.col,
             )
@@ -2989,19 +3004,32 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+                # Leading `over` axes beyond the family's event rank
+                # index an independent array of observations per row,
+                # as they do for a sample.
+                array = self._independent_over_axes(
+                    step.morphism, step.axes, step.line, step.col
+                )
+                array_shape = () if array is None else array[0]
                 _synth = DrawStep(
                     vars=(step.index_var,),
                     morphism=step.morphism,
                     args=step.args,
                     is_observed=True,
+                    axes=None if array is None else array[1],
                     line=step.line,
                     col=step.col,
                 )
                 # Use the program's declared codomain as a fallback for
                 # type inference on inline distributions; the family's
-                # codomain is what actually matters.
+                # codomain is what actually matters. An array's entries
+                # are drawn one variate each.
                 family, step_args = self._resolve_draw_morphism(
-                    _synth, bound_vars, codomain
+                    _synth,
+                    bound_vars,
+                    codomain
+                    if array is None
+                    else Euclidean(name=f"_{step.response_var}", dim=1),
                 )
                 # Build a placeholder response of the right shape; the
                 # actual values are supplied at fit time via the
@@ -3019,8 +3047,11 @@ class _ProgramsMixin:
                     resp_shape = (idx_space.size,) if d == 1 else (idx_space.size, d)
                 else:
                     resp_shape = (idx_space.size,) + tuple(family.codomain.shape)
+                resp_shape = (resp_shape[0], *array_shape, *resp_shape[1:])
                 placeholder = torch.zeros(*resp_shape)
-                vec_obs = VectorisedObserve(family, placeholder)
+                vec_obs = VectorisedObserve(
+                    family, placeholder, array_shape=array_shape
+                )
                 # The step's response_var is the data column supplied
                 # at fit time. We expose it as the bound name so the
                 # runtime's observations[response_var] = data flow

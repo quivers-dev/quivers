@@ -343,7 +343,7 @@ option block, before any trailing `~ Family(...)` initializer:
 `over=<axes>` names the **event axes**: the axes on which the
 family's joint structure lives. On a `morphism` declaration the axis
 count must match the family's declared `event_rank`, and on a `sample`
-step it must be at least that rank, as described below (0 for scalar families like Normal /
+or `observe` step it must be at least that rank, as described below (0 for scalar families like Normal /
 Beta / Gamma; 1 for vector families like
 [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal),
 [`Dirichlet`](../api/continuous/families.md#quivers.continuous.families.ConditionalDirichlet),
@@ -362,8 +362,8 @@ axis is the row axis, the second the column axis). The full
 event-rank table lives in
 [continuous families](continuous-families.md#event-rank-and-axis-role-syntax).
 
-On a `sample` step, `over` may list more axes than the family's event
-rank. The leading axes beyond the event rank then index an independent
+On a `sample` or `observe` step, `over` may list more axes than the
+family's event rank. The leading axes beyond the event rank then index an independent
 array of variates, and the trailing ones are the family's event axes:
 `sample w : A <- Normal(loc=0.0, scale=1.0) [over=[B, C]]` draws an
 `(A, B, C)` array of independent normals, and `sample p : A <-

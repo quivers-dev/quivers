@@ -471,10 +471,41 @@ class VectorisedObserve(ContinuousMorphism):
         codomain takes ``(N,)`` indices and has no event axis.
     """
 
-    def __init__(self, family: ContinuousMorphism, response: torch.Tensor) -> None:
+    def __init__(
+        self,
+        family: ContinuousMorphism,
+        response: torch.Tensor,
+        *,
+        array_shape: tuple[int, ...] = (),
+    ) -> None:
         super().__init__(family.domain, family.codomain)
         self._family = family
+        self._array_shape = tuple(array_shape)
         self.register_buffer("_response", response.detach())
+
+    @property
+    def array_shape(self) -> tuple[int, ...]:
+        """The extents of the independent array each observation row holds.
+
+        Empty for one variate per row; ``(|B|, |C|)`` for an observation
+        drawn over leading ``over`` axes beyond its family's event rank.
+        """
+        return self._array_shape
+
+    def _array_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """Repeat each row's parameters for every entry of its array.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The parameters, one row per observation row.
+
+        Returns
+        -------
+        torch.Tensor
+            The parameters, one row per entry of every row's array.
+        """
+        return x.repeat_interleave(math.prod(self._array_shape), dim=0)
 
     @property
     def response(self) -> torch.Tensor:
@@ -521,7 +552,14 @@ class VectorisedObserve(ContinuousMorphism):
         rows = self.response.shape[0]
         if x.dim() >= 1 and x.shape[0] == 1 and rows > 1:
             x = x.expand(rows, *x.shape[1:])
-        return self._family.rsample(x, sample_shape)
+        if not self._array_shape:
+            return self._family.rsample(x, sample_shape)
+        draws = self._family.rsample(self._array_rows(x), sample_shape)
+        lead = tuple(sample_shape)
+        event = tuple(draws.shape[len(lead) + 1 :])
+        if event == (1,):
+            event = ()
+        return draws.reshape(*lead, x.shape[0], *self._array_shape, *event)
 
     def _align_response(self, target: torch.Tensor) -> torch.Tensor:
         """Give the response its codomain's event axis before scoring.
@@ -572,6 +610,19 @@ class VectorisedObserve(ContinuousMorphism):
         for fast prior-predictive checks.
         """
         target = y if y is not None else cast("torch.Tensor", self._response)
+        if self._array_shape:
+            # Each entry of a row's array is one observation of the
+            # per-row family at that row's parameters.
+            entries = math.prod(self._array_shape)
+            flat = target.reshape(target.shape[0] * entries, -1).squeeze(-1)
+            rows = (
+                x
+                if x.shape[0] == target.shape[0]
+                else x.expand(target.shape[0], *x.shape[1:])
+            )
+            return self._family.log_prob(
+                self._array_rows(rows), self._align_response(flat)
+            ).sum()
         return self._family.log_prob(x, self._align_response(target)).sum()
 
     def log_likelihood(self, theta: torch.Tensor) -> torch.Tensor:

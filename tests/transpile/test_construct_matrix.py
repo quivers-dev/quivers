@@ -242,9 +242,13 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
     }
 )
 
-# A site drawn over more `over` axes than its family's event rank is
-# plated over several axes, and a WebPPL draw carries one batch axis.
-for _fixture in ("scalar_independent_array", "vector_independent_array"):
+# A site drawn or observed over more `over` axes than its family's event
+# rank is plated over several axes, and WebPPL carries one batch axis.
+for _fixture in (
+    "observe_independent_array",
+    "scalar_independent_array",
+    "vector_independent_array",
+):
     _EXPECTED_ORTHOGONAL_RAISES[("webppl", "axes", _fixture)] = "batch-rank:"
 
 for _backend in _BACKENDS:

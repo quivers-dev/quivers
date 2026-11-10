@@ -807,6 +807,15 @@ class WebPPLRenderer(RendererBase):
             )
             self._emit_expression_statement(ctx, self._body_vid, observe_call)
             return observe_call
+        if len(plate.batch_dims) > 1:
+            raise UnsupportedConstruct(
+                "qvr-webppl",
+                [
+                    f"batch-rank:{len(plate.batch_dims)}: WebPPL emits one "
+                    f"batch axis per observation; multi-axis plates not "
+                    f"implemented"
+                ],
+            )
         # Batched observe: mapIndexed over the observed data.
         # The loop var is `n`; the per-element bound var is `<name>_n`.
         loop_var = "n"
