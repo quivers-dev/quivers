@@ -1,0 +1,15 @@
+# Exercises a `let`-bound probability vector read as Categorical `probs`,
+# which a statically typed target declares as a vector.
+object Step : FinSet 3
+object K : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample s <- HalfNormal(scale=1.0)
+    let prior = factor k : K in 0.25
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        let loc = real(z) - 1.5
+        observe y : Step <- Normal(loc=loc, scale=s)
+    return s
+
+export p

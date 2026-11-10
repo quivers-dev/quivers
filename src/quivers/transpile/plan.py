@@ -164,6 +164,7 @@ from quivers.transpile.lower import (
     _arg_names_for,
     _codomain_alphabet,
     _wrap_for_constraint,
+    axis_shape,
     _floor_expr,
     _head_binding_name,
     _head_raw_binding_name,
@@ -182,6 +183,12 @@ _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kerne
 #: Primitives that are conversions the target's arithmetic performs on
 #: its own, so they read back as their operand.
 _TRANSPARENT: frozenset[str] = frozenset({"int_to_real", "as_weight", "weight_value"})
+
+#: Targets whose arithmetic keeps two integers integral: Stan's `/`
+#: truncates `int / int`. On them a conversion to real is not
+#: transparent, so `int_to_real(x)` reads back as `1.0 * x`, which is
+#: the same number and a real.
+_INTEGRAL_ARITHMETIC_TARGETS: frozenset[str] = frozenset({"stan"})
 
 #: Unary primitives the expression language writes as operators.
 _UNARY_OPERATORS: dict[str, Literal["-", "not"]] = {
@@ -1122,6 +1129,9 @@ class _ProgramWalk:
         family, args, arg_names, plate, constraint = self._distribution(
             distribution, latent, marginalized=True
         )
+        constraint = self._enumerated_support(
+            latent, family, args, arg_names, constraint
+        )
         self.bound_plates[latent] = plate
         self.ctx.bound_kinds[latent] = "marginalize"
         self.axes[latent] = _dim_names(plate)
@@ -1145,6 +1155,85 @@ class _ProgramWalk:
             scope=scope,
         )
         return node
+
+    def _enumerated_support(
+        self,
+        latent: str,
+        family: str,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        constraint: ConstraintSpec,
+    ) -> ConstraintSpec:
+        """The support a marginalized latent is enumerated over.
+
+        A family whose support is an integer range sized by its
+        arguments (Categorical's ``0 .. K - 1``) has that range read
+        off a placeholder instance, which is exact for literal
+        arguments but not for a reference to a bound name, whose
+        placeholder has no size of its own. The latent's atoms are
+        the elements of its declared index object, so a declared
+        index sizes the range; without one, the width of the
+        probability argument does, read off the referenced binding's
+        plate. A range neither determines is refused rather than
+        enumerated at a placeholder size.
+
+        Parameters
+        ----------
+        latent : str
+            The latent.
+        family : str
+            Its family.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+        arg_names : tuple[str, ...]
+            Their names.
+        constraint : ConstraintSpec
+            The support read off the placeholder instance.
+
+        Returns
+        -------
+        ConstraintSpec
+            The support, with an integer range's bounds taken from
+            the latent's index object or its probability argument.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the range depends on a referenced argument and neither
+            the declared index nor that argument's plate sizes it.
+        """
+        if not isinstance(constraint, CSIntegerInterval):
+            return constraint
+        if all(isinstance(arg, IRArgNumber | IRArgList) for arg in args):
+            return constraint
+        step = self.site_steps.get(latent)
+        if isinstance(step, MarginalizeStep) and step.index is not None:
+            size = axis_shape(step.index, dict(self.planner.cards))
+            if size is not None:
+                return CSIntegerInterval(lower=0, upper=size - 1)
+        named = dict(zip(arg_names, args, strict=True))
+        width_arg = named.get("probs", named.get("logits"))
+        width: int | None = None
+        if isinstance(width_arg, IRArgList):
+            width = len(width_arg.elements)
+        elif isinstance(width_arg, IRArgBroadcast) and width_arg.target_shape:
+            width = width_arg.target_shape[-1]
+        elif isinstance(width_arg, IRArgRef):
+            bound = self.bound_plates.get(width_arg.name)
+            if bound is not None:
+                axes = (*bound.batch_dims, *bound.event_dims)
+                if axes and isinstance(axes[-1], DimStatic):
+                    width = axes[-1].size
+        if width is None:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    f"marginalize:unknown-cardinality:{family}: the support "
+                    f"of `{latent}` depends on an argument whose size is not "
+                    f"static, and the latent declares no index object"
+                ],
+            )
+        return CSIntegerInterval(lower=0, upper=width - 1)
 
     def _scope_nodes(self, computation: Computation) -> Iterator[IRNode]:
         """The statements of a marginalization scope.
@@ -2230,6 +2319,12 @@ def _expression(
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
     if isinstance(value, PrimitiveApplication):
+        if value.name == "int_to_real" and target in _INTEGRAL_ARITHMETIC_TARGETS:
+            return LetExprBinOp(
+                op="*",
+                left=LetExprLiteral(value=1.0),
+                right=_expression(value.arguments[0], cards, target, program),
+            )
         if value.name in _TRANSPARENT:
             return _expression(value.arguments[0], cards, target, program)
         operator = PRIMITIVE_OPERATORS.get(value.name)

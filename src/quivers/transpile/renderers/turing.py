@@ -57,6 +57,7 @@ from quivers.transpile._pipeline import (
     parser_registry,
     target_protocol,
 )
+from quivers.transpile.renderers._one_based import index_covariate_names
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -539,6 +540,7 @@ class TuringRenderer(RendererBase):
                 name_event_rank=name_event_rank_map(ir),
                 name_array_rank=name_array_rank_map(ir),
                 nested_names=nested_tower_names(ir),
+                index_covariates=index_covariate_names(ir),
             ),
             module=ir.module,
         )
@@ -1201,7 +1203,7 @@ class TuringRenderer(RendererBase):
         plates = {**ctx.input_plates, **ctx.sample_plates}
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=plates),
+            support_size=marginal_support_size(node),
         )
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         prefix = f"__marg_{node.latent}"

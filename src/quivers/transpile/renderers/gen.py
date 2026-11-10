@@ -49,6 +49,7 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
+from quivers.transpile.renderers._one_based import index_covariate_names
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -1055,6 +1056,7 @@ class GenRenderer(RendererBase):
             name_event_rank=name_event_rank_map(ir),
             name_array_rank=name_array_rank_map(ir),
             nested_names=nested_tower_names(ir),
+            index_covariates=index_covariate_names(ir),
         )
 
         # Sort inputs alphabetically so the emitted `model(...)` signature

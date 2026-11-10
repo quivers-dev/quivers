@@ -396,7 +396,7 @@ class NumPyroRenderer(RendererBase):
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=py.name_plates),
+            support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
         term_names: list[str] = []

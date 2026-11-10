@@ -144,16 +144,11 @@ _ORACLES: dict[str, Oracle] = {
 #: the kind prefix the refusal names.
 _REFUSED: dict[tuple[str, str], str] = {
     ("let_expressions/let_reduce_nested", "bugs"): "let-expr:axis-reduction",
-    ("let_expressions/let_reduce_nested", "church"): (
-        "let-expr:LetExprFactor:multi-axis-body"
-    ),
+    ("let_expressions/let_reduce_nested", "church"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_nested", "gen"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_nested", "jags"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_nested", "stan"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_nested", "turing"): "let-expr:axis-reduction",
-    ("let_expressions/let_reduce_matrix", "church"): (
-        "let-expr:LetExprFactor:multi-axis-body"
-    ),
     ("let_expressions/let_reduce_matrix", "bugs"): "let-expr:axis-reduction",
     ("let_expressions/let_reduce_matrix", "jags"): "let-expr:axis-reduction",
 }

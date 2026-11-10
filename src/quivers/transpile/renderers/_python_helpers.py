@@ -40,13 +40,11 @@ from quivers.dsl.pure_builtins import EAGER_BUILTIN_NAMES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.family_meta import FAMILY_META, marginalize_support
 from quivers.transpile.ir import (
+    CSIntegerInterval,
     Dim,
-    DimStatic,
     LetAffineSource,
     LetExprAffineMap,
     IRArg,
-    IRArgBroadcast,
-    IRArgList,
     IRArgRef,
     IRDeterministic,
     IRMarginalize,
@@ -1693,20 +1691,34 @@ def marginalize_body(
     return MarginalizeBody(deterministics=tuple(deterministics), observe=observe)
 
 
-def marginal_support_size(
-    node: IRMarginalize, *, name_plates: dict[str, Plate]
-) -> int | None:
+def marginal_support_size(node: IRMarginalize) -> int | None:
     """Class count of a `class_index` atom set, or `None` when the
-    call site does not pin it.
+    family's atoms carry their own count.
 
-    The count is the trailing declared extent of the family's probability
-    argument: `Categorical(probs=theta)` over a `theta` declared
-    ``[over=Topic]`` enumerates ``|Topic|`` atoms. Checked computation and
-    factor results carry tensor axes as batch dimensions, while a sampled
-    simplex carries its class axis as an event dimension, so both halves of
-    the plate participate. Inline and broadcast probability vectors state
-    the same extent directly. A `binary` atom set carries its own size and
-    ignores this.
+    The plan states the latent's support as an integer range sized by
+    the latent's declared index object, or by the width of its
+    probability argument when it declares none (see
+    `_enumerated_support` in [`quivers.transpile.plan`][quivers.transpile.plan]),
+    so the count is that range's length whatever the probability
+    argument is: a sampled simplex, a literal, or a `let`. A `binary`
+    atom set carries its own size and ignores this.
+
+    Parameters
+    ----------
+    node : IRMarginalize
+        The marginalize block.
+
+    Returns
+    -------
+    int | None
+        The number of atoms, or `None` for a family with no
+        class-index atom set or one whose atoms carry their own count.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If a class-index latent's planned support is not an integer
+        range.
     """
     meta = FAMILY_META.get(node.family)
     if meta is None:
@@ -1714,19 +1726,15 @@ def marginal_support_size(
     support = marginalize_support(meta)
     if support is None or support.size is not None:
         return None
-    probs = _named_arg(node.args, node.arg_names, support.weight_arg)
-    if isinstance(probs, IRArgRef):
-        plate = name_plates.get(probs.name)
-        if plate is not None:
-            dimensions = (*plate.batch_dims, *plate.event_dims)
-            residual = dimensions[len(probs.indices) :]
-            if residual and isinstance(residual[-1], DimStatic):
-                return residual[-1].size
-    elif isinstance(probs, IRArgList):
-        return len(probs.elements)
-    elif isinstance(probs, IRArgBroadcast) and probs.target_shape:
-        return probs.target_shape[-1]
-    return None
+    if not isinstance(node.constraint, CSIntegerInterval):
+        raise UnsupportedConstruct(
+            "qvr-transpile",
+            [
+                f"marginalize:unknown-cardinality:{node.family}: the support "
+                f"of `{node.latent}` is not a finite integer range"
+            ],
+        )
+    return node.constraint.upper - node.constraint.lower + 1
 
 
 def marginal_weight_probs(

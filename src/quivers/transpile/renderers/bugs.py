@@ -1089,7 +1089,7 @@ class BUGSRenderer(RendererBase):
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=ctx.decl_plates),
+            support_size=marginal_support_size(node),
         )
         fibration = marginalize_fibration(
             node,

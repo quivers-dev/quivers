@@ -79,6 +79,7 @@ from quivers.transpile.ir import (
     LetExprAffineMap,
     Plate,
 )
+from quivers.transpile.renderers._one_based import fold_integers
 from quivers.transpile.renderers._ranks import LAST_AXIS_REDUCTIONS
 from quivers.transpile.renderers._base import IRArgTransform
 
@@ -1136,10 +1137,13 @@ def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
     already runs `1:N`, and an index-valued covariate arrives from
     the host already lifted to one-based.
 
-    An arithmetic subscript mixes the two conventions with no way to
-    tell which operand carries the origin, so it raises rather than
-    emitting an unadjusted expression.
+    Integer-literal arithmetic (`2 - t` once the binder `t` is
+    substituted) is evaluated first, so it is a literal subscript too.
+    An arithmetic subscript that still reads a name mixes the two
+    conventions with no way to tell which operand carries the origin,
+    so it raises rather than emitting an unadjusted expression.
     """
+    idx = fold_integers(idx)
     if isinstance(idx, LetExprLiteral):
         return _emit_number(ctx, float(int(idx.value) + 1))
     if isinstance(idx, (LetExprBinOp, LetExprUnaryOp)):

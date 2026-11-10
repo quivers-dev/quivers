@@ -44,17 +44,13 @@ import panproto
 
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
-from quivers.transpile.renderers._ranks import several_axis_reductions
+from quivers.transpile.renderers._ranks import let_expr_rank, several_axis_reductions
+from quivers.transpile.renderers._rows import take_row
 from quivers.transpile.renderers._scheme_helpers import render_let_expr_scheme
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprBinOp,
-    LetExprCall,
     LetExprFactor,
-    LetExprIndex,
-    LetExprList,
     LetExprNode,
-    LetExprUnaryOp,
     LetExprVar,
 )
 from quivers.transpile.ir import (
@@ -192,19 +188,20 @@ def _denotes_whole_row(expr: LetExprNode, plate: Plate) -> bool:
 
 
 def _plates_align(decl: Plate, surrounding: Plate) -> bool:
-    """True iff `decl`'s batch axes are a left-aligned prefix of
-    `surrounding`'s batch axes.
+    """True iff `decl`'s batch axes and `surrounding`'s agree on their
+    common leading axes.
 
     Purely name-based on `Dim.name`: a ref bound on ``(A,)`` read from
-    a site on ``(A, B)`` aligns on ``A``.
+    a site on ``(A, B)`` aligns on ``A``, and so does a ref bound on
+    ``(A, B)`` read from a site on ``(A,)``, whose row is then the
+    rest of its table (the event a Categorical's `probs` reads).
     """
-    if not decl.batch_dims:
+    if not decl.batch_dims or not surrounding.batch_dims:
         return False
-    decl_names = tuple(d.name for d in decl.batch_dims)
-    surr_names = tuple(d.name for d in surrounding.batch_dims)
-    if len(decl_names) > len(surr_names):
-        return False
-    return decl_names == surr_names[: len(decl_names)]
+    common = min(len(decl.batch_dims), len(surrounding.batch_dims))
+    decl_names = tuple(d.name for d in decl.batch_dims[:common])
+    surr_names = tuple(d.name for d in surrounding.batch_dims[:common])
+    return decl_names == surr_names
 
 
 class ChurchRenderer(RendererBase):
@@ -474,9 +471,7 @@ class ChurchRenderer(RendererBase):
         expr = node.expr
         lift = bool(node.plate.batch_dims) and not _denotes_whole_row(expr, node.plate)
         if lift:
-            loop_name = _loop_name(node.plate)
-            assert loop_name is not None
-            expr = self._index_let_refs(expr, node.plate, loop_name)
+            expr = self._take_loop_rows(expr, node.plate)
         ranks = {
             name: len(plate.batch_dims) + len(plate.event_dims)
             for name, plate in self._binding_plates.items()
@@ -501,52 +496,40 @@ class ChurchRenderer(RendererBase):
             )
         return _list(ctx, (_sym(ctx, "define"), _sym(ctx, node.name), expr_id))
 
-    def _index_let_refs(
-        self, expr: LetExprNode, plate: Plate, loop_name: str
-    ) -> LetExprNode:
-        """Rewrite `expr`, indexing every variable bound on a plate
-        that aligns with `plate` by ``[<loop_name>]``.
+    def _take_loop_rows(self, expr: LetExprNode, plate: Plate) -> LetExprNode:
+        """Read a binding's expression at one iteration of its maps.
 
-        The traversal mirrors
-        `_substitute_ref_indexing`
-        at the let-expression level: only the alignment case applies
-        (let bindings carry no `via` fibration).
+        The binding is built by one ``(map (lambda (m_<axis>) ...)
+        (iota N))`` layer per batch axis, outermost first, and each
+        layer's variable is the zero-based position on its axis. Each
+        operand carrying the binding's leading remaining axis is read
+        at that position through
+        [`take_row`][quivers.transpile.renderers._rows.take_row]; an
+        expression with fewer axes than remain is the same at every
+        position (QVR aligns trailing axes), so that layer selects
+        nothing from it.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The binding's expression.
+        plate : Plate
+            The binding's plate.
+
+        Returns
+        -------
+        LetExprNode
+            The expression for the entry the maps reach.
         """
-        if isinstance(expr, LetExprVar):
-            decl = self._binding_plates.get(expr.name)
-            if decl is not None and _plates_align(decl, plate):
-                return LetExprIndex(array=expr, indices=(LetExprVar(name=loop_name),))
-            return expr
-        if isinstance(expr, LetExprIndex):
-            return LetExprIndex(
-                array=self._index_let_refs(expr.array, plate, loop_name),
-                indices=tuple(
-                    self._index_let_refs(i, plate, loop_name) for i in expr.indices
-                ),
-            )
-        if isinstance(expr, LetExprBinOp):
-            return LetExprBinOp(
-                op=expr.op,
-                left=self._index_let_refs(expr.left, plate, loop_name),
-                right=self._index_let_refs(expr.right, plate, loop_name),
-            )
-        if isinstance(expr, LetExprUnaryOp):
-            return LetExprUnaryOp(
-                operand=self._index_let_refs(expr.operand, plate, loop_name)
-            )
-        if isinstance(expr, LetExprCall):
-            return LetExprCall(
-                func=expr.func,
-                args=tuple(
-                    self._index_let_refs(a, plate, loop_name) for a in expr.args
-                ),
-            )
-        if isinstance(expr, LetExprList):
-            return LetExprList(
-                items=tuple(
-                    self._index_let_refs(i, plate, loop_name) for i in expr.items
-                )
-            )
+        ranks = {
+            name: len(bound.batch_dims) + len(bound.event_dims)
+            for name, bound in self._binding_plates.items()
+        }
+        remaining = len(plate.batch_dims) + len(plate.event_dims)
+        for dim in plate.batch_dims:
+            if let_expr_rank(expr, ranks) == remaining:
+                expr = take_row(expr, LetExprVar(name=f"m_{dim.name}"), ranks, "church")
+            remaining -= 1
         return expr
 
     def _render_gp_forms(
@@ -783,7 +766,7 @@ class ChurchRenderer(RendererBase):
         plates = dict(self._binding_plates)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=plates),
+            support_size=marginal_support_size(node),
         )
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         prefix = f"__marg_{node.latent}"
@@ -970,7 +953,7 @@ class ChurchRenderer(RendererBase):
             complement = _list(
                 ctx, (_sym(ctx, "-"), _num(ctx, 1.0), self._render_arg(ctx, probs))
             )
-            forms = (
+            bit_forms = (
                 _define(
                     ctx,
                     zero,
@@ -989,7 +972,7 @@ class ChurchRenderer(RendererBase):
                     ),
                 ),
             )
-            return (zero, one), forms
+            return (zero, one), bit_forms
         if family != "Categorical":
             raise UnsupportedConstruct(
                 _TARGET,

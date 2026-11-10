@@ -52,6 +52,11 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder, LetFactorCase
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._one_based import (
+    one_based_subscript,
+    reads_index_covariate,
+)
+from quivers.transpile.renderers._ranks import let_expr_rank
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 
@@ -109,7 +114,7 @@ def _render(ctx, expr: LetExprNode) -> tuple[str, str]:
     """Recursive renderer returning ``(vertex_id, vertex_kind)`` so
     parents can populate ``chose-alt-child-kinds`` accurately."""
     if isinstance(expr, LetExprLiteral):
-        return _emit_literal(ctx, expr.value)
+        return _emit_literal(ctx, expr.value, integral=expr.integral)
     if isinstance(expr, LetExprVar):
         return _emit_variable_expression(ctx, expr.name)
     if isinstance(expr, LetExprBinOp):
@@ -127,10 +132,14 @@ def _render(ctx, expr: LetExprNode) -> tuple[str, str]:
             and len(expr.args) == 1
             and isinstance(expr.args[0], LetExprBinOp)
             and expr.args[0].op == "*"
+            and _rank(ctx, expr.args[0].left) == 1
+            and _rank(ctx, expr.args[0].right) == 1
         ):
             inner = expr.args[0]
-            return _emit_function_expression(
-                ctx, "dot_product", (inner.left, inner.right)
+            return _emit_call_rendered(
+                ctx,
+                "dot_product",
+                (_vector_operand(ctx, inner.left), _vector_operand(ctx, inner.right)),
             )
         if (
             expr.func in _REAL_POINTWISE
@@ -212,24 +221,36 @@ def _render(ctx, expr: LetExprNode) -> tuple[str, str]:
     )
 
 
-def _emit_literal(ctx, value: object) -> tuple[str, str]:
+def _emit_literal(ctx, value: float, *, integral: bool) -> tuple[str, str]:
     """Emit a `real_literal` or `integer_literal` vertex.
 
-    Whole-number floats (`1.0`, `2.0`) emit as `integer_literal`
-    so that array indices substituted from factor binders satisfy
-    Stan's strict `arr[int]` typing rule.
+    The literal keeps the type the source gave it: an integral
+    literal (a source integer, a factor binder's value, a subscript)
+    is a Stan `int`, and every other literal is a Stan `real` spelled
+    with its decimal point. Stan's `/` truncates when both operands
+    are `int`, so `1.0 / 4.0` must reach it as two reals.
+
+    Parameters
+    ----------
+    ctx : _StanLetCtx
+        The render context.
+    value : float
+        The literal's value.
+    integral : bool
+        Whether the literal is an integer.
+
+    Returns
+    -------
+    tuple[str, str]
+        The vertex and its kind.
     """
-    if isinstance(value, float) and value == int(value):
+    if integral:
         vid = ctx.vertex(ctx.fresh("il"), "integer_literal")
         ctx.literal(vid, str(int(value)))
         return vid, "integer_literal"
-    if isinstance(value, float):
-        vid = ctx.vertex(ctx.fresh("rl"), "real_literal")
-        ctx.literal(vid, str(value))
-        return vid, "real_literal"
-    vid = ctx.vertex(ctx.fresh("il"), "integer_literal")
-    ctx.literal(vid, str(value))
-    return vid, "integer_literal"
+    vid = ctx.vertex(ctx.fresh("rl"), "real_literal")
+    ctx.literal(vid, repr(float(value)))
+    return vid, "real_literal"
 
 
 def _emit_variable_expression(ctx, name: str) -> tuple[str, str]:
@@ -281,6 +302,60 @@ def _stan_maybe_paren(ctx, rendered: tuple[str, str]) -> tuple[str, str]:
     return _stan_paren(ctx, rendered)
 
 
+def _rank(ctx, expr: LetExprNode) -> int:
+    """The number of axes an expression's value carries.
+
+    Parameters
+    ----------
+    ctx : _StanLetCtx
+        The render context, whose `ranks` map gives each bound name's
+        rank.
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    int
+        Its rank under QVR's shape rules.
+    """
+    return let_expr_rank(expr, ctx.ranks)
+
+
+def _vector_operand(ctx, expr: LetExprNode) -> tuple[str, str]:
+    """Render a one-axis operand as a Stan `vector`.
+
+    QVR arithmetic on a one-axis value is elementwise. Stan defines
+    elementwise arithmetic on `vector` but not on `array[] real`, so an
+    operand that is not declared a `vector` is converted with
+    `to_vector`, which accepts either.
+
+    Parameters
+    ----------
+    ctx : _StanLetCtx
+        The render context, whose `vectors` set names the bindings
+        declared as Stan vectors.
+    expr : LetExprNode
+        A one-axis operand.
+
+    Returns
+    -------
+    tuple[str, str]
+        The rendered operand and its kind.
+    """
+    rendered = _render(ctx, expr)
+    if isinstance(expr, LetExprVar) and expr.name in ctx.vectors:
+        return rendered
+    if rendered[1] == "infix_op_expression":
+        # An elementwise operation over a one-axis operand is already
+        # a vector, because its own operands were converted.
+        return rendered
+    return _emit_call_rendered(ctx, "to_vector", (rendered,))
+
+
+#: The arithmetic operators QVR applies elementwise.
+_ELEMENTWISE_OPERATORS: frozenset[str] = frozenset({"+", "-", "*", "/"})
+
+
 def _emit_infix(ctx, expr: LetExprBinOp) -> tuple[str, str]:
     """Emit an `infix_op_expression` for a binary operator.
 
@@ -291,7 +366,47 @@ def _emit_infix(ctx, expr: LetExprBinOp) -> tuple[str, str]:
     explicit parens `(theta_1 - theta_0)` as the right operand of
     `c * (...)` would re-parse as `(c * theta_1) - theta_0` and
     silently change the meaning).
+
+    Arithmetic over a one-axis operand is elementwise in QVR. Stan
+    spells it on `vector` operands, with `.*` for the product of two
+    vectors and `./` for a quotient whose divisor is a vector, so each
+    one-axis operand is rendered as a vector.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If an arithmetic operand carries two or more axes, which Stan
+        has no elementwise arithmetic for.
     """
+    if expr.op in _ELEMENTWISE_OPERATORS:
+        left_rank = _rank(ctx, expr.left)
+        right_rank = _rank(ctx, expr.right)
+        if max(left_rank, right_rank) >= 2:
+            raise UnsupportedConstruct(
+                "qvr-stan-helper",
+                [
+                    f"let-expr:LetExprBinOp:stan: `{expr.op}` over an "
+                    f"operand with {max(left_rank, right_rank)} axes has no "
+                    f"elementwise Stan form outside a loop over its rows"
+                ],
+            )
+        if max(left_rank, right_rank) == 1:
+            op = expr.op
+            if op == "*" and left_rank == 1 and right_rank == 1:
+                op = ".*"
+            if op == "/" and right_rank == 1:
+                op = "./"
+            left = (
+                _vector_operand(ctx, expr.left)
+                if left_rank == 1
+                else _render(ctx, expr.left)
+            )
+            right = (
+                _vector_operand(ctx, expr.right)
+                if right_rank == 1
+                else _render(ctx, expr.right)
+            )
+            return _emit_infix_rendered(ctx, op, left, right)
     return _emit_infix_rendered(
         ctx, expr.op, _render(ctx, expr.left), _render(ctx, expr.right)
     )
@@ -424,21 +539,6 @@ accept it; otherwise emit_pretty silently drops the entire
 indexed expression and prints `[]`."""
 
 
-def _rebase_literal_index(index: LetExprNode) -> LetExprNode:
-    """Lift an integer-literal subscript from QVR's zero-based origin
-    to Stan's one-based one.
-
-    Only a literal is rebased: a subscript built from a loop
-    variable or from arithmetic the host already evaluates in its
-    own origin would be shifted twice.
-    """
-    if isinstance(index, LetExprLiteral):
-        value = int(index.value)
-        if float(value) == index.value:
-            return LetExprLiteral(value=float(value) + 1.0)
-    return index
-
-
 def _emit_indexed(ctx, expr: LetExprIndex) -> tuple[str, str]:
     """Emit an `indexed_expression` (the `arr[i][j]...` form).
 
@@ -448,13 +548,15 @@ def _emit_indexed(ctx, expr: LetExprIndex) -> tuple[str, str]:
     wrap it in `parenthized_expression` so the printer keeps the
     subtree intact instead of bailing to `[]`.
 
-    Literal subscripts are rebased from QVR's zero-based origin to
-    Stan's one-based one by
-    `_rebase_literal_index`,
-    the way the Julia and BUGS helpers rebase theirs. Every other
-    subscript shape (a loop variable, an arithmetic expression, a
-    nested lookup) is already in the host's origin and passes
-    through untouched.
+    Every subscript is valued in QVR's zero-based origin, and this is
+    the one place it is translated to Stan's one-based one, through
+    [`one_based_subscript`][quivers.transpile.renderers._one_based.one_based_subscript].
+    A Stan loop counter reaches an expression as its QVR value
+    `counter - 1` and so subscripts as the counter itself. The one
+    exception is a subscript that reads an integer data input: the
+    data contract of every one-based target delivers an index
+    covariate in the target's own origin, so such a read is already a
+    Stan subscript.
     """
     arr_vid, arr_kind = _render(ctx, expr.array)
     if arr_kind not in _STAN_INDEXED_CALLEE_KINDS:
@@ -467,7 +569,12 @@ def _emit_indexed(ctx, expr: LetExprIndex) -> tuple[str, str]:
     index_vids: list[str] = []
     child_kinds: list[str] = [arr_kind]
     for idx in expr.indices:
-        inner_vid, inner_kind = _render(ctx, _rebase_literal_index(idx))
+        subscript = (
+            idx
+            if reads_index_covariate(idx, ctx.host_indices)
+            else one_based_subscript(idx)
+        )
+        inner_vid, inner_kind = _render(ctx, subscript)
         wrap = ctx.vertex(ctx.fresh("idx"), "index")
         ctx.constraint(wrap, "chose-alt-child-kinds", inner_kind)
         ctx.edge(wrap, inner_vid, "child_of")
@@ -499,8 +606,8 @@ def _emit_row_block(ctx, array: LetExprNode, offset: int, rows: int) -> tuple[st
         "chose-alt-child-kinds",
         "integer_literal integer_literal",
     )
-    lo_vid, _lo_kind = _emit_literal(ctx, float(offset + 1))
-    hi_vid, _hi_kind = _emit_literal(ctx, float(offset + rows))
+    lo_vid, _lo_kind = _emit_literal(ctx, float(offset + 1), integral=True)
+    hi_vid, _hi_kind = _emit_literal(ctx, float(offset + rows), integral=True)
     ctx.edge(colon, lo_vid, "child_of")
     ctx.edge(colon, hi_vid, "child_of")
     wrap = ctx.vertex(ctx.fresh("idx"), "index")
@@ -609,11 +716,11 @@ def _render_factor(ctx, expr: LetExprFactor) -> tuple[str, str]:
     `array_expression` vertices of shape
     `(|b0|, |b1|, ..., |bn-1|)`. The shared
     `_substitute_let_expr`
-    walk receives the binder's 0-indexed value in both slots,
-    since
+    walk receives the binder's zero-based value, an integer literal,
+    in both slots, since
     `_emit_indexed`
-    is the one place that lifts a literal subscript to Stan's
-    one-based origin.
+    is the one place that lifts a subscript to Stan's one-based
+    origin.
     """
     if expr.cases and expr.body is None:
         if len(expr.binders) != 1:
@@ -688,8 +795,8 @@ def _build_nested_array(
             subst = _substitute_let_expr(
                 subst,
                 binder.var,
-                index_value=LetExprLiteral(value=value),
-                scalar_value=LetExprLiteral(value=value),
+                index_value=LetExprLiteral(value=float(value), integral=True),
+                scalar_value=LetExprLiteral(value=float(value), integral=True),
             )
         return _render(ctx, subst)
     level = len(fixed)

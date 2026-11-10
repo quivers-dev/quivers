@@ -94,6 +94,10 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
+from quivers.transpile.renderers._one_based import (
+    one_based_subscript,
+    reads_index_covariate,
+)
 
 
 @runtime_checkable
@@ -137,6 +141,8 @@ class JuliaShapes:
 
     `nested_names` identifies bindings emitted as nested vector literals, whose
     indices are chained as ``t[i][j]`` rather than emitted as ``t[i, j]``.
+    `index_covariates` names the integer data inputs, whose entries the data
+    contract delivers as one-based subscripts.
     Defaults describe a standalone scalar expression with no declared plates.
     """
 
@@ -144,6 +150,7 @@ class JuliaShapes:
     name_array_rank: dict[str, int]
     nested_names: frozenset[str]
     batch_rank: int
+    index_covariates: frozenset[str]
 
     def __init__(
         self,
@@ -152,11 +159,13 @@ class JuliaShapes:
         name_array_rank: dict[str, int] | None = None,
         nested_names: frozenset[str] = frozenset(),
         batch_rank: int = 0,
+        index_covariates: frozenset[str] = frozenset(),
     ) -> None:
         self.name_event_rank = dict(name_event_rank or {})
         self.name_array_rank = dict(name_array_rank or {})
         self.nested_names = nested_names
         self.batch_rank = batch_rank
+        self.index_covariates = index_covariates
 
     def scoped_to(self, batch_rank: int) -> JuliaShapes:
         """The same rank tables, scoped to a binding whose plate has
@@ -171,6 +180,7 @@ class JuliaShapes:
             name_array_rank=self.name_array_rank,
             nested_names=self.nested_names,
             batch_rank=batch_rank,
+            index_covariates=self.index_covariates,
         )
 
 
@@ -221,6 +231,7 @@ class _JlState:
         self.name_array_rank = shapes.name_array_rank
         self.nested_names = shapes.nested_names
         self.batch_rank = shapes.batch_rank
+        self.index_covariates = shapes.index_covariates
         self.dotted = dotted
 
     def fresh(self, prefix: str) -> str:
@@ -976,7 +987,15 @@ def _emit_index(ctx: _JlState, expr: LetExprIndex) -> tuple[str, str]:
     arr_vid, arr_kind = _render(ctx, expr.array)
     if arr_kind not in _JL_INDEX_CALLEE_KINDS:
         arr_vid, arr_kind = _force_paren(ctx, (arr_vid, arr_kind))
-    inner_rendered = tuple(_render(ctx, _rebase_literal_index(i)) for i in expr.indices)
+    inner_rendered = tuple(
+        _render(
+            ctx,
+            i
+            if reads_index_covariate(i, ctx.index_covariates)
+            else one_based_subscript(i),
+        )
+        for i in expr.indices
+    )
     if isinstance(expr.array, LetExprVar) and expr.array.name in ctx.nested_names:
         current = (arr_vid, arr_kind)
         for one in inner_rendered:
@@ -1143,22 +1162,6 @@ def _emit_affine_map(ctx: _JlState, expr: LetExprAffineMap) -> tuple[str, str]:
     ctx.e(vid, callee_vid, "child_of")
     ctx.e(vid, al_vid, "child_of")
     return vid, "broadcast_call_expression"
-
-
-def _rebase_literal_index(index: LetExprNode) -> LetExprNode:
-    """Shift a literal subscript from QVR's 0-based origin to Julia's.
-
-    Only a literal moves. A named index is either a factor binder,
-    which reaches this point already carrying the 0-based label its
-    axis assigns, or a covariate the probe harness lifts on the way
-    in; either way its value is already in the target's origin by the
-    time the subscript reads it.
-    """
-    if isinstance(index, LetExprLiteral) and not isinstance(index.value, bool):
-        value = index.value
-        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
-            return LetExprLiteral(value=float(value) + 1.0)
-    return index
 
 
 def _residual_index_axes(ctx: _JlState, expr: LetExprIndex) -> int:

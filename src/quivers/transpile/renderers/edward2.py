@@ -811,7 +811,7 @@ class Edward2Renderer(RendererBase):
             )
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=py.name_plates),
+            support_size=marginal_support_size(node),
         )
         meta = self._lookup_meta(observe.family)
         expected_event = _event_shape(

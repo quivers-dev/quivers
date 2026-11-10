@@ -918,7 +918,7 @@ class WebPPLRenderer(RendererBase):
         plates = dict(self._binding_plates)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=plates),
+            support_size=marginal_support_size(node),
         )
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         prefix = f"__marg_{node.latent}"

@@ -148,23 +148,36 @@ _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
     ("bugs", "steps", "marginalize_step"): "marginalize:grouped-fibration",
 }
 
+# A marginalize block with no index into the observe's plate shares one
+# latent across the rows; a target that samples each row's latent on
+# its own would score a different measure, so it refuses the block.
+for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
+    for _fixture in (
+        "marginalize_body_let_chain",
+        "marginalize_body_plated_let",
+        "marginalize_latent_value",
+        "marginalize_let_probs",
+        "marginalize_let_vector_probs",
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "marginalize:ungrouped-over-plate"
+        )
+# BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
+# QVR reduction collapses only the last.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "let_expressions", "let_host_matrix_row")
+    ] = "let-expr:axis-reduction"
+
 # A let reduction collapses only the last axis of its argument, and BUGS /
 # JAGS have no partial reduction of a two-axis table.
 for _backend in ("bugs", "jags"):
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_matrix")] = (
         "let-expr:axis-reduction"
     )
-# Church writes a factor as one list expression, which has no form for a
-# product over two axes.
-_EXPECTED_ORTHOGONAL_RAISES[("church", "let_expressions", "let_reduce_matrix")] = (
-    "let-expr:LetExprFactor:multi-axis-body"
-)
 # No target spells the reduction of a rank-three factor's last axis inside
-# its row loop, and Church has no form for the factor itself.
-_EXPECTED_ORTHOGONAL_RAISES[("church", "let_expressions", "let_reduce_nested")] = (
-    "let-expr:LetExprFactor:multi-axis-body"
-)
-for _backend in ("bugs", "gen", "jags", "stan", "turing"):
+# its row loop: read at one row, the factor still has two axes.
+for _backend in ("bugs", "church", "gen", "jags", "stan", "turing"):
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_nested")] = (
         "let-expr:axis-reduction"
     )

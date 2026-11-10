@@ -1,0 +1,15 @@
+# Exercises a `let` inside a marginalize body that is a tensor over the
+# plate of the observe reading it: each row is scored at its own entry.
+object Step : FinSet 3
+object K : FinSet 2
+object Val : Real 1
+
+program p : Step -> Val
+    sample r <- Gamma(concentration=2.0, rate=1.0)
+    sample prior <- Dirichlet(concentration=1.0) [over=K]
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        let rate = factor t : Step in r * real(t + 1)
+        observe y : Step <- Poisson(rate=rate)
+    return r
+
+export p

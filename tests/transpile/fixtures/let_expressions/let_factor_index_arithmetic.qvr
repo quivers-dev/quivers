@@ -1,0 +1,14 @@
+# Exercises index arithmetic on a `factor` binder (`y[2 - t]`) and a
+# binder read as a number (`real(t + 1)`).
+object Step : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Step <- Normal(loc=mu, scale=1.0)
+    let reversed = factor t : Step in y[2 - t]
+    let weighted = factor t : Step in real(t + 1) * reversed[t]
+    score s = sum(weighted)
+    return mu
+
+export p

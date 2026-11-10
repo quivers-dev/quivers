@@ -42,8 +42,11 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     first child and the arguments as subsequent children.
     """
     if isinstance(expr, LetExprLiteral):
+        # An integral literal is an exact Scheme integer, which a
+        # subscript (`list-ref`) requires; any other literal keeps its
+        # decimal point and is inexact.
         v = ctx.v(ctx.fresh("num"), "number")
-        ctx.lit(v, str(expr.value))
+        ctx.lit(v, str(int(expr.value)) if expr.integral else repr(float(expr.value)))
         return v
     if isinstance(expr, LetExprVar):
         v = ctx.v(ctx.fresh("sym"), "symbol")
@@ -77,14 +80,18 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
             ctx.e(lst, render_let_expr_scheme(ctx, a))
         return lst
     if isinstance(expr, LetExprIndex):
-        lst = ctx.v(ctx.fresh("list"), "list")
-        fn = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(fn, "list-ref")
-        ctx.e(lst, fn)
-        ctx.e(lst, render_let_expr_scheme(ctx, expr.array))
+        # A table is a list of rows, and `list-ref` takes one index, so
+        # `a[i, j]` reads as `(list-ref (list-ref a i) j)`.
+        current = render_let_expr_scheme(ctx, expr.array)
         for idx in expr.indices:
+            lst = ctx.v(ctx.fresh("list"), "list")
+            fn = ctx.v(ctx.fresh("sym"), "symbol")
+            ctx.lit(fn, "list-ref")
+            ctx.e(lst, fn)
+            ctx.e(lst, current)
             ctx.e(lst, _render_index_scheme(ctx, idx))
-        return lst
+            current = lst
+        return current
     if isinstance(expr, LetExprList):
         lst = ctx.v(ctx.fresh("list"), "list")
         fn = ctx.v(ctx.fresh("sym"), "symbol")
