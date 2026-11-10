@@ -1138,15 +1138,32 @@ def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
     the host already lifted to one-based.
 
     Integer-literal arithmetic (`2 - t` once the binder `t` is
-    substituted) is evaluated first, so it is a literal subscript too.
-    An arithmetic subscript that still reads a name mixes the two
-    conventions with no way to tell which operand carries the origin,
-    so it raises rather than emitting an unadjusted expression.
+    substituted) is evaluated first, so it is a literal subscript too,
+    as is a pointwise `max` / `min` of such literals. An arithmetic or
+    call subscript that still reads a name mixes the two conventions
+    with no way to tell which operand carries the origin, so it raises
+    rather than emitting an unadjusted expression.
     """
     idx = fold_integers(idx)
+    if (
+        isinstance(idx, LetExprCall)
+        and idx.func in ("max", "min")
+        and len(idx.args) == 2
+    ):
+        # A pointwise `max` / `min` of integer literals (a clamped
+        # factor binder, `max(t - 1, 0)` once `t` is substituted) is a
+        # literal subscript too.
+        values = [
+            int(bound.value)
+            for bound in (fold_integers(arg) for arg in idx.args)
+            if isinstance(bound, LetExprLiteral) and float(bound.value).is_integer()
+        ]
+        if len(values) == 2:
+            chosen = max(values) if idx.func == "max" else min(values)
+            return _emit_number(ctx, float(chosen + 1))
     if isinstance(idx, LetExprLiteral):
         return _emit_number(ctx, float(int(idx.value) + 1))
-    if isinstance(idx, (LetExprBinOp, LetExprUnaryOp)):
+    if isinstance(idx, (LetExprBinOp, LetExprUnaryOp, LetExprCall)):
         raise UnsupportedConstruct(
             f"qvr-{_target(ctx)}-helper",
             [
