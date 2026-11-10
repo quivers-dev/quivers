@@ -33,6 +33,10 @@ from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 _TARGET = "qvr-scheme-helper"
 
+#: QVR builtins Scheme spells under another name: the power function is
+#: `expt`, and Scheme has no `pow`.
+_SCHEME_CALL_NAMES: dict[str, str] = {"pow": "expt"}
+
 
 def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     """Build a Scheme expression schema for `expr`.
@@ -74,7 +78,7 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     if isinstance(expr, LetExprCall):
         lst = ctx.v(ctx.fresh("list"), "list")
         fn = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(fn, expr.func)
+        ctx.lit(fn, _SCHEME_CALL_NAMES.get(expr.func, expr.func))
         ctx.e(lst, fn)
         for a in expr.args:
             ctx.e(lst, render_let_expr_scheme(ctx, a))

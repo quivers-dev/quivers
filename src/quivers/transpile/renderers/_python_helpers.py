@@ -689,7 +689,8 @@ _BINARY_POINTWISE_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
     "pymc": {
         "max": _pmath("maximum"),
         "min": _pmath("minimum"),
-        "pow": _pmath("pow"),
+        # `pymc.math` has no power function; PyTensor's is `pt.pow`.
+        "pow": (("pymc", "pytensorf", "pt", "pow"), None),
     },
     "edward2": {
         "max": _tfmath("maximum"),
@@ -738,6 +739,7 @@ def _symbolic_index(expr: LetExprNode) -> bool:
             _symbolic_index(index) for index in expr.indices
         )
     return False
+
 
 #: Eager builtin names come from the same capability registry as the compiler.
 _MATH_BUILTIN_NAMES = EAGER_BUILTIN_NAMES

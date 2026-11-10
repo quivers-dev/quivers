@@ -638,6 +638,39 @@ def _emit_binop(ctx: _JlState, expr: LetExprBinOp) -> tuple[str, str]:
     return vid, "binary_expression"
 
 
+def _emit_power(
+    ctx: _JlState, base: LetExprNode, exponent: LetExprNode
+) -> tuple[str, str]:
+    """Emit QVR's pointwise ``pow(base, exponent)`` as ``base .^ exponent``.
+
+    Julia's `Base` has no `pow` function; the power is the `^` operator,
+    and its broadcast form applies pointwise to arrays as to scalars.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    base : LetExprNode
+        The base.
+    exponent : LetExprNode
+        The exponent.
+
+    Returns
+    -------
+    tuple[str, str]
+        The `binary_expression` vertex and its kind.
+    """
+    left_vid, left_kind = _maybe_paren(ctx, _render(ctx, base))
+    op_vid, _op_kind = _emit_operator(ctx, ".^")
+    right_vid, right_kind = _maybe_paren(ctx, _render(ctx, exponent))
+    vid = ctx.v(ctx.fresh("be"), "binary_expression")
+    ctx.constraint(vid, "chose-alt-child-kinds", f"{left_kind} operator {right_kind}")
+    ctx.e(vid, left_vid, "child_of")
+    ctx.e(vid, op_vid, "child_of")
+    ctx.e(vid, right_vid, "child_of")
+    return vid, "binary_expression"
+
+
 def _emit_unary(ctx: _JlState, expr: LetExprUnaryOp) -> tuple[str, str]:
     """Emit a `unary_expression` whose children are ``operator <operand>``.
 
@@ -693,12 +726,15 @@ def _emit_call(
     `_emit_axis_reduction`, which names that axis; a nested tower
     reduces each of its rows; a vector reduces whole, which is the
     same.
-    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`;
+    `pow(a, b)` emits the broadcast power `a .^ b`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
     if func == "sigmoid" and len(args) == 1:
         return _render(ctx, _sigmoid_expansion(args[0]))
+    if func == "pow" and len(args) == 2:
+        return _emit_power(ctx, args[0], args[1])
     if _reduces_tower_rows(ctx, func, args):
         return _emit_tower_row_reduction(ctx, func, args[0])
     if _reduces_named_axis(ctx, func, args):

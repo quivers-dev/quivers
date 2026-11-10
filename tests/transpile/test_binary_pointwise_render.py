@@ -96,7 +96,7 @@ _ELEMENTWISE: dict[str, dict[str, str]] = {
     "pymc": {
         "max": "pymc.math.maximum(",
         "min": "pymc.math.minimum(",
-        "pow": "pymc.math.pow(",
+        "pow": "pymc.pytensorf.pt.pow(",
     },
     "edward2": {
         "max": "tf.math.maximum(",
@@ -142,7 +142,7 @@ def _numpy_namespace(target: str) -> dict[str, object]:
         }
     if target == "pymc":
         tensors = types.SimpleNamespace(
-            pt=types.SimpleNamespace(as_tensor_variable=np.asarray)
+            pt=types.SimpleNamespace(as_tensor_variable=np.asarray, pow=np.power)
         )
         return {"pymc": types.SimpleNamespace(math=math, pytensorf=tensors)}
     return {"tf": types.SimpleNamespace(math=math, stack=np.stack)}

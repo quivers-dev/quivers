@@ -90,6 +90,16 @@ def _observed_read(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _pow(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    mu, y = v["mu"], v["y"]
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu)
+        + D.Normal(mu, 1.0).log_prob(y).sum()
+        + mu**2 * 0.5
+        + 1.5**mu
+    )
+
+
 #: Each fixture's data inputs, as flat lists.
 def _template_substitution(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     effect, y = v["a$effect"], v["y"]
@@ -105,6 +115,7 @@ _DATA: dict[str, dict[str, Host]] = {
     "let_expressions/let_binary_min_max": {"y": [0.2, -0.5, 1.1, 0.4]},
     "let_expressions/let_observed_read": {"y": [0.5, -1.0, 2.0, 0.3]},
     "let_expressions/let_template_substitution": {"y": [0.4, -0.3, 0.8]},
+    "let_expressions/let_pow": {"y": [0.4, -0.3, 0.8]},
 }
 
 #: Each fixture's clamped points; every site varies across them.
@@ -121,6 +132,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"a$effect": [0.2, -1.1]},
         {"a$effect": [1.4, 0.7]},
     ],
+    "let_expressions/let_pow": [{"mu": -0.7}, {"mu": 0.3}, {"mu": 1.4}],
 }
 
 #: The shape of every name a point carries; a scalar's is empty.
@@ -129,6 +141,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_binary_min_max": {"mu": [], "y": [4]},
     "let_expressions/let_observed_read": {"mu": [], "y": [4]},
     "let_expressions/let_template_substitution": {"a$effect": [2], "y": [3]},
+    "let_expressions/let_pow": {"mu": [], "y": [3]},
 }
 
 #: The integer-valued names of each fixture; every other name is real.
@@ -140,6 +153,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_binary_min_max": _binary_min_max,
     "let_expressions/let_observed_read": _observed_read,
     "let_expressions/let_template_substitution": _template_substitution,
+    "let_expressions/let_pow": _pow,
 }
 
 
