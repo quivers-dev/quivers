@@ -183,6 +183,27 @@ for _backend in ("bugs", "church", "gen", "jags", "stan", "turing"):
         "let-expr:axis-reduction"
     )
 
+# A host datum filling a vector-valued family parameter of a plated draw
+# holds one vector per row; a target whose library cannot read a parameter
+# vector per row refuses it rather than score a different model, and the
+# families a target lacks are refused by name.
+for _backend in ("bugs", "church", "gen", "jags", "pymc", "stan", "turing", "webppl"):
+    for _fixture in ("observe_vector_parameter_data", "observe_probs_data"):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "data:per-row-vector-parameter"
+        )
+for _backend in ("pymc", "stan"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_logits_data")] = (
+        "data:per-row-vector-parameter"
+    )
+for _backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_logits_data")] = (
+        "family:Categorical:logits"
+    )
+_EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data")] = (
+    "family:OrderedLogistic"
+)
+
 # A site drawn over more `over` axes than its family's event rank is
 # plated over several axes, and a WebPPL draw carries one batch axis.
 for _fixture in ("scalar_independent_array", "vector_independent_array"):

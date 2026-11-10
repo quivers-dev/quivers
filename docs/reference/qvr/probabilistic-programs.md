@@ -62,7 +62,8 @@ type is inferred from the name's uses:
 
 | Use of the free name `x` | Checked type of `x` |
 | --- | --- |
-| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, `Tensor[A]([x_extent, ...])` |
+| filling a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter |
 | combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
 | read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
 | used as an index | its elements are `Int` |
@@ -74,17 +75,26 @@ as in `score s = sum(weight)`, is reported at the step that reads it: nothing
 says how many entries it has. State its extent by combining it elementwise with
 a value over the intended object, or by reading it entrywise in a factor, as in
 `sum(factor i : Item in weight[i] * resid[i])`. Uses that fix two different
-shapes for one name are refused the same way. A free name filling a scalar
-family parameter of a plated draw directly, as in
-`observe y : School <- Normal(loc=theta, scale=sigma_j)`, holds one value per
-row of the plate, as a name a let feeds to the draw does.
+shapes for one name are refused the same way.
+
+A free name that fills a family parameter of a plated draw directly may also be
+supplied without the plate axis: a scalar `sigma` for `scale=sigma`, or one
+cutpoint vector of shape `(cuts_extent,)` for `cutpoints=cuts`, is one value
+every row shares. Each path broadcasts it across the plate: the compiled runtime
+reads it as it is, and the reference machine spreads it before validating
+([`broadcast_shared_data`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.broadcast_shared_data)). Transpile targets declare the per-row
+shape, so data for them are spread the same way before they are handed over. A
+target whose library cannot read one parameter vector per row refuses the
+program under `data:per-row-vector-parameter` rather than score a different
+model; NumPyro, Pyro, and Edward2 render it.
 
 A run supplies each input at its checked type. The reference machine validates
 every argument, and the compiled runtime (`log_joint`, `trace`, `rsample`, and
 the inference built on them) refuses a host datum whose shape or element type
-contradicts its checked type, naming the datum and both shapes: a vector for a
-scalar input, a `(rows, units)` index for a vector over `Row`, or a
-floating-point tensor for an `Int` index. An open extent takes the length of the
+contradicts its checked type, naming the datum and every admissible shape: a
+vector for a scalar input, a `(rows, units)` index for a vector over `Row`, a
+cutpoint table of neither the per-row nor the shared shape, or a floating-point
+tensor for an `Int` index. An open extent takes the length of the
 first datum it shapes. The check is what keeps the compiled runtime scoring the
 model the checked module and every transpiled program describe.
 

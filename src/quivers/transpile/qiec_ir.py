@@ -1896,12 +1896,16 @@ class IRQiecProgramParameter(dx.Model):
         Its type.
     axes
         The name of each dimension of a tensor-typed parameter.
+    per_row
+        Whether its leading axis is the plate of the draw it fills, so
+        that a value without that axis is shared by every row.
     """
 
     name: str
     role: str
     type: IRQiecStatic
     axes: tuple[str, ...] = ()
+    per_row: bool = False
 
 
 class IRQiecProgramSite(dx.Model):

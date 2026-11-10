@@ -31,7 +31,7 @@ The Beta-Binomial integrates the latent per-batch conversion rate $p_n$ analytic
 #
 #   conc1_j ~ HalfCauchy(2)              per-arm success concentration
 #   conc0_j ~ HalfCauchy(2)              per-arm failure concentration
-#   y_n     ~ BetaBinomial(n_trials_n, conc1_{j(n)}, conc0_{j(n)})
+#   y_n     ~ BetaBinomial(n_trials, conc1_{j(n)}, conc0_{j(n)})
 #
 # The Beta-Binomial marginalises the latent conversion rate
 # analytically. Each batch has an implicit Beta-distributed rate,
@@ -42,7 +42,7 @@ The Beta-Binomial integrates the latent per-batch conversion rate $p_n$ analytic
 # Arm is the plate the concentrations are allocated over and Batch
 # is the plate the counts are observed over; the per-row arm
 # assignment reaches the model through the standard plate-gather
-# idiom (conc1[arm_idx]). The per-batch trial count n_trials is exogenous
+# idiom (conc1[arm_idx]). The trial count n_trials is exogenous
 # data supplied at fit time through the observations dict, and Val
 # is the value space of the returned per-row success
 # concentration.
@@ -83,7 +83,7 @@ observations rather than a population-level pooling term.
 
 `object Arm : FinSet 2` is the plate the concentrations are allocated over, `object Batch : FinSet 12` is the plate the counts are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Batch -> Val`. The domain names the observation plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
-The per-arm concentration parameters `conc1` and `conc0` have independent HalfCauchy priors with scale $2$. `let a = conc1[arm_idx]` and `let b = conc0[arm_idx]` gather each batch's pair through the exogenous arm-assignment vector, the same plate-gather idiom the [2PL IRT example](irt-2pl.md) uses for its cross-classified design. The `observe` step then scores the batch's successes under a Beta-Binomial likelihood with each batch's trial count, `n_trials`, also supplied through host data: a name that fills a parameter of the `Batch`-plated `observe` directly holds one value per batch. `return a` exposes the fitted per-batch success concentration; conversion probabilities can be summarized from `conc1 / (conc1 + conc0)` after drawing both sites.
+The per-arm concentration parameters `conc1` and `conc0` have independent HalfCauchy priors with scale $2$. `let a = conc1[arm_idx]` and `let b = conc0[arm_idx]` gather each batch's pair through the exogenous arm-assignment vector, the same plate-gather idiom the [2PL IRT example](irt-2pl.md) uses for its cross-classified design. The `observe` step then scores the batch's successes under a Beta-Binomial likelihood with shared trial count `n_trials`, also supplied through host data. `return a` exposes the fitted per-batch success concentration; conversion probabilities can be summarized from `conc1 / (conc1 + conc0)` after drawing both sites.
 
 ## Try it
 
@@ -102,8 +102,7 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/beta_binomial_ab_test.qvr")
 model = prog.morphism
 
-n_arm, n_batch = 2, 12
-n_trials = torch.randint(150, 251, (n_batch,))
+n_arm, n_batch, n_trials = 2, 12, 200
 
 true_conc1 = torch.tensor([12.0, 18.0])
 true_conc0 = torch.tensor([28.0, 22.0])
@@ -112,13 +111,9 @@ arm_idx = torch.arange(n_arm).repeat(n_batch // n_arm)
 rate = torch.distributions.Beta(
     true_conc1[arm_idx], true_conc0[arm_idx],
 ).sample()
-y = torch.distributions.Binomial(n_trials.float(), rate).sample()
+y = torch.distributions.Binomial(n_trials, rate).sample()
 
-observations = {
-    "y": y,
-    "arm_idx": arm_idx,
-    "n_trials": n_trials,
-}
+observations = {"y": y, "arm_idx": arm_idx, "n_trials": torch.tensor(n_trials)}
 x_in = torch.zeros(n_batch, 1)
 ```
 

@@ -1530,6 +1530,8 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pyro": "OrderedLogistic",
             "pymc": "OrderedLogistic",
         },
+        # NumPyro's OrderedLogistic names its linear predictor `predictor`.
+        arg_aliases={"numpyro": {"eta": "predictor"}},
     ),
     "OrderedProbit": FamilyMeta(
         qvr_name="OrderedProbit",

@@ -1524,6 +1524,7 @@ class _ProgramElaboration:
         self._program_parameters(declaration, scope, state)
         state.input_shapes = self._infer_input_shapes(declaration)
         state.tables = _gathered_tables(declaration.draws)
+        state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
@@ -1583,6 +1584,7 @@ class _ProgramElaboration:
                         role,
                         scope.locals[name].type,
                         state.parameter_axes.get(name, ()),
+                        per_row=name in state.per_row,
                     )
                     for name, role in state.parameters
                 ),
@@ -3412,15 +3414,17 @@ class _ProgramElaboration:
         -------
         TypeExpr
             For a name some let gathers from, a table: the tensor of its
-            element over one open extent per axis a gather indexes, each
-            a static binder of the program that a run reads off the
-            data. Otherwise ``Int`` or ``Real`` when the name reaches no
+            element over one open extent per axis a gather indexes, and
+            per axis of a row when the gathered rows fill a vector-valued
+            family parameter, each a static binder of the program that a
+            run reads off the data. Otherwise ``Int`` or ``Real`` when the name reaches no
             plated step, else the tensor of that element over the
             plate's first batch axis.
         """
         element, axis = state.input_shapes.get(name, (REAL, None))
         rank = state.tables.get(name)
         if rank is not None:
+            rank += state.table_events.get(name, 0)
             dimensions: list[IndexTerm] = []
             for position in range(rank):
                 extent_name = (
@@ -3435,6 +3439,88 @@ class _ProgramElaboration:
         if axis is None:
             return element
         return tensor_type(element, (axis.size,))
+
+    def _table_event_ranks(
+        self: _Elaborator, declaration: ProgramDecl, tables: Mapping[str, int]
+    ) -> dict[str, int]:
+        """The axes each table's rows carry, read off the draws they fill.
+
+        A let that only gathers rows from a table, as in ``let row_cuts =
+        cuts[participant_idx]``, and fills a family parameter of rank r
+        with them, gathers vectors (or matrices) of that rank: the table
+        has r further axes after the ones a gather indexes.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+        tables : Mapping[str, int]
+            The gathered tables, with the axes a gather indexes.
+
+        Returns
+        -------
+        dict[str, int]
+            Each table whose rows fill a vector-valued parameter, with the
+            rank of one row.
+        """
+        gathers: dict[str, str] = {}
+        steps: list[ProgramStep] = []
+
+        def collect(body: Sequence[ProgramStep]) -> None:
+            """Gather a body's steps, marginalization scopes included.
+
+            Parameters
+            ----------
+            body : Sequence[ProgramStep]
+                The steps.
+            """
+            for step in body:
+                steps.append(step)
+                if isinstance(step, MarginalizeStep):
+                    collect(step.scope)
+
+        collect(declaration.draws)
+        for step in steps:
+            if isinstance(step, LetStep) and isinstance(step.value, LetExprIndex):
+                array = step.value.array
+                while isinstance(array, LetExprIndex):
+                    array = array.array
+                if isinstance(array, LetExprVar) and array.name in tables:
+                    gathers[step.name] = array.name
+        events: dict[str, int] = {}
+        for step in steps:
+            if not isinstance(step, SampleStep | ObserveStep) or not step.args:
+                continue
+            try:
+                resolved = resolve_step_dist(
+                    step.morphism,
+                    step.args,
+                    morphisms=self._program_morphisms,
+                    lets=self._program_lets,
+                    family_registry=frozenset(FAMILIES),
+                    target="qvr-qiec",
+                )
+            except StepResolutionError, TypeError:
+                continue
+            record = FAMILIES.get(resolved.family)
+            if record is None:
+                continue
+            for argument in step.args:
+                if not isinstance(argument, DrawArgNamed):
+                    continue
+                value = argument.value
+                if not isinstance(value, DrawArgName) or value.text not in gathers:
+                    continue
+                try:
+                    parameter = _semantic_family_parameter(
+                        record, argument.parameter, step.morphism
+                    )
+                except KeyError:
+                    continue
+                if parameter.rank > 0:
+                    table = gathers[value.text]
+                    events[table] = max(parameter.rank, events.get(table, 0))
+        return events
 
     def _infer_input_shapes(
         self: _Elaborator, declaration: ProgramDecl
@@ -5103,11 +5189,15 @@ class _ProgramElaboration:
 
         A bound name is read; a morphism with a distribution initializer
         is that distribution when a sampleable is expected; any other
-        name is a data input. Filling a scalar parameter of a plated
-        draw, it is a vector over the plate's first batch axis, one value
-        per row; filling a tensor parameter of a draw with no plate, it
-        is a tensor of open extents; otherwise it is one value of the
-        parameter's element type, which a tensor parameter broadcasts.
+        name is a data input. Filling a parameter of a plated draw whose
+        plate names no event axes, it holds one value per row: its type is
+        the plate's first batch axis, then one open extent per axis of the
+        parameter, and a datum without the plate axis is a value every row
+        shares. Filling a parameter of a draw whose plate names event axes
+        (`[over=...]`), it is one value of the parameter's element type,
+        which the plate broadcasts. Filling a tensor parameter of a draw
+        with no plate, it is a tensor of open extents; filling a scalar
+        parameter of such a draw, one value of its element type.
 
         Parameters
         ----------
@@ -5165,20 +5255,35 @@ class _ProgramElaboration:
                     node,
                 )
             )
-        if rank == 0 and plate.batch:
-            # A scalar parameter of a plated draw takes one value per row,
-            # as a name a let feeds to the draw does: the host datum is a
-            # vector over the plate's first batch axis.
+        if plate.batch and not plate.event:
+            # A parameter of a plated draw takes one value per row, as a
+            # name a let feeds to the draw does: the host datum ranges over
+            # the plate's first batch axis, then over the parameter's own
+            # axes, each an open extent the data fix. A datum without the
+            # plate axis is one value every row shares.
             axis = plate.batch[0]
+            dimensions_per_row: list[IndexTerm] = [axis.size]
+            axes_per_row: list[str] = [axis.name]
+            for position in range(rank):
+                extent_name = (
+                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
+                )
+                binder = state.extents.get(extent_name)
+                if binder is None:
+                    binder = IndexBinder(extent_name, NAT)
+                    state.extents[extent_name] = binder
+                dimensions_per_row.append(IndexVariable(extent_name, NAT))
+                axes_per_row.append(extent_name)
             local = self._declare_parameter(
                 name,
-                tensor_type(element, (axis.size,)),
+                tensor_type(element, tuple(dimensions_per_row)),
                 "data",
                 scope,
                 state,
                 node,
-                axes=(axis.name,),
+                axes=tuple(axes_per_row),
             )
+            state.per_row.add(name)
             state.batch_shapes[name] = (axis.size,)
             return Var(local)
         return Var(self._declare_parameter(name, element, "data", scope, state, node))
@@ -6943,12 +7048,18 @@ class _ProgramState:
     tables
         The names let expressions gather from, with how many axes a
         gather indexes; a free one is a table of open extents.
+    table_events
+        The tables whose gathered rows fill a vector-valued family
+        parameter, with the rank of one row.
     batch_shapes
         The plate extents each bound name ranges over, outermost first:
         a site's batch axes, a plated input's axes, and those a let
         inherits from the plated values it combines.
     parameter_axes
         The axis names of each parameter's dimensions.
+    per_row
+        The inputs that fill a family parameter of a plated draw
+        directly, whose leading axis is that draw's plate.
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
@@ -6977,8 +7088,10 @@ class _ProgramState:
         default_factory=dict
     )
     tables: dict[str, int] = field(default_factory=dict)
+    table_events: dict[str, int] = field(default_factory=dict)
     batch_shapes: dict[str, tuple[IndexTerm, ...]] = field(default_factory=dict)
     parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    per_row: set[str] = field(default_factory=set)
     random: NamedEffectInstance | None = None  # type: ignore[assignment]
     score: NamedEffectInstance | None = None  # type: ignore[assignment]
 

@@ -466,9 +466,18 @@ export m
     )
     expected = torch.distributions.Normal(mu, 1.0).log_prob(torch.zeros(4)).sum()
     assert float(joint.reshape(-1)[0]) == pytest.approx(float(expected), rel=1e-6)
-    with pytest.raises(ValueError, match=r"host datum 'mu' has shape \(\)"):
+    # A datum without the plate axis is one value every row shares, on the
+    # compiled runtime and on the reference machine alike.
+    shared = program.morphism.log_joint(
+        torch.zeros(1, 1), {"mu": torch.tensor(0.5), "y": torch.zeros(4)}
+    )
+    expected = torch.distributions.Normal(0.5, 1.0).log_prob(torch.zeros(4)).sum()
+    assert float(shared.reshape(-1)[0]) == pytest.approx(float(expected), rel=1e-6)
+    run = program.run("m", data={"mu": 0.5, "y": (0.0, 0.0, 0.0, 0.0)})
+    assert run.log_joint == pytest.approx(float(expected), rel=1e-6)
+    with pytest.raises(ValueError, match=r"of shape \(4,\) or \(\), the second"):
         program.morphism.log_joint(
-            torch.zeros(1, 1), {"mu": torch.tensor(0.5), "y": torch.zeros(4)}
+            torch.zeros(1, 1), {"mu": torch.zeros(3), "y": torch.zeros(4)}
         )
 
 

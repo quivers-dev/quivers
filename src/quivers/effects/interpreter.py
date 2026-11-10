@@ -1085,7 +1085,10 @@ def check_host_data(
     length of the first datum it shapes, and every later datum it shapes
     must agree. A run over an input batch replicates the whole program
     once per batch entry, so a datum may also carry one leading axis of
-    the batch's length, one value of its checked type per run.
+    the batch's length, one value of its checked type per run. A datum
+    that fills a parameter of a plated draw directly, listed in the
+    program's ``host_data_shared``, may also omit the plate axis its
+    checked type leads with: it is then one value every row shares.
 
     Parameters
     ----------
@@ -1114,22 +1117,23 @@ def check_host_data(
         element, dimensions = (expected, ()) if split is None else split
         rendered = render_static(expected)
         supplied = tuple(value.shape)
-        per_run = supplied
-        if (
-            runs is not None
-            and len(supplied) == len(dimensions) + 1
-            and supplied[0] == runs
-        ):
-            per_run = supplied[1:]
-        if len(per_run) != len(dimensions) or any(
-            isinstance(dimension, IndexLiteral) and dimension.value != extent
-            for dimension, extent in zip(dimensions, per_run)
-        ):
+        layouts = [tuple(dimensions)]
+        if name in program.host_data_shared and dimensions:
+            layouts.append(tuple(dimensions[1:]))
+        per_run, layout = _matching_layout(supplied, layouts, runs)
+        if layout is None:
+            admissible = " or ".join(_rendered_shape(item) for item in layouts)
+            shared = (
+                ", the second a value every row of the plate shares"
+                if len(layouts) > 1
+                else ""
+            )
             raise ValueError(
                 f"host datum {name!r} has shape {supplied}, but the checked "
                 f"program reads it at type {rendered}, of shape "
-                f"{_rendered_shape(dimensions)}; supply data of that shape"
+                f"{admissible}{shared}; supply data of that shape"
             )
+        dimensions = layout
         for dimension, extent in zip(dimensions, per_run):
             if not isinstance(dimension, IndexVariable):
                 continue
@@ -1145,6 +1149,45 @@ def check_host_data(
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
+
+
+def _matching_layout(
+    supplied: tuple[int, ...],
+    layouts: list[tuple[IndexTerm, ...]],
+    runs: int | None,
+) -> tuple[tuple[int, ...], tuple[IndexTerm, ...] | None]:
+    """The first admissible layout a supplied shape inhabits.
+
+    Parameters
+    ----------
+    supplied : tuple[int, ...]
+        The datum's shape.
+    layouts : list[tuple[IndexTerm, ...]]
+        The checked shapes the datum may take, in order of preference.
+    runs : int | None
+        The input batch's length, whose axis the datum may lead with.
+
+    Returns
+    -------
+    tuple[tuple[int, ...], tuple[IndexTerm, ...] | None]
+        The datum's shape for one run and the layout it inhabits, or the
+        supplied shape and ``None`` when it inhabits none.
+    """
+    for layout in layouts:
+        candidates = [supplied]
+        if (
+            runs is not None
+            and len(supplied) == len(layout) + 1
+            and supplied[0] == runs
+        ):
+            candidates.append(supplied[1:])
+        for per_run in candidates:
+            if len(per_run) == len(layout) and all(
+                not isinstance(dimension, IndexLiteral) or dimension.value == extent
+                for dimension, extent in zip(layout, per_run)
+            ):
+                return per_run, layout
+    return supplied, None
 
 
 def _rendered_shape(dimensions: tuple[IndexTerm, ...]) -> str:

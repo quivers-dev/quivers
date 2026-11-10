@@ -433,6 +433,10 @@ class MonadicProgram(ContinuousMorphism):
         checked elaboration; a run refuses a supplied datum whose shape
         or element type does not inhabit its entry. Empty for a program
         built directly, whose data carry no checked contract.
+    host_data_shared : frozenset[str]
+        The host data whose checked type leads with the plate of the
+        draw they fill; each may also be supplied without that axis, as
+        one value every row shares.
 
     Raises
     ------
@@ -462,6 +466,7 @@ class MonadicProgram(ContinuousMorphism):
         # downstream inference / dispatch code.
         self.effect_set: frozenset[str] | None = effect_set
         self.host_data_types: dict[str, TypeExpr] = {}
+        self.host_data_shared: frozenset[str] = frozenset()
         # compute input component dimensions for param splitting
         if params is not None and len(params) > 1:
             self._param_dims = self._compute_component_dims(domain)

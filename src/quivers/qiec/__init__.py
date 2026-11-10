@@ -285,6 +285,7 @@ from quivers.qiec.primitives import (
 from quivers.qiec.program_runtime import (
     DeductionRun,
     ProgramRun,
+    broadcast_shared_data,
     deduction_item,
     foreign_handler_configuration,
     joint_module,
@@ -728,6 +729,7 @@ __all__ = [
     "reweight_handler",
     "run_deduction",
     "run_named",
+    "broadcast_shared_data",
     "run_program",
     "run_structural",
     "runtime_configuration_from_data",

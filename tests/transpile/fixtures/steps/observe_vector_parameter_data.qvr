@@ -1,0 +1,9 @@
+# Exercises a host datum filling a vector-valued family parameter of a
+# plated observe: `cuts` holds one cutpoint vector per `Resp` row, and a
+# datum without the row axis is one vector every row shares.
+object Resp : FinSet 6
+program ord : Resp -> Resp
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    observe y : Resp <- OrderedLogistic(predictor=eta, cutpoints=cuts)
+    return y
+export ord

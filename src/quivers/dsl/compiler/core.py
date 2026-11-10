@@ -437,7 +437,9 @@ class Compiler(
         (its ``data`` parameters) and every group map (its ``fibration``
         parameters); the compiled program refuses a run whose supplied
         data do not inhabit those types, so it computes only the model
-        the checked module describes.
+        the checked module describes. An input that fills a parameter of
+        a plated draw directly may also be supplied without its plate
+        axis, as one value every row shares.
 
         Parameters
         ----------
@@ -457,6 +459,9 @@ class Compiler(
                 for parameter in entry.parameters
                 if parameter.role in ("data", "fibration")
             }
+            target.host_data_shared = frozenset(
+                parameter.name for parameter in entry.parameters if parameter.per_row
+            )
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.

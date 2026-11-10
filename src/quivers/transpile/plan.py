@@ -1914,6 +1914,19 @@ class _ProgramWalk:
                 name=name, constraint=CSReal(), plate=self.param_map_inputs[name]
             )
         dims = _typed_dims(parameter.type, parameter.axes)
+        if (
+            parameter.per_row
+            and len(dims) > 1
+            and self.planner.target not in _PER_ROW_VECTOR_TARGETS
+        ):
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    f"data:per-row-vector-parameter:{name}: the input fills a "
+                    f"vector-valued family parameter with one vector per row of "
+                    f"a plate, which {self.planner.target} has no rendering for"
+                ],
+            )
         if parameter.role == "domain":
             # The program's input is one value of its domain: the
             # factor's width is the input's event.
@@ -2046,6 +2059,13 @@ def _dim_names(plate: Plate) -> tuple[str, ...]:
         One name per dimension.
     """
     return tuple(str(dim.name) for dim in (*plate.batch_dims, *plate.event_dims))
+
+
+#: The targets that render a family parameter filled by host data holding
+#: one vector per row of the draw's plate: their array libraries read the
+#: per-row matrix and broadcast it against the plate as the checked
+#: program does. Every other target refuses such a program.
+_PER_ROW_VECTOR_TARGETS: frozenset[str] = frozenset({"edward2", "numpyro", "pyro"})
 
 
 def _dim(size: IndexTerm, name: str) -> Dim:
