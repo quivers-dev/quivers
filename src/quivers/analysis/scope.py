@@ -162,29 +162,75 @@ class ScopedRef(ValueModel):
 # ---------------------------------------------------------------------------
 
 
+TOP_LEVEL_ACCESSORS: tuple[tuple[str, ScopeKind], ...] = (
+    ("objects", "object"),
+    ("spaces", "space"),
+    ("programs", "program"),
+    ("morphisms", "morphism"),
+    ("rules", "rule"),
+    ("deductions", "deduction"),
+    ("signatures", "signature"),
+    ("encoders", "encoder"),
+    ("decoders", "decoder"),
+    ("losses", "loss"),
+    ("bundles", "bundle"),
+    ("contractions", "contraction"),
+)
+"""The compiler accessor each top-level kind is read from, in priority
+order. ``programs`` precedes ``morphisms``: a program without typed
+parameters also compiles to a morphism, and it is addressed as the
+program, whose scope holds its parameters and sites."""
+
+
+def top_level_bindings(compiler) -> tuple[ScopedRef, ...]:  # type: ignore[no-untyped-def]
+    """Every top-level binding of ``compiler``'s module, each once.
+
+    A name held by several accessors is bound once, at the first kind
+    in `TOP_LEVEL_ACCESSORS`; in particular every ``program``
+    declaration, with or without typed parameters, is a ``program``
+    binding rather than a ``morphism``.
+
+    Parameters
+    ----------
+    compiler : Compiler
+        A `quivers.dsl.Compiler` whose module has been compiled.
+
+    Returns
+    -------
+    tuple[ScopedRef, ...]
+        The bindings, grouped by kind in `TOP_LEVEL_ACCESSORS` order
+        and in declaration order within a kind.
+    """
+    seen: set[str] = set()
+    out: list[ScopedRef] = []
+    for attr, kind in TOP_LEVEL_ACCESSORS:
+        mapping = getattr(compiler, attr, None) or {}
+        for name, node in mapping.items():
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(
+                ScopedRef(name=name, kind=kind, path=name, parent_kind=None, node=node)
+            )
+    return tuple(out)
+
+
 def _top_level_lookup(compiler, name: str) -> ScopedRef | None:  # type: ignore[no-untyped-def]
-    """Find ``name`` in ``compiler``'s public buckets in priority
-    order. The order resolves shadowing: a morphism shadows a rule
-    of the same name shadows a deduction, and so on. In practice
-    QVR forbids same-name collisions across buckets, so the order
-    only matters when the same name legitimately appears twice
-    (the canonical case is an inline-bodied ``composition`` whose
-    name also appears as a referenced algebra)."""
-    accessor_map: tuple[tuple[str, ScopeKind], ...] = (
-        ("objects", "object"),
-        ("spaces", "space"),
-        ("morphisms", "morphism"),
-        ("rules", "rule"),
-        ("programs", "program"),
-        ("deductions", "deduction"),
-        ("signatures", "signature"),
-        ("encoders", "encoder"),
-        ("decoders", "decoder"),
-        ("losses", "loss"),
-        ("bundles", "bundle"),
-        ("contractions", "contraction"),
-    )
-    for attr, kind in accessor_map:
+    """Find ``name`` among ``compiler``'s top-level bindings.
+
+    Parameters
+    ----------
+    compiler : Compiler
+        A `quivers.dsl.Compiler` whose module has been compiled.
+    name : str
+        The top-level name.
+
+    Returns
+    -------
+    ScopedRef | None
+        The binding `top_level_bindings` gives the name, or ``None``.
+    """
+    for attr, kind in TOP_LEVEL_ACCESSORS:
         mapping = getattr(compiler, attr, None) or {}
         if name in mapping:
             return ScopedRef(
@@ -643,24 +689,8 @@ def find_all_references(compiler, name: str) -> list[ScopedRef]:  # type: ignore
     # Walk every top-level binding and recursively visit scopes.
     # Bounded by the AST size; QVR programs are small.
     seen: set[str] = set()
-    for attr, kind in (
-        ("objects", "object"),
-        ("spaces", "space"),
-        ("morphisms", "morphism"),
-        ("rules", "rule"),
-        ("programs", "program"),
-        ("deductions", "deduction"),
-        ("signatures", "signature"),
-        ("encoders", "encoder"),
-        ("decoders", "decoder"),
-        ("losses", "loss"),
-        ("bundles", "bundle"),
-        ("contractions", "contraction"),
-    ):
-        mapping = getattr(compiler, attr, None) or {}
-        for n, node in mapping.items():
-            top = ScopedRef(name=n, kind=kind, path=n, parent_kind=None, node=node)
-            _collect_named(top, name, hits, seen)
+    for top in top_level_bindings(compiler):
+        _collect_named(top, name, hits, seen)
     hits.sort(key=lambda r: (r.path.count(SCOPE_SEPARATOR), r.path))
     return hits
 
@@ -681,9 +711,11 @@ __all__ = [
     "SCOPE_SEPARATOR",
     "ScopedRef",
     "ScopeKind",
+    "TOP_LEVEL_ACCESSORS",
     "TOP_LEVEL_KINDS",
     "find_all_references",
     "resolve_scoped_path",
     "scope_children",
     "split_path",
+    "top_level_bindings",
 ]

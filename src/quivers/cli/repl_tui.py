@@ -60,7 +60,12 @@ from textual.widgets import (
     Tree,
 )
 
-from quivers.analysis.scope import SCOPE_SEPARATOR, ScopedRef, scope_children
+from quivers.analysis.scope import (
+    SCOPE_SEPARATOR,
+    ScopedRef,
+    scope_children,
+    top_level_bindings,
+)
 from quivers.cli.repl_highlight import to_rich_text, tokenize
 from quivers.cli.repl_complete import all_completions, public_meta_commands
 from quivers.cli.repl_session import (
@@ -914,20 +919,19 @@ def _populate_scope_tree(root, session, keep, *, filter_text):  # type: ignore[n
     compiler = session._compiler  # noqa: SLF001
     if compiler is None:
         return
-    for heading, attr, kind in _TREE_CATEGORIES:
-        mapping = getattr(compiler, attr, None) or {}
-        names = [n for n in sorted(mapping) if keep(n)]
-        if not names:
+    # Each binding sits under its one top-level kind: a program without
+    # typed parameters, which also compiles to a morphism, is listed as
+    # the program whose sites it scopes.
+    by_kind: dict[str, list[ScopedRef]] = {}
+    for ref in top_level_bindings(compiler):
+        if keep(ref.name):
+            by_kind.setdefault(ref.kind, []).append(ref)
+    for heading, _attr, kind in _TREE_CATEGORIES:
+        refs = sorted(by_kind.get(kind, ()), key=lambda ref: ref.name)
+        if not refs:
             continue
         cat_node = root.add(heading, expand=True)
-        for name in names:
-            ref = ScopedRef(
-                name=name,
-                kind=kind,  # type: ignore[arg-type]
-                path=name,
-                parent_kind=None,
-                node=mapping[name],
-            )
+        for ref in refs:
             _add_ref_node(cat_node, session, ref)
 
     grouped: dict[str, list] = {}

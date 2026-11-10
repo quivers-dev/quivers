@@ -502,6 +502,44 @@ class DocumentState:
             return None
         return f"{owner}.{text[i:j]}"
 
+    def scoped_path_at_position(self, line: int, col: int) -> str | None:
+        """The ``::`` scope path covering a position, up to its segment.
+
+        Parameters
+        ----------
+        line : int
+            The 0-based line.
+        col : int
+            The 0-based column.
+
+        Returns
+        -------
+        str | None
+            ``prog::site`` when the identifier at the position is a
+            segment of such a path, cut after that segment: the cursor
+            on ``z`` in ``lda::z::w`` gives ``lda::z``. ``None`` when
+            the identifier is not part of a ``::`` path.
+        """
+        lines = self.source.splitlines()
+        if line >= len(lines):
+            return None
+        text = lines[line]
+        if col > len(text):
+            return None
+        i = col
+        while i > 0 and (_is_ident_char(text[i - 1]) or text[i - 1] == ":"):
+            i -= 1
+        j = col
+        while j < len(text) and _is_ident_char(text[j]):
+            j += 1
+        spelled = text[i:j].lstrip(":")
+        if "::" not in spelled:
+            return None
+        segments = spelled.split("::")
+        if any(not segment or ":" in segment for segment in segments):
+            return None
+        return spelled
+
 
 def decl_names(stmt: Statement) -> tuple[str, ...]:
     """Every name bound by ``stmt``.

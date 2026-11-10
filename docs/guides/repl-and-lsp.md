@@ -782,7 +782,7 @@ What each container kind exposes as named children:
 
 | Container | Children |
 |---|---|
-| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return) |
+| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return); every program is a scope, with or without typed parameters |
 | `marginalize` | the same set of program-step kinds, nested inside the marginalize block |
 | `deduction` | rules + atoms + lexicon entries |
 | `signature` | sorts + constructors + binders + vertex_kinds + edge_kinds |
@@ -1056,7 +1056,10 @@ backend from the first document analysis. With no target, it reports the
 target-independent parser, constraint, compiler, and QIEC diagnostics. Pointed
 at any LSP-aware editor, it provides hover, go-to-definition, references, document
 symbols, semantic highlighting, completion, formatting, and live
-diagnostics.
+diagnostics. Hover and go-to-definition also read a
+[scope path](#scope-paths) such as `lda::theta` written anywhere in the
+document, a comment included: hover shows the step that binds the site and
+its kind, and go-to-definition jumps to the site's name in that step.
 
 The server also handles `workspace/didChangeConfiguration`. Either
 `{"qvr": {"transpileTarget": "stan"}}` or

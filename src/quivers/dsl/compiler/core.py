@@ -131,6 +131,9 @@ class Compiler(
         # stored as their unsubstituted AST decl. Instantiated at each call
         # site by parameter substitution + α-renaming of internal latents.
         self._program_templates: dict[str, ProgramDecl] = {}
+        # Every ``program`` declaration of the module by name, parametric
+        # or not: the scope model a program's sites are addressed through.
+        self._program_decls: dict[str, ProgramDecl] = {}
         # Operadic contraction declarations. Each entry is callable
         # from the DSL at define-binding sites; the value records the
         # compiled `EinsumWiring` plus the declared domain /
@@ -175,9 +178,15 @@ class Compiler(
         return self._algebra
 
     @property
-    def programs(self) -> dict:
-        """Declared parametric program templates (``program NAME(...)``)."""
-        return dict(getattr(self, "_program_templates", {}))
+    def programs(self) -> dict[str, ProgramDecl]:
+        """Every declared program, by name.
+
+        A program with typed parameters (a template) and one without
+        both appear: each is a scope whose parameters and sites are
+        addressed by ``program::site`` paths. A program without typed
+        parameters also compiles to a morphism, listed in `morphisms`.
+        """
+        return dict(getattr(self, "_program_decls", {}))
 
     @property
     def deductions(self) -> dict:
@@ -512,6 +521,7 @@ class Compiler(
         elif isinstance(stmt, MorphismDecl):
             self._compile_morphism(stmt)
         elif isinstance(stmt, ProgramDecl):
+            self._program_decls[stmt.name] = stmt
             self._compile_program(stmt)
         elif isinstance(stmt, ContractionDecl):
             self._compile_contraction(stmt)
