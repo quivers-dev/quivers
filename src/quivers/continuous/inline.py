@@ -30,6 +30,8 @@ FamilySpec entry.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 import math
 from collections.abc import Callable
 import torch
@@ -374,7 +376,9 @@ class MixedInlineDistribution(ContinuousMorphism):
         - ``('var', dim)``: a variable read from the input, ``dim``
           columns wide, or ``None`` when its width is to be read off
           the stacked input (see ``_variable_widths``);
-        - ``('lit', value)``: a fixed literal float value.
+        - ``('lit', value)``: a fixed literal float value;
+        - ``('const', tensor)``: a fixed literal tensor, a list literal
+          such as a cutpoint vector, which every row shares.
     dist_builder : callable
         ``(list[torch.Tensor]) -> torch.distributions.Distribution``.
         Receives one 1-D tensor per parameter (all same batch size).
@@ -389,7 +393,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         self,
         domain: AnySpace,
         codomain: AnySpace,
-        param_spec: list[tuple[str, int | float | None]],
+        param_spec: list[tuple[str, int | float | torch.Tensor | None]],
         dist_builder: Callable,
         discrete: bool = False,
         support: _constraints.Constraint | None = None,
@@ -440,12 +444,14 @@ class MixedInlineDistribution(ContinuousMorphism):
         """
         if x.dim() == 1:
             x = x.unsqueeze(0) if self._is_shared_vector(x) else x.unsqueeze(-1)
-        widths = self._variable_widths(x.shape[-1])
-        variables: list[torch.Tensor] = []
-        var_offset = 0
         positions = [
             pos for pos, (kind, _) in enumerate(self._param_spec) if kind == "var"
         ]
+        # With every parameter a literal the input carries no parameter
+        # columns; it only counts the rows.
+        widths = self._variable_widths(x.shape[-1]) if positions else []
+        variables: list[torch.Tensor] = []
+        var_offset = 0
         for pos, dim in zip(positions, widths, strict=True):
             is_vector = self._param_event_ranks[pos] >= 1
             if dim == 1 and not is_vector:
@@ -461,12 +467,16 @@ class MixedInlineDistribution(ContinuousMorphism):
         supplied = iter(variables)
         for kind, value in self._param_spec:
             if kind == "lit":
-                assert value is not None
+                assert isinstance(value, int | float)
                 params.append(
                     torch.full(
                         literal_shape, float(value), device=x.device, dtype=x.dtype
                     )
                 )
+            elif kind == "const":
+                assert isinstance(value, torch.Tensor)
+                constant = value.to(device=x.device, dtype=x.dtype)
+                params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
         return params
@@ -1769,6 +1779,92 @@ def _unwrap_draw_arg(arg):
     return arg
 
 
+def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
+    """The numbers of a list literal, nested as the literal nests them.
+
+    Parameters
+    ----------
+    arg : DrawArgList
+        The literal.
+
+    Returns
+    -------
+    list[float] | list[list[float]]
+        Its entries.
+
+    Raises
+    ------
+    TypeError
+        If an entry is neither a number nor a list of numbers.
+    """
+    values: list = []
+    for item in arg.items:
+        if isinstance(item, DrawArgScalar):
+            values.append(float(item.value))
+        elif isinstance(item, DrawArgList):
+            values.append(_list_values(item))
+        else:
+            raise TypeError(
+                f"a list literal argument holds numbers or lists of numbers, "
+                f"not a {type(item).__name__}"
+            )
+    return values
+
+
+def _inline_argument(
+    arg: object,
+) -> tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]:
+    """Classify one inline family argument for the compiled runtime.
+
+    Every draw argument kind the grammar has reaches this one function:
+    a number (`DrawArgScalar`) is a literal, a list literal
+    (`DrawArgList`) a literal tensor every row shares, a name
+    (`DrawArgName`) or a bracket-indexed name (`DrawArgIndex`) a value
+    read from the program's bindings, and a keyword argument
+    (`DrawArgNamed`) the argument it names. A nested distribution
+    (`DrawArgDist`) fills only a parameter that takes a distribution,
+    which an inline family with value parameters has none of.
+
+    Parameters
+    ----------
+    arg : object
+        The argument: a tagged draw argument, or its plain form (a
+        number, a name, or an `Indexed` gather).
+
+    Returns
+    -------
+    tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]
+        The argument's kind and its literal value or step argument.
+
+    Raises
+    ------
+    TypeError
+        If the argument is a nested distribution, or a kind the
+        compiled runtime has no reading for, named in the message.
+    """
+    if isinstance(arg, DrawArgNamed):
+        return _inline_argument(arg.value)
+    if isinstance(arg, DrawArgScalar):
+        return "lit", float(arg.value)
+    if isinstance(arg, int | float) and not isinstance(arg, bool):
+        return "lit", float(arg)
+    if isinstance(arg, DrawArgList):
+        return "const", torch.tensor(_list_values(arg))
+    if isinstance(arg, DrawArgName):
+        return "var", arg.text
+    if isinstance(arg, DrawArgIndex):
+        return "var", Indexed(name=arg.name, indices=arg.indices)
+    if isinstance(arg, str | Indexed):
+        return "var", arg
+    if isinstance(arg, DrawArgDist):
+        raise TypeError(
+            "a nested distribution (DrawArgDist) fills a parameter that takes a value"
+        )
+    raise TypeError(
+        f"the compiled runtime has no reading for a {type(arg).__name__} draw argument"
+    )
+
+
 def _normalize_inline_args(args):
     """Map a tuple of (possibly tagged) draw args to the plain
     `str | float | DrawArgDist | DrawArgList` form. Operator
@@ -2072,9 +2168,20 @@ def make_inline_distribution(
     # purposes of picking the fixed vs mixed factory dispatch, alongside
     # bare identifier strings.
     var_names = [a for a in args if isinstance(a, str | Indexed)]
-    if not var_names:
+    # A list literal filling a parameter of a family whose fixed factory
+    # takes numbers alone reads as a literal tensor of the general path
+    # below, as it does beside a variable argument.
+    literal_tensor = any(isinstance(a, DrawArgList) for a in args) and (
+        family not in _VECTOR_PARAM_FAMILIES and family != "Categorical"
+    )
+    fixed = not var_names and not (literal_tensor and family in _FAMILY_BUILDERS)
+    if fixed:
         if family == "Categorical":
-            values = _eval_draw_arg_value(args[0], variable_types)
+            values = (
+                _list_values(args[0])
+                if isinstance(args[0], DrawArgList)
+                else _eval_draw_arg_value(args[0], variable_types)
+            )
             return (
                 make_fixed_categorical(
                     values,
@@ -2106,13 +2213,18 @@ def make_inline_distribution(
             # we re-bundle here when the factory's documented contract
             # is a single vector argument.
             if family in _VECTOR_PARAM_FAMILIES:
-                value = _eval_draw_arg_value(args[0], variable_types)
+                value = (
+                    _list_values(args[0])
+                    if isinstance(args[0], DrawArgList)
+                    else _eval_draw_arg_value(args[0], variable_types)
+                )
                 morph = factory(value, codomain)
             else:
                 all_floats = [float(a) for a in args]
                 morph = factory(*all_floats, codomain)
             return (morph, None)
-        raise ValueError(f"no fixed factory for inline family {family!r}")
+        if family not in _FAMILY_BUILDERS:
+            raise ValueError(f"no fixed factory for inline family {family!r}")
     if family not in _FAMILY_BUILDERS:
         raise ValueError(
             f"no builder for inline family {family!r} with variable arguments"
@@ -2150,13 +2262,17 @@ def make_inline_distribution(
         family,
         tuple(0 for _ in param_names),
     )
-    param_spec: list[tuple[str, int | float | None]] = []
+    param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
     var_name_order: list[StepArgument] = []
     total_var_dim = 0
     for i, arg in enumerate(args):
-        if isinstance(arg, (int, float)):
-            param_spec.append(("lit", float(arg)))
+        kind, value = _inline_argument(arg)
+        if kind == "lit" or kind == "const":
+            assert isinstance(value, float | torch.Tensor)
+            param_spec.append((kind, value))
         else:
+            assert isinstance(value, str | Indexed)
+            arg = value
             # A parameter's width comes from its binding's type; without
             # one it is left unresolved, for the stacked width to settle.
             var_dim: int | None = None
@@ -2241,7 +2357,7 @@ def make_inline_distribution(
         support=fam_support,
         param_event_ranks=fam_event_ranks,
     )
-    return (morph, tuple(var_name_order))
+    return (morph, tuple(var_name_order) if var_name_order else None)
 
 
 def _make_fixed_selected_parameters(
