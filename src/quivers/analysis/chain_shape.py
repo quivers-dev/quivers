@@ -27,9 +27,11 @@ reads.
 
 from __future__ import annotations
 
-from typing import Literal, Mapping
+from typing import Literal
 
 import didactic.api as dx
+
+from quivers._values import ValueModel
 
 from quivers.core.algebras import Algebra
 from quivers.dsl.ast_nodes import (
@@ -88,15 +90,18 @@ class StepShape(dx.Model):
     intermediate_size: int | None = None
 
 
-class ChainShape(dx.Model):
+class ChainShape(ValueModel):
     """Sequence of `StepShape` records for a program.
+
+    Shapes compare by value over every field; the cardinality table
+    compares as a mapping, independently of insertion order.
 
     Attributes
     ----------
     algebra_name : str
         Name of the program's governing algebra (the top-level
         ``algebra <name>`` declaration).
-    object_cardinalities : Mapping[str, int]
+    object_cardinalities : dict[str, int]
         Cardinality of every ``object X : N`` declaration preceding
         the program. Used to resolve plate sizes referenced by
         ``: T`` annotations on latents / observes.
@@ -105,9 +110,7 @@ class ChainShape(dx.Model):
     """
 
     algebra_name: str = ""
-    object_cardinalities: Mapping[str, int] = dx.field(
-        default_factory=dict, opaque=True
-    )
+    object_cardinalities: dict[str, int] = dx.field(default_factory=dict)
     steps: tuple[StepShape, ...] = ()
 
     @property
