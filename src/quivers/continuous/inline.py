@@ -36,7 +36,6 @@ import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
-from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._ordered import OrderedLogistic
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
@@ -1048,7 +1047,7 @@ def make_fixed_lkj_cholesky(
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         shape = torch.full((batch,), float(concentration), device=device)
-        return OnionLKJCholesky(dim, shape)
+        return D.LKJCholesky(dim, shape)
 
     return FixedDistribution(codomain, builder, support=_constraints.corr_cholesky)
 
@@ -1464,7 +1463,7 @@ def _dim_dependent_builder(
 
         def _builder(params: list[torch.Tensor]) -> D.Distribution:
             concentration = params[0].clamp(min=EPS)
-            return OnionLKJCholesky(dim, concentration)
+            return D.LKJCholesky(dim, concentration)
 
         return _builder
     raise ValueError(
