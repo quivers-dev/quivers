@@ -71,6 +71,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecTableMap,
     IRQiecComprehension,
     IRQiecDistributionValue,
+    IRQiecLetValue,
     IRQiecReduction,
     IRQiecRowwise,
     IRQiecGather,
@@ -1460,6 +1461,11 @@ def _free_runtime_capture(
             value(item.value, locally_bound)
         elif isinstance(item, IRQiecComprehension):
             value(item.body, locally_bound | {item.binder.name})
+        elif isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                value(binding.value, locally_bound)
+                locally_bound = locally_bound | {binding.binder.name}
+            value(item.body, locally_bound)
 
     def computation(item: IRQiecComputation, locally_bound: frozenset[str]) -> None:
         if isinstance(item, IRQiecReturn):
@@ -1544,6 +1550,10 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
         elif isinstance(item, IRQiecReduction | IRQiecRowwise):
             value(item.value)
         elif isinstance(item, IRQiecComprehension):
+            value(item.body)
+        elif isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                value(binding.value)
             value(item.body)
         elif isinstance(item, IRQiecConstructorValue):
             for field in item.fields:
@@ -2016,6 +2026,16 @@ def _python_value(target: str, node: IRQiecValue) -> str:
             f"tuple({_python_value(target, node.body)} for {binder} in "
             f"range({_extent_literal(node.extent)}))"
         )
+    if isinstance(node, IRQiecLetValue):
+        # Assignment expressions bind in order and are read by the later
+        # bindings and the body; the tuple keeps the term one level deep
+        # however many bindings it holds.
+        bindings = "".join(
+            f"({_local_name(binding.binder.name)} := "
+            f"{_python_value(target, binding.value)}), "
+            for binding in node.bindings
+        )
+        return f"({bindings}{_python_value(target, node.body)})[-1]"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2258,6 +2278,12 @@ def _julia_value(target: str, node: IRQiecValue) -> str:
             f"Tuple({_julia_value(target, node.body)} for {binder} in "
             f"0:({_extent_literal(node.extent)} - 1))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = ", ".join(
+            f"{_local_name(binding.binder.name)} = {_julia_value(target, binding.value)}"
+            for binding in node.bindings
+        )
+        return f"(let {bindings}; {_julia_value(target, node.body)} end)"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2571,6 +2597,16 @@ def _javascript_value(target: str, node: IRQiecValue) -> str:
             f"Object.freeze(mapN(function({binder}) {{ return "
             f"{_javascript_value(target, node.body)}; }}, {_extent_literal(node.extent)}))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = " ".join(
+            f"var {_local_name(binding.binder.name)} = "
+            f"{_javascript_value(target, binding.value)};"
+            for binding in node.bindings
+        )
+        return (
+            f"(function() {{ {bindings} return "
+            f"{_javascript_value(target, node.body)}; }})()"
+        )
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2810,6 +2846,12 @@ def _scheme_value(target: str, node: IRQiecValue) -> str:
             f"(_qvr-qiec-tuple (map (lambda ({binder}) {_scheme_value(target, node.body)}) "
             f"(iota {_extent_literal(node.extent)})))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = " ".join(
+            f"({_local_name(binding.binder.name)} {_scheme_value(target, binding.value)})"
+            for binding in node.bindings
+        )
+        return f"(let* ({bindings}) {_scheme_value(target, node.body)})"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -3182,18 +3224,19 @@ def _stan_statements(
         The statements.
     """
     if isinstance(node, IRQiecReturn):
-        value = _stan_value(node.value, computation)
+        lines, value = _stan_expression(node.value, computation, indent)
         if target is None:
-            return [f"{indent}return {value};"]
-        return [f"{indent}{target} = {value};"]
+            return [*lines, f"{indent}return {value};"]
+        return [*lines, f"{indent}{target} = {value};"]
     if isinstance(node, IRQiecCall):
-        callee = _stan_call(node, computation)
+        lines, callee = _stan_call(node, computation, indent)
         if target is None:
-            return [f"{indent}return {callee};"]
-        return [f"{indent}{target} = {callee};"]
+            return [*lines, f"{indent}return {callee};"]
+        return [*lines, f"{indent}{target} = {callee};"]
     if isinstance(node, IRQiecIf):
-        condition = _stan_value(node.condition, computation)
+        lines, condition = _stan_expression(node.condition, computation, indent)
         return [
+            *lines,
             f"{indent}if ({condition}) {{",
             *_stan_statements(node.then, binders, computation, target, indent + "  "),
             f"{indent}}} else {{",
@@ -3209,10 +3252,13 @@ def _stan_statements(
             name = _local_name(step.binder.name)
             declared = f"{indent}{_stan_type(local.type)} {name}"
             if isinstance(step.first, IRQiecReturn):
-                value = _stan_value(step.first.value, computation)
+                before, value = _stan_expression(step.first.value, computation, indent)
+                lines.extend(before)
                 lines.append(f"{declared} = {value};")
             elif isinstance(step.first, IRQiecCall):
-                lines.append(f"{declared} = {_stan_call(step.first, computation)};")
+                before, callee = _stan_call(step.first, computation, indent)
+                lines.extend(before)
+                lines.append(f"{declared} = {callee};")
             else:
                 lines.append(f"{declared};")
                 lines.extend(
@@ -3223,7 +3269,9 @@ def _stan_statements(
     raise TypeError("the QIEC capability analyzer admitted a non-pure computation")
 
 
-def _stan_call(node: IRQiecCall, computation: str) -> str:
+def _stan_call(
+    node: IRQiecCall, computation: str, indent: str
+) -> tuple[list[str], str]:
     """A call of a module computation as a Stan call expression.
 
     Parameters
@@ -3232,16 +3280,78 @@ def _stan_call(node: IRQiecCall, computation: str) -> str:
         The call.
     computation : str
         The calling computation's name, for refusals.
+    indent : str
+        The indentation of the declarations the arguments need.
 
     Returns
     -------
-    str
+    tuple[list[str], str]
+        The declarations of the arguments' shared bindings, and
         ``qiec_<callee>(<arguments>)``.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If an argument applies a primitive with no Stan spelling.
     """
-    arguments = ", ".join(
-        _stan_value(argument, computation) for argument in node.arguments
-    )
-    return f"qiec_{_safe_name(node.name)}({arguments})"
+    lines: list[str] = []
+    arguments: list[str] = []
+    for argument in node.arguments:
+        before, rendered = _stan_expression(argument, computation, indent)
+        lines.extend(before)
+        arguments.append(rendered)
+    return lines, f"qiec_{_safe_name(node.name)}({', '.join(arguments)})"
+
+
+def _stan_expression(
+    node: IRQiecValue, computation: str, indent: str
+) -> tuple[list[str], str]:
+    """A pure scalar value as Stan declarations and one expression.
+
+    Stan expressions have no binding form, so each binding of an
+    ``IRQiecLetValue`` becomes a typed local declared ahead of the
+    statement that reads the value, and the expression reads it by
+    name. The value is scalar: the Stan capability set admits no
+    comprehension whose index a binding could read.
+
+    Parameters
+    ----------
+    node : IRQiecValue
+        The value.
+    computation : str
+        The computation it belongs to, for the refusal's kind.
+    indent : str
+        The indentation of the declarations.
+
+    Returns
+    -------
+    tuple[list[str], str]
+        The declarations in evaluation order, and the Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If a primitive has no Stan spelling.
+    """
+    lines: list[str] = []
+
+    def hoisted(item: IRQiecValue) -> IRQiecValue:
+        if isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                bound = _stan_value(hoisted(binding.value), computation)
+                lines.append(
+                    f"{indent}{_stan_type(binding.binder.type)} "
+                    f"{_local_name(binding.binder.name)} = {bound};"
+                )
+            return hoisted(item.body)
+        if isinstance(item, IRQiecPrimitiveApplication):
+            return item.with_(
+                arguments=tuple(hoisted(argument) for argument in item.arguments)
+            )
+        return item
+
+    value = _stan_value(hoisted(node), computation)
+    return lines, value
 
 
 def _bound_locals(node: IRQiecComputation) -> tuple[IRQiecLocal, ...]:

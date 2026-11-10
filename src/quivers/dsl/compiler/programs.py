@@ -434,6 +434,32 @@ type LetValue = (
 )
 
 
+def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
+    """The eager value of a list literal or a ``map``.
+
+    The checked surface types a collection of numbers as a ``Tensor``
+    whose leading axis runs over the items, and indexes, reduces, and
+    folds it as one. A collection whose items are all tensors is thus
+    stacked along a new leading axis, after broadcasting the items to
+    one shape. A collection of other host values, such as the tokens a
+    ``parse`` call reads, has no tensor form and stays a Python list.
+
+    Parameters
+    ----------
+    items : list[LetValue]
+        The evaluated items, in order.
+
+    Returns
+    -------
+    torch.Tensor | list[LetValue]
+        The stacked tensor, or the items themselves.
+    """
+    if items and all(isinstance(item, torch.Tensor) for item in items):
+        tensors = cast(list[torch.Tensor], items)
+        return torch.stack(torch.broadcast_tensors(*tensors))
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Built-in tensor primitives visible to let-expression bodies.
 # ---------------------------------------------------------------------------
@@ -4412,7 +4438,8 @@ class _ProgramsMixin:
         * `LetExprVar` — variable reference → env lookup.
         * `LetExprBinOp` — arithmetic over tensors.
         * `LetExprUnaryOp` — negation.
-        * `LetExprList` — list literal → Python list.
+        * `LetExprList` — list literal → stacked tensor, or a Python
+          list when an item is not a tensor.
         * `LetExprLambda` — closure over the let environment.
         * `LetExprMethodCall` — dispatch on receiver type.
         * `LetExprCall` — built-in or constructor mode.
@@ -4486,8 +4513,8 @@ class _ProgramsMixin:
                 for it in node.items
             ]
 
-            def _list(env: dict) -> list:
-                return [fn(env) for fn in item_fns]
+            def _list(env: dict) -> torch.Tensor | list[LetValue]:
+                return _collection_value([fn(env) for fn in item_fns])
 
             return _list
         if isinstance(node, LetExprLambda):
@@ -4652,7 +4679,7 @@ class _ProgramsMixin:
                     coll = arg_fns[0](env)
                     fn = arg_fns[1](env)
                     if func_name == "map":
-                        return [fn(x) for x in coll]
+                        return _collection_value([fn(x) for x in coll])
                     return [x for x in coll if fn(x)]
                 if func_name == "fold":
                     # fold(list, init, accumulator_lambda)
@@ -4682,7 +4709,7 @@ class _ProgramsMixin:
                     # logsumexp_over(list, lambda x -> log_weight_x)
                     coll = arg_fns[0](env)
                     fn = arg_fns[1](env)
-                    if not coll:
+                    if isinstance(coll, list | tuple | torch.Tensor) and len(coll) == 0:
                         return torch.tensor(-float("inf"))
                     weights = []
                     for x in coll:

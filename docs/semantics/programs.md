@@ -294,6 +294,12 @@ $$
 
 `map` lowers to a typed QIEC comprehension. `fold` is a left fold, written
 `fold(xs, init, acc -> item -> body)`, and is elaborated at its fixed extent.
+A body that reads the accumulator more than once, or inside a lambda or
+`factor`, has each intermediate accumulator bound once by a QIEC
+[`LetValue`][quivers.qiec.LetValue] and read through that binding, so the elaborated term is linear in
+$n$ however often the body reads the accumulator. A `map` or `fold`
+source that is not a variable, and the argument of a lambda-bound name
+whose body reads its parameter more than once, are bound the same way.
 `filter` remains available to the eager evaluator but has no checked
 denotation because its result length depends on values.
 

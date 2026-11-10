@@ -48,6 +48,8 @@ from quivers.qiec.terms import (
     Reduction,
     Rowwise,
     Comprehension,
+    LetBinding,
+    LetValue,
     Value,
     Var,
 )
@@ -601,6 +603,21 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
         return Comprehension(
             Local(value.binder.name, substitute_type(value.binder.type, substitution)),
             substitute_index(value.extent, substitution),
+            substitute_value(value.body, substitution),
+            substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, LetValue):
+        return LetValue(
+            tuple(
+                LetBinding(
+                    Local(
+                        binding.binder.name,
+                        substitute_type(binding.binder.type, substitution),
+                    ),
+                    substitute_value(binding.value, substitution),
+                )
+                for binding in value.bindings
+            ),
             substitute_value(value.body, substitution),
             substitute_type(value.result_type, substitution),
         )

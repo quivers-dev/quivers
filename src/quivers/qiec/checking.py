@@ -97,6 +97,7 @@ from quivers.qiec.terms import (
     Reduction,
     Rowwise,
     Comprehension,
+    LetValue,
     TransportValue,
     TensorValue,
     TupleValue,
@@ -2323,9 +2324,10 @@ def infer_value(
     KernelError
         If a local is unbound or carries a type other than the one the
         term claims, if a literal's value does not inhabit its type, if
-        a constructor is applied wrongly, if equality evidence is forged
-        or out of scope, or if an inferred type mentions a rigid variable
-        that escapes its branch.
+        a constructor is applied wrongly, if a let binds a value of a
+        type other than its binder's or rebinds a name in scope, if
+        equality evidence is forged or out of scope, or if an inferred
+        type mentions a rigid variable that escapes its branch.
     """
     if isinstance(value, Var):
         actual = context.local_type(value.local.name)
@@ -2558,6 +2560,29 @@ def infer_value(
             )
         _check_static_variable_scope(expected, context, subject="comprehension type")
         return expected
+    if isinstance(value, LetValue):
+        if not value.bindings:
+            raise KernelError("a let binds at least one value", "qiec-primitive")
+        inner = context
+        for binding in value.bindings:
+            bound = infer_value(binding.value, registry, inner)
+            if bound != binding.binder.type:
+                raise KernelError(
+                    f"let binds {binding.binder.name!r} at "
+                    f"{render_static(binding.binder.type)} a value of type "
+                    f"{render_static(bound)}",
+                    "qiec-primitive",
+                )
+            inner = inner.extend(binding.binder)
+        body = infer_value(value.body, registry, inner)
+        if value.result_type != body:
+            raise KernelError(
+                f"let has type {render_static(body)}, not the claimed "
+                f"{render_static(value.result_type)}",
+                "qiec-primitive",
+            )
+        _check_static_variable_scope(body, context, subject="let type")
+        return body
     if isinstance(value, TupleValue):
         components = tuple(infer_value(item, registry, context) for item in value.items)
         expected = product_type(*components)

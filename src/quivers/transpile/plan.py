@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
-from dataclasses import fields, replace
+from dataclasses import fields, is_dataclass, replace
 from typing import Literal, cast
 
 from torch.distributions import Distribution
@@ -76,6 +76,8 @@ from quivers.qiec.terms import (
     Gather,
     Handle,
     KernelMatrix,
+    LetBinding,
+    LetValue,
     LiteralValue,
     Local,
     LogDensity,
@@ -104,7 +106,7 @@ from quivers.dsl.qiec_lowering import (
     has_qiec_surface,
     lower_qvr_to_qiec,
 )
-from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.types import (
     INT,
     IndexLiteral,
@@ -296,6 +298,249 @@ _VALUE_TYPES: tuple[type, ...] = tuple(
 )
 
 
+class _LetFloater:
+    """Hoist the bindings of every :class:`LetValue` in a value to the front.
+
+    A plan states a program as a sequence of target statements, and the
+    target expression vocabulary has no binding form, so a value's
+    shared intermediates become statements of their own ahead of the
+    statement that reads them. Each binding is hoisted once, under a
+    fresh name the targets accept, so a term that reads a binding many
+    times keeps its size on every target. A binding inside a
+    comprehension reads the comprehension's index, so it is hoisted as
+    the comprehension of its value over the same axis and each read
+    becomes that tensor at the index.
+
+    Parameters
+    ----------
+    occupied : set[str]
+        Every name the program already uses, which no hoisted binding
+        may take.
+    """
+
+    def __init__(self, occupied: set[str]) -> None:
+        self.occupied = occupied
+
+    def fresh(self, name: str) -> str:
+        """A name no statement of the program uses yet.
+
+        Parameters
+        ----------
+        name : str
+            The binder's name in the checked term.
+
+        Returns
+        -------
+        str
+            The name without its leading underscores, which several
+            targets reject, suffixed until it is unused.
+        """
+        base = name.lstrip("_") or "shared"
+        candidate = base
+        suffix = 0
+        while candidate in self.occupied:
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        self.occupied.add(candidate)
+        return candidate
+
+    def computation(
+        self, first: Computation
+    ) -> tuple[tuple[LetBinding, ...], Computation]:
+        """Hoist the bindings out of the values a statement reads.
+
+        Parameters
+        ----------
+        first : Computation
+            The computation one program statement performs.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Computation]
+            The hoisted bindings in evaluation order, and the
+            computation reading them by name. A computation other than
+            a return, a request, or a call is returned unchanged.
+        """
+        if isinstance(first, Return):
+            bindings, value = self.value(first.value, {})
+            return bindings, Return(value)
+        if isinstance(first, Perform):
+            bindings, arguments = self.values(first.request.arguments, {})
+            return bindings, Perform(replace(first.request, arguments=arguments))
+        if isinstance(first, Call):
+            bindings, arguments = self.values(first.arguments, {})
+            return bindings, replace(first, arguments=arguments)
+        return (), first
+
+    def values(
+        self, items: tuple[Value, ...], renamed: dict[Local, Value]
+    ) -> tuple[tuple[LetBinding, ...], tuple[Value, ...]]:
+        """Hoist the bindings out of several values in order.
+
+        Parameters
+        ----------
+        items : tuple[Value, ...]
+            The values.
+        renamed : dict[Local, Value]
+            The term each local bound by an enclosing hoisted binding is
+            now read through.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], tuple[Value, ...]]
+            The hoisted bindings, and the values reading them.
+        """
+        hoisted: list[LetBinding] = []
+        results: list[Value] = []
+        for item in items:
+            bindings, result = self.value(item, renamed)
+            hoisted.extend(bindings)
+            results.append(result)
+        return tuple(hoisted), tuple(results)
+
+    def value(
+        self, value: Value, renamed: dict[Local, Value]
+    ) -> tuple[tuple[LetBinding, ...], Value]:
+        """Hoist the bindings out of one value.
+
+        Parameters
+        ----------
+        value : Value
+            The value.
+        renamed : dict[Local, Value]
+            The term each local bound by an enclosing hoisted binding is
+            now read through.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Value]
+            The hoisted bindings in evaluation order, each reading only
+            program names and earlier hoisted bindings, and the value
+            with no ``LetValue`` left in it.
+        """
+        if isinstance(value, Var):
+            return (), renamed.get(value.local, value)
+        if isinstance(value, LetValue):
+            hoisted: list[LetBinding] = []
+            scope = dict(renamed)
+            for binding in value.bindings:
+                inner, bound = self.value(binding.value, scope)
+                hoisted.extend(inner)
+                local = Local(self.fresh(binding.binder.name), binding.binder.type)
+                hoisted.append(LetBinding(local, bound))
+                scope[binding.binder] = Var(local)
+            inner, body = self.value(value.body, scope)
+            return (*hoisted, *inner), body
+        if isinstance(value, Comprehension):
+            inner, body = self.value(value.body, renamed)
+            if not inner:
+                return (), replace(value, body=body)
+            return self._stacked(value, inner, body)
+        changes: dict[
+            str, Value | tuple[Value, ...] | tuple[tuple[str, Value], ...]
+        ] = {}
+        hoisted = []
+        for field in fields(value):
+            current = getattr(value, field.name)
+            if isinstance(current, _VALUE_TYPES):
+                inner, result = self.value(cast(Value, current), renamed)
+                hoisted.extend(inner)
+                changes[field.name] = result
+            elif isinstance(current, tuple) and current:
+                if all(isinstance(item, _VALUE_TYPES) for item in current):
+                    inner, results = self.values(
+                        cast(tuple[Value, ...], current), renamed
+                    )
+                    hoisted.extend(inner)
+                    changes[field.name] = results
+                elif all(
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and isinstance(item[1], _VALUE_TYPES)
+                    for item in current
+                ):
+                    pairs: list[tuple[str, Value]] = []
+                    for name, item in cast(tuple[tuple[str, Value], ...], current):
+                        inner, result = self.value(item, renamed)
+                        hoisted.extend(inner)
+                        pairs.append((name, result))
+                    changes[field.name] = tuple(pairs)
+        return tuple(hoisted), replace(value, **changes) if changes else value
+
+    def _stacked(
+        self,
+        value: Comprehension,
+        hoisted: tuple[LetBinding, ...],
+        body: Value,
+    ) -> tuple[tuple[LetBinding, ...], Value]:
+        """Hoist a comprehension body's bindings over the comprehension's axis.
+
+        Parameters
+        ----------
+        value : Comprehension
+            The comprehension.
+        hoisted : tuple[LetBinding, ...]
+            The bindings hoisted out of its body, which may read its
+            index.
+        body : Value
+            The body reading them.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Value]
+            One binding per hoisted binding, holding the comprehension of
+            its value over the axis, and the comprehension whose body
+            reads each at the index.
+        """
+        index = Var(value.binder)
+        stacked: dict[Local, Value] = {}
+        lifted: list[LetBinding] = []
+        for binding in hoisted:
+            _, bound = self.value(binding.value, stacked)
+            element = binding.binder.type
+            split = tensor_shape(element)
+            tensor = (
+                tensor_type(element, (value.extent,))
+                if split is None
+                else tensor_type(split[0], (value.extent, *split[1]))
+            )
+            local = Local(binding.binder.name, tensor)
+            lifted.append(
+                LetBinding(
+                    local, Comprehension(value.binder, value.extent, bound, tensor)
+                )
+            )
+            stacked[binding.binder] = Gather(Var(local), index, element)
+        _, body = self.value(body, stacked)
+        return tuple(lifted), replace(value, body=body)
+
+
+def _local_names(term: object) -> set[str]:
+    """Every local name a checked term binds or reads.
+
+    Parameters
+    ----------
+    term : object
+        A value, a computation, or any record or tuple holding them.
+
+    Returns
+    -------
+    set[str]
+        The names.
+    """
+    found: set[str] = set()
+    pending: list[object] = [term]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Local):
+            found.add(item.name)
+        elif isinstance(item, tuple):
+            pending.extend(item)
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.extend(getattr(item, field.name) for field in fields(item))
+    return found
+
+
 class _ProgramWalk:
     """The derivation of one program's body and inputs.
 
@@ -341,6 +586,11 @@ class _ProgramWalk:
         # The components of every local bound to a tuple of bindings,
         # which the plan holds as the bindings themselves.
         self.tuples: dict[str, tuple[Value, ...]] = {}
+        self.floater = _LetFloater(
+            _local_names(computation.body)
+            | {parameter.name for parameter in computation.parameters}
+            | set(self.site_steps)
+        )
 
     # ------------------------------------------------------------------
     # body
@@ -394,6 +644,10 @@ class _ProgramWalk:
                 )
                 continue
             binder = node.binder
+            shared, first = self.floater.computation(first)
+            for binding in shared:
+                self.local_types[binding.binder.name] = binding.binder.type
+                emitted.extend(self._deterministic(binding.binder, binding.value))
             self.local_types[binder.name] = binder.type
             if isinstance(first, Perform):
                 request = first.request

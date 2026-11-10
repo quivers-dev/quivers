@@ -9,7 +9,7 @@ responsibilities.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -41,7 +41,7 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
 from quivers.qiec.types import render_static
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.dsl.let_expr_traversal import substitute_let_expr
+from quivers.dsl.let_expr_traversal import let_expr_children, substitute_let_expr
 from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
     _BINARY_PRIMITIVES,
@@ -77,6 +77,8 @@ from quivers.qiec import (
     ReductionOperator,
     Rowwise,
     Comprehension,
+    LetBinding,
+    LetValue,
     primitive,
     substitute_row,
     Call,
@@ -376,6 +378,135 @@ def _substitute_let(
         factor binder shadows the substitution inside its body.
     """
     return substitute_let_expr(expr, substitution)
+
+
+#: The records of a value term a local's reads can sit in: every value
+#: variant and the bindings of a ``LetValue``.
+_VALUE_RECORDS: tuple[type, ...] = (
+    *(item for item in Value.__value__.__args__ if isinstance(item, type)),
+    LetBinding,
+)
+
+type _ValueTerm = (
+    Value
+    | LetBinding
+    | str
+    | int
+    | float
+    | bool
+    | bytes
+    | None
+    | tuple[_ValueTerm, ...]
+)
+"""A value term or one of the parts a rewrite of its locals descends into."""
+
+#: The let expressions a substitution may copy freely: reading one costs
+#: nothing, so duplicating it neither grows a term nor repeats work.
+_ATOMIC_LET_EXPRESSIONS = (
+    surface.LetExprVar,
+    surface.LetExprLiteral,
+    surface.LetExprBool,
+    surface.LetExprUnit,
+    surface.LetExprString,
+)
+
+
+def _atomic(expr: surface.LetExprNode) -> bool:
+    """Whether substituting ``expr`` for a variable can copy it freely.
+
+    Parameters
+    ----------
+    expr : surface.LetExprNode
+        The expression a binder would be replaced by.
+
+    Returns
+    -------
+    bool
+        ``True`` for a variable or a scalar literal.
+    """
+    return isinstance(expr, _ATOMIC_LET_EXPRESSIONS)
+
+
+def _reads_repeatedly(name: str, body: surface.LetExprNode) -> bool:
+    """Whether ``body`` would evaluate a value substituted for ``name`` twice.
+
+    A substituted expression is copied once per free occurrence, and an
+    occurrence under a lambda or ``factor`` binder sits in a body that
+    is evaluated once per item. Either way a substitution would repeat
+    the expression's work, so the value must be bound once and shared.
+
+    Parameters
+    ----------
+    name : str
+        The variable a value would replace.
+    body : surface.LetExprNode
+        The expression ``name`` is free in.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``name`` occurs free more than once, or once under
+        a lambda or ``factor`` binder.
+    """
+    reads = 0
+
+    def visit(node: surface.LetExprNode, nested: bool) -> bool:
+        nonlocal reads
+        if isinstance(node, surface.LetExprVar):
+            if node.name == name:
+                reads += 1
+                return nested or reads > 1
+            return False
+        if isinstance(node, surface.LetExprLambda):
+            return node.param != name and visit(node.body, True)
+        if isinstance(node, surface.LetExprFactor):
+            if any(binder.var == name for binder in node.binders):
+                return False
+            return any(visit(child, True) for child in let_expr_children(node))
+        return any(visit(child, nested) for child in let_expr_children(node))
+
+    return visit(body, False)
+
+
+def _replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
+    """Replace the reads of some locals in a lowered value.
+
+    The replaced locals are fresh binders the lowering introduced, so
+    no binder inside ``value`` can capture a replacement's free locals.
+
+    Parameters
+    ----------
+    value : Value
+        The lowered value.
+    replacements : Mapping[Local, Value]
+        The value each local's reads become.
+
+    Returns
+    -------
+    Value
+        ``value`` with every ``Var`` of a replaced local substituted.
+    """
+
+    def rewrite(term: _ValueTerm) -> _ValueTerm:
+        if isinstance(term, Var):
+            return replacements.get(term.local, term)
+        if isinstance(term, tuple):
+            items = tuple(rewrite(item) for item in term)
+            if any(new is not old for new, old in zip(items, term, strict=True)):
+                return items
+            return term
+        if isinstance(term, _VALUE_RECORDS) and is_dataclass(term):
+            changes: dict[str, _ValueTerm] = {}
+            for field in fields(term):
+                current = getattr(term, field.name)
+                if isinstance(current, (tuple, *_VALUE_RECORDS)):
+                    rewritten = rewrite(current)
+                    if rewritten is not current:
+                        changes[field.name] = rewritten
+            return replace(term, **changes) if changes else term
+        return term
+
+    return cast(Value, rewrite(value))
 
 
 _EXPRESSION_FORMS = {
@@ -1102,6 +1233,9 @@ class _Elaborator(
         self.computation_signatures: dict[str, ComputationSignature] = {}
         self.entries: list[ProgramEntry] = []
         self._lambda_macros: dict[str, surface.LetExprLambda] = {}
+        # Numbers the locals a lowering introduces to share a value, so
+        # each such binder is unique across the module.
+        self._shared_serial = 0
         self._program_state: _ProgramState | None = None
         self._program_objects: dict[str, ObjectInfo] = {}
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
@@ -2766,13 +2900,8 @@ class _Elaborator(
                 )
             macro = self._lambda_macros.get(authored.func)
             if macro is not None:
-                return self._lower_value(
-                    self._expand_macro(macro, authored),
-                    scope,
-                    context,
-                    static_bindings,
-                    path,
-                    expected,
+                return self._lower_macro_application(
+                    macro, authored, scope, context, static_bindings, path, expected
                 )
             if authored.func in _COLLECTION_BUILTINS:
                 return self._lower_collection_value(
@@ -2902,6 +3031,74 @@ class _Elaborator(
             name = f"{base}_{suffix}"
         return name
 
+    def _shared_local(self, stem: str, type_: TypeExpr, context: CheckContext) -> Local:
+        """A fresh local that shares one lowered value by name.
+
+        Parameters
+        ----------
+        stem : str
+            What the local holds, as part of its name.
+        type_ : TypeExpr
+            The type of the value it binds.
+        context : CheckContext
+            Value bindings in scope, none of which the name may repeat.
+
+        Returns
+        -------
+        Local
+            A local named ``__<stem>_<n>``, unique across the module.
+        """
+        occupied = {local.name for local in context.locals}
+        while True:
+            self._shared_serial += 1
+            name = f"__{stem}_{self._shared_serial}"
+            if name not in occupied:
+                return Local(name, type_)
+
+    def _let(
+        self,
+        bindings: Sequence[LetBinding],
+        body: Value,
+        context: CheckContext,
+        authored: object,
+    ) -> Value:
+        """Wrap a lowered body in the bindings it reads.
+
+        Parameters
+        ----------
+        bindings : Sequence[LetBinding]
+            The bindings in evaluation order, each in scope in the later
+            ones and in ``body``.
+        body : Value
+            The lowered body.
+        context : CheckContext
+            Value bindings in scope around the whole term.
+        authored : object
+            The source node to blame.
+
+        Returns
+        -------
+        Value
+            ``body`` itself when there are no bindings, else one
+            :class:`LetValue` holding these bindings followed by those
+            of a body that is itself a ``LetValue``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the kernel rejects the bound term.
+        """
+        if not bindings:
+            return body
+        collected = tuple(bindings)
+        if isinstance(body, LetValue):
+            collected = (*collected, *body.bindings)
+            body = body.body
+        inner = context
+        for binding in collected:
+            inner = inner.extend(binding.binder)
+        return LetValue(collected, body, self._value_type(body, inner, authored))
+
     def _lower_map(
         self,
         authored: surface.LetExprCall,
@@ -2909,8 +3106,40 @@ class _Elaborator(
         context: CheckContext,
         static_bindings: Mapping[str, StaticArgument] | None,
         path: tuple[str | int, ...],
-    ) -> Comprehension:
-        """Lower a pure leading-axis ``map`` to a QIEC comprehension."""
+    ) -> Value:
+        """Lower a pure leading-axis ``map`` to a QIEC comprehension.
+
+        The body reads its item as the source at the comprehension's
+        index. A source other than a variable or literal is lowered once
+        and shared through a :class:`LetValue`, so the comprehension body
+        indexes a binding instead of holding, and evaluating once per
+        item, a copy of the source for every read of the item.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The ``map(xs, x -> body)`` application.
+        scope : Telescope
+            Static binders in scope.
+        context : CheckContext
+            Value bindings in scope.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing case refinement.
+        path : tuple[str | int, ...]
+            Structural path of the application.
+
+        Returns
+        -------
+        Value
+            The comprehension, wrapped in the source's binding when the
+            source is shared.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the application does not take a non-scalar tensor and a
+            lambda.
+        """
         if len(authored.args) != 2:
             self._fail(
                 authored,
@@ -2930,7 +3159,16 @@ class _Elaborator(
                 code="qiec-primitive",
             )
         function = self._collection_lambda(authored, 1)
-        index = Local(self._fresh_collection_index(context, path), INT)
+        bindings: list[LetBinding] = []
+        outer = context
+        if not _atomic(source_expr):
+            shared = self._shared_local("map_source", source_type, context)
+            bindings.append(LetBinding(shared, source))
+            outer = context.extend(shared)
+            source_expr = surface.LetExprVar(
+                name=shared.name, line=authored.line, col=authored.col
+            )
+        index = Local(self._fresh_collection_index(outer, path), INT)
         indexed = self._indexed_collection_item(
             source_expr,
             surface.LetExprVar(
@@ -2940,7 +3178,7 @@ class _Elaborator(
             ),
         )
         body_expr = substitute_let_expr(function.body, {function.param: indexed})
-        body_context = context.extend(index)
+        body_context = outer.extend(index)
         body = self._lower_value(
             body_expr,
             scope,
@@ -2955,7 +3193,12 @@ class _Elaborator(
             if inner is None
             else tensor_type(inner[0], (source_shape[1][0], *inner[1]))
         )
-        return Comprehension(index, source_shape[1][0], body, result)
+        return self._let(
+            bindings,
+            Comprehension(index, source_shape[1][0], body, result),
+            context,
+            authored,
+        )
 
     def _lower_collection_value(
         self,
@@ -3002,65 +3245,8 @@ class _Elaborator(
                 )
             return LiteralValue(int(extent.value), INT)
         if authored.func == "fold":
-            if len(authored.args) != 3:
-                self._fail(
-                    authored,
-                    f"fold takes 3 arguments, got {len(authored.args)}",
-                    code="qiec-primitive",
-                )
-            source_expr, current, _function = authored.args
-            source = self._lower_value(
-                source_expr,
-                scope,
-                context,
-                static_bindings,
-                (*path, "source"),
-            )
-            source_type = self._value_type(source, context, source_expr)
-            shape = tensor_shape(source_type)
-            if shape is None or not shape[1]:
-                self._fail(
-                    source_expr,
-                    f"fold expects a non-scalar tensor, got "
-                    f"{self._render(source_type)}",
-                    code="qiec-primitive",
-                )
-            extent = shape[1][0]
-            if not isinstance(extent, IndexLiteral):
-                self._fail(
-                    authored,
-                    "fold requires a statically known leading extent",
-                    code="qiec-primitive",
-                )
-            accumulator = self._collection_lambda(authored, 2)
-            if not isinstance(accumulator.body, surface.LetExprLambda):
-                self._fail(
-                    accumulator.body,
-                    "fold's lambda is curried as `acc -> item -> body`",
-                    code="qiec-primitive",
-                )
-            item_lambda = accumulator.body
-            for position in range(int(extent.value)):
-                item = self._indexed_collection_item(
-                    source_expr,
-                    surface.LetExprLiteral(
-                        value=float(position),
-                        integral=True,
-                        line=authored.line,
-                        col=authored.col,
-                    ),
-                )
-                current = substitute_let_expr(
-                    item_lambda.body,
-                    {accumulator.param: current, item_lambda.param: item},
-                )
-            return self._lower_value(
-                current,
-                scope,
-                context,
-                static_bindings,
-                (*path, "result"),
-                expected,
+            return self._lower_fold(
+                authored, scope, context, static_bindings, path, expected
             )
         if authored.func == "logsumexp_over":
             if len(authored.args) != 2:
@@ -3093,6 +3279,185 @@ class _Elaborator(
                 code="qiec-collection:filter:dynamic-shape",
             )
         self._fail(authored, f"unknown collection builtin {authored.func!r}")
+
+    def _lower_fold(
+        self,
+        authored: surface.LetExprCall,
+        scope: Telescope,
+        context: CheckContext,
+        static_bindings: Mapping[str, StaticArgument] | None,
+        path: tuple[str | int, ...],
+        expected: TypeExpr | None,
+    ) -> Value:
+        """Unroll a ``fold`` over a statically sized leading axis.
+
+        ``fold(xs, init, acc -> x -> body)`` applies the body at each
+        item in order, the accumulator reading the previous step's
+        result. The body is lowered once per accumulator type, over a
+        local for the accumulator and one for the item; each step
+        instantiates that lowered body at the previous accumulator and
+        the step's item, and every intermediate accumulator is bound once
+        by a :class:`LetValue` that each of the body's reads refers to.
+        The lowered term and the lowering's work thus grow linearly in
+        the axis's extent however often the body reads the accumulator.
+        A source or initial value other than a variable or literal is
+        bound once the same way.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The ``fold`` application.
+        scope : Telescope
+            Static binders in scope.
+        context : CheckContext
+            Value bindings in scope.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing case refinement.
+        path : tuple[str | int, ...]
+            Structural path of the application.
+        expected : TypeExpr or None
+            The type the position calls for, passed to the final step.
+
+        Returns
+        -------
+        Value
+            The final accumulator, wrapped in the bindings it reads.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the application is not ``fold`` of a statically sized
+            tensor, an initial value, and a curried lambda.
+        """
+        if len(authored.args) != 3:
+            self._fail(
+                authored,
+                f"fold takes 3 arguments, got {len(authored.args)}",
+                code="qiec-primitive",
+            )
+        source_expr, initial_expr, _function = authored.args
+        source = self._lower_value(
+            source_expr,
+            scope,
+            context,
+            static_bindings,
+            (*path, "source"),
+        )
+        source_type = self._value_type(source, context, source_expr)
+        shape = tensor_shape(source_type)
+        if shape is None or not shape[1]:
+            self._fail(
+                source_expr,
+                f"fold expects a non-scalar tensor, got {self._render(source_type)}",
+                code="qiec-primitive",
+            )
+        extent = shape[1][0]
+        if not isinstance(extent, IndexLiteral):
+            self._fail(
+                authored,
+                "fold requires a statically known leading extent",
+                code="qiec-primitive",
+            )
+        accumulator = self._collection_lambda(authored, 2)
+        if not isinstance(accumulator.body, surface.LetExprLambda):
+            self._fail(
+                accumulator.body,
+                "fold's lambda is curried as `acc -> item -> body`",
+                code="qiec-primitive",
+            )
+        item_lambda = accumulator.body
+        count = int(extent.value)
+        if count == 0:
+            return self._lower_value(
+                initial_expr, scope, context, static_bindings, (*path, "init"), expected
+            )
+        bindings: list[LetBinding] = []
+        inner = context
+
+        def share(value: Value, value_type: TypeExpr) -> Var:
+            nonlocal inner
+            local = self._shared_local("fold_acc", value_type, inner)
+            bindings.append(LetBinding(local, value))
+            inner = inner.extend(local)
+            return Var(local)
+
+        if not _atomic(source_expr):
+            source_local = self._shared_local("fold_source", source_type, inner)
+            bindings.append(LetBinding(source_local, source))
+            inner = inner.extend(source_local)
+            source_expr = surface.LetExprVar(
+                name=source_local.name, line=authored.line, col=authored.col
+            )
+        base = inner
+        initial = self._lower_value(
+            initial_expr, scope, context, static_bindings, (*path, "init")
+        )
+        current_type = self._value_type(initial, context, initial_expr)
+        current: Value = (
+            initial
+            if isinstance(initial, Var | LiteralValue)
+            else share(initial, current_type)
+        )
+        # The body lowered over an accumulator of each type it meets, and
+        # separately for the last step, which the position's expected
+        # type may refine.
+        bodies: dict[tuple[TypeExpr, bool], tuple[Local, Local, Value, TypeExpr]] = {}
+        item_type: TypeExpr | None = None
+        result: Value | None = None
+        for position in range(count):
+            item_expr = self._indexed_collection_item(
+                source_expr,
+                surface.LetExprLiteral(
+                    value=float(position),
+                    integral=True,
+                    line=authored.line,
+                    col=authored.col,
+                ),
+            )
+            item = self._lower_value(
+                item_expr, scope, base, static_bindings, (*path, "items", position)
+            )
+            if item_type is None:
+                item_type = self._value_type(item, base, item_expr)
+            last = position == count - 1
+            entry = bodies.get((current_type, last))
+            if entry is None:
+                state = self._shared_local("fold_state", current_type, base)
+                element = self._shared_local("fold_item", item_type, base.extend(state))
+                body_context = base.extend(state).extend(element)
+                renamed: dict[str, surface.LetExprNode] = {
+                    accumulator.param: surface.LetExprVar(
+                        name=state.name, line=authored.line, col=authored.col
+                    )
+                }
+                renamed[item_lambda.param] = surface.LetExprVar(
+                    name=element.name, line=authored.line, col=authored.col
+                )
+                body_expr = substitute_let_expr(item_lambda.body, renamed)
+                body = self._lower_value(
+                    body_expr,
+                    scope,
+                    body_context,
+                    static_bindings,
+                    (*path, "body"),
+                    expected if last else None,
+                )
+                entry = (
+                    state,
+                    element,
+                    body,
+                    self._value_type(body, body_context, body_expr),
+                )
+                bodies[(current_type, last)] = entry
+            state, element, body, body_type = entry
+            step = _replace_locals(body, {state: current, element: item})
+            if last:
+                result = step
+            else:
+                current = share(step, body_type)
+                current_type = body_type
+        assert result is not None
+        return self._let(bindings, result, context, authored)
 
     def _goal_weight_value(
         self,
@@ -4063,12 +4428,24 @@ class _Elaborator(
             )
         return info.extent
 
-    def _expand_macro(
+    def _lower_macro_application(
         self,
         macro: surface.LetExprLambda,
         authored: surface.LetExprCall,
-    ) -> surface.LetExprNode:
-        """Apply a lambda-bound name to its arguments by substitution.
+        scope: Telescope,
+        context: CheckContext,
+        static_bindings: Mapping[str, StaticArgument] | None,
+        path: tuple[str | int, ...],
+        expected: TypeExpr | None,
+    ) -> Value:
+        """Lower the application of a lambda-bound name to its argument.
+
+        An argument that is a variable or a literal, or one the body
+        reads once outside any lambda or ``factor``, is substituted for
+        the parameter. Any other argument is lowered once and bound by a
+        :class:`LetValue` that every read of the parameter refers to, so
+        nested applications of a body that reads its parameter several
+        times lower to a term linear in the nesting depth.
 
         Parameters
         ----------
@@ -4076,11 +4453,21 @@ class _Elaborator(
             The lambda a `let` bound.
         authored : surface.LetExprCall
             The application.
+        scope : Telescope
+            Static binders in scope.
+        context : CheckContext
+            Value bindings in scope.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing case refinement.
+        path : tuple[str | int, ...]
+            Structural path of the application.
+        expected : TypeExpr or None
+            The type the position calls for, passed to the body.
 
         Returns
         -------
-        surface.LetExprNode
-            The lambda's body with each parameter replaced by its argument.
+        Value
+            The lowered body at the argument.
 
         Raises
         ------
@@ -4093,7 +4480,38 @@ class _Elaborator(
                 f"{authored.func!r} takes 1 argument, got {len(authored.args)}",
                 code="qiec-primitive",
             )
-        return _substitute_let(macro.body, {macro.param: authored.args[0]})
+        argument = authored.args[0]
+        if _atomic(argument) or not _reads_repeatedly(macro.param, macro.body):
+            return self._lower_value(
+                _substitute_let(macro.body, {macro.param: argument}),
+                scope,
+                context,
+                static_bindings,
+                path,
+                expected,
+            )
+        value = self._lower_value(
+            argument, scope, context, static_bindings, (*path, "argument")
+        )
+        shared = self._shared_local(
+            "argument", self._value_type(value, context, argument), context
+        )
+        body = self._lower_value(
+            _substitute_let(
+                macro.body,
+                {
+                    macro.param: surface.LetExprVar(
+                        name=shared.name, line=authored.line, col=authored.col
+                    )
+                },
+            ),
+            scope,
+            context.extend(shared),
+            static_bindings,
+            path,
+            expected,
+        )
+        return self._let((LetBinding(shared, value),), body, context, authored)
 
     @staticmethod
     def _render(type_: TypeExpr) -> str:
@@ -4633,6 +5051,8 @@ class _Elaborator(
         pure ``map``.  Its finite leading extent is expanded into ordinary
         QIEC calls and binds, so effect rows, site provenance, interpreters,
         and every transpiler continue to consume the existing checked core.
+        A source other than a variable or literal is bound once ahead of
+        the calls, and each call reads its item from that binding.
         """
         if authored.static_arguments:
             self._fail(
@@ -4699,6 +5119,16 @@ class _Elaborator(
 
         calls: list[tuple[Local, Computation]] = []
         result_type: TypeExpr | None = None
+        # A source other than a variable is bound once by the computation,
+        # so each call reads an item of the binding rather than a copy of
+        # the source.
+        shared: Local | None = None
+        if not _atomic(source_expr):
+            shared = self._shared_local("traverse_source", source_type, context)
+            context = context.extend(shared)
+            source_expr = surface.LetExprVar(
+                name=shared.name, line=authored.line, col=authored.col
+            )
         occupied = {local.name for local in context.locals}
         for position in range(count):
             item = self._indexed_collection_item(
@@ -4758,6 +5188,8 @@ class _Elaborator(
         )
         for local, call in reversed(calls):
             body = Bind(local, call, body)
+        if shared is not None:
+            body = Bind(shared, Return(source), body)
         return body
 
     def _lower_case(

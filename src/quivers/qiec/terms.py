@@ -531,6 +531,50 @@ class Comprehension:
     tag: Literal["comprehension"] = "comprehension"
 
 
+@dataclass(frozen=True, slots=True)
+class LetBinding:
+    """One binding of a :class:`LetValue`.
+
+    Parameters
+    ----------
+    binder
+        The local the bound value is read through.
+    value
+        The value bound, evaluated once.
+    """
+
+    binder: Local
+    value: Value
+
+
+@dataclass(frozen=True, slots=True)
+class LetValue:
+    """A pure value shared by name through sequential bindings.
+
+    Each binding's value is evaluated once, in order, and is in scope in
+    every later binding and in the body, so a term that reads one
+    intermediate value several times holds it once. The bindings bind
+    sequentially, as ``let*`` does: binding ``k`` may read binders
+    ``0`` through ``k - 1``.
+
+    Parameters
+    ----------
+    bindings
+        The bindings, in evaluation order; at least one.
+    body
+        The value the term denotes, read with every binder in scope.
+    result_type
+        The body's type.
+    tag
+        The serialization discriminator; always ``"let"``.
+    """
+
+    bindings: tuple[LetBinding, ...]
+    body: Value
+    result_type: TypeExpr
+    tag: Literal["let"] = "let"
+
+
 SCALE_FLOOR = 1e-7
 """The floor an exponentiated scale head of an :class:`AffineMap` or
 :class:`TableMap` is clamped at, which every backend applies alike.
@@ -689,6 +733,7 @@ type Value = (
     | Reduction
     | Rowwise
     | Comprehension
+    | LetValue
 )
 """A value term: every pure, effect-free term a computation may mention."""
 
@@ -982,6 +1027,8 @@ __all__ = [
     "Handle",
     "If",
     "KernelMatrix",
+    "LetBinding",
+    "LetValue",
     "LiteralData",
     "LiteralValue",
     "Local",

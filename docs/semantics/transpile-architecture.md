@@ -471,7 +471,12 @@ implementing `dx.Mapping[Module, IRProgram]`. Its `forward`:
    narrowed by the declared bounds of the site's axes.
 5. Reads pure values back as let expressions: primitives as the operators
    and builtins they implement, gathers as subscripts, comprehensions as
-   factors, and a last-axis reduction as its builtin call.
+   factors, and a last-axis reduction as its builtin call. A shared binding
+   of a [`LetValue`][quivers.qiec.LetValue] becomes a deterministic statement of its own, under a
+   fresh name, ahead of the statement that reads it; a binding inside a
+   comprehension is hoisted as the comprehension of its value over the same
+   axis, read at the index. The emitted program thus states each shared
+   value once, however many times the value is read.
 6. Derives the inputs from the entry point's parameters, typed by the
    module and named by the axes the elaboration recorded, in the groups
    the targets declare them: the program's domain, its scalars,

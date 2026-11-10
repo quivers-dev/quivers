@@ -78,6 +78,7 @@ _TRANSPILE_DIR = pathlib.Path(__file__).parent
 PROBE_MODULES = frozenset(
     {
         "test_closed_form_marginals",
+        "test_construct_let_numeric",
         "test_equivalence_sensitivity",
         "test_expected_offsets",
         "test_export_equivalence",
