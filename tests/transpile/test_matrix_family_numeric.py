@@ -1,9 +1,9 @@
 """Vector- and matrix-valued draws score one joint on every path.
 
-A Wishart whose scale is written as its Cholesky factor, a one-hot draw
-from a probability vector, and a relaxed one-hot draw whose event extent
-comes from its probabilities are each scored on the compiled runtime and
-the reference machine, both pinned to an independent
+A multivariate normal and a Wishart each written with a Cholesky factor,
+a one-hot draw from a probability vector, and a relaxed one-hot draw
+whose event extent comes from its probabilities are each scored on the
+compiled runtime and the reference machine, both pinned to an independent
 `torch.distributions` joint, and on every target that renders them. A
 target with no spelling for a fixture refuses it under a stated kind.
 """
@@ -35,6 +35,7 @@ type Oracle = Callable[[torch.Tensor], torch.Tensor]
 _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 _WISHART = "steps/sample_wishart_factor"
+_MVN = "steps/sample_mvn_factor"
 _ONEHOT = "steps/sample_onehot_probs"
 _RELAXED = "steps/sample_relaxed_onehot_probs"
 
@@ -44,6 +45,14 @@ _PROBS = torch.tensor([0.2, 0.3, 0.5])
 #: Each fixture: its site, the site's points, the site's element dtype,
 #: and the oracle.
 _CASES: dict[str, tuple[str, list[Host], torch.dtype, Oracle]] = {
+    _MVN: (
+        "v",
+        [[0.3, 0.4], [-1.0, 2.5], [1.2, -0.7]],
+        torch.float32,
+        lambda v: D.MultivariateNormal(
+            torch.tensor([0.0, 1.0]), scale_tril=_FACTOR
+        ).log_prob(v),
+    ),
     _WISHART: (
         "sigma",
         [
@@ -72,6 +81,9 @@ _CASES: dict[str, tuple[str, list[Host], torch.dtype, Oracle]] = {
 
 #: The refusals each target states for a fixture it cannot render.
 _REFUSED: dict[tuple[str, str], str] = {
+    (_MVN, "bugs"): "arg:list-literal",
+    (_MVN, "church"): "arg:matrix-literal",
+    (_MVN, "jags"): "family:MultivariateNormal",
     (_WISHART, "bugs"): "arg:matrix-literal",
     (_WISHART, "jags"): "arg:matrix-literal",
     (_WISHART, "church"): "family:Wishart:no-church-target",
@@ -221,3 +233,27 @@ def test_target_refuses_under_its_kind(fixture: str, backend: str) -> None:
     assert any(kind.startswith(expected) for kind in caught.value.kinds), (
         caught.value.kinds
     )
+
+
+@pytest.mark.parametrize("family", ["MultivariateNormal", "Wishart"])
+@pytest.mark.parametrize("backend", ["numpyro", "stan"])
+def test_a_factor_known_only_at_run_time_is_refused_by_its_keyword(
+    family: str, backend: str
+) -> None:
+    draw = (
+        "MultivariateNormal(loc=[0.0, 1.0], scale_tril=L) [over=Dim]"
+        if family == "MultivariateNormal"
+        else "Wishart(df=4.0, scale_tril=L) [over=[Dim, Dim]]"
+    )
+    source = (
+        "object Dim : FinSet 2\nobject One : FinSet 1\n"
+        "program p : One -> One\n"
+        "    sample L : Dim <- LKJCholesky(concentration=2.0)\n"
+        f"    sample v <- {draw}\n    return v\nexport p\n"
+    )
+    with pytest.raises(UnsupportedConstruct) as caught:
+        transpile(parse(source), target=backend)
+    assert list(caught.value.kinds) == [
+        f"family:{family}:scale_tril: the {family}'s scale_tril is a Cholesky "
+        "factor known only at run time; write it as a matrix literal",
+    ], caught.value.kinds

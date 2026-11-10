@@ -1425,7 +1425,7 @@ class _ProgramWalk:
         plate = _plate_of(distribution.plate, marginalized, meta, distribution, self)
         named = {name: value for name, value in distribution.arguments}
         self.via = via
-        if meta.structured_lowering is not None and _structured(distribution):
+        if meta.structured_lowering is not None and _structured(distribution, meta):
             args, arg_names = self._structured_args(distribution, site, plate)
         else:
             args, arg_names = self._arguments(distribution, site, plate, meta, morphism)
@@ -1490,8 +1490,8 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
-        if distribution.name == "Wishart" and "scale_tril" in names:
-            self._wishart_scale(pre, names)
+        if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
+            self._factor_scale(distribution.name, pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
         if set(ordered) >= set(names) and len(ordered) >= len(names):
             order = {name: index for index, name in enumerate(ordered)}
@@ -1514,18 +1514,20 @@ class _ProgramWalk:
         )
         return out, tuple(names)
 
-    def _wishart_scale(self, pre: list[IRArg], names: list[str]) -> None:
-        """Hand a Wishart's Cholesky factor to the target as it reads it.
+    def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
+        """Hand a Cholesky factor to the target as it reads it.
 
-        A source writes the scale of a Wishart as its lower Cholesky
-        factor ``L``; most targets take the scale matrix ``L L^T``
-        itself, and no target's plan can size a factor known only at
-        run time. A literal factor is multiplied out here, in place, so
-        every target receives the scale matrix under
-        ``covariance_matrix``.
+        A source writes the scale of a Wishart or the covariance of a
+        multivariate normal as its lower Cholesky factor ``L``; most
+        targets take the matrix ``L L^T`` itself, and no target's plan
+        can size a factor known only at run time. A literal factor is
+        multiplied out here, in place, so every target receives the
+        matrix under ``covariance_matrix``.
 
         Parameters
         ----------
+        family : str
+            The family, one of `_FACTOR_FAMILIES`.
         pre : list[IRArg]
             The call's wire arguments, rewritten in place.
         names : list[str]
@@ -1562,8 +1564,9 @@ class _ProgramWalk:
         raise UnsupportedConstruct(
             f"qvr-{self.planner.target}",
             [
-                "family:Wishart:scale_tril: the Wishart's scale is a Cholesky "
-                "factor known only at run time; write it as a matrix literal"
+                f"family:{family}:scale_tril: the {family}'s scale_tril is a "
+                "Cholesky factor known only at run time; write it as a matrix "
+                "literal"
             ],
         )
 
@@ -2308,23 +2311,49 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
     return shape[0] if shape is not None else type_
 
 
-def _structured(distribution: DistributionValue) -> bool:
+#: The families whose ``scale_tril`` factor a target receives multiplied
+#: out, as the matrix it names the factor of.
+_FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+
+def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     """Whether a construction is a structured family's.
+
+    A Gaussian process reads its covariance as a kernel argument; a
+    multivariate or matrix normal drawn through a morphism reads its
+    location and scale from inputs the elaboration names after the
+    family's structured arguments. A multivariate normal whose source
+    writes its own arguments under another parameterization, such as a
+    ``scale_tril`` factor, is an ordinary family call.
 
     Parameters
     ----------
     distribution : DistributionValue
         The construction.
+    meta : FamilyMeta
+        The family's transpile metadata.
 
     Returns
     -------
     bool
-        ``True`` when an argument is a kernel matrix or the family
-        reads its factors structurally.
+        ``True`` when an argument is a kernel matrix, or the family
+        reads its factors structurally and the construction supplies
+        every structured argument by name.
     """
-    return any(
-        isinstance(value, KernelMatrix) for _, value in distribution.arguments
-    ) or distribution.name in ("GP", "MultivariateNormal", "MatrixNormal")
+    if any(isinstance(value, KernelMatrix) for _, value in distribution.arguments):
+        return True
+    if distribution.name not in ("GP", "MultivariateNormal", "MatrixNormal"):
+        return False
+    lowering = meta.structured_lowering
+    if lowering is None:
+        return False
+    registry = _REGISTRY_NAMES.get(distribution.name, {})
+    supplied = {name for name, _ in distribution.arguments}
+    return all(
+        registry.get(str(spec.arg_name), str(spec.arg_name)) in supplied
+        for spec in lowering.args
+        if isinstance(spec, StructuredDataArg)
+    )
 
 
 def _axis_name_of(extent: IndexTerm, cards: dict[str, int]) -> str:

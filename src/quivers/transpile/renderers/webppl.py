@@ -1682,6 +1682,8 @@ class WebPPLRenderer(RendererBase):
                 vid = self._render_arg(ctx, substituted)
             if raw_name in _WEBPPL_TENSOR_ARGS.get(meta.qvr_name, frozenset()):
                 vid = self._call(ctx, self._ident(ctx, "Vector"), (vid,))
+            elif raw_name in _WEBPPL_MATRIX_ARGS.get(meta.qvr_name, frozenset()):
+                vid = self._call(ctx, self._ident(ctx, "Matrix"), (vid,))
             out.append((keyword, vid))
         if meta.qvr_name == "Categorical":
             # WebPPL's `Categorical` ranges over the values it is
@@ -2981,6 +2983,15 @@ _WEBPPL_ARG_RECIPROCAL: dict[str, frozenset[str]] = {
 #: and carries the same measure.
 _WEBPPL_TENSOR_ARGS: dict[str, frozenset[str]] = {
     "Dirichlet": frozenset({"concentration"}),
+    "MultivariateNormal": frozenset({"loc"}),
+}
+
+#: Argument slots whose WebPPL parameter type is a matrix tensor, keyed
+#: as `_WEBPPL_TENSOR_ARGS` is: `MultivariateGaussian` declares its
+#: covariance a positive-definite matrix and rejects nested arrays, so
+#: the rendered value is wrapped in WebPPL's `Matrix(...)` constructor.
+_WEBPPL_MATRIX_ARGS: dict[str, frozenset[str]] = {
+    "MultivariateNormal": frozenset({"covariance_matrix"}),
 }
 
 

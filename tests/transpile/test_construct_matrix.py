@@ -208,6 +208,9 @@ _EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data"
 # whose literal arguments it cannot take, are refused by name.
 _EXPECTED_ORTHOGONAL_RAISES.update(
     {
+        ("bugs", "steps", "sample_mvn_factor"): "arg:list-literal",
+        ("church", "steps", "sample_mvn_factor"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_factor"): "family:MultivariateNormal",
         ("bugs", "steps", "sample_wishart_factor"): "arg:matrix-literal",
         ("jags", "steps", "sample_wishart_factor"): "arg:matrix-literal",
         ("church", "steps", "sample_wishart_factor"): "family:Wishart",
