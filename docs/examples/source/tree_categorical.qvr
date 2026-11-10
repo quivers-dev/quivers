@@ -14,18 +14,21 @@
 #   sigma_v   ~ HalfNormal(1)             spread of verb effects
 #   e_s[v]    ~ Normal(0, 1)              standardized verb effect
 #   eta_s[v]  = a_s + sigma_v * e_s[v]    verb v's logit of split s
-#   y_n       ~ Categorical(leaf_log[verb_idx[n]])
+#   y_n       ~ Categorical(leaf_prob[verb_idx[n]])
 #
-# for s in {root, left, right}, where with q = logsigmoid,
+# for s in {root, left, right}, where with p(x) = sigmoid(x),
 #
-#   leaf_log[v] = ( q(-eta_root) + q(-eta_left),
-#                   q(-eta_root) + q(eta_left),
-#                   q(eta_root)  + q(-eta_right),
-#                   q(eta_root)  + q(eta_right) ).
+#   leaf_prob[v] = ( p(-eta_root) * p(-eta_left),
+#                    p(-eta_root) * p(eta_left),
+#                    p(eta_root)  * p(-eta_right),
+#                    p(eta_root)  * p(eta_right) ).
 #
-# A pattern-match factor builds the class-by-verb table of leaf log
-# probabilities, one case per leaf; a uniform factor transposes it
-# to the verb-by-class table whose rows are the response logits.
+# Three pattern-match factors spell out the tree, one case per leaf:
+# which side of the root the leaf lies on, which side of its inner
+# split, and whether that inner split is the left or the right one.
+# A uniform factor over (Verb, Class) then evaluates the path
+# probability of every leaf for every verb; its rows are the
+# response probabilities.
 # There is no free per-class offset: adding one would let the class
 # effects absorb any change in the splits, leaving the splits
 # unidentified.
@@ -33,13 +36,13 @@
 object Verb : FinSet 12
 object Class : FinSet 4
 object Resp : FinSet 2400
-object LeafLog : Real 4
+object LeafProb : Real 4
 
 # Resp is the plate of observed class labels and verb_idx maps each
-# label to its verb. LeafLog is the value space of the returned rows
-# of leaf log probabilities, one real coordinate per class.
+# label to its verb. LeafProb is the value space of the returned rows
+# of leaf probabilities, one real coordinate per class.
 
-program tree_categorical : Resp -> LeafLog
+program tree_categorical : Resp -> LeafProb
     sample a_root <- Normal(loc=0.0, scale=1.5)
     sample a_left <- Normal(loc=0.0, scale=1.5)
     sample a_right <- Normal(loc=0.0, scale=1.5)
@@ -52,16 +55,14 @@ program tree_categorical : Resp -> LeafLog
     let eta_left = a_left + sigma_v * e_left
     let eta_right = a_right + sigma_v * e_right
 
-    let leaf_by_class = factor cls : Class in {
-        0 -> logsigmoid(-eta_root) + logsigmoid(-eta_left),
-        1 -> logsigmoid(-eta_root) + logsigmoid(eta_left),
-        2 -> logsigmoid(eta_root) + logsigmoid(-eta_right),
-        3 -> logsigmoid(eta_root) + logsigmoid(eta_right),
-    }
-    let leaf_log = factor v : Verb, cls : Class in leaf_by_class[cls, v]
-    let row_logits = leaf_log[verb_idx]
+    let root_side = factor cls : Class in { 0 -> -1.0, 1 -> -1.0, 2 -> 1.0, 3 -> 1.0, }
+    let inner_side = factor cls : Class in { 0 -> -1.0, 1 -> 1.0, 2 -> -1.0, 3 -> 1.0, }
+    let under_left = factor cls : Class in { 0 -> 1.0, 1 -> 1.0, 2 -> 0.0, 3 -> 0.0, }
 
-    observe y : Resp <- Categorical(logits=row_logits)
-    return leaf_log
+    let leaf_prob = factor v : Verb, cls : Class in sigmoid(root_side[cls] * eta_root[v]) * sigmoid(inner_side[cls] * (under_left[cls] * eta_left[v] + (1.0 - under_left[cls]) * eta_right[v]))
+    let row_probs = leaf_prob[verb_idx]
+
+    observe y : Resp <- Categorical(probs=row_probs)
+    return leaf_prob
 
 export tree_categorical

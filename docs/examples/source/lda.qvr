@@ -16,7 +16,10 @@
 #
 # Token indexes observed word positions; Vocab indexes possible word
 # types. The host datum doc_idx maps each token to its document, and
-# the let gathers that document's topic weights for every token.
+# the let gathers that document's topic weights for every token. The
+# marginalize block groups over Token itself: token_idx is the
+# identity map on token positions, so every group holds one token and
+# the topic sum is taken separately for each.
 # Mix is the real vector space containing the returned topic weights.
 #
 # Reference: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation,
@@ -35,8 +38,8 @@ program lda : Token -> Mix
     sample phi : Topic <- Dirichlet(concentration=0.2) [over=Vocab, iid_over=Topic]
     let theta_tok = theta[doc_idx]
 
-    marginalize z : Token <- Categorical(probs=theta_tok) [reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z])
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
     return theta
 

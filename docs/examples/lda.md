@@ -38,7 +38,10 @@ $$
 #
 # Token indexes observed word positions; Vocab indexes possible word
 # types. The host datum doc_idx maps each token to its document, and
-# the let gathers that document's topic weights for every token.
+# the let gathers that document's topic weights for every token. The
+# marginalize block groups over Token itself: token_idx is the
+# identity map on token positions, so every group holds one token and
+# the topic sum is taken separately for each.
 # Mix is the real vector space containing the returned topic weights.
 #
 # Reference: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation,
@@ -57,8 +60,8 @@ program lda : Token -> Mix
     sample phi : Topic <- Dirichlet(concentration=0.2) [over=Vocab, iid_over=Topic]
     let theta_tok = theta[doc_idx]
 
-    marginalize z : Token <- Categorical(probs=theta_tok) [reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z])
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
     return theta
 
@@ -69,7 +72,7 @@ export lda
 
 A topic is a distribution over words, and a document is a distribution over topics. Two documents about the same subject tend to put weight on the same topics, so their word frequencies look alike; a document that straddles two subjects can split its weight between two topics. Because every token picks its own topic, a single document can draw some words from one topic and other words from another, which is what lets $\theta_d$ express a genuine mixture rather than a single label per document.
 
-Summing out $z_n$ for one token multiplies each topic's weight in the token's document by that topic's probability of the observed word and adds the products. The order of operations matters: LDA sums over topics for each token and then multiplies across tokens. Multiplying the word probabilities within a document first and then summing over topics would instead give a model with one topic per document (a mixture of unigrams), which the [grouped form of `marginalize`](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping) expresses. This page uses the ungrouped, per-token form.
+Summing out $z_n$ for one token multiplies each topic's weight in the token's document by that topic's probability of the observed word and adds the products. The order of operations matters: LDA sums over topics for each token and then multiplies across tokens. Multiplying the word probabilities within a document first and then summing over topics would instead give a model with one topic per document (a mixture of unigrams). In the [grouped form of `marginalize`](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping), the grouping plate decides which of the two a program states: grouping tokens by document shares one topic per document, while grouping each token by itself, as this source does, gives every token its own topic.
 
 Topic labels are exchangeable: permuting the $K$ topics, together with the columns of $\theta$, leaves the likelihood unchanged. Fitted topics are thus compared with the truth only after matching them up, and the document-word probabilities $\theta \phi$, which do not depend on the labeling, give a check that needs no matching at all.
 
@@ -88,11 +91,11 @@ The marginalize block
 
 <!-- compile: false -->
 ```qvr
-marginalize z : Token <- Categorical(probs=theta_tok) [reduction=logsumexp]
-    observe w : Token <- Categorical(probs=phi[z])
+marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+    observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 ```
 
-introduces one topic latent $z_n$ per token, under a Categorical prior whose probabilities are that token's row of `theta_tok`. The body's `Categorical(probs=phi[z])` looks up the candidate topic's vocabulary row and scores the observed word. The block carries no `over=` grouping clause, so the reduction runs separately for every token: the agenda enumerates the $K$ topics, adds the prior log-weight to the word's log-probability, and applies `logsumexp` per token, giving $\log \sum_k \theta_{d[n], k}\, \phi_{k, w_n}$. These per-token terms are then summed over the `Token` plate. See [Probabilistic programs](../reference/qvr/probabilistic-programs.md#exact-marginalization) for the checked semantics of the block.
+introduces a topic latent $z$ with support `Topic`, one per group of the grouping plate named by `over=Token`, under a Categorical prior whose probabilities are the group's row of `theta_tok`. The body's `Categorical(probs=phi[z])` looks up the candidate topic's vocabulary row and scores the observed word, and `[via=token_idx]` maps each observed word to its group. The host datum `token_idx` is the identity on token positions, so every group holds exactly one word: the agenda enumerates the $K$ topics for each token, adds the prior log-weight to the word's log-probability, and applies `logsumexp` per token, giving $\log \sum_k \theta_{d[n], k}\, \phi_{k, w_n}$. These per-token terms are then summed over the `Token` plate. Replacing `over=Token` and `token_idx` by `over=Doc` and `doc_idx` would share one topic across each document instead. See [Probabilistic programs](../reference/qvr/probabilistic-programs.md#exact-marginalization) for the checked semantics of the block.
 
 Finally `return theta` projects the program's joint kernel onto the document-topic mixture, the quantity one usually inspects after fitting.
 
@@ -126,11 +129,13 @@ doc_idx = torch.arange(n_doc).repeat_interleave(per_doc)
 topics = D.Categorical(true_theta[doc_idx]).sample()
 w = D.Categorical(true_phi[topics]).sample()
 
-observations = {"w": w, "doc_idx": doc_idx}
+token_idx = torch.arange(n_token)
+
+observations = {"w": w, "doc_idx": doc_idx, "token_idx": token_idx}
 x_in = torch.zeros(1, 1)
 ```
 
-The program input `x_in` is a single row; the extents of the `Token` plate and of the gathered document weights come from `w` and `doc_idx`. The per-token topics `topics` are part of the simulation only. The model never sees them; it integrates them out.
+The program input `x_in` is a single row; the extents of the `Token` plate and of the gathered document weights come from `w`, `doc_idx`, and `token_idx`. The per-token topics `topics` are part of the simulation only. The model never sees them; it integrates them out.
 
 ### Checking the joint density
 
@@ -160,7 +165,7 @@ Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.Au
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
 torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names={"w", "doc_idx"})
+guide = AutoNormalGuide(model, observed_names={"w", "doc_idx", "token_idx"})
 optim = torch.optim.Adam(
     list(model.parameters()) + list(guide.parameters()), lr=5e-2,
 )
@@ -220,7 +225,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Marginalization pushes the joint measure on topic assignments and words forward onto the words by forgetting the assignments. In LDA the assignments are indexed by `Token`, and the topic prior for each token is pulled back from `Doc` along the map `doc_idx : Token -> Doc`; the finite sum then eliminates each token's topic independently. The [grouped form](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping) instead pushes token scores forward along the same map before the sum, which shares one topic across a whole document. The two programs differ only in which side of the fibration the finite sum is taken on, and that choice is the difference between LDA and a mixture of unigrams.
+Marginalization pushes the joint measure on topic assignments and words forward onto the words by forgetting the assignments. In LDA the assignments are indexed by `Token`, and the topic prior for each token is pulled back from `Doc` along the map `doc_idx : Token -> Doc`; grouping along the identity `token_idx : Token -> Token` then lets the finite sum eliminate each token's topic independently. Grouping along `doc_idx` instead would push token scores forward to `Doc` before the sum, which shares one topic across a whole document. The two programs differ only in which side of the fibration the finite sum is taken on, and that choice is the difference between LDA and a mixture of unigrams.
 
 ## See also
 
