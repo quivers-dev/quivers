@@ -21,6 +21,7 @@ import torch
 import torch.distributions as D
 
 from quivers.dsl import loads
+from quivers.dsl.compiler import CompileError
 from quivers.dsl.family_schemas import family_parameterizations
 from quivers.dsl.qiec_lowering import QiecDiagnosticError
 from quivers.inference.trace import trace
@@ -394,10 +395,10 @@ def test_two_parameterizations_in_one_draw_are_refused_at_the_draw(
         _HEADER
         + f"program p : One -> One\n    sample v <- {call}\n    return v\nexport p\n"
     )
-    with pytest.raises(QiecDiagnosticError) as caught:
+    with pytest.raises((QiecDiagnosticError, CompileError)) as caught:
         _ = loads(source).qiec
     message = str(caught.value)
-    assert ":7:" in message
+    assert ":7:" in message or "line 7" in message
     assert f"family {family!r} requires exactly one complete parameter schema" in (
         message
     )

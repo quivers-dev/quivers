@@ -194,22 +194,18 @@ def can_spell(target: str, family: str) -> bool:
     )
 
 
-#: Alternative parameterizations no speller here reads: a first-class
-#: construction naming one is refused rather than spelled positionally
-#: as the canonical parameter.
-_UNSPELLED_ALTERNATIVES: frozenset[tuple[str, str]] = frozenset(
-    {
-        *(
-            (family, "logits")
-            for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
-        ),
-        *(
-            (family, name)
-            for family in ("MultivariateNormal", "Wishart")
-            for name in ("covariance_matrix", "precision_matrix")
-        ),
-    }
-)
+#: Alternative parameterizations no speller here reads, each with the
+#: parameter the spellers read in its place: a first-class construction
+#: naming the alternative alone is refused rather than spelled
+#: positionally as that parameter.
+_UNSPELLED_ALTERNATIVES: dict[tuple[str, str], str] = {
+    **{
+        (family, "logits"): "probs"
+        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+    },
+    ("MultivariateNormal", "precision_matrix"): "covariance_matrix",
+    ("Wishart", "precision_matrix"): "scale_tril",
+}
 
 
 def spell_distribution(
@@ -250,7 +246,12 @@ def spell_distribution(
             f"qvr-{target}", [f"qiec:distribution:{family}:no-{target}-spelling"]
         )
     alternative = next(
-        (name for name in arguments if (family, name) in _UNSPELLED_ALTERNATIVES),
+        (
+            name
+            for name in arguments
+            if (family, name) in _UNSPELLED_ALTERNATIVES
+            and _UNSPELLED_ALTERNATIVES[(family, name)] not in arguments
+        ),
         None,
     )
     if alternative is not None:
