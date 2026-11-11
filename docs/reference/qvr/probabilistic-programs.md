@@ -168,8 +168,9 @@ A program binds a `define` computation with effectful binding:
 
 <!-- compile: qiec -->
 ```qvr
-define standardize(x : Real, location : Real, scale : Real) : Real !{} =
-    return (x - location) / scale
+define standardize(x : Tensor[Real]([8]), location : Real, scale : Real) : Tensor[Real]([8]) !{} =
+    let z_score = v -> (v - location) / scale
+    return map(x, z_score)
 
 object Row : FinSet 8
 
@@ -183,7 +184,24 @@ program standardized : Row -> Row
 export standardized
 ```
 
-The callee's residual effects join the program's. Dynamic transpile targets
+The host datum `x` takes the type of the parameter it is passed to, so it
+is a column of eight covariates, one per `Row`, and `map` standardizes each.
+The callee's residual effects join the program's.
+
+A call of a pure computation, one that performs no effect, takes no static
+arguments, and binds pure values before returning one, is inlined: its body
+runs at the call's arguments as `let` steps, with the callee's bindings under
+fresh names. The program then compiles to a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], so `trace`, `log_joint`
+and its gradients, SVI, and MCMC run on it, with the values the reference
+machine computes; the transpile planner inlines the same calls. A parametric
+template that calls a pure computation instantiates the same way. A call that
+cannot be inlined (an effectful callee, a conditional body, or a body that
+calls another computation) leaves the program a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] that runs on
+the reference machine, and a template making one is refused at the call.
+
+Dynamic transpile targets
 emit reachable calls through the common runtime ABI. Stan accepts a closed,
 monomorphic, effect-free scalar callee as a user-defined function. BUGS and
 JAGS refuse program-to-computation calls. Use `qvr check --target TARGET` to

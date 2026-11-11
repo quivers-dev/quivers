@@ -9,7 +9,7 @@ responsibilities.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -41,6 +41,9 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
 from quivers.qiec.types import render_static
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.transpile._pure_calls import (
+    replace_locals as _replace_locals,
+)
 from quivers.dsl.let_expr_traversal import let_expr_children, substitute_let_expr
 from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
@@ -380,26 +383,6 @@ def _substitute_let(
     return substitute_let_expr(expr, substitution)
 
 
-#: The records of a value term a local's reads can sit in: every value
-#: variant and the bindings of a ``LetValue``.
-_VALUE_RECORDS: tuple[type, ...] = (
-    *(item for item in Value.__value__.__args__ if isinstance(item, type)),
-    LetBinding,
-)
-
-type _ValueTerm = (
-    Value
-    | LetBinding
-    | str
-    | int
-    | float
-    | bool
-    | bytes
-    | None
-    | tuple[_ValueTerm, ...]
-)
-"""A value term or one of the parts a rewrite of its locals descends into."""
-
 #: The let expressions a substitution may copy freely: reading one costs
 #: nothing, so duplicating it neither grows a term nor repeats work.
 _ATOMIC_LET_EXPRESSIONS = (
@@ -480,59 +463,6 @@ def _reads_repeatedly(name: str, body: surface.LetExprNode) -> bool:
         return any(visit(child, nested) for child in let_expr_children(node))
 
     return visit(body, False)
-
-
-def _replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
-    """Replace the reads of some locals in a lowered value.
-
-    The replaced locals are fresh binders the lowering introduced, so
-    no binder inside ``value`` can capture a replacement's free locals.
-
-    Parameters
-    ----------
-    value : Value
-        The lowered value.
-    replacements : Mapping[Local, Value]
-        The value each local's reads become.
-
-    Returns
-    -------
-    Value
-        ``value`` with every ``Var`` of a replaced local substituted.
-    """
-
-    def rewrite(term: _ValueTerm) -> _ValueTerm:
-        """Replace each variable the replacements name, sharing unchanged terms.
-
-        Parameters
-        ----------
-        term : _ValueTerm
-            The term.
-
-        Returns
-        -------
-        _ValueTerm
-            The rewritten term, the input itself where nothing changed.
-        """
-        if isinstance(term, Var):
-            return replacements.get(term.local, term)
-        if isinstance(term, tuple):
-            items = tuple(rewrite(item) for item in term)
-            if any(new is not old for new, old in zip(items, term, strict=True)):
-                return items
-            return term
-        if isinstance(term, _VALUE_RECORDS) and is_dataclass(term):
-            changes: dict[str, _ValueTerm] = {}
-            for field in fields(term):
-                current = getattr(term, field.name)
-                if isinstance(current, (tuple, *_VALUE_RECORDS)):
-                    rewritten = rewrite(current)
-                    if rewritten is not current:
-                        changes[field.name] = rewritten
-            return replace(term, **changes) if changes else term
-        return term
-
-    return cast(Value, rewrite(value))
 
 
 _EXPRESSION_FORMS = {
