@@ -109,6 +109,9 @@
 ;; Sum of a list of numbers.
 (define (sum lst) (apply + lst))
 
+;; Mean of a list of numbers.
+(define (mean lst) (/ (apply + lst) (length lst)))
+
 ;; Dot product of two equal-length lists.
 (define (dot a b) (apply + (map * a b)))
 

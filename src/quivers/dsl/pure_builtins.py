@@ -25,6 +25,14 @@ from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
 
 _F = torch.nn.functional
 
+#: The variance offset ``layer_norm`` adds when no ``eps`` is given, as
+#: ``torch.nn.functional.layer_norm`` does.
+LAYER_NORM_EPS = 1e-5
+
+#: The offset ``rms_norm`` adds to the mean square when no ``eps`` is
+#: given.
+RMS_NORM_EPS = 1e-6
+
 #: Eager implementations for the deterministic-expression builtin surface.
 #: Higher-order collection forms are compiled specially because they consume
 #: source lambdas rather than evaluated values.
@@ -120,8 +128,13 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "sort": lambda a: torch.sort(a, dim=-1).values,
     "dropout": lambda a, p=0.5: _F.dropout(a, p=p, training=True),
     "alpha_dropout": lambda a, p=0.5: _F.alpha_dropout(a, p=p, training=True),
-    "layer_norm": lambda a: _F.layer_norm(a, normalized_shape=(a.shape[-1],)),
-    "rms_norm": lambda a: a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + 1e-6),
+    "layer_norm": lambda a, eps=LAYER_NORM_EPS: _F.layer_norm(
+        a, normalized_shape=(a.shape[-1],), eps=float(eps)
+    ),
+    "rms_norm": lambda a, eps=RMS_NORM_EPS: (
+        a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + float(eps))
+    ),
+    "matmul": lambda a, b: torch.matmul(a, b),
     "real": lambda a: (
         a.to(dtype=torch.get_default_dtype())
         if isinstance(a, torch.Tensor)
@@ -244,14 +257,19 @@ _ROWWISE: Mapping[str, RowwiseOperator] = {
     "normalize": "normalize",
 }
 
-#: Builtins that rebuild the last axis of their tensor arguments from
-#: selections at static positions: ``concat`` joins tensors along it and
-#: ``slice`` keeps a window of it. The checked lowering writes each as a
-#: tensor of entries chosen by literal positions under one comprehension
-#: per leading axis, so its sizes are known statically.
+#: Builtins that rebuild the last axis of their tensor arguments, which
+#: the checked lowering writes out in terms of selections, tensor
+#: literals, comprehensions, and other builtins: ``concat`` joins tensors
+#: along it and ``slice`` keeps a window of it (a tensor of entries
+#: chosen at literal positions under one comprehension per leading
+#: axis); ``matmul`` contracts it against the first axis of a vector or
+#: matrix; ``layer_norm`` and ``rms_norm`` normalize each row of it.
 _SHAPE_BUILTINS: Mapping[str, frozenset[int]] = {
     "concat": frozenset(range(2, 65)),
     "slice": frozenset({3}),
+    "matmul": frozenset({2}),
+    "layer_norm": frozenset({1, 2}),
+    "rms_norm": frozenset({1, 2}),
 }
 
 #: Higher-order operations whose types are determined by their collection and

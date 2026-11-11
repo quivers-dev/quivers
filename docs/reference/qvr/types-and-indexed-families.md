@@ -177,6 +177,9 @@ last axis (leading axes agree, last extents add) and `slice(v, start, length)`
 keeps `length` entries of it from `start`, both bounds integer literals.
 `select(c, a, b)` is `a` where the `Bool` `c` holds and `b` elsewhere, entry by
 entry, evaluating both, and `real(c)` and `int(c)` read a `Bool` as one or zero.
+`matmul(a, b)` sums the last axis of `a` against the first axis of a vector or
+matrix `b`, and `layer_norm(v)` and `rms_norm(v)` normalize each row along the
+last axis, with an optional real `eps`.
 `traverse` is effectful computation syntax
 rather than a pure value. The complete inventory and type restrictions are in
 [Finite collection expressions](collection-expressions.md) and the

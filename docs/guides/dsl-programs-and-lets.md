@@ -600,6 +600,32 @@ literals they already read; the compiled runtime calls `torch.cat` and a
 last-axis slice. Within one run of the compiled runtime the input-batch axis is
 never among a let's axes, so a `concat` or `slice` never reads it.
 
+**Products and normalizations**: `matmul(a, b)` sums the last axis of `a`
+against the first axis of `b`, which is a vector or a matrix with that axis's
+extent: a matrix times a vector is a vector, a vector times a matrix a vector,
+a vector times a vector a number, and `a` of any rank is multiplied row by row,
+so `matmul(X, W)` with `X : (T, D)` and `W : (D, H)` is `(T, H)`. The two
+extents are checked to agree. `layer_norm(v)` and `rms_norm(v)` normalize each
+row along the last axis and keep the shape: `layer_norm(v)` is
+`(v - mean(v)) / sqrt(mean((v - mean(v))^2) + eps)` (the biased variance, as
+`torch.nn.functional.layer_norm` computes it) and `rms_norm(v)` is
+`v / sqrt(mean(v^2) + eps)`. An optional second argument, a positive real
+literal, sets `eps`; it is `0.00001` and `0.000001` when omitted. Neither takes
+a learned gain or bias; multiply and add them as ordinary lets:
+
+<!-- compile: false -->
+```qvr
+let h = tanh(matmul(W_in, x_t) + matmul(W_rec, h_prev) + b)
+let normed = gain * layer_norm(h) + shift
+```
+
+The checked elaboration writes `matmul` as a sum of products under one
+comprehension per row and column, and the normalizations as row statistics
+bound once and a comprehension of quotients, so the reference machine and
+every transpile target compute them with forms they already read; the compiled
+runtime calls `torch.matmul`, `torch.nn.functional.layer_norm`, and the RMS
+formula.
+
 **Finite collections**: `map`, `fold`, `length`, and `logsumexp_over` are pure.
 `traverse` sequences a named computation and thus appears on the right
 side of `<-`. See the [collection reference](../reference/qvr/collection-expressions.md)
@@ -608,7 +634,7 @@ for their typing and shape rules.
 The eager PyTorch compiler also exposes the native-only operations `alpha_dropout`,
 `amax`, `amin`, `argmax`, `argmin`, `celu`, `clamp`, `cummax`, `cummin`,
 `cumprod`, `dropout`, `flip`, `glu`, `hardshrink`, `hardsigmoid`, `hardswish`,
-`hardtanh`, `layer_norm`, `leaky_relu`, `neg`, `norm`, `prelu`, `rms_norm`,
+`hardtanh`, `leaky_relu`, `neg`, `norm`, `prelu`,
 `rrelu`, `softmin`, `softshrink`, `std`, `swish`, `tanhshrink`, `threshold`,
 and `var`. These are an attachment boundary, not portable QIEC primitives. If
 a program uses one, `qvr check` reports `qiec-builtin:host-only` rather than

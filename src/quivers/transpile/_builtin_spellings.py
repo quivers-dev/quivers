@@ -23,7 +23,8 @@ target, that settles each builtin for each target in one of four ways:
 * [`Elaborated`][quivers.transpile._builtin_spellings.Elaborated]: the
   checked elaboration writes the builtin in terms of selections, tensor
   literals, comprehensions, and other builtins before any plan is
-  drawn (``concat``, ``slice``), so no renderer meets the call and the
+  drawn (``concat``, ``slice``, ``matmul``, ``layer_norm``, ``rms_norm``),
+  so no renderer meets the call and the
   target spells what it was written in.
 
 Every target's table has an entry for every surface builtin, so adding
@@ -829,6 +830,18 @@ _ELABORATED: dict[str, BuiltinSpelling] = {
     "slice": Elaborated(
         reason="a tensor literal of the window's entries selected at literal "
         "positions of the last axis, under a comprehension per leading axis"
+    ),
+    "matmul": Elaborated(
+        reason="a sum over a comprehension of products along the shared axis, "
+        "under a comprehension per leading axis and per column"
+    ),
+    "layer_norm": Elaborated(
+        reason="row means and variances bound once, and a comprehension of "
+        "each centered entry over the square root of its row's variance"
+    ),
+    "rms_norm": Elaborated(
+        reason="row mean squares bound once, and a comprehension of each "
+        "entry over the square root of its row's mean square"
     ),
 }
 
