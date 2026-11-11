@@ -18,7 +18,6 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.14"
-  FORCE_COLOR: "1"
 
 jobs:
   detect-changes:
