@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 92    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 92    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 92    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 92    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 92    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 92    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 92    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 92    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 92    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 92    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 92    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 19 / 46          | 58 / 92    |
+| [church](semantics/transpile-correctness/church.md)   | 20 / 46          | 69 / 92    |
+| [edward2](semantics/transpile-correctness/edward2.md) | 26 / 46          | 77 / 92    |
+| [gen](semantics/transpile-correctness/gen.md)         | 25 / 46          | 71 / 92    |
+| [jags](semantics/transpile-correctness/jags.md)       | 25 / 46          | 62 / 92    |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 28 / 46          | 85 / 92    |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 26 / 46          | 74 / 92    |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 28 / 46          | 86 / 92    |
+| [stan](semantics/transpile-correctness/stan.md)       | 28 / 46          | 74 / 92    |
+| [turing](semantics/transpile-correctness/turing.md)   | 26 / 46          | 71 / 92    |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 28 / 46          | 74 / 92    |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -66,11 +66,11 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md)             | no   | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`beta_regression`](examples/beta-regression.md)                         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`bidirectional_rnn_lm`](examples/bidirectional-rnn-lm.md)               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| [`bnn`](examples/bnn.md)                                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| [`ccg`](examples/ccg.md)                                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`changepoint`](examples/changepoint.md)                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`bnn`](examples/bnn.md)                                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`ccg`](examples/ccg.md)                                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| [`changepoint`](examples/changepoint.md)                                 | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | [`continuous_hmm`](examples/continuous-hmm.md)                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`custom_rules`](examples/custom-rules.md)                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`custom_rules`](examples/custom-rules.md)                               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`deep_markov`](examples/deep-markov.md)                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`factor_analysis`](examples/factor-analysis.md)                         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`gamma_regression`](examples/gamma-regression.md)                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -87,14 +87,13 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`lstm_lm`](examples/lstm-lm.md)                                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`mixture_model`](examples/mixture-model.md)                             | no   | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`montague_nli`](examples/montague-nli.md)                               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| [`multimodal_tlg`](examples/multimodal-tlg.md)                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`multimodal_tlg`](examples/multimodal-tlg.md)                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`negbin_regression`](examples/negbin-regression.md)                     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`parametric_pooling`](examples/parametric-pooling.md)                   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`pcfg`](examples/pcfg.md)                                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`pmcfg`](examples/pmcfg.md)                                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`pmf`](examples/pmf.md)                                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| [`pmf`](examples/pmf.md)                                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`ppca`](examples/ppca.md)                                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`quantifier_scope`](examples/quantifier-scope.md)                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`quantifier_scope`](examples/quantifier-scope.md)                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`schema_chart_parser`](examples/schema-chart-parser.md)                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`seq2seq`](examples/seq2seq.md)                                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`stochastic_volatility`](examples/stochastic-volatility.md)             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -102,10 +101,11 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`tensor_contraction`](examples/tensor-contraction.md)                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`term_autoencoder`](examples/term-autoencoder.md)                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`transformer_lm`](examples/transformer-lm.md)                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| [`tree_categorical`](examples/tree-categorical.md)                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`type_logical`](examples/type-logical.md)                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`tree_categorical`](examples/tree-categorical.md)                       | no   | yes    | yes     | no  | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`type_logical`](examples/type-logical.md)                               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`vae`](examples/vae.md)                                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`vanilla_rnn_lm`](examples/vanilla-rnn-lm.md)                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| [`wmcfg`](examples/wmcfg.md)                                             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`zip_regression`](examples/zip-regression.md)                           | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 ### 1.2 Constructs
@@ -233,22 +233,6 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 Each construct below is refused by all 11 backends, so it marks the boundary of what QVR exports at all rather than a gap in one target. Reaching a target means writing the model differently, not switching language.
 
-### `composition_decl`
-
-Refused for: [`pmf`](examples/pmf.md).
-
-Reported kinds:
-
-```text
-composition_decl
-```
-
-Each backend words it differently; this is bugs's. `bugs` on `pmf` reports:
-
-```text
-the module's `composition_decl` declaration declares a composition rule: the algebra (its `tensor_op`, `join`, `unit` and `zero`) that says how morphism scores combine when morphisms are composed. It is structure over the whole module, not a random variable and not a step. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for declaring the algebra a category composes in. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. A composition rule has no counterpart to emit. Add a `program ... :` block to the module and the rule is carried as module metadata while that program is transpiled; to run the rule itself, evaluate the module in quivers, which is where composition rules have meaning.
-```
-
 ### `composition_decl`, `contraction_decl`
 
 Refused for: [`tensor_contraction`](examples/tensor-contraction.md).
@@ -286,7 +270,7 @@ the module's `loss_decl` declaration declares a training objective attached to a
 
 ### `param-source:mlp`
 
-Refused for: [`bnn`](examples/bnn.md), [`deep_markov`](examples/deep-markov.md), [`seq2seq`](examples/seq2seq.md), [`transformer_lm`](examples/transformer-lm.md), [`vae`](examples/vae.md).
+Refused for: [`deep_markov`](examples/deep-markov.md), [`seq2seq`](examples/seq2seq.md), [`transformer_lm`](examples/transformer-lm.md), [`vae`](examples/vae.md).
 
 Reported kinds:
 
@@ -294,11 +278,11 @@ Reported kinds:
 param-source:mlp
 ```
 
-Every backend reports it in the same words. `bugs` on `bnn` reports:
+Every backend reports it in the same words. `bugs` on `deep_markov` reports:
 
 ```text
 no transpile target can transpile this program:
-  - no transpile target can transpile this program. The refusal is tagged `morphism 'net' draws its parameters from a 'mlp' network. The network's weights are model-internal and appear in neither the wire form nor the sample sites, so no backend can reconstruct the mean the morphism computes at line 33. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.`, which has no explanation registered yet; please report it.
+  - no transpile target can transpile this program. The refusal is tagged `morphism 'trans_mlp_1' draws its parameters from a 'mlp' network. The network's weights are model-internal and appear in neither the wire form nor the sample sites, so no backend can reconstruct the mean the morphism computes at line 49. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.`, which has no explanation registered yet; please report it.
   - a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
 ```
 
@@ -355,6 +339,70 @@ Each backend words it differently; this is bugs's. `bugs` on `term_autoencoder` 
 QIEC computation `reconstruct` requires the `neural-attachment` QIEC capability, but BUGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
+### `qiec:capability:search:AB__run`
+
+Refused for: [`custom_rules`](examples/custom-rules.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:AB__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `custom_rules` reports:
+
+```text
+QIEC computation `AB__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:capability:search:CCG__run`
+
+Refused for: [`ccg`](examples/ccg.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:CCG__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `ccg` reports:
+
+```text
+QIEC computation `CCG__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:capability:search:Lambek__run`
+
+Refused for: [`type_logical`](examples/type-logical.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:Lambek__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `type_logical` reports:
+
+```text
+QIEC computation `Lambek__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:capability:search:MMTLG__run`
+
+Refused for: [`multimodal_tlg`](examples/multimodal-tlg.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:MMTLG__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `multimodal_tlg` reports:
+
+```text
+QIEC computation `MMTLG__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
 ### `qiec:capability:search:Montague__run`
 
 Refused for: [`montague_nli`](examples/montague-nli.md).
@@ -385,6 +433,38 @@ Each backend words it differently; this is bugs's. `bugs` on `let_expressions/le
 
 ```text
 QIEC computation `PCFG__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:capability:search:QScope__run`
+
+Refused for: [`quantifier_scope`](examples/quantifier-scope.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:QScope__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `quantifier_scope` reports:
+
+```text
+QIEC computation `QScope__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:capability:search:WMCFG__run`
+
+Refused for: [`wmcfg`](examples/wmcfg.md).
+
+Reported kinds:
+
+```text
+qiec:capability:search:WMCFG__run
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `wmcfg` reports:
+
+```text
+QIEC computation `WMCFG__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
 ```
 
 ### `qiec:capability:search:lp_parser__run`
@@ -830,6 +910,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`bugs` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -868,9 +966,9 @@ bugs cannot emit this `observe` step: the data codes Categorical classes from ze
 
 **`observe:class-code:y`**
 
-Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`, [`tree_categorical`](examples/tree-categorical.md).
 
-Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -1197,6 +1295,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`church` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1271,6 +1387,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`edward2` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -1421,6 +1555,24 @@ family:Wishart:no-gen-target
 gen has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`let-expr:LetExprFactor:gen`**
+
+Refused for: [`tree_categorical`](examples/tree-categorical.md).
+
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:LetExprFactor:gen: axis 'Class' (binder 'cls') has no static cardinality in `ctx.cards`
+```
+
+`gen` on `tree_categorical` reports:
+
+```text
+gen-helper cannot emit a `factor` over an axis as a `let` body: axis 'Class' (binder 'cls') has no static cardinality in `ctx.cards`
+```
+
 **`let-expr:axis-reduction:gen`**
 
 Refused for: `let_expressions/let_reduce_nested`.
@@ -1455,6 +1607,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`gen` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -1732,6 +1902,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`jags` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1903,6 +2091,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`pymc` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -2253,6 +2459,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: [`changepoint`](examples/changepoint.md).
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`turing` on `changepoint` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
