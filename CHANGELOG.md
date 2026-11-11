@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.39.0] - 2026-11-11
+
+### Added
+
+- **Priors on a grammar's production probabilities.** A program binds a normalized grammar's production probabilities to its own values, `parse(D, sentence, ("Det", p_det), ("N", p_n))`, one probability vector per left-hand side of several productions, so a Dirichlet prior per left-hand side has a posterior that MCMC samples. The binding is checked when the program is lowered (every label a left-hand side of several productions, each bound once, each value a vector of its group's size, a value drawn at a sample site from a family on the simplex, and the grammar declaring `normalize=lhs`); the compiled runtime sends gradients to the bound values and the checked path elaborates the call to a weighted variant of the deduction's computations, `<D>__weighted_run`. Every transpile target refuses such a program by name.
+- **Corpora in one run.** `parse(D, corpus, Plate, ...)` parses a table with one sentence per object of `Plate`, all of one length, and `chart.goal_weight()` is the semiring product of the sentences' goal weights (the corpus log-likelihood under `LogProb`). `DeductionSystem.corpus` and `CorpusChart` in `quivers.stochastic` are the Python form, and `DeductionSystem.__call__`, `DeductionSystem.run`, and `DeductionSystem.production_log_probs` take the same production probabilities as a mapping from left-hand side to vector.
+
+### Fixed
+
+- **A program that parses a sentence runs on the compiled runtime.** Host data of strings (a sentence of tokens, or a corpus table) is checked against its checked type without a tensor conversion, and the program binds the deduction's answer as the inside weight of its goal, as the checked path does.
+
 ## [0.38.0] - 2026-11-11
 
 ### Added
