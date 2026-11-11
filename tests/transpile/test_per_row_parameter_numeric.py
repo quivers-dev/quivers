@@ -41,14 +41,32 @@ _RATE = "steps/observe_per_row_gamma_rate"
 _CHANGE = "steps/marginalize_factor_let_rows"
 
 
+def _f(value: float) -> torch.Tensor:
+    """A constant in double precision, so the oracle stays float64.
+
+    Parameters
+    ----------
+    value : float
+        The constant.
+
+    Returns
+    -------
+    torch.Tensor
+        A float64 scalar.
+    """
+    return torch.tensor(value, dtype=torch.float64)
+
+
 def _scale(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     mu, y, se = v["mu"], v["y"], v["se"]
-    return D.Normal(0.0, 10.0).log_prob(mu) + D.Normal(mu, se).log_prob(y).sum()
+    return D.Normal(_f(0.0), _f(10.0)).log_prob(mu) + D.Normal(mu, se).log_prob(y).sum()
 
 
 def _rate(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     nu, y, x = v["nu"], v["y"], v["x"]
-    return D.Gamma(2.0, 0.5).log_prob(nu) + D.Gamma(nu, nu / x).log_prob(y).sum()
+    return (
+        D.Gamma(_f(2.0), _f(0.5)).log_prob(nu) + D.Gamma(nu, nu / x).log_prob(y).sum()
+    )
 
 
 def _change(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
@@ -58,7 +76,7 @@ def _change(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     for tau in range(4):
         rate = torch.where(steps > tau, after, before)
         terms.append(math.log(0.25) + D.Poisson(rate).log_prob(y).sum())
-    prior = D.Gamma(2.0, 1.0)
+    prior = D.Gamma(_f(2.0), _f(1.0))
     return (
         prior.log_prob(before)
         + prior.log_prob(after)
@@ -181,7 +199,7 @@ def _reference(case: str) -> list[float]:
             data={name: _nested(values[name]) for name in data},
             sites={name: _nested(values[name]) for name in point},
         )
-        assert run.log_joint == pytest.approx(expected, rel=1e-5)
+        assert run.log_joint == pytest.approx(expected, rel=1e-9)
         densities.append(joint)
     return densities
 
@@ -217,7 +235,7 @@ def test_the_changepoint_oracle_separates_rows_from_a_shared_rate() -> None:
         name: torch.as_tensor(value, dtype=torch.float64)
         for name, value in {**data, **points[0]}.items()
     }
-    prior = D.Gamma(2.0, 1.0)
+    prior = D.Gamma(_f(2.0), _f(1.0))
     shared = (
         prior.log_prob(values["rate_before"])
         + prior.log_prob(values["rate_after"])

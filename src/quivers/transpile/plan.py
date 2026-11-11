@@ -1489,6 +1489,7 @@ class _ProgramWalk:
                     "pass the result as probs"
                 ],
             )
+        args, arg_names = self._parameterization(family, args, arg_names)
         constraint = _apply_declared_bounds(
             from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
             plate,
@@ -1500,6 +1501,50 @@ class _ProgramWalk:
         )
         del named
         return family, args, arg_names, plate, constraint
+
+    def _parameterization(
+        self, family: str, args: tuple[IRArg, ...], arg_names: tuple[str, ...]
+    ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
+        """Hand an alternative parameterization to the target as it reads it.
+
+        A target whose library has the parameterization the source wrote
+        receives it unchanged, under the keyword the renderer spells it
+        with. An alternative a target has no spelling for is refused by
+        name.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        args : tuple[IRArg, ...]
+            The call's wire arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+
+        Returns
+        -------
+        tuple[tuple[IRArg, ...], tuple[str, ...]]
+            The arguments and names the target receives.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the target has no spelling for the parameterization.
+        """
+        target = self.planner.target
+        for name in arg_names:
+            natives = _NATIVE_ALTERNATIVES.get((family, name))
+            if natives is None or target in natives:
+                continue
+            raise UnsupportedConstruct(
+                f"qvr-{target}",
+                [
+                    f"family:{family}:{name}: {target} has no {family} "
+                    f"parameterized by its {name}; write the probability "
+                    f"the logits name as probs"
+                ],
+            )
+        return args, arg_names
 
     def _arguments(
         self,
@@ -2382,6 +2427,14 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+#: The targets whose library takes each alternative parameterization as
+#: written, keyed by family and parameter. Every other target refuses it.
+_NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
+    ("Bernoulli", "logits"): frozenset(
+        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+    ),
+}
 
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:

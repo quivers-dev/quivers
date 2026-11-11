@@ -838,7 +838,9 @@ class TuringRenderer(RendererBase):
         sb, counter = ctx.sb, ctx.counter
 
         meta = _meta_or_raise(family)
-        target_dist = _ZERO_BASED_FAMILIES.get(family, meta.target_names.get("turing"))
+        target_dist = _ZERO_BASED_FAMILIES.get(
+            family, _turing_parameterized_name(family, arg_names, meta)
+        )
         if target_dist is None:
             raise UnsupportedConstruct(
                 "qvr-turing", [f"family:{family}: no Turing.jl mapping"]
@@ -1401,7 +1403,9 @@ class TuringRenderer(RendererBase):
         """
         sb, counter = ctx.sb, ctx.counter
         meta = _meta_or_raise(observe.family)
-        target_dist = meta.target_names.get("turing")
+        target_dist = _turing_parameterized_name(
+            observe.family, observe.arg_names, meta
+        )
         if target_dist is None:
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
@@ -2922,6 +2926,39 @@ _TURING_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
 #: [`runtime_turing.jl`][quivers.transpile.runtime_turing] rather than
 #: Distributions.jl's one-based one.
 _ZERO_BASED_FAMILIES: dict[str, str] = {"Categorical": "qvr_categorical"}
+
+#: The Turing.jl distribution that takes each alternative parameterization
+#: a family call can name, keyed by family and the parameter selecting it.
+_TURING_PARAMETERIZED_NAMES: dict[tuple[str, str], str] = {
+    ("Bernoulli", "logits"): "BernoulliLogit",
+}
+
+
+def _turing_parameterized_name(
+    family: str, arg_names: tuple[str, ...], meta: FamilyMeta
+) -> str | None:
+    """The Turing.jl distribution for the parameterization a call names.
+
+    Parameters
+    ----------
+    family : str
+        The family.
+    arg_names : tuple[str, ...]
+        The parameters the call supplies.
+    meta : FamilyMeta
+        The family's transpile metadata.
+
+    Returns
+    -------
+    str | None
+        The distribution taking the named parameterization, else the
+        family's Turing.jl name, or ``None`` when it has none.
+    """
+    for name in arg_names:
+        selected = _TURING_PARAMETERIZED_NAMES.get((family, name))
+        if selected is not None:
+            return selected
+    return meta.target_names.get("turing")
 
 
 def _load_runtime_turing_schema() -> tuple[panproto.Schema, str, tuple[str, ...]]:

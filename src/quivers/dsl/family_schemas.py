@@ -74,6 +74,7 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
 
 _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
     "Categorical": (("probs",), ("logits",)),
+    "Bernoulli": (("probs",), ("logits",)),
     "Restrict": (
         ("base", "low", "high"),
         ("base", "low"),

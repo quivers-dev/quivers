@@ -30,6 +30,7 @@ from quivers.qiec.reference_support import (
     finite_value as _finite_value,
     log_choose as _log_choose,
     normal_log_prob as _normal_log_prob,
+    log_probabilities as _log_probabilities,
     probability as _probabilities,
     real_parameter as _real,
     simplex as _simplex,
@@ -613,10 +614,8 @@ def _bernoulli_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    probability = _probabilities(a, "Bernoulli")
-    hit = bool(_finite_value(value, "Bernoulli"))
-    chance = probability if hit else 1.0 - probability
-    return math.log(chance) if chance > 0 else -math.inf
+    log_success, log_failure = _log_probabilities(a, "Bernoulli")
+    return log_success if bool(_finite_value(value, "Bernoulli")) else log_failure
 
 
 def _categorical_sample(a: Mapping[str, object], rng: random.Random) -> object:

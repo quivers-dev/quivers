@@ -2298,15 +2298,12 @@ def make_inline_distribution(
             _spec: FamilySpec = spec,
             _parameters: tuple[str, ...] = source_parameters,
         ) -> D.Distribution:
-            values: dict[str, torch.Tensor] = {}
-            for index, (name, value) in enumerate(
-                zip(_parameters, params, strict=True)
-            ):
-                if name == "probs":
-                    values[name] = value.clamp(min=EPS, max=1.0 - EPS)
-                else:
-                    values[name] = _spec.params[index].inline_clamp(value)
-            return _spec.dist_class(**values)
+            return _spec.dist_class(
+                **{
+                    name: _selected_clamp(_spec, name, value)
+                    for name, value in zip(_parameters, params, strict=True)
+                }
+            )
 
         param_names = selected_parameters
         dist_builder = _selected_builder
@@ -2438,16 +2435,12 @@ def _make_fixed_selected_parameters(
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         values: dict[str, torch.Tensor] = {}
-        for index, (name, value) in enumerate(zip(parameters, evaluated, strict=True)):
+        for name, value in zip(parameters, evaluated, strict=True):
             if isinstance(value, (list, tuple)):
                 tensor = torch.as_tensor(value, device=device).expand(batch, -1)
             else:
                 tensor = torch.full((batch, d), float(value), device=device)
-            if name == "probs":
-                tensor = tensor.clamp(min=EPS, max=1.0 - EPS)
-            else:
-                tensor = spec.params[index].inline_clamp(tensor)
-            values[name] = tensor
+            values[name] = _selected_clamp(spec, name, tensor)
         return spec.dist_class(**values)
 
     return FixedDistribution(
@@ -2456,6 +2449,36 @@ def _make_fixed_selected_parameters(
         discrete=spec.discrete,
         support=spec.support,
     )
+
+
+def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.Tensor:
+    """Keep a parameter the source names inside its family's constraint.
+
+    A probability is held off zero and one, a parameter the family's
+    specification declares takes its own inline clamp, and an alternative
+    the specification does not declare (logits) is passed as written:
+    logits range over the reals.
+
+    Parameters
+    ----------
+    spec : FamilySpec
+        The family's specification.
+    name : str
+        The parameter the source names.
+    value : torch.Tensor
+        Its value.
+
+    Returns
+    -------
+    torch.Tensor
+        The value the family is built with.
+    """
+    if name == "probs":
+        return value.clamp(min=EPS, max=1.0 - EPS)
+    declared = {param.name: param for param in spec.params}
+    if name in declared:
+        return declared[name].inline_clamp(value)
+    return value
 
 
 def _bind_inline_arguments(

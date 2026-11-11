@@ -1210,7 +1210,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": "dbern",
         },
         arg_aliases={
-            "pymc": {"probs": "p"},
+            "pymc": {"probs": "p", "logits": "logit_p"},
             "webppl": {"probs": "p"},
         },
     ),

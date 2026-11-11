@@ -1877,6 +1877,7 @@ _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
     "Categorical": {
         "logits": "logits",
     },
+    "Bernoulli": {"logits": "logits"},
     "BetaBinomial": {
         "total_count": "total_count",
         "concentration1": "concentration1",
