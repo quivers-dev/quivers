@@ -383,6 +383,7 @@ def _let_space(
     expr: LetExprNode,
     bound: Mapping[str, AnySpace | None],
     known: Mapping[str, AnySpace],
+    functions: Mapping[str, int],
 ) -> Euclidean | None:
     """The space an entrywise let expression's value occupies.
 
@@ -399,6 +400,9 @@ def _let_space(
         The spaces of the names bound in the body.
     known : Mapping[str, AnySpace]
         The spaces of host data and of earlier lets.
+    functions : Mapping[str, int]
+        The codomain width of each learned function by name; a call of
+        one is a value of that width shared by every row.
 
     Returns
     -------
@@ -447,6 +451,8 @@ def _let_space(
             and len(node.args) == 1
         ):
             return shape(node.args[0])
+        if isinstance(node, LetExprCall) and node.func in functions:
+            return (None, functions[node.func])
         return None
 
     found = shape(expr)
@@ -3683,7 +3689,12 @@ class _ProgramsMixin:
                         _let_expr_reads(step.value),
                     )
                     bound_vars[step.name] = None
-                    let_space = _let_space(step.value, bound_vars, parameter_spaces)
+                    let_space = _let_space(
+                        step.value,
+                        bound_vars,
+                        parameter_spaces,
+                        self._function_widths(),
+                    )
                     if let_space is not None:
                         parameter_spaces[step.name] = let_space
                     steps.append(Let(name=step.name, value=compiled_fn))
@@ -4128,7 +4139,9 @@ class _ProgramsMixin:
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
-                let_space = _let_space(bstep.value, local_bv, parameter_spaces)
+                let_space = _let_space(
+                    bstep.value, local_bv, parameter_spaces, self._function_widths()
+                )
                 if let_space is not None:
                     parameter_spaces[bstep.name] = let_space
             elif isinstance(bstep, VectorisedObserveStep):
@@ -5221,6 +5234,20 @@ class _ProgramsMixin:
                 found[name] = morphism.apply_values
         found["__index_size__"] = self._resolve_index_size
         return found
+
+    def _function_widths(self) -> dict[str, int]:
+        """The codomain width of every learned function, by name.
+
+        Returns
+        -------
+        dict[str, int]
+            One entry per ``[role=function]`` morphism.
+        """
+        return {
+            name: int(cast(ContinuousSpace, morphism.codomain).dim)
+            for name, morphism in self._morphisms.items()
+            if isinstance(morphism, LearnedFunction)
+        }
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep

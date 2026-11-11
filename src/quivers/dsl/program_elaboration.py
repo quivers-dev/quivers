@@ -3853,6 +3853,21 @@ class _ProgramElaboration:
         for position, (argument, width) in enumerate(
             zip(call.args, widths, strict=True)
         ):
+            if (
+                isinstance(argument, LetExprVar)
+                and scope.lookup(argument.name) is None
+                and argument.name not in self._lambda_macros
+            ):
+                # A host datum passed straight to the function takes the
+                # type of the domain factor it fills.
+                self._declare_parameter(
+                    argument.name,
+                    REAL if width == 1 else tensor_type(REAL, (_extent(width),)),
+                    "data",
+                    scope,
+                    state,
+                    node,
+                )
             value = self._let_value(argument, scope, state, node)
             type_ = self._value_type(value, scope.context(), argument)
             shape = tensor_shape(type_)
