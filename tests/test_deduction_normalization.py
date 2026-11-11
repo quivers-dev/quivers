@@ -609,7 +609,7 @@ def test_maximum_likelihood_recovers_the_generating_grammar() -> None:
     table = system.production_log_probs()
     for symbol, productions in GENERATOR.items():
         for name, _, truth in productions:
-            fitted = math.exp(float(table[symbol][name]))
+            fitted = math.exp(float(table[symbol][name].detach()))
             assert fitted == pytest.approx(relative[(symbol, name)], abs=5e-3)
             # Four binomial standard errors at the true probability over
             # the left-hand side's uses in the sampled derivations.
