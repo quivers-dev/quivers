@@ -59,6 +59,11 @@ MATH_BUILTINS: Mapping[str, int] = {
 }
 
 
+#: The planner's target-neutral lowering, which no renderer reads: it
+#: keeps every builtin under its QVR name.
+NEUTRAL_TARGET = "ir"
+
+
 class BuiltinSpelling(dx.TaggedUnion, discriminator="kind"):
     """How one target spells one math builtin."""
 
@@ -207,10 +212,16 @@ _COMMON_FORMS: dict[str, LetExprNode] = {
         _lit(1.0),
         _op("/", _lit(2.0), _op("+", _call("exp", _op("*", _lit(2.0), _X)), _lit(1.0))),
     ),
-    "asinh": _call("log", _op("+", _X, _call("sqrt", _op("+", _op("*", _X, _X), _lit(1.0))))),
-    "acosh": _call("log", _op("+", _X, _call("sqrt", _op("-", _op("*", _X, _X), _lit(1.0))))),
+    "asinh": _call(
+        "log", _op("+", _X, _call("sqrt", _op("+", _op("*", _X, _X), _lit(1.0))))
+    ),
+    "acosh": _call(
+        "log", _op("+", _X, _call("sqrt", _op("-", _op("*", _X, _X), _lit(1.0))))
+    ),
     "atanh": _op(
-        "*", _lit(0.5), _call("log", _op("/", _op("+", _lit(1.0), _X), _op("-", _lit(1.0), _X)))
+        "*",
+        _lit(0.5),
+        _call("log", _op("/", _op("+", _lit(1.0), _X), _op("-", _lit(1.0), _X))),
     ),
     "ceil": _neg(_call("floor", _neg(_X))),
     "erfc": _op("-", _lit(1.0), _call("erf", _X)),
@@ -280,7 +291,18 @@ def _imported(module: tuple[tuple[str, ...], str], name: str) -> NativeCall:
     return NativeCall(path=(alias, name), import_path=path, import_alias=alias)
 
 
-_TORCH_FUNCTIONAL = ("relu", "relu6", "elu", "selu", "gelu", "silu", "mish", "softplus", "logsigmoid", "softsign")
+_TORCH_FUNCTIONAL = (
+    "relu",
+    "relu6",
+    "elu",
+    "selu",
+    "gelu",
+    "silu",
+    "mish",
+    "softplus",
+    "logsigmoid",
+    "softsign",
+)
 
 _PYRO: dict[str, BuiltinSpelling] = {
     **{
@@ -298,9 +320,27 @@ _NUMPYRO: dict[str, BuiltinSpelling] = {
     **{
         name: _native("jnp", name)
         for name in (
-            "exp", "expm1", "log", "log1p", "log2", "log10", "sqrt", "square",
-            "abs", "sign", "reciprocal", "sin", "cos", "tan", "sinh", "cosh",
-            "floor", "ceil", "round", "trunc", "tanh",
+            "exp",
+            "expm1",
+            "log",
+            "log1p",
+            "log2",
+            "log10",
+            "sqrt",
+            "square",
+            "abs",
+            "sign",
+            "reciprocal",
+            "sin",
+            "cos",
+            "tan",
+            "sinh",
+            "cosh",
+            "floor",
+            "ceil",
+            "round",
+            "trunc",
+            "tanh",
         )
     },
     "asin": _native("jnp", "arcsin"),
@@ -343,9 +383,27 @@ _PYMC: dict[str, BuiltinSpelling] = {
     **{
         name: _pmath(name)
         for name in (
-            "exp", "expm1", "log", "log1p", "log2", "log10", "sqrt", "abs",
-            "sin", "cos", "tan", "sinh", "cosh", "tanh", "floor", "ceil",
-            "erf", "erfc", "erfinv", "sigmoid", "softplus",
+            "exp",
+            "expm1",
+            "log",
+            "log1p",
+            "log2",
+            "log10",
+            "sqrt",
+            "abs",
+            "sin",
+            "cos",
+            "tan",
+            "sinh",
+            "cosh",
+            "tanh",
+            "floor",
+            "ceil",
+            "erf",
+            "erfc",
+            "erfinv",
+            "sigmoid",
+            "softplus",
         )
     },
     "asin": _pt("arcsin"),
@@ -380,14 +438,44 @@ _EDWARD2: dict[str, BuiltinSpelling] = {
     **{
         name: _tfmath(name)
         for name in (
-            "exp", "expm1", "log", "log1p", "sqrt", "rsqrt", "square", "abs",
-            "sign", "reciprocal", "sin", "cos", "tan", "asin", "acos", "atan",
-            "sinh", "cosh", "asinh", "acosh", "atanh", "floor", "ceil", "round",
-            "tanh", "sigmoid", "erf", "erfc", "erfinv", "lgamma", "digamma",
+            "exp",
+            "expm1",
+            "log",
+            "log1p",
+            "sqrt",
+            "rsqrt",
+            "square",
+            "abs",
+            "sign",
+            "reciprocal",
+            "sin",
+            "cos",
+            "tan",
+            "asin",
+            "acos",
+            "atan",
+            "sinh",
+            "cosh",
+            "asinh",
+            "acosh",
+            "atanh",
+            "floor",
+            "ceil",
+            "round",
+            "tanh",
+            "sigmoid",
+            "erf",
+            "erfc",
+            "erfinv",
+            "lgamma",
+            "digamma",
         )
     },
     "logsigmoid": _tfmath("log_sigmoid"),
-    **{name: _tfnn(name) for name in ("relu", "elu", "selu", "gelu", "silu", "softplus", "softsign")},
+    **{
+        name: _tfnn(name)
+        for name in ("relu", "elu", "selu", "gelu", "silu", "softplus", "softsign")
+    },
     **_common("log2", "log10", "relu6", "mish"),
     # TensorFlow's `trunc` is `tf.truncatediv`'s cousin for integers; a
     # real truncates as the sign times the floor of the magnitude.
@@ -404,10 +492,35 @@ _EDWARD2: dict[str, BuiltinSpelling] = {
 
 _STAN: dict[str, BuiltinSpelling] = {
     **_same_name(
-        "abs", "acos", "acosh", "asin", "asinh", "atan", "atanh", "ceil", "cos",
-        "cosh", "digamma", "erf", "erfc", "exp", "expm1", "floor", "lgamma",
-        "log", "log10", "log1p", "log2", "sin", "sinh", "sqrt", "square", "tan",
-        "tanh", "trunc", "pow",
+        "abs",
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atanh",
+        "ceil",
+        "cos",
+        "cosh",
+        "digamma",
+        "erf",
+        "erfc",
+        "exp",
+        "expm1",
+        "floor",
+        "lgamma",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "sin",
+        "sinh",
+        "sqrt",
+        "square",
+        "tan",
+        "tanh",
+        "trunc",
+        "pow",
     ),
     "sigmoid": _native("inv_logit"),
     "logsigmoid": _native("log_inv_logit"),
@@ -416,7 +529,11 @@ _STAN: dict[str, BuiltinSpelling] = {
     "rsqrt": _native("inv_sqrt"),
     # `erfinv(y) = inv_Phi((y + 1) / 2) / sqrt(2)`.
     "erfinv": _form(
-        _op("*", _call("inv_Phi", _op("/", _op("+", _X, _lit(1.0)), _lit(2.0))), _lit(_SQRT_HALF))
+        _op(
+            "*",
+            _call("inv_Phi", _op("/", _op("+", _X, _lit(1.0)), _lit(2.0))),
+            _lit(_SQRT_HALF),
+        )
     ),
     # Stan's `round` rounds a tie away from zero; the reference rounds
     # it to even. Stan's `step` is one at zero.
@@ -437,9 +554,30 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
     special = (root, "Distributions", "SpecialFunctions")
     return {
         **_same_name(
-            "abs", "acos", "acosh", "asin", "asinh", "atan", "atanh", "ceil",
-            "cos", "cosh", "exp", "expm1", "floor", "log", "log10", "log1p",
-            "log2", "sign", "sin", "sinh", "sqrt", "tan", "tanh", "trunc",
+            "abs",
+            "acos",
+            "acosh",
+            "asin",
+            "asinh",
+            "atan",
+            "atanh",
+            "ceil",
+            "cos",
+            "cosh",
+            "exp",
+            "expm1",
+            "floor",
+            "log",
+            "log10",
+            "log1p",
+            "log2",
+            "sign",
+            "sin",
+            "sinh",
+            "sqrt",
+            "tan",
+            "tanh",
+            "trunc",
         ),
         # Julia's `round` rounds a tie to even, as the reference does.
         "round": _native("round"),
@@ -468,9 +606,31 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
 #: under the bare name.
 WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
     {
-        "acos", "acosh", "asin", "asinh", "atan", "atanh", "ceil", "cos",
-        "cosh", "digamma", "erf", "erfc", "erfinv", "expm1", "floor", "lgamma",
-        "log10", "log1p", "log2", "round", "sign", "sin", "sinh", "tan", "tanh",
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atanh",
+        "ceil",
+        "cos",
+        "cosh",
+        "digamma",
+        "erf",
+        "erfc",
+        "erfinv",
+        "expm1",
+        "floor",
+        "lgamma",
+        "log10",
+        "log1p",
+        "log2",
+        "round",
+        "sign",
+        "sin",
+        "sinh",
+        "tan",
+        "tanh",
         "trunc",
     }
 )
@@ -490,16 +650,53 @@ _WEBPPL: dict[str, BuiltinSpelling] = {
 #: the QVR name prefixed by `qvr-`.
 CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
     {
-        "abs", "acos", "acosh", "asin", "asinh", "atan", "atanh", "ceil", "cos",
-        "cosh", "digamma", "erf", "erfc", "erfinv", "exp", "expm1", "floor",
-        "lgamma", "log", "log10", "log1p", "log2", "round", "sign", "sin",
-        "sinh", "sqrt", "tan", "tanh", "trunc", "max", "min", "pow",
+        "abs",
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atanh",
+        "ceil",
+        "cos",
+        "cosh",
+        "digamma",
+        "erf",
+        "erfc",
+        "erfinv",
+        "exp",
+        "expm1",
+        "floor",
+        "lgamma",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "round",
+        "sign",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "trunc",
+        "max",
+        "min",
+        "pow",
     }
 )
 
 _CHURCH: dict[str, BuiltinSpelling] = {
     **{name: _native(f"qvr-{name}") for name in CHURCH_RUNTIME_BUILTINS},
-    **_common("square", "reciprocal", "rsqrt", "sigmoid", "softplus", "logsigmoid", *_ACTIVATIONS),
+    **_common(
+        "square",
+        "reciprocal",
+        "rsqrt",
+        "sigmoid",
+        "softplus",
+        "logsigmoid",
+        *_ACTIVATIONS,
+    ),
 }
 
 
@@ -519,8 +716,20 @@ _BUGS_FLOOR = _op(
 
 _BUGS: dict[str, BuiltinSpelling] = {
     **_same_name(
-        "abs", "cos", "cosh", "exp", "log", "sin", "sinh", "sqrt", "tan",
-        "tanh", "trunc", "pow", "max", "min",
+        "abs",
+        "cos",
+        "cosh",
+        "exp",
+        "log",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "trunc",
+        "pow",
+        "max",
+        "min",
     ),
     "acos": _native("arccos"),
     "acosh": _native("arccosh"),
@@ -538,16 +747,35 @@ _BUGS: dict[str, BuiltinSpelling] = {
     "sign": _form(_op("-", _call("step", _X), _call("step", _neg(_X)))),
     # `erf(x) = 2 Phi(x sqrt 2) - 1`, through the normal CDF `phi`.
     "erf": _form(
-        _op("-", _op("*", _lit(2.0), _call("phi", _op("/", _X, _lit(_SQRT_HALF)))), _lit(1.0))
+        _op(
+            "-",
+            _op("*", _lit(2.0), _call("phi", _op("/", _X, _lit(_SQRT_HALF)))),
+            _lit(1.0),
+        )
     ),
-    "erfc": _form(_op("*", _lit(2.0), _call("phi", _neg(_op("/", _X, _lit(_SQRT_HALF)))))),
+    "erfc": _form(
+        _op("*", _lit(2.0), _call("phi", _neg(_op("/", _X, _lit(_SQRT_HALF)))))
+    ),
     "erfinv": _form(
-        _op("*", _call("probit", _op("/", _op("+", _X, _lit(1.0)), _lit(2.0))), _lit(_SQRT_HALF))
+        _op(
+            "*",
+            _call("probit", _op("/", _op("+", _X, _lit(1.0)), _lit(2.0))),
+            _lit(_SQRT_HALF),
+        )
     ),
     **_refuse("BUGS and JAGS have no digamma function", "digamma"),
     **_common(
-        "ceil", "expm1", "log1p", "log2", "log10", "square", "reciprocal",
-        "rsqrt", "softplus", "logsigmoid", *_ACTIVATIONS,
+        "ceil",
+        "expm1",
+        "log1p",
+        "log2",
+        "log10",
+        "square",
+        "reciprocal",
+        "rsqrt",
+        "softplus",
+        "logsigmoid",
+        *_ACTIVATIONS,
     ),
 }
 
@@ -585,7 +813,9 @@ def builtin_spelling(target: str, func: str, arity: int) -> BuiltinSpelling | No
     BuiltinSpelling | None
         The spelling, or ``None`` when ``func`` at this arity is not a
         pointwise math builtin (a reduction such as one-argument
-        ``max``, a let-bound function, or a target's own function).
+        ``max``, a let-bound function, or a target's own function), or
+        when ``target`` is the neutral IR, which keeps every builtin
+        under its QVR name.
 
     Raises
     ------
@@ -593,7 +823,7 @@ def builtin_spelling(target: str, func: str, arity: int) -> BuiltinSpelling | No
         If the target has no table, or its table has no entry for the
         builtin.
     """
-    if MATH_BUILTINS.get(func) != arity:
+    if MATH_BUILTINS.get(func) != arity or target == NEUTRAL_TARGET:
         return None
     table = BUILTIN_SPELLINGS.get(target)
     if table is None or func not in table:
@@ -644,9 +874,7 @@ def _instantiate(
     return body
 
 
-def spell_builtin(
-    target: str, func: str, args: tuple[LetExprNode, ...]
-) -> LetExprNode:
+def spell_builtin(target: str, func: str, args: tuple[LetExprNode, ...]) -> LetExprNode:
     """A builtin call as the target's renderer reads it.
 
     A closed form is expanded, and a refusal raised; a native or
@@ -722,7 +950,9 @@ def native_path(target: str, func: str, arity: int) -> tuple[str, ...] | None:
     )
 
 
-def native_import(target: str, func: str, arity: int) -> tuple[tuple[str, ...], str] | None:
+def native_import(
+    target: str, func: str, arity: int
+) -> tuple[tuple[str, ...], str] | None:
     """The import a native builtin call needs.
 
     Parameters
@@ -750,6 +980,7 @@ __all__ = [
     "BUILTIN_SPELLINGS",
     "CHURCH_RUNTIME_BUILTINS",
     "MATH_BUILTINS",
+    "NEUTRAL_TARGET",
     "WEBPPL_RUNTIME_BUILTINS",
     "BuiltinSpelling",
     "ClosedForm",

@@ -88,7 +88,7 @@ PROBE_MODULES = frozenset(
         "test_matrix_family_numeric",
         "test_numeric_equivalence",
         "test_over_array_numeric",
-        "test_python_builtin_numeric",
+        "test_builtin_numeric",
         "test_qiec_call_equivalence",
         "test_qiec_distributions",
         "test_qiec_fixture_equivalence",
