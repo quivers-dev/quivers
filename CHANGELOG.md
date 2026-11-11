@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.33.0] - 2026-11-11
+
+### Added
+
+- **Tempered sequential Monte Carlo.** `SMC(kernel, num_particles=1024, num_mcmc_steps=5, target_ess=0.5, resampling="systematic", num_pilot_steps=50, seed=...)` moves particles drawn exactly from the prior to the posterior through `p(z) L(z)^beta`, choosing each temperature by bisection on the conditional ESS, reweighting, resampling (`resample`, with the `"multinomial"`, `"systematic"`, `"stratified"`, and `"residual"` `ResamplingScheme`s), and rejuvenating with any `MCMCKernel`, tuned to the population (`MCMCKernel.tune`) and on a discarded pilot run, then frozen for the temperature. `SMCResult` holds the equally weighted particles, `log_evidence` (the log of an unbiased evidence estimate), the temperature ladder, and the ESS and acceptance per temperature. `TemperedPotential` evaluates `log p(z) + beta log L(z)`, `L` being the observations and score steps, and returns the two parts separately. `SMC.run` takes a one-row input.
+
 ## [0.32.0] - 2026-11-11
 
 ### Added
