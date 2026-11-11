@@ -44,6 +44,7 @@ from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.let_expr_traversal import let_expr_children, substitute_let_expr
 from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
+    SHAPE_BUILTINS,
     _BINARY_PRIMITIVES,
     _BUILTIN_PRIMITIVES,
     _COLLECTION_BUILTINS,
@@ -674,6 +675,78 @@ def _last_axis_reduction(
         else tensor_type(inner_shape[0], (dimensions[0], *inner_shape[1]))
     )
     return Comprehension(binder, dimensions[0], inner, result)
+
+
+def _rebuild_last_axis(
+    tensors: tuple[Value, ...],
+    extents: tuple[int, ...],
+    element: TypeExpr,
+    leading: tuple[IndexTerm, ...],
+    picks: tuple[tuple[int, int], ...],
+    path: tuple[str | int, ...],
+    occupied: frozenset[str],
+) -> Value:
+    """A tensor whose last axis lists chosen entries of other tensors' last axes.
+
+    Parameters
+    ----------
+    tensors : tuple[Value, ...]
+        The tensors read, each of shape ``leading`` followed by its own
+        last extent.
+    extents : tuple[int, ...]
+        Each tensor's last extent.
+    element : TypeExpr
+        Their element type.
+    leading : tuple[IndexTerm, ...]
+        The axes before the last, which every tensor shares.
+    picks : tuple[tuple[int, int], ...]
+        The new last axis, in order: each entry names a tensor by its
+        position and an entry of that tensor's last axis.
+    path : tuple[str | int, ...]
+        Structural path of the call, which names the binders.
+    occupied : frozenset[str]
+        The names of the locals in scope, which no binder repeats.
+
+    Returns
+    -------
+    Value
+        A tensor literal of the picked entries, under one comprehension
+        per leading axis.
+    """
+    stem = "_".join(str(item) for item in path)
+    binders: list[Local] = []
+    taken = set(occupied)
+    for axis in range(len(leading)):
+        name = f"__{stem}_lead{axis}"
+        suffix = 0
+        while name in taken:
+            suffix += 1
+            name = f"__{stem}_lead{axis}_{suffix}"
+        taken.add(name)
+        binders.append(Local(name, INT))
+    rows: list[Value] = []
+    for tensor, extent in zip(tensors, extents, strict=True):
+        row = tensor
+        for axis, binder in enumerate(binders):
+            remaining = (*leading[axis + 1 :], IndexLiteral(extent, NAT))
+            row = Gather(row, Var(binder), tensor_type(element, remaining))
+        rows.append(row)
+    width = IndexLiteral(len(picks), NAT)
+    body: Value = TensorValue(
+        tuple(
+            Gather(rows[operand], LiteralValue(entry, INT), element)
+            for operand, entry in picks
+        ),
+        tensor_type(element, (width,)),
+    )
+    for axis in reversed(range(len(leading))):
+        body = Comprehension(
+            binders[axis],
+            leading[axis],
+            body,
+            tensor_type(element, (*leading[axis:], width)),
+        )
+    return body
 
 
 class _PointwiseGatherError(ValueError):
@@ -3074,6 +3147,10 @@ class _Elaborator(
                 self._value_type(argument, context, source)
                 for argument, source in zip(arguments, authored.args, strict=True)
             )
+            if authored.func in SHAPE_BUILTINS:
+                return self._lower_shape_builtin(
+                    authored, arguments, types, context, path
+                )
             if authored.func in _REDUCTIONS and len(arguments) == 1:
                 shape = tensor_shape(types[0])
                 if shape is not None:
@@ -4462,6 +4539,179 @@ class _Elaborator(
             value = Gather(value, index_value, result)
             value_type = result
         return value
+
+    def _lower_shape_builtin(
+        self,
+        authored: surface.LetExprCall,
+        arguments: tuple[Value, ...],
+        types: tuple[TypeExpr, ...],
+        context: CheckContext,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """Lower ``concat`` or ``slice`` to selections along the last axis.
+
+        ``concat(a, b, ...)`` joins two or more tensors of one element
+        type along their last axis: every leading axis agrees and the
+        last extents add. ``slice(v, start, length)`` keeps the entries
+        ``start`` to ``start + length - 1`` of the last axis, both bounds
+        integer literals inside the axis. Each is written as one tensor of
+        entries selected at literal positions, under a comprehension per
+        leading axis, so every path that reads selections and tensor
+        literals runs it unchanged.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The call.
+        arguments : tuple[Value, ...]
+            The lowered arguments.
+        types : tuple[TypeExpr, ...]
+            Their types.
+        context : CheckContext
+            Value bindings in scope.
+        path : tuple[str | int, ...]
+            Structural path of the call, which names the binders.
+
+        Returns
+        -------
+        Value
+            The joined or sliced tensor.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the arity is wrong, an operand is not a tensor of a fixed
+            last extent, the operands disagree in element type or leading
+            axes, or a slice bound is not an integer literal inside the
+            axis.
+        """
+        name = authored.func
+        if name == "concat":
+            if len(arguments) < 2:
+                self._fail(
+                    authored,
+                    "concat joins two or more tensors along their last axis",
+                    code="qiec-primitive",
+                )
+            tensors = arguments
+            tensor_types = types
+        else:
+            if len(arguments) != 3:
+                self._fail(
+                    authored,
+                    "slice takes a tensor, a start, and a length: slice(v, start, length)",
+                    code="qiec-primitive",
+                )
+            tensors = arguments[:1]
+            tensor_types = types[:1]
+        shapes: list[tuple[TypeExpr, tuple[IndexTerm, ...], int]] = []
+        for position, (argument_type, source) in enumerate(
+            zip(tensor_types, authored.args, strict=False)
+        ):
+            split = tensor_shape(argument_type)
+            if split is None:
+                self._fail(
+                    source,
+                    f"{name} acts on the last axis of a tensor, but argument "
+                    f"{position + 1} is a {self._render(argument_type)}; a number "
+                    "x joins as the one-entry vector [x]",
+                    code="qiec-primitive",
+                )
+            element, dimensions = split
+            final = dimensions[-1]
+            last = (
+                final.value
+                if isinstance(final, IndexLiteral) and isinstance(final.value, int)
+                else None
+            )
+            if last is None:
+                self._fail(
+                    source,
+                    f"{name} reads the last axis of argument {position + 1} at "
+                    f"fixed positions, but its extent "
+                    f"{render_static(dimensions[-1])} is open",
+                    code="qiec-primitive",
+                )
+            shapes.append((element, tuple(dimensions[:-1]), last))
+        element, leading, _ = shapes[0]
+        for position, (other, other_leading, _) in enumerate(shapes[1:], start=2):
+            if other != element:
+                self._fail(
+                    authored,
+                    f"concat joins tensors of one element type; argument "
+                    f"{position} holds {self._render(other)}, not "
+                    f"{self._render(element)}",
+                    code="qiec-primitive",
+                )
+            if other_leading != leading:
+                self._fail(
+                    authored,
+                    f"concat joins tensors whose axes before the last agree; "
+                    f"argument {position} has other leading axes than the first",
+                    code="qiec-primitive",
+                )
+        if name == "concat":
+            picks: list[tuple[int, int]] = [
+                (operand, entry)
+                for operand, (_, _, extent) in enumerate(shapes)
+                for entry in range(extent)
+            ]
+        else:
+            start = self._static_slice_bound(authored, 1, "start")
+            length = self._static_slice_bound(authored, 2, "length")
+            extent = shapes[0][2]
+            if length < 1 or start < 0 or start + length > extent:
+                self._fail(
+                    authored,
+                    f"slice({start}, {length}) reads entries {start} to "
+                    f"{start + length - 1}, outside a last axis of {extent} entries",
+                    code="qiec-primitive",
+                )
+            picks = [(0, start + offset) for offset in range(length)]
+        return _rebuild_last_axis(
+            tensors,
+            tuple(extent for _, _, extent in shapes),
+            element,
+            leading,
+            tuple(picks),
+            path,
+            frozenset(local.name for local in context.locals),
+        )
+
+    def _static_slice_bound(
+        self, authored: surface.LetExprCall, position: int, role: str
+    ) -> int:
+        """Read a slice bound, which is an integer literal.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The ``slice`` call.
+        position : int
+            The argument's position.
+        role : str
+            ``"start"`` or ``"length"``, for the message.
+
+        Returns
+        -------
+        int
+            The bound.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the argument is not an integer literal.
+        """
+        argument = authored.args[position]
+        if isinstance(argument, surface.LetExprLiteral) and argument.integral:
+            return int(argument.value)
+        self._fail(
+            argument,
+            f"the {role} of a slice is an integer literal, so the slice's "
+            "length is known where it is checked; a bound computed at run "
+            "time is a gather, v[i]",
+            code="qiec-primitive",
+        )
 
     def _pointwise_gather(
         self,

@@ -190,6 +190,7 @@ from quivers.dsl.pure_builtins import (
     _ROWWISE,
     HOST_ONLY_BUILTINS,
     PURE_BUILTINS,
+    SHAPE_BUILTINS,
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.step_resolution import (
@@ -1063,6 +1064,7 @@ def _unify_free_shapes(
         if (
             isinstance(node, LetExprCall)
             and node.func not in _REDUCTIONS
+            and node.func not in SHAPE_BUILTINS
             and node.func in PURE_BUILTINS
         ):
             return set().union(*(bare(argument) for argument in node.args))
@@ -1158,6 +1160,13 @@ def _unify_free_shapes(
                 if shapes[0] is None:
                     reduced.update(bare(node.args[0]))
                 return shapes[0]
+            if node.func in SHAPE_BUILTINS:
+                # The plates lead every operand and are kept; the last
+                # axis is rebuilt, so no free operand takes a shape here.
+                tensors = shapes if node.func == "concat" else shapes[:1]
+                if any(item is None for item in tensors) or len(set(tensors)) != 1:
+                    return None
+                return tensors[0]
             if node.func in PURE_BUILTINS:
                 known = [item for item in shapes if item is not None]
                 if len(known) < len(shapes):
