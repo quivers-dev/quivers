@@ -21,7 +21,7 @@ so a group's probabilities sum to one whatever the free weights are.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Literal
 
@@ -104,9 +104,13 @@ class ProductionWeights:
     `table` turns the free log-weights into the log-weights the chart
     reads: under per-left-hand-side normalization, each group's vector
     passes through ``log_softmax``; otherwise each production keeps its
-    free log-weight. A run of the deduction computes the table once and
-    makes it `active`, so every rule firing and lexical axiom of that run
-    reads one consistent table.
+    free log-weight. A normalized grammar may instead take its production
+    probabilities from the caller, one probability vector per left-hand
+    side with several productions (`bound_groups`), as a program does
+    when it places a prior on the grammar's weights. A run of the
+    deduction computes the table once and makes it `active`, so every
+    rule firing and lexical axiom of that run reads one consistent
+    table.
 
     Parameters
     ----------
@@ -150,18 +154,108 @@ class ProductionWeights:
             ]
         )
 
-    def table(self) -> dict[ProductionKey, torch.Tensor]:
+    @property
+    def bound_groups(self) -> tuple[ProductionGroup, ...]:
+        """The groups whose probabilities a caller supplies.
+
+        Returns
+        -------
+        tuple[ProductionGroup, ...]
+            The groups with more than one production; a production alone
+            in its group has probability one.
+        """
+        return tuple(group for group in self.groups if len(group.productions) > 1)
+
+    def check_probabilities(self, probabilities: Mapping[str, torch.Tensor]) -> None:
+        """Refuse supplied probabilities that do not fit the groups.
+
+        Parameters
+        ----------
+        probabilities : Mapping[str, torch.Tensor]
+            One probability vector per bound group, by group label.
+
+        Raises
+        ------
+        ValueError
+            If the grammar is not normalized, a bound group is missing,
+            a label names no bound group, a vector's shape is not
+            ``(n,)`` for a group of ``n`` productions, or an entry is
+            negative.
+        """
+        if not self.normalize:
+            raise ValueError(
+                "production probabilities replace the weights of a grammar "
+                "normalized per left-hand side; declare normalize=lhs"
+            )
+        bound = {group.label: group for group in self.bound_groups}
+        missing = [label for label in bound if label not in probabilities]
+        extra = [label for label in probabilities if label not in bound]
+        if missing or extra:
+            singletons = [
+                label
+                for label in extra
+                if any(group.label == label for group in self.groups)
+            ]
+            raise ValueError(
+                "production probabilities must name every left-hand side with "
+                f"several productions, {list(bound)}; missing {missing}, "
+                f"unknown {extra}"
+                + (
+                    f" ({singletons} have one production, whose probability is one)"
+                    if singletons
+                    else ""
+                )
+            )
+        for label, group in bound.items():
+            vector = probabilities[label]
+            size = len(group.productions)
+            if tuple(vector.shape) != (size,):
+                raise ValueError(
+                    f"the probabilities of {label!r} have shape "
+                    f"{tuple(vector.shape)}, but {label!r} has {size} productions "
+                    f"({', '.join(p.label for p in group.productions)})"
+                )
+            if bool((vector.detach() < 0).any()):
+                raise ValueError(
+                    f"the probabilities of {label!r} have a negative entry: "
+                    f"{vector.detach().tolist()}"
+                )
+
+    def table(
+        self, probabilities: Mapping[str, torch.Tensor] | None = None
+    ) -> dict[ProductionKey, torch.Tensor]:
         """The log-weight of every production.
+
+        Parameters
+        ----------
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities to read instead of the free
+            log-weights, one vector per bound group; each is
+            renormalized, so its logarithm passes through the same
+            ``log_softmax``.
 
         Returns
         -------
         dict[ProductionKey, torch.Tensor]
             One scalar per production: its group's ``log_softmax`` entry
             under normalization, its free log-weight otherwise.
+
+        Raises
+        ------
+        ValueError
+            If the probabilities do not fit the groups
+            (`check_probabilities`).
         """
+        if probabilities is not None:
+            self.check_probabilities(probabilities)
         out: dict[ProductionKey, torch.Tensor] = {}
         for group in self.groups:
-            vector = self.group_vector(group)
+            if probabilities is not None and len(group.productions) == 1:
+                vector = torch.zeros(1)
+            elif probabilities is not None:
+                vector = torch.log(probabilities[group.label])
+            else:
+                vector = self.group_vector(group)
             if self.normalize:
                 vector = torch.log_softmax(vector, dim=0)
             for position, production in enumerate(group.productions):
@@ -211,15 +305,28 @@ class ProductionWeights:
         table = self._active if self._active is not None else self.table()
         return table[key]
 
-    def log_probs(self) -> dict[str, dict[str, torch.Tensor]]:
+    def log_probs(
+        self, probabilities: Mapping[str, torch.Tensor] | None = None
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """The table by group and production label.
+
+        Parameters
+        ----------
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities to read instead of the free
+            log-weights, as for `table`.
 
         Returns
         -------
         dict[str, dict[str, torch.Tensor]]
             For each left-hand side, each production's log-weight.
+
+        Raises
+        ------
+        ValueError
+            If the probabilities do not fit the groups.
         """
-        table = self.table()
+        table = self.table(probabilities)
         return {
             group.label: {
                 production.label: table[production.key]

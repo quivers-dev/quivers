@@ -35,7 +35,7 @@ from __future__ import annotations
 import heapq
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
@@ -685,6 +685,46 @@ class ChartView:
             f" goal={len(self._result.goal_items)},"
             f" semiring={self._result.semiring.__class__.__name__})"
         )
+
+
+class CorpusChart:
+    """The charts of a corpus of independent sentences.
+
+    Parameters
+    ----------
+    charts : tuple[ChartView, ...]
+        One chart per sentence, in corpus order.
+    semiring : ChartSemiring
+        The semiring the charts were computed in.
+    """
+
+    def __init__(self, charts: tuple[ChartView, ...], semiring: ChartSemiring) -> None:
+        self.charts = charts
+        self.semiring = semiring
+
+    def goal_weight(self) -> torch.Tensor:
+        """The corpus's goal weight: the semiring product over sentences.
+
+        Returns
+        -------
+        torch.Tensor
+            Under ``LogProb``, the sum of the sentences' log inside
+            weights, the corpus's log-likelihood.
+        """
+        total = self.charts[0].goal_weight()
+        for chart in self.charts[1:]:
+            total = self.semiring.times(total, chart.goal_weight())
+        return total
+
+    def __repr__(self) -> str:
+        """A one-line summary.
+
+        Returns
+        -------
+        str
+            The sentence count.
+        """
+        return f"CorpusChart(sentences={len(self.charts)})"
 
 
 # ---------------------------------------------------------------------------
@@ -1386,8 +1426,17 @@ class DeductionSystem:
             )
         return self.productions.groups
 
-    def production_log_probs(self) -> dict[str, dict[str, torch.Tensor]]:
+    def production_log_probs(
+        self, probabilities: Mapping[str, torch.Tensor] | None = None
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Each production's log-probability, by left-hand side.
+
+        Parameters
+        ----------
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities to read instead of the learned
+            weights: one vector per left-hand side with several
+            productions, keyed by its label, in production order.
 
         Returns
         -------
@@ -1401,7 +1450,24 @@ class DeductionSystem:
         ------
         ValueError
             If the system does not normalize its weights per left-hand
-            side (``normalize=lhs``).
+            side (``normalize=lhs``), or the probabilities do not fit its
+            groups.
+        """
+        return self._normalized().log_probs(probabilities)
+
+    def _normalized(self) -> ProductionWeights:
+        """The production weights of a grammar normalized per left-hand side.
+
+        Returns
+        -------
+        ProductionWeights
+            The system's production weights.
+
+        Raises
+        ------
+        ValueError
+            If the system does not normalize its weights per left-hand
+            side.
         """
         if self.productions is None or not self.productions.normalize:
             raise ValueError(
@@ -1409,9 +1475,13 @@ class DeductionSystem:
                 "probabilities; declare normalize=lhs to normalize them per "
                 "left-hand side"
             )
-        return self.productions.log_probs()
+        return self.productions
 
-    def run(self, input_value: Any) -> AgendaResult:
+    def run(
+        self,
+        input_value: Any,
+        probabilities: Mapping[str, torch.Tensor] | None = None,
+    ) -> AgendaResult:
         """Run the deduction system on an input value.
 
         Injects the input's axioms, runs the agenda to fixed point,
@@ -1422,21 +1492,34 @@ class DeductionSystem:
         ----------
         input_value : Any
             The input the axiom injector reads.
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities the run reads instead of the
+            learned weights, for a grammar normalized per left-hand
+            side: one vector per left-hand side with several
+            productions, keyed by its label (`production_groups`).
 
         Returns
         -------
         AgendaResult
             The completed chart, its goal items, and any attached
             loss.
+
+        Raises
+        ------
+        ValueError
+            If probabilities are given to a system that is not
+            normalized per left-hand side, or do not fit its groups.
         """
         productions = self.productions
         # A normalized grammar computes its production table once per run,
         # so every axiom and firing reads one consistent table.
-        scope = (
-            productions.active(productions.table())
-            if productions is not None and productions.normalize
-            else nullcontext()
-        )
+        if probabilities is not None:
+            normalized = self._normalized()
+            scope = normalized.active(normalized.table(probabilities))
+        elif productions is not None and productions.normalize:
+            scope = productions.active(productions.table())
+        else:
+            scope = nullcontext()
         with scope:
             return self._run(input_value)
 
@@ -1527,7 +1610,11 @@ class DeductionSystem:
             result.attached_loss = total
         return result
 
-    def __call__(self, input_value: Any) -> ChartView:
+    def __call__(
+        self,
+        input_value: Any,
+        probabilities: Mapping[str, torch.Tensor] | None = None,
+    ) -> ChartView:
         """Run the deduction and return a `ChartView`.
 
         Convenience for the user-facing presheaf-evaluation API:
@@ -1539,13 +1626,56 @@ class DeductionSystem:
         ----------
         input_value : Any
             The input the axiom injector reads.
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities to read instead of the learned
+            weights, as for `run`.
 
         Returns
         -------
         ChartView
             A view onto the completed chart.
+
+        Raises
+        ------
+        ValueError
+            If the probabilities do not fit the system, as for `run`.
         """
-        return ChartView(self.run(input_value))
+        return ChartView(self.run(input_value, probabilities))
+
+    def corpus(
+        self,
+        sentences: Sequence[Any],
+        probabilities: Mapping[str, torch.Tensor] | None = None,
+    ) -> CorpusChart:
+        """Run the deduction on every sentence of a corpus.
+
+        The sentences are independent draws, so the corpus's goal weight
+        is the semiring product of the sentences' goal weights: under
+        ``LogProb``, the sum of their log inside weights.
+
+        Parameters
+        ----------
+        sentences : Sequence[Any]
+            The inputs, one per sentence.
+        probabilities : Mapping[str, torch.Tensor] | None
+            Production probabilities every sentence reads instead of the
+            learned weights, as for `run`.
+
+        Returns
+        -------
+        CorpusChart
+            The sentences' charts and the corpus's goal weight.
+
+        Raises
+        ------
+        ValueError
+            If the corpus is empty, or the probabilities do not fit the
+            system.
+        """
+        if len(sentences) == 0:
+            raise ValueError("a corpus has at least one sentence")
+        views = tuple(self(sentence, probabilities) for sentence in sentences)
+        return CorpusChart(views, self.semiring)
 
     def parameters(self, recurse: bool = True) -> Iterable[torch.nn.Parameter]:
         """Yield every learnable parameter owned by this system.

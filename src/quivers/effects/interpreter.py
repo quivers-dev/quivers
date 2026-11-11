@@ -90,6 +90,7 @@ from quivers.qiec.terms import (
     Perform,
     Var,
 )
+from quivers.stochastic.agenda import ChartView, CorpusChart
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -1182,6 +1183,10 @@ class _HostSteps:
         if callable(spec.value):
             stripped, carried = self._one_run(step, env)
             value = spec.value(stripped)
+            if isinstance(value, ChartView | CorpusChart):
+                # The checked program binds a deduction's answer, the
+                # inside weight of its goal.
+                value = value.goal_weight()
             if carried:
                 value = _with_run_axis(value)
             self.axis.record(step.program, spec.name, carried)
@@ -1532,11 +1537,17 @@ def check_host_data(
     for name, expected in program.host_data_types.items():
         if name not in data:
             continue
-        value = torch.as_tensor(data[name])
         split = tensor_shape(expected)
         element, dimensions = (expected, ()) if split is None else split
         rendered = render_static(expected)
-        supplied = tuple(value.shape)
+        if element == STRING:
+            # Text has no tensor form: a sentence is a sequence of tokens,
+            # a corpus a sequence of equally long sentences.
+            supplied = _string_shape(name, data[name], rendered)
+            value = None
+        else:
+            value = torch.as_tensor(data[name])
+            supplied = tuple(value.shape)
         layouts = [tuple(dimensions)]
         if name in program.host_data_shared and dimensions:
             layouts.append(tuple(dimensions[1:]))
@@ -1564,13 +1575,56 @@ def check_host_data(
                     f"host datum {name!r} fixes extent {dimension.name!r} at "
                     f"{extent}, but {fixed[1]!r} fixes it at {fixed[0]}"
                 )
-        if not _element_admits(element, value):
+        if value is not None and not _element_admits(element, value):
             raise TypeError(
                 f"host datum {name!r} has dtype {value.dtype}, but the checked "
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
     return per_run_data
+
+
+def _string_shape(name: str, value: object, rendered: str) -> tuple[int, ...]:
+    """The shape of a nested sequence of tokens.
+
+    Parameters
+    ----------
+    name : str
+        The datum's name, for the diagnostic.
+    value : object
+        The datum: a string, or a sequence (list or tuple) of data of one
+        shape.
+    rendered : str
+        The checked type, for the diagnostic.
+
+    Returns
+    -------
+    tuple[int, ...]
+        The lengths of its nesting levels; empty for one string.
+
+    Raises
+    ------
+    TypeError
+        If a leaf is not a string.
+    ValueError
+        If the sequences at one level differ in length.
+    """
+    if isinstance(value, str):
+        return ()
+    if not isinstance(value, list | tuple):
+        raise TypeError(
+            f"host datum {name!r} holds {type(value).__name__}, but the checked "
+            f"program reads it at type {rendered}, whose elements are strings"
+        )
+    shapes = {_string_shape(name, item, rendered) for item in value}
+    if len(shapes) > 1:
+        raise ValueError(
+            f"host datum {name!r} holds sequences of different lengths, but the "
+            f"checked program reads it at type {rendered}; a corpus takes "
+            "sentences of one length"
+        )
+    inner = shapes.pop() if shapes else ()
+    return (len(value), *inner)
 
 
 def _matching_layout(
