@@ -5847,7 +5847,11 @@ class _ProgramElaboration:
             The named arguments, in the order of ``pairs``.
         """
         event: dict[int, IndexTerm] = {}
-        if record.event_rank and len(plate.event) >= record.event_rank:
+        if (
+            record.event_rank
+            and len(plate.event) >= record.event_rank
+            and not self._provisional_event(record, step)
+        ):
             trailing = plate.event[len(plate.event) - record.event_rank :]
             event = {position: axis.size for position, axis in enumerate(trailing)}
         values: dict[int, Value] = {}
@@ -5902,6 +5906,42 @@ class _ProgramElaboration:
                 value = self._fibred(value, via, group, plate, scope, state, step)
             arguments.append((parameter.name, value))
         return arguments
+
+    def _provisional_event(
+        self: _Elaborator,
+        record: DistributionFamily,
+        step: SampleStep | ObserveStep | MarginalizeStep,
+    ) -> bool:
+        """Whether a draw's event axes come from an annotation its arguments may override.
+
+        A vector family's ``: Axis`` annotation, with no axis-role
+        clause, names the event axis only when the arguments fix no other
+        event size; otherwise it is the plate the draws repeat over.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step.
+
+        Returns
+        -------
+        bool
+            Whether the plate's event axes are such an annotation.
+        """
+        if (
+            step.index is None
+            or isinstance(step, MarginalizeStep)
+            or step.axes is not None
+            or record.event_rank == 0
+            or not record.event_sources
+            or _option_axes(step.options, "over")
+            or _option_axes(step.options, "iid_over")
+        ):
+            return False
+        morphism = self._program_morphisms.get(step.morphism)
+        return morphism is None or not _option_axes(morphism.options, "over")
 
     def _tie_event_extents(
         self: _Elaborator,
