@@ -192,6 +192,32 @@ suffice: interlocking cycles (e.g. an introduction / elimination
 pair over nested constructors) can diverge even when every
 individual cycle's log-weight is negative.
 
+### 2.4 Production probabilities (`normalize=lhs`)
+
+Under the deduction option `normalize=lhs`, the rules and the
+expanded lexicon entries are the productions $p$ of a grammar, each
+with a left-hand side $\mathrm{lhs}(p)$: the category of a `span`
+conclusion or of a lexical axiom, and otherwise the conclusion item
+with its position slots erased. Each production has a free
+log-weight $\phi_p$, its learnable parameter or $0$ when it is not
+learnable, and contributes
+
+$$
+\theta_p \;=\; \phi_p \;-\; \log \sum_{q \,:\, \mathrm{lhs}(q) = \mathrm{lhs}(p)} e^{\phi_q},
+$$
+
+so $\sum_{q : \mathrm{lhs}(q) = A} e^{\theta_q} = 1$ for every
+left-hand side $A$ and the deduction denotes a probabilistic
+context-free grammar [@booth1973applying]. The rule weight of §2.1
+is $\theta_r$ and the lexical weight of an entry $e$ is $\theta_e$.
+The groups must be fixed by the declaration: every rule has
+$C(r) = \varnothing$ and carries neither `parent` nor `bounded`, the
+lexicon categories are ground, items carry no logical forms, the
+axioms come from a lexicon, and the semiring is `LogProb` or
+`Viterbi`; any other deduction is refused. The checked elaboration
+computes the same $\theta_p$ from the `Param` reads of the group's
+members.
+
 The separation between a deduction structure and the semiring used to score
 it follows the semiring-parsing perspective [@goodman1999semiring].
 
