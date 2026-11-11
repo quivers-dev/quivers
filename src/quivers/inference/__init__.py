@@ -36,6 +36,7 @@ from quivers.inference.registry import LatentRegistry, LatentSite
 from quivers.inference.guides import (
     AutoDelta,
     AutoDeltaGuide,
+    AmortizedGuide,
     AutoGuideList,
     AutoIAFGuide,
     AutoIAFNormal,
@@ -140,6 +141,7 @@ __all__ = [
     "AutoIAFGuide",
     "AutoNeuralSplineGuide",
     "AutoMixtureGuide",
+    "AmortizedGuide",
     "AutoGuideList",
     "AutoStructured",
     "AutoNormal",

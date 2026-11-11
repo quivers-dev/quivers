@@ -29,6 +29,7 @@ introspection.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import ClassVar
 
 import didactic.api as dx
@@ -165,6 +166,22 @@ class Guide(nn.Module, ABC):
         """The `LatentRegistry` this guide was built
         against."""
         return self._registry
+
+    def observe(self, observations: Mapping[str, torch.Tensor]) -> None:
+        """Receive the data of the step about to sample the guide.
+
+        Every objective calls this with its step's observations and host
+        data before it draws from the guide, so a guide that reads the
+        data (an `AmortizedGuide`) samples the posterior of the data the
+        step scores. A guide whose parameters do not depend on the data
+        ignores them, as this base implementation does.
+
+        Parameters
+        ----------
+        observations : Mapping[str, torch.Tensor]
+            Observed values and host data.
+        """
+        del observations
 
     @abstractmethod
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:

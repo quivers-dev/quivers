@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.36.0] - 2026-11-11
+
+### Added
+
+- **`AmortizedGuide`** runs declared morphisms as the variational posterior: `AmortizedGuide(model, observed_names, encoders={"z": (encoder, "y")})` applies each encoder to every row of the datum it reads (once per run for a site drawn per run, once per plate row for a plated local latent), passes a real-valued encoder's draw through the site's bijector with the Jacobian in the density, and checks every binding (site, support, event size, datum, rows, and an exact encoder density). It composes with `AutoGuideList`, and every objective and estimator takes it.
+- **`Guide.observe`** hands a guide the data of the step about to sample it; every objective calls it, `AutoGuideList`, `AutoMixtureGuide`, and `AutoDAIS` forward it, and guides whose parameters do not depend on the data ignore it.
+
 ## [0.35.0] - 2026-11-11
 
 ### Added
