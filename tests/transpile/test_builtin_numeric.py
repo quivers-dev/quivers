@@ -2,7 +2,7 @@
 
 A let applies a math builtin by its QVR name, and each target settles
 each builtin in
-[`BUILTIN_SPELLINGS`][quivers.transpile.builtin_spellings.BUILTIN_SPELLINGS]:
+[`BUILTIN_SPELLINGS`][quivers.transpile._builtin_spellings.BUILTIN_SPELLINGS]:
 a function of its own, a definition in terms of other builtins, code of
 its renderer's own, or a refusal. Every target's table is checked to
 settle every surface builtin; every builtin a target spells is applied
@@ -27,7 +27,7 @@ from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
-from quivers.transpile.builtin_spellings import (
+from quivers.transpile._builtin_spellings import (
     BUILTIN_SPELLINGS,
     MATH_BUILTINS,
     Refusal,

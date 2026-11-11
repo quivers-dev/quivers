@@ -176,7 +176,7 @@ from quivers.transpile.lower import (
     pick_program,
 )
 from quivers.transpile.qiec_ir import IRQiecStatic, IRQiecValue, _convert, lower_qiec_ir
-from quivers.transpile.builtin_spellings import spell_builtin
+from quivers.transpile._builtin_spellings import spell_builtin
 
 #: The registry's name for a structured family's constructor argument
 #: where the two differ.

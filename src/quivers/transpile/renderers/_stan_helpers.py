@@ -52,7 +52,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder, LetFactorCase
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.renderers._one_based import one_based_subscript
 from quivers.transpile.renderers._ranks import let_expr_rank
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
@@ -453,7 +453,7 @@ def _emit_function_expression(
     identifier and `child_of` edge to the `argument_list`.
 
     A pointwise math builtin is called by the Stan function
-    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
     names (`sigmoid` is `inv_logit`, ...); any other name is Stan's own.
     """
     path = native_path("stan", func, len(args))

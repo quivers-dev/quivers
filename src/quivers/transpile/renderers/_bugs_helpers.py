@@ -57,7 +57,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import (
     affine_column_offsets,
     Dim,
@@ -803,7 +803,7 @@ def _emit_call(
     the edge label (so the panproto walker can pick the right child
     alternative). A pointwise math builtin is called by the BUGS / JAGS
     function
-    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
     names (``sigmoid`` is ``ilogit``, ...).
     """
     c = ctx.v(ctx.fresh("call"), "function_call")

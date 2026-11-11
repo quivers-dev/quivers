@@ -7,16 +7,16 @@ name: Stan writes the logistic sigmoid ``inv_logit``, JAGS has no
 tensors rather than numbers. This module holds one table, keyed by
 target, that settles each builtin for each target in one of four ways:
 
-* [`NativeCall`][quivers.transpile.builtin_spellings.NativeCall]: the
+* [`NativeCall`][quivers.transpile._builtin_spellings.NativeCall]: the
   target calls a function of its own, named by a dotted path.
-* [`ClosedForm`][quivers.transpile.builtin_spellings.ClosedForm]: the
+* [`ClosedForm`][quivers.transpile._builtin_spellings.ClosedForm]: the
   builtin is written in terms of arithmetic and other builtins, each of
   which the same table spells in turn.
-* [`Dedicated`][quivers.transpile.builtin_spellings.Dedicated]: the
+* [`Dedicated`][quivers.transpile._builtin_spellings.Dedicated]: the
   target's renderer spells the builtin with code of its own (the
   pointwise ``max`` / ``min`` / ``pow``, whose spelling depends on the
   operands).
-* [`Refusal`][quivers.transpile.builtin_spellings.Refusal]: the
+* [`Refusal`][quivers.transpile._builtin_spellings.Refusal]: the
   target cannot express the builtin, and rendering it raises
   [`UnsupportedConstruct`][quivers.transpile._api.UnsupportedConstruct]
   naming the builtin and the target.
@@ -24,8 +24,8 @@ target, that settles each builtin for each target in one of four ways:
 Every target's table has an entry for every surface builtin, so adding
 a builtin to the registry forces a decision for every target. The
 planner expands closed forms and raises refusals before any renderer
-reads the expression ([`spell_builtin`][quivers.transpile.builtin_spellings.spell_builtin]),
-and a renderer asks [`native_path`][quivers.transpile.builtin_spellings.native_path]
+reads the expression ([`spell_builtin`][quivers.transpile._builtin_spellings.spell_builtin]),
+and a renderer asks [`native_path`][quivers.transpile._builtin_spellings.native_path]
 for the name it emits.
 """
 

@@ -55,7 +55,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
-from quivers.transpile.builtin_spellings import native_import, native_path
+from quivers.transpile._builtin_spellings import native_import, native_path
 from quivers.transpile.renderers._ranks import reduces_last_of_several_axes
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
@@ -403,7 +403,7 @@ def with_statement(
 #: emit as a dotted attribute, plus the import it needs (``None`` when the
 #: symbol lives on a namespace the target already has in scope). The
 #: pointwise math builtins are spelled by
-#: [`BUILTIN_SPELLINGS`][quivers.transpile.builtin_spellings.BUILTIN_SPELLINGS].
+#: [`BUILTIN_SPELLINGS`][quivers.transpile._builtin_spellings.BUILTIN_SPELLINGS].
 _CallEntry = tuple[tuple[str, ...], "tuple[tuple[str, ...], str] | None"]
 
 #: QVR primitives whose semantics is per-axis reduction over the event
@@ -514,7 +514,7 @@ def _resolve_python_call(ctx: PyCtx, func: str, arity: int = 1) -> str:
     """Emit the callee vertex for a ``LetExprCall`` to ``func``.
 
     A pointwise math builtin emits the function
-    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
     names as a dotted attribute (e.g. ``torch.erf``), recording any
     import it needs on ``ctx.required_imports``; a two-argument ``max``,
     ``min``, or ``pow`` is pointwise and never reaches a reduction. A

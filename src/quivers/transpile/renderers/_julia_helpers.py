@@ -78,7 +78,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import (
     IRArg,
     LetAffineSource,
@@ -712,9 +712,9 @@ def _emit_call(
     whose children are ``identifier argument_list``.
 
     A pointwise math builtin is called by the Julia function
-    [`native_path`][quivers.transpile.builtin_spellings.native_path]
-    names; a dotted name (`Turing.Distributions.SpecialFunctions.erf`)
-    is a `field_expression` callee.
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
+    names; a qualified name (`Turing.Distributions.SpecialFunctions.erf`)
+    is emitted whole.
 
     A reduction primitive collapses the last axis of its argument. An
     argument with an event axis, or with two or more axes, routes to
@@ -745,8 +745,8 @@ def _emit_call(
         return vid, "call_expression"
     rendered = tuple(_render(ctx, a) for a in args)
     path = native_path(ctx.target, func, len(args))
-    callee_vid, callee_kind = _emit_callee(
-        ctx, path if path is not None else tuple(_JULIA_CALL_NAMES.get(func, func).split("."))
+    callee_vid, callee_kind = _emit_identifier(
+        ctx, _JULIA_CALL_NAMES.get(func, func) if path is None else ".".join(path)
     )
     al_vid = _emit_argument_list(ctx, rendered)
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
@@ -758,33 +758,6 @@ def _emit_call(
     ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")
     ctx.e(vid, callee_vid, "child_of")
     ctx.e(vid, al_vid, "child_of")
-    return vid, kind
-
-
-def _emit_callee(ctx: _JlState, path: tuple[str, ...]) -> tuple[str, str]:
-    """Emit a function's dotted path as a callee.
-
-    Parameters
-    ----------
-    ctx : _JlState
-        The emit state.
-    path : tuple[str, ...]
-        The path, outermost name first.
-
-    Returns
-    -------
-    tuple[str, str]
-        The callee vertex and its kind: an `identifier` for one name, a
-        nested `field_expression` for several.
-    """
-    vid, kind = _emit_identifier(ctx, path[0])
-    for name in path[1:]:
-        field_vid = ctx.v(ctx.fresh("fe"), "field_expression")
-        ctx.constraint(field_vid, "chose-alt-fingerprint", ".")
-        ctx.constraint(field_vid, "chose-alt-child-kinds", f"{kind} identifier")
-        ctx.e(field_vid, vid, "child_of")
-        ctx.e(field_vid, _emit_identifier(ctx, name)[0], "child_of")
-        vid, kind = field_vid, "field_expression"
     return vid, kind
 
 

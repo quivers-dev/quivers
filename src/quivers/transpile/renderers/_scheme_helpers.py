@@ -29,7 +29,7 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 _TARGET = "qvr-scheme-helper"
@@ -37,7 +37,7 @@ _TARGET = "qvr-scheme-helper"
 #: Let calls Scheme spells under another name: integer division and
 #: remainder truncate toward zero, as `quotient` and `remainder` do. The
 #: math builtins are spelled by
-#: [`BUILTIN_SPELLINGS`][quivers.transpile.builtin_spellings.BUILTIN_SPELLINGS].
+#: [`BUILTIN_SPELLINGS`][quivers.transpile._builtin_spellings.BUILTIN_SPELLINGS].
 _SCHEME_CALL_NAMES: dict[str, str] = {
     "quot": "quotient",
     "rem": "remainder",

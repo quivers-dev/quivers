@@ -56,7 +56,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import LetExprAffineMap
 from quivers.transpile.renderers._stan_helpers import _substitute_let_expr
 

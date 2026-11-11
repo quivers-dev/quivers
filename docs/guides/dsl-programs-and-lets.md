@@ -509,6 +509,15 @@ on every target.
 **Activations**: `relu`, `relu6`, `elu`, `selu`, `gelu`, `silu`, `mish`,
 `softplus`, `logsigmoid`, `softsign`, `sigmoid`, and `tanh`.
 
+Every transpile target computes each pointwise builtin above with the
+reference's meaning: through a function of its own where it has one
+(Stan's `inv_logit` for `sigmoid`, JAGS's `loggam` for `lgamma`), and
+otherwise through a definition in terms of the others (`gelu(x)` as
+`0.5 * x * (1 + erf(x / sqrt(2)))`, JAGS's `erf` through its normal CDF
+`phi`). `round` rounds a tie to even on every target. A builtin a target
+cannot express is refused by name when the program is transpiled; BUGS
+and JAGS refuse `digamma`.
+
 **Tensor reductions**: `sum`, `mean`, `min`, `max`, `prod`, `logsumexp`.
 
 **Last-axis operations**: `softmax`, `log_softmax`, `cumsum`, `sort`,
