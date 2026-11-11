@@ -969,9 +969,7 @@ def _require_positive(family: str, **parameter: float) -> None:
     """
     for name, value in parameter.items():
         if not float(value) > 0.0:
-            raise ValueError(
-                f"{family} needs a positive {name}; got {value!r}"
-            )
+            raise ValueError(f"{family} needs a positive {name}; got {value!r}")
 
 
 def make_fixed_exponential(rate: float, codomain: AnySpace) -> FixedDistribution:

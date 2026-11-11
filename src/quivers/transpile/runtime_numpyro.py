@@ -126,12 +126,8 @@ class LogitBeta(numpyro.distributions.Distribution):
     reparametrized_params = ["concentration1", "concentration0"]
 
     def __init__(self, concentration1, concentration0, *, validate_args=None):
-        self.concentration1 = jnp.asarray(
-            concentration1, dtype=jnp.result_type(float)
-        )
-        self.concentration0 = jnp.asarray(
-            concentration0, dtype=jnp.result_type(float)
-        )
+        self.concentration1 = jnp.asarray(concentration1, dtype=jnp.result_type(float))
+        self.concentration0 = jnp.asarray(concentration0, dtype=jnp.result_type(float))
         batch_shape = jnp.broadcast_shapes(
             jnp.shape(self.concentration1), jnp.shape(self.concentration0)
         )
