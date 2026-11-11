@@ -293,6 +293,90 @@ transition as accepted when it moved the chain. Enumeration evaluates the
 model's log joint once per value of each element, so a large discrete
 block may need an `update=` function that exploits its structure.
 
+## Checkpoints, budgets, and sampler statistics
+
+A long run of an expensive target is exposed to crashes, preemption,
+and power loss. With an
+[`MCMCCheckpoint`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMCCheckpoint),
+`MCMC.run` writes every chain's state to one file in a directory: the
+chain's phase and position in it, its
+[`KernelState`](../api/inference/mcmc.md#quivers.inference.mcmc.KernelState),
+the kernel's adaptation state (`MCMCKernel.state_dict`), the chain
+generator's state, and the draws so far. It writes after every `every`
+transitions, after `every_seconds`, when a chain finishes, and when a
+budget stops it. Each write goes to a temporary file that then replaces
+the previous checkpoint atomically, so an interrupted write leaves the
+last good checkpoint in place. The file holds only tensors and plain
+containers and is read with `torch.load(..., weights_only=True)`, so
+reading it runs no code.
+[`MCMC.resume`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC.resume)
+continues the run, and its draws, statistics, and diagnostics are bit
+for bit those of an uninterrupted run with the same seed. It refuses a
+checkpoint written for a different model or data, kernel
+configuration, run settings, seed, or checkpoint format, naming which.
+
+`max_seconds` and `max_evaluations` cap each chain's wall-clock time
+and potential evaluations in one call. They are checked between
+transitions, so a chain stops at a transition boundary, possibly one
+transition past the budget. `MCMCResult.stopped_by` records why each chain
+stopped, `num_draws` how many draws each made, and `truncated` whether a
+budget cut any short; the per-draw arrays then keep the first
+`min(num_draws)` draws of every chain. A `callback(chain, iteration,
+state, phase)` sees every transition as it happens.
+
+<!-- python: skip -->
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference.mcmc import MCMC, MCMCCheckpoint, NUTSKernel
+
+model = loads(
+    "object Obs : FinSet 20\n"
+    "program p : Obs -> Obs\n"
+    "    sample mu <- Normal(loc=0.0, scale=1.0)\n"
+    "    sample tau <- HalfNormal(scale=1.0)\n"
+    "    observe y : Obs <- Normal(loc=mu, scale=tau)\n"
+    "    return mu\n"
+    "export p\n"
+).morphism
+x, data = torch.zeros(1, 1), {"y": torch.linspace(-1.0, 2.0, 20)}
+
+
+def make_mcmc(max_evaluations: int | None = None) -> MCMC:
+    return MCMC(
+        NUTSKernel(adaptation="windowed"),
+        num_warmup=300,
+        num_samples=300,
+        num_chains=2,
+        seed=0,
+        checkpoint=MCMCCheckpoint(directory="mcmc-run", every=50),
+        max_evaluations=max_evaluations,
+    )
+
+
+partial = make_mcmc(max_evaluations=2000).run(model, x, data)
+print(partial.stopped_by, partial.num_draws)   # ('evaluations', 'evaluations') ...
+result = make_mcmc().resume("mcmc-run", model, x, data)
+print(result.stopped_by)                       # ('draws', 'draws')
+
+energy = result.sample_stats["energy"]         # (num_chains, num_samples)
+print(result.sample_stats["tree_depth"].max(), result.num_evaluations)
+```
+
+`MCMCResult.sample_stats` holds each transition's statistics at
+`(num_chains, num_samples)`. For NUTS these are `accept_prob`, `accepted`,
+`diverged`, `step_size`, `tree_depth`, `num_steps` (leapfrog steps), and
+`energy`, the Hamiltonian at the draw; a composite kernel's appear under
+each component's name. `energy` is what the energy plot and the
+energy Bayesian fraction of missing information (E-BFMI) need
+[@betancourt2016diagnosing], and
+[`to_datatree`](../api/diagnostics/arviz_io.md#quivers.diagnostics.arviz_io.to_datatree)
+writes these statistics under ArviZ's names (`diverging`, `tree_depth`,
+`n_steps`, `energy`, `step_size`, `acceptance_rate`), so divergences
+can be located in parameter space and tree-depth saturation checked
+draw by draw.
+
 ## Hybrid samplers
 
 `r_hat` compares variation within chains with variation between chains.

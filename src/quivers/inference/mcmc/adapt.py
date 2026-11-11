@@ -32,11 +32,14 @@ inlined into either kernel.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
 from typing import Callable, Literal
 
 import didactic.api as dx
 import torch
+
+from quivers.inference.mcmc.kernel import StateValue
 
 
 AdaptationMode = Literal["windowed", "single"]
@@ -46,6 +49,34 @@ metric re-estimated and the step size re-initialized after every slow
 window), and ``"single"`` runs dual averaging and the covariance
 estimate over the whole warmup under the initial metric and installs
 the metric once, when warmup ends."""
+
+
+def _number(state: Mapping[str, StateValue], key: str, owner: str) -> float:
+    """Read a float entry of a state dictionary.
+
+    Parameters
+    ----------
+    state : Mapping[str, StateValue]
+        The dictionary.
+    key : str
+        The entry.
+    owner : str
+        The class named in the error.
+
+    Returns
+    -------
+    float
+        The entry.
+
+    Raises
+    ------
+    ValueError
+        If the entry is missing or is not a number.
+    """
+    value = state.get(key)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError(f"{owner}.from_state_dict: {key} must be a number")
+    return float(value)
 
 
 class AdaptationWindow(dx.Model):
@@ -270,7 +301,78 @@ class DualAveraging:
 
     @property
     def step_count(self) -> int:
+        """Number of `update` calls so far."""
         return self._step_count
+
+    def state_dict(self) -> dict[str, float | int]:
+        """The adapter's state, for a checkpoint.
+
+        Returns
+        -------
+        dict[str, float | int]
+            Every parameter and running quantity; `from_state_dict`
+            rebuilds the adapter exactly.
+        """
+        return {
+            "mu": self._mu,
+            "target_accept": self._target_accept,
+            "gamma": self._gamma,
+            "t0": self._t0,
+            "kappa": self._kappa,
+            "log_step": self._log_step,
+            "log_step_smoothed": self._log_step_smoothed,
+            "h_bar": self._h_bar,
+            "step_count": self._step_count,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, StateValue]) -> "DualAveraging":
+        """Rebuild an adapter from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : Mapping[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        DualAveraging
+            The adapter, in exactly the recorded state.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or is not a number.
+        """
+        floats = {
+            key: _number(state, key, "DualAveraging")
+            for key in (
+                "mu",
+                "target_accept",
+                "gamma",
+                "t0",
+                "kappa",
+                "log_step",
+                "log_step_smoothed",
+                "h_bar",
+            )
+        }
+        count = state.get("step_count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise ValueError("DualAveraging.from_state_dict: step_count must be an int")
+        adapter = cls(
+            math.exp(floats["log_step"]),
+            target_accept=floats["target_accept"],
+            gamma=floats["gamma"],
+            t0=floats["t0"],
+            kappa=floats["kappa"],
+        )
+        adapter._mu = floats["mu"]
+        adapter._log_step = floats["log_step"]
+        adapter._log_step_smoothed = floats["log_step_smoothed"]
+        adapter._h_bar = floats["h_bar"]
+        adapter._step_count = count
+        return adapter
 
 
 class WelfordCovariance:
@@ -365,6 +467,69 @@ class WelfordCovariance:
             else:
                 cov = shrink * cov + jitter * torch.eye(self._dim)
         return cov
+
+    def state_dict(self) -> dict[str, torch.Tensor | int | bool]:
+        """The accumulator's state, for a checkpoint.
+
+        Returns
+        -------
+        dict[str, torch.Tensor | int | bool]
+            The configuration, the count, the running mean, and the
+            running sum of squared deviations.
+        """
+        return {
+            "dim": self._dim,
+            "regularise": self._regularise,
+            "diagonal": self._diagonal,
+            "n": self._n,
+            "mean": self._mean.clone(),
+            "m2": self._m2.clone(),
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, StateValue]) -> "WelfordCovariance":
+        """Rebuild an accumulator from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : Mapping[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        WelfordCovariance
+            The accumulator, in exactly the recorded state.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or has the wrong type or shape.
+        """
+        dim, n = state.get("dim"), state.get("n")
+        regularise, diagonal = state.get("regularise"), state.get("diagonal")
+        mean, m2 = state.get("mean"), state.get("m2")
+        if not (
+            isinstance(dim, int)
+            and isinstance(n, int)
+            and isinstance(regularise, bool)
+            and isinstance(diagonal, bool)
+            and isinstance(mean, torch.Tensor)
+            and isinstance(m2, torch.Tensor)
+        ):
+            raise ValueError(
+                "WelfordCovariance.from_state_dict: an entry is missing or has the "
+                "wrong type"
+            )
+        accumulator = cls(dim, regularise=regularise, diagonal=diagonal)
+        if mean.shape != accumulator._mean.shape or m2.shape != accumulator._m2.shape:
+            raise ValueError(
+                "WelfordCovariance.from_state_dict: the mean or the sum of squares "
+                "has the wrong shape"
+            )
+        accumulator._n = n
+        accumulator._mean = mean.clone()
+        accumulator._m2 = m2.clone()
+        return accumulator
 
     def reset(self) -> None:
         """Discard accumulated statistics."""

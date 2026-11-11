@@ -162,6 +162,23 @@ def _distribution_validation() -> Iterator[None]:
         Distribution.set_default_validate_args(previous)
 
 
+type StateValue = (
+    torch.Tensor
+    | float
+    | int
+    | bool
+    | str
+    | None
+    | list[StateValue]
+    | dict[str, StateValue]
+)
+"""A value in a kernel's or a chain state's state dictionary: a tensor, a
+Python scalar or string, ``None``, or a list or string-keyed dictionary
+of such values. These are exactly the values a checkpoint stores and
+`torch.load` reads back with ``weights_only=True``, so loading a
+checkpoint executes no code."""
+
+
 @dataclass
 class KernelState:
     """Mutable container for one chain's MCMC state.
@@ -217,6 +234,112 @@ class KernelState:
     extras: dict = field(default_factory=dict)
     stats: dict[str, float] = field(default_factory=dict)
     gibbs_values: dict[str, torch.Tensor] = field(default_factory=dict)
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The state as a dictionary a checkpoint can store.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            Every field, with tensors detached; `from_state_dict`
+            rebuilds the state exactly.
+
+        Raises
+        ------
+        TypeError
+            If ``extras`` holds a value other than a tensor, a Python
+            scalar, or a string.
+        """
+        extras: dict[str, StateValue] = {}
+        for key, value in self.extras.items():
+            if not isinstance(value, torch.Tensor | float | int | bool | str):
+                raise TypeError(
+                    f"KernelState.state_dict: extras[{key!r}] is a "
+                    f"{type(value).__name__}, which a checkpoint cannot store"
+                )
+            extras[str(key)] = (
+                value.detach() if isinstance(value, torch.Tensor) else value
+            )
+        return {
+            "position": self.position.detach(),
+            "log_density": self.log_density.detach(),
+            "grad_log_density": self.grad_log_density.detach(),
+            "step_count": self.step_count,
+            "accept_count": self.accept_count,
+            "diverged": self.diverged,
+            "extras": extras,
+            "stats": {key: float(value) for key, value in self.stats.items()},
+            "gibbs_values": {k: v.detach() for k, v in self.gibbs_values.items()},
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, StateValue]) -> "KernelState":
+        """Rebuild a state from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        KernelState
+            The state.
+
+        Raises
+        ------
+        ValueError
+            If a field is missing or has the wrong type.
+        """
+        try:
+            position = state["position"]
+            log_density = state["log_density"]
+            grad = state["grad_log_density"]
+            step_count = state["step_count"]
+            accept_count = state["accept_count"]
+            diverged = state["diverged"]
+            extras = state["extras"]
+            stats = state["stats"]
+            gibbs_values = state["gibbs_values"]
+        except KeyError as error:
+            raise ValueError(f"KernelState.from_state_dict: missing {error}") from None
+        if not (
+            isinstance(position, torch.Tensor)
+            and isinstance(log_density, torch.Tensor)
+            and isinstance(grad, torch.Tensor)
+            and isinstance(step_count, int)
+            and isinstance(accept_count, int)
+            and isinstance(diverged, bool)
+            and isinstance(extras, dict)
+            and isinstance(stats, dict)
+            and isinstance(gibbs_values, dict)
+        ):
+            raise ValueError("KernelState.from_state_dict: a field has the wrong type")
+        values: dict[str, torch.Tensor] = {}
+        for name, value in gibbs_values.items():
+            if not isinstance(value, torch.Tensor):
+                raise ValueError(
+                    f"KernelState.from_state_dict: Gibbs value {name!r} is not a tensor"
+                )
+            values[name] = value
+        floats: dict[str, float] = {}
+        for key, value in stats.items():
+            if not isinstance(value, float):
+                raise ValueError(
+                    f"KernelState.from_state_dict: statistic {key!r} is not a float"
+                )
+            floats[key] = value
+        return cls(
+            position=position,
+            log_density=log_density,
+            grad_log_density=grad,
+            step_count=step_count,
+            accept_count=accept_count,
+            diverged=diverged,
+            extras=dict(extras),
+            stats=floats,
+            gibbs_values=values,
+        )
 
 
 class PotentialFn:
@@ -279,6 +402,25 @@ class PotentialFn:
         self._base_observations = observations
         self._conditioned: dict[str, torch.Tensor] = {}
         self._observations = observations
+        # [forward passes, gradient evaluations], shared with every
+        # conditioned copy so that a chain's evaluations are counted in
+        # one place.
+        self._counts = [0, 0]
+
+    @property
+    def num_evaluations(self) -> int:
+        """Forward passes of the log-density so far, gradient ones included.
+
+        Counted across this potential and every potential `condition`
+        derived from it; `check_initial` is not counted.
+        """
+        return self._counts[0]
+
+    @property
+    def num_gradient_evaluations(self) -> int:
+        """Calls of `value_and_grad` so far, across this potential and
+        every potential `condition` derived from it."""
+        return self._counts[1]
 
     @property
     def registry(self) -> LatentRegistry:
@@ -384,6 +526,7 @@ class PotentialFn:
             Any error ``log_joint`` raises that does not mark the
             position as outside the support.
         """
+        self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
         try:
             log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
@@ -501,6 +644,7 @@ class PotentialFn:
             program or its data rather than a position outside the
             support.
         """
+        self._counts[1] += 1
         if z.numel() == 0:
             # Every latent is held outside the flat vector (a model a
             # GibbsKernel samples alone): there is nothing to
@@ -554,6 +698,62 @@ class MCMCKernel(ABC):
         union of its components'.
         """
         return frozenset()
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The kernel's configuration, for telling kernels apart.
+
+        A checkpoint records it and `MCMC.resume` refuses a checkpoint
+        written by a kernel whose configuration differs. The base
+        implementation records the class; concrete kernels add their
+        hyperparameters, and composites their components'.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {"kernel": f"{type(self).__module__}.{type(self).__qualname__}"}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The kernel's mutable state for one chain.
+
+        Everything a chain's continuation depends on beyond its
+        `KernelState` and its generator: whether the kernel is adapting,
+        and its adaptation state (step size, metric, schedule
+        position). `MCMC` writes it to a checkpoint and restores it with
+        `load_state_dict` after `init`, so a resumed chain continues bit
+        for bit.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {"is_adapting": self.is_adapting}
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned.
+
+        Called after `init` for the same chain, which has rebuilt the
+        kernel's structures for the registry.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If the dictionary lacks an entry or holds one of the wrong
+            type.
+        """
+        flag = state.get("is_adapting")
+        if not isinstance(flag, bool):
+            raise ValueError(
+                f"{type(self).__name__}.load_state_dict: is_adapting must be a bool"
+            )
+        self.is_adapting = flag
 
     @staticmethod
     def _evaluate_first(state: KernelState, potential: PotentialFn) -> None:
@@ -648,4 +848,4 @@ def _with_generator[T](generator: torch.Generator | None, draw: Callable[[], T])
                 generator.set_state(torch.random.get_rng_state())
 
 
-__all__ = ["KernelState", "PotentialFn", "MCMCKernel"]
+__all__ = ["KernelState", "PotentialFn", "MCMCKernel", "StateValue"]

@@ -138,7 +138,9 @@ populates the canonical ArviZ groups (`posterior`, `sample_stats`,
 `posterior_predictive`, `log_likelihood`, `observed_data`,
 `constant_data`) from the `(num_chains, num_samples, *site_shape)`
 tensors that
-[`MCMCResult`](../api/inference/mcmc.md) already produces.
+[`MCMCResult`](../api/inference/mcmc.md) already produces, with its
+per-draw sampler statistics under ArviZ's names (`diverging`,
+`tree_depth`, `n_steps`, `energy`, `step_size`, `acceptance_rate`).
 [`compare`](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.compare)
 delegates to
 [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html)

@@ -25,7 +25,11 @@ Public surface (the kernels and driver are also re-exported from
 * `MCMC`: chain orchestrator with warmup, parallel chains, an
   `InitStrategy`, and posterior diagnostics (split-:math:`\\hat R`,
   effective sample size).
-* `MCMCResult`: posterior samples and per-chain diagnostics.
+* `MCMCResult`: posterior samples, per-draw sampler statistics, and
+  per-chain diagnostics.
+* `MCMCCheckpoint`: atomic checkpoints from which `MCMC.resume`
+  continues a run exactly; `MCMC` also takes wall-clock and evaluation
+  budgets and an `MCMCCallback` progress hook.
 """
 
 from __future__ import annotations
@@ -39,13 +43,26 @@ from quivers.inference.mcmc.adapt import (
     find_reasonable_step_size,
 )
 from quivers.inference.mcmc.compose import CycleKernel, MixtureKernel
-from quivers.inference.mcmc.driver import MCMC, InitStrategy, MCMCResult
+from quivers.inference.mcmc.checkpoint import (
+    CHECKPOINT_FILENAME,
+    CHECKPOINT_FORMAT_VERSION,
+    MCMCCheckpoint,
+)
+from quivers.inference.mcmc.driver import (
+    MCMC,
+    InitStrategy,
+    MCMCCallback,
+    MCMCPhase,
+    MCMCResult,
+    StopReason,
+)
 from quivers.inference.mcmc.gibbs import GibbsKernel, GibbsUpdate
 from quivers.inference.mcmc.hmc import HMCKernel, MassMatrixKind, NUTSKernel
 from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    StateValue,
 )
 from quivers.inference.mcmc.metropolis import (
     IndependenceProposal,
@@ -78,4 +95,11 @@ __all__ = [
     "MCMC",
     "MCMCResult",
     "InitStrategy",
+    "MCMCCheckpoint",
+    "CHECKPOINT_FORMAT_VERSION",
+    "CHECKPOINT_FILENAME",
+    "StopReason",
+    "MCMCPhase",
+    "MCMCCallback",
+    "StateValue",
 ]
