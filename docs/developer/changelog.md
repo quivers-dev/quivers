@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.38.0] - 2026-11-11
+
+### Added
+
+- **Deduction weights normalized per left-hand side (`normalize=lhs`).** Under the deduction option `normalize=lhs`, the rules and lexicon entries that rewrite one left-hand side form a probability distribution: each group's free log-weights (a learned parameter, or zero for a production that is not `#[learnable]`) pass through a `log_softmax`, so the deduction is a probabilistic context-free grammar and maximum likelihood is bounded. The agenda chart, the checked search (`run_deduction` and programs that call `parse`), `adam_fit_deduction`, and `sample_corpus` read the normalized weights. A deduction whose groups are not fixed at compile time (a rule binding a category variable, spans carrying logical forms, a `bounded` or `parent` rule, a non-ground lexicon category, a repeated entry, axioms given as input, or a semiring other than `LogProb` or `Viterbi`) is refused with a located diagnostic on both paths. `normalize=none` is the default.
+- **`DeductionSystem.production_groups` and `DeductionSystem.production_log_probs`,** with `Production`, `ProductionGroup`, `ProductionKey`, and `ProductionWeights` in `quivers.stochastic`, report a grammar's productions by left-hand side and their log-probabilities.
+
 ## [0.37.0] - 2026-11-11
 
 ### Changed
