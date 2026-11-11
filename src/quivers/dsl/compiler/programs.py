@@ -709,8 +709,7 @@ def _project_nested_aggregates(
 # values: numeric literals lift to torch tensors; identifier
 # references resolve to whatever is bound (morphisms, programs,
 # chart views, structured tuples); composite expressions return
-# tensors of derived shape; lambdas wrap functions; a learned
-# function is a tensor map applied to its evaluated arguments.  The union
+# tensors of derived shape; lambdas wrap functions.  The union
 # below enumerates the kinds the program-theory check admits at a
 # let position.
 type LetValue = (
@@ -724,7 +723,6 @@ type LetValue = (
     | Morphism
     | ContinuousMorphism
     | Callable[[dict[str, "LetValue"]], "LetValue"]
-    | Callable[..., torch.Tensor]
 )
 
 
@@ -812,6 +810,7 @@ def _expected_call_arity(target: object) -> int | None:
     * `MonadicProgram` without ``params``: arity is ``1`` (the
       packed program input).
     * `Morphism`: arity is ``1`` (the domain tensor).
+    * `LearnedFunction`: one argument per factor of its domain.
     * Any other callable: use `inspect.signature` and count
       positional parameters without defaults; ``*args`` makes arity
       unknowable, return ``None``.
@@ -821,6 +820,8 @@ def _expected_call_arity(target: object) -> int | None:
         return len(params) if params else 1
     if isinstance(target, Morphism):
         return 1
+    if isinstance(target, LearnedFunction):
+        return len(target.factor_widths)
     try:
         sig = inspect.signature(target)  # type: ignore[arg-type]
     except TypeError, ValueError:
@@ -5233,7 +5234,7 @@ class _ProgramsMixin:
         found: dict[str, LetValue] = dict(getattr(self, "_deductions", {}))
         for name, morphism in self._morphisms.items():
             if isinstance(morphism, LearnedFunction):
-                found[name] = morphism.apply_values
+                found[name] = morphism
         found["__index_size__"] = self._resolve_index_size
         return found
 
@@ -5794,6 +5795,11 @@ class _ProgramsMixin:
                 globs_dict = globals_ or {}
                 if func_name in globs_dict and func_name not in LET_INTERNAL_KEYS:
                     target = globs_dict[func_name]
+                    if isinstance(target, LearnedFunction):
+                        values = [fn(env) for fn in arg_fns]
+                        return target.apply_values(
+                            *(torch.as_tensor(value) for value in values)
+                        )
                     if callable(target):
                         args = [fn(env) for fn in arg_fns]
                         try:
