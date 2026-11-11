@@ -181,6 +181,57 @@ def test_decoder_samples_and_scores(program: Program) -> None:
     lp.backward()
 
 
+def _replace_first_leaf(term: Term, vocab: tuple[str, ...]) -> Term | None:
+    """Swap the first string leaf (pre-order) for another vocab entry.
+
+    Returns ``None`` when the term carries no string leaf.
+    """
+    args = list(term.args)
+    for position, arg in enumerate(args):
+        if isinstance(arg, str):
+            args[position] = next(v for v in vocab if v != arg)
+            return make_term(term.op, *args)
+        if isinstance(arg, Term):
+            replaced = _replace_first_leaf(arg, vocab)
+            if replaced is not None:
+                args[position] = replaced
+                return make_term(term.op, *args)
+    return None
+
+
+def test_reconstruction_equality_rejects_a_wrong_leaf_below_the_root(
+    program: Program,
+) -> None:
+    enc, dec, _ = _artifacts(program)
+    vocab = ("f", "x", "plus", "base")
+    decoded: Term | None = None
+    redecoded: Term | None = None
+    wrong: Term | None = None
+    for seed in range(50):
+        torch.manual_seed(seed)
+        code = torch.randn(24)
+        torch.manual_seed(seed)
+        decoded = dec(code)
+        torch.manual_seed(seed)
+        redecoded = dec(code)
+        wrong = _replace_first_leaf(decoded, vocab)
+        if wrong is not None:
+            break
+    if decoded is None or redecoded is None or wrong is None:
+        pytest.fail("no decoded sample carried a data leaf")
+    # The same code and seed reproduce the same term.
+    assert redecoded == decoded
+    # A reconstruction that differs from the decoded term only in one
+    # leaf keeps the root operator, and is a different term.
+    assert wrong.op == decoded.op
+    assert wrong.to_tuple() != decoded.to_tuple()
+    assert wrong != decoded
+    assert hash(wrong) != hash(decoded)
+    assert len({wrong, decoded}) == 2
+    # The wrong reconstruction is a well-formed term the decoder scores.
+    assert torch.isfinite(dec.log_prob(wrong, enc(wrong)))
+
+
 def test_decoder_samples_data_leaves_from_declared_vocab(
     program: Program,
 ) -> None:

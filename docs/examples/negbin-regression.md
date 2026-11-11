@@ -93,7 +93,7 @@ probs_true = true_dispersion[out_idx] / (true_dispersion[out_idx] + mu_true)
 y = torch.distributions.NegativeBinomial(true_dispersion[out_idx], probs_true).sample()
 
 observations = {"x": x, "y": y, "out_idx": out_idx}
-x_in = torch.zeros(ND, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit
@@ -128,13 +128,10 @@ print(f"oracle NLL:   {oracle_nll:.2f}")
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-N_mcmc, D_mcmc = 11, 3
-ND_mcmc = N_mcmc * D_mcmc
-out_idx_mcmc = torch.arange(D_mcmc).repeat(N_mcmc)
-x_mcmc = x[:ND_mcmc]
-y_mcmc = y[:ND_mcmc]
-obs_mcmc = {"x": x_mcmc, "y": y_mcmc, "out_idx": out_idx_mcmc}
-x_in_mcmc = torch.zeros(ND_mcmc, 1)
+# The plate's size is declared in the source, so NUTS conditions on
+# the whole data set, as one run of the program.
+obs_mcmc = observations
+x_in_mcmc = torch.zeros(1, 1)
 
 torch.manual_seed(2)
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)

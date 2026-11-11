@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from quivers.qiec.builtins import PARAM_GET, RANDOM_SAMPLE, SCORE_ADD
-from quivers.qiec.canonical import LOG_WEIGHT
+from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
 from quivers.qiec.effects import (
     ComputationType,
     EffectRow,
@@ -477,6 +477,74 @@ def _extent_of(value: object, depth: int) -> int:
     return len(current)
 
 
+def _host_rank(value: object) -> int:
+    """The number of axes of a host value.
+
+    Parameters
+    ----------
+    value : object
+        A number, nested tuples or lists of numbers, or an object with a
+        ``shape``.
+
+    Returns
+    -------
+    int
+        Its rank, reading a nested sequence along its first entries.
+    """
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        return len(shape)
+    rank = 0
+    current = value
+    while isinstance(current, (tuple, list)):
+        rank += 1
+        if not current:
+            break
+        current = current[0]
+    return rank
+
+
+def broadcast_shared_data(
+    entry: ProgramEntry, data: Mapping[str, object]
+) -> dict[str, object]:
+    """Spread each shared datum across the plate of the draw it fills.
+
+    A parameter that fills a family parameter of a plated draw directly
+    (`ProgramParameter.per_row`) is typed with the draw's plate as its
+    leading axis. A datum supplied without that axis is one value every
+    row shares, and is replicated once per row so that it inhabits the
+    checked type.
+
+    Parameters
+    ----------
+    entry : ProgramEntry
+        The program's entry point.
+    data : Mapping[str, object]
+        The host value of each parameter, by name.
+
+    Returns
+    -------
+    dict[str, object]
+        The data, each shared datum replicated across its plate.
+    """
+    spread = dict(data)
+    for parameter in entry.parameters:
+        if not parameter.per_row or parameter.name not in spread:
+            continue
+        shape = tensor_shape(parameter.type)
+        if shape is None or not shape[1]:
+            continue
+        plate = shape[1][0]
+        value = spread[parameter.name]
+        if (
+            isinstance(plate, IndexLiteral)
+            and isinstance(plate.value, int)
+            and _host_rank(value) == len(shape[1]) - 1
+        ):
+            spread[parameter.name] = tuple(value for _ in range(plate.value))
+    return spread
+
+
 def static_arguments_for(
     entry: ProgramEntry,
     data: Mapping[str, object],
@@ -780,6 +848,7 @@ def _run_wrapped(
     ExecutionFailure
         If the run fails.
     """
+    data = broadcast_shared_data(entry, data)
     arguments = tuple(data[parameter.name] for parameter in entry.parameters)
     statics = static_arguments_for(entry, data, static_arguments)
     configured = {
@@ -1130,6 +1199,7 @@ def _deduction_wrapper(
 __all__ = [
     "DeductionRun",
     "ProgramRun",
+    "broadcast_shared_data",
     "deduction_item",
     "foreign_handler_configuration",
     "joint_module",

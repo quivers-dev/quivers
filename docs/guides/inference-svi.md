@@ -82,7 +82,7 @@ conditioned = condition(model, observations)
 guide = AutoNormalGuide(conditioned.model, observed_names=set(observations))
 
 # Sample latents from guide (each lives in its prior's support)
-latents = guide.rsample(x)  # dict {name: tensor}
+latents = guide.rsample(x)  # {name: (batch, *constrained_shape)}; plates: constrained_shape
 
 # Log probability under guide (with Jacobian correction)
 log_q = guide.log_prob(x, latents)
@@ -118,6 +118,66 @@ z_map = guide.rsample(x)
 log_q = guide.log_prob(x, z_map)
 ```
 
+### AutoMixtureGuide
+
+A mixture guide combines $K$ component guides with learnable weights
+$\pi = \mathrm{softmax}(\texttt{mixture\_logits})$:
+
+$$q_\phi(z) = \sum_{k=1}^{K} \pi_k\, q_k(z).$$
+
+Each component may be any guide, so a mixture of `AutoNormalGuide`
+instances can place one component on each of several separated modes.
+`log_prob` evaluates the mixture density with a log-sum-exp over the
+components. `rsample` draws from that same density: it picks a component
+index $k \sim \mathrm{Categorical}(\pi)$ and returns component $k$'s
+draw, so predictive sampling from a fitted mixture guide reproduces the
+distribution that `log_prob` scores. Its draws carry gradient to the
+chosen component's parameters but not to the mixture logits, since the
+component choice is discrete.
+
+Training does not go through `rsample`. Every objective calls
+[`Guide.rsample_strata`](../api/inference/guide.md#quivers.inference.guides.Guide.rsample_strata),
+which a mixture implements by enumerating its components: one
+reparameterized draw $z_k \sim q_k$ per component, weighted by $\pi_k$.
+The ELBO is thus estimated as the stratified ELBO
+[@morningstar2021mixtures]
+
+$$\mathcal{L}(\phi) = \sum_{k=1}^{K} \pi_k\,
+\mathbb{E}_{q_k}\bigl[\log p(y, z \mid x) - \log q_\phi(z)\bigr],$$
+
+which equals the ELBO of the mixture density exactly. Gradients reach the
+component parameters through each reparameterized draw and reach the
+mixture logits through the finite sum. The importance-weighted objectives
+use the same weights: `IWAEBound` becomes the stratified IWAE bound
+$\log \frac{1}{K'}\sum_{j}\sum_{k} \pi_k\, p(y, z_{jk})/q_\phi(z_{jk})$
+over $K'$ particles, and `RenyiBound`, `VRIWAEBound`, `ChiVI`, and `RWS`
+weight each draw the same way. A mixture nested inside another mixture or
+inside an `AutoGuideList` part is enumerated as well (an `AutoGuideList`
+takes the product of its parts' strata), so each step costs $K$ model
+evaluations per particle.
+
+The `DoublyReparameterized` estimator rewrites the score of the density
+each particle was drawn from, and stratified draws come from the
+components rather than from $q_\phi$. It therefore raises an error with a
+mixture guide; use `IWAEBound(num_particles=K, estimator=Reparameterized())`
+or `StickingTheLanding()` instead.
+
+<!-- python: skip -->
+```python
+from quivers.inference import ELBO, SVI, AutoMixtureGuide, AutoNormalGuide
+
+components = [
+    AutoNormalGuide(conditioned.model, observed_names=set(observations))
+    for _ in range(3)
+]
+guide = AutoMixtureGuide(components)
+svi = SVI(conditioned.model, guide, optimizer, ELBO(num_particles=4))
+
+# After fitting: draws from the mixture density q
+z = guide.rsample(x)
+weights = guide.mixture_weights()
+```
+
 ## Objectives and gradient estimators
 
 The **objective** says what numerical quantity the fit optimizes. The
@@ -144,19 +204,59 @@ objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objective
 | `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ [@burda2016iwae] |
 | `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE [@daudel2023vriwae] | Controls the tradeoff between computation and approximation |
-| `ChiVI(n, K)` | Chi-squared upper bound (CUBO; [@dieng2017chi]) | Over-covering approximation; pair with ELBO for lower/upper estimates |
-| `RWS(K)` | Reweighted wake-sleep [@bornschein2015rws] | Discrete latents and importance-weighted wake updates |
+| `ChiVI(n, K)` | $\chi^n$ upper bound $\mathrm{CUBO}_n = \tfrac{1}{n}\log \mathbb{E}_q[(p/q)^n]$ [@dieng2017chi] | Over-covering approximation; minimizes $\exp(n\,\mathrm{CUBO}_n)$ with an unbiased gradient and reports the $K$-sample CUBO estimate for the sandwich $\mathrm{ELBO} \le \log p(y) \le \mathrm{CUBO}_n$ |
+| `RWS(K)` | Reweighted wake-sleep, wake phase [@bornschein2015rws] | Importance-weighted wake updates with the draws held fixed; not a bound, takes no estimator |
 | `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient [@tucker2019dreg] | Switch the IWAE bound and DReG estimator together |
 
-The first six accept an `estimator=` strategy. `DReGsBound` fixes the
-strategy to `DoublyReparameterized` by definition:
+`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, and `DReGsBound` are
+Monte Carlo *power-mean bounds* of the per-draw log importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$,
+
+$$B_a = \frac{1}{a}\log \frac{1}{K}\sum_{k=1}^{K} e^{a \ell_k},$$
+
+with exponent $a = 0$ (the ELBO, read as the mean of $\ell_k$), $a = 1$
+(IWAE), or $a = 1 - \alpha$ (Rényi and VR-IWAE). Each accepts an
+`estimator=` strategy, which estimates the gradient of $\mathbb{E}[B_a]$
+for both the guide and the model parameters. `DReGsBound` fixes the
+strategy to `DoublyReparameterized`, and `RWS` takes none.
+
+`ChiVI` is an upper bound, and the log of a Monte Carlo average is
+biased *downward* by Jensen's inequality, so minimizing the $K$-sample
+estimate $\tfrac{1}{n}\log \tfrac{1}{K}\sum_k w_k^n$ would neither
+keep the bounding property nor give an unbiased gradient. Following
+Dieng et al. [@dieng2017chi], `ChiVI` minimizes the exponentiated bound
+$L_n = \exp(n\,\mathrm{CUBO}_n) = \mathbb{E}_q[w^n]$, which has the same
+minimizers and the unbiased estimate $\tfrac{1}{K}\sum_k w_k^n$. To
+avoid overflow, particle $k$'s term is divided by $e^{m_{-k}}$, where
+$m_{-k}$ is the largest $n \log w_j$ among the *other* particles; that
+scale is independent of particle $k$'s draws, so the expected update is
+a positive multiple of $\nabla L_n$ and the stationary points are
+unchanged. `ChiVI` therefore needs `num_particles >= 2` and an order
+$n > 1$. The value it returns is the $K$-sample CUBO estimate, directly
+comparable with the negated `ELBO` loss; it is biased downward at finite
+$K$, so for small $K$ it can fall below $\log p(y)$, and the bias
+vanishes as $K$ grows. Start `ChiVI` from a guide wider than the
+posterior: the gradient's variance is finite only when
+$\mathbb{E}_q[w^{2n}]$ is.
 
 | Estimator | What it does |
 |---|---|
-| [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Standard pathwise gradient (default) |
-| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
-| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG for IWAE [@tucker2019dreg]; removes the score-function term that can worsen signal-to-noise as $K$ grows |
-| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE; for non-reparameterizable sites |
+| [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Pathwise gradient of $B_a$ (default except for `IWAEBound`) |
+| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches the variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
+| [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG [@tucker2019dreg; @daudel2023vriwae]: rewrites the score term with the reparameterization identity, weighting draw $k$ by $(1-a)\bar w_k + a \bar w_k^2$ with $\bar w = \mathrm{softmax}(a\ell)$; default for `IWAEBound` |
+| [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE [@ranganath2014bbvi]: the objective draws from the guide and holds the draws fixed, so the guide's `rsample` need not be differentiable |
+
+Not every pair has an unbiased estimator. Dropping the score term, as
+sticking the landing does, is unbiased only when that term has mean zero:
+for the ELBO, or for a single draw. The objectives check the pair at
+construction and on every call, and raise `ValueError` naming a valid
+estimator instead of silently using another one:
+
+| Objective | `Reparameterized` | `StickingTheLanding` | `DoublyReparameterized` | `ScoreFunction` |
+|---|---|---|---|---|
+| `ELBO` | yes | yes | yes (equals sticking the landing) | yes |
+| `IWAEBound`, `RenyiBound`, `VRIWAEBound` | yes | only with `num_particles=1` | yes | yes |
+| `ChiVI` | yes (Dieng et al., Eq. 3) | no | no | yes (their Algorithm 1) |
+| any of the above with an `AutoMixtureGuide` | yes | `ELBO` only | `ELBO` only | yes (independent draws) |
 
 <!-- python: skip -->
 ```python
@@ -167,11 +267,14 @@ loss = iwae(model, guide, x, observations)
 ```
 
 Multi-particle objectives run a Python `for` loop over
-`num_particles`, calling `guide.rsample` and `model.log_joint` once
-per particle and stacking the per-particle log-densities into a
-leading `(K, batch)` axis. `torch.distributions` and the model
-runtime are not vectorized over a Monte Carlo dimension, so `K > 1`
-scales linearly in the particle count.
+`num_particles`, calling `guide.rsample_strata` once per particle and
+`model.log_joint` once per stratum, and stack the per-draw
+log-densities into a leading `(K * S, batch)` axis with a log-weight
+for each draw. An ordinary guide returns a single stratum ($S = 1$, equal
+weights $1/K$); an `AutoMixtureGuide` returns one stratum per component,
+weighted by the mixture weights. `torch.distributions` and the model
+runtime are not vectorized over a Monte Carlo dimension, so the cost
+scales linearly in the number of draws.
 
 ## ELBO: evidence lower bound
 
@@ -230,11 +333,15 @@ loss.backward()  # backprop through both model and guide
 
 Internally, the ELBO:
 
-1. Samples latent variables $z \sim q_\phi(\cdot \mid x, y)$.
+1. Draws latent variables with `guide.rsample_strata()`: one draw
+   $z \sim q_\phi(\cdot \mid x, y)$ with weight $\omega = 1$ for an
+   ordinary guide, or one draw per component with weight $\pi_k$ for an
+   [`AutoMixtureGuide`](#automixtureguide).
 2. Computes $\log p(y, z \mid x)$ via
    [`model.log_joint()`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint).
 3. Computes $\log q_\phi(z \mid x, y)$ via `guide.log_prob()`.
-4. Returns $\frac{1}{n}\sum_i [\log q - \log p]$.
+4. Returns $\frac{1}{n}\sum_i \sum_s \omega_{s} [\log q - \log p]$ over
+   the $n$ particles and their strata $s$.
 
 ## SVI: stochastic variational inference
 
@@ -275,6 +382,14 @@ for epoch in range(100):
 
 The `step` method computes the ELBO loss, backpropagates gradients,
 and steps the optimizer.
+
+Each row of the input is an independent run of the model, with its own
+latent draws from the guide, and every objective sums its per-run terms;
+a minibatch of rows is therefore a minibatch of runs. A program whose
+observations live in a plate, with its rows given in `observations`,
+takes a one-row input instead: its rows come from its data and its
+plates, and repeating the input row would only add copies of the same
+run.
 
 ## Predictive sampling
 
@@ -392,6 +507,17 @@ class MyGuide(Guide):
         raise NotImplementedError()
 ```
 
+The objectives draw through `Guide.rsample_strata`, which returns
+[`GuideDraw`](../api/inference/guide.md#quivers.inference.guides.GuideDraw)
+records: the sites, the guide log-density the objective pairs with
+them, and a stratum log-weight. Its default returns one draw from
+`rsample`, scored by `log_prob`, with weight one. A guide whose sampler
+makes a discrete choice that `rsample` cannot reparameterize overrides
+it to return weighted strata whose weighted average estimates
+expectations under the guide, as `AutoMixtureGuide` does; a guide
+whose density exists only along the path that produced a draw returns
+that density with the draw, as `AutoDAIS` does.
+
 ## Further reading
 
 - [@durkan2019splines]
@@ -402,3 +528,4 @@ class MyGuide(Guide):
 - [@bornschein2015rws]
 - [@li2016renyi]
 - [@burda2016iwae]
+- [@morningstar2021mixtures]

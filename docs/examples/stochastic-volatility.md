@@ -90,7 +90,7 @@ for t in range(1, T):
     h[t] = mu_true + phi_true * (h[t - 1] - mu_true) + sigma_h_true * torch.randn(())
 h_prev = torch.cat([torch.zeros(1), h[:-1]])
 returns = torch.exp(0.5 * h) * torch.randn(T)
-x_in = torch.zeros(T, 1)
+x_in = torch.zeros(1, 1)
 observations = {"r": returns, "h_prev": h_prev}
 ```
 

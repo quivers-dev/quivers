@@ -1,0 +1,12 @@
+# Exercises real division of real literals, which stays real division on
+# a target whose `/` truncates two integers.
+object Step : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    let quarter = 1.0 / 4.0
+    observe y : Step <- Normal(loc=mu, scale=quarter)
+    return mu
+
+export p

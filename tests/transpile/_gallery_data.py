@@ -25,11 +25,15 @@ import shutil
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import torch
 from torch.distributions import constraints
 
 from quivers.continuous import ContinuousMorphism, Draw, MonadicProgram, Observe
+from quivers.dsl import loads
+from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.types import IndexLiteral
 from tests.transpile.probes._protocol import Point
 from tests.transpile.probes.qvr import QvrProbe
 
@@ -349,6 +353,11 @@ class GalleryDataset:
     instantiated MonadicProgram. The QVR probe consumes this directly
     rather than re-parsing the source, so it sees the same template
     instance the data was generated under."""
+
+    shared_plates: dict[str, int] = dataclasses.field(default_factory=dict)
+    """The plate extent of each datum supplied as one value every row of
+    that plate shares. See
+    [`_shared_plates`][tests.transpile._gallery_data._shared_plates]."""
 
 
 def md_path_for(source_qvr: Path) -> Path:
@@ -897,6 +906,15 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         source_qvr.stem,
     )
 
+    shared_plates = _shared_plates(source_qvr, obs_tensors)
+
+    # The program's input rows are independent runs of the whole
+    # program, and the rows a gallery program observes come from its
+    # data and its plates, so the fixture scores one run: the first row
+    # of the input the snippet built.
+    if x_input is not None:
+        x_input = _first_row(x_input)
+
     single_row = _program_is_plateless(source_qvr)
     if single_row:
         # The program denotes one row and every backend emits one, so
@@ -909,8 +927,6 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         # SVI and MCMC demos want the full batch.
         obs_tensors = {k: _first_row(v) for k, v in obs_tensors.items()}
         params = {k: _first_row(v) for k, v in params.items()}
-        if x_input is not None:
-            x_input = _first_row(x_input)
 
     return GalleryDataset(
         observations=obs_tensors,
@@ -924,7 +940,108 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         ),
         single_row=single_row,
         monadic=monadic,
+        shared_plates=shared_plates,
     )
+
+
+def _shared_plates(
+    source_qvr: Path, observations: dict[str, torch.Tensor]
+) -> dict[str, int]:
+    """The data supplied as one value every row of a plate shares.
+
+    A datum that fills a family parameter of a plated draw directly is
+    checked as one value per row of that plate; the snippet may supply
+    it without the row axis, as one value every row shares. The
+    reference machine and the compiled runtime read it as given, and
+    every transpile target declares the per-row shape, so
+    [`target_point`][tests.transpile._gallery_data.target_point] hands
+    each such datum to a target spread across the plate, as
+    [`broadcast_shared_data`][quivers.qiec.broadcast_shared_data] does.
+
+    Parameters
+    ----------
+    source_qvr : Path
+        The example's QVR source.
+    observations : dict[str, torch.Tensor]
+        The snippet's observations, by name.
+
+    Returns
+    -------
+    dict[str, int]
+        The plate's extent for each datum supplied without its axis.
+    """
+    module = loads(source_qvr.read_text()).qiec
+    if module is None:
+        return {}
+    shared: dict[str, int] = {}
+    for entry in module.entries:
+        for parameter in entry.parameters:
+            value = observations.get(parameter.name)
+            if not parameter.per_row or value is None:
+                continue
+            shape = tensor_shape(parameter.type)
+            if shape is None or not shape[1]:
+                continue
+            plate = shape[1][0]
+            if isinstance(plate, IndexLiteral) and value.dim() == len(shape[1]) - 1:
+                shared[parameter.name] = int(plate.value)
+    return shared
+
+
+type PointSection = dict[str, float | int | list[float] | list[int]]
+"""One section of a point as it crosses the probe boundary."""
+
+
+def target_point(dataset: GalleryDataset, point: Point) -> dict[str, PointSection]:
+    """A point as a transpile target reads it, shared data spread.
+
+    Parameters
+    ----------
+    dataset : GalleryDataset
+        The example's data, naming the shared data.
+    point : Point
+        The point.
+
+    Returns
+    -------
+    dict[str, PointSection]
+        The point's ``params`` and ``data``, each shared datum repeated
+        once per row of its plate in row-major order.
+    """
+    data: PointSection = dict(point.data)
+    for name, rows in dataset.shared_plates.items():
+        if name not in data:
+            continue
+        value = data[name]
+        if isinstance(value, list):
+            data[name] = cast(list[float], value) * rows
+        else:
+            data[name] = [float(value)] * rows
+    return {"params": point.params, "data": data}
+
+
+def target_shapes(
+    dataset: GalleryDataset, shapes: dict[str, list[int]]
+) -> dict[str, list[int]]:
+    """A shape table with each shared datum's plate axis restored.
+
+    Parameters
+    ----------
+    dataset : GalleryDataset
+        The example's data, naming the shared data.
+    shapes : dict[str, list[int]]
+        The shape of each name as the dataset holds it.
+
+    Returns
+    -------
+    dict[str, list[int]]
+        The shapes, each shared datum led by its plate's extent.
+    """
+    spread = dict(shapes)
+    for name, rows in dataset.shared_plates.items():
+        if name in spread:
+            spread[name] = [rows, *spread[name]]
+    return spread
 
 
 def _program_is_plateless(source_qvr: Path) -> bool:
@@ -1394,21 +1511,39 @@ def _perturb_integer(
     noise: torch.Tensor,
     lower: float,
     upper: float,
+    *,
+    declared: bool,
 ) -> torch.Tensor:
     """Move an integer tensor within its inferred admissible window.
 
     A tensor with multiple values uses the intersection of its
     attested range and the declared bounds. A constant tensor uses
     finite declared bounds. If neither case provides a finite range,
-    the tensor remains fixed.
+    the tensor remains fixed. A lone count whose window is a site's
+    declared support, such as a category index, is redrawn across that
+    window rather than stepped by its own magnitude.
+
+    Parameters
+    ----------
+    work : torch.Tensor
+        The integer values, as floats.
+    noise : torch.Tensor
+        Standard-normal noise of the same shape.
+    lower : float
+        The support's least value.
+    upper : float
+        The support's greatest value, possibly infinite.
+    declared : bool
+        Whether the bounds are a site's declared support rather than a
+        window inferred from host data.
+
+    Returns
+    -------
+    torch.Tensor
+        The moved values.
     """
     if work.numel() == 0:
         return work
-    magnitude = max(
-        1.0,
-        _INTEGER_STEP_FRACTION * float(work.abs().mean().item()),
-    )
-    moved = torch.round(work + torch.round(noise * magnitude))
     attested_low = float(work.min().item())
     attested_high = float(work.max().item())
     if attested_low < attested_high:
@@ -1416,14 +1551,59 @@ def _perturb_integer(
         high = min(upper, attested_high)
     elif math.isfinite(lower) and math.isfinite(upper):
         low, high = lower, upper
+        if declared and work.numel() == 1 and high > low:
+            return _redraw_single_count(work, noise, low, high)
     else:
         return work
+    magnitude = max(
+        1.0,
+        _INTEGER_STEP_FRACTION * float(work.abs().mean().item()),
+    )
+    moved = torch.round(work + torch.round(noise * magnitude))
     if low > high:
         return work
     clamped = moved.clamp(min=low, max=high)
     if torch.equal(clamped, work):
         return _nudge_frozen_integer(work, noise, low, high)
     return clamped
+
+
+def _redraw_single_count(
+    work: torch.Tensor,
+    noise: torch.Tensor,
+    low: float,
+    high: float,
+) -> torch.Tensor:
+    """Move a single count to another value of its declared window.
+
+    A lone count has no spread to scale a step by, and a step scaled
+    by its own magnitude sends independent seeds to the same neighbour.
+    The noise is mapped through the standard-normal CDF to a uniform
+    position among the window's other values, so every other value is
+    equally likely and the count always moves.
+
+    Parameters
+    ----------
+    work : torch.Tensor
+        The count, one entry.
+    noise : torch.Tensor
+        Standard-normal noise of the same shape.
+    low : float
+        The window's least admissible value.
+    high : float
+        The window's greatest admissible value, above ``low``.
+
+    Returns
+    -------
+    torch.Tensor
+        The moved count, with ``work``'s shape and dtype.
+    """
+    others = int(high - low)
+    uniform = 0.5 * (1.0 + math.erf(float(noise.flatten()[0].item()) / math.sqrt(2.0)))
+    offset = 1 + min(others - 1, int(uniform * others))
+    current = int(work.flatten()[0].item()) - int(low)
+    moved = int(low) + (current + offset) % (others + 1)
+    return torch.full_like(work, moved)
 
 
 def _nudge_frozen_integer(
@@ -1478,9 +1658,14 @@ def _perturb_by_support(
     support: constraints.Constraint,
     generator: torch.Generator,
     scale: float,
+    *,
+    declared: bool,
 ) -> torch.Tensor | None:
     """Move `value` inside `support` by roughly `scale` in the
     support's natural unconstrained coordinate.
+
+    ``declared`` says whether `support` is a site's declared support,
+    rather than a window inferred from host data.
 
     Returns None for a constraint whose interior this helper cannot
     parameterise; the caller then leaves the value at ground truth
@@ -1516,6 +1701,7 @@ def _perturb_by_support(
             noise,
             float(support.lower_bound),
             float(support.upper_bound),
+            declared=declared,
         )
     elif isinstance(support, type(constraints.nonnegative_integer)):
         moved = _perturb_integer(
@@ -1523,6 +1709,7 @@ def _perturb_by_support(
             noise,
             float(support.lower_bound),
             math.inf,
+            declared=declared,
         )
     elif isinstance(
         support,
@@ -1672,6 +1859,7 @@ def _perturb_section(
             out[name] = value
             continue
         support = supports.get(name)
+        declared = support is not None
         if support is None and infer_from_value:
             support = _data_section_support(
                 name,
@@ -1682,7 +1870,7 @@ def _perturb_section(
         if support is None:
             out[name] = value
             continue
-        moved = _perturb_by_support(value, support, generator, scale)
+        moved = _perturb_by_support(value, support, generator, scale, declared=declared)
         out[name] = value if moved is None else moved
     return out
 

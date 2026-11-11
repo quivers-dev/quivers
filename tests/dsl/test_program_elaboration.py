@@ -17,7 +17,6 @@ import torch.distributions as td
 
 from quivers.continuous.morphisms import SampledComposition
 from quivers.continuous.programs import MonadicProgram
-from quivers.continuous.scan import ScanMorphism
 from quivers.dsl import Compiler, parse
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec
@@ -142,11 +141,15 @@ def _tensor(value: object) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        The values as floats.
+        The values as integers when every one is an integer, as the
+        checked type of an index reads them, else as floats.
     """
     if isinstance(value, bool | int | float):
         return torch.tensor([float(value)])
-    return torch.tensor([float(item) for item in value])  # type: ignore[union-attr]
+    items = list(value)  # type: ignore[call-overload]
+    if all(isinstance(item, int) and not isinstance(item, bool) for item in items):
+        return torch.tensor(items, dtype=torch.long)
+    return torch.tensor([float(item) for item in items])
 
 
 def _classic_log_joint(
@@ -1326,7 +1329,8 @@ def test_a_network_kernel_reads_its_layers_at_every_row() -> None:
     torch.manual_seed(0)
     x = torch.randn(6, 2)
     y = torch.randn(6, 1)
-    classic = trace(monadic, torch.zeros(6, 1), observations={"y": y, "x": x}).log_joint
+    # One run of the program: its six rows come from the data.
+    classic = trace(monadic, torch.zeros(1, 1), observations={"y": y, "x": x}).log_joint
     assert classic is not None
     classic = classic.detach()
     module = _module(NETWORK_KERNEL)
@@ -1644,8 +1648,8 @@ def test_a_scan_recurs_over_a_sequence() -> None:
     monadic = program._morphism
     assert isinstance(monadic, MonadicProgram)
     parameters = {name: item.detach() for name, item in monadic.named_parameters()}
-    weight = parameters["_step_h._cell.param_source.linear.weight"]
-    bias = parameters["_step_h._cell.param_source.linear.bias"]
+    weight = parameters["_scan_h._step_h.param_source.linear.weight"]
+    bias = parameters["_scan_h._step_h.param_source.linear.bias"]
     module = _module(SCANNED)
     assert loads(dumps(module)) == module
     assert [item.name for item in module.computations] == [
@@ -1684,10 +1688,11 @@ def test_a_scan_recurs_over_a_sequence() -> None:
         previous = states[position]
     assert run.log_joint == pytest.approx(float(closed), rel=1e-5)
     assert run.value == _nested(states[3])
-    scan = monadic.get_submodule("_step_h")
-    assert isinstance(scan, ScanMorphism)
-    classic = scan.log_joint(inputs.unsqueeze(0), states.unsqueeze(0)).detach()
-    assert run.log_joint == pytest.approx(float(classic.sum()), rel=1e-5)
+    compiled = monadic.log_joint(
+        inputs.unsqueeze(0),
+        {f"h@{position}": states[position : position + 1] for position in range(4)},
+    ).detach()
+    assert run.log_joint == pytest.approx(float(compiled.sum()), rel=1e-5)
 
 
 RECURRENT_CELL = """\
@@ -1721,13 +1726,13 @@ def test_a_scan_step_program_carries_the_cells_inputs() -> None:
     ]
     step = program_entry(module, "rnn_cell__scan_step")
     assert [(item.name, item.role) for item in step.parameters] == [
-        ("x_t", "domain"),
-        ("h_prev", "domain"),
+        ("h$x_t", "domain"),
+        ("h$h_prev", "domain"),
         ("tok_embed_param_table", "table"),
         ("cell_param_weight", "weight"),
         ("cell_param_bias", "bias"),
     ]
-    assert [(site.name, site.family) for site in step.sites] == [("x_in", "Normal")]
+    assert [(site.name, site.family) for site in step.sites] == [("h$x_in", "Normal")]
     entry = program_entry(module, "lm")
     assert [
         (item.name, item.role, render_static(item.type)) for item in entry.parameters
@@ -1762,7 +1767,7 @@ def test_a_scan_step_program_carries_the_cells_inputs() -> None:
             "next_token": 3,
         },
         sites={
-            **{f"x_in@{t}": _nested(embedded[t]) for t in range(3)},
+            **{f"h$x_in@{t}": _nested(embedded[t]) for t in range(3)},
             **{f"squashed@{t}": _nested(squashed[t]) for t in range(3)},
         },
     )

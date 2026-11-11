@@ -665,12 +665,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("webppl", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     # hmm: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
-    #
-    # `bugs` keeps its zero on the strength of a corrected emit, for
-    # the same reason `bugs` on `lda` does: the `marginalize state`
-    # scope lowers to `state ~ dcat(initial_row)`, a latent no point
-    # payload clamps, and the engine rejects it ("Cannot normalize
-    # density" at `state`) rather than integrating it out.
     ("webppl", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
@@ -722,21 +716,12 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs` keeps its zero on the strength of a corrected emit rather
-    # than of the current one. The renderer lowers the example's
-    # `marginalize z` scope to a stochastic node, `z[d] ~ dcat(...)`,
-    # instead of writing the logsumexp marginal the reduction denotes,
-    # so the emitted program declares a latent the point payload never
-    # clamps and the engine rejects it ("Cannot normalize density" at
-    # `z[6]`) before scoring. The entry states what the marginal emit
-    # would be entitled to, which is nothing;
-    # `test_backend_offset_matches_registry` stays red for this cell
-    # until the renderer emits it.
+    # `bugs` refuses the example: its word codes are observed class
+    # codes, which BUGS cannot shift to `dcat`'s one-based classes.
     ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("gen", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
-    ("bugs", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "lda"): _derived(half_sites=0, dropped_sites=0),
@@ -2321,7 +2306,7 @@ def test_backend_offset_matches_registry(cell: tuple[str, str]) -> None:
     qvr_lps = _qvr_log_densities(example, dataset, points, scratch)
     emitted = transpile(parse(example.read_text()), target=backend)
     script_path = _gallery_data.PROBE_SCRIPT_DIR / script_name
-    payload = [{"params": point.params, "data": point.data} for point in points]
+    payload = [_gallery_data.target_point(dataset, point) for point in points]
     raw_result = _docker.run_probe(
         image=image,
         script=script_path,
@@ -2329,7 +2314,7 @@ def test_backend_offset_matches_registry(cell: tuple[str, str]) -> None:
         source_ext=source_ext,
         points=payload,
         scratch=scratch,
-        shapes=_shapes_from_dataset(dataset),
+        shapes=_gallery_data.target_shapes(dataset, _shapes_from_dataset(dataset)),
         dtypes=_dtypes_from_dataset(dataset),
         timeout=600.0,
     )

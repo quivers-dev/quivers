@@ -35,6 +35,7 @@ from quivers.qiec.distributions import seed_reference_rng
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.kinds import IndexBinder
 from quivers.qiec.program_runtime import (
+    broadcast_shared_data,
     program_entry,
     sample_program,
     static_arguments_for,
@@ -445,6 +446,7 @@ def invoke_entry(
     ]
     if unknown:
         _refuse(name, f"program {name!r} has no parameter(s) {', '.join(unknown)}")
+    supplied = cast(dict[str, HostValue], broadcast_shared_data(program, supplied))
     try:
         run = sample_program(
             module,

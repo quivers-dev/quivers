@@ -40,7 +40,7 @@ JAGS family-name differences are:
 | `Dirichlet(α)` | `ddirich(α)` | (BUGS uses `ddirch`) |
 | `Gamma(α, β)` | `dgamma(α, β)` | matches BUGS |
 | `Bernoulli(p)` | `dbern(p)` | matches BUGS |
-| `Categorical(probs=p)` | `dcat(p)` | matches BUGS |
+| `Categorical(probs=p)` | `dcat(p)` on the one-based code `y_code <- y + 1` the `data` block binds; a drawn class is read back as `code - 1` | $y \mapsto y + 1$ |
 | `Normal(μ, σ)` | `dnorm(μ, 1/σ²)` | precision parameterization |
 
 JAGS also exposes

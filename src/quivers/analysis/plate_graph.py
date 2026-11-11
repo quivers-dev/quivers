@@ -386,21 +386,7 @@ def build_plate_graph(  # type: ignore[no-untyped-def]
         The program's plate graph, or ``None`` when no program of that
         name is registered.
     """
-    # Locate the program declaration. Parametric programs live on
-    # ``compiler.programs`` (the template registry); non-parametric
-    # programs compile straight to a morphism and are accessible
-    # only through the source module's statement list. Check both.
-    programs = getattr(compiler, "programs", {}) or {}
-    decl = programs.get(program_name)
-    if not isinstance(decl, ProgramDecl):
-        module = getattr(compiler, "_module", None)
-        for stmt in getattr(module, "statements", ()) or ():
-            if (
-                isinstance(stmt, ProgramDecl)
-                and getattr(stmt, "name", None) == program_name
-            ):
-                decl = stmt
-                break
+    decl = compiler.programs.get(program_name)
     if not isinstance(decl, ProgramDecl):
         return None
 

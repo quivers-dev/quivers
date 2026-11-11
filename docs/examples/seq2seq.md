@@ -27,16 +27,16 @@ This example combines source and target branches in an encoder-decoder-shaped mo
 # Source * Target -> Target in the Giry monad's Kleisli
 # category.
 #
-# Resp is the plate: it indexes the 32 scored rows, one
-# next-token target per (source, target) position pair. Target is
-# the target-side vocabulary, so it is the value space of what
-# lm_head draws and of what the program returns.
+# Each input row is one (source, target) token pair, and one run of
+# the program scores its next target token: the pairs of a corpus are
+# independent runs that share the model's parameters. Target is the
+# target-side vocabulary, so it is the value space of what lm_head
+# draws and of what the program returns.
 #
 # The wiring is inspired by encoder-decoder models, but the
 # branch operations should not be read as a full sequence model.
 
 object Source, Target : FinSet 32
-object Resp : FinSet 32
 object Latent : Real 16
 object HeadOut : Real 4
 object FFHidden, Combined : Real 32
@@ -67,7 +67,7 @@ define backbone = (encoder @ decoder) >> cross
 program seq2seq : Source * Target -> Target
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export seq2seq
@@ -105,7 +105,7 @@ does this with attention to the encoder's outputs [@alammar2018transformer].
 
 The closing `morphism lm_head : Combined -> Target ~ Categorical` maps the combined representation onto a Categorical distribution over the target vocabulary; the program's `observe next_token` step accumulates the per-position categorical log-likelihood against the supplied target tensor.
 
-`Resp : FinSet 32` and `Target : FinSet 32` are the same size and mean different things, and their positions are what fix them. `Resp` fills the observe step's index slot, so it is the plate: 32 scored rows, one per flattened `(source, target)` position pair. `Target` fills `lm_head`'s codomain and the program's own codomain, so it is the value space: the 32 target-vocabulary outcomes a draw ranges over, and the space the returned `next_token` lives in.
+The program scores one `(source, target)` token pair per run. Each input row is a pair, and a corpus of pairs is a batch of independent runs that share the model's parameters, so every pair draws its own merged `h` and scores its own next-token target. `Target` fills `lm_head`'s codomain and the program's own codomain, so it is the value space: the 32 target-vocabulary outcomes a draw ranges over, and the space the returned `next_token` lives in.
 
 ```mermaid
 flowchart LR
@@ -130,7 +130,7 @@ The program's domain is the product object `Source * Target`, so the runtime inp
 
 ### Generating synthetic data
 
-Draw a source and a target token batch column by column from a uniform Categorical over the two vocabularies, flatten the `(B, L)` grid into rows, and run one forward [`trace`](../api/inference/trace.md) so the merged latent `h` and the next-token targets generated from it are jointly consistent. `true_h` names the ground truth for the latent `h` site, and shipping it in the observations dict is what clamps it: an unclamped `h` is redrawn on every call, which leaves any reference joint non-deterministic. The `B * L = 32` rows are the elements of the `Resp` plate: the encoder reads the source column, the decoder reads the target column, and `lm_head` scores one Categorical draw per row.
+Draw a source and a target token batch column by column from a uniform Categorical over the two vocabularies, flatten the `(B, L)` grid into rows, and run one forward [`trace`](../api/inference/trace.md) so the merged latent `h` and the next-token targets generated from it are jointly consistent. `true_h` names the ground truth for the latent `h` site, and shipping it in the observations dict is what clamps it: an unclamped `h` is redrawn on every call, which leaves any reference joint non-deterministic. The `B * L = 32` rows are 32 independent runs: in each, the encoder reads the source column, the decoder reads the target column, and `lm_head` scores one Categorical draw.
 
 ```python
 import torch

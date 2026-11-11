@@ -102,11 +102,11 @@ _ORTHOGONAL_REFUSALS: dict[tuple[str, str], str] = {
     ("bugs", "wishart"): "arg:matrix-literal",
     ("bugs", "inversewishart"): "arg:matrix-literal",
     ("bugs", "lowrankmvn"): "arg:list-literal",
-    # `categorical.qvr` marginalizes a latent over a Normal scope, which
-    # is no categorical mixture, and BUGS has no statement that adds
-    # the integrated log-density to the joint; the observed `cls` site
-    # the family claim rests on is one BUGS has.
-    ("bugs", "categorical"): "marginalize:no-collapse",
+    # `categorical.qvr` observes the class codes `cls`, which the data
+    # holds counting from zero and `dcat` reads from one; BUGS has no
+    # data block to shift them in and no free log-density statement to
+    # score them otherwise.
+    ("bugs", "categorical"): "observe:class-code",
 }
 
 

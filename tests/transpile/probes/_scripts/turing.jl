@@ -66,9 +66,9 @@ function main()
     points = JSON3.read(read("/io/points.json", String))
     shapes, dtypes = load_tables("/io")
     export_names = load_export_names("/io")
-    # Julia arrays are 1-based; lift every 0-based covariate the model
-    # subscripts before it reaches the @model call.
-    index_names = index_input_names(source, dtypes)
+    # The point payload is in QVR's zero-based coding, and the emitted
+    # program reads an index covariate or a class code one higher where
+    # Julia counts from one, so the payload reaches the model as it is.
     simplex_names = simplex_site_names(source)
 
     # Eval the @model declaration in Main; the macro produces a
@@ -80,9 +80,7 @@ function main()
     log_densities = Float64[]
     exports = []
     for pt in points
-        reshaped = shift_index_inputs(
-            reshape_point(pt, shapes, dtypes), index_names,
-        )
+        reshaped = reshape_point(pt, shapes, dtypes)
         data = reshaped["data"]
         params = renormalise_simplex_params(
             reshaped["params"], simplex_names,

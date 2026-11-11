@@ -41,12 +41,15 @@ from quivers.dsl.emit import EmitError, module_to_source, static_argument_to_sou
 from quivers.dsl.family_schemas import (
     DISTRIBUTION_FAMILIES,
     FAMILY_ALIASES,
+    PARAMETER_ALIASES,
     family_parameter_names,
     family_parameterizations,
 )
 from quivers.dsl.let_expr_traversal import (
+    free_let_callees,
     free_let_names,
     let_expr_children,
+    map_let_expr,
     substitute_let_expr,
     walk_let_expr,
 )
@@ -148,6 +151,7 @@ def load(
 __all__ = [
     "DISTRIBUTION_FAMILIES",
     "FAMILY_ALIASES",
+    "PARAMETER_ALIASES",
     "QIEC_STATEMENT_TYPES",
     "QVR_DEDUCTION_PROTOCOL",
     "QVR_PROGRAM_PROTOCOL",
@@ -168,12 +172,14 @@ __all__ = [
     "extract_program_schema",
     "family_parameter_names",
     "family_parameterizations",
+    "free_let_callees",
     "free_let_names",
     "has_qiec_surface",
     "let_expr_children",
     "load",
     "loads",
     "lower_qvr_to_qiec",
+    "map_let_expr",
     "module_to_source",
     "non_qiec_projection",
     "parse",

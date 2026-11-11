@@ -1,0 +1,10 @@
+# Exercises a host datum a `score` reads elementwise with a plated value:
+# `weight * theta` makes `weight` one entry per `Item`, and the score is
+# the weighted sum of the row effects.
+object Item : FinSet 4
+program prog : Item -> Item
+    sample theta : Item <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=theta, scale=1.0)
+    score weighting = sum(weight * theta)
+    return y
+export prog

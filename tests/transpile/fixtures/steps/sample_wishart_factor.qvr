@@ -1,0 +1,7 @@
+# A Wishart whose scale is written as a non-identity Cholesky factor.
+object Dim : FinSet 2
+object One : FinSet 1
+program wishart_factor : One -> One
+    sample sigma <- Wishart(df=4.0, scale_tril=[[1.0, 0.0], [0.5, 1.0]]) [over=[Dim, Dim]]
+    return sigma
+export wishart_factor

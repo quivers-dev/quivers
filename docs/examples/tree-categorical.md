@@ -165,7 +165,7 @@ cell0 = true_delta[0] + true_mu[0] + leaf_log_0
 y = torch.distributions.Normal(cell0, 0.5).sample((N_RESP,))
 
 observations = {"y": y}
-x_in = torch.zeros(N_RESP, 1)
+x_in = torch.zeros(1, 1)
 print("y batch shape:", tuple(y.shape))
 ```
 

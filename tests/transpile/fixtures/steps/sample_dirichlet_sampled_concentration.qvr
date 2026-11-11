@@ -1,0 +1,8 @@
+# A Dirichlet whose concentration is a sampled vector.
+object Dim : FinSet 3
+object One : FinSet 1
+program dirichlet_sampled_concentration : One -> One
+    sample a <- Gamma(concentration=2.0, rate=1.0) [over=Dim]
+    sample v <- Dirichlet(concentration=a) [over=Dim]
+    return v
+export dirichlet_sampled_concentration

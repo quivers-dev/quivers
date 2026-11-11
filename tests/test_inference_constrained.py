@@ -148,17 +148,15 @@ def test_condition_data_dict_visible_to_let_expression() -> None:
     model = prog.morphism
     subj_idx = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3])
     cond = condition(model, {"subj_idx": subj_idx})
+    # The program has no observation plate, so subj_idx is checked as
+    # one index per run: twelve runs, each drawing its own by_subj of
+    # shape (|Subj|,) and gathering one entry of it.
     tr = cond.trace(torch.zeros(12, 1))
-
-    # by_subj is a batch-invariant plate latent of shape (|Subj|,).
-    # The gather along its only axis with subj_idx of shape (12,)
-    # produces mu of shape (12,) — exactly the per-row predictor
-    # the hierarchical-regression idiom needs.
     by_subj = tr.sites["by_subj"].value
     mu = tr.sites["mu"].value
-    assert by_subj.shape == (4,)
+    assert by_subj.shape == (12, 4)
     assert mu.shape == (12,)
-    assert torch.allclose(mu, by_subj[subj_idx])
+    assert torch.allclose(mu, by_subj[torch.arange(12), subj_idx])
 
 
 def test_hierarchical_regression_svi_step_runs() -> None:
@@ -231,7 +229,7 @@ def test_hierarchical_regression_observation_kernel_composes() -> None:
     subj_idx = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3])
     r_obs = torch.tensor([0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0])
     cond = condition(prog.morphism, {"subj_idx": subj_idx, "r": r_obs})
-    tr = cond.trace(torch.zeros(12, 1))
+    tr = cond.trace(torch.zeros(1, 1))  # one run; its rows come from Resp
 
     assert tr.sites["by_subj"].value.shape == (4,)
     assert tr.sites["mu"].value.shape == (12,)
@@ -259,7 +257,7 @@ def test_condition_data_dict_alongside_observations() -> None:
     subj_idx = torch.tensor([0, 1, 2, 0, 1, 2])
     r = torch.zeros(6)
     cond = condition(model, {"subj_idx": subj_idx, "r": r})
-    tr = cond.trace(torch.zeros(6, 1))
+    tr = cond.trace(torch.zeros(1, 1))  # one run; its rows come from the plate
 
     # `r` is clamped as an observed sample site.
     assert torch.allclose(tr.sites["r"].value, r)
@@ -307,10 +305,9 @@ def test_inline_dirichlet_vector_concentration() -> None:
         "export p\n"
     )
     tr = trace(prog.morphism, torch.zeros(2, 1))
-    # `pc : Item` is a plate over Item of 3-simplex Dirichlet
-    # draws; the result has shape (|Item|, 3) regardless of the
-    # program input's leading batch axis.
-    assert tr.sites["pc"].value.shape == (8, 3)
+    # `pc : Item` is a plate over Item of 3-simplex Dirichlet draws,
+    # drawn once in each of the input's two independent runs.
+    assert tr.sites["pc"].value.shape == (2, 8, 3)
 
 
 def test_inline_dirichlet_under_autonormal_guide() -> None:

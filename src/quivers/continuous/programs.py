@@ -49,28 +49,40 @@ PDS-style nested programs::
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol, cast
 
 import torch
 from torch import nn
 
-from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
+from quivers.continuous.morphisms import (
+    AnySpace,
+    ContinuousMorphism,
+    SampledComposition,
+    _event_dim,
+)
+from quivers.continuous.spaces import ProductSpace
 from quivers.continuous.program_steps import (
+    Call,
     Draw,
     Indexed,
     Let,
     Observe,
+    Scan,
     Score,
     Step,
     StepArgument,
 )
-from quivers.core.morphisms import as_torch_module
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
+from quivers.continuous.scan import ScanMorphism
+from quivers.core.morphisms import Morphism, as_torch_module
+from quivers.qiec.types import TypeExpr
 
 
 def _lookup_arg(
     env: Mapping[str, torch.Tensor],
     arg: StepArgument,
+    carries: Callable[[str], bool] | None = None,
 ) -> torch.Tensor:
     """Resolve a draw or observe argument against the environment.
 
@@ -82,6 +94,12 @@ def _lookup_arg(
         A binding's name, or an
         [`Indexed`][quivers.continuous.program_steps.Indexed] gather,
         which indexes the binding at each index binding in turn.
+    carries : Callable[[str], bool] | None
+        Whether a binding leads with the run axis of one run of the
+        program. A gather is taken within the run: the run axis is
+        dropped from the table and the indices before indexing and
+        restored on the result, so an index never reads the run axis.
+        ``None`` treats no binding as carrying it.
 
     Returns
     -------
@@ -97,14 +115,67 @@ def _lookup_arg(
         if arg.name not in env:
             raise KeyError(arg.name)
         tensor = env[arg.name]
+        carried = carries is not None and carries(arg.name)
+        if carried:
+            tensor = tensor[0]
         for ix in arg.indices:
             if ix not in env:
                 raise KeyError(ix)
-            tensor = tensor[env[ix]]
-        return tensor
+            index = env[ix]
+            if carries is not None and carries(ix):
+                index = index[0]
+                carried = True
+            tensor = tensor[index]
+        return tensor.unsqueeze(0) if carried else tensor
     if arg in env:
         return env[arg]
     raise KeyError(arg)
+
+
+def _arg_carries(arg: StepArgument, carries: Callable[[str], bool]) -> bool:
+    """Whether an argument's value leads with the run axis of one run.
+
+    Parameters
+    ----------
+    arg : StepArgument
+        A binding's name, or a gather of one.
+    carries : Callable[[str], bool]
+        Whether a binding leads with the run axis.
+
+    Returns
+    -------
+    bool
+        For a name, its flag; for a gather, whether the table or any
+        index carries the run axis, which the gathered value then keeps.
+    """
+    if isinstance(arg, Indexed):
+        return carries(arg.name) or any(carries(ix) for ix in arg.indices)
+    return carries(arg)
+
+
+def _argument_widths(domain: AnySpace, count: int) -> tuple[int | None, ...]:
+    """The event width of each argument a morphism's domain reads.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The morphism's domain.
+    count : int
+        How many arguments the step passes.
+
+    Returns
+    -------
+    tuple[int | None, ...]
+        One width per argument: the whole domain's for a single
+        argument, a product factor's for each of as many arguments as
+        the product has factors, and ``None`` where the domain does not
+        split that way.
+    """
+    if count == 1:
+        return (_event_dim(domain),)
+    if isinstance(domain, ProductSpace) and len(domain.components) == count:
+        return tuple(_event_dim(component) for component in domain.components)
+    return (None,) * count
 
 
 def _bound_names(step: Step) -> tuple[str, ...]:
@@ -122,9 +193,108 @@ def _bound_names(step: Step) -> tuple[str, ...]:
     """
     if isinstance(step, Draw | Observe):
         return step.names
-    if isinstance(step, Let | Score):
+    if isinstance(step, Let | Score | Call | Scan):
         return (step.name,)
     raise TypeError(f"{type(step).__name__} is not a program step")
+
+
+def _runs_a_scan(morphism: ContinuousMorphism | Morphism) -> bool:
+    """Whether a morphism runs a scan.
+
+    Parameters
+    ----------
+    morphism : ContinuousMorphism | Morphism
+        A draw's morphism.
+
+    Returns
+    -------
+    bool
+        ``True`` for a [`ScanMorphism`][quivers.continuous.ScanMorphism],
+        or a composition with one among its factors.
+    """
+    if isinstance(morphism, ScanMorphism):
+        return True
+    if isinstance(morphism, SampledComposition):
+        return any(_runs_a_scan(factor) for factor in morphism.factors)
+    return False
+
+
+def _check_call(step: Call) -> MonadicProgram:
+    """Check a call step's callee against its arguments.
+
+    Parameters
+    ----------
+    step : Call
+        The step.
+
+    Returns
+    -------
+    MonadicProgram
+        The callee.
+
+    Raises
+    ------
+    ValueError
+        If the callee is not a program returning one value, or the
+        arguments do not match its parameters.
+    """
+    callee = step.program
+    if not isinstance(callee, MonadicProgram) or not callee._return_is_single:
+        raise ValueError(
+            f"call {step.name!r}: the callee must be a MonadicProgram returning "
+            f"one value"
+        )
+    arity = len(callee._params) if callee._params is not None else 1
+    if len(step.args) != arity:
+        raise ValueError(
+            f"call {step.name!r}: the callee takes {arity} argument(s), "
+            f"got {len(step.args)}"
+        )
+    return callee
+
+
+def _check_scan(step: Scan) -> MonadicProgram:
+    """Check a scan step's step program and initial state.
+
+    Parameters
+    ----------
+    step : Scan
+        The step.
+
+    Returns
+    -------
+    MonadicProgram
+        The step program.
+
+    Raises
+    ------
+    ValueError
+        If the step program is not a program of an entry and a state
+        returning one value, or the initial state is not a vector of
+        the state's width.
+    """
+    body = step.step
+    if (
+        not isinstance(body, MonadicProgram)
+        or body._params is None
+        or len(body._params) != 2
+        or not body._return_is_single
+    ):
+        raise ValueError(
+            f"scan {step.name!r}: the step must be a MonadicProgram of two "
+            f"parameters, the entry and the previous state, returning the "
+            f"next state"
+        )
+    if step.initial is not None:
+        width = getattr(body.codomain, "dim", None)
+        if step.initial.dim() != 1 or (
+            width is not None and int(step.initial.shape[0]) != int(width)
+        ):
+            raise ValueError(
+                f"scan {step.name!r}: the initial state has shape "
+                f"{tuple(step.initial.shape)}, not the ({width},) of the state"
+            )
+    return body
 
 
 def _parameter_dtype(parts: Sequence[torch.Tensor]) -> torch.dtype:
@@ -243,7 +413,8 @@ class ProgramEvaluator(Protocol):
         Returns
         -------
         torch.Tensor
-            The joint log density.
+            The joint log density of each run of the input, shape
+            ``(B,)``.
         """
         ...
 
@@ -318,6 +489,19 @@ class MonadicProgram(ContinuousMorphism):
         The declared effect row (``Sample``, ``Score``, ``Marginal``,
         ``Pure``), or ``None`` when unannotated.
 
+    Attributes
+    ----------
+    host_data_types : dict[str, TypeExpr]
+        The checked type of each host datum the program reads by name,
+        keyed by name. The DSL compiler fills it from the program's
+        checked elaboration; a run refuses a supplied datum whose shape
+        or element type does not inhabit its entry. Empty for a program
+        built directly, whose data carry no checked contract.
+    host_data_shared : frozenset[str]
+        The host data whose checked type leads with the plate of the
+        draw they fill; each may also be supplied without that axis, as
+        one value every row shares.
+
     Raises
     ------
     ValueError
@@ -345,6 +529,8 @@ class MonadicProgram(ContinuousMorphism):
         # (Sample / Score / Marginal / Pure) for introspection by
         # downstream inference / dispatch code.
         self.effect_set: frozenset[str] | None = effect_set
+        self.host_data_types: dict[str, TypeExpr] = {}
+        self.host_data_shared: frozenset[str] = frozenset()
         # compute input component dimensions for param splitting
         if params is not None and len(params) > 1:
             self._param_dims = self._compute_component_dims(domain)
@@ -366,10 +552,24 @@ class MonadicProgram(ContinuousMorphism):
                         f"two {step.kind} steps bind {step.names[0]!r}; each "
                         f"draw or observe binds a name no other one does"
                     )
+                if _runs_a_scan(step.morphism):
+                    # Drawn as one opaque sample, the scan's per-position
+                    # sites would be neither traced nor scored.
+                    raise ValueError(
+                        f"{step.kind} {step.names[0]!r} draws from a scan; "
+                        f"bind it with a Scan step, which runs the step's "
+                        f"sites as sites of this program"
+                    )
                 # A backend-agnostic `Morphism` registers through its
                 # parameter container, which keeps the morphism under
                 # ``_morphism`` for `extract_morphism`.
                 self.add_module(key, as_torch_module(step.morphism))
+            elif isinstance(step, Call):
+                self.add_module(f"_call_{step.name}", _check_call(step))
+            elif isinstance(step, Scan):
+                self.add_module(f"_scan_{step.name}", _check_scan(step))
+                if isinstance(step.initial, nn.Parameter):
+                    self.register_parameter(f"_scan_{step.name}_init", step.initial)
         self._steps: tuple[Step, ...] = tuple(steps)
 
     @property
@@ -474,6 +674,7 @@ class MonadicProgram(ContinuousMorphism):
         spec: Draw | Observe,
         x: torch.Tensor,
         env: dict[str, torch.Tensor],
+        carries: Callable[[str], bool] | None = None,
     ) -> torch.Tensor:
         """Resolve the input tensor for a draw step.
 
@@ -485,6 +686,9 @@ class MonadicProgram(ContinuousMorphism):
             The raw program input.
         env : dict[str, torch.Tensor]
             Current variable environment.
+        carries : Callable[[str], bool] | None
+            Whether a binding leads with the run axis, which a gathered
+            argument indexes past.
 
         Returns
         -------
@@ -503,8 +707,22 @@ class MonadicProgram(ContinuousMorphism):
         # shared ``(D,)`` vector or a per-row ``(N, D)`` block.
         # Any other single argument passes through, promoted to a column
         # when it is a rank-1 float.
-        parts = [_lookup_arg(env, a) for a in spec.args]
+        parts = [_lookup_arg(env, a, carries) for a in spec.args]
         morph = self._modules.get(step_key(spec))
+        if carries is not None and isinstance(morph, PlateDraw | VectorisedObserve):
+            # A plate's parameters are read along its rows within one
+            # run: the run axis a value carries is not one of its rows.
+            # A value holding one event of its domain factor is a single
+            # input every row shares, and keeps its leading axis.
+            widths = _argument_widths(morph.domain, len(parts))
+            parts = [
+                part
+                if not _arg_carries(arg, carries)
+                or (width is not None and part[0].numel() == width)
+                else part[0]
+                for part, arg, width in zip(parts, spec.args, widths, strict=True)
+            ]
+            carries = None
         event_ranks = getattr(morph, "_param_event_ranks", None)
         param_spec = getattr(morph, "_param_spec", None)
         if event_ranks is not None and param_spec is not None:
@@ -515,6 +733,15 @@ class MonadicProgram(ContinuousMorphism):
                 None if v is None else int(v) for k, v in param_spec if k == "var"
             )
             if len(var_ranks) == len(parts):
+                if carries is not None:
+                    # A vector parameter is read at one run's layout:
+                    # the run axis a value carries is not a row of it.
+                    parts = [
+                        part[0] if rank >= 1 and _arg_carries(arg, carries) else part
+                        for part, rank, arg in zip(
+                            parts, var_ranks, spec.args, strict=True
+                        )
+                    ]
                 return self._stack_params(parts, var_ranks, var_dims)
         if len(parts) == 1:
             return self._promote_rank(parts[0])
@@ -551,6 +778,18 @@ class MonadicProgram(ContinuousMorphism):
                     shaped.append(tf.reshape(1, -1))
                 else:
                     shaped.append(tf.reshape(tf.shape[0], -1))
+            elif dim is not None:
+                # A parameter of declared per-row width: its entries are
+                # rows of that width, however many leading axes carry
+                # them (a value drawn under the program's batch axis
+                # arrives as ``(1, N)`` for ``N`` rows of one column).
+                if tf.numel() % dim != 0:
+                    raise RuntimeError(
+                        f"_stack_params: a parameter of declared width {dim} "
+                        f"holds {tf.numel()} entries, which are no whole "
+                        f"number of rows of that width"
+                    )
+                shaped.append(tf.reshape(-1, dim))
             else:
                 # Per-row scalar.
                 if tf.dim() == 0:
@@ -632,7 +871,9 @@ class MonadicProgram(ContinuousMorphism):
         dtype = _parameter_dtype(parts)
         expanded = []
         for p in parts:
-            if p.dim() == 1:
+            if p.dim() == 0:
+                expanded.append(p.reshape(1, 1).to(dtype))
+            elif p.dim() == 1:
                 expanded.append(p.unsqueeze(-1).to(dtype))
             else:
                 expanded.append(p.to(dtype))
@@ -701,14 +942,23 @@ class MonadicProgram(ContinuousMorphism):
 
     @property
     def observed_names(self) -> set[str]:
-        """Return the set of variable names marked as observed in the DSL."""
-        names = set()
+        """The names the program's observations are supplied under.
 
+        Returns
+        -------
+        set[str]
+            The names of the program's ``observe`` steps, with those of
+            the programs its [`Call`][quivers.continuous.Call] and
+            [`Scan`][quivers.continuous.Scan] steps run in place.
+        """
+        names: set[str] = set()
         for spec in self._steps:
             if isinstance(spec, Observe):
-                for v in spec.names:
-                    names.add(v)
-
+                names.update(spec.names)
+            elif isinstance(spec, Call):
+                names |= _check_call(spec).observed_names
+            elif isinstance(spec, Scan):
+                names |= _check_scan(spec).observed_names
         return names
 
     def rsample(  # type: ignore[override]
@@ -726,7 +976,9 @@ class MonadicProgram(ContinuousMorphism):
         Parameters
         ----------
         x : torch.Tensor
-            Program input.
+            Program input. Its ``B`` rows are ``B`` independent runs of
+            the program, whose outputs stack along a leading run axis
+            (ahead of a plated value's rows).
         sample_shape : torch.Size
             Additional leading sample dimensions; each element is one
             independent run of the program.
@@ -846,19 +1098,28 @@ class MonadicProgram(ContinuousMorphism):
         its given value, under the active handler stack, so the joint
         is the one [`trace`][quivers.inference.trace.trace] reports.
 
+        An input of ``B`` rows is ``B`` independent runs of the whole
+        program, and the joint is one number per run; the joint of all
+        the runs is the sum of the result. The rows the program
+        observes come from its data and its plates, not from the input,
+        so a program whose observations live in a plate is scored on a
+        one-row input.
+
         Parameters
         ----------
         x : torch.Tensor
-            Program input.
+            Program input, one row per run.
         intermediates : dict[str, torch.Tensor]
             Values for ALL bound variables (keyed by variable name
             or by return label if labels are set), together with any
-            host data the steps read by name.
+            host data the steps read by name. A value is given either
+            once per run, along a leading axis of length ``B``, or once
+            for every run to share.
 
         Returns
         -------
         torch.Tensor
-            Joint log-density. Shape (batch,).
+            The joint log-density of each run, shape ``(B,)``.
 
         Raises
         ------
@@ -873,6 +1134,11 @@ class MonadicProgram(ContinuousMorphism):
         for s in self._steps:
             if isinstance(s, Score):
                 parts.append(f"score {s.name} = {s.score}")
+            elif isinstance(s, Call):
+                parts.append(f"let {s.name} <- call({', '.join(s.args)})")
+            elif isinstance(s, Scan):
+                source = s.source if s.source is not None else "input"
+                parts.append(f"let {s.name} = scan({source})")
             elif isinstance(s, Let):
                 parts.append(f"let {s.name} = {s.value}")
             elif isinstance(s, Draw | Observe):

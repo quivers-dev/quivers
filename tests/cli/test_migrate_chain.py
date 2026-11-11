@@ -648,3 +648,66 @@ def test_windows_compile_commands_emit_dlls_without_posix_flags() -> None:
     assert "-shared" in mingw
     assert "-fPIC" not in mingw
     assert mingw[-1].endswith("qvr.dll")
+
+
+@pytest.mark.parametrize("machine", ["arm64", "x86_64"])
+def test_macos_compile_command_builds_for_the_loading_architecture(
+    machine: str,
+) -> None:
+    src = Path("/qvr/src")
+    command = _grammar._compile_command(
+        "cc",
+        src,
+        (src / "parser.c",),
+        Path("/cache/build/qvr.dylib"),
+        platform_name="darwin",
+        machine=machine,
+    )
+    position = command.index("-arch")
+    assert command[position + 1] == machine
+
+
+def test_linux_compile_command_names_no_architecture() -> None:
+    src = Path("/qvr/src")
+    command = _grammar._compile_command(
+        "cc",
+        src,
+        (src / "parser.c",),
+        Path("/cache/build/qvr.so"),
+        platform_name="linux",
+        machine="x86_64",
+    )
+    assert "-arch" not in command
+
+
+def test_compiled_parsers_are_cached_per_architecture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    src = snapshot / "source/src"
+    src.mkdir(parents=True)
+    (src / "parser.c").write_text("/* parser */", encoding="utf-8")
+    (src / "grammar.json").write_text("{}", encoding="utf-8")
+    (src / "node-types.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(
+        _grammar.tempfile, "gettempdir", lambda: str(tmp_path / "cache")
+    )
+    monkeypatch.setattr(_grammar, "_compiler_for_platform", lambda: "/usr/bin/cc")
+    built: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        built.append(command)
+        Path(command[-1]).write_bytes(b"shared-library")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(_grammar.subprocess, "run", fake_run)
+    paths = []
+    for machine in ("arm64", "x86_64"):
+        monkeypatch.setattr(_grammar.platform, "machine", lambda m=machine: m)
+        paths.append(_grammar._compile_parser(snapshot, "v0.test"))
+    assert paths[0] != paths[1]
+    assert paths[0].parent.name.endswith("-arm64")
+    assert paths[1].parent.name.endswith("-x86_64")
+    assert len(built) == 2

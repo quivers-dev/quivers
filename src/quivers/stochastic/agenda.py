@@ -1474,7 +1474,7 @@ class DeductionSystem:
         """Yield every learnable parameter owned by this system.
 
         Walks the optional ``_axiom_module`` (lexicon log-weights)
-        and ``_rule_module`` (per-rule, per-binding log-weights)
+        and ``_rule_module`` (per-rule log-weights keyed by category bindings)
         submodules attached by the compiler. The ``recurse`` flag
         is the standard `torch.nn.Module.parameters` signature
         so user code can pass a ``DeductionSystem`` anywhere a

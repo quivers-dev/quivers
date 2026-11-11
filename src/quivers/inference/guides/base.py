@@ -10,6 +10,14 @@ ABC fixes a uniform contract:
   ``(batch, *B.shape)`` or ``(batch,)`` for scalar event shape).
 * `Guide.log_prob` evaluates the variational density of a
   per-site dict and returns a ``(batch,)``-shaped tensor.
+* `Guide.rsample_strata` returns weighted draws, each a `GuideDraw`
+  carrying its own guide log-density, whose weighted average
+  estimates expectations under the guide. The variational objectives
+  consume this method. A guide whose draws are not reparameterizable
+  as a whole (a finite mixture, whose component choice is discrete)
+  enumerates its discrete part exactly, and a guide whose density is
+  defined only along the path that produced a draw (`AutoDAIS`)
+  returns that path's density with the draw.
 
 Every concrete subclass under [`quivers.inference.guides`][quivers.inference.guides] is
 constructed against a `quivers.inference.registry.LatentRegistry`,
@@ -22,11 +30,43 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.registry import LatentRegistry
+
+# A module reference, resolved at call time: the effects package imports
+# this module while `quivers.inference.trace` is still initializing.
+import quivers.inference.trace as _trace
+
+
+class GuideDraw(ValueModel):
+    """One weighted draw from a guide, scored by the guide.
+
+    The site tensors, density, and weight compare by identity: two
+    draws are equal exactly when they hold the same tensor objects.
+
+    Parameters
+    ----------
+    sites
+        Per-site constrained values, shaped as `Guide.rsample`'s output.
+    log_density
+        The guide log-density of this draw, shape ``(batch,)``, with
+        gradients to the variational parameters through the draw and
+        directly. For most guides it is `Guide.log_prob` at ``sites``;
+        for `AutoDAIS` it is the extended-space density of the
+        trajectory that produced the draw.
+    log_weight
+        Scalar log-weight :math:`\\log \\omega` of the stratum the draw
+        represents; zero for a guide that is not stratified.
+    """
+
+    sites: dict[str, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_weight: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 class Guide(nn.Module, ABC):
@@ -46,12 +86,40 @@ class Guide(nn.Module, ABC):
         cls,
         model: MonadicProgram,
         observed_names: set[str] | frozenset[str],
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> LatentRegistry:
-        """Convenience wrapper around
-        `LatentRegistry.from_model` so guide constructors
-        can do ``self._registry = self.build_registry(model, obs)``
-        without an extra import."""
-        return LatentRegistry.from_model(model, observed_names)
+        """Build the latent registry a guide is constructed against.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model.
+        observed_names : set[str] | frozenset[str]
+            The names observed, for a registry read off the model's
+            steps.
+        x : torch.Tensor | None
+            A program input. When given, the registry is built from a
+            run of the model at ``x`` and ``observations`` with
+            `LatentRegistry.from_trace`, so every site the run reaches
+            is a latent, every position of a scan included; the run
+            draws from a forked stream, leaving Torch's global RNG as it
+            was. Required for a program that scans or calls a program
+            that draws.
+        observations : dict[str, torch.Tensor] | None
+            The observed values and host data of that run.
+
+        Returns
+        -------
+        LatentRegistry
+            The registry.
+        """
+        if x is None:
+            return LatentRegistry.from_model(model, observed_names)
+        with torch.random.fork_rng(devices=[]):
+            recorded = _trace.trace(model, x, observations=dict(observations or {}))
+        return LatentRegistry.from_trace(model, recorded)
 
     @property
     def registry(self) -> LatentRegistry:
@@ -78,6 +146,50 @@ class Guide(nn.Module, ABC):
         """
         ...
 
+    def rsample_strata(self, x: torch.Tensor) -> tuple[GuideDraw, ...]:
+        """Weighted reparameterized draws from :math:`q_\\phi(z \\mid x)`.
+
+        Returns one `GuideDraw` per stratum :math:`s`, with log-weight
+        :math:`\\log \\omega_s` and a draw :math:`z_s \\sim q_s`, such
+        that the strata partition the guide's density,
+        :math:`q_\\phi = \\sum_s \\omega_s\\, q_s` with
+        :math:`\\sum_s \\omega_s = 1`. Thus
+        :math:`\\sum_s \\omega_s f(z_s)` is an unbiased estimate of
+        :math:`\\mathbb{E}_{q_\\phi}[f(z)]` for every ``f``, and
+        :math:`\\sum_s \\omega_s\\, p(z_s) / q_\\phi(z_s)` is an
+        unbiased estimate of :math:`\\int p`. Each draw carries the guide
+        log-density the objectives pair it with. Gradients reach the
+        variational parameters through the reparameterized draws, the
+        densities, and the log-weights.
+
+        The default returns a single draw from `rsample` with log-weight
+        zero, scored by `log_prob`. A guide with a discrete choice inside
+        its sampler (such as `AutoMixtureGuide`) overrides it to
+        enumerate that choice; a guide without a density at arbitrary
+        points (such as `AutoDAIS`) overrides it to return the density
+        of the path that produced the draw.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input, as for `rsample`.
+
+        Returns
+        -------
+        tuple[GuideDraw, ...]
+            The ``S`` weighted draws; their log-weights have
+            ``logsumexp == 0``.
+        """
+        sites = self.rsample(x)
+        log_density = self.log_prob(x, sites)
+        return (
+            GuideDraw(
+                sites=sites,
+                log_density=log_density,
+                log_weight=torch.zeros((), device=x.device, dtype=log_density.dtype),
+            ),
+        )
+
     @abstractmethod
     def log_prob(
         self,
@@ -101,4 +213,4 @@ class Guide(nn.Module, ABC):
         ...
 
 
-__all__ = ["Guide"]
+__all__ = ["Guide", "GuideDraw"]

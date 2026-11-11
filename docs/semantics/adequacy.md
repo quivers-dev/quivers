@@ -53,10 +53,13 @@ Sampling from `f >> g` is ancestral: sample the intermediate value with `f.rsamp
 
 Density evaluation is different. `SampledComposition.log_prob` draws a fixed number of intermediate samples, evaluates the second density, and combines the values with `logsumexp - log(n)`. The density-scale average is a Monte Carlo estimator of the integral; taking its logarithm introduces finite-sample bias. The default sample count is 100. Increasing the sample count reduces Monte Carlo error; analytic compositions provide a reference for checking the estimator.
 
-`ScanMorphism.log_prob(x, y)` constructs the canonical reference trajectory
-ending at `y` and returns `log_joint` for that fixed trajectory. The marginal
-density of the final state would require summing or integrating these joint
-scores across all intermediate trajectories. A cell without a
+`ScanMorphism.log_prob(x, y)` scores a supplied trajectory `y`, one state per
+position, as the sum of its transition densities, which is how a scan inside a
+program scores the site it reaches at each position. A final state alone is
+refused: its density is the marginal over every earlier state, which would
+require summing or integrating the joint across all intermediate trajectories.
+A composition whose prefix runs a scan binds it to the trajectory its
+canonical coordinates select and scores that trajectory. A cell without a
 conditional density contributes zero instead.
 
 ## 4. Programs and data

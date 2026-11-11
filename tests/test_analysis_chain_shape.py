@@ -16,6 +16,9 @@ Coverage:
 """
 
 from __future__ import annotations
+
+import copy
+import pickle
 import textwrap
 
 import math
@@ -359,3 +362,41 @@ export f
         prog = loads(textwrap.dedent(src))
         raw = prog.morphism.raw.detach()
         assert torch.allclose(raw, torch.zeros_like(raw), atol=1e-5)
+
+
+class TestChainShapeValueSemantics:
+    def test_shapes_of_one_program_are_equal(self):
+        first = ChainShape.from_module(parse(SIMPLE_PROGRAM))
+        second = ChainShape.from_module(parse(SIMPLE_PROGRAM))
+        assert first == second
+        assert hash(first) == hash(second)
+
+    def test_cardinality_tables_enter_equality(self):
+        shape = ChainShape.from_module(parse(SIMPLE_PROGRAM))
+        changed = ChainShape(
+            algebra_name=shape.algebra_name,
+            object_cardinalities={"A": 4, "B": 5},
+            steps=shape.steps,
+        )
+        assert changed != shape
+        assert hash(changed) != hash(shape)
+
+    def test_cardinality_tables_compare_independently_of_order(self):
+        shape = ChainShape.from_module(parse(SIMPLE_PROGRAM))
+        reordered = ChainShape(
+            algebra_name=shape.algebra_name,
+            object_cardinalities={"B": 4, "A": 4},
+            steps=shape.steps,
+        )
+        assert reordered == shape
+        assert hash(reordered) == hash(shape)
+
+    def test_shapes_survive_copy_and_pickle(self):
+        shape = ChainShape.from_module(parse(SIMPLE_PROGRAM))
+        for clone in (
+            copy.copy(shape),
+            copy.deepcopy(shape),
+            pickle.loads(pickle.dumps(shape)),
+        ):
+            assert clone.object_cardinalities == {"A": 4, "B": 4}
+            assert clone == shape

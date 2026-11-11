@@ -80,6 +80,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginalize_body,
     marginalize_fibration,
 )
+from quivers.transpile.renderers._one_based import is_class_code_family
 from quivers.transpile.renderers._bugs_helpers import (
     TRUNCATION_FINGERPRINT,
     CategoricalMixture,
@@ -87,6 +88,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     factor_axis_sizes,
     factor_cells,
     half_support_truncation,
+    hoist_list_operands,
     index_letexpr_refs,
     list_cells,
     list_sizes,
@@ -500,6 +502,13 @@ class BUGSRenderer(RendererBase):
                 self._check_factor_plate(node, list_sizes(node.expr))
                 self._emit_cells(ctx, node, list_cells(node.expr, ()))
                 return
+            literals, node = hoist_list_operands(node, frozenset(ctx.decl_plates))
+            for literal in literals:
+                cells = literal.expr
+                assert isinstance(cells, LetExprList)
+                ctx.decl_plates[literal.name] = literal.plate
+                self._check_factor_plate(literal, list_sizes(cells))
+                self._emit_cells(ctx, literal, list_cells(cells, ()))
             self._emit_deterministic_node(ctx, node)
             return
         if isinstance(node, IRScore):
@@ -963,6 +972,38 @@ class BUGSRenderer(RendererBase):
         if node.family == "TruncatedNormal":
             self._emit_truncated_normal_native(ctx, node, loop_suffix)
             return
+        if is_class_code_family(node.family) and not observed:
+            # `dcat` draws a class counting from one; the program reads
+            # the draw as QVR's zero-based code.
+            code = f"{node.name}_code"
+            while code in ctx.decl_plates:
+                code = f"{code}_"
+            ctx.decl_plates[code] = node.plate
+            self._emit_relation(
+                ctx,
+                name=code,
+                family=node.family,
+                args=node.args,
+                arg_names=node.arg_names,
+                plate=node.plate,
+                via=None,
+                loop_suffix=loop_suffix,
+                observed=observed,
+            )
+            self._emit_deterministic_node(
+                ctx,
+                IRDeterministic(
+                    name=node.name,
+                    expr=LetExprBinOp(
+                        op="-",
+                        left=LetExprVar(name=code),
+                        right=LetExprLiteral(value=1.0, integral=True),
+                    ),
+                    constraint=node.constraint,
+                    plate=node.plate,
+                ),
+            )
+            return
         self._emit_relation(
             ctx,
             name=node.name,
@@ -1021,7 +1062,14 @@ class BUGSRenderer(RendererBase):
         different plate are rewritten as `<name>[via[loop]]`. This
         is the BUGS idiom for "observation `n` maps to latent group
         `via[n]`".
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the observation is a class code; see
+            `_refuse_observed_class_code`.
         """
+        _refuse_observed_class_code(self.target, node)
         if _is_wrapper_family_call(node.args):
             self._emit_truncated(
                 ctx,
@@ -1083,13 +1131,17 @@ class BUGSRenderer(RendererBase):
         ------
         UnsupportedConstruct
             If the block's rows fibre into its groups under a shared
-            prior, or the scope is no categorical mixture.
+            prior, the scope is no categorical mixture, or the scope
+            observes a class code (see `_refuse_observed_class_code`).
         """
         refuse_ungrouped_row_marginalize("qvr-bugs", node)
+        for inner in node.scope:
+            if isinstance(inner, IRObserve):
+                _refuse_observed_class_code(self.target, inner)
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=ctx.decl_plates),
+            support_size=marginal_support_size(node),
         )
         fibration = marginalize_fibration(
             node,
@@ -2351,11 +2403,14 @@ class BUGSRenderer(RendererBase):
                 auto_leading.append(_IndexPiece.ident(loop_var))
                 continue
             # No surrounding loop on this axis. If the enclosing
-            # observe has a via fibration, apply it.
+            # observe has a via fibration, apply it; the fibration
+            # holds zero-based QVR group codes.
             if ctx.via is not None and ctx.enclosing_loop_names:
                 via_inner = ctx.enclosing_loop_names[-1]
                 auto_leading.append(
-                    _IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),))
+                    _IndexPiece.shifted(
+                        _IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),))
+                    )
                 )
                 continue
             # Otherwise the reference is degenerate; emit the axis
@@ -2426,9 +2481,14 @@ class BUGSRenderer(RendererBase):
             inner_plate = ctx.decl_plates.get(arg.name)
             if inner_plate is None or not inner_plate.batch_dims:
                 if not arg.indices:
-                    return _IndexPiece.ident(arg.name)
-                children = tuple(self._user_index_piece(ctx, ix) for ix in arg.indices)
-                return _IndexPiece.indexed_pieces(arg.name, children)
+                    piece = _IndexPiece.ident(arg.name)
+                else:
+                    children = tuple(
+                        self._user_index_piece(ctx, ix) for ix in arg.indices
+                    )
+                    piece = _IndexPiece.indexed_pieces(arg.name, children)
+                # A program value holds a zero-based QVR code.
+                return piece if inner_plate is None else _IndexPiece.shifted(piece)
             # arg has declared batch dims: build nested indexing.
             sub: list[_IndexPiece] = []
             for dim in inner_plate.batch_dims:
@@ -2439,12 +2499,16 @@ class BUGSRenderer(RendererBase):
                     continue
                 if ctx.via is not None and ctx.enclosing_loop_names:
                     via_inner = ctx.enclosing_loop_names[-1]
-                    sub.append(_IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),)))
+                    sub.append(
+                        _IndexPiece.shifted(
+                            _IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),))
+                        )
+                    )
                     continue
                 sub.append(_IndexPiece.ident(axis))
             for ix in arg.indices:
                 sub.append(self._user_index_piece(ctx, ix))
-            return _IndexPiece.indexed_pieces(arg.name, tuple(sub))
+            return _IndexPiece.shifted(_IndexPiece.indexed_pieces(arg.name, tuple(sub)))
         raise UnsupportedConstruct(
             f"qvr-{self.target}",
             [f"user-index:{type(arg).__name__}"],
@@ -2791,7 +2855,7 @@ class _IndexPiece:
     indexed-variable form (`indexed`) with nested pieces.
     """
 
-    kind: Literal["ident", "number", "indexed"]
+    kind: Literal["ident", "number", "indexed", "shifted"]
     text: str
     children: tuple[_IndexPiece | _LoopRef, ...] = ()
 
@@ -2810,6 +2874,22 @@ class _IndexPiece:
         return cls(kind="indexed", text=name, children=children)
 
     @classmethod
+    def shifted(cls, inner: _IndexPiece) -> _IndexPiece:
+        """The subscript `<inner> + 1`: a zero-based QVR code read from one.
+
+        Parameters
+        ----------
+        inner : _IndexPiece
+            The piece holding the code.
+
+        Returns
+        -------
+        _IndexPiece
+            The shifted piece.
+        """
+        return cls(kind="shifted", text="+", children=(inner,))
+
+    @classmethod
     def indexed_pieces(
         cls, name: str, children: tuple[_IndexPiece, ...]
     ) -> _IndexPiece:
@@ -2824,6 +2904,18 @@ class _IndexPiece:
             ctx.sb.vertex(nid, "number")
             ctx.sb.constraint(nid, "literal-value", self.text)
             return nid, "number"
+        if self.kind == "shifted":
+            (inner,) = self.children
+            assert isinstance(inner, _IndexPiece)
+            inner_id, _inner_kind = inner.emit(ctx, renderer)
+            one_id, _one_kind = _IndexPiece.number("1").emit(ctx, renderer)
+            be_id = renderer._fresh(ctx, "be")
+            ctx.sb.vertex(be_id, "binary_expression")
+            ctx.sb.constraint(be_id, "field:operator", "+")
+            ctx.sb.constraint(be_id, "chose-alt-fingerprint", "+")
+            ctx.sb.edge(be_id, inner_id, "left")
+            ctx.sb.edge(be_id, one_id, "right")
+            return be_id, "binary_expression"
         # indexed:
         iv_id = renderer._fresh(ctx, "iv")
         ctx.sb.vertex(iv_id, "indexed_variable")
@@ -2840,6 +2932,42 @@ class _IndexPiece:
             cid, kind = child.emit(ctx, renderer)
             ctx.sb.edge(il_id, cid, kind)
         return iv_id, "indexed_variable"
+
+
+def _refuse_observed_class_code(target: str, node: IRObserve) -> None:
+    """Refuse an observed class code, which BUGS cannot score as QVR codes it.
+
+    The observed data holds QVR's zero-based class codes, and `dcat`
+    counts classes from one. JAGS binds the one-based code in its
+    `data { ... }` block; the BUGS language has no such block, cannot
+    give a logical node computed from data a distribution of its own,
+    and cannot add the written-out log-probability to the joint without
+    a data-bound zeros-trick carrier (see `_NO_BUGS_FREE_DENSITY_TERM`),
+    so no emitted relation scores the codes the data holds.
+
+    Parameters
+    ----------
+    target : str
+        The target being rendered.
+    node : IRObserve
+        The observation.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the observation's family is a class-index family.
+    """
+    if not is_class_code_family(node.family):
+        return
+    raise UnsupportedConstruct(
+        f"qvr-{target}",
+        [
+            f"observe:class-code:{node.name}: the data codes {node.family} "
+            f"classes from zero and `dcat` reads them from one; BUGS has no "
+            f"data block to shift the observed codes and no free "
+            f"log-density statement to score them otherwise"
+        ],
+    )
 
 
 def _is_wrapper_family_call(args: tuple[IRArg, ...]) -> bool:

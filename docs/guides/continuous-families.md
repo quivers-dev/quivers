@@ -255,6 +255,23 @@ parameter is learned from the input by the family's parameter
 network (concentration 1 gives the uniform distribution over
 correlation matrices).
 
+Draws use the onion method of section 3.2 of
+[@lewandowski2009lkj]: row
+$k$ of the factor (counting from zero) is
+$(\sqrt{y}\, u, \sqrt{1 - y})$ with
+$y \sim \mathrm{Beta}(k/2, \eta + (d - 1 - k)/2)$ and $u$ uniform on
+the unit sphere in $\mathbb{R}^k$. Every off-diagonal correlation $r$
+of a $d \times d$ draw thus has
+$(r + 1)/2 \sim \mathrm{Beta}(\eta - 1 + d/2, \eta - 1 + d/2)$. The
+compiled runtime, every factory over the family (the fixed and
+variable-concentration forms, a plate over it, and
+[`LKJCorrelationFactor`][quivers.continuous.families.LKJCorrelationFactor]),
+and the QIEC reference machine all draw through one implementation of
+this construction, so a program's prior draws follow the same law in
+both runtimes. `rsample` is differentiable in the concentration
+through implicitly reparameterized Beta draws; the directions $u$ do
+not depend on it. The log density is torch's `LKJCholesky.log_prob`.
+
 ### Wishart
 
 ```python

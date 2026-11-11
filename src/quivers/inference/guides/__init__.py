@@ -26,7 +26,7 @@ from quivers.inference.guides.auto_structured import (
     DependencyKind,
     DependencySpec,
 )
-from quivers.inference.guides.base import Guide
+from quivers.inference.guides.base import Guide, GuideDraw
 from quivers.inference.guides.delta import AutoDeltaGuide
 from quivers.inference.guides.flow import (
     AutoIAFGuide,
@@ -61,6 +61,7 @@ AutoIAFNormal = AutoIAFGuide
 
 __all__ = [
     "Guide",
+    "GuideDraw",
     "AutoNormalGuide",
     "AutoMultivariateNormalGuide",
     "AutoLowRankMultivariateNormalGuide",

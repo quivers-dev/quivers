@@ -78,6 +78,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import (
     IRArg,
     LetAffineSource,
@@ -94,6 +95,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
+from quivers.transpile.renderers._one_based import one_based_subscript
 
 
 @runtime_checkable
@@ -137,6 +139,12 @@ class JuliaShapes:
 
     `nested_names` identifies bindings emitted as nested vector literals, whose
     indices are chained as ``t[i][j]`` rather than emitted as ``t[i, j]``.
+    `program_values` names every input, site, and binding of the program: a
+    plan argument's subscript that reads one holds a zero-based QVR value,
+    which Julia reads one higher.
+    `row_arrays` maps each binding stored as an array of event vectors to
+    the number of its outer array axes: a subscript into it reads those axes
+    first and then the event, as ``p[i, j][k]``.
     Defaults describe a standalone scalar expression with no declared plates.
     """
 
@@ -144,6 +152,8 @@ class JuliaShapes:
     name_array_rank: dict[str, int]
     nested_names: frozenset[str]
     batch_rank: int
+    program_values: frozenset[str]
+    row_arrays: dict[str, int]
 
     def __init__(
         self,
@@ -152,11 +162,15 @@ class JuliaShapes:
         name_array_rank: dict[str, int] | None = None,
         nested_names: frozenset[str] = frozenset(),
         batch_rank: int = 0,
+        program_values: frozenset[str] = frozenset(),
+        row_arrays: dict[str, int] | None = None,
     ) -> None:
         self.name_event_rank = dict(name_event_rank or {})
         self.name_array_rank = dict(name_array_rank or {})
         self.nested_names = nested_names
         self.batch_rank = batch_rank
+        self.program_values = program_values
+        self.row_arrays = dict(row_arrays or {})
 
     def scoped_to(self, batch_rank: int) -> JuliaShapes:
         """The same rank tables, scoped to a binding whose plate has
@@ -171,6 +185,8 @@ class JuliaShapes:
             name_array_rank=self.name_array_rank,
             nested_names=self.nested_names,
             batch_rank=batch_rank,
+            program_values=self.program_values,
+            row_arrays=self.row_arrays,
         )
 
 
@@ -181,7 +197,7 @@ _STANDALONE_SHAPES = JuliaShapes()
 
 @runtime_checkable
 class _JlShapeView(Protocol):
-    """The two rank tables the shape-inference walks read.
+    """The shape tables the shape-inference walks read.
 
     Satisfied by both
     `JuliaShapes`
@@ -191,6 +207,7 @@ class _JlShapeView(Protocol):
 
     name_event_rank: dict[str, int]
     name_array_rank: dict[str, int]
+    nested_names: frozenset[str]
 
 
 class _JlState:
@@ -220,6 +237,8 @@ class _JlState:
         self.name_array_rank = shapes.name_array_rank
         self.nested_names = shapes.nested_names
         self.batch_rank = shapes.batch_rank
+        self.program_values = shapes.program_values
+        self.row_arrays = shapes.row_arrays
         self.dotted = dotted
 
     def fresh(self, prefix: str) -> str:
@@ -249,6 +268,15 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
     "max": "maximum",
     "min": "minimum",
 }
+
+
+#: Let calls Julia spells under another name: integer division and
+#: remainder truncate toward zero, as Julia's `div` and `rem` do.
+_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem"}
+
+#: QVR builtins whose two-argument form is pointwise, which Julia spells
+#: as a broadcast call.
+_BINARY_POINTWISE_CALLS: frozenset[str] = frozenset({"max", "min"})
 
 
 def render_let_expr_julia(
@@ -282,8 +310,9 @@ def render_let_expr_julia(
 
 def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """True iff ``expr`` contracts an axis anywhere in its tree:
-    either a reduction over a positive-rank event axis, or the
-    matrix-vector product an affine parameter map denotes.
+    either a reduction along the last axis of an array with an event
+    axis or with two or more axes, or the matrix-vector product an
+    affine parameter map denotes.
 
     A binding whose body contracts an axis cannot be wrapped in
     Julia's ``@.`` macro: the macro broadcasts the contraction
@@ -293,11 +322,7 @@ def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     between the ``@.`` form and the explicitly dotted form.
     """
     if isinstance(expr, LetExprCall):
-        if (
-            expr.func in _AXIS_REDUCING_CALLS
-            and len(expr.args) == 1
-            and _infer_event_rank(ctx, expr.args[0]) > 0
-        ):
+        if _reduces_named_axis(ctx, expr.func, expr.args):
             return True
         return any(let_expr_has_axis_reduction(ctx, a) for a in expr.args)
     if isinstance(expr, LetExprBinOp):
@@ -357,7 +382,7 @@ def infer_array_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
         return infer_array_rank(ctx, expr.operand)
     if isinstance(expr, LetExprCall):
         inner = max((infer_array_rank(ctx, a) for a in expr.args), default=0)
-        if expr.func in _AXIS_REDUCING_CALLS:
+        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
             return max(0, inner - 1)
         return inner
     if isinstance(expr, LetExprIndex):
@@ -400,7 +425,7 @@ def _infer_event_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
     if isinstance(expr, LetExprUnaryOp):
         return _infer_event_rank(ctx, expr.operand)
     if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS:
+        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
             return 0
         return max((_infer_event_rank(ctx, a) for a in expr.args), default=0)
     if isinstance(expr, LetExprIndex):
@@ -418,7 +443,7 @@ def _render(ctx: _JlState, expr: LetExprNode) -> tuple[str, str]:
     """Recursive renderer returning ``(vertex_id, vertex_kind)`` so
     parents can populate ``chose-alt-child-kinds`` accurately."""
     if isinstance(expr, LetExprLiteral):
-        return _emit_literal(ctx, expr.value)
+        return _emit_literal(ctx, expr.value, integral=expr.integral)
     if isinstance(expr, LetExprString):
         return _emit_string(ctx, expr.value)
     if isinstance(expr, LetExprVar):
@@ -452,43 +477,55 @@ def _render(ctx: _JlState, expr: LetExprNode) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _emit_literal(ctx: _JlState, value: object) -> tuple[str, str]:
-    """Emit `integer_literal` for whole numbers, `float_literal` otherwise.
+def _emit_literal(
+    ctx: _JlState, value: float | int, *, integral: bool
+) -> tuple[str, str]:
+    """Emit an `integer_literal` or a `float_literal` of the literal's own type.
 
-    Whole-number floats (`1.0`, `2.0`) emit as `integer_literal` so
-    that array indices substituted from factor binders satisfy Julia's
-    `arr[Int]` typing rule.
+    An integral literal (a source integer, a factor binder's value, a
+    subscript, an axis count) is a Julia `Int`; every other literal is a
+    `Float64` spelled with its decimal point, so real arithmetic on
+    whole-number reals stays in floating point instead of wrapping
+    around past `typemax(Int)`.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    value : float | int
+        The literal's value.
+    integral : bool
+        Whether the literal is an integer.
+
+    Returns
+    -------
+    tuple[str, str]
+        The vertex and its kind.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If an integral literal's value is not a whole number.
     """
-    if isinstance(value, bool):
-        # `bool` is a subclass of `int` in Python; treat as integer.
+    if integral:
+        if not float(value).is_integer():
+            raise UnsupportedConstruct(
+                f"qvr-{_target(ctx)}-helper",
+                [
+                    f"let-expr:LetExprLiteral:{_target(ctx)}: integral literal "
+                    f"{value!r} is not a whole number"
+                ],
+            )
+        text = str(int(value))
         vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(int(value)))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(int(value)))
-        return vid, "integer_literal"
-    if isinstance(value, int):
-        vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(value))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(value))
-        return vid, "integer_literal"
-    if isinstance(value, float) and value.is_integer():
-        vid = ctx.v(ctx.fresh("il"), "integer_literal")
-        ctx.lit(vid, str(int(value)))
-        ctx.constraint(vid, "chose-alt-fingerprint", str(int(value)))
-        return vid, "integer_literal"
-    if isinstance(value, float):
-        text = repr(value)
-        vid = ctx.v(ctx.fresh("fl"), "float_literal")
         ctx.lit(vid, text)
         ctx.constraint(vid, "chose-alt-fingerprint", text)
-        return vid, "float_literal"
-    raise UnsupportedConstruct(
-        f"qvr-{_target(ctx)}-helper",
-        [
-            f"let-expr:LetExprLiteral:{_target(ctx)}: literal value "
-            f"{value!r} of type {type(value).__name__} has no Julia "
-            f"numeric literal representation"
-        ],
-    )
+        return vid, "integer_literal"
+    text = repr(float(value))
+    vid = ctx.v(ctx.fresh("fl"), "float_literal")
+    ctx.lit(vid, text)
+    ctx.constraint(vid, "chose-alt-fingerprint", text)
+    return vid, "float_literal"
 
 
 def _emit_string(ctx: _JlState, text: str) -> tuple[str, str]:
@@ -616,6 +653,39 @@ def _emit_binop(ctx: _JlState, expr: LetExprBinOp) -> tuple[str, str]:
     return vid, "binary_expression"
 
 
+def _emit_power(
+    ctx: _JlState, base: LetExprNode, exponent: LetExprNode
+) -> tuple[str, str]:
+    """Emit QVR's pointwise ``pow(base, exponent)`` as ``base .^ exponent``.
+
+    Julia's `Base` has no `pow` function; the power is the `^` operator,
+    and its broadcast form applies pointwise to arrays as to scalars.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    base : LetExprNode
+        The base.
+    exponent : LetExprNode
+        The exponent.
+
+    Returns
+    -------
+    tuple[str, str]
+        The `binary_expression` vertex and its kind.
+    """
+    left_vid, left_kind = _maybe_paren(ctx, _render(ctx, base))
+    op_vid, _op_kind = _emit_operator(ctx, ".^")
+    right_vid, right_kind = _maybe_paren(ctx, _render(ctx, exponent))
+    vid = ctx.v(ctx.fresh("be"), "binary_expression")
+    ctx.constraint(vid, "chose-alt-child-kinds", f"{left_kind} operator {right_kind}")
+    ctx.e(vid, left_vid, "child_of")
+    ctx.e(vid, op_vid, "child_of")
+    ctx.e(vid, right_vid, "child_of")
+    return vid, "binary_expression"
+
+
 def _emit_unary(ctx: _JlState, expr: LetExprUnaryOp) -> tuple[str, str]:
     """Emit a `unary_expression` whose children are ``operator <operand>``.
 
@@ -635,58 +705,57 @@ def _emit_unary(ctx: _JlState, expr: LetExprUnaryOp) -> tuple[str, str]:
     return vid, "unary_expression"
 
 
-def _sigmoid_expansion(arg: LetExprNode) -> LetExprNode:
-    """Rewrite ``sigmoid(x)`` to the arithmetic body ``1 / (1 + exp(-x))``.
-
-    Julia's `Base` carries no `sigmoid`; `StatsFuns.logistic` needs a
-    package import the probe container does not bring into `Main`. The
-    logit-link identity `1 / (1 + exp(-x))` is a closed-form Julia
-    expression that broadcasts elementwise under `@.`, so the renderer
-    expands the call into that body and lets the normal binop / unary
-    path parenthesise it.
-    """
-    return LetExprBinOp(
-        op="/",
-        left=LetExprLiteral(value=1.0),
-        right=LetExprBinOp(
-            op="+",
-            left=LetExprLiteral(value=1.0),
-            right=LetExprCall(func="exp", args=(LetExprUnaryOp(operand=arg),)),
-        ),
-    )
-
-
 def _emit_call(
     ctx: _JlState, func: str, args: tuple[LetExprNode, ...]
 ) -> tuple[str, str]:
     """Emit ``<func>(<arg_0>, <arg_1>, ...)`` as a `call_expression`
     whose children are ``identifier argument_list``.
 
-    QVR math primitives without a `Base` Julia counterpart are rewritten
-    to a closed-form body before emission: `sigmoid(x)` becomes
-    `1 / (1 + exp(-x))`.
+    A pointwise math builtin is called by the Julia function
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
+    names; a qualified name (`Turing.Distributions.SpecialFunctions.erf`)
+    is emitted whole.
 
-    A reduction primitive applied to an argument of positive event
-    rank routes to
-    `_emit_axis_reduction`
-    so it collapses the innermost axes instead of the whole array.
+    A reduction primitive collapses the last axis of its argument. An
+    argument with an event axis, or with two or more axes, routes to
+    `_emit_axis_reduction`, which names that axis; a nested tower
+    reduces each of its rows; a vector reduces whole, which is the
+    same.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`;
+    `pow(a, b)` emits the broadcast power `a .^ b`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
-    if func == "sigmoid" and len(args) == 1:
-        return _render(ctx, _sigmoid_expansion(args[0]))
-    if (
-        func in _AXIS_REDUCING_CALLS
-        and len(args) == 1
-        and _infer_event_rank(ctx, args[0]) > 0
-    ):
-        return _emit_axis_reduction(ctx, func, args[0], _infer_event_rank(ctx, args[0]))
+    if func == "pow" and len(args) == 2:
+        return _emit_power(ctx, args[0], args[1])
+    if _reduces_tower_rows(ctx, func, args):
+        return _emit_tower_row_reduction(ctx, func, args[0])
+    if _reduces_named_axis(ctx, func, args):
+        return _emit_axis_reduction(ctx, func, args[0], infer_array_rank(ctx, args[0]))
+    if func in _AXIS_REDUCING_CALLS and len(args) == 1 and ctx.dotted:
+        # A reduction of a vector reduces it whole; broadcasting the
+        # call would apply it to each entry and reduce nothing.
+        rendered_argument = _render(ctx, args[0])
+        callee_vid, _callee_kind = _emit_identifier(ctx, _AXIS_REDUCING_CALLS[func])
+        al_vid = _emit_argument_list(ctx, (rendered_argument,))
+        vid = ctx.v(ctx.fresh("ce"), "call_expression")
+        ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+        ctx.e(vid, callee_vid, "child_of")
+        ctx.e(vid, al_vid, "child_of")
+        return vid, "call_expression"
     rendered = tuple(_render(ctx, a) for a in args)
-    callee_vid, _callee_kind = _emit_identifier(ctx, func)
+    path = native_path(ctx.target, func, len(args))
+    callee_vid, callee_kind = _emit_identifier(
+        ctx, _JULIA_CALL_NAMES.get(func, func) if path is None else ".".join(path)
+    )
     al_vid = _emit_argument_list(ctx, rendered)
-    kind = "broadcast_call_expression" if ctx.dotted else "call_expression"
+    # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
+    # `max(a, b)` of two arrays compares them as wholes and returns one,
+    # so the binary form always broadcasts.
+    pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
+    kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
-    ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+    ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")
     ctx.e(vid, callee_vid, "child_of")
     ctx.e(vid, al_vid, "child_of")
     return vid, kind
@@ -743,41 +812,170 @@ def _emit_keyword_call(
     return vid, "call_expression"
 
 
+def _is_tower(ctx: _JlShapeView, expr: LetExprNode) -> bool:
+    """Whether an expression names a nested vector tower.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        True for a bare name the emit materialises as nested vectors.
+    """
+    return isinstance(expr, LetExprVar) and expr.name in ctx.nested_names
+
+
+def _reduces_tower_rows(
+    ctx: _JlShapeView, func: str, args: tuple[LetExprNode, ...]
+) -> bool:
+    """Whether a call reduces the rows of a nested vector tower.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    func : str
+        The callee.
+    args : tuple[LetExprNode, ...]
+        The arguments.
+
+    Returns
+    -------
+    bool
+        True for a one-argument reduction of a tower name.
+    """
+    return func in _AXIS_REDUCING_CALLS and len(args) == 1 and _is_tower(ctx, args[0])
+
+
+def _reduces_named_axis(
+    ctx: _JlShapeView, func: str, args: tuple[LetExprNode, ...]
+) -> bool:
+    """Whether a reduction must name the last axis of a dense array.
+
+    Parameters
+    ----------
+    ctx : _JlShapeView
+        The shape tables.
+    func : str
+        The callee.
+    args : tuple[LetExprNode, ...]
+        The arguments.
+
+    Returns
+    -------
+    bool
+        True for a one-argument reduction of an array, not a tower, that
+        has an event axis or two or more axes: Julia's `sum(x)` would
+        reduce every axis of it, not only the last.
+    """
+    return (
+        func in _AXIS_REDUCING_CALLS
+        and len(args) == 1
+        and not _is_tower(ctx, args[0])
+        and (_infer_event_rank(ctx, args[0]) > 0 or infer_array_rank(ctx, args[0]) >= 2)
+    )
+
+
+def _emit_tower_row_reduction(
+    ctx: _JlState, func: str, arg: LetExprNode
+) -> tuple[str, str]:
+    """Emit the reduction of each row of a two-level nested tower.
+
+    A tower over two binders is a vector of row vectors, so its last
+    axis is each row: the broadcast call `sum.(t)` reduces every row
+    and keeps one number per row.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    func : str
+        The QVR reduction.
+    arg : LetExprNode
+        The tower's name.
+
+    Returns
+    -------
+    tuple[str, str]
+        The broadcast call's vertex and kind.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the tower nests more than two levels, whose last axis lies
+        below a row.
+    """
+    if infer_array_rank(ctx, arg) != 2:
+        raise UnsupportedConstruct(
+            f"qvr-{ctx.target}-helper",
+            [
+                f"let-expr:axis-reduction:{ctx.target}: `{func}(...)` reduces the "
+                "last axis of a factor over more than two binders, which the "
+                "nested vector form has no single broadcast for"
+            ],
+        )
+    rendered = _render(ctx, arg)
+    callee_vid, _callee_kind = _emit_identifier(ctx, _AXIS_REDUCING_CALLS[func])
+    al_vid = _emit_argument_list(ctx, (rendered,))
+    vid = ctx.v(ctx.fresh("ce"), "broadcast_call_expression")
+    ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+    ctx.e(vid, callee_vid, "child_of")
+    ctx.e(vid, al_vid, "child_of")
+    return vid, "broadcast_call_expression"
+
+
 def _emit_axis_reduction(
     ctx: _JlState, func: str, arg: LetExprNode, rank: int
 ) -> tuple[str, str]:
-    """Emit a reduction of the innermost ``rank`` axes of ``arg``.
+    """Emit a reduction of the last axis of a ``rank``-axis ``arg``.
 
     Julia's `sum(x)` reduces every axis to a scalar and `@. sum(x)`
-    reduces none of them, so an event-axis reduction has to name the
-    axis: `sum(x, dims = d)` keeps the array rank and `dropdims`
-    removes the collapsed axis. Axes are collapsed innermost-first, so
-    each `dropdims` shifts the next axis into place without a tuple of
-    dimension indices.
+    reduces none of them, so a last-axis reduction has to name the
+    axis: `sum(x, dims = rank)` keeps the array rank and `dropdims`
+    removes the collapsed axis.
 
     The argument itself renders in dotted mode: it is the elementwise
     body the reduction consumes (`z_row .* w_row`), and the caller has
     already declined to wrap the binding in ``@.``.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    func : str
+        The QVR reduction.
+    arg : LetExprNode
+        The argument.
+    rank : int
+        Its number of axes; the last is reduced.
+
+    Returns
+    -------
+    tuple[str, str]
+        The reduction's vertex and kind.
     """
     julia_func = _AXIS_REDUCING_CALLS[func]
     outer = ctx.dotted
     ctx.dotted = True
     rendered = _render(ctx, arg)
     ctx.dotted = outer
-    for axis in range(ctx.batch_rank + rank, ctx.batch_rank, -1):
-        reduced = _emit_keyword_call(
-            ctx,
-            julia_func,
-            rendered,
-            (("dims", _emit_literal(ctx, axis)),),
-        )
-        rendered = _emit_keyword_call(
-            ctx,
-            "dropdims",
-            reduced,
-            (("dims", _emit_literal(ctx, axis)),),
-        )
-    return rendered
+    reduced = _emit_keyword_call(
+        ctx,
+        julia_func,
+        rendered,
+        (("dims", _emit_literal(ctx, rank, integral=True)),),
+    )
+    return _emit_keyword_call(
+        ctx,
+        "dropdims",
+        reduced,
+        (("dims", _emit_literal(ctx, rank, integral=True)),),
+    )
 
 
 def _emit_argument_list(ctx: _JlState, rendered: tuple[tuple[str, str], ...]) -> str:
@@ -829,12 +1027,20 @@ def _emit_index(ctx: _JlState, expr: LetExprIndex) -> tuple[str, str]:
     arr_vid, arr_kind = _render(ctx, expr.array)
     if arr_kind not in _JL_INDEX_CALLEE_KINDS:
         arr_vid, arr_kind = _force_paren(ctx, (arr_vid, arr_kind))
-    inner_rendered = tuple(_render(ctx, _rebase_literal_index(i)) for i in expr.indices)
+    inner_rendered = tuple(_render(ctx, one_based_subscript(i)) for i in expr.indices)
     if isinstance(expr.array, LetExprVar) and expr.array.name in ctx.nested_names:
         current = (arr_vid, arr_kind)
         for one in inner_rendered:
             current = _emit_subscript(ctx, current, (one,))
         return current
+    outer = (
+        ctx.row_arrays.get(expr.array.name)
+        if isinstance(expr.array, LetExprVar)
+        else None
+    )
+    if outer is not None and len(inner_rendered) > outer:
+        rows = _emit_subscript(ctx, (arr_vid, arr_kind), inner_rendered[:outer])
+        return _emit_subscript(ctx, rows, inner_rendered[outer:])
     residual = _residual_index_axes(ctx, expr)
     inner_rendered += tuple(_emit_operator(ctx, ":") for _ in range(residual))
     return _emit_subscript(ctx, (arr_vid, arr_kind), inner_rendered)
@@ -869,8 +1075,8 @@ def _emit_range(ctx: _JlState, lower: int, upper: int) -> tuple[str, str]:
     vid = ctx.v(ctx.fresh("rng"), "range_expression")
     ctx.constraint(vid, "chose-alt-fingerprint", ":")
     ctx.constraint(vid, "chose-alt-child-kinds", "integer_literal integer_literal")
-    lo_vid, _lo_kind = _emit_literal(ctx, float(lower))
-    hi_vid, _hi_kind = _emit_literal(ctx, float(upper))
+    lo_vid, _lo_kind = _emit_literal(ctx, lower, integral=True)
+    hi_vid, _hi_kind = _emit_literal(ctx, upper, integral=True)
     ctx.e(vid, lo_vid, "child_of")
     ctx.e(vid, hi_vid, "child_of")
     return vid, "range_expression"
@@ -996,22 +1202,6 @@ def _emit_affine_map(ctx: _JlState, expr: LetExprAffineMap) -> tuple[str, str]:
     ctx.e(vid, callee_vid, "child_of")
     ctx.e(vid, al_vid, "child_of")
     return vid, "broadcast_call_expression"
-
-
-def _rebase_literal_index(index: LetExprNode) -> LetExprNode:
-    """Shift a literal subscript from QVR's 0-based origin to Julia's.
-
-    Only a literal moves. A named index is either a factor binder,
-    which reaches this point already carrying the 0-based label its
-    axis assigns, or a covariate the probe harness lifts on the way
-    in; either way its value is already in the target's origin by the
-    time the subscript reads it.
-    """
-    if isinstance(index, LetExprLiteral) and not isinstance(index.value, bool):
-        value = index.value
-        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
-            return LetExprLiteral(value=float(value) + 1.0)
-    return index
 
 
 def _residual_index_axes(ctx: _JlState, expr: LetExprIndex) -> int:
@@ -1197,7 +1387,9 @@ def _build_nested_vector(
     if len(fixed) == len(binders):
         subst = body
         for binder, value in zip(binders, fixed, strict=True):
-            subst = _substitute(subst, binder.var, LetExprLiteral(value=value))
+            subst = _substitute(
+                subst, binder.var, LetExprLiteral(value=value, integral=True)
+            )
         return _render(ctx, subst)
     level = len(fixed)
     rendered: list[tuple[str, str]] = []

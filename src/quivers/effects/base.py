@@ -30,12 +30,14 @@ provenance.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import threading
 from typing import Self
 
 import torch
 
+from quivers.continuous.programs import MonadicProgram
 from quivers.effects.program_module import ProgramKernel
 from quivers.qiec.evaluator import RuntimeHandler, RuntimeRequest, RuntimeValidator
 from quivers.qiec.identifiers import HandlerId
@@ -92,6 +94,61 @@ class Contribution:
     path: tuple[str | int, ...] = ()
 
 
+def _shared_value(label: str, value: torch.Tensor) -> torch.Tensor:
+    """The value a run of a single-run call takes: the value itself.
+
+    Parameters
+    ----------
+    label : str
+        The site label, unused.
+    value : torch.Tensor
+        The value.
+
+    Returns
+    -------
+    torch.Tensor
+        ``value``.
+    """
+    del label
+    return value
+
+
+def _no_run_axis(program: MonadicProgram, name: str) -> bool:
+    """The default run-axis classifier, which marks no binding.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program, unused.
+    name : str
+        The binding, unused.
+
+    Returns
+    -------
+    bool
+        ``False``.
+    """
+    del program, name
+    return False
+
+
+def _no_site_run_axis(label: str) -> bool:
+    """The default site classifier, which marks no site.
+
+    Parameters
+    ----------
+    label : str
+        The site's label, unused.
+
+    Returns
+    -------
+    bool
+        ``False``.
+    """
+    del label
+    return False
+
+
 @dataclass(slots=True)
 class RunContext:
     """What one run shares with the handlers installed on it.
@@ -116,6 +173,29 @@ class RunContext:
     supplied
         Values standing in for let bindings, by name, which their steps
         read rather than compute.
+    occurrences
+        How many times the run has reached each site a scan reaches once
+        per position, by label.
+    reached
+        The addresses ``"<label>@<n>"`` of the occurrences reached.
+    run_index
+        The position of this run among the runs of one call: an input of
+        ``B`` rows runs the program once per row, ``0`` to ``B - 1``.
+    runs
+        The number of runs the call makes, ``B``.
+    slice_value
+        Maps a site label and a value given for every run of the call to
+        this run's value: the run's slice of a value laid out one per
+        run, or the value itself when every run shares it.
+    carries_run_axis
+        Whether a binding of a program, by name, carries this run's
+        leading axis of length one.
+    site_carries_run_axis
+        Whether a site's value in this run, by label, carries the run's
+        leading axis of length one.
+    vectorized
+        Whether this execution carries all ``runs`` runs of the call at
+        once, every value leading with the run axis of length ``runs``.
     """
 
     kernel: ProgramKernel
@@ -126,6 +206,14 @@ class RunContext:
     parameters: dict[str, torch.Tensor] = field(default_factory=dict)
     observations: dict[str, torch.Tensor] = field(default_factory=dict)
     supplied: dict[str, torch.Tensor] = field(default_factory=dict)
+    occurrences: dict[str, int] = field(default_factory=dict)
+    reached: set[str] = field(default_factory=set)
+    run_index: int = 0
+    runs: int = 1
+    slice_value: Callable[[str, torch.Tensor], torch.Tensor] = _shared_value
+    carries_run_axis: Callable[[MonadicProgram, str], bool] = _no_run_axis
+    site_carries_run_axis: Callable[[str], bool] = _no_site_run_axis
+    vectorized: bool = False
 
     @property
     def result_type(self) -> TypeExpr:

@@ -30,8 +30,8 @@ hole in it.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Sequence
-from dataclasses import fields, replace
+from collections.abc import Hashable, Iterator, Sequence
+from dataclasses import fields, is_dataclass, replace
 from typing import Literal, cast
 
 from torch.distributions import Distribution
@@ -76,6 +76,8 @@ from quivers.qiec.terms import (
     Gather,
     Handle,
     KernelMatrix,
+    LetBinding,
+    LetValue,
     LiteralValue,
     Local,
     LogDensity,
@@ -100,11 +102,12 @@ from quivers.qiec.terms import (
 from quivers.dsl.program_elaboration import GAP_CODE
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.dsl.qiec_lowering import (
+    _replace_locals,
     QiecDiagnosticError,
     has_qiec_surface,
     lower_qvr_to_qiec,
 )
-from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.types import (
     INT,
     IndexLiteral,
@@ -162,6 +165,7 @@ from quivers.transpile.lower import (
     _arg_names_for,
     _codomain_alphabet,
     _wrap_for_constraint,
+    axis_shape,
     _floor_expr,
     _head_binding_name,
     _head_raw_binding_name,
@@ -172,6 +176,7 @@ from quivers.transpile.lower import (
     pick_program,
 )
 from quivers.transpile.qiec_ir import IRQiecStatic, IRQiecValue, _convert, lower_qiec_ir
+from quivers.transpile._builtin_spellings import spell_builtin
 
 #: The registry's name for a structured family's constructor argument
 #: where the two differ.
@@ -180,6 +185,23 @@ _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kerne
 #: Primitives that are conversions the target's arithmetic performs on
 #: its own, so they read back as their operand.
 _TRANSPARENT: frozenset[str] = frozenset({"int_to_real", "as_weight", "weight_value"})
+
+#: Targets whose arithmetic keeps two integers integral: Stan's `/`
+#: truncates `int / int`. On them a conversion to real is not
+#: transparent, so `int_to_real(x)` reads back as `1.0 * x`, which is
+#: the same number and a real.
+_INTEGRAL_ARITHMETIC_TARGETS: frozenset[str] = frozenset({"stan"})
+
+#: Targets whose arithmetic does not promote an integer operand to a
+#: real one: TensorFlow refuses a product of a float and an int tensor.
+#: On them a conversion to real reads back as an explicit `real(x)`.
+_STRICT_DTYPE_TARGETS: frozenset[str] = frozenset({"edward2"})
+
+#: Integer division and remainder, which truncate toward zero. A target
+#: whose `/` and `%` on two integers do so reads them as the operators;
+#: every other target reads them as these calls, which each renderer
+#: spells with its own truncating division and remainder.
+_TRUNCATING_CALLS: dict[str, str] = {"div_int": "quot", "mod_int": "rem"}
 
 #: Unary primitives the expression language writes as operators.
 _UNARY_OPERATORS: dict[str, Literal["-", "not"]] = {
@@ -296,6 +318,249 @@ _VALUE_TYPES: tuple[type, ...] = tuple(
 )
 
 
+class _LetFloater:
+    """Hoist the bindings of every :class:`LetValue` in a value to the front.
+
+    A plan states a program as a sequence of target statements, and the
+    target expression vocabulary has no binding form, so a value's
+    shared intermediates become statements of their own ahead of the
+    statement that reads them. Each binding is hoisted once, under a
+    fresh name the targets accept, so a term that reads a binding many
+    times keeps its size on every target. A binding inside a
+    comprehension reads the comprehension's index, so it is hoisted as
+    the comprehension of its value over the same axis and each read
+    becomes that tensor at the index.
+
+    Parameters
+    ----------
+    occupied : set[str]
+        Every name the program already uses, which no hoisted binding
+        may take.
+    """
+
+    def __init__(self, occupied: set[str]) -> None:
+        self.occupied = occupied
+
+    def fresh(self, name: str) -> str:
+        """A name no statement of the program uses yet.
+
+        Parameters
+        ----------
+        name : str
+            The binder's name in the checked term.
+
+        Returns
+        -------
+        str
+            The name without its leading underscores, which several
+            targets reject, suffixed until it is unused.
+        """
+        base = name.lstrip("_") or "shared"
+        candidate = base
+        suffix = 0
+        while candidate in self.occupied:
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        self.occupied.add(candidate)
+        return candidate
+
+    def computation(
+        self, first: Computation
+    ) -> tuple[tuple[LetBinding, ...], Computation]:
+        """Hoist the bindings out of the values a statement reads.
+
+        Parameters
+        ----------
+        first : Computation
+            The computation one program statement performs.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Computation]
+            The hoisted bindings in evaluation order, and the
+            computation reading them by name. A computation other than
+            a return, a request, or a call is returned unchanged.
+        """
+        if isinstance(first, Return):
+            bindings, value = self.value(first.value, {})
+            return bindings, Return(value)
+        if isinstance(first, Perform):
+            bindings, arguments = self.values(first.request.arguments, {})
+            return bindings, Perform(replace(first.request, arguments=arguments))
+        if isinstance(first, Call):
+            bindings, arguments = self.values(first.arguments, {})
+            return bindings, replace(first, arguments=arguments)
+        return (), first
+
+    def values(
+        self, items: tuple[Value, ...], renamed: dict[Local, Value]
+    ) -> tuple[tuple[LetBinding, ...], tuple[Value, ...]]:
+        """Hoist the bindings out of several values in order.
+
+        Parameters
+        ----------
+        items : tuple[Value, ...]
+            The values.
+        renamed : dict[Local, Value]
+            The term each local bound by an enclosing hoisted binding is
+            read through once hoisted.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], tuple[Value, ...]]
+            The hoisted bindings, and the values reading them.
+        """
+        hoisted: list[LetBinding] = []
+        results: list[Value] = []
+        for item in items:
+            bindings, result = self.value(item, renamed)
+            hoisted.extend(bindings)
+            results.append(result)
+        return tuple(hoisted), tuple(results)
+
+    def value(
+        self, value: Value, renamed: dict[Local, Value]
+    ) -> tuple[tuple[LetBinding, ...], Value]:
+        """Hoist the bindings out of one value.
+
+        Parameters
+        ----------
+        value : Value
+            The value.
+        renamed : dict[Local, Value]
+            The term each local bound by an enclosing hoisted binding is
+            read through once hoisted.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Value]
+            The hoisted bindings in evaluation order, each reading only
+            program names and earlier hoisted bindings, and the value
+            with no ``LetValue`` left in it.
+        """
+        if isinstance(value, Var):
+            return (), renamed.get(value.local, value)
+        if isinstance(value, LetValue):
+            hoisted: list[LetBinding] = []
+            scope = dict(renamed)
+            for binding in value.bindings:
+                inner, bound = self.value(binding.value, scope)
+                hoisted.extend(inner)
+                local = Local(self.fresh(binding.binder.name), binding.binder.type)
+                hoisted.append(LetBinding(local, bound))
+                scope[binding.binder] = Var(local)
+            inner, body = self.value(value.body, scope)
+            return (*hoisted, *inner), body
+        if isinstance(value, Comprehension):
+            inner, body = self.value(value.body, renamed)
+            if not inner:
+                return (), replace(value, body=body)
+            return self._stacked(value, inner, body)
+        changes: dict[
+            str, Value | tuple[Value, ...] | tuple[tuple[str, Value], ...]
+        ] = {}
+        hoisted = []
+        for field in fields(value):
+            current = getattr(value, field.name)
+            if isinstance(current, _VALUE_TYPES):
+                inner, result = self.value(cast(Value, current), renamed)
+                hoisted.extend(inner)
+                changes[field.name] = result
+            elif isinstance(current, tuple) and current:
+                if all(isinstance(item, _VALUE_TYPES) for item in current):
+                    inner, results = self.values(
+                        cast(tuple[Value, ...], current), renamed
+                    )
+                    hoisted.extend(inner)
+                    changes[field.name] = results
+                elif all(
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and isinstance(item[1], _VALUE_TYPES)
+                    for item in current
+                ):
+                    pairs: list[tuple[str, Value]] = []
+                    for name, item in cast(tuple[tuple[str, Value], ...], current):
+                        inner, result = self.value(item, renamed)
+                        hoisted.extend(inner)
+                        pairs.append((name, result))
+                    changes[field.name] = tuple(pairs)
+        return tuple(hoisted), replace(value, **changes) if changes else value
+
+    def _stacked(
+        self,
+        value: Comprehension,
+        hoisted: tuple[LetBinding, ...],
+        body: Value,
+    ) -> tuple[tuple[LetBinding, ...], Value]:
+        """Hoist a comprehension body's bindings over the comprehension's axis.
+
+        Parameters
+        ----------
+        value : Comprehension
+            The comprehension.
+        hoisted : tuple[LetBinding, ...]
+            The bindings hoisted out of its body, which may read its
+            index.
+        body : Value
+            The body reading them.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], Value]
+            One binding per hoisted binding, holding the comprehension of
+            its value over the axis, and the comprehension whose body
+            reads each at the index.
+        """
+        index = Var(value.binder)
+        stacked: dict[Local, Value] = {}
+        lifted: list[LetBinding] = []
+        for binding in hoisted:
+            _, bound = self.value(binding.value, stacked)
+            element = binding.binder.type
+            split = tensor_shape(element)
+            tensor = (
+                tensor_type(element, (value.extent,))
+                if split is None
+                else tensor_type(split[0], (value.extent, *split[1]))
+            )
+            local = Local(binding.binder.name, tensor)
+            lifted.append(
+                LetBinding(
+                    local, Comprehension(value.binder, value.extent, bound, tensor)
+                )
+            )
+            stacked[binding.binder] = Gather(Var(local), index, element)
+        _, body = self.value(body, stacked)
+        return tuple(lifted), replace(value, body=body)
+
+
+def _local_names(term: Computation) -> set[str]:
+    """Every local name a checked term binds or reads.
+
+    Parameters
+    ----------
+    term : Computation
+        The computation, whose values and records are walked in turn.
+
+    Returns
+    -------
+    set[str]
+        The names.
+    """
+    found: set[str] = set()
+    pending: list[Hashable] = [term]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Local):
+            found.add(item.name)
+        elif isinstance(item, tuple):
+            pending.extend(item)
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.extend(getattr(item, field.name) for field in fields(item))
+    return found
+
+
 class _ProgramWalk:
     """The derivation of one program's body and inputs.
 
@@ -341,6 +606,11 @@ class _ProgramWalk:
         # The components of every local bound to a tuple of bindings,
         # which the plan holds as the bindings themselves.
         self.tuples: dict[str, tuple[Value, ...]] = {}
+        self.floater = _LetFloater(
+            _local_names(computation.body)
+            | {parameter.name for parameter in computation.parameters}
+            | set(self.site_steps)
+        )
 
     # ------------------------------------------------------------------
     # body
@@ -394,6 +664,10 @@ class _ProgramWalk:
                 )
                 continue
             binder = node.binder
+            shared, first = self.floater.computation(first)
+            for binding in shared:
+                self.local_types[binding.binder.name] = binding.binder.type
+                emitted.extend(self._deterministic(binding.binder, binding.value))
             self.local_types[binder.name] = binder.type
             if isinstance(first, Perform):
                 request = first.request
@@ -775,19 +1049,29 @@ class _ProgramWalk:
                     f"`sample {binder.name} <- {call.name}` to run it in place"
                 ],
             )
-        arguments = tuple(self._expr(argument) for argument in call.arguments)
-        inlined = _inline_pure(callee, arguments)
+        inlined = self._inlined(callee, call, binder)
         arguments_value = TupleValue(call.arguments, binder.type)
         axes = self._inferred_axes(binder.type, arguments_value)
         self.axes[binder.name] = axes
         plate = self._inferred_plate(binder.type, axes, arguments_value)
         self.bound_plates[binder.name] = plate
         if inlined is not None:
+            shared, result = inlined
+            nodes: list[IRNode] = []
+            for binding in shared:
+                self.local_types[binding.binder.name] = binding.binder.type
+                nodes.extend(self._deterministic(binding.binder, binding.value))
+            self.axes[binder.name] = axes
+            self.bound_plates[binder.name] = plate
             self.ctx.bound_kinds[binder.name] = "deterministic"
-            yield IRDeterministic(
-                name=binder.name, expr=inlined, constraint=CSReal(), plate=plate
+            nodes.append(
+                IRDeterministic(
+                    name=binder.name, expr=result, constraint=CSReal(), plate=plate
+                )
             )
+            yield from nodes
             return
+        arguments = tuple(self._expr(argument) for argument in call.arguments)
         allowed = {self.entry.random_instance, self.entry.score_instance}
         for row_entry in call.effects.entries:
             if row_entry.instance not in allowed:
@@ -807,6 +1091,49 @@ class _ProgramWalk:
             score_instance=str(self.entry.score_instance),
             plate=plate,
         )
+
+    def _inlined(
+        self, callee: NamedComputation, call: Call, binder: Local
+    ) -> tuple[tuple[LetBinding, ...], LetExprNode] | None:
+        """A pure computation's result at the call, as shared bindings.
+
+        A pure computation whose body is a chain of pure bindings is
+        inlined: its parameters are bound to the call's arguments and
+        each of its bindings to its value, as one
+        [`LetValue`][quivers.qiec.LetValue] that the plan's floater
+        hoists to statements of their own under fresh names. Each
+        binding is thus stated once, however many times the body reads
+        it, so the inlined code grows linearly in the computation's
+        size.
+
+        Parameters
+        ----------
+        callee : NamedComputation
+            The computation called.
+        call : Call
+            The call.
+        binder : Local
+            The local the call's result binds.
+
+        Returns
+        -------
+        tuple[tuple[LetBinding, ...], LetExprNode] | None
+            The hoisted bindings and the result's expression, or
+            ``None`` when the computation performs an effect, takes
+            static arguments, calls anything, or binds a value the
+            expression language has no form for; such a call is made
+            through the target's host runtime.
+        """
+        shared = _pure_body(callee, call.arguments, binder.type)
+        if shared is None:
+            return None
+        hoisted, result = self.floater.value(shared, {})
+        try:
+            for binding in hoisted:
+                self._expr(binding.value)
+            return hoisted, self._expr(result)
+        except UnsupportedConstruct:
+            return None
 
     def _marginalize(self, call: Call) -> IRMarginalize:
         """The scope a marginalization helper's call denotes.
@@ -868,6 +1195,9 @@ class _ProgramWalk:
         family, args, arg_names, plate, constraint = self._distribution(
             distribution, latent, marginalized=True
         )
+        constraint = self._enumerated_support(
+            latent, family, args, arg_names, constraint
+        )
         self.bound_plates[latent] = plate
         self.ctx.bound_kinds[latent] = "marginalize"
         self.axes[latent] = _dim_names(plate)
@@ -891,6 +1221,85 @@ class _ProgramWalk:
             scope=scope,
         )
         return node
+
+    def _enumerated_support(
+        self,
+        latent: str,
+        family: str,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        constraint: ConstraintSpec,
+    ) -> ConstraintSpec:
+        """The support a marginalized latent is enumerated over.
+
+        A family whose support is an integer range sized by its
+        arguments (Categorical's ``0 .. K - 1``) has that range read
+        off a placeholder instance, which is exact for literal
+        arguments but not for a reference to a bound name, whose
+        placeholder has no size of its own. The latent's atoms are
+        the elements of its declared index object, so a declared
+        index sizes the range; without one, the width of the
+        probability argument does, read off the referenced binding's
+        plate. A range neither determines is refused rather than
+        enumerated at a placeholder size.
+
+        Parameters
+        ----------
+        latent : str
+            The latent.
+        family : str
+            Its family.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+        arg_names : tuple[str, ...]
+            Their names.
+        constraint : ConstraintSpec
+            The support read off the placeholder instance.
+
+        Returns
+        -------
+        ConstraintSpec
+            The support, with an integer range's bounds taken from
+            the latent's index object or its probability argument.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the range depends on a referenced argument and neither
+            the declared index nor that argument's plate sizes it.
+        """
+        if not isinstance(constraint, CSIntegerInterval):
+            return constraint
+        if all(isinstance(arg, IRArgNumber | IRArgList) for arg in args):
+            return constraint
+        step = self.site_steps.get(latent)
+        if isinstance(step, MarginalizeStep) and step.index is not None:
+            size = axis_shape(step.index, dict(self.planner.cards))
+            if size is not None:
+                return CSIntegerInterval(lower=0, upper=size - 1)
+        named = dict(zip(arg_names, args, strict=True))
+        width_arg = named.get("probs", named.get("logits"))
+        width: int | None = None
+        if isinstance(width_arg, IRArgList):
+            width = len(width_arg.elements)
+        elif isinstance(width_arg, IRArgBroadcast) and width_arg.target_shape:
+            width = width_arg.target_shape[-1]
+        elif isinstance(width_arg, IRArgRef):
+            bound = self.bound_plates.get(width_arg.name)
+            if bound is not None:
+                axes = (*bound.batch_dims, *bound.event_dims)
+                if axes and isinstance(axes[-1], DimStatic):
+                    width = axes[-1].size
+        if width is None:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    f"marginalize:unknown-cardinality:{family}: the support "
+                    f"of `{latent}` depends on an argument whose size is not "
+                    f"static, and the latent declares no index object"
+                ],
+            )
+        return CSIntegerInterval(lower=0, upper=width - 1)
 
     def _scope_nodes(self, computation: Computation) -> Iterator[IRNode]:
         """The statements of a marginalization scope.
@@ -1017,7 +1426,7 @@ class _ProgramWalk:
         plate = _plate_of(distribution.plate, marginalized, meta, distribution, self)
         named = {name: value for name, value in distribution.arguments}
         self.via = via
-        if meta.structured_lowering is not None and _structured(distribution):
+        if meta.structured_lowering is not None and _structured(distribution, meta):
             args, arg_names = self._structured_args(distribution, site, plate)
         else:
             args, arg_names = self._arguments(distribution, site, plate, meta, morphism)
@@ -1082,6 +1491,8 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
+        if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
+            self._factor_scale(distribution.name, pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
         if set(ordered) >= set(names) and len(ordered) >= len(names):
             order = {name: index for index, name in enumerate(ordered)}
@@ -1103,6 +1514,62 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
+        """Hand a Cholesky factor to the target as it reads it.
+
+        A source writes the scale of a Wishart or the covariance of a
+        multivariate normal as its lower Cholesky factor ``L``; most
+        targets take the matrix ``L L^T`` itself, and no target's plan
+        can size a factor known only at run time. A literal factor is
+        multiplied out here, in place, so every target receives the
+        matrix under ``covariance_matrix``.
+
+        Parameters
+        ----------
+        family : str
+            The family, one of `_FACTOR_FAMILIES`.
+        pre : list[IRArg]
+            The call's wire arguments, rewritten in place.
+        names : list[str]
+            The parameter each argument fills, rewritten in place.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the factor is not a literal.
+        """
+        position = names.index("scale_tril")
+        factor = pre[position]
+        if isinstance(factor, IRArgMatrix) and all(
+            isinstance(entry, IRArgNumber)
+            for row in factor.rows
+            for entry in row.elements
+        ):
+            rows = [
+                [cast(IRArgNumber, entry).value for entry in row.elements]
+                for row in factor.rows
+            ]
+            scale = [
+                [sum(a * b for a, b in zip(left, right, strict=True)) for right in rows]
+                for left in rows
+            ]
+            pre[position] = IRArgMatrix(
+                rows=tuple(
+                    IRArgList(elements=tuple(IRArgNumber(value=v) for v in row))
+                    for row in scale
+                )
+            )
+            names[position] = "covariance_matrix"
+            return
+        raise UnsupportedConstruct(
+            f"qvr-{self.planner.target}",
+            [
+                f"family:{family}:scale_tril: the {family}'s scale_tril is a "
+                "Cholesky factor known only at run time; write it as a matrix "
+                "literal"
+            ],
+        )
 
     def _arg(
         self, value: Value, site: str, head: str, plate: Plate, morphism: str
@@ -1571,6 +2038,19 @@ class _ProgramWalk:
                 name=name, constraint=CSReal(), plate=self.param_map_inputs[name]
             )
         dims = _typed_dims(parameter.type, parameter.axes)
+        if (
+            parameter.per_row
+            and len(dims) > 1
+            and self.planner.target not in _PER_ROW_VECTOR_TARGETS
+        ):
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    f"data:per-row-vector-parameter:{name}: the input fills a "
+                    f"vector-valued family parameter with one vector per row of "
+                    f"a plate, which {self.planner.target} has no rendering for"
+                ],
+            )
         if parameter.role == "domain":
             # The program's input is one value of its domain: the
             # factor's width is the input's event.
@@ -1705,6 +2185,13 @@ def _dim_names(plate: Plate) -> tuple[str, ...]:
     return tuple(str(dim.name) for dim in (*plate.batch_dims, *plate.event_dims))
 
 
+#: The targets that render a family parameter filled by host data holding
+#: one vector per row of the draw's plate: their array libraries read the
+#: per-row matrix and broadcast it against the plate as the checked
+#: program does. Every other target refuses such a program.
+_PER_ROW_VECTOR_TARGETS: frozenset[str] = frozenset({"edward2", "numpyro", "pyro"})
+
+
 def _dim(size: IndexTerm, name: str) -> Dim:
     """A plate dimension from an index term.
 
@@ -1825,23 +2312,49 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
     return shape[0] if shape is not None else type_
 
 
-def _structured(distribution: DistributionValue) -> bool:
+#: The families whose ``scale_tril`` factor a target receives multiplied
+#: out, as the matrix it names the factor of.
+_FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+
+def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     """Whether a construction is a structured family's.
+
+    A Gaussian process reads its covariance as a kernel argument; a
+    multivariate or matrix normal drawn through a morphism reads its
+    location and scale from inputs the elaboration names after the
+    family's structured arguments. A multivariate normal whose source
+    writes its own arguments under another parameterization, such as a
+    ``scale_tril`` factor, is an ordinary family call.
 
     Parameters
     ----------
     distribution : DistributionValue
         The construction.
+    meta : FamilyMeta
+        The family's transpile metadata.
 
     Returns
     -------
     bool
-        ``True`` when an argument is a kernel matrix or the family
-        reads its factors structurally.
+        ``True`` when an argument is a kernel matrix, or the family
+        reads its factors structurally and the construction supplies
+        every structured argument by name.
     """
-    return any(
-        isinstance(value, KernelMatrix) for _, value in distribution.arguments
-    ) or distribution.name in ("GP", "MultivariateNormal", "MatrixNormal")
+    if any(isinstance(value, KernelMatrix) for _, value in distribution.arguments):
+        return True
+    if distribution.name not in ("GP", "MultivariateNormal", "MatrixNormal"):
+        return False
+    lowering = meta.structured_lowering
+    if lowering is None:
+        return False
+    registry = _REGISTRY_NAMES.get(distribution.name, {})
+    supplied = {name for name, _ in distribution.arguments}
+    return all(
+        registry.get(str(spec.arg_name), str(spec.arg_name)) in supplied
+        for spec in lowering.args
+        if isinstance(spec, StructuredDataArg)
+    )
 
 
 def _axis_name_of(extent: IndexTerm, cards: dict[str, int]) -> str:
@@ -1976,8 +2489,28 @@ def _expression(
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
     if isinstance(value, PrimitiveApplication):
+        if value.name == "int_to_real" and target in _INTEGRAL_ARITHMETIC_TARGETS:
+            return LetExprBinOp(
+                op="*",
+                left=LetExprLiteral(value=1.0),
+                right=_expression(value.arguments[0], cards, target, program),
+            )
+        if value.name == "int_to_real" and target in _STRICT_DTYPE_TARGETS:
+            return LetExprCall(
+                func="real",
+                args=(_expression(value.arguments[0], cards, target, program),),
+            )
         if value.name in _TRANSPARENT:
             return _expression(value.arguments[0], cards, target, program)
+        truncating = _TRUNCATING_CALLS.get(value.name)
+        if truncating is not None and target not in _INTEGRAL_ARITHMETIC_TARGETS:
+            return LetExprCall(
+                func=truncating,
+                args=tuple(
+                    _expression(argument, cards, target, program)
+                    for argument in value.arguments
+                ),
+            )
         operator = PRIMITIVE_OPERATORS.get(value.name)
         if operator is not None and len(value.arguments) == 2:
             left, right = value.arguments
@@ -1994,9 +2527,10 @@ def _expression(
             )
         builtin = PRIMITIVE_BUILTINS.get(value.name)
         if builtin is not None:
-            return LetExprCall(
-                func=builtin,
-                args=tuple(
+            return spell_builtin(
+                target,
+                builtin,
+                tuple(
                     _expression(argument, cards, target, program)
                     for argument in value.arguments
                 ),
@@ -2064,108 +2598,59 @@ def _expression(
     )
 
 
-def _inline_pure(
+def _pure_body(
     callee: NamedComputation,
-    arguments: tuple[LetExprNode, ...],
-) -> LetExprNode | None:
-    """A pure computation's result at the arguments, as one expression.
+    arguments: tuple[Value, ...],
+    result_type: TypeExpr,
+) -> Value | None:
+    """A pure computation's body at the arguments, as one shared value.
 
     Parameters
     ----------
     callee : NamedComputation
         The computation called.
-    arguments : tuple[LetExprNode, ...]
-        The arguments as let expressions, one per parameter.
+    arguments : tuple[Value, ...]
+        The call's arguments, one per parameter.
+    result_type : TypeExpr
+        The type of the call's result.
 
     Returns
     -------
-    LetExprNode | None
-        The body's returned value with every binding and parameter
-        substituted, or ``None`` when the computation performs an
-        effect, takes static arguments, calls anything, or binds a
-        value the expression language has no form for.
+    Value | None
+        A [`LetValue`][quivers.qiec.LetValue] binding each parameter to
+        its argument (a variable or literal argument is read in place)
+        and each of the body's bindings to its value, whose body is the
+        returned value; ``None`` when the computation
+        performs an effect, takes static arguments, or does anything but
+        bind pure values and return one.
     """
     if callee.type.effects.entries or callee.telescope:
         return None
     if len(arguments) != len(callee.parameters):
         return None
-    bindings: dict[str, LetExprNode] = {
-        parameter.name: argument
-        for parameter, argument in zip(callee.parameters, arguments, strict=True)
-    }
+    # A variable or literal argument is read in place; any other is
+    # bound once, like the body's own bindings.
+    replaced: dict[Local, Value] = {}
+    bindings: list[LetBinding] = []
+    for parameter, argument in zip(callee.parameters, arguments, strict=True):
+        if isinstance(argument, Var | LiteralValue):
+            replaced[parameter] = argument
+        else:
+            bindings.append(LetBinding(parameter, argument))
     node: Computation = callee.body
     while isinstance(node, Bind):
         if not isinstance(node.first, Return):
             return None
-        try:
-            bindings[node.binder.name] = _substitute(
-                _expression(node.first.value, {}, "", callee.name), bindings
-            )
-        except UnsupportedConstruct:
-            return None
+        bindings.append(
+            LetBinding(node.binder, _replace_locals(node.first.value, replaced))
+        )
         node = node.then
     if not isinstance(node, Return):
         return None
-    try:
-        return _substitute(_expression(node.value, {}, "", callee.name), bindings)
-    except UnsupportedConstruct:
-        return None
-
-
-def _substitute(expr: LetExprNode, bindings: dict[str, LetExprNode]) -> LetExprNode:
-    """Replace named references in a let expression.
-
-    Parameters
-    ----------
-    expr : LetExprNode
-        The expression.
-    bindings : dict[str, LetExprNode]
-        The expression each name stands for.
-
-    Returns
-    -------
-    LetExprNode
-        The expression with every bound name replaced.
-    """
-    if isinstance(expr, LetExprVar):
-        return bindings.get(expr.name, expr)
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_substitute(expr.left, bindings),
-            right=_substitute(expr.right, bindings),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(op=expr.op, operand=_substitute(expr.operand, bindings))
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(_substitute(argument, bindings) for argument in expr.args),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_substitute(expr.array, bindings),
-            indices=tuple(_substitute(index, bindings) for index in expr.indices),
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(
-            items=tuple(_substitute(item, bindings) for item in expr.items)
-        )
-    if isinstance(expr, LetExprFactor):
-        shadowed = {
-            name: value
-            for name, value in bindings.items()
-            if name not in {binder.var for binder in expr.binders}
-        }
-        return LetExprFactor(
-            binders=expr.binders,
-            body=None if expr.body is None else _substitute(expr.body, shadowed),
-            cases=tuple(
-                LetFactorCase(label=case.label, value=_substitute(case.value, shadowed))
-                for case in expr.cases
-            ),
-        )
-    return expr
+    body = _replace_locals(node.value, replaced)
+    if not bindings:
+        return body
+    return LetValue(tuple(bindings), body, result_type)
 
 
 def _lower_static(argument: StaticArgument) -> IRQiecStatic:

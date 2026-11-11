@@ -8,6 +8,9 @@ reproducible across re-runs.
 
 from __future__ import annotations
 
+import copy
+import pickle
+
 import pandas as pd
 import polars as pl
 import pytest
@@ -189,3 +192,56 @@ export demo
         prog = compose(body, schema)
         # Body's `object Verb : 99` wins over the schema's `Verb : 3`.
         assert prog._morphism.domain.cardinality == 99
+
+
+class TestDatasetSchemaValueSemantics:
+    def test_schemas_over_one_frame_with_equal_mappings_are_equal(self, df_pandas):
+        first = DatasetSchema(df=df_pandas, objects={"verb": "Verb", "item": "Item"})
+        second = DatasetSchema(df=df_pandas, objects={"item": "Item", "verb": "Verb"})
+        assert first == second
+        assert hash(first) == hash(second)
+
+    @pytest.mark.parametrize(
+        "field", ["objects", "observations", "plate_indices", "covariates"]
+    )
+    def test_each_mapping_enters_equality(self, df_pandas, field):
+        base = DatasetSchema(df=df_pandas, objects={"verb": "Verb"})
+        changed_mappings = {
+            "objects": {"verb": "Verb", "item": "Item"},
+            "observations": {"response": "y"},
+            "plate_indices": {"verb": "verb_idx"},
+            "covariates": {"rt": "rt"},
+        }
+        mappings: dict[str, dict[str, str]] = {
+            "objects": {"verb": "Verb"},
+            "observations": {},
+            "plate_indices": {},
+            "covariates": {},
+        }
+        mappings[field] = changed_mappings[field]
+        changed = DatasetSchema(
+            df=df_pandas,
+            objects=mappings["objects"],
+            observations=mappings["observations"],
+            plate_indices=mappings["plate_indices"],
+            covariates=mappings["covariates"],
+        )
+        assert changed != base
+        assert hash(changed) != hash(base)
+
+    def test_dataframe_compares_by_identity(self, df_pandas):
+        schema = DatasetSchema(df=df_pandas, objects={"verb": "Verb"})
+        assert schema == DatasetSchema(df=df_pandas, objects={"verb": "Verb"})
+        assert schema != DatasetSchema(df=df_pandas.copy(), objects={"verb": "Verb"})
+
+    def test_copy_keeps_the_frame_and_pickle_restores_it(self, df_pandas):
+        schema = DatasetSchema(df=df_pandas, objects={"verb": "Verb"})
+        shallow = copy.copy(schema)
+        assert shallow.df is df_pandas
+        assert shallow == schema
+        for clone in (copy.deepcopy(schema), pickle.loads(pickle.dumps(schema))):
+            assert clone.df is not df_pandas
+            assert isinstance(clone.df, pd.DataFrame)
+            assert clone.df.equals(df_pandas)
+            assert clone.objects == {"verb": "Verb"}
+            assert dict(clone.cardinalities) == dict(schema.cardinalities)

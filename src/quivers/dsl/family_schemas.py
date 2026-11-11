@@ -97,6 +97,20 @@ A key is a name a source may write; its value is the family whose
 specification builds the distribution.
 """
 
+PARAMETER_ALIASES: dict[str, dict[str, str]] = {
+    "LogitNormal": {"mu": "loc", "sigma": "scale"},
+    "TruncatedNormal": {"mu": "loc", "sigma": "scale"},
+    "Mixture": {"components": "component"},
+    "OrderedLogistic": {"predictor": "eta"},
+    "Pushforward": {"bijector": "transforms"},
+}
+"""Surface keywords that name a registry parameter under another name.
+
+A family's entry maps each keyword a source may write to the registry
+parameter it fills, which means the same quantity. A keyword absent here
+and from the registry record names no parameter of the family.
+"""
+
 DISTRIBUTION_FAMILIES: frozenset[str] = frozenset(
     (*_FAMILY_PARAMETERS, *FAMILY_ALIASES)
 )
@@ -158,6 +172,7 @@ def render_parameterizations(schemas: tuple[tuple[str, ...], ...]) -> str:
 __all__ = [
     "DISTRIBUTION_FAMILIES",
     "FAMILY_ALIASES",
+    "PARAMETER_ALIASES",
     "family_parameter_names",
     "family_parameterizations",
 ]

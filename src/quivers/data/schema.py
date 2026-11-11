@@ -31,6 +31,7 @@ import narwhals as nw
 import torch
 from narwhals.typing import IntoDataFrame
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.data.encoding import (
     ColumnRole,
     MissingPolicy,
@@ -39,33 +40,39 @@ from quivers.data.encoding import (
 from quivers.dsl import loads
 
 
-class DatasetSchema(dx.Model):
+class DatasetSchema(ValueModel):
     """Mapping from dataframe columns to QVR program artefacts.
+
+    Schemas compare by value over their column mappings and missing
+    policy, and by identity over ``df``: two schemas are equal only
+    when they map the same columns the same way over the same
+    dataframe object. Copying a schema keeps the dataframe object;
+    deep-copying or pickling copies it, so the copy compares unequal.
 
     Attributes
     ----------
-    df : Any
+    df : IntoDataFrame
         Source dataframe; pandas, polars, modin, dask, pyarrow, or
         anything else Narwhals' ``from_native`` accepts. Stored as
-        an opaque field so the schema can be serialized without
-        depending on a specific dataframe flavour.
-    objects : Mapping[str, str]
+        an opaque field compared by identity, so the schema does not
+        depend on a specific dataframe flavour.
+    objects : dict[str, str]
         Map from column name to the QVR object name. The object's
         cardinality is inferred from the column's number of unique
         values; the canonical ordering is the sorted set of unique
         values, so plate indices are deterministic across reruns.
-    observations : Mapping[str, str]
+    observations : dict[str, str]
         Map from column name to the QVR observe-site name. Categorical
         columns are encoded to ``LongTensor`` codes (using either
         their own object's category ordering, when the column is
         also listed under ``objects``, or a sorted-unique fallback);
         numeric columns to ``FloatTensor``.
-    plate_indices : Mapping[str, str]
+    plate_indices : dict[str, str]
         Map from column name (which must also appear under
         ``objects``) to the per-row plate-index variable name.
         Encoded as ``LongTensor`` of category codes; one entry per
         row.
-    covariates : Mapping[str, str]
+    covariates : dict[str, str]
         Map from numeric column name to the QVR variable name to
         bind the column's values to (as a ``FloatTensor``).
     missing_policy : MissingPolicy
@@ -73,11 +80,11 @@ class DatasetSchema(dx.Model):
         `quivers.data.encoding.MissingPolicy.RAISE`.
     """
 
-    df: IntoDataFrame = dx.field(opaque=True)
-    objects: Mapping[str, str] = dx.field(default_factory=dict, opaque=True)
-    observations: Mapping[str, str] = dx.field(default_factory=dict, opaque=True)
-    plate_indices: Mapping[str, str] = dx.field(default_factory=dict, opaque=True)
-    covariates: Mapping[str, str] = dx.field(default_factory=dict, opaque=True)
+    df: IntoDataFrame = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    objects: dict[str, str] = dx.field(default_factory=dict)
+    observations: dict[str, str] = dx.field(default_factory=dict)
+    plate_indices: dict[str, str] = dx.field(default_factory=dict)
+    covariates: dict[str, str] = dx.field(default_factory=dict)
     missing_policy: MissingPolicy = MissingPolicy.RAISE
 
     @dx.derived

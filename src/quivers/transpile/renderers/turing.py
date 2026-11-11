@@ -57,6 +57,7 @@ from quivers.transpile._pipeline import (
     parser_registry,
     target_protocol,
 )
+from quivers.transpile.renderers._ranks import carried_dims, name_rank_map
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -539,6 +540,7 @@ class TuringRenderer(RendererBase):
                 name_event_rank=name_event_rank_map(ir),
                 name_array_rank=name_array_rank_map(ir),
                 nested_names=nested_tower_names(ir),
+                program_values=frozenset(name_rank_map(ir)),
             ),
             module=ir.module,
         )
@@ -836,7 +838,7 @@ class TuringRenderer(RendererBase):
         sb, counter = ctx.sb, ctx.counter
 
         meta = _meta_or_raise(family)
-        target_dist = meta.target_names.get("turing")
+        target_dist = _ZERO_BASED_FAMILIES.get(family, meta.target_names.get("turing"))
         if target_dist is None:
             raise UnsupportedConstruct(
                 "qvr-turing", [f"family:{family}: no Turing.jl mapping"]
@@ -944,8 +946,12 @@ class TuringRenderer(RendererBase):
             # `product_distribution(Family.(args))` and emit the
             # scalar tilde. DynamicPPL no longer accepts `.~` over
             # an array of distributions; `product_distribution` is
-            # the supported replacement.
-            rhs_args = tuple(_arg_to_julia(ctx, a, family=family) for a in args)
+            # the supported replacement. A table read as one event per
+            # row (a gathered `probs` matrix) broadcasts over its rows.
+            rhs_args = tuple(
+                _rows_of_table(ctx, _arg_to_julia(ctx, a, family=family), a, meta, n)
+                for a, n in zip(args, arg_names, strict=True)
+            )
             elemwise = _dist_expr(
                 sb,
                 counter,
@@ -990,7 +996,7 @@ class TuringRenderer(RendererBase):
         # the emitted call matches the Turing.jl idiom of a
         # fully-shaped vector for the event-dim arg.
         promoted = tuple(
-            _promote_scalar_ref(a, name, plate, meta)
+            _promote_scalar_ref(a, name, plate, meta, ctx.shapes.name_array_rank)
             for name, a in zip(arg_names, args, strict=False)
         )
         dist = self._family_call(ctx, target_dist, promoted, family, own_event)
@@ -1113,7 +1119,7 @@ class TuringRenderer(RendererBase):
                 for a in args
             )
         promoted = tuple(
-            _promote_scalar_ref(a, arg_name, plate, meta)
+            _promote_scalar_ref(a, arg_name, plate, meta, ctx.shapes.name_array_rank)
             for arg_name, a in zip(arg_names, rewritten, strict=False)
         )
         dist = self._family_call(ctx, target_dist, promoted, family, own_event)
@@ -1201,7 +1207,7 @@ class TuringRenderer(RendererBase):
         plates = {**ctx.input_plates, **ctx.sample_plates}
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=plates),
+            support_size=marginal_support_size(node),
         )
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         prefix = f"__marg_{node.latent}"
@@ -1302,12 +1308,12 @@ class TuringRenderer(RendererBase):
         return ""
 
     def _group_sums(self, ctx: _TuringCtx, term: str, via: str, group: Dim) -> str:
-        """`[sum(<term>[<via> .== g]) for g in 1:<extent>]`.
+        """`[sum(<term>[<via> .+ 1 .== g]) for g in 1:<extent>]`.
 
         The per-row log-likelihoods of one atom summed within each
         group the fibration sends the rows to, one entry per group.
-        The fibration is subscripted, so the point's index covariate
-        reaches the model lifted to Julia's one-based indexing.
+        The fibration holds QVR's zero-based group codes, read one
+        higher to match the one-based group counter.
 
         Parameters
         ----------
@@ -1335,7 +1341,7 @@ class TuringRenderer(RendererBase):
                 _dotted_binary(
                     sb,
                     counter,
-                    _identifier(sb, counter, via),
+                    _one_higher(ctx, _identifier(sb, counter, via), via),
                     "==",
                     _identifier(sb, counter, binder),
                 ),
@@ -1666,7 +1672,10 @@ class TuringRenderer(RendererBase):
 
     def _emit_score(self, ctx: RenderContext, node: IRScore) -> None:
         """Bind the score expression then add it to the log-joint via
-        `Turing.@addlogprob!`."""
+        `Turing.@addlogprob!`.
+
+        The expression renders elementwise, so a weight it combines with
+        a plated value scales each row before a reduction sums them."""
         assert isinstance(ctx, _TuringCtx)
         sb, counter = ctx.sb, ctx.counter
         lhs = _identifier(sb, counter, node.name)
@@ -1674,6 +1683,7 @@ class TuringRenderer(RendererBase):
             _JlCtxShim(sb, counter, ctx.cards, "turing"),
             node.expr,
             shapes=ctx.shapes,
+            dotted=True,
         )
         stmt = _assignment(sb, counter, lhs, rhs)
         sb.edge(ctx.body, stmt, "child_of")
@@ -2331,8 +2341,10 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
     base = _identifier(sb, counter, ref.name)
     if not ref.indices:
         return base
-    parent_plate = ctx.sample_plates.get(ref.name)
-    parent_event_dim = len(parent_plate.event_dims) if parent_plate is not None else 0
+    # Each gathered element carries the parent's axes after the indexed
+    # ones: none for an entry of a vector, the columns for a row of a
+    # matrix, each read whole with a trailing `:`.
+    carried = carried_dims(ref, {**ctx.input_plates, **ctx.sample_plates})
     # Rewrite each index: a name-ref index may be threaded through the
     # via fibration.
     rendered_indices: list[str] = []
@@ -2340,11 +2352,14 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
         if via is not None and isinstance(idx, IRArgRef) and not idx.indices:
             # `z` becomes `z[<via>]`.
             inner = _identifier(sb, counter, idx.name)
-            via_id = _identifier(sb, counter, via)
-            rendered_indices.append(_index_expr(sb, counter, inner, (via_id,)))
+            via_id = _one_higher(ctx, _identifier(sb, counter, via), via)
+            rendered = _index_expr(sb, counter, inner, (via_id,))
         else:
-            rendered_indices.append(_arg_to_julia(ctx, idx))
-    if parent_event_dim > 0:
+            rendered = _arg_to_julia(ctx, idx)
+        if isinstance(idx, IRArgRef):
+            rendered = _one_higher(ctx, rendered, idx.name)
+        rendered_indices.append(rendered)
+    if carried:
         # `phi` is a matrix-shaped distribution sample; take its rows.
         #
         # `phi[k, :]` rather than `eachrow(phi)[k]`, because the two
@@ -2357,9 +2372,80 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
             sb,
             counter,
             base,
-            (*rendered_indices, _colon(sb, counter)),
+            (*rendered_indices, *(_colon(sb, counter) for _ in carried)),
         )
     return _index_expr(sb, counter, base, tuple(rendered_indices))
+
+
+def _rows_of_table(
+    ctx: _TuringCtx, rendered: str, arg: IRArg, meta: FamilyMeta, arg_name: str
+) -> str:
+    """Broadcast a class-code family's table argument row by row.
+
+    Categorical's `probs` reads one vector per observation. A binding
+    with two axes, one row per observation, broadcasts through the
+    grafted `qvr_rows(...)`, which takes a matrix's rows and passes a
+    vector of vectors through.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The render context.
+    rendered : str
+        The rendered argument.
+    arg : IRArg
+        The plan argument.
+    meta : FamilyMeta
+        The family.
+    arg_name : str
+        The argument's name.
+
+    Returns
+    -------
+    str
+        The argument, wrapped in `qvr_rows` when it is such a table.
+    """
+    if meta.qvr_name not in _ZERO_BASED_FAMILIES:
+        return rendered
+    constraints = meta.distribution_class.arg_constraints
+    expected = constraints.get(arg_name) if isinstance(constraints, dict) else None
+    if int(getattr(expected, "event_dim", 0)) != 1:
+        return rendered
+    if not isinstance(arg, IRArgRef) or arg.indices:
+        return rendered
+    if ctx.shapes.name_array_rank.get(arg.name, 0) != 2:
+        return rendered
+    return _call(
+        ctx.sb, ctx.counter, _identifier(ctx.sb, ctx.counter, "qvr_rows"), (rendered,)
+    )
+
+
+def _one_higher(ctx: _TuringCtx, index: str, name: str) -> str:
+    """Read a subscript one higher when it holds a QVR value.
+
+    A program's index covariate or drawn class holds a zero-based QVR
+    value, which Julia reads one higher; a renderer's own loop variable
+    already counts from one.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The render context.
+    index : str
+        The rendered subscript.
+    name : str
+        The name the subscript reads.
+
+    Returns
+    -------
+    str
+        The subscript, broadcast-shifted with `.+ 1` for a program value.
+    """
+    if name not in ctx.shapes.program_values:
+        return index
+    return _binary_expr(
+        ctx.sb, ctx.counter, index, ".+", _integer(ctx.sb, ctx.counter, 1)
+    )
 
 
 def _broadcast_arg(ctx: _TuringCtx, arg: IRArgBroadcast) -> str:
@@ -2497,6 +2583,7 @@ def _promote_scalar_ref(
     arg_name: str,
     plate: Plate,
     meta: FamilyMeta,
+    name_array_rank: dict[str, int],
 ) -> IRArg:
     """Promote an [`IRArgRef`][quivers.transpile.ir.IRArgRef] that
     targets a vector-shaped arg constraint into an
@@ -2510,9 +2597,30 @@ def _promote_scalar_ref(
     family's `arg_constraints[arg_name]` is an
     `IndependentConstraint` of rank `n >= 1`, wrap in `IRArgBroadcast`
     whose `target_shape` is read from the surrounding step's
-    `event_dims`.
+    `event_dims`. A reference is promoted only when the plan binds its
+    name to a value of no axes: a reference to a vector (a sampled
+    `loc` or `concentration`) already carries the slot's shape.
+
+    Parameters
+    ----------
+    arg : IRArg
+        The argument.
+    arg_name : str
+        The family parameter the argument binds.
+    plate : Plate
+        The site's plate, whose event axes size the fill.
+    meta : FamilyMeta
+        The family's metadata.
+    name_array_rank : dict[str, int]
+        The Julia array rank of each name the plan binds.
+
+    Returns
+    -------
+    IRArg
+        The argument filled to the slot's shape, or the argument as it
+        stands.
     """
-    if not isinstance(arg, IRArgRef) or arg.indices:
+    if not isinstance(arg, IRArgRef) or arg.indices or name_array_rank.get(arg.name, 0):
         return arg
     cls_attr = meta.distribution_class.arg_constraints
     if not isinstance(cls_attr, dict):
@@ -2744,10 +2852,17 @@ _RUNTIME_TURING_PATH = (
 #: a graft would turn into a sequence of top-level statements.
 _TURING_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
     {
+        "Categorical",
         "ContinuousBernoulli",
         "GP",
     }
 )
+
+#: Families whose QVR values are zero-based class codes, drawn and
+#: scored through the grafted zero-based form in
+#: [`runtime_turing.jl`][quivers.transpile.runtime_turing] rather than
+#: Distributions.jl's one-based one.
+_ZERO_BASED_FAMILIES: dict[str, str] = {"Categorical": "qvr_categorical"}
 
 
 def _load_runtime_turing_schema() -> tuple[panproto.Schema, str, tuple[str, ...]]:

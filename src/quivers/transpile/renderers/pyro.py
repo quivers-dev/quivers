@@ -15,6 +15,7 @@ import panproto
 from quivers.dsl.ast_nodes import MorphismInitFamily
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile.renderers._ranks import carries_event_dims, name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     MarginalizeBody,
     PyCtx,
@@ -149,6 +150,7 @@ class PyroRenderer(RendererBase):
             sb=sb,
             cards=dict(ir.cards),
             name_event_rank=name_event_rank_map(ir),
+            name_rank=name_rank_map(ir),
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )
@@ -596,12 +598,22 @@ class PyroRenderer(RendererBase):
             return
         # Build innermost-first by walking the dims in reverse: the
         # innermost block holds the sample, the outer blocks own each
-        # inner `with` as their sole child.
+        # inner `with` as their sole child. Pyro gives a plate with no
+        # stated `dim` the rightmost free batch axis, so the outermost
+        # of several nested plates would take the last axis and the
+        # draw would come out transposed; each plate of a nest of
+        # several states its axis, outermost leftmost.
         current_stmt = inner_stmt
-        for dim in reversed(plate.batch_dims):
+        count = len(plate.batch_dims)
+        for position in reversed(range(count)):
+            dim = plate.batch_dims[position]
             inner_block = pctx.v(pctx.fresh("blk"), "block")
             pctx.e(inner_block, current_stmt, "child_of")
-            plate_call = self._plate_call(pctx, dim, name=name, observed=observed)
+            plate_call = (
+                self._plate_call(pctx, dim, name=name, observed=observed)
+                if count == 1
+                else self._plate_object_call(pctx, dim, axis=position - count)
+            )
             current_stmt = with_statement(
                 pctx,
                 expression=plate_call,
@@ -631,8 +643,31 @@ class PyroRenderer(RendererBase):
             return identifier(pctx, shared_var)
         return self._plate_object_call(pctx, dim)
 
-    def _plate_object_call(self, pctx: _PyroCtx, dim: Dim) -> str:
-        """Build the `pyro.plate(<name>, <size>)` constructor call."""
+    def _plate_object_call(
+        self, pctx: _PyroCtx, dim: Dim, *, axis: int | None = None
+    ) -> str:
+        """Build the `pyro.plate(<name>, <size>)` constructor call.
+
+        Parameters
+        ----------
+        pctx : _PyroCtx
+            The render state.
+        dim : Dim
+            The plate's axis.
+        axis : int | None
+            The negative batch axis the plate occupies, stated as its
+            `dim`; `None` leaves Pyro to allocate it.
+
+        Returns
+        -------
+        str
+            The call's vertex.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the axis is neither static nor dynamic.
+        """
         plate_callee = attribute(pctx, ("pyro", "plate"))
         if isinstance(dim, DimStatic):
             plate_name = string_literal(pctx, dim.name)
@@ -649,10 +684,16 @@ class PyroRenderer(RendererBase):
                 f"qvr-{_TARGET}",
                 [f"dim-kind:{type(dim).__name__}"],
             )
+        keyword: tuple[tuple[str, str], ...] = ()
+        if axis is not None:
+            keyword = (
+                ("dim", _python_unary_minus(pctx, number_literal(pctx, float(-axis)))),
+            )
         return call(
             pctx,
             plate_callee,
             positional=(plate_name, size_arg),
+            keyword=keyword,
         )
 
     def _build_sample_call(
@@ -764,7 +805,7 @@ class PyroRenderer(RendererBase):
             keyword=dist_args.keyword,
         )
         event_dims = plate.event_dims if plate is not None else ()
-        return self._wrap_event_dims(pctx, dist_call, family, event_dims)
+        return self._wrap_event_dims(pctx, dist_call, family, event_dims, args)
 
     def _mixture_same_family_call(
         self,
@@ -812,6 +853,7 @@ class PyroRenderer(RendererBase):
         dist_call: str,
         family: str,
         event_dims: tuple[Dim, ...],
+        args: tuple[IRArg, ...],
     ) -> str:
         """Lift the residual user-declared event dims into the
         distribution via ``.expand([sizes]).to_event(n)``.
@@ -823,6 +865,27 @@ class PyroRenderer(RendererBase):
         family (`Normal(0, 1) [over=LatentDim, iid_over=Item]`) lifts
         the `LatentDim` axis into the distribution; a vector family
         whose `[over=Axis]` matches its natural event dim gets no lift.
+        An argument that already carries the lifted axes (a gathered
+        matrix row) gives the family those axes as batch, so only
+        `.to_event(n)` is applied.
+
+        Parameters
+        ----------
+        pctx : _PyroCtx
+            The render state.
+        dist_call : str
+            The family call's vertex.
+        family : str
+            The family.
+        event_dims : tuple[Dim, ...]
+            The site's event axes.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+
+        Returns
+        -------
+        str
+            The lifted call's vertex.
         """
         if not event_dims:
             return dist_call
@@ -831,6 +894,13 @@ class PyroRenderer(RendererBase):
         residual = event_dims[: len(event_dims) - natural] if natural else event_dims
         if not residual:
             return dist_call
+        if carries_event_dims(args, residual, pctx.name_plates):
+            # An argument already carries the lifted axes (a gathered
+            # row of a matrix, say): the family's batch holds them, and
+            # only their reading as event axes remains.
+            return _python_method_call(
+                pctx, dist_call, "to_event", (number_literal(pctx, len(residual)),)
+            )
         list_vid = pctx.v(pctx.fresh("list"), "list")
         for dim in residual:
             pctx.e(list_vid, self._dim_size_vid(pctx, dim), "child_of")
@@ -901,7 +971,7 @@ class PyroRenderer(RendererBase):
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=pctx.name_plates),
+            support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
         term_names: list[str] = []
@@ -1188,7 +1258,9 @@ class PyroRenderer(RendererBase):
         for ir_arg, arg_name in zip(args, arg_names, strict=False):
             target = None
             if plate is not None:
-                target = _scalar_broadcast_for_arg(meta, ir_arg, arg_name, plate)
+                target = _scalar_broadcast_for_arg(
+                    meta, ir_arg, arg_name, plate, pctx.name_rank
+                )
             if target is not None:
                 vid = self._broadcast(pctx, ir_arg, target)
             else:
@@ -1216,9 +1288,15 @@ class PyroRenderer(RendererBase):
         (see [`_build_dist_args`][PyroRenderer._build_dist_args]); this
         helper handles per-arg structural dispatch only.
         """
-        del meta, arg_name
         if isinstance(arg, IRArgNumber):
-            return number_literal(pctx, arg.value)
+            literal = number_literal(pctx, arg.value)
+            if (meta.qvr_name, arg_name) in _PYRO_TENSOR_SCALARS:
+                return call(
+                    pctx,
+                    attribute(pctx, ("torch", "tensor")),
+                    positional=(literal,),
+                )
+            return literal
         if isinstance(arg, IRArgRef):
             return _arg_ref_vid(pctx, arg)
         if isinstance(arg, IRArgBroadcast):
@@ -1394,6 +1472,7 @@ class _PyroCtx(PyCtx):
         name_event_rank: dict[str, int] | None = None,
         factor_towers: frozenset[str] | None = None,
         name_plates: dict[str, Plate] | None = None,
+        name_rank: dict[str, int] | None = None,
     ) -> None:
         super().__init__(
             sb,
@@ -1402,6 +1481,7 @@ class _PyroCtx(PyCtx):
             name_event_rank=name_event_rank,
             factor_towers=factor_towers,
             name_plates=name_plates,
+            name_rank=name_rank,
         )
         self.body: str = ""
         self.observed: frozenset[str] = frozenset()
@@ -1652,10 +1732,16 @@ def _scalar_broadcast_for_arg(
     arg: IRArg,
     arg_name: str,
     plate: Plate,
+    name_rank: dict[str, int],
 ) -> tuple[int, ...] | None:
     """If `arg` is a bare scalar reference / literal and `arg_name`'s
     slot is a rank-`n` array, return the target shape derived from
     `plate.event_dims`; otherwise `None`.
+
+    A reference is scalar only when the plan binds its name to a value
+    of no axes: a reference to a vector (a sampled `loc` or
+    `concentration`) already carries the slot's shape and is passed
+    through as it stands.
 
     When the family declares a
     [`StructuredSampleLowering`][quivers.transpile.ir.StructuredSampleLowering],
@@ -1668,10 +1754,29 @@ def _scalar_broadcast_for_arg(
     structured lowering, the target shape falls back to the leading
     `event_dim` axes implied by the torch arg constraint (the
     `Dirichlet` idiom of `torch.full((K,), alpha)`).
+
+    Parameters
+    ----------
+    meta : FamilyMeta
+        The family's metadata.
+    arg : IRArg
+        The argument.
+    arg_name : str
+        The family parameter the argument binds.
+    plate : Plate
+        The site's plate, whose event axes size the fill.
+    name_rank : dict[str, int]
+        The number of axes of each name the plan binds.
+
+    Returns
+    -------
+    tuple[int, ...] | None
+        The shape to fill the scalar to, or `None` when the argument is
+        passed as it stands.
     """
     if not isinstance(arg, (IRArgRef, IRArgNumber)):
         return None
-    if isinstance(arg, IRArgRef) and arg.indices:
+    if isinstance(arg, IRArgRef) and (arg.indices or name_rank.get(arg.name, 0)):
         return None
     axis_indices = _structured_axis_indices(meta, arg_name)
     if axis_indices is not None:
@@ -1745,6 +1850,17 @@ _PYRO_LEADING_DIM_FAMILIES = frozenset(
 #: family is emitted as a keyword argument, which is order-free. The
 #: map is `qvr arg name -> pyro keyword`; identity entries are kept
 #: explicit so a reader can check the whole signature in one place.
+#: Scalar parameters a Pyro class reads as a tensor: the relaxed
+#: families scale their log density by ``temperature`` through
+#: ``torch.full_like``, which takes no Python number.
+_PYRO_TENSOR_SCALARS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("RelaxedBernoulli", "temperature"),
+        ("RelaxedOneHotCategorical", "temperature"),
+    }
+)
+
+
 _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
     "Categorical": {
         "logits": "logits",

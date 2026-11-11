@@ -115,7 +115,7 @@ comps = torch.distributions.Categorical(true_probs).sample((N,))
 r     = torch.distributions.Normal(true_mu[comps], true_sigma[comps]).sample()
 
 observations = {"r": r, "probs": true_probs}
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 The synthetic rows are drawn by sampling a component per row and then a value from that component's Gaussian, but the model never sees the component labels: only the rows `r` and the fixed mixing weights `probs` enter `observations`. The per-component locations `mu` and scales `sigma` remain unobserved latents; SVI approximates their posterior given these observations.

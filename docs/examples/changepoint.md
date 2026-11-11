@@ -95,7 +95,7 @@ y = torch.cat([
     torch.poisson(torch.ones(T - n_before) * rate_after),
 ])
 t_vec = t_start + torch.arange(T, dtype=torch.float32)
-x_in = torch.zeros(T, 1)
+x_in = torch.zeros(1, 1)
 observations = {"y": y, "t": t_vec}
 ```
 

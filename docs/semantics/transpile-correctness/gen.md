@@ -45,6 +45,14 @@ Wrapped families (`Truncated`, `Mixture`) use Gen's
 via a per-renderer `_WRAPPER_BUILDERS` dispatch table; cf.
 [Architecture §5.1](../transpile-architecture.md#51-backend-idioms).
 
+QVR codes a Categorical value from zero and Gen's built-in
+`categorical` counts from one. The renderer traces a class through
+`qvr_categorical(p)`, a grafted distribution whose support is `0:K-1`
+(its log density at `x` is `categorical`'s at `x + 1`), so an observed
+code and a traced class are QVR codes and a subscript reads them one
+higher. Index covariates arrive zero-based too and are read one higher
+where they subscript.
+
 ## Per-construct emit
 
 **Sample / observe.** Gen has no native plate; the renderer emits

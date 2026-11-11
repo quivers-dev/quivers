@@ -140,6 +140,13 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # engine: the `panproto-test-bugs` image runs JAGS, which is why
     # the sibling `jags` cell is live and scores the same model.
     ("bugs", "beta_binomial_ab_test"): ("family:BetaBinomial:no-bugs-distribution"),
+    # lda observes its word codes, which the data holds counting from
+    # zero, and `dcat` counts from one. JAGS binds the shifted codes in
+    # its `data { ... }` block; the BUGS language has no such block, no
+    # logical node computed from data can also carry a distribution,
+    # and the zeros trick that would score the shifted code needs a
+    # data-bound carrier, so BUGS refuses the observed code.
+    ("bugs", "lda"): "observe:class-code",
     # gru_lm and lstm_lm build their gate arguments with `+` between
     # two `Hidden`-wide operands. The BUGS model language has no
     # elementwise vector arithmetic: only the contracted product
@@ -224,67 +231,27 @@ for _neural_model in (
 # into a bare load failure.
 _SKIP_DATASET_LOAD_FAILED: frozenset[str] = frozenset()
 
-# Gallery examples the in-process [`QvrProbe`][tests.transpile.probes.qvr.QvrProbe]
-# cannot score to a deterministic, correct joint.
+# Gallery examples whose oracle joint no pin can be held to, for want
+# of a source outside the oracle.
 #
-# Each of these carries a `sample h <- backbone` latent whose backbone
-# is a `SampledComposition` over continuous intermediate objects
-# (RNN/LSTM/GRU scan cells, attention and feed-forward Kleisli chains).
-# The per-timestep gates and per-layer composition latents are internal
-# to that composition and are never surfaced as trace sites, so no
-# point entry can clamp them and `assert_all_latents_clamped` has
-# nothing to look at. What the oracle reports for such a program is
-# therefore decided entirely by how the composition performs the
-# integral, and on that question the eight split two ways. Both grounds
-# are measured rather than asserted, and
+# `bidirectional_rnn_lm` and `transformer_lm` carry a `sample h <-
+# backbone` latent whose backbone is a `SampledComposition` over
+# continuous intermediate objects; each factor is scored once along the
+# composition's canonical path. `gru_lm`, `lstm_lm`, and
+# `vanilla_rnn_lm` scan a program cell: the embedding and every cell
+# draw are sites of the program at every position, `x_in@t` and the
+# cell's labels at `@t`, so their joint is the sum of every position's
+# densities and the emission's. All five joints are bitwise stable
+# across global RNG seeds, which
+# `test_oracle_determinism.py::test_composition_marginalised_models_are_bitwise_deterministic`
+# measures; what they lack is a witness. Every backend refuses the scan
+# or the composition, so no container re-derives the number, and no
+# reconstruction in `test_oracle_reference_strength.py` does either.
+# `test_oracle_reference_strength.py::test_unwitnessable_exempt_examples_have_no_independent_source`
+# measures that ground per example, and
 # `test_oracle_reference_strength.py::test_composition_exemption_grounds_partition_the_registry`
-# requires them to cover this registry exactly once:
-#
-# 1. For `bidirectional_rnn_lm`, `deep_markov`, `seq2seq`,
-#    `transformer_lm`, and `vae` the joint is a property of the
-#    quadrature rule rather than of the model, so it is the output of
-#    an estimator and there is no value a pin could hold. This is a
-#    measurement, not an inference from the shape of the program:
-#    forcing every `SampledComposition.n_intermediate` in the compiled
-#    module from its default 100 down to 23 and re-scoring the same
-#    six points moves the joint by 1.04 nats (`seq2seq`), 1.45
-#    (`deep_markov`), 12.97 (`vae`), 1.36e04 (`transformer_lm`) and
-#    9.17e05 (`bidirectional_rnn_lm`) at the point each moves most.
-#    Two rules integrating the same kernel against the same data would
-#    return the same density; these return different numbers, and the
-#    smallest of them is already thousands of times the pin tolerance
-#    at its magnitude.
-#    `test_oracle_reference_strength.py::test_quadrature_exempt_examples_have_a_rule_dependent_joint`
-#    holds each example to a floor on that ratio under a 37-node rule,
-#    so a quadrature converging toward the tolerance, which is the
-#    event that would make these pinnable, surfaces as a shrinking
-#    margin rather than as a silent change of grounds.
-# 2. For `gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` the composite site
-#    scores identically zero, so the reported number is the emission
-#    likelihood alone and omits the `~ Normal` recurrent transition
-#    density the source declares at every step. That flat site is also
-#    plate-shaped where the emission site is scalar, so the sum
-#    broadcasts and the joint carries the emission likelihood once per
-#    scored row: measured exactly 32 times at all six points of all
-#    three,
-#    `test_oracle_reference_strength.py::test_flat_latent_exempt_examples_inflate_their_emission_per_row`.
-#    The excess is `(rows - 1)` times a likelihood the perturbation
-#    schedule moves, so it is not the additive constant Theorem 4.1's
-#    quotient absorbs; it varies across the point set by 3.2e06
-#    equivalence tolerances (`gru_lm`, `lstm_lm`) and 2.7e08
-#    (`vanilla_rnn_lm`). Dropping these three rows would therefore
-#    produce 30 failing cells rather than 30 recovered ones.
-#
-# The joints themselves are bitwise stable across global RNG seeds,
-# which `test_oracle_determinism.py::test_composition_marginalised_models_are_bitwise_deterministic`
-# measures at every point of the set; stability is what makes the
-# quadrature probe meaningful, and is not on its own enough to pin
-# against. It is emphatically not enough to lift the exemption: a
-# joint that reproducibly counts its likelihood 32 times is
-# deterministic and wrong, which is why both grounds above are
-# measured against the density rather than against the generator.
-# Pinning these needs the composition's integral made a rule whose
-# value has converged, and its inner latents exposed as sites.
+# requires it to cover this registry exactly. A reconstruction or a
+# live backend cell is what moves a row to `_QVR_REFERENCE_JOINT`.
 _SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset(
     {
         "bidirectional_rnn_lm",
@@ -617,12 +584,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -71.1627197265625,
     ),
     "seq2seq": (
-        -15812.892578125,
-        -15826.595703125,
-        -15821.7587890625,
-        -15847.22265625,
-        -15836.48046875,
-        -15819.671875,
+        -488.5443420410156,
+        -487.85491943359375,
+        -489.553466796875,
+        -490.8770751953125,
+        -489.0007629394531,
+        -489.3353576660156,
     ),
     "vae": (
         -41.807464599609375,
@@ -641,21 +608,16 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
 # example has no reference, so an exemption cannot outlive the gap it
 # describes.
 _REFERENCE_PIN_EXEMPT: dict[str, str] = {
-    # Sequence models carrying a `SampledComposition` latent. Every one
-    # of them scores a bitwise-stable joint, so non-determinism is not
-    # the ground and never was the one that mattered: what disqualifies
-    # the number is that it is not the model's density. Five report the
-    # output of a quadrature rule, which moves by 1.04 to 9.17e05 nats
-    # when the rule's node count changes; three report their emission
-    # likelihood inflated once per scored row, because the composite
-    # site carries no density at all. Each sits in
-    # `_SKIP_QVR_INCOMPATIBLE`, whose comment carries the full
-    # diagnosis and names the test that measures each ground.
-    "bidirectional_rnn_lm": "oracle joint is a quadrature output, not a density",
-    "gru_lm": "oracle joint omits the recurrent density and inflates the emission",
-    "lstm_lm": "oracle joint omits the recurrent density and inflates the emission",
-    "transformer_lm": "oracle joint is a quadrature output, not a density",
-    "vanilla_rnn_lm": "oracle joint omits the recurrent density and inflates the emission",
+    # Sequence models whose exact joint nothing outside the oracle
+    # re-derives: every backend refuses the scan or the composition,
+    # and no reconstruction exists. Each sits in
+    # `_SKIP_QVR_INCOMPATIBLE`, whose comment carries the diagnosis
+    # and names the test that measures the ground.
+    "bidirectional_rnn_lm": "no backend or reconstruction witnesses the joint",
+    "gru_lm": "no backend or reconstruction witnesses the joint",
+    "lstm_lm": "no backend or reconstruction witnesses the joint",
+    "transformer_lm": "no backend or reconstruction witnesses the joint",
+    "vanilla_rnn_lm": "no backend or reconstruction witnesses the joint",
 }
 
 _REFERENCE_PIN_ULP_BUDGET = 8
@@ -674,7 +636,8 @@ against a guess. The raw-`torch.distributions` reconstructions in
 `test_oracle_reference_strength.py` sum the same per-site terms in a
 different order and grouping, while the CI probe replays the trace on
 independent runners. The largest observed difference is **two**
-float32 ULPs (`seq2seq`, 1.95e-03 at magnitude 15,836);
+float32 ULPs (1.95e-03, on a feed-forward chain's joint of magnitude
+15,836);
 `continuous_hmm`'s independent reconstruction differs by one ULP
 (6.10e-05 at magnitude 736). Eight ULPs is two bits of headroom above
 the measured worst case.
@@ -740,8 +703,8 @@ def reference_pin_atol(reference: float) -> float:
     quotienting out an additive constant. Its scalar floor therefore
     cannot cap this function below a representable float32 step.
 
-    The largest pinned magnitudes are `seq2seq`'s roughly 15,800-nat
-    joints, where eight float32 ULPs are 7.81e-03. The tightest bound is
+    The largest pinned magnitudes are `zip_regression`'s roughly
+    760-nat joints, where eight float32 ULPs are 4.88e-04. The tightest bound is
     9.54e-07, the magnitude-1 floor, which
     binds wherever a joint lands below 2
     (`kumaraswamy_bounded_outcome` at its first latents point,
@@ -1275,9 +1238,9 @@ def test_gallery_backend_logdensity_matches_qvr(
         script=script_path,
         source=emitted,
         source_ext=ext,
-        points=[{"params": point.params, "data": point.data} for point in points],
+        points=[_gallery_data.target_point(dataset, point) for point in points],
         scratch=scratch,
-        shapes=_shapes_from_dataset(dataset),
+        shapes=_gallery_data.target_shapes(dataset, _shapes_from_dataset(dataset)),
         dtypes=_dtypes_from_dataset(dataset),
     )
 

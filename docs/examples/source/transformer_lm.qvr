@@ -20,15 +20,14 @@
 # ordinary learned parameters unless an inference lift supplies
 # priors over them.
 #
-# Resp is the plate: it indexes the 32 scored rows, one
-# next-token target per context. Token is the vocabulary, so it
-# is the value space of what lm_head draws and of what the
-# program returns.
+# Each input row is one context, and one run of the program scores
+# it: the contexts of a corpus are independent runs that share the
+# model's parameters. Token is the vocabulary, so it is the value
+# space of what lm_head draws and of what the program returns.
 #
 # Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
 object Token : FinSet 32
-object Resp : FinSet 32
 object Latent : Real 16
 object HeadOut : Real 4
 object FFHidden : Real 32
@@ -47,7 +46,7 @@ define backbone = tok_embed >> stack(layer, 2)
 program transformer_lm : Token -> Token
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export transformer_lm

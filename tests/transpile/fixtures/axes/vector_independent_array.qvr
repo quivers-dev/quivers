@@ -1,0 +1,12 @@
+# A vector family drawn over an independent axis and its event axis
+# beside an index annotation: one K-simplex point per (A, B) element.
+object A : FinSet 2
+object B : FinSet 2
+object K : FinSet 3
+object Obs : FinSet 4
+program prog : Obs -> Obs
+    sample p : A <- Dirichlet(concentration=2.0) [over=[B, K]]
+    let t = p[1, 0, 2] * 3.0 - p[0, 1, 0]
+    observe y : Obs <- Normal(loc=t, scale=1.0)
+    return t
+export prog

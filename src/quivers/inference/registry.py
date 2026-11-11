@@ -42,6 +42,7 @@ site in declaration order.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import cast
 
 import torch
@@ -51,9 +52,10 @@ from torch.distributions.transforms import Transform
 
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous.program_steps import Draw, Observe
+from quivers.continuous.program_steps import Call, Draw, Observe, Scan
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
+from quivers.effects.trace_types import Trace
 
 
 def _unconstrained_event_dim(
@@ -83,6 +85,67 @@ def _unconstrained_event_dim(
     if support is _constraints.corr_cholesky:
         return max(1, constrained_dim * (constrained_dim - 1) // 2)
     return constrained_dim
+
+
+def _apply_transform(transform: Transform, value: torch.Tensor) -> torch.Tensor:
+    """Apply a `torch.distributions` transform and return its tensor.
+
+    Parameters
+    ----------
+    transform : Transform
+        The bijector (or its inverse) to apply.
+    value : torch.Tensor
+        The input point.
+
+    Returns
+    -------
+    torch.Tensor
+        ``transform(value)``.
+
+    Raises
+    ------
+    TypeError
+        If the transform returns something other than a tensor.
+    """
+    out = transform(value)
+    if not isinstance(out, torch.Tensor):
+        raise TypeError(
+            f"LatentRegistry: transform {transform!r} returned "
+            f"{type(out).__name__}, not a tensor"
+        )
+    return out
+
+
+def _require_one_run(x: torch.Tensor, consumer: str) -> None:
+    """Refuse an input of more than one row for a one-run posterior.
+
+    An input of ``B`` rows is ``B`` independent runs of the whole
+    program, each with its own latents. MCMC, the Laplace approximation,
+    and annealed importance sampling target the posterior of one run's
+    latents, so they take a one-row input; the rows a program observes
+    come from its data and its plates, not from the input's rows.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        The program input.
+    consumer : str
+        The name the error reports.
+
+    Raises
+    ------
+    ValueError
+        If ``x`` has more than one row.
+    """
+    rows = int(x.shape[0]) if x.dim() else 1
+    if rows != 1:
+        raise ValueError(
+            f"{consumer}: the input has {rows} rows, and an input of {rows} rows "
+            f"is {rows} independent runs of the program, each with its own "
+            f"latents; {consumer} targets the posterior of one run. Pass one "
+            f"input row (for instance torch.zeros(1, ...)): the rows a program "
+            f"observes come from its data and its plates, not from the input"
+        )
 
 
 @dataclass(frozen=True)
@@ -121,6 +184,11 @@ class LatentSite:
         Number of elements this site occupies in the flat vector
         (= ``plate_index_size * unconstrained_dim`` for plate
         sites, ``unconstrained_dim`` for scalar sites).
+    plate_shape : tuple[int, ...]
+        The extents of a plate site's axes, outermost first, whose
+        product is ``plate_index_size``: ``(|A|,)`` for a plate over one
+        axis, ``(|A|, |B|, |C|)`` for an independent array over
+        several; ``()`` otherwise.
     """
 
     name: str
@@ -134,18 +202,46 @@ class LatentSite:
     spec_index: int
     flat_offset: int
     flat_length: int
+    plate_shape: tuple[int, ...] = ()
 
     @property
     def constrained_shape(self) -> tuple[int, ...]:
-        """The trace-side shape of this site's value (after
-        bijector forward / squeezing scalar event dims)."""
+        """The shape of one draw of this site on its constrained
+        support (after the bijector, with a length-one event axis
+        squeezed off).
+
+        Plate sites have shape ``(*plate_shape,)`` or
+        ``(*plate_shape, d)``, ``(|A|,)`` or ``(|A|, d)`` for a plate
+        over one axis; non-plate
+        sites have shape ``()`` for a scalar event and ``(d,)``
+        otherwise. Posterior containers index draws by this shape:
+        `MCMCResult.samples` holds ``(num_chains, num_samples,
+        *constrained_shape)`` and `MCMCResult.r_hat` and
+        `MCMCResult.ess` hold ``constrained_shape``.
+
+        The values a program's `MonadicProgram.log_joint`, a trace,
+        and a guide exchange carry the run axis of the program's input,
+        whose ``B`` rows are ``B`` independent runs: a non-plate site
+        is ``(B, *constrained_shape)`` (``(1, *constrained_shape)`` in
+        one run), and a plate site is ``constrained_shape`` in one run,
+        or one value every run shares, and ``(B, *constrained_shape)``
+        given or recorded per run. `LatentRegistry.trace_values` lifts
+        one draw to the values runs share.
+
+        A correlation-Cholesky site's draw is a lower-triangular
+        ``(d, d)`` factor, so its event shape is ``(d, d)`` rather
+        than ``(d,)``.
+        """
+        event: tuple[int, ...]
+        if self.support is _constraints.corr_cholesky:
+            event = (self.constrained_dim, self.constrained_dim)
+        elif self.constrained_dim == 1:
+            event = ()
+        else:
+            event = (self.constrained_dim,)
         if self.is_plate:
-            if self.constrained_dim == 1:
-                return (self.plate_index_size,)
-            return (self.plate_index_size, self.constrained_dim)
-        if self.constrained_dim == 1:
-            return ()
-        return (self.constrained_dim,)
+            return (*(self.plate_shape or (self.plate_index_size,)), *event)
+        return event
 
     @property
     def unconstrained_shape(self) -> tuple[int, ...]:
@@ -154,6 +250,174 @@ class LatentSite:
         if self.is_plate:
             return (self.plate_index_size, self.unconstrained_dim)
         return (self.unconstrained_dim,)
+
+
+def _latent_site(
+    name: str,
+    morphism: ContinuousMorphism,
+    names: int,
+    spec_index: int,
+    flat_offset: int,
+) -> LatentSite:
+    """Describe one latent site from the morphism it draws from.
+
+    Parameters
+    ----------
+    name : str
+        The site's name.
+    morphism : ContinuousMorphism
+        The site's prior.
+    names : int
+        How many variables the draw binds; a destructuring draw splits
+        its codomain evenly among them.
+    spec_index : int
+        The position, in ``model.steps``, of the step that reaches the
+        site.
+    flat_offset : int
+        The site's first index in the flat unconstrained vector.
+
+    Returns
+    -------
+    LatentSite
+        The site.
+    """
+    is_plate = isinstance(morphism, PlateDraw)
+    if is_plate:
+        plate = cast(PlateDraw, morphism)
+        inner = plate.family
+        inner_cod = inner.codomain
+        if isinstance(inner_cod, ContinuousSpace):
+            constrained_dim = max(1, math.prod(inner_cod.event_shape))
+        else:
+            constrained_dim = 1
+        support = inner.support
+        plate_index_size = plate.index_size
+        plate_shape = plate.index_shape
+    else:
+        cod = morphism.codomain
+        if isinstance(cod, ContinuousSpace):
+            total_dim = math.prod(cod.event_shape)
+            constrained_dim = max(1, total_dim // max(1, names))
+        else:
+            constrained_dim = 1
+        support = morphism.support
+        plate_index_size = 0
+        plate_shape = ()
+    unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
+    flat_length = (
+        plate_index_size * unconstrained_dim if is_plate else unconstrained_dim
+    )
+    return LatentSite(
+        name=name,
+        morphism=morphism,
+        support=support,
+        bijector=biject_to(support),
+        constrained_dim=constrained_dim,
+        unconstrained_dim=unconstrained_dim,
+        is_plate=is_plate,
+        plate_index_size=plate_index_size,
+        spec_index=spec_index,
+        flat_offset=flat_offset,
+        flat_length=flat_length,
+        plate_shape=plate_shape,
+    )
+
+
+def _drawing_programs(program: MonadicProgram) -> bool:
+    """Whether a program draws, directly or in a program it calls or scans.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    bool
+        ``True`` when any of its steps, or its callees' or scanned
+        cells' steps, is a draw or an observation.
+    """
+    for spec in program.steps:
+        if isinstance(spec, Draw | Observe):
+            return True
+        if isinstance(spec, Call | Scan):
+            inner = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(inner, MonadicProgram) and _drawing_programs(inner):
+                return True
+    return False
+
+
+def _input_dependent_sites(program: MonadicProgram) -> bool:
+    """Whether a program reaches sites that its steps alone do not list.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    bool
+        ``True`` when it calls or scans a program that draws.
+    """
+    for spec in program.steps:
+        if isinstance(spec, Call | Scan):
+            inner = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(inner, MonadicProgram) and _drawing_programs(inner):
+                return True
+    return False
+
+
+def _reaching_steps(program: MonadicProgram) -> dict[str, int]:
+    """The step of a program through which each site label is reached.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    dict[str, int]
+        Each variable a draw binds, directly or in a program a step
+        calls or scans, mapped to that step's position in
+        ``program.steps``.
+    """
+
+    def drawn(inner: MonadicProgram) -> list[str]:
+        """Every variable a program's draws bind, its callees' included.
+
+        Parameters
+        ----------
+        inner : MonadicProgram
+            The program.
+
+        Returns
+        -------
+        list[str]
+            The names, in step order.
+        """
+        names: list[str] = []
+        for spec in inner.steps:
+            if isinstance(spec, Draw | Observe):
+                names.extend(spec.names)
+            elif isinstance(spec, Call | Scan):
+                callee = spec.program if isinstance(spec, Call) else spec.step
+                if isinstance(callee, MonadicProgram):
+                    names.extend(drawn(callee))
+        return names
+
+    positions: dict[str, int] = {}
+    for index, spec in enumerate(program.steps):
+        if isinstance(spec, Draw | Observe):
+            for name in spec.names:
+                positions.setdefault(name, index)
+        elif isinstance(spec, Call | Scan):
+            callee = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(callee, MonadicProgram):
+                for name in drawn(callee):
+                    positions.setdefault(name, index)
+    return positions
 
 
 class LatentRegistry:
@@ -173,6 +437,11 @@ class LatentRegistry:
       (`unflatten_unconstrained`, `flatten_constrained`).
     * Bijector forward / inverse with Jacobian accumulation
       (`to_constrained`, `to_unconstrained`).
+    * Conversion between one draw per site, at
+      `LatentSite.constrained_shape`, and the trace-side values a
+      program's ``log_joint`` and the guides exchange, which add the
+      ``(batch, ...)`` axis to non-plate sites (`trace_values`,
+      `trace_row`).
 
     All operations are vectorized, with no per-site Python loops on
     the hot path beyond the construction-time setup.
@@ -218,6 +487,13 @@ class LatentRegistry:
             support, bijector, dims, and flat-vector offsets.
         """
         observed: frozenset[str] = frozenset(observed_names)
+        if _input_dependent_sites(model):
+            raise ValueError(
+                "LatentRegistry.from_model: the program scans or calls a program "
+                "that draws, so how many latent sites it has depends on its "
+                "input; build the registry from a run with "
+                "LatentRegistry.from_trace(model, trace(model, x, observations))"
+            )
         sites: dict[str, LatentSite] = {}
         flat_cursor = 0
 
@@ -233,53 +509,68 @@ class LatentRegistry:
                         f"LatentRegistry: morphism module for site "
                         f"{var!r} is unregistered on the model"
                     )
-                morph_cm = cast(ContinuousMorphism, morph)
-                is_plate = isinstance(morph_cm, PlateDraw)
-                if is_plate:
-                    plate = cast(PlateDraw, morph_cm)
-                    inner = plate.family
-                    inner_cod = inner.codomain
-                    if isinstance(inner_cod, ContinuousSpace):
-                        constrained_dim = max(1, int(inner_cod.dim))
-                    else:
-                        constrained_dim = 1
-                    support = inner.support
-                    plate_index_size = plate.index_size
-                else:
-                    cod = morph_cm.codomain
-                    if isinstance(cod, ContinuousSpace):
-                        total_dim = int(cod.dim)
-                        constrained_dim = max(1, total_dim // max(1, len(spec.names)))
-                    else:
-                        constrained_dim = 1
-                    support = morph_cm.support
-                    plate_index_size = 0
-
-                unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
-                bijector = biject_to(support)
-
-                flat_length = (
-                    plate_index_size * unconstrained_dim
-                    if is_plate
-                    else unconstrained_dim
+                site = _latent_site(
+                    var,
+                    cast(ContinuousMorphism, morph),
+                    len(spec.names),
+                    spec_idx,
+                    flat_cursor,
                 )
-
-                sites[var] = LatentSite(
-                    name=var,
-                    morphism=morph_cm,
-                    support=support,
-                    bijector=bijector,
-                    constrained_dim=constrained_dim,
-                    unconstrained_dim=unconstrained_dim,
-                    is_plate=is_plate,
-                    plate_index_size=plate_index_size,
-                    spec_index=spec_idx,
-                    flat_offset=flat_cursor,
-                    flat_length=flat_length,
-                )
-                flat_cursor += flat_length
+                sites[var] = site
+                flat_cursor += site.flat_length
 
         return cls(sites, observed, model)
+
+    @classmethod
+    def from_trace(cls, model: MonadicProgram, recorded: Trace) -> "LatentRegistry":
+        """Assemble the registry from a run of the model.
+
+        Every sample site the run reached that is neither observed nor
+        intervened on is a latent, in the order the run reached it. A
+        site a scan reaches once per position is one latent per
+        position, ``"<label>@<n>"``, so a scanned program cell's latent
+        trajectory is inferred site by site, as many as the input's
+        sequence has positions. Build ``recorded`` with
+        ``trace(model, x, observations)`` at the input and data the
+        latents are inferred at.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            Compiled probabilistic program.
+        recorded : Trace
+            A trace of one run of ``model``.
+
+        Returns
+        -------
+        LatentRegistry
+            Fully populated registry with each latent's morphism,
+            support, bijector, dims, and flat-vector offsets.
+        """
+        reached = _reaching_steps(model)
+        sites: dict[str, LatentSite] = {}
+        observed: set[str] = set()
+        flat_cursor = 0
+        for label, record in recorded.sites.items():
+            if record.morphism is None or record.is_deterministic:
+                continue
+            if record.is_observed:
+                observed.update(label.split(","))
+                continue
+            names = label.split(",")
+            base = label.rpartition("@")[0] or label
+            spec_index = reached.get(base.split(",")[0], -1)
+            for var in names:
+                site = _latent_site(
+                    var if len(names) > 1 else label,
+                    record.morphism,
+                    len(names),
+                    spec_index,
+                    flat_cursor,
+                )
+                sites[site.name] = site
+                flat_cursor += site.flat_length
+        return cls(sites, frozenset(observed), model)
 
     # ------------------------------------------------------------------
     # Iteration / lookup
@@ -434,7 +725,7 @@ class LatentRegistry:
                     f"LatentRegistry.to_constrained: missing site {site.name!r}"
                 )
             z = unconstrained[site.name]
-            v = site.bijector(z)
+            v = _apply_transform(site.bijector, z)
             log_abs_dets[site.name] = site.bijector.log_abs_det_jacobian(z, v)
             if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
                 v = v.squeeze(-1)
@@ -455,10 +746,131 @@ class LatentRegistry:
             v = constrained[site.name]
             if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 0):
                 v = v.unsqueeze(-1)
-            z = site.bijector.inv(v)
+            z = _apply_transform(site.bijector.inv, v)
             log_abs_dets[site.name] = site.bijector.inv.log_abs_det_jacobian(v, z)
             unconstrained[site.name] = z
         return unconstrained, log_abs_dets
+
+    def trace_values(
+        self, constrained: dict[str, torch.Tensor], batch_size: int
+    ) -> dict[str, torch.Tensor]:
+        """Lift single constrained draws to trace-side values.
+
+        A trace-side value is what `MonadicProgram.log_joint`, a
+        trace, and `Guide.rsample` exchange: each non-plate site
+        carries the program's leading batch axis, shape
+        ``(batch_size, *constrained_shape)``, and each plate site
+        keeps ``constrained_shape``. The lift expands the one draw
+        across the batch axis, so every input row sees the same
+        latent value.
+
+        Parameters
+        ----------
+        constrained : dict[str, torch.Tensor]
+            One draw per latent site, each of shape
+            `LatentSite.constrained_shape` (as in one entry of
+            `MCMCResult.samples` or the output of `to_constrained`
+            on an unbatched unconstrained vector). Keys that name no
+            latent site are passed through unchanged.
+        batch_size : int
+            Size of the program input's leading batch axis.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The trace-side values, keyed as ``constrained``.
+
+        Raises
+        ------
+        ValueError
+            If ``batch_size`` is less than one, or a latent site's
+            value does not have shape `LatentSite.constrained_shape`.
+        """
+        if batch_size < 1:
+            raise ValueError(
+                f"LatentRegistry.trace_values: batch_size must be >= 1, "
+                f"got {batch_size}"
+            )
+        out: dict[str, torch.Tensor] = {}
+        for name, value in constrained.items():
+            site = self._sites.get(name)
+            if site is None:
+                out[name] = value
+                continue
+            if tuple(value.shape) != site.constrained_shape:
+                raise ValueError(
+                    f"LatentRegistry.trace_values: site {name!r} has shape "
+                    f"{tuple(value.shape)}; expected its constrained shape "
+                    f"{site.constrained_shape}"
+                )
+            if site.is_plate:
+                out[name] = value
+            else:
+                out[name] = value.unsqueeze(0).expand(batch_size, *value.shape)
+        return out
+
+    def trace_row(
+        self, trace_side: dict[str, torch.Tensor], row: int = 0
+    ) -> dict[str, torch.Tensor]:
+        """Read one draw per latent site out of trace-side values.
+
+        The inverse of `trace_values` for one batch row: each
+        non-plate site, of shape ``(batch, *constrained_shape)``,
+        contributes its row ``row``, and each plate site, of shape
+        ``constrained_shape``, is returned as is. A guide's
+        `Guide.rsample` output is a valid input.
+
+        Parameters
+        ----------
+        trace_side : dict[str, torch.Tensor]
+            Trace-side values for every latent site. Keys that name
+            no latent site are ignored.
+        row : int
+            Index into the batch axis of the non-plate sites.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            One draw per latent site, each of shape
+            `LatentSite.constrained_shape`, in declaration order.
+
+        Raises
+        ------
+        KeyError
+            If a latent site is missing from ``trace_side``.
+        ValueError
+            If a site's value is not trace-side shaped, or ``row`` is
+            outside a non-plate site's batch axis.
+        """
+        out: dict[str, torch.Tensor] = {}
+        for site in self._sites.values():
+            if site.name not in trace_side:
+                raise KeyError(f"LatentRegistry.trace_row: missing site {site.name!r}")
+            value = trace_side[site.name]
+            if site.is_plate:
+                if tuple(value.shape) != site.constrained_shape:
+                    raise ValueError(
+                        f"LatentRegistry.trace_row: plate site {site.name!r} "
+                        f"has shape {tuple(value.shape)}; expected "
+                        f"{site.constrained_shape}"
+                    )
+                out[site.name] = value
+                continue
+            if value.dim() != len(site.constrained_shape) + 1 or (
+                tuple(value.shape[1:]) != site.constrained_shape
+            ):
+                raise ValueError(
+                    f"LatentRegistry.trace_row: site {site.name!r} has shape "
+                    f"{tuple(value.shape)}; expected the trace-side shape "
+                    f"(batch, *{site.constrained_shape})"
+                )
+            if not 0 <= row < value.shape[0]:
+                raise ValueError(
+                    f"LatentRegistry.trace_row: row {row} is outside the "
+                    f"batch axis of size {value.shape[0]} on site {site.name!r}"
+                )
+            out[site.name] = value[row]
+        return out
 
     @staticmethod
     def aggregate_log_abs_det(

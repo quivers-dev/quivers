@@ -62,7 +62,16 @@ log weight to `factor`. Grouping is applied before the support reduction.
 The resulting density sums over the hidden coordinate.
 
 **Score / let / return.** [`factor(expr)`](https://webppl.readthedocs.io/en/master/inference.html#factor)
-for score; `var <name> = <expr>;` for let; native `return`.
+for score; `var <name> = <expr>;` for let; native `return`. A `let`
+whose value has no axis is one expression, whatever plated names it reads
+at an index. A `let` whose value has a leading axis is built one row at a
+time, `mapIndexed(function(i, _) { return <row i>; }, repeat(N, 0))`. The
+row is the expression read at `i`: each operand that carries the leading
+axis is read at `i`, and an operand of lower rank passes through
+unchanged. An operator over an array that a row still holds goes through
+the elementwise `_qvr_bcast` helper, because a JavaScript operator would
+coerce the array to `NaN`. A site over a plate reads, at its row, every
+name bound over the same leading axis.
 
 ## Acceptance
 

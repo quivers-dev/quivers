@@ -398,8 +398,8 @@ _AR1_FAMILY_SUBSTITUTED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
-                    new='edward2.StudentT(df=4.,loc=mu,scale=sigma,name="y" )',
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
+                    new='edward2.StudentT(df=4.,loc=mu,scale=sigma,value=y,name="y" )',
                 ),
             ),
         ),
@@ -569,8 +569,10 @@ _AR1_LOCATION_TRUNCATED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
-                    new=('edward2.Normal(loc=tf.math.floor(mu),scale=sigma,name="y" )'),
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
+                    new=(
+                        'edward2.Normal(loc=tf.math.floor(mu),scale=sigma,value=y,name="y" )'
+                    ),
                 ),
             ),
         ),
@@ -691,11 +693,11 @@ _AR1_OBSERVATION_TERM_DROPPED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Normal(loc=mu,scale=sigma,name="y" )',
+                    old='edward2.Normal(loc=mu,scale=sigma,value=y,name="y" )',
                     new=(
                         "edward2.Normal(loc=mu,scale=tf.concat("
                         "[sigma*tf.ones([63]),tf.constant([1e6])],axis=0),"
-                        'name="y" )'
+                        'value=y,name="y" )'
                     ),
                 ),
             ),
@@ -865,8 +867,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Weibull(scale=scale,concentration=k,name="t" )',
-                    new='edward2.Weibull(scale=k,concentration=scale,name="t" )',
+                    old='edward2.Weibull(scale=scale,concentration=k,value=t,name="t" )',
+                    new='edward2.Weibull(scale=k,concentration=scale,value=t,name="t" )',
                 ),
             ),
         ),
@@ -1016,8 +1018,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] = beta_0[out_idx[m_Resp]];",
-                    new="b0[m_Resp] = beta_0[(out_idx[m_Resp] % 3)+1];",
+                    old="b0[m_Resp] = beta_0[out_idx[m_Resp]+1];",
+                    new="b0[m_Resp] = beta_0[((out_idx[m_Resp]+1) % 3)+1];",
                 ),
             ),
         ),
@@ -1043,8 +1045,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="b0 = @. beta_0[out_idx]",
-                    new="b0 = @. beta_0[mod1(out_idx + 1, 3)]",
+                    old="b0 = @. beta_0[out_idx + 1]",
+                    new="b0 = @. beta_0[mod(out_idx + 1, 3) + 1]",
                 ),
             ),
         ),
@@ -1052,8 +1054,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="gen",
             rewrites=(
                 SourceRewrite(
-                    old="b0 = @. beta_0[out_idx]",
-                    new="b0 = @. beta_0[mod1(out_idx + 1, 3)]",
+                    old="b0 = @. beta_0[out_idx + 1]",
+                    new="b0 = @. beta_0[mod(out_idx + 1, 3) + 1]",
                 ),
             ),
         ),
@@ -1061,10 +1063,10 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="jags",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]]",
+                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]+1]",
                     new=(
-                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+1-3*"
-                        "equals(out_idx[m_Resp],3)]"
+                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+2-3*"
+                        "equals(out_idx[m_Resp],2)]"
                     ),
                 ),
             ),
@@ -1073,10 +1075,10 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="bugs",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]]",
+                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]+1]",
                     new=(
-                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+1-3*"
-                        "equals(out_idx[m_Resp],3)]"
+                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+2-3*"
+                        "equals(out_idx[m_Resp],2)]"
                     ),
                 ),
             ),

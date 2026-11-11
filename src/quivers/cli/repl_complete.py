@@ -22,6 +22,7 @@ from quivers.analysis.scope import (
     SCOPE_SEPARATOR,
     resolve_scoped_path,
     scope_children,
+    top_level_bindings,
 )
 from quivers.cli import repl_session
 from quivers.cli.repl_session import ReplSession
@@ -204,48 +205,17 @@ def _env_completions(session: ReplSession, prefix: str) -> list[Completion]:
     # name starts with the prefix, *and* any deep path whose final
     # segment matches (so users find scoped bindings without
     # knowing the prefix).
-    for label, mapping in (
-        ("object", compiler.objects),
-        ("space", compiler.spaces),
-        ("morphism", compiler.morphisms),
-        ("rule", compiler.rules),
-        ("program", compiler.programs),
-        ("deduction", compiler.deductions),
-        ("signature", compiler.signatures),
-        ("encoder", compiler.encoders),
-        ("decoder", compiler.decoders),
-        ("loss", compiler.losses),
-        ("bundle", compiler.bundles),
-        ("contraction", compiler.contractions),
-    ):
-        for name in mapping:
-            if name.startswith(prefix):
-                out.append(Completion(text=name, kind="env", detail=label))
+    tops = top_level_bindings(compiler)
+    for top in tops:
+        if top.name.startswith(prefix):
+            out.append(Completion(text=top.name, kind="env", detail=top.kind))
 
     # Surface scope paths whose final segment matches the prefix.
     # Skips duplicates of bare-name matches.
     seen = {c.text for c in out}
     if prefix:
-        from quivers.analysis.scope import ScopedRef
-
-        for kind, mapping in (
-            ("program", compiler.programs),
-            ("deduction", compiler.deductions),
-            ("signature", compiler.signatures),
-            ("encoder", compiler.encoders),
-            ("decoder", compiler.decoders),
-            ("bundle", compiler.bundles),
-            ("contraction", compiler.contractions),
-        ):
-            for top_name, top_node in mapping.items():
-                top = ScopedRef(
-                    name=top_name,
-                    kind=kind,  # type: ignore[arg-type]
-                    path=top_name,
-                    parent_kind=None,
-                    node=top_node,
-                )
-                _walk_scope_for_prefix(top, prefix, out, seen)
+        for top in tops:
+            _walk_scope_for_prefix(top, prefix, out, seen)
     return out
 
 

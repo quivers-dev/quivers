@@ -1,0 +1,14 @@
+# Exercises a `let` that gathers rows of a sampled table of simplexes by an
+# index covariate and is read as Categorical `probs`.
+object Group : FinSet 2
+object Class : FinSet 3
+object Row : FinSet 4
+object Val : Real 1
+
+program rows : Row -> Val
+    sample table : Group <- Dirichlet(concentration=1.0) [over=Class, iid_over=Group]
+    let row_table = table[group_idx]
+    observe y : Row <- Categorical(probs=row_table)
+    return table
+
+export rows

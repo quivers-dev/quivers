@@ -1,0 +1,16 @@
+# Exercises a draw from a program template whose lets index a renamed
+# local, build a factor over an object parameter, shadow a parameter
+# with a lambda, and read a scalar parameter.
+object Group : FinSet 2
+object Obs : FinSet 3
+program part(tau : Real, G : FinSet) : Obs -> Obs
+    sample effect : G <- Normal(loc=0.0, scale=tau)
+    let doubled = factor g : G in effect[g] * tau
+    let shadowed = map(doubled, tau -> tau * 2.0)
+    let shifted = shadowed[1] - effect[0]
+    return shifted
+program prog : Obs -> Obs
+    sample a <- part(0.5, Group)
+    observe y : Obs <- Normal(loc=a, scale=1.0)
+    return a
+export prog

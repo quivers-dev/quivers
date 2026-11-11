@@ -150,6 +150,12 @@ class AutoStructured(Guide):
         Generative model to build a guide for.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     conditionals : str or dict[str, str]
         Per-site marginal-family choice. A single string sets every
         site to the same family. A dict maps site name to family.
@@ -181,9 +187,14 @@ class AutoStructured(Guide):
         conditionals: ConditionalSpec,
         dependencies: DependencySpec | None = None,
         init_scale: float = 0.1,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
 
         # --- Normalise conditionals ---
         site_names = list(self._registry.names)

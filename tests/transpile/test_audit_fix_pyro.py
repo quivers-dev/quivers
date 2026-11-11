@@ -167,25 +167,18 @@ def test_halfstudentt_grafts_helper_not_pyro_class() -> None:
     assert "pyro.distributions.HalfStudentT" not in text
 
 
-def test_matrixnormal_grafts_helper_with_per_factor_covariance_shapes() -> None:
+def test_matrixnormal_grafts_helper_and_passes_its_declared_matrices() -> None:
     """`MatrixNormal` over `Row(3) x Col(4)` emits a grafted helper
-    class with the row covariance broadcast to `(3, 3)`, the column
-    covariance to `(4, 4)`, and the mean to `(3, 4)` (not every
-    covariance to the `loc` shape), never the nonexistent
-    `pyro.distributions.MatrixNormal`."""
+    class, never the nonexistent `pyro.distributions.MatrixNormal`, and
+    hands it the mean and the two covariance factors as the `(3, 4)`,
+    `(3, 3)` and `(4, 4)` matrices the plan declares those inputs to be,
+    with no fill: `torch.full` fills only from a number."""
     source = (_FIXTURES / "matrixnormal.qvr").read_text()
     text, stripped = _emit(source)
     assert "class MatrixNormal(" in text
     assert "pyro.distributions.MatrixNormal" not in text
-    # Mean fills the full (3, 4) matrix.
-    assert "torch.full((3,4,),m_loc)" in stripped, text
-    # Row covariance is the (Row, Row) = (3, 3) factor.
-    assert "torch.full((3,3,),m_row_covariance)" in stripped, text
-    # Column covariance is the (Col, Col) = (4, 4) factor.
-    assert "torch.full((4,4,),m_col_covariance)" in stripped, text
-    # The pre-fix bug filled the covariances to the (3, 4) loc shape.
-    assert "torch.full((3,4,),m_row_covariance)" not in stripped, text
-    assert "torch.full((3,4,),m_col_covariance)" not in stripped, text
+    assert "MatrixNormal(m_loc,m_row_covariance,m_col_covariance)" in stripped, text
+    assert "torch.full(" not in stripped, text
 
 
 def test_inversewishart_grafts_helper_not_pyro_class() -> None:
@@ -256,13 +249,16 @@ def test_inversewishart_sampler_mean_matches_theory() -> None:
 
 def test_relaxed_families_place_temperature_first() -> None:
     """The relaxed families take `temperature` as their leading
-    constructor slot; the QVR call's first argument lands there and the
-    probability argument follows."""
+    constructor slot, as a tensor since their log density scales by it
+    through `torch.full_like`; the QVR call's first argument lands there
+    and the probability argument follows."""
     text, stripped = _emit(_RELAXED_SOURCE)
-    assert "pyro.distributions.RelaxedBernoulli(0.5,0.3)" in stripped, text
+    assert "pyro.distributions.RelaxedBernoulli(torch.tensor(0.5),0.3)" in stripped, (
+        text
+    )
     assert (
         "pyro.distributions.RelaxedOneHotCategorical("
-        "0.25,torch.tensor([0.1,0.2,0.3,0.4]))" in stripped
+        "torch.tensor(0.25),torch.tensor([0.1,0.2,0.3,0.4]))" in stripped
     ), text
 
 

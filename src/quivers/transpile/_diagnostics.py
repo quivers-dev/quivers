@@ -1726,6 +1726,42 @@ def _render_draw_arg_kind(backend: str, tail: str) -> str:
     )
 
 
+def _render_data_kind(backend: str, tail: str) -> str:
+    """`data:per-row-vector-parameter:<name>: ...`: a data input that
+    gives a vector-valued family parameter one vector per plate row.
+
+    Parameters
+    ----------
+    backend : str
+        The target.
+    tail : str
+        The kind after `data:`.
+
+    Returns
+    -------
+    str
+        The explanation.
+    """
+    form, _, rest = tail.partition(":")
+    name = rest.partition(":")[0] or "the input"
+    if form == "per-row-vector-parameter":
+        return (
+            f"The data input `{name}` fills a vector-valued family "
+            f"parameter (a mean vector, a concentration, a probability "
+            f"vector) with one vector per row of the draw's plate, so it "
+            f"is a matrix whose rows the plated draw reads one at a time. "
+            f"{_cannot(backend, 'hand a plated draw a different parameter vector at each row')}: "
+            f"its plated draw takes one parameter vector shared by every "
+            f"row. Pass one vector shared by every row, or transpile to "
+            f"edward2, numpyro or pyro, which take one vector per row."
+        )
+    return (
+        f"{_cannot(backend, 'transpile this program')}. The refusal is "
+        f"tagged `data:{tail}`, which has no explanation registered "
+        f"yet; please report it."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1902,6 +1938,8 @@ def _render_head(
         return _render_transform_kind(backend, tail)
     if head == "draw-arg":
         return _render_draw_arg_kind(backend, tail)
+    if head == "data":
+        return _render_data_kind(backend, tail)
     return (
         f"{_cannot(backend, 'transpile this program')}. The refusal is "
         f"tagged `{structured}`, which has no explanation registered "

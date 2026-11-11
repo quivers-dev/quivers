@@ -29,9 +29,19 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 _TARGET = "qvr-scheme-helper"
+
+#: Let calls Scheme spells under another name: integer division and
+#: remainder truncate toward zero, as `quotient` and `remainder` do. The
+#: math builtins are spelled by
+#: [`BUILTIN_SPELLINGS`][quivers.transpile._builtin_spellings.BUILTIN_SPELLINGS].
+_SCHEME_CALL_NAMES: dict[str, str] = {
+    "quot": "quotient",
+    "rem": "remainder",
+}
 
 
 def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
@@ -42,8 +52,11 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     first child and the arguments as subsequent children.
     """
     if isinstance(expr, LetExprLiteral):
+        # An integral literal is an exact Scheme integer, which a
+        # subscript (`list-ref`) requires; any other literal keeps its
+        # decimal point and is inexact.
         v = ctx.v(ctx.fresh("num"), "number")
-        ctx.lit(v, str(expr.value))
+        ctx.lit(v, str(int(expr.value)) if expr.integral else repr(float(expr.value)))
         return v
     if isinstance(expr, LetExprVar):
         v = ctx.v(ctx.fresh("sym"), "symbol")
@@ -71,20 +84,30 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     if isinstance(expr, LetExprCall):
         lst = ctx.v(ctx.fresh("list"), "list")
         fn = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(fn, expr.func)
+        path = native_path("church", expr.func, len(expr.args))
+        ctx.lit(
+            fn,
+            _SCHEME_CALL_NAMES.get(expr.func, expr.func)
+            if path is None
+            else ".".join(path),
+        )
         ctx.e(lst, fn)
         for a in expr.args:
             ctx.e(lst, render_let_expr_scheme(ctx, a))
         return lst
     if isinstance(expr, LetExprIndex):
-        lst = ctx.v(ctx.fresh("list"), "list")
-        fn = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(fn, "list-ref")
-        ctx.e(lst, fn)
-        ctx.e(lst, render_let_expr_scheme(ctx, expr.array))
+        # A table is a list of rows, and `list-ref` takes one index, so
+        # `a[i, j]` reads as `(list-ref (list-ref a i) j)`.
+        current = render_let_expr_scheme(ctx, expr.array)
         for idx in expr.indices:
+            lst = ctx.v(ctx.fresh("list"), "list")
+            fn = ctx.v(ctx.fresh("sym"), "symbol")
+            ctx.lit(fn, "list-ref")
+            ctx.e(lst, fn)
+            ctx.e(lst, current)
             ctx.e(lst, _render_index_scheme(ctx, idx))
-        return lst
+            current = lst
+        return current
     if isinstance(expr, LetExprList):
         lst = ctx.v(ctx.fresh("list"), "list")
         fn = ctx.v(ctx.fresh("sym"), "symbol")

@@ -110,11 +110,11 @@ N = 200
 x = torch.linspace(-3.0, 3.0, N).unsqueeze(-1)
 y = torch.sin(3.0 * x) + 0.1 * torch.randn(N, 1)
 
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
 observations = {"y": y, "x": x}
 ```
 
-The target is a sine wave in noise, so its mean bends across the input range. `y` carries the `Target` event axis, so it is shaped `(N, 1)` rather than `(N,)`. The dummy `x_in` supplies the program's batch axis; the real covariate enters through `observations["x"]`.
+The target is a sine wave in noise, so its mean bends across the input range. `y` carries the `Target` event axis, so it is shaped `(N, 1)` rather than `(N,)`. The program input `x_in` is one row, so one run of the program scores every observation through its `Resp` plate; the real covariate enters through `observations["x"]`.
 
 ### Fitting the network
 
@@ -130,7 +130,7 @@ for step in range(2000):
 print(f"final negative log-likelihood: {float(loss.detach()):.1f}")
 ```
 
-[`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) returns the total log-joint broadcast across the batch axis, so every entry is the same number and `[0]` reads it. Summing instead would count the same scalar once per row.
+[`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) returns one joint per input row, each row an independent run of the program; `x_in` is a single row, so `[0]` reads that run's joint.
 
 ### Does the nonlinearity earn its keep?
 

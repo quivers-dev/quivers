@@ -1,0 +1,11 @@
+# Exercises a reduction of a plate of event vectors: `sum(z)` collapses
+# each row's `Dim` event axis and keeps the `Resp` plate, one number per
+# row, as the per-row inner products of a factor model do.
+object Dim : FinSet 2
+object Resp : FinSet 3
+program prog : Resp -> Resp
+    sample z : Resp <- Normal(loc=0.0, scale=1.0) [over=Dim, iid_over=Resp]
+    let s = sum(z)
+    observe y : Resp <- Normal(loc=s, scale=1.0)
+    return y
+export prog

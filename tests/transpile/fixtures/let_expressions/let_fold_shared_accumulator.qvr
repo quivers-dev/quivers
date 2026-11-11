@@ -1,0 +1,21 @@
+# Exercises `fold` bodies that read the accumulator more than once: a
+# scalar recurrence, a vector message whose every component reads the
+# whole previous message, and a fold nested in a `map` body, whose
+# shared accumulators each target states once per row. The folds run
+# over a fixed list, and the message and the rows are scaled by the
+# site, so every term of the joint varies across points.
+object State : FinSet 2
+object Step : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Step <- Normal(loc=mu, scale=1.0)
+    let xs = [0.4, -0.3, 0.8]
+    let total = fold(xs, mu, acc -> x -> acc * acc * 0.1 + acc * 0.2 + x)
+    let message = fold(xs, [0.3, 0.5], m -> x -> map(m, v -> m[0] * 0.5 + m[1] * 0.25 + v * x))
+    let rows = map(xs, x -> fold(xs, x * 0.7, acc -> z -> acc * acc * 0.1 + acc * 0.3 + z))
+    score s = total + mu * sum(message) + mu * mu * sum(rows)
+    return mu
+
+export p

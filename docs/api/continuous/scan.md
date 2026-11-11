@@ -8,9 +8,21 @@ obtaining the final state’s marginal density requires integrating over earlier
 `ScanMorphism(cell)` realizes the iterated Kleisli composition of a
 per-step cell over a sequence. `ScanMorphism.rsample(x)` applies the
 kernel at each step while threading the hidden state.
-`ScanMorphism.log_joint(x, hidden_states)` sums the per-step log
-density. It accepts the hidden-state trajectory either as a positional
+`ScanMorphism.rsample_trajectory(x)` draws every state, and
+`ScanMorphism.log_prob(x, trajectory)` scores a trajectory as the sum of
+its per-step log densities; a final state alone is refused, since its
+density is a marginal over the earlier states.
+`ScanMorphism.log_joint(x, hidden_states)` sums the same per-step log
+density and accepts the hidden-state trajectory either as a positional
 tensor or as a `{state_key: tensor}` dictionary. The default
 `state_key` is `"h"`.
+
+`ScanMorphism` is the scan as a standalone morphism. Inside a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], the compiler binds
+every scan with a [`Scan`][quivers.continuous.Scan] step instead, whose
+step's sites are sites of the program addressed `"<label>@<n>"`: a
+stochastic morphism cell's draw at the scan's binding, a program cell's
+sites under their own labels. A program refuses a draw from a
+`ScanMorphism`.
 
 ::: quivers.continuous.scan

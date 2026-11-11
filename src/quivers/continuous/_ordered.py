@@ -114,8 +114,13 @@ class OrderedLogistic(Distribution):
         if self._validate_args:
             self._validate_sample(value)
         log_probs = self._category_log_probs()
-        idx = value.long().unsqueeze(-1)
-        idx = idx.expand(*log_probs.shape[:-1], 1)
+        idx = value.long()
+        # The value and the distribution's batch broadcast against each
+        # other: a predictor shared by every row scores a vector of
+        # responses, and a per-row predictor scores one response each.
+        shape = torch.broadcast_shapes(idx.shape, log_probs.shape[:-1])
+        log_probs = log_probs.expand(*shape, self._num_categories)
+        idx = idx.expand(shape).unsqueeze(-1)
         return log_probs.gather(-1, idx).squeeze(-1)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 import torch.nn as nn
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.continuous.morphisms import AnySpace
+from quivers.continuous.programs import MonadicProgram
 from quivers.core.objects import SetObject
 from quivers.program import Program
 from quivers.dsl.ast_nodes import (
@@ -130,11 +132,27 @@ class Compiler(
         # stored as their unsubstituted AST decl. Instantiated at each call
         # site by parameter substitution + α-renaming of internal latents.
         self._program_templates: dict[str, ProgramDecl] = {}
+        # Every ``program`` declaration of the module by name, parametric
+        # or not: the scope model a program's sites are addressed through.
+        self._program_decls: dict[str, ProgramDecl] = {}
+        # The parameter spaces of the program being compiled, innermost
+        # last: its host data and its lets, by name.
+        self._parameter_space_stack: list[dict[str, AnySpace]] = []
+        # The checked extents of the values the program being compiled
+        # binds, innermost last, by name.
+        self._value_extents_stack: list[dict[str, tuple[int, ...]]] = []
         # Operadic contraction declarations. Each entry is callable
         # from the DSL at define-binding sites; the value records the
         # compiled `EinsumWiring` plus the declared domain /
         # codomain typing for shape-checking at invocation time.
         self._contractions: dict[str, "_CompiledContraction"] = {}
+        # The step programs the expansion of a scan over a program cell
+        # declares, their compiled forms, and the learned initial state
+        # of each scan that declares one, shared by name as the checked
+        # elaboration shares its `weight` input.
+        self._scan_step_declarations: dict[str, ProgramDecl] = {}
+        self._scan_step_programs: dict[str, MonadicProgram] = {}
+        self._scan_initial_states: dict[str, nn.Parameter] = {}
 
     @property
     def categories(self) -> list[str]:
@@ -167,9 +185,15 @@ class Compiler(
         return self._algebra
 
     @property
-    def programs(self) -> dict:
-        """Declared parametric program templates (``program NAME(...)``)."""
-        return dict(getattr(self, "_program_templates", {}))
+    def programs(self) -> dict[str, ProgramDecl]:
+        """Every declared program, by name.
+
+        A program with typed parameters (a template) and one without
+        both appear: each is a scope whose parameters and sites are
+        addressed by ``program::site`` paths. A program without typed
+        parameters also compiles to a morphism, listed in `morphisms`.
+        """
+        return dict(getattr(self, "_program_decls", {}))
 
     @property
     def deductions(self) -> dict:
@@ -398,6 +422,8 @@ class Compiler(
         # QIEC-only source thus becomes an inspection/evaluation container;
         # its computation graph is never misrepresented as a PyTorch morphism.
         object.__setattr__(program, "qiec", qiec_module)
+        if qiec_module is not None:
+            self._attach_host_data_types(qiec_module)
         # Wire the loss registry into every compiled deduction so the
         # agenda's rule-firing and chart-completion paths can fire
         # rule-attached and chart-attached losses automatically.
@@ -406,6 +432,39 @@ class Compiler(
                 system._loss_registry = program.losses  # type: ignore[attr-defined]
                 system._deduction_name = name  # type: ignore[attr-defined]
         return program
+
+    def _attach_host_data_types(self, module: QiecModule) -> None:
+        """Give each compiled program the checked types of its host data.
+
+        A program's checked entry types every free name its steps read
+        (its ``data`` parameters) and every group map (its ``fibration``
+        parameters); the compiled program refuses a run whose supplied
+        data do not inhabit those types, so it computes only the model
+        the checked module describes. An input that fills a parameter of
+        a plated draw directly may also be supplied without its plate
+        axis, as one value every row shares.
+
+        Parameters
+        ----------
+        module : QiecModule
+            The checked module.
+        """
+        compiled = {
+            **getattr(self, "_posteriors", {}),
+            **self._morphisms,
+        }
+        for entry in module.entries:
+            target = compiled.get(entry.name)
+            if not isinstance(target, MonadicProgram):
+                continue
+            target.host_data_types = {
+                parameter.name: parameter.type
+                for parameter in entry.parameters
+                if parameter.role in ("data", "fibration")
+            }
+            target.host_data_shared = frozenset(
+                parameter.name for parameter in entry.parameters if parameter.per_row
+            )
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.
@@ -504,6 +563,7 @@ class Compiler(
         elif isinstance(stmt, MorphismDecl):
             self._compile_morphism(stmt)
         elif isinstance(stmt, ProgramDecl):
+            self._program_decls[stmt.name] = stmt
             self._compile_program(stmt)
         elif isinstance(stmt, ContractionDecl):
             self._compile_contraction(stmt)

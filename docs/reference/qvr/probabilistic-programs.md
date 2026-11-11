@@ -54,6 +54,50 @@ its binding, and host data may supply free names used by expressions. The
 compiler records those names as input parameters rather than treating them as
 globals.
 
+## Host data
+
+Each free name is a program input with one checked type, which
+`qvr check` and `entry_points()` list and every transpile target declares. The
+type is inferred from the name's uses:
+
+| Use of the free name `x` | Checked type of `x` |
+| --- | --- |
+| filling a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter |
+| combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
+| read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
+| used as an index | its elements are `Int` |
+| none of the above | a scalar `Real`, or `Int` for an index |
+
+The rule applies to `let` and `score` expressions alike. A free name that a
+reduction or a rowwise operation consumes, but that no use fixes the shape of,
+as in `score s = sum(weight)`, is reported at the step that reads it: nothing
+says how many entries it has. State its extent by combining it elementwise with
+a value over the intended object, or by reading it entrywise in a factor, as in
+`sum(factor i : Item in weight[i] * resid[i])`. Uses that fix two different
+shapes for one name are refused the same way.
+
+A free name that fills a family parameter of a plated draw directly may also be
+supplied without the plate axis: a scalar `sigma` for `scale=sigma`, or one
+cutpoint vector of shape `(cuts_extent,)` for `cutpoints=cuts`, is one value
+every row shares. Each path broadcasts it across the plate: the compiled runtime
+reads it as it is, and the reference machine spreads it before validating
+([`broadcast_shared_data`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.broadcast_shared_data)). Transpile targets declare the per-row
+shape, so data for them are spread the same way before they are handed over. A
+target whose library cannot read one parameter vector per row refuses the
+program under `data:per-row-vector-parameter` rather than score a different
+model; NumPyro, Pyro, and Edward2 render it.
+
+A run supplies each input at its checked type. The reference machine validates
+every argument, and the compiled runtime (`log_joint`, `trace`, `rsample`, and
+the inference built on them) refuses a host datum whose shape or element type
+contradicts its checked type, naming the datum and every admissible shape: a
+vector for a scalar input, a `(rows, units)` index for a vector over `Row`, a
+cutpoint table of neither the per-row nor the shared shape, or a floating-point
+tensor for an `Int` index. An open extent takes the length of the
+first datum it shapes. The check is what keeps the compiled runtime scoring the
+model the checked module and every transpiled program describe.
+
 Pure collection expressions such as `map` stay on the right of `=`. An
 effect-aware `traverse` is computation syntax and stays on the right of `<-`;
 the called computation's effects join the program row. See
@@ -181,6 +225,15 @@ program mixture : Row -> Row
 export mixture
 ```
 
+The latent's atoms are the elements of its declared index object, here the
+two elements of `Component`, numbered from zero; every target enumerates
+exactly those atoms, whatever form the probability argument takes (a sampled
+simplex, a literal, or a `let`). A latent declared without an index object
+takes its atom count from the width of its probability argument, and a
+target refuses the block with `marginalize:unknown-cardinality:<family>` when
+neither fixes the count. Inside the scope the latent is a number in that
+zero-based range, so `real(z + 1)` is 1 at the first atom on every target.
+
 `over=Item` requests one latent mixture assignment per item. `via=item_idx`
 maps observation rows into those groups. For product groups write
 `[over=[School, Subject]]` and `[via=[school_idx, subject_idx]]`; the product is
@@ -210,11 +263,103 @@ recursive helper over the open sequence extent:
 sample hidden <- token_embedding >> scan(cell)
 ```
 
-The reference machine replays the `n`-th occurrence of a step site from
-`"site@n"`, which makes a trajectory's addressing stable. `init=learned`
-adds a learned initial-state input; the default initial state is zero. Current
-transpile targets refuse scans with `scan:no-lowering:<cell>` because the open
-sequence extent is not a declared categorical object.
+The step program takes one position's entry and the previous state, draws the
+chain's elements before the scan at the entry, and applies the cell. The
+binding, here `hidden`, is the final state, a value the run computes rather
+than a site. `init=learned` adds a learned initial-state input; the default
+initial state is zero. The scan returns only the final state. Every scan,
+whatever its cell, runs its step as steps of the scanning program, once per
+position, and the compiled runtime and the reference machine apply the same
+rules to it.
+
+A cell that is a stochastic morphism, `morphism cell : A * H -> H ~ Normal`,
+draws the next state at every position, at a site named by the scan's
+binding: `hidden@0`, `hidden@1`, and so on. The log joint is the density of
+the whole trajectory, `sum_t log p(hidden_t | x_t, hidden_{t-1})`. A cell that
+is a deterministic morphism contributes no site. A cell may also be a program,
+whose own steps run once per position under the three rules below.
+
+1. **Scope.** A name a program cell reads without binding it is the scanning
+   program's binding of that name *before* the scan: a sampled site, a `let`,
+   or a program input. A name the scanning program does not bind before the
+   scan is host data of the scanning program, supplied under that name, and the
+   scanning program cannot bind it afterwards. A name the cell binds itself
+   shadows the scanning program's binding inside the cell and is not visible
+   after the scan. Gradients flow through the bindings the cell reads.
+2. **Sites.** Every site the step reaches is reached once per position. The
+   `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
+   from zero over the run, so for a single scan `n` is the position. A trace
+   records `s@0`, `s@1`, and so on; a replay, a clamp, or a joint density
+   addresses them by these keys. A `let` or `score` in a program cell appears in
+   a trace as `name@n`, and each position's `score` joins the log joint. The
+   labels the expansion makes derive from the binding the source writes: a
+   morphism cell's draw is the binding itself, the chain's elements before the
+   scan draw at `"<binding>$x_in"` (and `"<binding>$x_in_chain_<k>"` for a
+   longer prefix), and a scan inside a longer chain or a branch of `fan` or `@`
+   is named `"<binding>$<intermediate>"`. A source cannot write `$`, so these
+   labels never meet a source label. A program cell's own labels are the
+   source's; two sites of one program that would share a label, a program
+   cell's site and the scanning program's or another scan's, are refused on
+   both paths with one diagnostic at the scan.
+3. **Observations.** An `observe y` in the cell observes one value per
+   position. The scanning program takes the whole sequence as its observation
+   input `y`, with the position axis first: the checked elaboration types it
+   `Tensor[A]([<input>_extent, ...])` when one position's value is `A[...]`.
+   The compiled runtime takes a batch of sequences with the position axis
+   after the batch axis, `(batch, seq_len, ...)`; entry `[:, t]` is the
+   observation at position `t`, scored at site `y@t`. A single position may be
+   given instead as `y@t`, shaped `(batch, ...)`. Giving a position twice, a
+   value past the sequence's end, or a value for the scan's final state is
+   refused. The scanning program cannot also bind `y`.
+
+The same two layouts address every per-position site: a latent `s` takes
+`s@t` for one position or `s` for the whole sequence, `(batch, seq_len,
+...)`, which is the shape a lift's `additional_latents` entry declares. A value
+under the bare label with any other shape, such as a single final state, is
+refused rather than split across positions. On the reference machine, which
+replays one sequence at a time, a value under the bare label of a site reached
+more than once is refused rather than replayed at every position; give each
+occurrence under `s@n`.
+
+The log joint is the sum over positions of every site's density, every
+observation's likelihood, and every score. For a state-space model whose cell
+draws `s` and observes `o`, it is
+`sum_t log p(s_t | u_t, s_{t-1}) + log p(o_t | s_t)`.
+
+<!-- compile: qiec -->
+```qvr
+object Driver : Real 2
+object State : Real 3
+object Obs : Real 2
+
+morphism transition : Driver * State -> State ~ Normal
+morphism emission : State -> Obs ~ Normal
+
+program step(u_t, s_prev) : Driver * State -> State
+    sample s <- transition(u_t, s_prev)
+    observe o <- emission(s)
+    return s
+
+define run_all = scan(step)
+
+program ssm : Driver -> State
+    sample h <- run_all
+    return h
+
+export ssm
+```
+
+Here `ssm.log_joint(u, {"s@0": ..., "s@1": ..., "o": o})` scores a driver
+sequence `u` of shape `(batch, T, 2)` with `T` latent states and the
+observations `o` of shape `(batch, T, 2)`.
+
+A program composes with another through `sample y <- p(x)`, or runs at every
+position as the cell of `scan(p)`. A program used in `>>`, `repeat`, `stack`,
+`fan`, or `@` is refused on both paths, since the chain would treat it as a
+host function of its input.
+
+Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
+the open sequence extent is not a declared categorical object.
 
 ## Network kernels
 

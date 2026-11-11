@@ -521,10 +521,6 @@ def export_deviation(
     return worst_ratio, worst_abs, detail
 
 
-def _probe_points(points: list[Point]) -> list[_ProbePoint]:
-    return [{"params": point.params, "data": point.data} for point in points]
-
-
 # ---------------------------------------------------------------------
 # Structural tests. No container: these guard the registries, so a
 # coverage regression surfaces even where the probe images are absent.
@@ -759,8 +755,10 @@ def test_gallery_backend_export_matches_qvr(
         backend=backend,
         source_text=emitted,
         export_names=names,
-        points=_probe_points(points),
-        shapes=_gallery_tier._shapes_from_dataset(dataset),
+        points=[_gallery_data.target_point(dataset, point) for point in points],
+        shapes=_gallery_data.target_shapes(
+            dataset, _gallery_tier._shapes_from_dataset(dataset)
+        ),
         dtypes=_gallery_tier._dtypes_from_dataset(dataset),
         scratch_name=f"{stem}_{backend}",
     )
@@ -1167,8 +1165,10 @@ def _worst_export_ratio(
         backend=backend,
         source_text=source_text,
         export_names=names,
-        points=_probe_points(points),
-        shapes=_gallery_tier._shapes_from_dataset(dataset),
+        points=[_gallery_data.target_point(dataset, point) for point in points],
+        shapes=_gallery_data.target_shapes(
+            dataset, _gallery_tier._shapes_from_dataset(dataset)
+        ),
         dtypes=_gallery_tier._dtypes_from_dataset(dataset),
         scratch_name=scratch_name,
     )

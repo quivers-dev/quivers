@@ -1,0 +1,14 @@
+# Exercises a scalar `let` that reads a plated observation at literal
+# indices: the binding is one number, which no target may map over the
+# observation's plate.
+object Step : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Step <- Normal(loc=mu, scale=1.0)
+    let first = mu * y[0] + y[1]
+    score s = first
+    return mu
+
+export p

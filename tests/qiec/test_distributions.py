@@ -292,7 +292,10 @@ def test_unknown_families_and_bad_parameters_are_reported() -> None:
         RuntimeDistribution("Unheard", {"df": 3.0}).sample(random.Random(0))
     with pytest.raises(DistributionError, match="cannot score Unheard"):
         RuntimeDistribution("Unheard", {"df": 3.0}).log_prob(1.0)
-    with pytest.raises(DistributionError, match="needs parameter 'covariance_matrix'"):
+    with pytest.raises(
+        DistributionError,
+        match="Wishart needs covariance_matrix, precision_matrix, or scale_tril",
+    ):
         RuntimeDistribution("Wishart", {"df": 3.0}).log_prob(((1.0, 0.0), (0.0, 1.0)))
     with pytest.raises(DistributionError, match="needs parameter 'scale'"):
         RuntimeDistribution("Normal", {"loc": 0.0}).log_prob(0.0)

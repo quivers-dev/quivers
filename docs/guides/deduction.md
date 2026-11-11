@@ -174,9 +174,12 @@ run = run_deduction(module, "PCFG", tokens=["the", "dog", "runs"])
 
 The reference machine enumerates derivations, choosing split positions
 and rules through the search handler and combining the shots by the
-semiring's addition, while the agenda engine tabulates them; the two
-agree on every system whose derivations of the goal fit the declared
-`depth`. Learned weights reach the computation through the module's
+semiring's addition, while the agenda engine tabulates them. In both,
+`depth` bounds the constructor depth of rule conclusions' categories and
+never the length of a derivation: the search recurs on smaller spans (or,
+for multiple context-free items, smaller yields), and a cycle of unary
+rules converges within the declared `tolerance`, as the chart's
+aggregation does. Learned weights reach the computation through the module's
 `params` instance under the names the engine keys its parameters by, so
 a run may be given a parameter store built from a fitted system.
 

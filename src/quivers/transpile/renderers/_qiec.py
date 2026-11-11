@@ -26,7 +26,21 @@ from quivers.transpile.family_spelling import (
     helper_roots,
     spell_distribution,
 )
-from quivers.dsl.ast_nodes.let_expressions import LetExprNode, LetExprVar
+from quivers.dsl.ast_nodes.let_expressions import (
+    LetExprBinOp,
+    LetExprCall,
+    LetExprLiteral,
+    LetExprNode,
+    LetExprUnaryOp,
+    LetExprVar,
+)
+from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS
+from quivers.transpile._builtin_spellings import (
+    Dedicated,
+    builtin_spelling,
+    native_path,
+    spell_builtin,
+)
 from quivers.transpile.ir import (
     IRCall,
     IRMarginalize,
@@ -71,6 +85,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecTableMap,
     IRQiecComprehension,
     IRQiecDistributionValue,
+    IRQiecLetValue,
     IRQiecReduction,
     IRQiecRowwise,
     IRQiecGather,
@@ -1460,6 +1475,11 @@ def _free_runtime_capture(
             value(item.value, locally_bound)
         elif isinstance(item, IRQiecComprehension):
             value(item.body, locally_bound | {item.binder.name})
+        elif isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                value(binding.value, locally_bound)
+                locally_bound = locally_bound | {binding.binder.name}
+            value(item.body, locally_bound)
 
     def computation(item: IRQiecComputation, locally_bound: frozenset[str]) -> None:
         if isinstance(item, IRQiecReturn):
@@ -1544,6 +1564,10 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
         elif isinstance(item, IRQiecReduction | IRQiecRowwise):
             value(item.value)
         elif isinstance(item, IRQiecComprehension):
+            value(item.body)
+        elif isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                value(binding.value)
             value(item.body)
         elif isinstance(item, IRQiecConstructorValue):
             for field in item.fields:
@@ -2016,6 +2040,16 @@ def _python_value(target: str, node: IRQiecValue) -> str:
             f"tuple({_python_value(target, node.body)} for {binder} in "
             f"range({_extent_literal(node.extent)}))"
         )
+    if isinstance(node, IRQiecLetValue):
+        # Assignment expressions bind in order and are read by the later
+        # bindings and the body; the tuple keeps the term one level deep
+        # however many bindings it holds.
+        bindings = "".join(
+            f"({_local_name(binding.binder.name)} := "
+            f"{_python_value(target, binding.value)}), "
+            for binding in node.bindings
+        )
+        return f"({bindings}{_python_value(target, node.body)})[-1]"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2258,6 +2292,12 @@ def _julia_value(target: str, node: IRQiecValue) -> str:
             f"Tuple({_julia_value(target, node.body)} for {binder} in "
             f"0:({_extent_literal(node.extent)} - 1))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = ", ".join(
+            f"{_local_name(binding.binder.name)} = {_julia_value(target, binding.value)}"
+            for binding in node.bindings
+        )
+        return f"(let {bindings}; {_julia_value(target, node.body)} end)"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2571,6 +2611,16 @@ def _javascript_value(target: str, node: IRQiecValue) -> str:
             f"Object.freeze(mapN(function({binder}) {{ return "
             f"{_javascript_value(target, node.body)}; }}, {_extent_literal(node.extent)}))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = " ".join(
+            f"var {_local_name(binding.binder.name)} = "
+            f"{_javascript_value(target, binding.value)};"
+            for binding in node.bindings
+        )
+        return (
+            f"(function() {{ {bindings} return "
+            f"{_javascript_value(target, node.body)}; }})()"
+        )
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2810,6 +2860,12 @@ def _scheme_value(target: str, node: IRQiecValue) -> str:
             f"(_qvr-qiec-tuple (map (lambda ({binder}) {_scheme_value(target, node.body)}) "
             f"(iota {_extent_literal(node.extent)})))"
         )
+    if isinstance(node, IRQiecLetValue):
+        bindings = " ".join(
+            f"({_local_name(binding.binder.name)} {_scheme_value(target, binding.value)})"
+            for binding in node.bindings
+        )
+        return f"(let* ({bindings}) {_scheme_value(target, node.body)})"
     raise TypeError(f"unknown QIEC value {node!r}")
 
 
@@ -2993,10 +3049,11 @@ def _stan_type(type_: object) -> str:
     )
 
 
-#: Stan spellings of the primitives a Stan function may apply, as
-#: templates over the rendered arguments. Booleans are Stan integers,
-#: so the logical operators are Stan's, and an activation is written
-#: out in the functions Stan has.
+#: Stan spellings of the operators, comparisons, conversions, and
+#: operand-typed `min` / `max` a Stan function may apply, as templates
+#: over the rendered arguments. Booleans are Stan integers, so the
+#: logical operators are Stan's. Every other math builtin is spelled by
+#: the shared per-target table, through `_stan_builtin`.
 _STAN_PRIMITIVES: dict[str, str] = {
     "add_int": "({0} + {1})",
     "sub_int": "({0} - {1})",
@@ -3004,7 +3061,6 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "div_int": "({0} %/% {1})",
     "mod_int": "({0} - {1} * ({0} %/% {1}))",
     "neg_int": "(-{0})",
-    "abs_int": "abs({0})",
     "min_int": "min({0}, {1})",
     "max_int": "max({0}, {1})",
     "add_real": "({0} + {1})",
@@ -3012,13 +3068,8 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "mul_real": "({0} * {1})",
     "div_real": "({0} / {1})",
     "neg_real": "(-{0})",
-    "abs_real": "abs({0})",
     "min_real": "fmin({0}, {1})",
     "max_real": "fmax({0}, {1})",
-    "pow_real": "pow({0}, {1})",
-    "exp": "exp({0})",
-    "log": "log({0})",
-    "sqrt": "sqrt({0})",
     "eq_int": "({0} == {1})",
     "ne_int": "({0} != {1})",
     "lt_int": "({0} < {1})",
@@ -3037,46 +3088,6 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "or": "({0} || {1})",
     "not": "(!{0})",
     "int_to_real": "(1.0 * {0})",
-    "expm1": "expm1({0})",
-    "log1p": "log1p({0})",
-    "log2": "log2({0})",
-    "log10": "log10({0})",
-    "rsqrt": "inv_sqrt({0})",
-    "square": "square({0})",
-    "sign": "(({0} > 0) - ({0} < 0))",
-    "reciprocal": "inv({0})",
-    "sin": "sin({0})",
-    "cos": "cos({0})",
-    "tan": "tan({0})",
-    "asin": "asin({0})",
-    "acos": "acos({0})",
-    "atan": "atan({0})",
-    "sinh": "sinh({0})",
-    "cosh": "cosh({0})",
-    "tanh": "tanh({0})",
-    "asinh": "asinh({0})",
-    "acosh": "acosh({0})",
-    "atanh": "atanh({0})",
-    "floor": "floor({0})",
-    "ceil": "ceil({0})",
-    "round": "round({0})",
-    "trunc": "trunc({0})",
-    "erf": "erf({0})",
-    "erfc": "erfc({0})",
-    "erfinv": "inv_erfc(1 - {0})",
-    "lgamma": "lgamma({0})",
-    "digamma": "digamma({0})",
-    "sigmoid": "inv_logit({0})",
-    "relu": "fmax({0}, 0)",
-    "relu6": "fmin(fmax({0}, 0), 6)",
-    "elu": "({0} > 0 ? {0} : expm1({0}))",
-    "selu": "(1.0507009873554805 * ({0} > 0 ? {0} : 1.6732632423543772 * expm1({0})))",
-    "gelu": "(0.5 * {0} * (1 + erf({0} / sqrt(2))))",
-    "silu": "({0} * inv_logit({0}))",
-    "mish": "({0} * tanh(log1p_exp({0})))",
-    "softplus": "log1p_exp({0})",
-    "logsigmoid": "log_inv_logit({0})",
-    "softsign": "({0} / (1 + abs({0})))",
 }
 
 
@@ -3101,15 +3112,114 @@ def _stan_value(node: IRQiecValue, computation: str) -> str:
         If a primitive has no Stan spelling.
     """
     if isinstance(node, IRQiecPrimitiveApplication):
+        arguments = tuple(
+            _stan_value(argument, computation) for argument in node.arguments
+        )
+        builtin = PRIMITIVE_BUILTINS.get(node.name)
+        spelling = (
+            None
+            if builtin is None
+            else builtin_spelling("stan", builtin, len(arguments))
+        )
+        if (
+            builtin is not None
+            and spelling is not None
+            and not isinstance(spelling, Dedicated)
+        ):
+            return _stan_builtin(builtin, arguments)
         template = _STAN_PRIMITIVES.get(node.name)
         if template is None:
             raise UnsupportedConstruct(
                 "qvr-stan", [f"qiec:stan:primitive:{node.name}:{computation}"]
             )
-        return template.format(
-            *(_stan_value(argument, computation) for argument in node.arguments)
-        )
+        return template.format(*arguments)
     return _static_value(node)
+
+
+def _stan_builtin(builtin: str, arguments: tuple[str, ...]) -> str:
+    """A math builtin applied to rendered Stan arguments.
+
+    The builtin is spelled by the shared per-target table: a Stan
+    function of its own, or a closed form whose own builtins are
+    spelled the same way.
+
+    Parameters
+    ----------
+    builtin : str
+        The QVR builtin.
+    arguments : tuple[str, ...]
+        The rendered arguments.
+
+    Returns
+    -------
+    str
+        The Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If Stan cannot express the builtin.
+    """
+    placeholders = tuple(
+        LetExprVar(name=f"__qiec_argument{index}") for index in range(len(arguments))
+    )
+    return _stan_text(
+        spell_builtin("stan", builtin, placeholders),
+        {
+            placeholder.name: text
+            for placeholder, text in zip(placeholders, arguments, strict=True)
+        },
+    )
+
+
+#: Stan's real-valued pointwise `max` and `min`, which a closed form
+#: applies to reals.
+_STAN_REAL_POINTWISE: dict[str, str] = {"max": "fmax", "min": "fmin"}
+
+
+def _stan_text(expr: LetExprNode, arguments: dict[str, str]) -> str:
+    """A spelled builtin's expression as Stan text.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The call or its closed form, over placeholder variables.
+    arguments : dict[str, str]
+        The rendered argument each placeholder stands for.
+
+    Returns
+    -------
+    str
+        The Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the expression holds a node a closed form does not use.
+    """
+    if isinstance(expr, LetExprVar):
+        return arguments[expr.name]
+    if isinstance(expr, LetExprLiteral):
+        return repr(float(expr.value))
+    if isinstance(expr, LetExprBinOp):
+        return (
+            f"({_stan_text(expr.left, arguments)} {expr.op} "
+            f"{_stan_text(expr.right, arguments)})"
+        )
+    if isinstance(expr, LetExprUnaryOp):
+        return f"(-{_stan_text(expr.operand, arguments)})"
+    if isinstance(expr, LetExprCall):
+        path = native_path("stan", expr.func, len(expr.args))
+        name = (
+            ".".join(path)
+            if path is not None
+            else _STAN_REAL_POINTWISE.get(expr.func, expr.func)
+        )
+        rendered = ", ".join(_stan_text(argument, arguments) for argument in expr.args)
+        return f"{name}({rendered})"
+    raise UnsupportedConstruct(
+        "qvr-stan", [f"qiec:stan:builtin-form:{type(expr).__name__}"]
+    )
 
 
 def _stan_signature(item: IRQiecNamedComputation) -> str:
@@ -3182,18 +3292,19 @@ def _stan_statements(
         The statements.
     """
     if isinstance(node, IRQiecReturn):
-        value = _stan_value(node.value, computation)
+        lines, value = _stan_expression(node.value, computation, indent)
         if target is None:
-            return [f"{indent}return {value};"]
-        return [f"{indent}{target} = {value};"]
+            return [*lines, f"{indent}return {value};"]
+        return [*lines, f"{indent}{target} = {value};"]
     if isinstance(node, IRQiecCall):
-        callee = _stan_call(node, computation)
+        lines, callee = _stan_call(node, computation, indent)
         if target is None:
-            return [f"{indent}return {callee};"]
-        return [f"{indent}{target} = {callee};"]
+            return [*lines, f"{indent}return {callee};"]
+        return [*lines, f"{indent}{target} = {callee};"]
     if isinstance(node, IRQiecIf):
-        condition = _stan_value(node.condition, computation)
+        lines, condition = _stan_expression(node.condition, computation, indent)
         return [
+            *lines,
             f"{indent}if ({condition}) {{",
             *_stan_statements(node.then, binders, computation, target, indent + "  "),
             f"{indent}}} else {{",
@@ -3209,10 +3320,13 @@ def _stan_statements(
             name = _local_name(step.binder.name)
             declared = f"{indent}{_stan_type(local.type)} {name}"
             if isinstance(step.first, IRQiecReturn):
-                value = _stan_value(step.first.value, computation)
+                before, value = _stan_expression(step.first.value, computation, indent)
+                lines.extend(before)
                 lines.append(f"{declared} = {value};")
             elif isinstance(step.first, IRQiecCall):
-                lines.append(f"{declared} = {_stan_call(step.first, computation)};")
+                before, callee = _stan_call(step.first, computation, indent)
+                lines.extend(before)
+                lines.append(f"{declared} = {callee};")
             else:
                 lines.append(f"{declared};")
                 lines.extend(
@@ -3223,7 +3337,9 @@ def _stan_statements(
     raise TypeError("the QIEC capability analyzer admitted a non-pure computation")
 
 
-def _stan_call(node: IRQiecCall, computation: str) -> str:
+def _stan_call(
+    node: IRQiecCall, computation: str, indent: str
+) -> tuple[list[str], str]:
     """A call of a module computation as a Stan call expression.
 
     Parameters
@@ -3232,16 +3348,90 @@ def _stan_call(node: IRQiecCall, computation: str) -> str:
         The call.
     computation : str
         The calling computation's name, for refusals.
+    indent : str
+        The indentation of the declarations the arguments need.
 
     Returns
     -------
-    str
+    tuple[list[str], str]
+        The declarations of the arguments' shared bindings, and
         ``qiec_<callee>(<arguments>)``.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If an argument applies a primitive with no Stan spelling.
     """
-    arguments = ", ".join(
-        _stan_value(argument, computation) for argument in node.arguments
-    )
-    return f"qiec_{_safe_name(node.name)}({arguments})"
+    lines: list[str] = []
+    arguments: list[str] = []
+    for argument in node.arguments:
+        before, rendered = _stan_expression(argument, computation, indent)
+        lines.extend(before)
+        arguments.append(rendered)
+    return lines, f"qiec_{_safe_name(node.name)}({', '.join(arguments)})"
+
+
+def _stan_expression(
+    node: IRQiecValue, computation: str, indent: str
+) -> tuple[list[str], str]:
+    """A pure scalar value as Stan declarations and one expression.
+
+    Stan expressions have no binding form, so each binding of an
+    ``IRQiecLetValue`` becomes a typed local declared ahead of the
+    statement that reads the value, and the expression reads it by
+    name. The value is scalar: the Stan capability set admits no
+    comprehension whose index a binding could read.
+
+    Parameters
+    ----------
+    node : IRQiecValue
+        The value.
+    computation : str
+        The computation it belongs to, for the refusal's kind.
+    indent : str
+        The indentation of the declarations.
+
+    Returns
+    -------
+    tuple[list[str], str]
+        The declarations in evaluation order, and the Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If a primitive has no Stan spelling.
+    """
+    lines: list[str] = []
+
+    def hoisted(item: IRQiecValue) -> IRQiecValue:
+        """Emit a let value's bindings as statements and return its body.
+
+        Parameters
+        ----------
+        item : IRQiecValue
+            The value.
+
+        Returns
+        -------
+        IRQiecValue
+            The value with every let binding emitted ahead of it.
+        """
+        if isinstance(item, IRQiecLetValue):
+            for binding in item.bindings:
+                bound = _stan_value(hoisted(binding.value), computation)
+                lines.append(
+                    f"{indent}{_stan_type(binding.binder.type)} "
+                    f"{_local_name(binding.binder.name)} = {bound};"
+                )
+            return hoisted(item.body)
+        if isinstance(item, IRQiecPrimitiveApplication):
+            return item.with_(
+                arguments=tuple(hoisted(argument) for argument in item.arguments)
+            )
+        return item
+
+    value = _stan_value(hoisted(node), computation)
+    return lines, value
 
 
 def _bound_locals(node: IRQiecComputation) -> tuple[IRQiecLocal, ...]:

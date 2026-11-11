@@ -328,6 +328,8 @@ an iid product over the *batch axes* $\{a_i\} \cup \{b_j\} \setminus E$ of an $F
 
 **Arity contract.**  The axis-role clause is well-typed only when $|E| = r_F$.  This preserves a critical categorical distinction: a flat $\mathrm{MVN}_{d_1 d_2}$ with dense covariance over $\mathbb{R}^{d_1 d_2}$ (event rank 1, single named axis whose dim equals $d_1 \cdot d_2$) is a different morphism from a $\mathrm{MatrixNormal}(d_1, d_2)$ with Kronecker covariance $V \otimes U$ over $\mathbb{R}^{d_1 \times d_2}$ (event rank 2, two named axes); no auto-substitution between them occurs.
 
+The contract binds a morphism declaration's clause. A program's `sample` or `observe` step of a family with $r_F \le 1$ may list $n > r_F$ axes $(e_1, \dots, e_n)$: its event axes are the trailing $(e_{n - r_F + 1}, \dots, e_n)$, and the leading $n - r_F$ axes are batch axes, so the site is an iid product $F^{\prod_{i \le n - r_F} d_{e_i}}$ over them, laid out in the order written. A step of a matrix-valued family keeps $|E| = r_F$.
+
 **Positional binding.**  For families with two distinguishable event axes (row and column for `MatrixNormal`; the two correlation indices for `LKJCholesky`), the ordering of `over (e_1, e_2)` corresponds positionally to the family's declared event-axis ordering.
 
 **Naturality.**  Refactoring a morphism's dom or cod (e.g. $B \mapsto B_1 \otimes B_2$) invalidates the old axis references at type-check time rather than silently rebinding them. This rejection preserves the declared product structure instead of guessing how the old axes map to the new factors.

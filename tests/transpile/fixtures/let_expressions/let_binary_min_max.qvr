@@ -1,0 +1,21 @@
+# Exercises the two-argument `min` and `max`, which are pointwise: on
+# reals, on two vectors, and on the integer index arithmetic of a
+# `factor` binder clamped into range (`ys[max(t - 1, 0)]`), where an
+# axis reduction or a real-valued index would read the wrong entry.
+object Step : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Step <- Normal(loc=mu, scale=1.0)
+    let ys = [1.0, 2.0, 3.0, 4.0]
+    let cap = min(mu, 1.0)
+    let bottom = max(mu, 0.0)
+    let zs = [2.5, 0.5, 3.5, 1.0]
+    let highs = max(ys, zs)
+    let lag = factor t : Step in ys[max(t - 1, 0)]
+    let lead = factor t : Step in ys[min(t + 1, 3)]
+    score s = cap + bottom + mu * sum(highs) + mu * mu * sum(lag) + mu * mu * mu * sum(lead)
+    return mu
+
+export p

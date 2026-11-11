@@ -1,0 +1,15 @@
+# Exercises a marginalized latent indexing a sampled vector in an
+# observation whose other parameter is a literal: at each atom the
+# location is one value, shared by every row of the plate.
+object Step : FinSet 3
+object K : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu : K <- Normal(loc=0.0, scale=1.0)
+    sample prior <- Dirichlet(concentration=1.0) [over=K]
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        observe y : Step <- Normal(loc=mu[z], scale=1.0)
+    return mu
+
+export p

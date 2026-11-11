@@ -1,0 +1,17 @@
+# Exercises integer division and remainder, which truncate toward zero
+# on every target, over operands of both signs, beside a real division
+# that stays exact.
+object Step : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Step <- Normal(loc=mu, scale=1.0)
+    let below = factor t : Step in real((t - 3) / 2)
+    let rest = factor t : Step in real((t - 3) % 2)
+    let above = factor t : Step in real((t + 3) / 2)
+    let half = mu / 4.0
+    score s = mu * sum(below) + mu * mu * sum(rest) + half * sum(above)
+    return mu
+
+export p

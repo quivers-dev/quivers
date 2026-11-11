@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from quivers.dsl.ast_nodes import (
     LetExprBinOp,
     LetExprBool,
@@ -23,9 +25,13 @@ from quivers.dsl.ast_nodes import (
     QiecTypeName,
     TypeName,
 )
+import pytest
+
 from quivers.dsl.let_expr_traversal import (
+    free_let_callees,
     free_let_names,
     let_expr_children,
+    map_let_expr,
     substitute_let_expr,
 )
 
@@ -100,4 +106,53 @@ def test_every_surface_variant_has_an_explicit_traversal_case() -> None:
     assert {type(sample) for sample in samples} == surface_variants
     for sample in samples:
         let_expr_children(sample)
-        substitute_let_expr(sample, {"unused": leaf})
+        substitute_let_expr(sample, {"unused": leaf}, callees={"unused": "g"})
+        free_let_callees(sample)
+        assert map_let_expr(sample, lambda node: node) == sample
+        renamed = map_let_expr(
+            sample,
+            lambda node: node.with_(name="y") if isinstance(node, LetExprVar) else node,
+        )
+        assert "x" not in free_let_names(renamed)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        let_expr_children,
+        lambda node: map_let_expr(node, lambda inner: inner),
+        free_let_callees,
+        lambda node: substitute_let_expr(node, {}),
+    ],
+)
+def test_a_node_outside_the_let_expression_union_raises_by_name(operation) -> None:
+    stray = cast(LetExprNode, LetFactorBinder(var="i", index=TypeName(name="I")))
+    with pytest.raises(TypeError, match="LetFactorBinder"):
+        operation(stray)
+
+
+def test_callee_substitution_renames_free_callees_only() -> None:
+    expression = LetExprList(
+        items=(
+            LetExprCall(func="f", args=(_var("f"),)),
+            LetExprLambda(param="f", body=LetExprCall(func="f", args=())),
+        )
+    )
+    replaced = substitute_let_expr(expression, {}, callees={"f": "g"})
+
+    assert isinstance(replaced, LetExprList)
+    outer, inner = replaced.items
+    assert isinstance(outer, LetExprCall) and outer.func == "g"
+    assert outer.args == (_var("f"),)
+    assert isinstance(inner, LetExprLambda)
+    assert isinstance(inner.body, LetExprCall) and inner.body.func == "f"
+    assert free_let_callees(replaced) == ("g",)
+
+
+def test_callee_substitution_renames_a_capturing_binder() -> None:
+    expression = LetExprLambda(param="g", body=LetExprCall(func="f", args=(_var("g"),)))
+    replaced = substitute_let_expr(expression, {}, callees={"f": "g"})
+
+    assert isinstance(replaced, LetExprLambda)
+    assert replaced.param == "g_1"
+    assert replaced.body == LetExprCall(func="g", args=(_var("g_1"),))

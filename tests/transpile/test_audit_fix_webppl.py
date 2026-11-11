@@ -12,8 +12,9 @@ These tests pin two properties of the graft:
 2. The graft fires exactly when a helper is used. A deterministic
    `let` that pivots on a data-input array lowers to a plain
    `mapIndexed` and needs no helper, so the runtime must not be
-   prepended; a `let` that broadcasts an array-valued prior under a
-   scalar operator does emit `_qvr_bcast` and must graft it.
+   prepended; a plated `let` reads an array-valued prior one row at a
+   time; and a score that applies a scalar operator to whole arrays
+   emits `_qvr_bcast` and must graft it.
 
 Assertions run on emitted text so they stay fast and deterministic.
 """
@@ -117,8 +118,8 @@ def test_webppl_data_input_pivot_let_does_not_graft_runtime() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Graft trigger: a `let` broadcasting an array-valued prior under a
-# scalar operator DOES emit `_qvr_bcast`, so the helper is grafted.
+# A plated `let` reads an array-valued prior one row at a time; a score
+# over whole arrays DOES emit `_qvr_bcast`, so the helper is grafted.
 # ---------------------------------------------------------------------------
 
 
@@ -133,15 +134,34 @@ program g : O -> O
 export g"""
 
 
-def test_webppl_array_prior_let_grafts_qvr_bcast() -> None:
+def test_webppl_array_prior_let_reads_the_prior_row_by_row() -> None:
     out = _emit(_ARRAY_PRIOR_BROADCAST)
     dense = _dense(out)
-    # The array-valued prior `w` broadcasts through `_qvr_bcast`.
-    assert '_qvr_bcast("*"' in dense
-    assert '_qvr_bcast("+"' in dense
-    assert "var _qvr_bcast = function" in out
-    # The scalar operators are never applied to the array directly.
+    # The plated `z` is built one row at a time, each row reading the
+    # array-valued prior `w` at that row, so the scalar operators apply
+    # to one entry of `w` and never to the array.
+    assert "varz=mapIndexed(function(__i_1,_){return(w[__i_1]*2)+1;}" in dense
     assert "w*2" not in dense
+
+
+_ARRAY_SCORE = """object O : FinSet 4
+
+program g : O -> O
+    sample w : O <- Normal(loc=0.0, scale=1.0)
+    score s = sum(w * w)
+    return w
+
+export g"""
+
+
+def test_webppl_array_score_grafts_qvr_bcast() -> None:
+    out = _emit(_ARRAY_SCORE)
+    dense = _dense(out)
+    # The score multiplies two whole arrays, which a scalar operator
+    # would coerce to NaN, so it routes through `_qvr_bcast`, and the
+    # helper is grafted above the model.
+    assert 'sum(_qvr_bcast("*",w,w))' in dense
+    assert "var _qvr_bcast = function" in out
 
 
 # ---------------------------------------------------------------------------

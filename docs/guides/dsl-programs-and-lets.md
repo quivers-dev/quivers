@@ -261,6 +261,15 @@ The renamed step list is inlined into the caller, so distinct call
 sites contribute distinct factors to the parent's joint kernel:
 fresh latents per use, no inadvertent tying.
 
+The substitution reaches every position a name can occupy in a `let`
+or `score` right-hand side and in the arguments of a computation call:
+the array and the indices of `arr[idx]`, call arguments, method
+receivers, list and tuple items, lambda and `factor` bodies, and an
+object parameter named as a `factor` binder's index. It is
+capture-avoiding: a lambda parameter or `factor` binder shadows a
+parameter or local of the same spelling, and is renamed if a
+substituted name would otherwise be captured by it.
+
 <!-- compile: false -->
 ```qvr
 # Parametric random-intercepts template: one HalfNormal scale and
@@ -332,8 +341,9 @@ option block, before any trailing `~ Family(...)` initializer:
 ```
 
 `over=<axes>` names the **event axes**: the axes on which the
-family's joint structure lives. The axis count must match the
-family's declared `event_rank` (0 for scalar families like Normal /
+family's joint structure lives. On a `morphism` declaration the axis
+count must match the family's declared `event_rank`, and on a `sample`
+or `observe` step it must be at least that rank, as described below (0 for scalar families like Normal /
 Beta / Gamma; 1 for vector families like
 [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal),
 [`Dirichlet`](../api/continuous/families.md#quivers.continuous.families.ConditionalDirichlet),
@@ -352,6 +362,20 @@ axis is the row axis, the second the column axis). The full
 event-rank table lives in
 [continuous families](continuous-families.md#event-rank-and-axis-role-syntax).
 
+On a `sample` or `observe` step, `over` may list more axes than the
+family's event rank. The leading axes beyond the event rank then index an independent
+array of variates, and the trailing ones are the family's event axes:
+`sample w : A <- Normal(loc=0.0, scale=1.0) [over=[B, C]]` draws an
+`(A, B, C)` array of independent normals, and `sample p : A <-
+Dirichlet(concentration=1.0) [over=[B, K]]` draws one `K`-simplex point
+per element of `A` and `B`, an `(A, B, K)` array. The site holds every
+listed axis in the order written, after the plate of the index
+annotation, so a body reads it as `w[a, b, c]`. The independent axes are
+batch axes of the site, exactly as if they were written in `iid_over`. A
+matrix-valued family (event rank 2) takes no such leading axes, and the
+compiler rejects them. A `morphism` declaration's clause keeps the exact
+count below.
+
 `iid_over=<axes>` is an optional readability assertion naming the
 batch axes (the complement of `over`). Any axis not in `over` is
 batched by default, which categorically is a product of independent
@@ -368,7 +392,9 @@ Dirichlet(concentration=[1.0, 2.0, 3.0])` draws one three-simplex point per item
 A vector family's single parameter is named like every other family parameter.
 Write `Dirichlet(concentration=[1.0, 2.0, 3.0])` for an explicit vector or
 `Dirichlet(concentration=1.0)` for a symmetric concentration at the dimension
-fixed by the step's plate or the program's declared codomain.
+fixed by the step's annotation, its `over` axis, or the program's declared
+codomain; a draw that fixes no simplex dimension is refused at compile time
+with its location.
 
 **Axis names.** Names resolve against the named factors of the
 surrounding morphism's dom and cod (or the type annotation `: T`
@@ -390,8 +416,9 @@ rebinding.
 
 **Compile-time errors.** Two diagnostics fire here:
 
-- *"axis count does not match family event_rank"*: the family
-  declares event_rank `k` but `over` lists `j ≠ k` axes. Common
+- *"axis count does not match family event_rank"*: on a `morphism`
+  declaration, the family declares event_rank `k` but `over` lists
+  `j ≠ k` axes. Common
   when migrating from a flat
   [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal)
   (event_rank 1) to a matrix
@@ -450,8 +477,16 @@ kernel](https://en.wikipedia.org/wiki/Dirac_delta_function).
 ### Checked primitive reference
 
 The checked registry defines the portable QIEC expression set. Operators and calls are
-resolved by argument type before execution or transpilation. Reductions act on
-the entire supplied tensor; rowwise operations act on its last axis. For a
+resolved by argument type before execution or transpilation. A reduction
+collapses the last axis of its argument and a rowwise operation acts along that
+axis, keeping the shape. For a vector over a plate, as in `sum(theta)` over
+`theta : School`, the last axis is the only one and the result is the plate's
+total. For a plate of event vectors, as in `sum(z_row * w_row)` over a
+`Resp`-plated value with an `[over=LatentDim]` event axis, the result keeps the
+plate and holds one inner product per row. For a table a `factor` builds over
+`Row` and `Unit`, the result holds one number per `Row`. `normalize` divides
+each row by its sum. Every execution path and transpile target reads the
+builtins this way. For a
 [contraction](dsl-contractions.md#type-driven-wiring-inference) over a named axis, use a typed
 [contraction declaration](dsl-contractions.md).
 
@@ -459,7 +494,11 @@ the entire supplied tensor; rowwise operations act on its last axis. For a
 
 **Arithmetic and comparisons**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`,
 `<=`, `>`, `>=`, `&&`, `||`; and the call forms `pow`, `abs`, `min`, and
-`max`.
+`max`. The two-argument `min(a, b)` and `max(a, b)` are pointwise, unlike
+the one-argument reductions below: two tensors compare entry by entry, a
+scalar broadcasts against a tensor, and two `Int` operands give an `Int`,
+so `ys[max(t - 1, 0)]` clamps an index arithmetic expression into range
+on every target.
 
 **Pointwise transcendentals**: `exp`, `expm1`, `log`, `log1p`,
 `log2`, `log10`, `sqrt`, `rsqrt`, `square`, `abs`, `sign`,
@@ -469,6 +508,15 @@ the entire supplied tensor; rowwise operations act on its last axis. For a
 
 **Activations**: `relu`, `relu6`, `elu`, `selu`, `gelu`, `silu`, `mish`,
 `softplus`, `logsigmoid`, `softsign`, `sigmoid`, and `tanh`.
+
+Every transpile target computes each pointwise builtin above with the
+reference's meaning: through a function of its own where it has one
+(Stan's `inv_logit` for `sigmoid`, JAGS's `loggam` for `lgamma`), and
+otherwise through a definition in terms of the others (`gelu(x)` as
+`0.5 * x * (1 + erf(x / sqrt(2)))`, JAGS's `erf` through its normal CDF
+`phi`). `round` rounds a tie to even on every target. A builtin a target
+cannot express is refused by name when the program is transpiled; BUGS
+and JAGS refuse `digamma`.
 
 **Tensor reductions**: `sum`, `mean`, `min`, `max`, `prod`, `logsumexp`.
 

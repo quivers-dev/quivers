@@ -111,7 +111,7 @@ z_struct = torch.bernoulli(pi_true)
 y = z_struct * torch.poisson(rate_true)
 
 observations = {"x": x, "y": y, "out_idx": out_idx}
-x_in = torch.zeros(ND, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit

@@ -30,6 +30,13 @@ Gradient-based MCMC is an alternative to fitting a variational family. The kerne
 gradients flow through
 [`torch.autograd.grad`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad.html).
 
+MCMC targets the posterior of one run of the program, so `MCMC.run`
+takes a one-row input, such as `x = torch.zeros(1, 1)`, and refuses more
+rows: [an input of `B` rows is `B` independent runs](inference-foundations.md#input-rows-are-independent-runs),
+and the rows a program observes come from its data and its plates. Its
+latents are the sites one run at `(x, observations)` reaches, every
+position of a scanned program cell included.
+
 <!-- python: skip -->
 ```python
 from quivers.inference import NUTSKernel, MCMC
@@ -52,7 +59,7 @@ print(result.r_hat)             # rank-normalized folded split R-hat
 print(result.ess)               # rank-normalized bulk ESS
 print(result.divergence_counts) # per-chain divergence count
 print(result.total_divergences) # sum across chains
-samples = result.samples        # dict[str, Tensor] of shape (chains, draws, ...)
+samples = result.samples        # dict[str, Tensor]: (chains, draws, *constrained_shape)
 ```
 
 Both
@@ -61,9 +68,17 @@ Both
 Nesterov dual-averaging [@hoffman2014nuts]
 step-size adaptation during warmup, and Welford-online mass-matrix
 adaptation when `mass_matrix` is set to `"diagonal"` or `"dense"`
-(the default `"identity"` disables mass-matrix adaptation). Chains
+(`"identity"`, the `HMCKernel` default, disables mass-matrix
+adaptation; `NUTSKernel` defaults to `"diagonal"`). Chains
 run sequentially: the driver loops over `num_chains`, and within
 each chain warmup and sampling advance one leapfrog step at a time.
+Each leapfrog step evaluates the target once, through
+[`PotentialFn.value_and_grad`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.value_and_grad)
+(one forward and one backward pass). The value it returns is the
+endpoint log-density in the Hamiltonian, and NUTS carries the
+selected proposal's gradient into the next transition, so a
+transition costs one target evaluation per leapfrog step and nothing
+more.
 Each chain derives an independent local generator from `seed`; that
 stream controls initialization, momentum, tree direction, subtree
 selection, and acceptance. Thus repeated runs with the same seed are
@@ -73,9 +88,27 @@ advance a caller-owned stream. `seed` and `generator` are mutually
 exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
-The [`MCMCResult`](../api/inference/mcmc.md) exposes per-site convergence and effective sample size diagnostics
+Before sampling, `MCMC.run` scores each chain's initial position with
+[`PotentialFn.check_initial`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.check_initial),
+which converts no error: observed values that are not finite or lie
+outside a likelihood's support, row counts that disagree, and errors in
+a custom score function raise there, with a note naming the chain, and
+a non-finite initial log density raises naming the offending terms.
+During sampling a position scores $-\infty$, and is rejected, only when
+it lies outside the model's support: a `torch.distributions` parameter
+or value validation error, recognised by the validator that raised it,
+or a `torch.linalg.LinAlgError` from a matrix the position makes
+non-positive-definite. Every other error propagates.
+
+The [`MCMCResult`](../api/inference/mcmc.md) holds each site's draws at
+`(num_chains, num_samples, *constrained_shape)`, where
+`constrained_shape` is the shape of one draw: `()` for a scalar site,
+`(d,)` for a vector site, and `(n, ...)` for a plate of size `n`. It exposes per-site convergence and effective sample size diagnostics
 [@vehtari2021rhat] via
-`r_hat` and `ess`. Each `r_hat` coordinate is the conservative
+`r_hat` and `ess`, each of shape `constrained_shape` (zero-dimensional
+for a scalar site). [Latent site shapes](inference-foundations.md#latent-site-shapes)
+relates these shapes to the `(batch, ...)` values that `log_joint`
+and the guides exchange. Each `r_hat` coordinate is the conservative
 maximum of the rank-normalized and folded split statistics, while
 `ess` is the rank-normalized cross-chain bulk ESS. The result also
 exposes per-chain divergence counts via `divergence_counts` (with
@@ -99,10 +132,33 @@ distribution or choose initial chain values, as specified below.
 ### AutoDAIS
 
 Differentiable annealed importance
-sampling [@zhang2021dais] wraps a base
-guide with $K$ HMC trajectories along an annealing path between
-base and target. The base mean and scale, step size, and inverse
-temperatures are jointly trained via SVI.
+sampling [@zhang2021dais; @geffner2021uha] wraps a base
+guide with $K$ uncorrected Hamiltonian transitions along an annealing
+path between base and target: each transition draws a fresh momentum
+and takes leapfrog steps on the bridge
+$q_0^{1-\beta_k}\, p^{\beta_k}$, with no Metropolis correction. The
+base mean and scale, step sizes, and inverse temperatures are jointly
+trained via SVI, differentiating through the whole trajectory.
+
+Each draw comes with the log importance weight of its own trajectory,
+
+$$\log w = \log p(u_K, y) - \log q_0(u_0)
+  + \sum_{k=1}^{K}\bigl[\log \mathcal{N}(\hat v_k) - \log \mathcal{N}(v_{k-1})\bigr],$$
+
+where $v_{k-1}$ and $\hat v_k$ are the momenta before and after
+transition $k$ and both densities are taken in the unconstrained space
+the chain runs in (Eq. 15 of [@zhang2021dais]). Because leapfrog preserves
+volume, $\mathbb{E}[w] = p(y)$, so `ELBO` with this guide estimates
+$\mathbb{E}[\log w] \le \log p(y)$, a valid lower bound, and
+`IWAEBound` gives the importance-weighted bound from the same weights.
+The bridges and step sizes shape the chain, not the validity of the
+bound. The bound is not guaranteed to exceed the base guide's ELBO.
+
+The endpoint has no closed-form density, so `AutoDAIS.log_prob` raises.
+Use the `Reparameterized` estimator: `StickingTheLanding`,
+`DoublyReparameterized` (the `IWAEBound` default), `ScoreFunction`, and
+`RWS` need the guide density at a fixed point and raise with this
+guide.
 
 <!-- python: skip -->
 ```python
@@ -117,7 +173,7 @@ guide = AutoDAIS(
     init_step_size=0.05,
     init_temperature=0.1,
 )
-# Plug into SVI exactly like any other guide.
+# Plug into SVI with ELBO() or IWAEBound(estimator=Reparameterized()).
 ```
 
 ### WarmupThenHMC
@@ -157,7 +213,9 @@ the observations gives a [posterior predictive check](analysis-fitting-and-diagn
 [`Guide`](../api/inference/guide.md) or an
 [`MCMCResult`](../api/inference/mcmc.md). With an
 `MCMCResult`, it iterates over posterior samples instead of calling
-`guide.rsample`.
+`guide.rsample`; each recorded draw is one value every run of the
+predictive input shares, so both posteriors yield predictive draws of
+shape `(num_samples, batch, ...)` for non-plate sites.
 
 <!-- python: skip -->
 ```python

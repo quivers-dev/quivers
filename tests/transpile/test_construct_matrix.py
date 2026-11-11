@@ -148,6 +148,159 @@ _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
     ("bugs", "steps", "marginalize_step"): "marginalize:grouped-fibration",
 }
 
+# A marginalize block with no index into the observe's plate shares one
+# latent across the rows; a target that samples each row's latent on
+# its own would score a different measure, so it refuses the block.
+for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
+    for _fixture in (
+        "marginalize_body_let_chain",
+        "marginalize_body_plated_let",
+        "marginalize_latent_gather",
+        "marginalize_latent_value",
+        "marginalize_let_probs",
+        "marginalize_let_vector_probs",
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "marginalize:ungrouped-over-plate"
+        )
+# BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
+# QVR reduction collapses only the last.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "let_expressions", "let_host_matrix_row")
+    ] = "let-expr:axis-reduction"
+
+# A let reduction collapses only the last axis of its argument, and BUGS /
+# JAGS have no partial reduction of a two-axis table.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_matrix")] = (
+        "let-expr:axis-reduction"
+    )
+# No target spells the reduction of a rank-three factor's last axis inside
+# its row loop: read at one row, the factor still has two axes.
+for _backend in ("bugs", "church", "gen", "jags", "stan", "turing"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_reduce_nested")] = (
+        "let-expr:axis-reduction"
+    )
+
+# A host datum filling a vector-valued family parameter of a plated draw
+# holds one vector per row; a target whose library cannot read a parameter
+# vector per row refuses it rather than score a different model, and the
+# families a target lacks are refused by name.
+for _backend in ("bugs", "church", "gen", "jags", "pymc", "stan", "turing", "webppl"):
+    for _fixture in ("observe_vector_parameter_data", "observe_probs_data"):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "data:per-row-vector-parameter"
+        )
+for _backend in ("pymc", "stan"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_logits_data")] = (
+        "data:per-row-vector-parameter"
+    )
+for _backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_logits_data")] = (
+        "family:Categorical:logits"
+    )
+_EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data")] = (
+    "family:OrderedLogistic"
+)
+
+# Vector- and matrix-valued families a target ships no class for, or
+# whose literal arguments it cannot take, are refused by name.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_mvn_factor"): "arg:list-literal",
+        ("church", "steps", "sample_mvn_factor"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_factor"): "family:MultivariateNormal",
+        ("bugs", "steps", "sample_mvn_sampled_loc"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_sampled_loc"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_sampled_loc"): "family:MultivariateNormal",
+        ("bugs", "steps", "sample_wishart_factor"): "arg:matrix-literal",
+        ("jags", "steps", "sample_wishart_factor"): "arg:matrix-literal",
+        ("church", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("edward2", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("gen", "steps", "sample_wishart_factor"): "family:Wishart",
+        ("webppl", "steps", "sample_wishart_factor"): "family:no-webppl-target:Wishart",
+        ("bugs", "steps", "sample_onehot_probs"): "arg:list-literal",
+        ("church", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("gen", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("jags", "steps", "sample_onehot_probs"): "family:no-target-name",
+        ("pymc", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("stan", "steps", "sample_onehot_probs"): "family:no-stan-target",
+        ("turing", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
+        ("webppl", "steps", "sample_onehot_probs"): "family:no-webppl-target",
+        ("bugs", "steps", "sample_onehot_sampled_probs"): "arg:list-literal",
+        ("church", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("gen", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("jags", "steps", "sample_onehot_sampled_probs"): "arg:list-literal",
+        ("pymc", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("stan", "steps", "sample_onehot_sampled_probs"): "family:no-stan-target",
+        ("turing", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("webppl", "steps", "sample_onehot_sampled_probs"): "family:no-webppl-target",
+        ("bugs", "steps", "sample_relaxed_onehot_probs"): "arg:list-literal",
+        ("church", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("gen", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("jags", "steps", "sample_relaxed_onehot_probs"): "family:no-target-name",
+        ("numpyro", "steps", "sample_relaxed_onehot_probs"): "family:no-target-name",
+        ("pymc", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("stan", "steps", "sample_relaxed_onehot_probs"): "declare:simplex",
+        ("turing", "steps", "sample_relaxed_onehot_probs"): (
+            "family:RelaxedOneHotCategorical"
+        ),
+        ("webppl", "steps", "sample_relaxed_onehot_probs"): "family:no-webppl-target",
+    }
+)
+
+# An observed class code counts from zero and `dcat` reads it from one;
+# BUGS has no data block to shift the codes in and no free log-density
+# statement to score them otherwise.
+for _category, _fixture in (
+    ("let_expressions", "let_row_gather"),
+    ("let_expressions", "let_row_gather_sampled"),
+    ("steps", "observe_class_code"),
+):
+    _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
+# Stan's samplers draw no discrete parameter, so a sampled class is one
+# it cannot carry.
+_EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
+    "sample:discrete-latent"
+)
+# A gather by a sampled class draws that class, which Stan cannot carry;
+# BUGS / JAGS take no list-literal probability vector; Turing has no
+# lift of a residual event axis over a plate, and WebPPL carries one
+# batch axis.
+for _fixture in ("observe_gather_event_vector", "observe_gather_matrix_row"):
+    _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", _fixture)] = "sample:discrete-latent"
+    _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", _fixture)] = "arg:list-literal"
+    _EXPECTED_ORTHOGONAL_RAISES[("jags", "steps", _fixture)] = "arg:list-literal"
+_EXPECTED_ORTHOGONAL_RAISES[("turing", "steps", "observe_gather_matrix_row")] = (
+    "sample:event-axis-lift"
+)
+_EXPECTED_ORTHOGONAL_RAISES[("webppl", "steps", "observe_gather_matrix_row")] = (
+    "batch-rank:2"
+)
+# An ordinal outcome is scored by a family only some targets' libraries
+# carry; BUGS also has no list-literal cutpoint vector.
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "observe_ordinal_code")] = (
+    "arg:list-literal"
+)
+for _backend in ("church", "edward2", "gen", "jags", "turing", "webppl"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_ordinal_code")] = "family:"
+
+# A site drawn or observed over more `over` axes than its family's event
+# rank is plated over several axes, and WebPPL carries one batch axis.
+for _fixture in (
+    "observe_independent_array",
+    "scalar_independent_array",
+    "vector_independent_array",
+):
+    _EXPECTED_ORTHOGONAL_RAISES[("webppl", "axes", _fixture)] = "batch-rank:"
+
 for _backend in _BACKENDS:
     for _fixture in ("encoder_decl", "decoder_decl"):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "statements", _fixture)] = (

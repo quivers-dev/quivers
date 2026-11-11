@@ -114,7 +114,7 @@ rate = torch.distributions.Beta(
 y = torch.distributions.Binomial(n_trials, rate).sample()
 
 observations = {"y": y, "arm_idx": arm_idx, "n_trials": torch.tensor(n_trials)}
-x_in = torch.zeros(n_batch, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 The trial count `n_trials` and the arm assignment `arm_idx` are both exogenous: the program never declares them, so the runtime resolves them from the observations dict at trace time and every backend takes them as data inputs.

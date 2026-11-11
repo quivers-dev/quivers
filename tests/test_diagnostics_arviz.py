@@ -25,6 +25,8 @@ from quivers.diagnostics import (
     posterior_predictive_check,
     to_datatree,
 )
+from quivers.dsl import loads
+from quivers.inference import MCMC, NUTSKernel
 from quivers.inference.mcmc.driver import (
     MCMCResult,
     _ess_1d,
@@ -148,6 +150,36 @@ class TestToDataTree:
         dt = to_datatree(_make_result(samples))
         assert dt["posterior"]["theta"].shape == (4, 1000)
         assert dt["posterior"]["beta"].shape == (4, 1000, 3)
+
+    def test_sampler_output_posterior_shapes_match_site_shapes(self):
+        model = loads(
+            "object Subj : FinSet 4\n"
+            "object Resp : FinSet 12\n"
+            "program p : Resp -> Resp\n"
+            "    sample sigma <- HalfNormal(scale=1.0)\n"
+            "    sample by_subj : Subj <- Normal(loc=0.0, scale=sigma)\n"
+            "    let mu = by_subj[subj_idx]\n"
+            "    observe r : Resp <- Normal(loc=mu, scale=1.0)\n"
+            "    return mu\n"
+            "export p\n"
+        ).morphism
+        observations = {
+            "subj_idx": torch.tensor([0, 1, 2, 3] * 3),
+            "r": torch.linspace(-1.0, 1.0, 12),
+        }
+        result = MCMC(
+            NUTSKernel(max_tree_depth=3),
+            num_warmup=5,
+            num_samples=8,
+            num_chains=2,
+            seed=0,
+        ).run(model, torch.zeros(1, 1), observations)
+        dt = to_datatree(result, dims={"by_subj": ["Subj"]})
+        assert dt["posterior"]["sigma"].dims == ("chain", "draw")
+        assert dt["posterior"]["by_subj"].dims == ("chain", "draw", "Subj")
+        assert dt["posterior"]["by_subj"].shape == (2, 8, 4)
+        summary = az.summary(dt, var_names=["sigma"])
+        assert list(summary.index) == ["sigma"]
 
     def test_sample_stats_populated(self):
         samples = {"x": torch.randn(4, 100)}

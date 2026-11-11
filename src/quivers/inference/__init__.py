@@ -52,13 +52,17 @@ from quivers.inference.guides import (
     AutoNormalizingFlow,
     AutoStructured,
     Guide,
+    GuideDraw,
 )
 from quivers.inference.estimators import (
     DoublyReparameterized,
     GradientEstimator,
+    ParticleLogDensities,
     Reparameterized,
     ScoreFunction,
     StickingTheLanding,
+    leave_one_out_log_scale,
+    power_mean_bound,
 )
 from quivers.inference.objectives import (
     ELBO,
@@ -110,6 +114,7 @@ __all__ = [
     "LatentRegistry",
     "LatentSite",
     "Guide",
+    "GuideDraw",
     "AutoNormalGuide",
     "AutoMultivariateNormalGuide",
     "AutoLowRankMultivariateNormalGuide",
@@ -143,6 +148,9 @@ __all__ = [
     "DReGsBound",
     "VRIWAEBound",
     "GradientEstimator",
+    "ParticleLogDensities",
+    "power_mean_bound",
+    "leave_one_out_log_scale",
     "Reparameterized",
     "StickingTheLanding",
     "DoublyReparameterized",

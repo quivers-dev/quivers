@@ -59,7 +59,7 @@ Other parameterization differences:
 | `Laplace(μ, b)` | `ddexp(μ, 1/b)` | rate = $1/b$ |
 | `MultivariateNormal(μ, Σ)` | `dmnorm(μ, Σ⁻¹)` | precision matrix |
 | `Dirichlet(α)` | `ddirch(α)` | identity |
-| `Categorical(probs=p)` | `dcat(p)` | identity |
+| `Categorical(probs=p)` | `dcat(p)` on a drawn class, read back as `code - 1`; an observed code is refused | $y \mapsto y + 1$ |
 | `Bernoulli(p)` | `dbern(p)` | identity |
 | `LogNormal(μ, σ)` | `dlnorm(μ, 1/σ²)` | precision |
 | `StudentT(ν, μ, σ)` | `dt(μ, 1/σ², ν)` | precision |
@@ -86,6 +86,15 @@ d<family>(<args>) }`. Under BUGS’s graphical-model interpretation [@lunn2009bu
 contribution to the joint is the product of per-iteration
 factors. Each row's args may index into other plate-shaped nodes
 (LDA's `theta[doc[n], 1:K]` form).
+
+**Class codes.** QVR codes a Categorical value from zero and `dcat` counts
+from one. A drawn class is drawn as `z_code ~ dcat(p)` and read back as the
+QVR code `z <- z_code - 1`, and a subscript reads a code one higher. An
+observed code cannot be shifted: BUGS has no `data` block to bind
+`y + 1` from the data, a logical node cannot also carry a distribution, and
+the zeros trick that would score `log p[y + 1]` needs a data-bound carrier.
+An observed class code is therefore refused with `observe:class-code:<name>`,
+outside a marginalize block and inside one.
 
 **Marginalize.** A categorical-mixture scope can be collapsed into a `dcat`
 distribution whose probabilities already sum over the hidden class. Other

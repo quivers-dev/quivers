@@ -145,7 +145,7 @@ observations = {
     "item_idx": item_idx,
     "obs_idx": obs_idx,
 }
-x_in = torch.zeros(ND, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit

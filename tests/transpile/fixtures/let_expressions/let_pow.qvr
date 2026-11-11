@@ -1,0 +1,14 @@
+# Exercises the pointwise `pow`, with the site as the base and as the
+# exponent, which every target must spell as its own power function.
+object Item : FinSet 3
+object Val : Real 1
+
+program p : Item -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=mu, scale=1.0)
+    let square = pow(mu, 2.0)
+    let growth = pow(1.5, mu)
+    score s = square * 0.5 + growth
+    return mu
+
+export p

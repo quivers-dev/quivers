@@ -38,11 +38,9 @@ import pyjags
 
 from _reshape import (
     as_nested,
-    index_input_names,
     load_export_names,
     load_tables,
     reshape_point,
-    shift_index_inputs,
 )
 
 
@@ -102,6 +100,11 @@ def _monitored_export(
 
 #: A zeros-trick carrier the emitted model scores: the `score` step's
 #: `zero_<name> ~ dpois(C_<name>)` relation.
+#: A drawn class's decoding relation, `<name>[...] <- <name>_code[...]-1`.
+_DECODED_CLASS_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*<-\s*\1_code(?:\[[^\]]*\])?-1\b"
+)
+
 _CARRIER_RE = re.compile(r"\b(zero_[A-Za-z_][A-Za-z0-9_]*)\s*~\s*dpois\(")
 
 
@@ -112,10 +115,10 @@ def main() -> None:
     points = json.loads((io / "points.json").read_text())
     shapes, dtypes = load_tables(io)
     export_names = load_export_names(io)
-    # JAGS / BUGS index arrays from 1; lift every 0-based covariate
-    # the model subscripts before it becomes an observed node.
+    # The point payload is in QVR's zero-based coding, and the emitted
+    # program reads an index covariate or a class code one higher where
+    # JAGS / BUGS count from one, so the payload is bound as it is.
     source_text = source_path.read_text()
-    index_names = index_input_names(source_text, dtypes)
     # A `score` step is a zeros-trick relation `zero_<name> ~ dpois(C)`
     # whose carrier the BUGS emission leaves to the host's data list,
     # the language having no data block of its own; JAGS binds the
@@ -126,14 +129,14 @@ def main() -> None:
         for name in _CARRIER_RE.findall(source_text)
         if f"{name} <- 0" not in source_text
     }
+    # A drawn class is the one-based node `<name>_code`, which the
+    # program decodes into the QVR code `<name> <- <name>_code-1`.
+    decoded = {name for name in _DECODED_CLASS_RE.findall(source_text)}
 
     log_densities = []
     exports = []
     for pt in points:
-        reshaped = shift_index_inputs(
-            reshape_point(pt, shapes, dtypes),
-            index_names,
-        )
+        reshaped = reshape_point(pt, shapes, dtypes)
         # Combine params + data: JAGS treats every supplied node as
         # observed, so the deviance includes the joint log-density of
         # the latent parameters AND the observed data nodes.
@@ -141,6 +144,13 @@ def main() -> None:
         for k, v in reshaped.get("data", {}).items():
             merged[k] = _arr(v)
         for k, v in reshaped.get("params", {}).items():
+            if k in decoded:
+                # The program draws this class as the one-based node
+                # `<k>_code` and decodes it, `<k> <- <k>_code - 1`; a
+                # clamp fixes the drawn node, so it inverts that
+                # relation.
+                merged[f"{k}_code"] = _arr(v) + 1
+                continue
             merged[k] = _arr(v)
         for name in carriers:
             merged[name] = _arr(0)

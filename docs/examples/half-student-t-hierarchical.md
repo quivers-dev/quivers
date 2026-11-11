@@ -116,7 +116,7 @@ mu = true_beta_0 + true_u[group_idx] + true_beta_1 * x
 y = torch.distributions.Normal(mu, true_sigma).sample()
 
 observations = {"y": y, "x": x, "group_idx": group_idx}
-x_in = torch.zeros(n_resp, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit

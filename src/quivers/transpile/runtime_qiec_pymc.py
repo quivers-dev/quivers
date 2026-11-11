@@ -124,7 +124,7 @@ _qvr_qiec_host_math.update(
         "atanh": _qvr_qiec_pt.arctanh,
         "floor": _qvr_qiec_pt.floor,
         "ceil": _qvr_qiec_pt.ceil,
-        "round": _qvr_qiec_pt.round,
+        "round": _qvr_qiec_pt.round_half_to_even,
         "trunc": _qvr_qiec_pt.trunc,
         "real_to_int": lambda value: _qvr_qiec_pt.trunc(value).astype("int64"),
         "erf": _qvr_qiec_pt.erf,
