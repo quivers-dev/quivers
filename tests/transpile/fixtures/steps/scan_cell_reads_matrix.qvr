@@ -1,0 +1,19 @@
+# Exercises a scan over a program cell that reads a matrix the scanning
+# program draws before the scan, through a matrix-vector product.
+object In : Real 2
+object Hid : FinSet 2
+object State : Real 2
+
+program cell(x_t, h_prev) : In * State -> State
+    let m = sum(factor i : Hid, j : Hid in W[i, j] * h_prev[j]) + x_t
+    sample s <- Normal(loc=m, scale=0.5)
+    observe o <- Normal(loc=s, scale=0.3)
+    return s
+
+define run_all = scan(cell)
+
+program prog : In -> State
+    sample W : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample h <- run_all
+    return h
+export prog

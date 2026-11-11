@@ -1,0 +1,18 @@
+# Exercises a subscript of two index vectors, which selects one entry per
+# row, `M[r[n], c[n]]`, from a host matrix and from a table a `factor`
+# builds; a row-gather reading would leave a (rows, columns) value.
+object A : FinSet 3
+object B : FinSet 2
+object Row : FinSet 4
+
+program p : Row -> Row
+    sample a : A <- Normal(loc=0.0, scale=1.0)
+    sample b : B <- Normal(loc=0.0, scale=1.0)
+    let table = factor i : A, j : B in a[i] * b[j]
+    let m = M[r_idx, c_idx]
+    let t = table[r_idx, c_idx]
+    observe y : Row <- Normal(loc=m, scale=1.0)
+    observe z : Row <- Normal(loc=t, scale=1.0)
+    return y
+
+export p
