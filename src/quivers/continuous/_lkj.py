@@ -9,6 +9,8 @@ draws by.
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.distributions as D
 from torch.types import _size
@@ -139,9 +141,63 @@ class OnionLKJCholesky(D.LKJCholesky):
         The LKJ shape ``eta``, positive.
     validate_args : bool or None
         Whether to validate parameters and scored values.
+
+    Raises
+    ------
+    ValueError
+        If ``dim`` is less than two, or, when arguments are validated,
+        if the concentration is not positive.
     """
 
     has_rsample = True
+
+    def __init__(
+        self,
+        dim: int,
+        concentration: torch.Tensor | float = 1.0,
+        validate_args: bool | None = None,
+    ) -> None:
+        """Build the distribution as `torch.distributions.LKJCholesky` does.
+
+        Parameters
+        ----------
+        dim : int
+            The matrix dimension, at least two.
+        concentration : torch.Tensor or float
+            The LKJ shape ``eta``, positive.
+        validate_args : bool or None
+            Whether to validate parameters and scored values.
+
+        Raises
+        ------
+        ValueError
+            If ``dim`` is less than two, or, when arguments are
+            validated, if the concentration is not positive.
+        """
+        super().__init__(dim, concentration, validate_args=validate_args)
+
+    def expand(
+        self,
+        batch_shape: torch.Size,
+        _instance: OnionLKJCholesky | None = None,
+    ) -> OnionLKJCholesky:
+        """Broadcast the distribution to a batch shape, keeping its class.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            The batch shape.
+        _instance : OnionLKJCholesky or None
+            The instance to fill, as `torch.distributions` passes it.
+
+        Returns
+        -------
+        OnionLKJCholesky
+            The expanded distribution, which draws by the onion method.
+        """
+        new = self._get_checked_instance(OnionLKJCholesky, _instance)
+        expanded = super().expand(batch_shape, _instance=new)
+        return cast(OnionLKJCholesky, expanded)
 
     def rsample(self, sample_shape: _size = torch.Size()) -> torch.Tensor:
         """Draw factors with gradients to the concentration.
