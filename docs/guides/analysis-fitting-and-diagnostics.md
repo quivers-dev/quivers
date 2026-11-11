@@ -241,6 +241,115 @@ constant but sit at different values give an infinite R-hat. On every
 other input the estimators agree with ArviZ's `rhat`, `ess`, and
 `mcse` to floating-point rounding.
 
+### Simulation-based calibration
+
+Convergence diagnostics say whether chains agree with each other, not
+whether they agree with the posterior. A sampler with a bug in its
+acceptance step, or a guide whose family cannot represent the
+posterior, can mix well around the wrong distribution.
+[Simulation-based calibration](../api/diagnostics/calibration.md) (SBC)
+tests the procedure itself [@talts2018sbc]: draw parameters from the
+prior, draw data from the program given those parameters, fit the
+data, and record the rank of each true parameter among its posterior
+draws. If the procedure samples the exact posterior, each rank is
+uniform on `{0, ..., L}` for `L` posterior draws, whatever the program.
+Ranks piled at both ends mean posteriors that are too narrow; piled in
+the middle, too wide; tilted to one side, biased.
+
+[`sbc`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc)
+runs the loop for a program, a one-row input, and a fit
+`fit(observations, seed)` that returns an
+[`MCMCResult`](../api/inference/mcmc.md), a fitted
+[`Guide`](../api/inference/guide.md), or a mapping of site names to
+`(num_chains, num_draws, ...)` draws from a custom sampler. The example
+below checks a fit that samples the closed-form posterior of a
+Normal mean, so its ranks should look uniform.
+
+```python
+import torch
+from quivers.diagnostics import sbc, sbc_coverage, sbc_uniformity
+from quivers.dsl import loads
+
+program = loads("""
+object Obs : FinSet 8
+
+program normal_mean : Obs -> Obs
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Obs <- Normal(loc=mu, scale=0.5)
+    return y
+
+export normal_mean
+""").morphism
+
+def exact_fit(observations, seed):
+    # Conjugate posterior of mu: precision 1 + 8 / 0.25.
+    precision = 1.0 + 8 / 0.25
+    mean = observations["y"].sum() / 0.25 / precision
+    generator = torch.Generator().manual_seed(seed)
+    draws = mean + torch.randn(1, 99, generator=generator) / precision**0.5
+    return {"mu": draws}
+
+result = sbc(
+    program, torch.zeros(1, 1), exact_fit,
+    observed_names={"y"}, num_simulations=200, thin=1, seed=0,
+)
+print(result.statistic_names, result.ranks.shape, result.num_draws)
+print(sbc_uniformity(result.ranks, result.num_draws))   # p-values, one per statistic
+coverage = sbc_coverage(result.ranks, result.num_draws, mass=0.9)
+print(coverage.null_mass, coverage.coverage, coverage.consistent)
+```
+
+With MCMC the fit passes its seed to the driver, and `thin="ess"`
+(the default) keeps about one draw per effective sample, since
+autocorrelated draws make even an exact sampler's ranks non-uniform:
+
+<!-- python: skip -->
+```python
+from quivers.inference import MCMC, NUTSKernel
+
+def nuts_fit(observations, seed):
+    driver = MCMC(NUTSKernel(), num_warmup=500, num_samples=1000, seed=seed)
+    return driver.run(program, torch.zeros(1, 1), observations)
+
+result = sbc(program, torch.zeros(1, 1), nuts_fit,
+             observed_names={"y"}, num_simulations=200, seed=0)
+```
+
+Three details decide whether the check has the size it claims.
+First,
+[`sbc_ranks`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc_ranks)
+breaks ties between a true value and its posterior draws uniformly at
+random; without that, a discrete quantity (a count, an indicator) has
+non-uniform ranks even under an exact sampler. Second,
+[`sbc_uniformity`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc_uniformity)
+compares the ranks with the discrete uniform distribution on
+`{0, ..., L}`: its statistic is the smallest two-sided binomial tail
+probability of the rank
+[ECDF](https://en.wikipedia.org/wiki/Empirical_distribution_function)
+over every threshold, the quantity behind the simultaneous bands of
+Säilynoja et al. [@sailynoja2022graphical], and its p-value comes from
+ranks simulated exactly under that null, where a continuous
+Kolmogorov-Smirnov test would have the wrong size at small `L`. Each
+statistic gets its own p-value, so compare the smallest with
+`alpha / num_statistics`. Third,
+[`sbc_coverage`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc_coverage)
+counts how often the true value falls in the central rank band, whose
+exact null mass (`null_mass`) differs from the requested `mass` at
+finite `L`, and gives each statistic a Clopper-Pearson interval
+[@clopper1934binomial] with a Bonferroni adjustment across
+statistics.
+
+By default every coordinate of every latent site is ranked. The
+`statistics=` argument names other test quantities, each a function of
+a batch of parameter draws and the data; quantities that read the
+data, such as a residual sum of squares or a log-likelihood, can
+detect miscalibration that the parameters alone miss
+[@modrak2025sbc].
+[`to_datatree_from_sbc`](../api/diagnostics/arviz_io.md#quivers.diagnostics.arviz_io.to_datatree_from_sbc)
+writes the ranks into the `prior_sbc` group that ArviZ's
+`plot_ecdf_pit` reads, for the graphical version of the uniformity
+test.
+
 ## Algebra-guided training tooling
 
 The `quivers.analysis` subpackage

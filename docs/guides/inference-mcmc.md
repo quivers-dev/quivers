@@ -132,6 +132,13 @@ draws. Divergences mark inaccurate numerical trajectories. Locate them in
 parameter plots, then assess whether a smaller step size or a different
 parameterization improves exploration.
 
+These diagnostics compare chains with each other, so a sampler that
+mixes well around the wrong distribution passes them.
+[Simulation-based calibration](analysis-fitting-and-diagnostics.md#simulation-based-calibration)
+checks the sampler against the model instead, by fitting data simulated
+from the prior and testing whether the true parameters' ranks among the
+posterior draws are uniform.
+
 Hybrid methods use variational fitting to construct a proposal
 distribution or choose initial chain values, as specified below.
 

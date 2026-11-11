@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.0] - 2026-11-11
+
+### Added
+
+- **Simulation-based calibration: `sbc`, `sbc_ranks`, `sbc_uniformity`, `sbc_coverage`, and `to_datatree_from_sbc` in `quivers.diagnostics`.** `sbc` draws parameters from a program's prior and data from the program at a one-row input, runs a caller-supplied fit (returning an `MCMCResult`, a fitted `Guide`, or chain-by-draw tensors), thins the posterior draws by effective sample size or a fixed interval, and ranks every latent coordinate or named test quantity among its posterior draws, reproducibly from one seed and without touching the global random state; it returns an `SBCResult`. `sbc_ranks` breaks ties between a true value and its draws uniformly at random. `sbc_uniformity` gives Monte Carlo p-values for the simultaneous ECDF statistic under the exact discrete uniform null. `sbc_coverage` returns an `SBCCoverage` comparing the central rank band's coverage with its exact null mass through Bonferroni-adjusted Clopper-Pearson intervals. `to_datatree_from_sbc` writes the ranks into the `prior_sbc` group ArviZ's `plot_ecdf_pit` reads.
+
 ## [0.28.0] - 2026-11-11
 
 ### Added

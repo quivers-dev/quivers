@@ -19,6 +19,7 @@ import arviz as az
 import torch
 import xarray as xr
 
+from quivers.diagnostics.calibration import SBCResult
 from quivers.inference.mcmc.driver import MCMCResult
 
 
@@ -224,6 +225,37 @@ def to_datatree_from_svi(
     )
 
 
+def to_datatree_from_sbc(result: SBCResult) -> xr.DataTree:
+    """Convert simulation-based calibration ranks for ArviZ's PIT plots.
+
+    The ranks go into a ``prior_sbc`` group, the group
+    ``arviz_plots.plot_ecdf_pit`` reads by default, with one variable
+    per statistic laid out ``(chain=1, draw=num_simulations)``. Each
+    rank ``r`` in ``{0, ..., L}`` is mapped to ``(r + 1/2) / (L + 1)``,
+    the midpoint of its cell in an even partition of ``[0, 1]``: under
+    calibration the values are uniform on those midpoints, so their
+    ECDF meets the uniform CDF at every cell boundary, and the mapping
+    is symmetric about one half, as the plot's coverage view assumes.
+
+    Parameters
+    ----------
+    result : SBCResult
+        The result of `quivers.diagnostics.calibration`.
+
+    Returns
+    -------
+    xr.DataTree
+        A DataTree with the ``prior_sbc`` group.
+    """
+    pit = (result.ranks.to(dtype=torch.float64) + 0.5) / (result.num_draws + 1)
+    values = _tensor_to_numpy(pit)
+    group = {
+        name: values[None, :, column]
+        for column, name in enumerate(result.statistic_names)
+    }
+    return az.from_dict({"prior_sbc": group})
+
+
 def to_datatree_any(
     fit: MCMCResult
     | Mapping[str, torch.Tensor]
@@ -319,4 +351,9 @@ def to_datatree_any(
     )
 
 
-__all__ = ["to_datatree", "to_datatree_any", "to_datatree_from_svi"]
+__all__ = [
+    "to_datatree",
+    "to_datatree_any",
+    "to_datatree_from_svi",
+    "to_datatree_from_sbc",
+]
