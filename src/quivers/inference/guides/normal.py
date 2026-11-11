@@ -13,8 +13,37 @@ import torch.distributions as D
 import torch.nn as nn
 
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.subsample import active_subsets, subsampled_rows
 from quivers.inference.guides.base import Guide
 from quivers.inference.registry import LatentSite
+
+
+def _kept_rows(
+    values: torch.Tensor,
+    plate_shape: tuple[int, ...],
+    rows: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    """Sum a plate site's per-element terms over the rows kept.
+
+    Parameters
+    ----------
+    values : torch.Tensor
+        One term per element of the plate, the plate's elements leading
+        in row-major order, any event axes after them.
+    plate_shape : tuple[int, ...]
+        The extents of the plate's axes.
+    rows : tuple[torch.Tensor, ...]
+        One index per plate axis.
+
+    Returns
+    -------
+    torch.Tensor
+        The sum of the terms of the kept elements.
+    """
+    kept = values.reshape(*plate_shape, -1)
+    for axis, index in enumerate(rows):
+        kept = kept.index_select(axis, index.to(kept.device))
+    return kept.sum()
 
 
 class AutoNormalGuide(Guide):
@@ -39,7 +68,17 @@ class AutoNormalGuide(Guide):
         Initial scale (in unconstrained space) of every latent.
         Default ``0.1``; small enough to keep the guide near its
         prior at the start of optimisation.
+
+    Notes
+    -----
+    The guide factors over a plate's rows, so under a
+    [`subsample`][quivers.effects.subsample] block `log_prob` scores a
+    latent in a subsampled plate at the subset's rows, times the same
+    factor the model's sites take; every row is still drawn, and the
+    rows outside the subset receive no gradient from the step.
     """
+
+    scores_subsampled_rows = True
 
     def __init__(
         self,
@@ -127,10 +166,14 @@ class AutoNormalGuide(Guide):
             log q(v) = log Normal(z; loc, scale) + log|det J_{T^{-1}}(v)|
 
         where ``z = bijector.inv(v)``. The plate / scalar shape
-        dispatch matches `rsample`'s convention.
+        dispatch matches `rsample`'s convention. A latent in a plate
+        that a [`subsample`][quivers.effects.subsample] block is
+        active for is scored at the subset's rows, times the plate's
+        size over the subset's.
         """
         batch = x.shape[0]
         total = torch.zeros(batch, device=x.device)
+        subsets = active_subsets()
         for site in self._registry.sites.values():
             if site.name not in sites:
                 continue
@@ -145,7 +188,26 @@ class AutoNormalGuide(Guide):
                 # broadcast against the batch accumulator.
                 log_q_z = D.Normal(loc, scale).log_prob(z)
                 log_abs_det = site.bijector.inv.log_abs_det_jacobian(v, z)
-                contribution = log_q_z.reshape(-1).sum() + log_abs_det.reshape(-1).sum()
+                plate_shape = site.plate_shape or (site.plate_index_size,)
+                kept = (
+                    subsampled_rows(
+                        site.name,
+                        self._registry.model.site_plates.get(site.name, ()),
+                        subsets,
+                    )
+                    if subsets
+                    else None
+                )
+                if kept is None:
+                    contribution = (
+                        log_q_z.reshape(-1).sum() + log_abs_det.reshape(-1).sum()
+                    )
+                else:
+                    rows, factor = kept
+                    contribution = factor * (
+                        _kept_rows(log_q_z, plate_shape, rows)
+                        + _kept_rows(log_abs_det, plate_shape, rows)
+                    )
                 total = total + contribution
             else:
                 loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
