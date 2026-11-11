@@ -4,7 +4,7 @@ The `MCMC` driver wraps a `MCMCKernel` and applies
 it to a model: it builds the registry, draws an initial position
 (from the prior, an existing guide, or a user-supplied dict),
 runs ``num_warmup`` adaptation steps with
-``kernel.start_adaptation()``, freezes the kernel via
+``kernel.start_adaptation(num_warmup)``, freezes the kernel via
 ``kernel.stop_adaptation()``, and then collects ``num_samples``
 post-warmup samples per chain.
 
@@ -529,7 +529,7 @@ class MCMC:
             state = self.kernel.init(registry, model, x, observations, init_pos)
             # Warmup.
             if self.num_warmup > 0:
-                self.kernel.start_adaptation()
+                self.kernel.start_adaptation(self.num_warmup)
                 for _ in range(self.num_warmup):
                     state = self.kernel.step(state, potential)
                 self.kernel.stop_adaptation()

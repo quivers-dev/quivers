@@ -75,6 +75,7 @@ from quivers.inference.objectives import (
     VRIWAEBound,
 )
 from quivers.inference.mcmc import (
+    AdaptationSchedule,
     HMCKernel,
     MCMC,
     MCMCKernel,
@@ -133,6 +134,7 @@ __all__ = [
     "AutoLaplace",
     "AutoIAFNormal",
     "MCMCKernel",
+    "AdaptationSchedule",
     "HMCKernel",
     "NUTSKernel",
     "MCMC",
