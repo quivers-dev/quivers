@@ -9948,7 +9948,7 @@
     "named": true,
     "fields": {
       "init": {
-        "multiple": false,
+        "multiple": true,
         "required": false,
         "types": [
           {
@@ -10027,6 +10027,26 @@
           },
           {
             "type": "trans_compose",
+            "named": true
+          }
+        ]
+      },
+      "outputs": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "reverse": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "let_bool",
             "named": true
           }
         ]
@@ -11628,6 +11648,10 @@
     "named": false
   },
   {
+    "type": "outputs",
+    "named": false
+  },
+  {
     "type": "parser",
     "named": false
   },
@@ -11709,6 +11733,10 @@
   },
   {
     "type": "return",
+    "named": false
+  },
+  {
+    "type": "reverse",
     "named": false
   },
   {
