@@ -63,7 +63,7 @@ from quivers.transpile.ir import (
     Plate,
 )
 from quivers.transpile.renderers._ranks import let_expr_rank, name_rank_map
-from quivers.transpile.renderers._rows import take_row
+from quivers.transpile.renderers._rows import scalar_parameter, take_row, visited_position
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
     BlockKind,
@@ -742,7 +742,9 @@ class WebPPLRenderer(RendererBase):
         """Emit `var <name> = <maybe-batched-call>;` for a latent sample."""
         # Decide the batching strategy: `repeat` vs `mapIndexed`.
         loop_name = self._loop_name_for(name, plate)
-        index_dependent = self._args_use_surrounding_index(args, plate)
+        index_dependent = self._args_use_surrounding_index(
+            args, plate
+        ) or self._visits_scalar_parameter(meta, args, arg_names, plate)
         # Build the inner sample call: `sample(<Dist>({...}))`.
         # When index-dependent, arg refs whose binding plate aligns
         # with the surrounding plate get indexed by the loop var.
@@ -1670,6 +1672,8 @@ class WebPPLRenderer(RendererBase):
             substituted = self._substitute_for_indexing(
                 broadcasted, plate, loop_name, index_dependent
             )
+            if loop_name is not None and scalar_parameter(meta.qvr_name, raw_name):
+                substituted = self._read_at_position(substituted, plate, loop_name)
             reciprocal = raw_name in _WEBPPL_ARG_RECIPROCAL.get(
                 meta.qvr_name, frozenset()
             )
@@ -1711,6 +1715,73 @@ class WebPPLRenderer(RendererBase):
                 )
             )
         return tuple(out)
+
+    def _read_at_position(self, arg: IRArg, plate: Plate, loop_name: str) -> IRArg:
+        """Read a value over the site's axis at the position the loop visits.
+
+        A rank-0 family parameter filled by a vector `z` whose one axis
+        is the site's batch axis, such as `Normal(loc=z, ...)`
+        replicated over `Feat` with `z` drawn over `Feat`, reads the
+        entry `z[n]` in the draw at position `n`; the bare `z` would
+        hand the scalar slot the whole vector.
+
+        Parameters
+        ----------
+        arg : IRArg
+            The argument, already threaded through the batch alignment.
+        plate : Plate
+            The site's plate.
+        loop_name : str
+            The loop variable visiting the site's batch axis.
+
+        Returns
+        -------
+        IRArg
+            The argument indexed at ``loop_name`` when it is an unindexed
+            reference to a value whose every axis is the site's batch
+            axis, else `arg` unchanged.
+        """
+        if not isinstance(arg, IRArgRef) or arg.indices or len(plate.batch_dims) != 1:
+            return arg
+        loops = {str(plate.batch_dims[0].name): loop_name}
+        visited = visited_position(self._binding_plates.get(arg.name), loops)
+        if not visited:
+            return arg
+        return IRArgRef(name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited))
+
+    def _visits_scalar_parameter(
+        self,
+        meta: FamilyMeta,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        plate: Plate,
+    ) -> bool:
+        """Whether a rank-0 parameter reads a value over the site's axis.
+
+        Parameters
+        ----------
+        meta : FamilyMeta
+            The family.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+        plate : Plate
+            The site's plate.
+
+        Returns
+        -------
+        bool
+            True when some argument filling a rank-0 parameter is read
+            at the site's position by `_read_at_position`.
+        """
+        if len(plate.batch_dims) != 1:
+            return False
+        return any(
+            scalar_parameter(meta.qvr_name, name)
+            and self._read_at_position(arg, plate, "_") is not arg
+            for arg, name in zip(args, arg_names, strict=False)
+        )
 
     def _maybe_broadcast(
         self,
