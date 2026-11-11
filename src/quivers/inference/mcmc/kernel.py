@@ -22,12 +22,13 @@ the kernel itself.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
 from torch.distributions import Distribution
+from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
@@ -77,6 +78,65 @@ def _rejects_position(error: BaseException) -> bool:
     while frame.tb_next is not None:
         frame = frame.tb_next
     return frame.tb_frame.f_code in _DISTRIBUTION_VALIDATION_CODE
+
+
+def _check_observed_support(
+    model: MonadicProgram,
+    observations: Mapping[str, torch.Tensor],
+    consumer: str,
+) -> None:
+    """Refuse observed data outside its site's support.
+
+    The data a potential conditions on do not change between
+    evaluations, so they are checked once, against the support of the
+    distribution each observed site is drawn from: a value outside it
+    makes every position score ``-inf``, which is an error in the data,
+    not a region of the posterior.
+
+    Parameters
+    ----------
+    model : MonadicProgram
+        The model.
+    observations : Mapping[str, torch.Tensor]
+        Observed-site values and host data; host data are not checked.
+    consumer : str
+        The caller named in the error, such as ``"PotentialFn"``.
+
+    Raises
+    ------
+    ValueError
+        If an observed value is not finite, or lies outside the support
+        of its site's distribution, naming the site and the values.
+    """
+    for spec in model.steps:
+        if not isinstance(spec, Draw | Observe) or len(spec.names) != 1:
+            continue
+        (name,) = spec.names
+        if name not in observations:
+            continue
+        value = torch.as_tensor(observations[name])
+        if value.dtype.is_floating_point and not bool(torch.isfinite(value).all()):
+            bad = value[~torch.isfinite(value)]
+            raise ValueError(
+                f"{consumer}: observed site {name!r} holds non-finite values "
+                f"{bad.flatten()[:5].tolist()}"
+            )
+        morphism = model.step_module(spec)
+        support = getattr(morphism, "support", None)
+        if not isinstance(support, _constraints.Constraint) or (
+            _constraints.is_dependent(support)
+        ):
+            continue
+        inside = support.check(value)
+        if not bool(inside.all()):
+            outside = (
+                value[~inside] if inside.shape == value.shape else value.reshape(-1)
+            )
+            raise ValueError(
+                f"{consumer}: observed site {name!r} holds values outside the "
+                f"support {support} of its distribution: "
+                f"{outside[:5].tolist()}"
+            )
 
 
 @contextmanager
@@ -161,10 +221,13 @@ class PotentialFn:
     axis being the program's batch axis, and plate sites at
     ``constrained_shape``.
 
-    `check_initial` scores a starting position strictly and must run
-    once before sampling (`MCMC.run` does): it raises on observed data
-    that is not finite or lies outside a likelihood's support, which
-    `log_density` would otherwise score as an unreachable position.
+    Observed data are checked once, at construction, against the
+    support of each observed site's distribution, so data that are
+    not finite or lie outside a likelihood's support raise here rather
+    than scoring every position ``-inf``; only latent positions
+    outside the support score ``-inf``. `check_initial` scores a
+    starting position strictly and must run once before sampling
+    (`MCMC.run` does), catching the remaining program and data errors.
 
     Parameters
     ----------
@@ -176,6 +239,12 @@ class PotentialFn:
         Model input. Shape ``(batch, ...)``.
     observations : dict[str, torch.Tensor]
         Observed-site values and host data.
+
+    Raises
+    ------
+    ValueError
+        If ``x`` has more than one row, or an observed value is not
+        finite or lies outside its site's support.
     """
 
     def __init__(
@@ -186,6 +255,7 @@ class PotentialFn:
         observations: dict[str, torch.Tensor],
     ) -> None:
         _require_one_run(x, "PotentialFn")
+        _check_observed_support(model, observations, "PotentialFn")
         self._model = model
         self._registry = registry
         self._x = x
@@ -277,11 +347,11 @@ class PotentialFn:
     def check_initial(self, z: torch.Tensor) -> torch.Tensor:
         """Score a chain's initial position, raising on any failure.
 
-        Run once before sampling. Observed values must be finite; the
-        program is then scored with `torch.distributions` validation
-        enabled and no error converted, so observed data outside a
-        likelihood's support, mismatched row counts, and errors in
-        custom score functions raise here with their own type. A
+        Run once before sampling. The program is scored with
+        `torch.distributions` validation enabled and no error
+        converted, so mismatched row counts, data a score function
+        reads that its distribution rejects, and errors in custom
+        score functions raise here with their own type. A
         position that scores a non-finite log-density raises, naming
         the sites whose log-density is not finite.
 
@@ -298,26 +368,10 @@ class PotentialFn:
         Raises
         ------
         ValueError
-            If an observed value is not finite, or the log-density at
-            ``z`` is not finite.
+            If the log-density at ``z`` is not finite.
         Exception
             Any error ``log_joint`` raises at ``z``.
         """
-        site_names = {
-            name
-            for step in self._model.steps
-            if isinstance(step, Draw | Observe)
-            for name in step.names
-        }
-        for name, value in self._observations.items():
-            if (
-                name in site_names
-                and value.dtype.is_floating_point
-                and not torch.isfinite(value).all()
-            ):
-                raise ValueError(
-                    f"PotentialFn: observed site {name!r} holds non-finite values"
-                )
         with torch.no_grad(), _distribution_validation():
             trace_side, log_det_total = self._trace_side(z)
             values = {**trace_side, **self._observations}

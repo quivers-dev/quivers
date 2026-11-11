@@ -25,7 +25,7 @@ import pytest
 import torch
 
 import quivers.inference.mcmc.hmc as hmc_module
-from torch.distributions import Categorical, Distribution, Gamma, Normal
+from torch.distributions import Categorical, Distribution, Gamma, Normal, Poisson
 
 from quivers.continuous import (
     ContinuousMorphism,
@@ -1134,7 +1134,20 @@ _DEFECTS = {
 }
 
 
-@pytest.mark.parametrize("case", sorted(_DEFECTS))
+_PROGRAM_DEFECTS = [
+    "covariate rows disagree with response rows",
+    "design matrix narrower than the coefficients",
+]
+_OBSERVED_DEFECTS = {
+    "NaN in the observed response": r"observed site 'y' holds non-finite values \[nan\]",
+    "negative count under Poisson": (
+        r"observed site 'y' holds values outside the support "
+        r"IntegerGreaterThan\(lower_bound=0\).*\[-1\.0, -1\.0, -1\.0\]"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", _PROGRAM_DEFECTS)
 def test_mcmc_run_raises_on_a_program_or_data_defect(case: str) -> None:
     make, data, error_type = _DEFECTS[case]
     driver = MCMC(
@@ -1168,16 +1181,31 @@ def test_potential_never_scores_a_defect_as_minus_infinity(case: str) -> None:
         potential.check_initial(position)
 
 
-@pytest.mark.parametrize(
-    "case", ["NaN in the observed response", "negative count under Poisson"]
-)
-def test_check_initial_rejects_observed_data_outside_the_likelihood(case: str) -> None:
+@pytest.mark.parametrize("case", sorted(_OBSERVED_DEFECTS))
+def test_potential_refuses_observed_data_outside_the_likelihood(case: str) -> None:
+    """Observed data outside a likelihood's support are an error in the
+    data, named at construction, never a ``-inf`` at every position."""
     make, data, _ = _DEFECTS[case]
     model = make()
     registry = LatentRegistry.from_model(model, {"y"})
-    potential = PotentialFn(model, registry, torch.zeros(1, 1), data)
-    with pytest.raises(ValueError):
-        potential.check_initial(torch.zeros(registry.total_unconstrained_dim))
+    with pytest.raises(ValueError, match=r"^PotentialFn: " + _OBSERVED_DEFECTS[case]):
+        PotentialFn(model, registry, torch.zeros(1, 1), data)
+
+
+@pytest.mark.parametrize("kernel_kind", ["nuts", "hmc"])
+@pytest.mark.parametrize("case", sorted(_OBSERVED_DEFECTS))
+def test_mcmc_run_refuses_observed_data_outside_the_likelihood(
+    case: str, kernel_kind: str
+) -> None:
+    make, data, _ = _DEFECTS[case]
+    kernel = (
+        NUTSKernel(max_tree_depth=3)
+        if kernel_kind == "nuts"
+        else HMCKernel(step_size=0.1, num_steps=3)
+    )
+    driver = MCMC(kernel, num_warmup=5, num_samples=5, num_chains=1, seed=0)
+    with pytest.raises(ValueError, match=r"^MCMC\.run: " + _OBSERVED_DEFECTS[case]):
+        driver.run(make(), torch.zeros(1, 1), data)
 
 
 def _score_program(
@@ -1272,9 +1300,17 @@ def test_check_initial_names_the_non_finite_term() -> None:
         potential.check_initial(torch.tensor([-1.0]))
 
 
+def _count_score(env: dict[str, torch.Tensor]) -> torch.Tensor:
+    rate = env["b"].reshape(()).exp()
+    return Poisson(rate).log_prob(env["y"]).sum().reshape(1)
+
+
 def test_check_initial_validates_whatever_the_global_default() -> None:
-    model = _count_program()
-    registry = LatentRegistry.from_model(model, {"y"})
+    """Counts a score function reads, outside the support its
+    distribution checks, raise the distribution's own validation error
+    however the global validation default is set."""
+    model = _score_program(_count_score, ("b", "y"))
+    registry = LatentRegistry.from_model(model, set())
     potential = PotentialFn(
         model,
         registry,
@@ -1284,7 +1320,7 @@ def test_check_initial_validates_whatever_the_global_default() -> None:
     previous = Distribution._validate_args
     Distribution.set_default_validate_args(False)
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Expected value argument"):
             potential.check_initial(torch.zeros(1))
         assert Distribution._validate_args is False
     finally:

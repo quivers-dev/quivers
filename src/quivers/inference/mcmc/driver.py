@@ -37,6 +37,7 @@ from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    _check_observed_support,
 )
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
@@ -475,16 +476,17 @@ class MCMC:
         ------
         ValueError
             If ``x`` has more than one row (MCMC targets the posterior
-            of one run), a chain's initial position is not finite, an
-            observed
-            value is not finite, or the log-density at an initial
-            position is not finite.
+            of one run), an observed value is not finite or lies
+            outside its site's support, a chain's initial position is
+            not finite, or the log-density at an initial position is
+            not finite.
         Exception
             Any error the program raises at an initial position, or
             raises during sampling for a reason other than a position
             outside its support.
         """
         _require_one_run(x, "MCMC.run")
+        _check_observed_support(model, observations, "MCMC.run")
         # The latents are the sites one run at (x, observations) reaches,
         # every position of a scan included. The run draws its latents
         # from a forked stream, so Torch's global RNG is left as it was.
