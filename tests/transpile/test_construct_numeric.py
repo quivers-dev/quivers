@@ -21,7 +21,6 @@ import math
 import pathlib
 
 import pytest
-from _pytest.mark import ParameterSet
 import torch
 import torch.distributions as D
 
@@ -597,45 +596,6 @@ _REFUSED: dict[tuple[str, str], str] = {
 }
 
 
-#: Cells a target renders but scores wrongly today, each with the defect.
-#: They run as strict expected failures, so a fix surfaces as an
-#: unexpected pass and the entry must then be removed.
-_KNOWN_DEFECTS: dict[tuple[str, str], str] = {
-    **{
-        ("let_expressions/let_plated_list_operand", backend): (
-            "a list literal in let arithmetic renders as a Python list, so "
-            "`ys * mu` and `+ [2.5, ...]` are list operations rather than "
-            "elementwise array arithmetic"
-        )
-        for backend in ("numpyro", "pyro")
-    },
-    ("steps/sample_class_code", "pyro"): (
-        "the drawn class reaches the model as a float tensor, which torch "
-        "refuses as a subscript (`mu[z]`)"
-    ),
-}
-
-
-def _target_cell(fixture: str, backend: str) -> ParameterSet:
-    """One probe cell, marked as a strict expected failure when known wrong.
-
-    Parameters
-    ----------
-    fixture : str
-        ``<category>/<stem>``.
-    backend : str
-        The target.
-
-    Returns
-    -------
-    ParameterSet
-        The `pytest.param` for the cell.
-    """
-    defect = _KNOWN_DEFECTS.get((fixture, backend))
-    marks = () if defect is None else (pytest.mark.xfail(strict=True, reason=defect),)
-    return pytest.param(fixture, backend, marks=marks, id=f"{fixture}-{backend}")
-
-
 def _source(fixture: str) -> str:
     """A fixture's QVR source.
 
@@ -764,7 +724,7 @@ def test_reference_matches_the_independent_joint(fixture: str) -> None:
 @pytest.mark.parametrize(
     ("fixture", "backend"),
     [
-        _target_cell(fixture, backend)
+        (fixture, backend)
         for fixture in sorted(_ORACLES)
         for backend in _TARGETS
         if (fixture, backend) not in _REFUSED

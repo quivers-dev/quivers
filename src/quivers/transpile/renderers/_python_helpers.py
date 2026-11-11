@@ -464,6 +464,16 @@ _LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
     },
 }
 
+#: ``(stack, convert)``: how a list literal becomes an array on the
+#: targets whose arithmetic reads a Python list as a sequence rather
+#: than a vector (`[1.0, 2.0] * mu` repeats or raises on torch and JAX):
+#: each entry is converted to an array and the entries stacked. PyMC
+#: and TensorFlow convert a list operand of their arithmetic themselves.
+_LIST_STACK_SYMBOLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "pyro": (("torch", "stack"), ("torch", "as_tensor")),
+    "numpyro": (("jnp", "stack"), ("jnp", "asarray")),
+}
+
 #: The array constructor each target's pointwise binary call converts its
 #: operands with, for the targets whose elementwise functions reject a
 #: host operand: ``torch.maximum`` takes tensors only, and ``jnp.maximum``
@@ -926,9 +936,15 @@ def render_let_expr_python(
         return s
     if isinstance(expr, LetExprList):
         lst = ctx.v(ctx.fresh("list"), "list")
+        stack = _LIST_STACK_SYMBOLS.get(ctx.target)
         for item in expr.items:
-            ctx.e(lst, render_let_expr_python(ctx, item), "child_of")
-        return lst
+            rendered = render_let_expr_python(ctx, item)
+            if stack is not None:
+                rendered = call(ctx, attribute(ctx, stack[1]), positional=(rendered,))
+            ctx.e(lst, rendered, "child_of")
+        if stack is None or not expr.items:
+            return lst
+        return call(ctx, attribute(ctx, stack[0]), positional=(lst,))
     if isinstance(expr, LetExprLambda):
         lam = ctx.v(ctx.fresh("lam"), "lambda")
         params = ctx.v(ctx.fresh("ps"), "lambda_parameters")

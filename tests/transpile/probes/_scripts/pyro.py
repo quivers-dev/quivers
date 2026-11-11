@@ -33,10 +33,14 @@ def _tensor(value):
 
 
 def _site_tensor(value, dtype):
-    # A site the caller types `float32` takes the dtype of the model's
-    # own literal tensors, so a family that solves against a literal
-    # parameter (Wishart's scale) sees one dtype throughout; every other
-    # site keeps the float64 the data it is combined with carries.
+    # A site the caller types `int` (a drawn class code) is an integer
+    # tensor, as Pyro draws it, so the model can subscript with it. A
+    # site typed `float32` takes the dtype of the model's own literal
+    # tensors, so a family that solves against a literal parameter
+    # (Wishart's scale) sees one dtype throughout; every other site keeps
+    # the float64 the data it is combined with carries.
+    if dtype == "int":
+        return torch.tensor(value, dtype=torch.long)
     if dtype == "float32":
         return torch.tensor(value, dtype=torch.float32)
     return _tensor(value)
