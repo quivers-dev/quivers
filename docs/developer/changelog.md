@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.45.0] - 2026-11-11
+
+### Added
+
+- **`concat` and `slice` in let expressions.** `concat(a, b, ...)` joins two or more tensors of one element type along their last axis, the leading axes agreeing and the last extents adding; `slice(v, start, length)` keeps `length` entries of the last axis from `start`, both bounds non-negative integer literals. Both are checked (a number where a tensor belongs, disagreeing element types or leading axes, a non-literal or out-of-range bound are refused at the argument), run on the reference machine and the compiled runtime, and transpile to every target, so a scan can carry a state of several parts, such as an LSTM's hidden and cell state, as one vector. BUGS and JAGS refuse a `concat` or `slice` of a table by name.
+
+### Fixed
+
+- **Transpiled list literals and factor tables keep their array shape.** PyMC and Edward2 stack a list-literal let into an array, as Pyro and NumPyro do, so arithmetic between two of them is elementwise; Julia targets count a factor's entry axes when deciding whether a binding spans its plate, and nest a factor whose entry is a list; Church gives each nested map its own variable when two axes of a binding share a name.
+
 ## [0.44.0] - 2026-11-11
 
 ### Added
