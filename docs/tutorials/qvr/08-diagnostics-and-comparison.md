@@ -90,6 +90,16 @@ The columns to watch:
 - `ess_bulk`, `ess_tail`: bulk and tail effective sample sizes. Judge them against the Monte Carlo precision needed for the estimand; this example runs two chains.
 - `mcse_mean`, `mcse_sd`: Monte Carlo standard error of the posterior mean and standard deviation. Should be small relative to the posterior `sd`.
 
+The same estimators are available without ArviZ, for any tensor laid out `(num_chains, num_draws, *event_shape)`. [`rhat`](../../api/diagnostics/convergence.md#quivers.diagnostics.convergence.rhat), [`ess`](../../api/diagnostics/convergence.md#quivers.diagnostics.convergence.ess), and [`mcse`](../../api/diagnostics/convergence.md#quivers.diagnostics.convergence.mcse) are the functions `result.r_hat`, `result.ess`, and `result.ess_tail` are computed with, so they also diagnose a quantity derived from the draws, such as the ratio of the slope to the noise scale:
+
+```python
+from quivers.diagnostics import ess, mcse, rhat
+
+ratio = result.samples["beta_1"] / result.samples["sigma"]
+print(rhat(ratio), ess(ratio, method="bulk"), ess(ratio, method="tail"))
+print(mcse(ratio, method="mean"), mcse(ratio, method="quantile", prob=0.95))
+```
+
 Trace and rank plots give you a visual on the same diagnostics:
 
 <!-- python: skip -->
@@ -160,7 +170,7 @@ call for checking the reliability of the leave-one-out approximation.
 
 ## Try this
 
-- Run the eight-schools fit from chapter 3 through this pipeline. Inspect `result.total_divergences` before conversion, because the current adapter stores aggregate diagnostics rather than a per-draw `sample_stats/diverging` variable.
+- Run the eight-schools fit from chapter 3 through this pipeline, and locate its divergences in parameter space with the per-draw `sample_stats/diverging` variable the adapter writes from [`MCMCResult.sample_stats`](../../guides/inference-mcmc.md#checkpoints-budgets-and-sampler-statistics).
 - Add a `Cauchy` likelihood model alongside the `Normal` one and compare them on a dataset with outliers.
 - Slice the posterior tree by chain (`tree.posterior.sel(chain=0)`) and confirm individual chains are converging to the same place.
 

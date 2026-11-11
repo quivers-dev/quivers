@@ -453,11 +453,7 @@ svi = SVI(model, guide, optimizer, elbo)
 
 # Training loop
 for epoch in range(100):
-    x = next(data_loader)  # minibatch
-    observations = {"y": x[:, -1]}
-    x_input = x[:, :-1]
-
-    loss = svi.step(x_input, observations)
+    loss = svi.step(x, observations)
     print(f"Epoch {epoch}: loss={loss:.4f}")
 ```
 
@@ -471,6 +467,84 @@ observations live in a plate, with its rows given in `observations`,
 takes a one-row input instead: its rows come from its data and its
 plates, and repeating the input row would only add copies of the same
 run.
+
+## Minibatches: subsampled plates
+
+A program whose records live in a plate scores every record on every
+step. Stochastic variational inference [@hoffman2013svi] scores a random
+subset of the records instead and multiplies their contribution by the
+number of records over the subset's size. The minibatch estimate of the
+ELBO is then unbiased for the full-data ELBO, and so is its gradient, so
+SVI converges to the same posterior while each step reads only the
+subset's observations.
+
+[`subsample`][quivers.effects.subsample.subsample] does this for one plate.
+Inside its block, every site whose plate axes include the plate, a plate
+latent or an observation, is scored at the index's rows, times the plate's
+size `N` over the index's size `B`. The global sites, the latents outside
+the plate, are scored in full and unscaled, so the prior and the guide's
+global entropy count once per step rather than once per record. Several
+blocks compose: a site in two subsampled plates takes the product of the
+two factors, and a site in one of two sibling plates takes its own
+plate's factor alone. A trace records each scaled site's factor as
+`metadata["subsample_scale"]`.
+
+<!-- compile: standalone -->
+```qvr
+object Item : FinSet 40
+
+program mean_model : Item -> Item
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=mu, scale=1.0)
+    return mu
+
+export mean_model
+```
+
+<!-- python: skip -->
+```python
+import torch
+from quivers.effects import subsample
+from quivers.inference import ELBO, SVI, AutoNormalGuide
+
+guide = AutoNormalGuide(model, {"y"})
+svi = SVI(model, guide, torch.optim.Adam(guide.parameters(), lr=0.02), ELBO())
+x = torch.zeros(1, 1)
+for step in range(1500):
+    index = torch.randperm(40)[:8].sort().values
+    with subsample("Item", index):
+        svi.step(x, {"y": y[index]})
+```
+
+The index lists distinct rows in increasing order. An observation may be
+given at the subset's size, as above, its rows read in the order of the
+index, or at the plate's full extent. Within a run the plate keeps its
+declared extent: its latents are drawn at every row and the program's
+lets compute every row, so a row outside the subset keeps a well-defined
+value and only its score is left out. The saving is thus in the scored
+terms and in the data a step reads, not in the lets of the program.
+
+A local latent inside the subsampled plate, one variable per record, is
+handled by [`AutoNormalGuide`][quivers.inference.guides.AutoNormalGuide],
+whose density factors over the plate's rows: it scores the latent at the
+subset's rows with the same factor, and a row outside the subset receives
+no gradient from the step. [`AutoDeltaGuide`][quivers.inference.guides.AutoDeltaGuide],
+whose density is constant, also admits it. A guide whose density couples
+the rows, such as
+[`AutoMultivariateNormalGuide`][quivers.inference.guides.AutoMultivariateNormalGuide],
+refuses a local latent in a subsampled plate rather than score a biased
+objective; it remains usable when the plate holds only observations.
+
+Only an objective linear in the log joint stays unbiased under
+subsampling: the ELBO, with any number of particles and any gradient
+estimator. The importance-weighted and Rényi bounds, `ChiVI`, and `RWS`
+exponentiate or self-normalise the log weights and refuse a subsampled
+plate, and so do the consumers of the exact posterior, MCMC and
+`PotentialFn`, the Laplace approximation, `AutoDAIS`, and the Bayesian
+lift. A site in the plate that is neither a plate draw nor a plated
+observation (a grouped marginalization, for instance) has no per-row
+density and is refused, as is a plate whose extent the program leaves to
+its data.
 
 ## Predictive sampling
 

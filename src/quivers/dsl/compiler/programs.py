@@ -10,7 +10,7 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Collection, Hashable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
@@ -134,6 +134,7 @@ from quivers.dsl.let_expr_traversal import (
     free_let_names,
     map_let_expr,
     substitute_let_expr,
+    walk_let_expr,
 )
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
@@ -207,9 +208,7 @@ def _let_expr_reads(node: LetExprNode) -> frozenset[str]:
     return frozenset(free_let_names(node))
 
 
-def _checked_real_space(
-    name: str, type_: TypeExpr, axes: tuple[str, ...]
-) -> Euclidean | None:
+def _checked_real_space(name: str, type_: TypeExpr, per_row: bool) -> Euclidean | None:
     """The Euclidean space a checked real-valued datum occupies.
 
     Parameters
@@ -218,8 +217,9 @@ def _checked_real_space(
         The datum's name.
     type_ : TypeExpr
         Its checked type.
-    axes : tuple[str, ...]
-        The plate axes its values range over, outermost first.
+    per_row : bool
+        Whether the datum holds one value per row of a plate, along its
+        leading extent.
 
     Returns
     -------
@@ -244,7 +244,7 @@ def _checked_real_space(
         return Euclidean(name=f"_{name}", dim=1)
     total = math.prod(extents)
     return Euclidean(
-        name=f"_{name}", dim=total, plate_rows=extents[0] if axes else None
+        name=f"_{name}", dim=total, plate_rows=extents[0] if per_row else None
     )
 
 
@@ -759,6 +759,130 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 # write the contraction via the typed ``contraction`` declaration.
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
 
+#: The calls the let evaluator implements itself rather than through
+#: the builtin table: the collection combinators, which read a lambda,
+#: and the deduction and term operations.
+_LET_SPECIAL_CALLS: frozenset[str] = frozenset(
+    {
+        "length",
+        "map",
+        "filter",
+        "fold",
+        "logsumexp_over",
+        "parse",
+        "subst",
+        "compose",
+        "cholesky_quad_form",
+    }
+)
+
+
+def _checked_layout(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    reads: frozenset[str],
+    extents: Mapping[str, tuple[int, ...]],
+    result: str,
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a let body on its operands' checked shapes.
+
+    Within one run, the runtime holds a number drawn from a continuous
+    family, or read from a one-coordinate input, as a vector of one
+    entry. Elementwise arithmetic cannot tell the difference, but a
+    body that lays numbers out along a new axis (a list literal or a
+    ``factor``) or reduces one would read that stray axis as data:
+    ``[h, 1.0]`` would be ``(2, 1)`` rather than the checked ``(2,)``.
+    Each operand the checked program types as a number is thus handed
+    to the body as a number, and a result the checked program types as
+    a number is given back the one-entry layout its operands had.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, LetValue]], LetValue]
+        The compiled body.
+    reads : frozenset[str]
+        The names the body reads.
+    extents : Mapping[str, tuple[int, ...]]
+        The checked extents of the program's bindings, ``()`` for a
+        number.
+    result : str
+        The name the body's value is bound to.
+
+    Returns
+    -------
+    Callable[[dict[str, LetValue]], LetValue]
+        The body, reading and returning values at their checked layout.
+    """
+    numbers = frozenset(name for name in reads if extents.get(name) == ())
+    if not numbers:
+        return function
+    returns_number = extents.get(result) == ()
+
+    def _run(env: dict[str, LetValue]) -> LetValue:
+        view = dict(env)
+        unwrapped = False
+        for name in numbers:
+            value = env.get(name)
+            if isinstance(value, torch.Tensor) and tuple(value.shape) == (1,):
+                view[name] = value.reshape(())
+                unwrapped = True
+        value = function(view)
+        if (
+            unwrapped
+            and returns_number
+            and isinstance(value, torch.Tensor)
+            and value.dim() == 0
+        ):
+            return value.reshape(1)
+        return value
+
+    return _run
+
+
+def _unknown_let_call(
+    node: LetExprNode,
+    globals_: Mapping[str, LetValue | frozenset[str]],
+    bound: Collection[str],
+) -> LetExprCall | None:
+    """The first call in a let expression to a name the evaluator lacks.
+
+    The let evaluator resolves a call against its builtin table, its own
+    combinators, the static globals it is compiled with (compiled
+    deductions and injected callables), and the declared constructors.
+    A call naming none of them fails whenever it runs, so it is reported
+    when the program compiles instead.
+
+    Parameters
+    ----------
+    node : LetExprNode
+        The let's value.
+    globals_ : Mapping[str, LetValue | frozenset[str]]
+        The static globals the expression is compiled with.
+    bound : Collection[str]
+        The names the program binds before the let, which a call may
+        name when one of them holds a function.
+
+    Returns
+    -------
+    LetExprCall | None
+        The first such call in preorder, or ``None``.
+    """
+    constructors = globals_.get(LET_CONSTRUCTORS_KEY, frozenset())
+    assert isinstance(constructors, frozenset)
+    for candidate in walk_let_expr(node):
+        if not isinstance(candidate, LetExprCall):
+            continue
+        name = candidate.func
+        if (
+            name in _LET_EXPR_BUILTINS
+            or name in _LET_SPECIAL_CALLS
+            or (name in globals_ and name not in LET_INTERNAL_KEYS)
+            or name in constructors
+            or name in bound
+        ):
+            continue
+        return candidate
+    return None
+
 
 def _expected_call_arity(target: object) -> int | None:
     """Return the expected number of positional arguments for ``target``
@@ -927,6 +1051,11 @@ def _infer_wiring_from_signature(
 #   the posterior-block ``over`` model reference.
 # * ``contraction`` declarations read the composition ``rule``, the
 #   explicit einsum ``wiring`` escape hatch, and the ``share`` list.
+_MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN"}
+)
+"""Families whose sample is one real vector over the event axis."""
+
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
 _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
@@ -3638,18 +3767,35 @@ class _ProgramsMixin:
                     self._validate_let_expr_vars(step.value, bound_vars, step)
                     deductions_globals = dict(getattr(self, "_deductions", {}))
                     deductions_globals["__index_size__"] = self._resolve_index_size
+                    self._reject_unknown_let_calls(
+                        step.value,
+                        deductions_globals,
+                        bound_vars,
+                        "let",
+                        step.name,
+                        step.line,
+                        step.col,
+                    )
+                    reads = _let_expr_reads(step.value)
                     compiled_fn = reading(
-                        self._locate_let_failure(
-                            self._compile_let_expr(
-                                step.value,
-                                globals_=deductions_globals,
+                        _checked_layout(
+                            self._locate_let_failure(
+                                self._compile_let_expr(
+                                    step.value,
+                                    globals_=deductions_globals,
+                                ),
+                                "let",
+                                step.name,
+                                step.line,
+                                step.col,
                             ),
-                            "let",
+                            reads,
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {},
                             step.name,
-                            step.line,
-                            step.col,
                         ),
-                        _let_expr_reads(step.value),
+                        reads,
                     )
                     bound_vars[step.name] = None
                     let_space = _let_space(step.value, bound_vars, parameter_spaces)
@@ -3675,18 +3821,35 @@ class _ProgramsMixin:
                 self._validate_let_expr_vars(step.value, bound_vars, step)
                 deductions_globals = dict(getattr(self, "_deductions", {}))
                 deductions_globals["__index_size__"] = self._resolve_index_size
+                self._reject_unknown_let_calls(
+                    step.value,
+                    deductions_globals,
+                    bound_vars,
+                    "score",
+                    step.name,
+                    step.line,
+                    step.col,
+                )
+                reads = _let_expr_reads(step.value)
                 compiled_fn = reading(
-                    self._locate_let_failure(
-                        self._compile_let_expr(
-                            step.value,
-                            globals_=deductions_globals,
+                    _checked_layout(
+                        self._locate_let_failure(
+                            self._compile_let_expr(
+                                step.value,
+                                globals_=deductions_globals,
+                            ),
+                            "score",
+                            step.name,
+                            step.line,
+                            step.col,
                         ),
-                        "score",
+                        reads,
+                        self._value_extents_stack[-1]
+                        if self._value_extents_stack
+                        else {},
                         step.name,
-                        step.line,
-                        step.col,
                     ),
-                    _let_expr_reads(step.value),
+                    reads,
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -4069,9 +4232,30 @@ class _ProgramsMixin:
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
             if isinstance(bstep, LetStep):
+                self._reject_unknown_let_calls(
+                    bstep.value,
+                    deductions_globals,
+                    local_bv,
+                    "let",
+                    bstep.name,
+                    bstep.line,
+                    bstep.col,
+                )
+                body_reads = _let_expr_reads(bstep.value)
                 fn = reading(
-                    self._compile_let_expr(bstep.value, globals_=deductions_globals),
-                    _let_expr_reads(bstep.value),
+                    _checked_layout(
+                        self._compile_let_expr(
+                            bstep.value, globals_=deductions_globals
+                        ),
+                        body_reads,
+                        (
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {}
+                        ),
+                        bstep.name,
+                    ),
+                    body_reads,
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
@@ -4456,6 +4640,12 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                     )
+            except ValueError:
+                # An inline family the checked program cannot size is
+                # refused here; when the checked program itself fails to
+                # lower, its located diagnostic says why first.
+                _ = self.qiec_module
+                raise
             except TypeError as exc:
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
@@ -4579,11 +4769,21 @@ class _ProgramsMixin:
         entry = next((e for e in module.entries if e.name == program), None)
         if entry is None:
             return {}
+        plates = {axis.name for site in entry.sites for axis in site.batch}
         spaces: dict[str, AnySpace] = {}
         for parameter in entry.parameters:
             if parameter.role != "data":
                 continue
-            space = _checked_real_space(parameter.name, parameter.type, parameter.axes)
+            # A datum ranges over a plate when it fills a plated draw's
+            # parameter one row at a time, or when it is a vector a let
+            # reads along a plate's rows; a tensor over its own axes,
+            # such as a Cholesky factor, is one value.
+            space = _checked_real_space(
+                parameter.name,
+                parameter.type,
+                parameter.per_row
+                or (len(parameter.axes) == 1 and parameter.axes[0] in plates),
+            )
             if space is not None:
                 spaces[parameter.name] = space
         return spaces
@@ -4974,17 +5174,23 @@ class _ProgramsMixin:
         event_size = (
             self._axis_event_size(event_axis) if event_axis is not None else None
         )
+        checked_event = self._checked_event_extents(
+            family, argument_by_name, var_names[0]
+        )
         matrix_spec = self._matrix_family_spec(family)
         if matrix_spec is not None:
             # A matrix-valued family takes its ``K x K`` shape from the
             # width in scope: the ``[over=...]`` axis when one is
-            # written, otherwise the object the draw is annotated with.
-            # Neither is optional, since the underlying distribution
-            # needs ``K`` at construction and a scalar codomain would
-            # build it at ``K = 1``.
+            # written, else the extents the checked program gives the
+            # draw, otherwise the object the draw is annotated with.
+            # None is optional, since the underlying distribution needs
+            # ``K`` at construction and a scalar codomain would build it
+            # at ``K = 1``.
             matrix_dim = (
                 event_size
                 if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
                 else self._axis_event_size(program_codomain)
             )
             if matrix_dim is None or matrix_dim < 2:
@@ -5000,8 +5206,45 @@ class _ProgramsMixin:
             return self._matrix_codomain(
                 matrix_spec, matrix_dim, var_names[0], line, col
             )
+        record = FAMILIES.get(family)
+        if (
+            record is not None
+            and record.event_rank == 1
+            and record.event_sources
+            and family in _MULTIVARIATE_REAL_FAMILIES
+        ):
+            # A multivariate real family samples a vector over its event
+            # axis: the ``[over=...]`` axis when one is written, else the
+            # extent the checked program gives its event source.
+            width = (
+                event_size
+                if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
+                else None
+            )
+            if width is None:
+                # A checked program that fails to lower says why first.
+                _ = self.qiec_module
+                raise CompileError(
+                    f"{family} draw of {var_names[0]!r} fixes no event size the "
+                    f"compiled runtime can build it at: name its axis with "
+                    f"``[over=K]``, annotate it (``{var_names[0]} : K <- "
+                    f"{family}(...)``), or give its "
+                    f"{' or '.join(map(repr, record.event_sources))} a fixed size",
+                    line,
+                    col,
+                )
+            return Euclidean(name=f"_{var_names[0]}", dim=width)
         if event_size is not None and event_size > 1:
-            if family in ("Normal", "LogitNormal", "Uniform", "TruncatedNormal"):
+            if family in (
+                "Normal",
+                "LogitNormal",
+                "Uniform",
+                "TruncatedNormal",
+                "LogGamma",
+                "LogitBeta",
+            ):
                 return Euclidean(name=f"_{var_names[0]}", dim=event_size)
             if family in (
                 "Exponential",
@@ -5117,6 +5360,49 @@ class _ProgramsMixin:
         else:
             return Euclidean(name=f"_{var_names[0]}", dim=1)
 
+    def _checked_event_extents(
+        self,
+        family: str,
+        arguments: Mapping[str, object],
+        site: str,
+    ) -> tuple[int, ...] | None:
+        """The event extents the checked program gives an inline draw.
+
+        Parameters
+        ----------
+        family : str
+            The family's source name.
+        arguments : Mapping[str, object]
+            The draw's arguments by parameter name.
+        site : str
+            The name the draw binds.
+
+        Returns
+        -------
+        tuple[int, ...] | None
+            The trailing event-rank extents of the argument the family's
+            event shape comes from, a list literal's length for a vector,
+            else of the draw's own checked value; ``None`` when none is
+            fixed or the family has no event axes.
+        """
+        record = FAMILIES.get(family)
+        if record is None or record.event_rank == 0:
+            return None
+        rank = record.event_rank
+        extents = self._value_extents_stack[-1] if self._value_extents_stack else {}
+        for name in record.event_sources:
+            argument = arguments.get(name)
+            if isinstance(argument, DrawArgName):
+                checked = extents.get(argument.text)
+                if checked is not None and len(checked) >= rank:
+                    return tuple(checked[len(checked) - rank :])
+            if isinstance(argument, DrawArgList) and argument.items and rank == 1:
+                return (len(argument.items),)
+        own = extents.get(site)
+        if own is not None and len(own) >= rank:
+            return tuple(own[len(own) - rank :])
+        return None
+
     @staticmethod
     def _locate_let_failure(
         fn: Callable[[dict[str, "LetValue"]], "LetValue"],
@@ -5146,6 +5432,51 @@ class _ProgramsMixin:
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
 
         return _run
+
+    @staticmethod
+    def _reject_unknown_let_calls(
+        node: LetExprNode,
+        globals_: Mapping[str, LetValue | frozenset[str]],
+        bound: Collection[str],
+        kind: str,
+        name: str,
+        line: int,
+        col: int,
+    ) -> None:
+        """Refuse a let or score body that calls a name nothing defines.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The body.
+        globals_ : Mapping[str, LetValue | frozenset[str]]
+            The static globals the body is compiled with.
+        bound : Collection[str]
+            The names bound before the step.
+        kind : str
+            ``"let"`` or ``"score"``, for the message.
+        name : str
+            The binding's name.
+        line : int
+            The step's source line, used when the call has none.
+        col : int
+            The step's source column, used when the call has none.
+
+        Raises
+        ------
+        CompileError
+            If a call names no builtin, combinator, global, constructor,
+            or earlier binding, located at the call.
+        """
+        call = _unknown_let_call(node, globals_, bound)
+        if call is None:
+            return
+        raise CompileError(
+            f"{kind} {name!r}: unknown function {call.func!r} in let expression; "
+            f"it names no builtin, no constructor, and nothing bound earlier",
+            call.line or line,
+            call.col if call.line else col,
+        )
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep
