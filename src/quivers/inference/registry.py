@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import torch
 from torch.distributions import constraints as _constraints
@@ -55,9 +55,7 @@ from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Call, Draw, Observe, Scan
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
-
-if TYPE_CHECKING:
-    from quivers.effects.trace_types import Trace
+from quivers.effects.trace_types import Trace
 
 
 def _unconstrained_event_dim(

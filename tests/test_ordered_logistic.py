@@ -197,7 +197,7 @@ export ord
     participant_idx = torch.tensor([0, 1, 2, 0, 1, 2]).long()
     tr = trace(
         program.morphism,
-        torch.zeros(6, 1),
+        torch.zeros(1, 1),
         observations={
             "y": y,
             "cutpoints": cutpoints,
@@ -206,13 +206,9 @@ export ord
     )
     assert tr.log_joint is not None
     assert torch.isfinite(tr.log_joint).all()
-    # The joint reduces to the narrowest shape its density-carrying
-    # sites agree on, and `eta` is one draw shared by every row, so
-    # that shape is a single element rather than one per row. What it
-    # has to equal is the sum of the sites it is built from, which is
-    # the invariant a shape alone does not pin: a joint that repeated
-    # a shared site once per row would have the same shape and the
-    # wrong value.
+    # One run, so one joint, which has to equal the sum of the sites it
+    # is built from: a joint that repeated a shared site once per row
+    # would have the same shape and the wrong value.
     assert tr.log_joint.numel() == 1
     site_total = sum(float(site.log_prob.sum()) for site in tr.sites.values())
     torch.testing.assert_close(
@@ -240,15 +236,15 @@ export ordinal
     torch.manual_seed(0)
     y = torch.randint(0, 5, (N,)).long()
     base = torch.tensor([-1.5, -0.5, 0.5, 1.5])
+    # One run of the program: its rows come from the `Resp` plate.
     tr = trace(
         program.morphism,
-        torch.zeros(N, 1),
+        torch.zeros(1, 1),
         observations={"y": y, "base": base},
     )
     assert tr.log_joint is not None
-    # One `eta` shared across the plate, so the joint reduces to a
-    # single element and must equal the sum of its sites; see the
-    # participant-indexed case above.
+    # One run, so one joint, which must equal the sum of its sites; see
+    # the participant-indexed case above.
     assert tr.log_joint.numel() == 1
     torch.testing.assert_close(
         float(tr.log_joint.sum()),
@@ -288,14 +284,14 @@ export ordinal
     torch.manual_seed(0)
     y = torch.randint(0, 5, (N,)).long()
     base = torch.tensor([-1.5, -0.5, 0.5, 1.5])
+    # One run of the program: its rows come from the `Resp` plate.
     tr = trace(
         program.morphism,
-        torch.zeros(N, 1),
+        torch.zeros(1, 1),
         observations={"y": y, "base": base},
     )
     assert tr.log_joint is not None
-    # One `eta` shared across the plate, so the joint reduces to a
-    # single element and must equal the sum of its sites.
+    # One run, so one joint, which must equal the sum of its sites.
     assert tr.log_joint.numel() == 1
     torch.testing.assert_close(
         float(tr.log_joint.sum()),

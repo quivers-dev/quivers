@@ -442,6 +442,9 @@ class MixedInlineDistribution(ContinuousMorphism):
             One tensor per parameter, each shape ``(batch,)`` or
             ``(batch, dim)``.
         """
+        if x.dim() == 0:
+            # One run's scalar parameter: a single row of one column.
+            x = x.reshape(1, 1)
         if x.dim() == 1:
             x = x.unsqueeze(0) if self._is_shared_vector(x) else x.unsqueeze(-1)
         positions = [
