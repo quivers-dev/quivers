@@ -1931,8 +1931,9 @@ class StanRenderer(RendererBase):
         * User-written index already present (`phi[z]`, `mu[cls]`):
           left alone; the IR already encodes the per-element lookup.
         * Unindexed ref whose declared plate's batch_dims align (as a
-          tuple-equality on `Dim`s) with `plate.batch_dims`: prepend
-          one [`IRArgRef`][quivers.transpile.ir.IRArgRef] index per
+          tuple-equality on `Dim`s) with `plate.batch_dims`, or whose
+          every dimension, batch then event, does: prepend one
+          [`IRArgRef`][quivers.transpile.ir.IRArgRef] index per
           aligned batch dim, in declaration order. The loop indices
           are 1-based identifiers; the Stan
           `indexed_expression`
@@ -1944,7 +1945,11 @@ class StanRenderer(RendererBase):
         `observe y : Obs <- Normal(mu, ...)` index `mu` per-element
         rather than reading the whole array into the scalar Normal
         slot (which Stan rejects with a dimension mismatch at runtime
-        data binding).
+        data binding). A vector `z` over `Feat`, one event, read by a
+        scalar family the plan replicates over `Feat` is read at the
+        loop's position too: inside the loop a whole `vector` in the
+        location slot would score each entry of the observation
+        against every entry of `z`.
         """
         if not isinstance(arg, IRArgRef):
             return arg
@@ -1954,7 +1959,10 @@ class StanRenderer(RendererBase):
         if declared is None:
             return arg
         decl_plate = declared[1]
-        if decl_plate.batch_dims != plate.batch_dims:
+        if decl_plate.batch_dims != plate.batch_dims and (
+            *decl_plate.batch_dims,
+            *decl_plate.event_dims,
+        ) != tuple(plate.batch_dims):
             return arg
         if not loop_names:
             return arg

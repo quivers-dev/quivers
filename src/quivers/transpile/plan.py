@@ -1144,7 +1144,10 @@ class _ProgramWalk:
             )
         step = self.site_steps.get(site)
         morphism = step.morphism if step is not None else ""
-        plate = _plate_of(distribution.plate, marginalized, meta, distribution, self)
+        plate = self._broadcast_axes(
+            _plate_of(distribution.plate, marginalized, meta, distribution, self),
+            distribution,
+        )
         named = {name: value for name, value in distribution.arguments}
         self.via = via
         if meta.structured_lowering is not None and _structured(distribution, meta):
@@ -1177,6 +1180,62 @@ class _ProgramWalk:
         )
         del named
         return family, args, arg_names, plate, constraint
+
+    def _broadcast_axes(self, plate: Plate, distribution: DistributionValue) -> Plate:
+        """Name a broadcast plate's axes after the argument it is read off.
+
+        An unplated scalar family whose parameter is filled by a tensor
+        binding, ``Normal(loc=z, scale=0.5)`` with ``z`` a vector, is
+        replicated once per entry of ``z``; the checked program names
+        those batch axes after the binding, ``z``, ``z_1``, and so on.
+        The entry at each position is the entry of ``z`` there, so the
+        plate's axes are ``z``'s own axes, which the plan already names
+        (``Feat`` for a ``z`` read off a draw over ``Feat``). Naming them
+        so lets a target that visits the plate one position at a time
+        read the binding at the position it visits.
+
+        Parameters
+        ----------
+        plate : Plate
+            The site's plate as the checked program states it.
+        distribution : DistributionValue
+            The construction, whose arguments name the broadcast axes.
+
+        Returns
+        -------
+        Plate
+            The plate with every broadcast axis renamed to the axis of
+            the binding it is read off, or `plate` unchanged when its
+            axes are not a binding's broadcast or the binding's axes
+            are unnamed or repeat a name.
+        """
+        if plate.event_dims or not plate.batch_dims:
+            return plate
+        names = tuple(dim.name for dim in plate.batch_dims)
+        for _, value in distribution.arguments:
+            if not isinstance(value, Var):
+                continue
+            stem = value.local.name
+            stated = tuple(
+                stem if index == 0 else f"{stem}_{index}" for index in range(len(names))
+            )
+            known = self.axes.get(stem)
+            if (
+                names != stated
+                or known is None
+                or len(known) != len(names)
+                or len(set(known)) != len(known)
+                or any(name in self.ctx.cards for name in stated)
+            ):
+                continue
+            return Plate(
+                event_dims=(),
+                batch_dims=tuple(
+                    _renamed_dim(dim, axis)
+                    for dim, axis in zip(plate.batch_dims, known, strict=True)
+                ),
+            )
+        return plate
 
     def _arguments(
         self,
@@ -1972,6 +2031,33 @@ def _dim(size: IndexTerm, name: str) -> Dim:
     if isinstance(size, IndexVariable):
         return DimDynamic(size_name=size.name, name=name)
     raise UnsupportedConstruct("qvr-lower", [f"axis:unknown-cardinality:{name}"])
+
+
+def _renamed_dim(dim: Dim, name: str) -> Dim:
+    """A plate dimension of the same extent under another name.
+
+    Parameters
+    ----------
+    dim : Dim
+        The dimension.
+    name : str
+        The new name.
+
+    Returns
+    -------
+    Dim
+        The dimension, named ``name``.
+
+    Raises
+    ------
+    TypeError
+        If ``dim`` is neither a static nor a dynamic dimension.
+    """
+    if isinstance(dim, DimStatic):
+        return DimStatic(size=dim.size, name=name)
+    if isinstance(dim, DimDynamic):
+        return DimDynamic(size_name=dim.size_name, name=name)
+    raise TypeError(f"unknown plate dimension {type(dim).__name__}")
 
 
 def _axis_dim(axis: PlateAxis) -> Dim:

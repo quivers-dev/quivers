@@ -2417,10 +2417,24 @@ class BUGSRenderer(RendererBase):
             # name as a free identifier (will probably fail in BUGS
             # but is a signal of an under-specified IR).
             auto_leading.append(_IndexPiece.ident(axis))
+        # Event dims the receiver does not read as its own event, each
+        # visited by an enclosing loop, are read at the loop's
+        # position: a vector `z` over `Feat` filling a scalar family
+        # replicated over `Feat` is `z[m_Feat]`, one entry per draw.
+        event_dims = decl_plate.event_dims
+        visited = len(event_dims) - receiver_event_rank
+        if visited > 0 and len(user_pieces) <= len(decl_plate.batch_dims):
+            loops = [
+                self._loop_for_axis(ctx, str(dim.name)) for dim in event_dims[:visited]
+            ]
+            named = [loop for loop in loops if loop is not None]
+            if len(named) == len(loops):
+                auto_leading.extend(_IndexPiece.ident(loop) for loop in named)
+                event_dims = event_dims[visited:]
         # Event-dim slices: prefer the referenced var's own event
         # dims; fall back to the receiver's expected event rank
         # when the referenced var has none but the receiver does.
-        slice_uppers = tuple(self._dim_upper_text(d) for d in decl_plate.event_dims)
+        slice_uppers = tuple(self._dim_upper_text(d) for d in event_dims)
         if not slice_uppers and receiver_event_rank > len(user_pieces):
             slice_uppers = self._receiver_slice_uppers(ctx, receiver_event_rank)
         if not (auto_leading or user_pieces or slice_uppers):

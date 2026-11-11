@@ -3369,6 +3369,9 @@ def _rewrite_arg(
         )
         info = ctx.latent_plate_info.get(arg.name)
         if info is None:
+            visited = _visited_position(ctx.decl_plates.get(arg.name), axis_to_lv)
+            if visited and not arg.indices:
+                return IRArgRef(name=arg.name, indices=visited)
             if new_indices == arg.indices:
                 return arg
             return IRArgRef(name=arg.name, indices=new_indices)
@@ -3456,6 +3459,41 @@ def _rewrite_arg(
             return arg
         return IRArgTransform(inner=inner, transform=arg.transform, operand=operand)
     return arg
+
+
+def _visited_position(
+    declared: Plate | None, axis_to_lv: dict[str, str]
+) -> tuple[IRArg, ...]:
+    """The loop position at which a value over the visited axes is read.
+
+    A value whose every axis, batch then event, is one the surrounding
+    loops visit holds one entry per position: a vector `z` over `Feat`
+    filling a scalar family replicated over `Feat` is read as
+    `z[m_Feat]`, where the bare `z` would hand the scalar slot the
+    whole vector.
+
+    Parameters
+    ----------
+    declared : Plate | None
+        The value's declared plate, if the program declares it.
+    axis_to_lv : dict[str, str]
+        Each visited axis name mapped to its loop variable.
+
+    Returns
+    -------
+    tuple[IRArg, ...]
+        One loop-variable index per axis of the value, in order; empty
+        when the value is undeclared, has no axes, repeats an axis, or
+        has an axis the loops do not visit.
+    """
+    if declared is None:
+        return ()
+    names = tuple(_dim_name(dim) for dim in (*declared.batch_dims, *declared.event_dims))
+    if not names or len(set(names)) != len(names):
+        return ()
+    if any(name not in axis_to_lv for name in names):
+        return ()
+    return tuple(IRArgRef(name=axis_to_lv[name]) for name in names)
 
 
 def _has_trailing(indices: tuple[IRArg, ...], suffix: tuple[IRArg, ...]) -> bool:
