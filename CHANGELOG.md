@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.34.0] - 2026-11-11
+
+### Added
+
+- **`LogitBeta` and `LogGamma` families on the real line.** `LogitBeta(concentration1=a, concentration0=b)` is the law of `logit(p)` for `p ~ Beta(a, b)` and `LogGamma(concentration=a, rate=r)` the law of `log(g)` for `g ~ Gamma(a, r)`, scored by their exact densities `a logsigmoid(x) + b logsigmoid(-x) - log B(a, b)` and `a (log r + y) - r exp(y) - lgamma(a)` at every finite argument, and sampled in log space by the shape augmentation `log G' + log(U) / a` with `G' ~ Gamma(a + 1)`, so draws stay finite and reparameterized for shapes far below where a Beta or Gamma sampler clamps at the smallest normal number. The `torch.distributions` classes `LogitBeta` and `LogGamma` and the sampler `log_standard_gamma` are in `quivers.continuous`; `ConditionalLogitBeta` and `ConditionalLogGamma` learn their shapes through a softplus head; `make_fixed_logit_beta` and `make_fixed_log_gamma` build the fixed steps, and the inline paths pass small literal shapes through unclamped and refuse a shape that is not positive. Both families are in the QVR surface, the semantic registry, and the reference machine, and render for Stan, NumPyro, and Pyro through runtime helpers with the same densities and samplers; every other target refuses them by name.
+
 ## [0.33.0] - 2026-11-11
 
 ### Added
