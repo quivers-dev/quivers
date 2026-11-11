@@ -4404,24 +4404,33 @@ class _ProgramsMixin:
                     if self._parameter_space_stack
                     else {}
                 )
+                value_extents = (
+                    self._value_extents_stack[-1] if self._value_extents_stack else {}
+                )
+                variable_types = {
+                    **{
+                        name: space
+                        for name, space in parameter_spaces.items()
+                        if bound_vars.get(name) is None
+                    },
+                    **{k: v for k, v in bound_vars.items() if v is not None},
+                }
                 morph, var_args = make_inline_distribution(
                     draw.morphism,
                     draw.args,
                     inline_codomain,
-                    value_extents=(
-                        self._value_extents_stack[-1]
-                        if self._value_extents_stack
-                        else {}
-                    ),
-                    variable_types={
-                        **{
-                            name: space
-                            for name, space in parameter_spaces.items()
-                            if bound_vars.get(name) is None
-                        },
-                        **{k: v for k, v in bound_vars.items() if v is not None},
-                    },
+                    value_extents=value_extents,
+                    variable_types=variable_types,
                 )
+                broadcast = self._broadcast_codomain(draw, morph, axes_override)
+                if broadcast is not None:
+                    morph, var_args = make_inline_distribution(
+                        draw.morphism,
+                        draw.args,
+                        broadcast,
+                        value_extents=value_extents,
+                        variable_types=variable_types,
+                    )
             except TypeError as exc:
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
@@ -4453,6 +4462,67 @@ class _ProgramsMixin:
             draw.line,
             draw.col,
         )
+
+    @staticmethod
+    def _broadcast_codomain(
+        draw: DrawStep,
+        morph: ContinuousMorphism,
+        axes_override: AnySpace | None,
+    ) -> AnySpace | None:
+        """The codomain of a scalar family drawn at vector parameters.
+
+        A scalar family whose parameters are vector-valued bindings, with
+        no axis-role clause, draws one independent variate per entry of
+        its parameters: its value has their broadcast extent, as the
+        checked elaboration types the site.
+
+        Parameters
+        ----------
+        draw : DrawStep
+            The draw.
+        morph : ContinuousMorphism
+            The family built at the draw's scalar codomain.
+        axes_override : AnySpace | None
+            The space an axis-role clause names, if any.
+
+        Returns
+        -------
+        AnySpace | None
+            The codomain widened to the parameters' extent, or ``None``
+            when every parameter is one value per row.
+
+        Raises
+        ------
+        CompileError
+            If two parameters have different extents of more than one
+            entry, which do not broadcast.
+        """
+        record = FAMILIES.get(draw.morphism)
+        spec = getattr(morph, "_param_spec", None)
+        codomain = morph.codomain
+        if (
+            record is None
+            or record.event_rank != 0
+            or axes_override is not None
+            or spec is None
+            or not isinstance(codomain, Euclidean | PositiveReals)
+            or codomain.dim != 1
+        ):
+            return None
+        extents = sorted(
+            {int(w) for kind, w in spec if kind == "var" and w is not None and w > 1}
+        )
+        if not extents:
+            return None
+        if len(extents) > 1:
+            raise CompileError(
+                f"{draw.morphism} draw of {draw.vars[0]!r} reads parameters of "
+                f"{' and '.join(map(str, extents))} entries, which do not "
+                f"broadcast to one extent",
+                draw.line,
+                draw.col,
+            )
+        return codomain.with_(dim=extents[0])
 
     def _host_data_spaces(self, program: str) -> dict[str, AnySpace]:
         """The spaces the host data a program reads are checked at.
@@ -5138,17 +5208,17 @@ class _ProgramsMixin:
 
         Supported node kinds:
 
-        * `LetExprLiteral` — numeric literal → tensor.
-        * `LetExprString` — string literal → Python str.
-        * `LetExprVar` — variable reference → env lookup.
-        * `LetExprBinOp` — arithmetic over tensors.
-        * `LetExprUnaryOp` — negation.
-        * `LetExprList` — list literal → stacked tensor, or a Python
+        * `LetExprLiteral`: numeric literal → tensor.
+        * `LetExprString`: string literal → Python str.
+        * `LetExprVar`: variable reference → env lookup.
+        * `LetExprBinOp`: arithmetic over tensors.
+        * `LetExprUnaryOp`: negation.
+        * `LetExprList`: list literal → stacked tensor, or a Python
           list when an item is not a tensor.
-        * `LetExprLambda` — closure over the let environment.
-        * `LetExprMethodCall` — dispatch on receiver type.
-        * `LetExprCall` — built-in or constructor mode.
-        * `LetExprIndex` — tensor gather.
+        * `LetExprLambda`: closure over the let environment.
+        * `LetExprMethodCall`: dispatch on receiver type.
+        * `LetExprCall`: built-in or constructor mode.
+        * `LetExprIndex`: tensor gather.
         """
         if isinstance(node, LetExprLiteral):
             # An integral literal is an integer tensor, so integer
