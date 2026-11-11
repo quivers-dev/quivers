@@ -1,0 +1,8 @@
+# A Wishart whose scale's Cholesky factor is host data, sized by the
+# program's codomain.
+object Cov : Real 2
+object One : FinSet 1
+program wishart_host_factor : One -> Cov
+    sample W <- Wishart(df=4.0, scale_tril=L)
+    return W
+export wishart_host_factor

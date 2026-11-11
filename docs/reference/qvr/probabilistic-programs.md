@@ -63,10 +63,10 @@ type is inferred from the name's uses:
 | Use of the free name `x` | Checked type of `x` |
 | --- | --- |
 | filling a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
-| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter; several index vectors in one subscript select one entry per position, `x[i[n], j[n]]` |
 | combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
 | read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
-| used as an index | its elements are `Int` |
+| used as an index, or gathered from in an index position as in `E[tokens[q], k]` | its elements are `Int` |
 | none of the above | a scalar `Real`, or `Int` for an index |
 
 The rule applies to `let` and `score` expressions alike. A free name that a
@@ -168,8 +168,9 @@ A program binds a `define` computation with effectful binding:
 
 <!-- compile: qiec -->
 ```qvr
-define standardize(x : Real, location : Real, scale : Real) : Real !{} =
-    return (x - location) / scale
+define standardize(x : Tensor[Real]([8]), location : Real, scale : Real) : Tensor[Real]([8]) !{} =
+    let z_score = v -> (v - location) / scale
+    return map(x, z_score)
 
 object Row : FinSet 8
 
@@ -183,7 +184,24 @@ program standardized : Row -> Row
 export standardized
 ```
 
-The callee's residual effects join the program's. Dynamic transpile targets
+The host datum `x` takes the type of the parameter it is passed to, so it
+is a column of eight covariates, one per `Row`, and `map` standardizes each.
+The callee's residual effects join the program's.
+
+A call of a pure computation, one that performs no effect, takes no static
+arguments, and binds pure values before returning one, is inlined: its body
+runs at the call's arguments as `let` steps, with the callee's bindings under
+fresh names. The program then compiles to a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], so `trace`, `log_joint`
+and its gradients, SVI, and MCMC run on it, with the values the reference
+machine computes; the transpile planner inlines the same calls. A parametric
+template that calls a pure computation instantiates the same way. A call that
+cannot be inlined (an effectful callee, a conditional body, or a body that
+calls another computation) leaves the program a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] that runs on
+the reference machine, and a template making one is refused at the call.
+
+Dynamic transpile targets
 emit reachable calls through the common runtime ABI. Stan accepts a closed,
 monomorphic, effect-free scalar callee as a user-defined function. BUGS and
 JAGS refuse program-to-computation calls. Use `qvr check --target TARGET` to
@@ -281,11 +299,14 @@ whose own steps run once per position under the three rules below.
 
 1. **Scope.** A name a program cell reads without binding it is the scanning
    program's binding of that name *before* the scan: a sampled site, a `let`,
-   or a program input. A name the scanning program does not bind before the
-   scan is host data of the scanning program, supplied under that name, and the
-   scanning program cannot bind it afterwards. A name the cell binds itself
-   shadows the scanning program's binding inside the cell and is not visible
-   after the scan. Gradients flow through the bindings the cell reads.
+   or a program input, read at that binding's type: a scalar, a plated vector,
+   or a matrix-valued draw. A name the scanning program does not bind before
+   the scan is host data of the scanning program, supplied under that name and
+   typed by the cell's uses, as for any free name (a table read as `M[i, j]`
+   keeps its open extents); the scanning program cannot bind it afterwards. A
+   name the cell binds itself shadows the scanning program's binding inside the
+   cell and is not visible after the scan. Gradients flow through the bindings
+   the cell reads.
 2. **Sites.** Every site the step reaches is reached once per position. The
    `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
    from zero over the run, so for a single scan `n` is the position. A trace

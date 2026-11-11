@@ -23,6 +23,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+from collections.abc import Mapping
 
 from quivers.transpile.plan import target_name
 
@@ -166,15 +167,46 @@ def _probe_cache_key(
     shapes: dict[str, list[int]] | None,
     dtypes: dict[str, str] | None,
     script: pathlib.Path,
+    side_files: Mapping[str, bytes],
 ) -> str:
     """Digest every input that can move the measurement.
 
     That is the image the code runs under, the emitted source and its
-    extension, the points, the shape and dtype side-tables, and the
-    probe script together with the reshape helpers copied in beside it.
+    extension, the points, the shape and dtype side-tables, the probe
+    script together with the reshape helpers copied in beside it, and
+    every other file the caller placed in the mounted directory. A
+    probe reads its instructions from that directory, so a file there
+    that the key ignored (the list of names to export, for one) would
+    let a measurement taken without it answer a call made with it.
     Anything omitted here is something that can change while the cache
-    keeps answering with a stale number, so the helpers are hashed by
-    content rather than by name.
+    keeps answering with a stale number, so files are hashed by content
+    as well as by name.
+
+    Parameters
+    ----------
+    image : str
+        The image tag.
+    resolved_image_id : str
+        The image identifier the tag resolves to.
+    source : bytes
+        The emitted program.
+    source_ext : str
+        The program's file extension.
+    points : list[dict]
+        The points the probe scores.
+    shapes : dict[str, list[int]] | None
+        The shape side-table.
+    dtypes : dict[str, str] | None
+        The dtype side-table.
+    script : pathlib.Path
+        The probe script.
+    side_files : Mapping[str, bytes]
+        The other files in the mounted directory, by relative path.
+
+    Returns
+    -------
+    str
+        The hexadecimal digest.
     """
     digest = hashlib.sha256()
     parts: list[bytes] = [
@@ -192,6 +224,9 @@ def _probe_cache_key(
         reshape_path = script.parent / reshape_name
         parts.append(reshape_name.encode())
         parts.append(reshape_path.read_bytes() if reshape_path.exists() else b"")
+    for name in sorted(side_files):
+        parts.append(name.encode())
+        parts.append(side_files[name])
     for part in parts:
         digest.update(len(part).to_bytes(8, "big"))
         digest.update(part)
@@ -237,6 +272,41 @@ def spelled_points(points: list[dict]) -> list[dict]:
         }
         for point in points
     ]
+
+
+def _side_files(scratch: pathlib.Path, source_ext: str) -> dict[str, bytes]:
+    """The files in a probe's mounted directory that the caller put there.
+
+    Parameters
+    ----------
+    scratch : pathlib.Path
+        The directory mounted into the container.
+    source_ext : str
+        The extension of the emitted program, which names the source
+        file `run_probe` writes.
+
+    Returns
+    -------
+    dict[str, bytes]
+        Each file's content by its path relative to `scratch`, leaving
+        out the files `run_probe` writes from its own arguments and the
+        result the probe writes back.
+    """
+    own = {
+        f"source.{source_ext}",
+        "points.json",
+        "shapes.json",
+        "dtypes.json",
+        "probe.py",
+        "_reshape.py",
+        "_reshape.jl",
+        "result.json",
+    }
+    return {
+        path.relative_to(scratch).as_posix(): path.read_bytes()
+        for path in sorted(scratch.rglob("*"))
+        if path.is_file() and path.relative_to(scratch).as_posix() not in own
+    }
 
 
 def run_probe(
@@ -333,6 +403,7 @@ def run_probe(
                     shapes=shapes,
                     dtypes=dtypes,
                     script=script,
+                    side_files=_side_files(scratch, source_ext),
                 )
                 + ".json"
             )

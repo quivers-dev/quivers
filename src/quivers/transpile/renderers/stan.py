@@ -163,8 +163,8 @@ from quivers.transpile.renderers._stan_helpers import (
 #: when it is discrete. The keys are the `target_names["stan"]`
 #: entries of [`FAMILY_META`][quivers.transpile.family_meta.FAMILY_META]
 #: plus the helper densities grafted from `runtime_stan_functions.stan`
-#: (`continuous_bernoulli`, `kumaraswamy`, `logit_normal`,
-#: `matrix_normal`). A Stan sampling name absent from this table has
+#: (`continuous_bernoulli`, `kumaraswamy`, `log_gamma`, `logit_beta`,
+#: `logit_normal`, `matrix_normal`). A Stan sampling name absent from this table has
 #: no log-density form, and
 #: [`StanRenderer._log_density_name`][quivers.transpile.renderers.stan.StanRenderer]
 #: raises rather than emit a `~` statement that would drop constants.
@@ -189,6 +189,8 @@ _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "lkj_corr": "lpdf",
     "lkj_corr_cholesky": "lpdf",
     "logistic": "lpdf",
+    "log_gamma": "lpdf",
+    "logit_beta": "lpdf",
     "logit_normal": "lpdf",
     "lognormal": "lpdf",
     "matrix_normal": "lpdf",
@@ -440,6 +442,13 @@ class StanRenderer(RendererBase):
         # makes the pretty-printer drop it.
         for kind in self._needed_blocks(ir):
             self._ensure_block(ctx, kind)
+        # An input of an open extent, such as a host table `M` typed
+        # `Tensor[Real]([M_extent0, M_extent1])`, is declared at a size
+        # Stan reads as data, so each extent is an integer datum first.
+        for inp in ir.inputs:
+            for dim in (*inp.plate.batch_dims, *inp.plate.event_dims):
+                if isinstance(dim, DimDynamic):
+                    self._declare_extent(ctx, dim.size_name)
         # IRDataInput entries land in `data`.
         for inp in ir.inputs:
             self.declare(
@@ -952,6 +961,33 @@ class StanRenderer(RendererBase):
         ctx.sb.constraint(nm, "literal-value", name)
         ctx.sb.edge(decl, nm, "name")
         return decl
+
+    def _declare_extent(self, ctx: RenderContext, name: str) -> None:
+        """Declare an open extent as a non-negative integer datum.
+
+        Parameters
+        ----------
+        ctx : RenderContext
+            The render call's mutable state.
+        name : str
+            The extent's name, which the declarations of the inputs it
+            sizes read.
+        """
+        if name in self._declared["data"]:
+            return
+        self._declared["data"].add(name)
+        parent = self._ensure_block(ctx, "data")
+        decl = self._fresh(ctx, "decl")
+        ctx.sb.vertex(decl, "top_var_decl_no_assign")
+        ctx.sb.edge(parent, decl, "child_of")
+        tvt = self._fresh(ctx, "tvt")
+        ctx.sb.vertex(tvt, "top_var_type")
+        self._emit_int_type(ctx, tvt, lower=0, upper=None)
+        ctx.sb.edge(decl, tvt, "child_of")
+        nm = self._fresh(ctx, "ident")
+        ctx.sb.vertex(nm, "identifier")
+        ctx.sb.constraint(nm, "literal-value", name)
+        ctx.sb.edge(decl, nm, "name")
 
     def _emit_type(
         self,
@@ -4410,6 +4446,8 @@ _STAN_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
         "ContinuousBernoulli",
         "MatrixNormal",
         "LogitNormal",
+        "LogGamma",
+        "LogitBeta",
     }
 )
 

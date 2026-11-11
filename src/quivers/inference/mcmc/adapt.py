@@ -1,6 +1,6 @@
 """Adaptation primitives for HMC / NUTS warmup.
 
-Two primitives:
+Two stateful primitives:
 
 * `DualAveraging`: Nesterov's dual averaging for adapting
   the step size to a target Metropolis acceptance probability
@@ -12,18 +12,211 @@ Two primitives:
   diagonal and dense forms are exposed because HMC mass matrices
   are typically one of those two shapes.
 
-These primitives are *stateful*: they accumulate per-step samples
-during warmup and freeze when the kernel stops adapting. They are
-shared across HMC and NUTS, which is why they live in their own
-module rather than being inlined into either kernel.
+and the schedule that decides when each runs:
+
+* `AdaptationSchedule`: the Stan-style windowed warmup schedule, an
+  initial fast interval that adapts only the step size, a sequence of
+  doubling slow windows that each re-estimate the metric, and a
+  terminal fast interval that re-tunes the step size under the final
+  metric. `AdaptationSchedule.windows` lays a warmup of a given length
+  out as `AdaptationWindow` records.
+* `AdaptationMode`: whether a kernel follows that schedule
+  (``"windowed"``) or adapts in one phase over the whole warmup
+  (``"single"``).
+
+The stateful primitives accumulate per-step samples during warmup and
+freeze when the kernel stops adapting. They are shared across HMC and
+NUTS, which is why they live in their own module rather than being
+inlined into either kernel.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
-from typing import Callable
+from typing import Callable, Literal
 
+import didactic.api as dx
 import torch
+
+from quivers.inference.mcmc.kernel import StateValue
+
+
+AdaptationMode = Literal["windowed", "single"]
+"""How an HMC or NUTS kernel adapts during warmup: ``"windowed"`` follows
+an `AdaptationSchedule` (fast, doubling slow, fast windows, with the
+metric re-estimated and the step size re-initialized after every slow
+window), and ``"single"`` runs dual averaging and the covariance
+estimate over the whole warmup under the initial metric and installs
+the metric once, when warmup ends."""
+
+
+def _number(state: Mapping[str, StateValue], key: str, owner: str) -> float:
+    """Read a float entry of a state dictionary.
+
+    Parameters
+    ----------
+    state : Mapping[str, StateValue]
+        The dictionary.
+    key : str
+        The entry.
+    owner : str
+        The class named in the error.
+
+    Returns
+    -------
+    float
+        The entry.
+
+    Raises
+    ------
+    ValueError
+        If the entry is missing or is not a number.
+    """
+    value = state.get(key)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError(f"{owner}.from_state_dict: {key} must be a number")
+    return float(value)
+
+
+class AdaptationWindow(dx.Model):
+    """One window of a warmup schedule.
+
+    Attributes
+    ----------
+    start : int
+        The first warmup iteration in the window, counted from zero.
+    stop : int
+        One past the last warmup iteration in the window.
+    adapts_metric : bool
+        Whether the window is a slow window: the positions it visits
+        are accumulated into a covariance estimate that becomes the
+        metric (inverse mass matrix) at the window's end. A fast window
+        adapts only the step size.
+    """
+
+    start: int
+    stop: int
+    adapts_metric: bool
+
+
+class AdaptationSchedule(dx.Model):
+    """The Stan-style windowed warmup schedule.
+
+    A warmup of ``N`` iterations is split into an initial fast interval
+    of ``init_buffer`` iterations, a run of slow windows over the next
+    ``N - init_buffer - term_buffer`` iterations, and a terminal fast
+    interval of ``term_buffer`` iterations. The first slow window has
+    ``base_window`` iterations and each later one twice the length of
+    the one before; when the window after next would not fit before the
+    terminal interval, the current window is stretched to reach it, so
+    the slow windows tile their interval exactly. This is the schedule
+    of the Stan reference manual's automatic parameter tuning and its
+    implementation in ``stan::mcmc::windowed_adaptation``.
+
+    Two rules cover warmups too short for the configured buffers,
+    again following Stan:
+
+    * When ``init_buffer + base_window + term_buffer > N``, the buffers
+      are rescaled to 15% / 75% / 10% of ``N``: ``init_buffer =
+      floor(0.15 N)``, ``term_buffer = floor(0.1 N)``, and one slow
+      window covers the rest.
+    * When ``N < 20``, no metric is estimated: the whole warmup is one
+      fast window.
+
+    Attributes
+    ----------
+    init_buffer : int
+        Length of the initial fast interval. Default ``75``.
+    term_buffer : int
+        Length of the terminal fast interval. Default ``50``.
+    base_window : int
+        Length of the first slow window. Default ``25``.
+
+    Raises
+    ------
+    didactic.api.ValidationError
+        If a buffer is negative or ``base_window`` is less than one.
+    """
+
+    init_buffer: int = 75
+    term_buffer: int = 50
+    base_window: int = 25
+
+    @dx.model_validator()
+    def _check_lengths(self) -> None:
+        """Refuse negative buffers and an empty first slow window.
+
+        Raises
+        ------
+        ValueError
+            If ``init_buffer`` or ``term_buffer`` is negative, or
+            ``base_window`` is less than one.
+        """
+        if self.init_buffer < 0 or self.term_buffer < 0:
+            raise ValueError(
+                "AdaptationSchedule: init_buffer and term_buffer must be >= 0, "
+                f"got {self.init_buffer} and {self.term_buffer}"
+            )
+        if self.base_window < 1:
+            raise ValueError(
+                f"AdaptationSchedule: base_window must be >= 1, got {self.base_window}"
+            )
+
+    def windows(self, num_warmup: int) -> tuple[AdaptationWindow, ...]:
+        """Lay a warmup of ``num_warmup`` iterations out in windows.
+
+        Parameters
+        ----------
+        num_warmup : int
+            Number of warmup iterations.
+
+        Returns
+        -------
+        tuple[AdaptationWindow, ...]
+            The windows in order. They tile ``[0, num_warmup)`` without
+            gaps or overlaps; empty buffers are omitted, and a warmup of
+            zero iterations has no windows.
+
+        Raises
+        ------
+        ValueError
+            If ``num_warmup`` is negative.
+        """
+        if num_warmup < 0:
+            raise ValueError(
+                f"AdaptationSchedule.windows: num_warmup must be >= 0, got {num_warmup}"
+            )
+        if num_warmup == 0:
+            return ()
+        if num_warmup < 20:
+            return (AdaptationWindow(start=0, stop=num_warmup, adapts_metric=False),)
+        init, term, base = self.init_buffer, self.term_buffer, self.base_window
+        if init + base + term > num_warmup:
+            init = int(0.15 * num_warmup)
+            term = int(0.1 * num_warmup)
+            base = num_warmup - init - term
+        out: list[AdaptationWindow] = []
+        if init > 0:
+            out.append(AdaptationWindow(start=0, stop=init, adapts_metric=False))
+        end = num_warmup - term
+        start, size = init, base
+        stop = init + base
+        while True:
+            out.append(AdaptationWindow(start=start, stop=stop, adapts_metric=True))
+            if stop >= end:
+                break
+            start, size = stop, 2 * size
+            stop = start + size
+            # Stretch this window to the terminal interval when the
+            # doubled window after it would not fit.
+            if stop != end and (stop - 1) + 2 * size >= end:
+                stop = end
+        if term > 0:
+            out.append(
+                AdaptationWindow(start=end, stop=num_warmup, adapts_metric=False)
+            )
+        return tuple(out)
 
 
 class DualAveraging:
@@ -108,7 +301,78 @@ class DualAveraging:
 
     @property
     def step_count(self) -> int:
+        """Number of `update` calls so far."""
         return self._step_count
+
+    def state_dict(self) -> dict[str, float | int]:
+        """The adapter's state, for a checkpoint.
+
+        Returns
+        -------
+        dict[str, float | int]
+            Every parameter and running quantity; `from_state_dict`
+            rebuilds the adapter exactly.
+        """
+        return {
+            "mu": self._mu,
+            "target_accept": self._target_accept,
+            "gamma": self._gamma,
+            "t0": self._t0,
+            "kappa": self._kappa,
+            "log_step": self._log_step,
+            "log_step_smoothed": self._log_step_smoothed,
+            "h_bar": self._h_bar,
+            "step_count": self._step_count,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, StateValue]) -> "DualAveraging":
+        """Rebuild an adapter from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : Mapping[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        DualAveraging
+            The adapter, in exactly the recorded state.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or is not a number.
+        """
+        floats = {
+            key: _number(state, key, "DualAveraging")
+            for key in (
+                "mu",
+                "target_accept",
+                "gamma",
+                "t0",
+                "kappa",
+                "log_step",
+                "log_step_smoothed",
+                "h_bar",
+            )
+        }
+        count = state.get("step_count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise ValueError("DualAveraging.from_state_dict: step_count must be an int")
+        adapter = cls(
+            math.exp(floats["log_step"]),
+            target_accept=floats["target_accept"],
+            gamma=floats["gamma"],
+            t0=floats["t0"],
+            kappa=floats["kappa"],
+        )
+        adapter._mu = floats["mu"]
+        adapter._log_step = floats["log_step"]
+        adapter._log_step_smoothed = floats["log_step_smoothed"]
+        adapter._h_bar = floats["h_bar"]
+        adapter._step_count = count
+        return adapter
 
 
 class WelfordCovariance:
@@ -204,6 +468,69 @@ class WelfordCovariance:
                 cov = shrink * cov + jitter * torch.eye(self._dim)
         return cov
 
+    def state_dict(self) -> dict[str, torch.Tensor | int | bool]:
+        """The accumulator's state, for a checkpoint.
+
+        Returns
+        -------
+        dict[str, torch.Tensor | int | bool]
+            The configuration, the count, the running mean, and the
+            running sum of squared deviations.
+        """
+        return {
+            "dim": self._dim,
+            "regularise": self._regularise,
+            "diagonal": self._diagonal,
+            "n": self._n,
+            "mean": self._mean.clone(),
+            "m2": self._m2.clone(),
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: Mapping[str, StateValue]) -> "WelfordCovariance":
+        """Rebuild an accumulator from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : Mapping[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        WelfordCovariance
+            The accumulator, in exactly the recorded state.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or has the wrong type or shape.
+        """
+        dim, n = state.get("dim"), state.get("n")
+        regularise, diagonal = state.get("regularise"), state.get("diagonal")
+        mean, m2 = state.get("mean"), state.get("m2")
+        if not (
+            isinstance(dim, int)
+            and isinstance(n, int)
+            and isinstance(regularise, bool)
+            and isinstance(diagonal, bool)
+            and isinstance(mean, torch.Tensor)
+            and isinstance(m2, torch.Tensor)
+        ):
+            raise ValueError(
+                "WelfordCovariance.from_state_dict: an entry is missing or has the "
+                "wrong type"
+            )
+        accumulator = cls(dim, regularise=regularise, diagonal=diagonal)
+        if mean.shape != accumulator._mean.shape or m2.shape != accumulator._m2.shape:
+            raise ValueError(
+                "WelfordCovariance.from_state_dict: the mean or the sum of squares "
+                "has the wrong shape"
+            )
+        accumulator._n = n
+        accumulator._mean = mean.clone()
+        accumulator._m2 = m2.clone()
+        return accumulator
+
     def reset(self) -> None:
         """Discard accumulated statistics."""
         self._n = 0
@@ -267,6 +594,9 @@ def find_reasonable_step_size(
 
 
 __all__ = [
+    "AdaptationMode",
+    "AdaptationSchedule",
+    "AdaptationWindow",
     "DualAveraging",
     "WelfordCovariance",
     "find_reasonable_step_size",
