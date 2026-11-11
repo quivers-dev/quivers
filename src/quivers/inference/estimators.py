@@ -195,6 +195,19 @@ def leave_one_out_log_scale(
 def _moment_terms(order: float, particles: ParticleLogDensities) -> torch.Tensor:
     """Detached per-draw coefficients ``omega_n (p_n/q_n)^n / e^{m_{-k}}``.
 
+    Parameters
+    ----------
+    order : float
+        The order :math:`n`.
+    particles : ParticleLogDensities
+        The drawn particles' log-densities.
+
+    Returns
+    -------
+    torch.Tensor
+        One coefficient per draw, detached, each scaled by the largest
+        weight among the other particles.
+
     Raises
     ------
     RuntimeError
@@ -217,6 +230,25 @@ def _moment_terms(order: float, particles: ParticleLogDensities) -> torch.Tensor
 
 
 def _require_detached(estimator: str, particles: ParticleLogDensities) -> torch.Tensor:
+    """The guide log-density with detached variational parameters.
+
+    Parameters
+    ----------
+    estimator : str
+        The estimator's name, for the error.
+    particles : ParticleLogDensities
+        The drawn particles' log-densities.
+
+    Returns
+    -------
+    torch.Tensor
+        `ParticleLogDensities.log_q_detached`.
+
+    Raises
+    ------
+    RuntimeError
+        If the particles carry no detached guide log-density.
+    """
     if particles.log_q_detached is None:
         raise RuntimeError(
             f"{estimator}: the particles carry no log_q_detached (the guide "
@@ -373,16 +405,57 @@ class Reparameterized(GradientEstimator):
     """
 
     def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        """The bound, differentiated through the draws, guide and weights.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``: :math:`B_a`, carrying this estimator's
+            gradient.
+        """
         return power_mean_bound(
             particles.log_p - particles.log_q, particles.log_weights, power
         )
 
     def check_moment(self, order: float, num_particles: int, stratified: bool) -> None:
+        """Accept every order: the pathwise moment gradient is unbiased.
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        num_particles : int
+            Particles per row.
+        stratified : bool
+            Whether the draws are stratified.
+        """
         del order, num_particles, stratified
 
     def moment_surrogate(
         self, order: float, particles: ParticleLogDensities
     ) -> torch.Tensor:
+        """The pathwise surrogate for :math:`\\nabla L_n` (Dieng et al. Eq. 3).
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``, whose gradient's expectation is
+            :math:`c\\, \\nabla L_n` for a positive constant :math:`c`.
+        """
         # Dieng et al. Eq. 3: grad (p/q)^n = n (p/q)^n grad log(p/q), each
         # term divided by the other particles' largest weight.
         log_ratio = particles.log_p - particles.log_q
@@ -412,6 +485,23 @@ class StickingTheLanding(GradientEstimator):
     needs_detached_parameters = True
 
     def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        """Accept the ELBO, or any bound with a single unstratified draw.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        num_draws : int
+            Draws per row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            For another bound with several draws, where dropping the
+            score term biases the gradient.
+        """
         if power == 0.0 or (num_draws == 1 and not stratified):
             return
         alternative = "Reparameterized()" if stratified else "DoublyReparameterized()"
@@ -423,6 +513,26 @@ class StickingTheLanding(GradientEstimator):
         )
 
     def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        """The bound with the guide density's parameters detached.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``: :math:`B_a`, carrying this estimator's
+            gradient.
+
+        Raises
+        ------
+        RuntimeError
+            If the particles carry no detached guide log-density.
+        """
         log_q_detached = _require_detached("StickingTheLanding", particles)
         return power_mean_bound(
             particles.log_p - log_q_detached, particles.log_weights, power
@@ -463,9 +573,38 @@ class DoublyReparameterized(GradientEstimator):
     needs_detached_parameters = True
 
     def needs_fixed_log_p(self, power: float) -> bool:
+        """Whether the surrogate reads the log-joint at detached draws.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+
+        Returns
+        -------
+        bool
+            ``True`` for every bound but the ELBO, whose model gradient
+            needs no reweighting.
+        """
         return power != 0.0
 
     def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        """Refuse stratified draws for any bound but the ELBO.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        num_draws : int
+            Draws per row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            If the draws are stratified and the bound is not the ELBO.
+        """
         del num_draws
         if stratified and power != 0.0:
             raise ValueError(
@@ -478,6 +617,30 @@ class DoublyReparameterized(GradientEstimator):
             )
 
     def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        """The bound with the DReG pathwise rewrite of its score term.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``: :math:`B_a`, carrying this estimator's
+            gradient.
+
+        Raises
+        ------
+        RuntimeError
+            If the particles lack the detached guide log-density or, for
+            a bound other than the ELBO, the log-joint at the detached
+            draws.
+        ValueError
+            If the draws are stratified and the bound is not the ELBO.
+        """
         log_q_detached = _require_detached("DoublyReparameterized", particles)
         if power == 0.0:
             return power_mean_bound(
@@ -536,6 +699,22 @@ class ScoreFunction(GradientEstimator):
     fixed_draws = True
 
     def check(self, power: float, num_draws: int, stratified: bool) -> None:
+        """Refuse stratified draws, which are not independent draws from q.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        num_draws : int
+            Draws per row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            If the draws are stratified.
+        """
         del power, num_draws
         if stratified:
             raise ValueError(
@@ -546,6 +725,26 @@ class ScoreFunction(GradientEstimator):
             )
 
     def surrogate(self, power: float, particles: ParticleLogDensities) -> torch.Tensor:
+        """The bound with the log-derivative term at the fixed draws.
+
+        Parameters
+        ----------
+        power : float
+            The bound's exponent :math:`a`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``: :math:`B_a`, carrying this estimator's
+            gradient.
+
+        Raises
+        ------
+        ValueError
+            If the draws are stratified.
+        """
         self.check(power, particles.log_p.shape[0], particles.stratified)
         log_q = particles.log_q
         log_q_fixed = log_q.detach()
@@ -561,11 +760,49 @@ class ScoreFunction(GradientEstimator):
         return bound + bound.detach() * score.sum(dim=0)
 
     def check_moment(self, order: float, num_particles: int, stratified: bool) -> None:
+        """Refuse stratified draws, as for the bound.
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        num_particles : int
+            Particles per row.
+        stratified : bool
+            Whether the draws are stratified.
+
+        Raises
+        ------
+        ValueError
+            If the draws are stratified.
+        """
         self.check(order, num_particles, stratified)
 
     def moment_surrogate(
         self, order: float, particles: ParticleLogDensities
     ) -> torch.Tensor:
+        """The score-function surrogate for :math:`\\nabla L_n`.
+
+        Parameters
+        ----------
+        order : float
+            The order :math:`n`.
+        particles : ParticleLogDensities
+            The drawn particles' log-densities.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``, whose gradient's expectation is
+            :math:`c\\, \\nabla L_n` for a positive constant :math:`c`.
+
+        Raises
+        ------
+        ValueError
+            If the draws are stratified.
+        RuntimeError
+            If a scaled importance weight overflows.
+        """
         # Dieng et al. Algorithm 1 and Appendix C: at fixed draws,
         # grad_phi E[(p/q)^n] = (1 - n) E[(p/q)^n grad log q] and
         # grad_theta E[(p/q)^n] = n E[(p/q)^n grad log p].

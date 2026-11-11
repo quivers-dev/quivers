@@ -97,7 +97,13 @@ class AutoMixtureGuide(Guide):
 
     @property
     def num_components(self) -> int:
-        """Number of mixture components."""
+        """Number of mixture components.
+
+        Returns
+        -------
+        int
+            The component count :math:`K`.
+        """
         return len(self.components)
 
     def mixture_weights(self) -> torch.Tensor:
@@ -214,7 +220,13 @@ class AutoMixtureGuide(Guide):
 
     @property
     def latent_names(self) -> list[str]:
-        """Names of the latent sites the mixture covers."""
+        """Names of the latent sites the mixture covers.
+
+        Returns
+        -------
+        list[str]
+            The registry's site names, in order.
+        """
         return list(self._registry.names)
 
 

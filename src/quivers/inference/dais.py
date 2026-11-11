@@ -452,7 +452,13 @@ class AutoDAIS(Guide):
 
     @property
     def latent_names(self) -> list[str]:
-        """Names of the latent sites the guide covers."""
+        """Names of the latent sites the guide covers.
+
+        Returns
+        -------
+        list[str]
+            The registry's site names, in order.
+        """
         return list(self._registry.names)
 
 

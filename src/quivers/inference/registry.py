@@ -385,6 +385,18 @@ def _reaching_steps(program: MonadicProgram) -> dict[str, int]:
     """
 
     def drawn(inner: MonadicProgram) -> list[str]:
+        """Every variable a program's draws bind, its callees' included.
+
+        Parameters
+        ----------
+        inner : MonadicProgram
+            The program.
+
+        Returns
+        -------
+        list[str]
+            The names, in step order.
+        """
         names: list[str] = []
         for spec in inner.steps:
             if isinstance(spec, Draw | Observe):
