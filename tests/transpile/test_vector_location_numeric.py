@@ -335,9 +335,9 @@ def test_the_shared_oracle_separates_one_event_from_one_entry_per_row() -> None:
         for name, value in {**data, **points[1]}.items()
     }
     w = values["w"]
-    per_row = D.Dirichlet(torch.ones(3, dtype=torch.float64)).log_prob(w) + torch.log(
-        w
-    ).sum()
+    per_row = (
+        D.Dirichlet(torch.ones(3, dtype=torch.float64)).log_prob(w) + torch.log(w).sum()
+    )
     assert abs(float(oracle(values)) - float(per_row)) > 1.0
 
 

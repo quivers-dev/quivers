@@ -63,7 +63,11 @@ from quivers.transpile.ir import (
     Plate,
 )
 from quivers.transpile.renderers._ranks import let_expr_rank, name_rank_map
-from quivers.transpile.renderers._rows import scalar_parameter, take_row, visited_position
+from quivers.transpile.renderers._rows import (
+    scalar_parameter,
+    take_row,
+    visited_position,
+)
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
     BlockKind,
@@ -1747,7 +1751,9 @@ class WebPPLRenderer(RendererBase):
         visited = visited_position(self._binding_plates.get(arg.name), loops)
         if not visited:
             return arg
-        return IRArgRef(name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited))
+        return IRArgRef(
+            name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited)
+        )
 
     def _visits_scalar_parameter(
         self,

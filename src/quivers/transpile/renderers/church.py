@@ -50,7 +50,11 @@ from quivers.transpile.renderers._ranks import (
     let_expr_rank,
     several_axis_reductions,
 )
-from quivers.transpile.renderers._rows import scalar_parameter, take_row, visited_position
+from quivers.transpile.renderers._rows import (
+    scalar_parameter,
+    take_row,
+    visited_position,
+)
 from quivers.transpile.renderers._scheme_helpers import render_let_expr_scheme
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.dsl.ast_nodes.let_expressions import (
