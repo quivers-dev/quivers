@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.43.0] - 2026-11-11
+
+### Added
+
+- **Learned deterministic morphisms, declared `[role=function]`.** `morphism f : X -> Y [role=function]` is a learned map between continuous spaces with no noise: affine by default, `param_source=mlp(...)` for a perceptron with an `activation` between hidden layers, or `param_source=identity`, with an `output` nonlinearity (`tanh`, `sigmoid`, `softplus`, `relu`). A program calls it as a value, `let z = f(a, b)`, with one argument per domain factor; in a chain or as a scan's cell it is applied and contributes no site, so a recurrent cell is deterministic. The compiled runtime fits its weights as point estimates, and the checked elaboration reads them as typed `weight` and `bias` inputs (`f_param_weight`, `f_param_layer<k>_weight`, ...), so the reference machine scores the same model. Every transpile target refuses a function with weights under `param-source:linear` or `param-source:mlp`, and renders an identity function. A `sample` or `observe` from a function, a call inside a `factor` or lambda body, and a call that misses the domain's factors are refused with located diagnostics. Python: `LearnedFunction`, `FunctionOutput`, `FunctionActivation`, and `function_source` in `quivers.continuous`.
+
 ## [0.42.0] - 2026-11-11
 
 ### Changed

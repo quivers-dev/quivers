@@ -509,6 +509,45 @@ parameter sources because those weights are neither explicit model sites nor
 portable data. The measured [support matrix](../../transpile-support.md)
 reports this as `param-source:mlp`.
 
+## Learned functions
+
+A morphism declared `[role=function]` is a learned deterministic map between
+continuous spaces. A program calls it in a `let` or `score` expression, with
+one argument per factor of its domain, each a `Real` for a one-wide factor or
+a `Tensor[Real]([width])`; a free name passed straight to it is a host datum of
+the factor's type. The call elaborates to its network: for each hidden layer
+`k`, an affine map with weight `f_param_layer<k>_weight` and bias
+`f_param_layer<k>_bias` under the declared activation, then the output layer
+`f_param_weight` and `f_param_bias` under the declared output nonlinearity.
+The weights and biases are typed program inputs with roles `weight` and
+`bias`, as a network kernel's are, so the reference machine runs the call with
+the compiled program's weights supplied as data. The value is `Real` for a
+one-wide codomain and `Tensor[Real]([width])` otherwise, and it is bound before
+the expression that reads it.
+
+<!-- compile: false -->
+```qvr
+morphism proj : Feature * Feature -> Score [role=function, param_source=mlp(4), output=tanh]
+
+program p : Feature -> Score
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feature]
+    sample b <- Normal(loc=0.0, scale=1.0) [over=Feature]
+    let z = 2.0 * proj(a, b) + 1.0
+    observe y <- Normal(loc=z, scale=0.5)
+    return z
+```
+
+A function contributes no site. A `sample` or `observe` that draws from one is
+refused, as is a call inside a `factor` or lambda body (bind it in a `let` of
+its own) and a call whose arguments miss its domain's factors. As a scan's cell,
+or as a link of a chain, it is applied rather than drawn.
+
+Every transpile target refuses a function with weights under
+`param-source:linear` or `param-source:mlp`, because the weights are neither
+sites nor data a target is given. A `param_source=identity` function has no
+weights: it is its output nonlinearity applied to its argument, and every
+target renders it.
+
 ## Running and scoring
 
 Replay fixes named random choices so a particular execution can be

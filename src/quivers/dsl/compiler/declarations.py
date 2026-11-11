@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Callable
+from typing import cast
 
 import torch
 
@@ -31,9 +32,15 @@ from quivers.core.algebras import (
     Semigroupoid,
 )
 from quivers.continuous.boundaries import Discretize, Embed
+from quivers.continuous.deterministic import (
+    FUNCTION_OUTPUTS,
+    FunctionOutput,
+    LearnedFunction,
+)
 from quivers.continuous.flows import ConditionalFlow
 from quivers.continuous.inline import make_inline_distribution
-from quivers.continuous.spaces import ContinuousSpace
+from quivers.continuous.param_source import FunctionActivation, function_source
+from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.core.morphisms import (
     ObservedMorphism,
     morphism as make_latent,
@@ -104,7 +111,7 @@ from quivers.stochastic.schema import (
 
 
 _VALID_ROLES: frozenset[str] = frozenset(
-    {"latent", "observed", "kernel", "embed", "discretize", "let"}
+    {"latent", "observed", "kernel", "embed", "discretize", "let", "function"}
 )
 
 
@@ -184,6 +191,8 @@ _MORPHISM_OPTION_KEYS: frozenset[str] = frozenset(
         "param_source",
         "rank",
         "temperature",
+        "activation",
+        "output",
     }
 )
 
@@ -218,6 +227,8 @@ _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
     "embed": frozenset(),
     "discretize": frozenset({"bins"}),
     "let": frozenset({"over", "iid"}),
+    # `_compile_function_role` builds the network and its output map.
+    "function": frozenset({"param_source", "activation", "output"}),
 }
 
 
@@ -833,6 +844,9 @@ class _DeclarationsMixin:
         * ``role=let``     : deterministic morphism whose value is
           ``~ <expr>`` (composition pipeline, contraction call,
           transformation invocation, etc.).
+        * ``role=function``: learned deterministic map between
+          continuous spaces, a `LearnedFunction` whose network the
+          ``param_source`` option selects.
 
         When ``role`` is absent the morphism is a kernel: programs
         draw from kernels, so the parametric-Markov-kernel lowering
@@ -881,6 +895,8 @@ class _DeclarationsMixin:
             self._compile_embed_role(decl, name, names)
         elif role == "discretize":
             self._compile_discretize_role(decl, name, names)
+        elif role == "function":
+            self._compile_function_role(decl, name, names)
         else:
             self._compile_let_role(decl, name, names)
         if replicate is not None:
@@ -1242,6 +1258,112 @@ class _DeclarationsMixin:
             )
         for member in names:
             self._morphisms[member] = self._compile_expr(decl.init_expr)
+
+    def _compile_function_role(
+        self,
+        decl: MorphismDecl,
+        name: str,
+        names: list[str],
+    ) -> None:
+        """Compile ``[role=function]``: a learned deterministic map.
+
+        Parameters
+        ----------
+        decl : MorphismDecl
+            The declaration.
+        name : str
+            The declared name.
+        names : list[str]
+            The members to bind, one per replica.
+
+        Raises
+        ------
+        CompileError
+            If the declaration has an initializer, a side is not a
+            continuous space, or the options name no learned-function
+            network.
+        """
+        if decl.init_family is not None or decl.init_expr is not None:
+            init = decl.init_family if decl.init_family is not None else decl.init_expr
+            line = getattr(init, "line", 0)
+            col = getattr(init, "col", 0)
+            raise CompileError(
+                f"function morphism {name!r}: a learned function takes no "
+                f"``~`` initializer; its network comes from ``param_source`` "
+                f"and its output from ``output``",
+                line if isinstance(line, int) and line else decl.line,
+                col if isinstance(col, int) and line else decl.col,
+            )
+        domain = self._resolve_any_space(decl.domain)
+        codomain = self._resolve_any_space(decl.codomain)
+        for side, space in (("domain", domain), ("codomain", codomain)):
+            factors = space.components if isinstance(space, ProductSpace) else (space,)
+            if not all(isinstance(factor, ContinuousSpace) for factor in factors):
+                raise CompileError(
+                    f"function morphism {name!r}: its {side} {space!s} is not a "
+                    f"continuous space or a product of them; a learned function "
+                    f"maps real coordinates (a finite domain is read through "
+                    f"``role=embed``)",
+                    decl.line,
+                    decl.col,
+                )
+        if isinstance(codomain, ProductSpace):
+            raise CompileError(
+                f"function morphism {name!r}: its codomain {codomain!s} is a "
+                f"product; a learned function writes one space",
+                decl.line,
+                decl.col,
+            )
+        source_text = get_option_call_text(
+            decl.options, "param_source", line=decl.line, col=decl.col
+        )
+        if (
+            source_text is not None
+            and source_text.strip() == "identity"
+            and isinstance(domain, ProductSpace)
+        ):
+            entry = find_option(decl.options, "param_source")
+            raise CompileError(
+                f"function morphism {name!r}: an identity function passes one "
+                f"input through, but its domain {domain!s} is a product; select "
+                f"a learned source (linear or mlp) to read several inputs",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        activation = get_option_name(
+            decl.options, "activation", line=decl.line, col=decl.col
+        )
+        output = get_option_name(
+            decl.options, "output", line=decl.line, col=decl.col, default="identity"
+        )
+        if output not in FUNCTION_OUTPUTS:
+            entry = find_option(decl.options, "output")
+            raise CompileError(
+                f"function morphism {name!r}: unknown output {output!r}; "
+                f"expected one of {sorted(FUNCTION_OUTPUTS)}",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        width = _shape_size(codomain)
+        for member in names:
+            try:
+                source = function_source(
+                    domain,
+                    width,
+                    source_text,
+                    activation=cast(FunctionActivation | None, activation),
+                )
+            except ValueError as error:
+                key = "activation" if activation is not None else "param_source"
+                entry = find_option(decl.options, key)
+                raise CompileError(
+                    f"function morphism {name!r}: {error}",
+                    entry.line if entry is not None and entry.line else decl.line,
+                    entry.col if entry is not None and entry.line else decl.col,
+                ) from error
+            self._morphisms[member] = LearnedFunction(
+                domain, codomain, source, output=cast(FunctionOutput, output)
+            )
 
     # family-construction plumbing ------------------------------------
 

@@ -43,6 +43,7 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprBinOp,
     LetExprCall,
+    LetExprFactor,
     LetExprIndex,
     LetExprLambda,
     LetExprLiteral,
@@ -191,9 +192,11 @@ from quivers.dsl.family_schemas import (
 from quivers.dsl.let_expr_traversal import (
     free_let_names,
     let_expr_children,
+    map_let_expr,
     walk_let_expr,
 )
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
+from quivers.continuous.deterministic import learned_function_draw_message
 from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
@@ -757,6 +760,28 @@ def _option_entry(options: tuple[OptionEntry, ...], key: str) -> OptionValue | N
         if entry.key == key:
             return entry.value
     return None
+
+
+def _source_kind(morphism: MorphismDecl) -> str:
+    """The network kind a morphism's ``param_source`` option names.
+
+    Parameters
+    ----------
+    morphism : MorphismDecl
+        The morphism.
+
+    Returns
+    -------
+    str
+        The kind (``linear``, ``mlp``, ``identity``, ...), ``linear``
+        when the option is absent.
+    """
+    source = _option_entry(morphism.options, "param_source")
+    if isinstance(source, OptionCall):
+        return source.func
+    if isinstance(source, OptionName):
+        return source.value
+    return "linear"
 
 
 def _option_value(options: tuple[OptionEntry, ...], key: str) -> str | float | None:
@@ -4245,6 +4270,7 @@ class _ProgramElaboration:
         Value
             The lowered value.
         """
+        expr = self._hoist_function_calls(expr, scope, state, node)
         chart = _chart_construct(expr)
         if chart is not None:
             self._fail(
@@ -4336,6 +4362,331 @@ class _ProgramElaboration:
             None,
             ("programs", state.declaration.name, "lets"),
         )
+
+    def _function_morphism(self: _Elaborator, name: str) -> MorphismDecl | None:
+        """The learned-function declaration a name denotes, if any.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        MorphismDecl | None
+            The ``[role=function]`` morphism of that name, else ``None``.
+        """
+        morphism = self._program_morphisms.get(name)
+        if morphism is None or _option_value(morphism.options, "role") != "function":
+            return None
+        return morphism
+
+    def _hoist_function_calls(
+        self: _Elaborator,
+        expr: LetExprNode,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> LetExprNode:
+        """Bind every learned-function call in a let expression on its own.
+
+        Each call ``f(a, b)`` of a ``[role=function]`` morphism is
+        elaborated, innermost first, to its network applied to its
+        arguments and bound to a fresh name in the scope, and the
+        expression reads that name in its place.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+        scope : _Scope
+            The scope the calls bind in.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        LetExprNode
+            The expression with every learned-function call replaced.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a call lies under a ``factor`` or lambda binder, or its
+            arguments do not fit the function's domain.
+        """
+        calls = [
+            candidate
+            for candidate in walk_let_expr(expr)
+            if isinstance(candidate, LetExprCall)
+            and self._function_morphism(candidate.func) is not None
+        ]
+        if not calls:
+            return expr
+        for binder in walk_let_expr(expr):
+            if not isinstance(binder, LetExprFactor | LetExprLambda):
+                continue
+            inner = next(
+                (
+                    candidate.func
+                    for candidate in walk_let_expr(binder)
+                    if isinstance(candidate, LetExprCall)
+                    and self._function_morphism(candidate.func) is not None
+                ),
+                None,
+            )
+            if inner is not None:
+                self._fail(
+                    node,
+                    f"the learned function {inner!r} is called inside a factor or "
+                    "lambda body; call it in a let of its own and read the result "
+                    "there",
+                    code="qiec-program",
+                )
+
+        def hoist(candidate: LetExprNode) -> LetExprNode:
+            if not isinstance(candidate, LetExprCall):
+                return candidate
+            morphism = self._function_morphism(candidate.func)
+            if morphism is None:
+                return candidate
+            value, type_ = self._function_call(morphism, candidate, scope, state, node)
+            serial = state.function_calls
+            state.function_calls += 1
+            name = f"{candidate.func}__call{serial}"
+            self._bind_step(scope, name, type_, Return(value), node)
+            return LetExprVar(name=name)
+
+        return map_let_expr(expr, hoist)
+
+    def _function_call(
+        self: _Elaborator,
+        morphism: MorphismDecl,
+        call: LetExprCall,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> tuple[Value, TypeExpr]:
+        """Elaborate one call of a learned function to its network.
+
+        The network's layers are affine maps whose weights and biases
+        are program inputs named after the function, as a network
+        kernel's are: ``<f>_param_layer<k>_weight`` and
+        ``<f>_param_layer<k>_bias`` for each hidden layer, under the
+        declared activation, then ``<f>_param_weight`` and
+        ``<f>_param_bias`` for the output layer, under the declared
+        output nonlinearity. An identity network applies only the
+        output nonlinearity.
+
+        Parameters
+        ----------
+        morphism : MorphismDecl
+            The ``[role=function]`` declaration.
+        call : LetExprCall
+            The call, its arguments already free of learned-function
+            calls.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        tuple[Value, TypeExpr]
+            The image and its type: ``Real`` for a one-wide codomain,
+            else ``Tensor[Real]([width])``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the call's arity or an argument's width differs from the
+            domain's factors, an argument is not a real scalar or vector,
+            or a side has no fixed real width.
+        """
+        name = call.func
+        widths: list[int] = []
+        for factor in _factors(morphism.domain):
+            info = (
+                self._program_objects.get(factor.name)
+                if isinstance(factor, TypeName)
+                else None
+            )
+            width = (
+                None
+                if info is None or info.real_width is None
+                else _fixed_extent(info.real_width)
+            )
+            if width is None:
+                self._fail(
+                    node,
+                    f"the learned function {name!r} has a domain factor with no "
+                    "fixed real width",
+                    code="qiec-program",
+                )
+            widths.append(width)
+        codomain = morphism.codomain
+        info = (
+            self._program_objects.get(codomain.name)
+            if isinstance(codomain, TypeName)
+            else None
+        )
+        out_width = (
+            None
+            if info is None or info.real_width is None
+            else _fixed_extent(info.real_width)
+        )
+        if out_width is None:
+            self._fail(
+                node,
+                f"the learned function {name!r} has a codomain with no fixed real "
+                "width",
+                code="qiec-program",
+            )
+        if len(call.args) != len(widths):
+            self._fail(
+                node,
+                f"the learned function {name!r} takes {len(widths)} argument(s), "
+                f"one per factor of its domain, but is called with "
+                f"{len(call.args)}",
+                code="qiec-program",
+            )
+        sources: list[Value] = []
+        for position, (argument, width) in enumerate(
+            zip(call.args, widths, strict=True)
+        ):
+            if (
+                isinstance(argument, LetExprVar)
+                and scope.lookup(argument.name) is None
+                and argument.name not in self._lambda_macros
+            ):
+                # A host datum passed straight to the function takes the
+                # type of the domain factor it fills.
+                self._declare_parameter(
+                    argument.name,
+                    REAL if width == 1 else tensor_type(REAL, (_extent(width),)),
+                    "data",
+                    scope,
+                    state,
+                    node,
+                )
+            value = self._let_value(argument, scope, state, node)
+            type_ = self._value_type(value, scope.context(), argument)
+            shape = tensor_shape(type_)
+            if type_ == REAL:
+                given: int | None = 1
+            elif (
+                shape is not None
+                and shape[0] == REAL
+                and len(shape[1]) == 1
+                and isinstance(shape[1][0], IndexLiteral)
+            ):
+                given = int(shape[1][0].value)
+            else:
+                given = None
+            if given != width:
+                self._fail(
+                    node,
+                    f"argument {position} of the learned function {name!r} has "
+                    f"type {self._render(type_)}, but its domain factor is a "
+                    f"{width}-wide real vector",
+                    code="qiec-program",
+                )
+            sources.append(value)
+        output = _option_value(morphism.options, "output") or "identity"
+        result: TypeExpr = (
+            REAL if out_width == 1 else tensor_type(REAL, (_extent(out_width),))
+        )
+        result_shape: tuple[IndexTerm, ...] | None = (
+            None if out_width == 1 else (_extent(out_width),)
+        )
+        path = ("programs", state.declaration.name, "functions", name)
+        if _source_kind(morphism) == "identity":
+            if len(sources) != 1:
+                self._fail(
+                    node,
+                    f"the identity function {name!r} has a product domain",
+                    code="qiec-program",
+                )
+            image: Value = sources[0]
+        else:
+            activation = str(_option_value(morphism.options, "activation") or "tanh")
+            fan_in = sum(widths)
+            for depth, hidden in enumerate(self._hidden_widths(morphism, node)):
+                layer_weight = self._declare_parameter(
+                    f"{name}_param_layer{depth}_weight",
+                    tensor_type(REAL, (_extent(hidden), _extent(fan_in))),
+                    "weight",
+                    scope,
+                    state,
+                    node,
+                    axes=(f"{name}_layer{depth}_row", f"{name}_layer{depth}_col"),
+                )
+                layer_bias = self._declare_parameter(
+                    f"{name}_param_layer{depth}_bias",
+                    tensor_type(REAL, (_extent(hidden),)),
+                    "bias",
+                    scope,
+                    state,
+                    node,
+                    axes=(f"{name}_layer{depth}_row",),
+                )
+                hidden_type = tensor_type(REAL, (_extent(hidden),))
+                sources = [
+                    self._primitive(
+                        activation,
+                        (
+                            AffineMap(
+                                Var(layer_weight),
+                                Var(layer_bias),
+                                tuple(sources),
+                                0,
+                                hidden,
+                                "identity",
+                                hidden_type,
+                            ),
+                        ),
+                        node,
+                        (*path, "layers", depth),
+                        (_extent(hidden),),
+                    )
+                ]
+                fan_in = hidden
+            weight = self._declare_parameter(
+                f"{name}_param_weight",
+                tensor_type(REAL, (_extent(out_width), _extent(fan_in))),
+                "weight",
+                scope,
+                state,
+                node,
+                axes=(f"{name}_param_row", f"{name}_param_col"),
+            )
+            bias = self._declare_parameter(
+                f"{name}_param_bias",
+                tensor_type(REAL, (_extent(out_width),)),
+                "bias",
+                scope,
+                state,
+                node,
+                axes=(f"{name}_param_row",),
+            )
+            image = AffineMap(
+                Var(weight),
+                Var(bias),
+                tuple(sources),
+                0,
+                out_width,
+                "identity",
+                result,
+            )
+        if output != "identity":
+            image = self._primitive(
+                str(output), (image,), node, (*path, "output"), result_shape
+            )
+        return image, result
 
     def _batch_of(self: _Elaborator, name: str, state: _ProgramState) -> _Shape:
         """The plate extents a bound name ranges over.
@@ -5334,6 +5685,10 @@ class _ProgramElaboration:
             If the morphism cannot be resolved to a family, or the
             arguments and plate do not type.
         """
+        if self._function_morphism(step.morphism) is not None:
+            self._fail(
+                step, learned_function_draw_message(step.morphism), code="qiec-program"
+            )
         if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.
@@ -8758,6 +9113,9 @@ class _ProgramState:
     per_row
         The inputs that fill a family parameter of a plated draw
         directly, whose leading axis is that draw's plate.
+    function_calls
+        The number of learned-function calls bound so far, which numbers
+        the binding of the next one.
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
@@ -8798,6 +9156,7 @@ class _ProgramState:
     batch_shapes: dict[str, tuple[IndexTerm, ...]] = field(default_factory=dict)
     parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
     per_row: set[str] = field(default_factory=set)
+    function_calls: int = 0
     random: NamedEffectInstance | None = None  # type: ignore[assignment]
     score: NamedEffectInstance | None = None  # type: ignore[assignment]
 

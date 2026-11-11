@@ -17,6 +17,10 @@ from typing import Literal, cast
 import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
+from quivers.continuous.deterministic import (
+    LearnedFunction,
+    learned_function_draw_message,
+)
 from quivers.continuous.family_spec import FAMILY_REGISTRY, FamilySpec
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -384,6 +388,7 @@ def _let_space(
     expr: LetExprNode,
     bound: Mapping[str, AnySpace | None],
     known: Mapping[str, AnySpace],
+    functions: Mapping[str, int],
 ) -> Euclidean | None:
     """The space an entrywise let expression's value occupies.
 
@@ -400,6 +405,9 @@ def _let_space(
         The spaces of the names bound in the body.
     known : Mapping[str, AnySpace]
         The spaces of host data and of earlier lets.
+    functions : Mapping[str, int]
+        The codomain width of each learned function by name; a call of
+        one is a value of that width shared by every row.
 
     Returns
     -------
@@ -448,6 +456,8 @@ def _let_space(
             and len(node.args) == 1
         ):
             return shape(node.args[0])
+        if isinstance(node, LetExprCall) and node.func in functions:
+            return (None, functions[node.func])
         return None
 
     found = shape(expr)
@@ -957,6 +967,30 @@ def _unknown_let_call(
     return None
 
 
+def _let_callees(steps: Sequence[ProgramStep]) -> tuple[str, ...]:
+    """The callees a body's lets and scores call, in first-use order.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        The body, a marginalization's scope included.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Each called name once.
+    """
+    found: dict[str, None] = {}
+    for step in steps:
+        if isinstance(step, LetStep | ScoreStep):
+            for callee in free_let_callees(step.value):
+                found.setdefault(callee, None)
+        elif isinstance(step, MarginalizeStep):
+            for callee in _let_callees(step.scope):
+                found.setdefault(callee, None)
+    return tuple(found)
+
+
 def _expected_call_arity(target: object) -> int | None:
     """Return the expected number of positional arguments for ``target``
     when invoked from a let-expression call site, or ``None`` when the
@@ -969,6 +1003,7 @@ def _expected_call_arity(target: object) -> int | None:
     * `MonadicProgram` without ``params``: arity is ``1`` (the
       packed program input).
     * `Morphism`: arity is ``1`` (the domain tensor).
+    * `LearnedFunction`: one argument per factor of its domain.
     * Any other callable: use `inspect.signature` and count
       positional parameters without defaults; ``*args`` makes arity
       unknowable, return ``None``.
@@ -978,6 +1013,8 @@ def _expected_call_arity(target: object) -> int | None:
         return len(params) if params else 1
     if isinstance(target, Morphism):
         return 1
+    if isinstance(target, LearnedFunction):
+        return len(target.factor_widths)
     try:
         sig = inspect.signature(target)  # type: ignore[arg-type]
     except TypeError, ValueError:
@@ -4051,8 +4088,7 @@ class _ProgramsMixin:
                     # `globals_` environment for variable
                     # resolution.
                     self._validate_let_expr_vars(step.value, bound_vars, step)
-                    deductions_globals = dict(getattr(self, "_deductions", {}))
-                    deductions_globals["__index_size__"] = self._resolve_index_size
+                    deductions_globals = self._let_globals()
                     self._reject_unknown_let_calls(
                         step.value,
                         deductions_globals,
@@ -4084,7 +4120,12 @@ class _ProgramsMixin:
                         reads,
                     )
                     bound_vars[step.name] = None
-                    let_space = _let_space(step.value, bound_vars, parameter_spaces)
+                    let_space = _let_space(
+                        step.value,
+                        bound_vars,
+                        parameter_spaces,
+                        self._function_widths(),
+                    )
                     if let_space is not None:
                         parameter_spaces[step.name] = let_space
                     steps.append(Let(name=step.name, value=compiled_fn))
@@ -4105,8 +4146,7 @@ class _ProgramsMixin:
                         step.col,
                     )
                 self._validate_let_expr_vars(step.value, bound_vars, step)
-                deductions_globals = dict(getattr(self, "_deductions", {}))
-                deductions_globals["__index_size__"] = self._resolve_index_size
+                deductions_globals = self._let_globals()
                 self._reject_unknown_let_calls(
                     step.value,
                     deductions_globals,
@@ -4230,6 +4270,13 @@ class _ProgramsMixin:
                 or frozenset(self._infer_effects(expanded_draws) | scan_effects)
             ),
         )
+        # A learned function a let or score calls is evaluated through
+        # the let globals, not drawn as a step, so the program holds it
+        # as a submodule for its weights to reach the optimizer.
+        for callee in _let_callees(expanded_draws):
+            function = self._morphisms.get(callee)
+            if isinstance(function, LearnedFunction):
+                prog.add_module(f"_function_{callee}", function)
         if step_program:
             return prog
         # Posterior-block routing: `[over=M]` programs go to the
@@ -4536,8 +4583,7 @@ class _ProgramsMixin:
             self._parameter_space_stack[-1] if self._parameter_space_stack else {}
         )
         parameter_spaces[latent_name] = Euclidean(name=f"_{latent_name}", dim=1)
-        deductions_globals = dict(getattr(self, "_deductions", {}))
-        deductions_globals["__index_size__"] = self._resolve_index_size
+        deductions_globals = self._let_globals()
         body_lets: list[tuple[str, Callable]] = []
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
@@ -4569,7 +4615,9 @@ class _ProgramsMixin:
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
-                let_space = _let_space(bstep.value, local_bv, parameter_spaces)
+                let_space = _let_space(
+                    bstep.value, local_bv, parameter_spaces, self._function_widths()
+                )
                 if let_space is not None:
                     parameter_spaces[bstep.name] = let_space
             elif isinstance(bstep, VectorisedObserveStep):
@@ -4866,6 +4914,10 @@ class _ProgramsMixin:
         """
         if draw.morphism in self._morphisms:
             morph = self._morphisms[draw.morphism]
+            if isinstance(morph, LearnedFunction):
+                raise CompileError(
+                    learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
             if draw.args is not None:
                 for a in draw.args:
                     # A named morphism consumes only identifier
@@ -5743,6 +5795,38 @@ class _ProgramsMixin:
 
         return _run
 
+    def _let_globals(self) -> "dict[str, LetValue]":
+        """The names a program's let expressions resolve statically.
+
+        Returns
+        -------
+        dict[str, LetValue]
+            The compiled deductions, which ``parse(D, ...)`` reads; every
+            learned function (``[role=function]``) by name, called as
+            ``f(a, b)`` on one value per domain factor; and the
+            index-size resolver ``factor`` binders read.
+        """
+        found: dict[str, LetValue] = dict(getattr(self, "_deductions", {}))
+        for name, morphism in self._morphisms.items():
+            if isinstance(morphism, LearnedFunction):
+                found[name] = morphism
+        found["__index_size__"] = self._resolve_index_size
+        return found
+
+    def _function_widths(self) -> dict[str, int]:
+        """The codomain width of every learned function, by name.
+
+        Returns
+        -------
+        dict[str, int]
+            One entry per ``[role=function]`` morphism.
+        """
+        return {
+            name: int(cast(ContinuousSpace, morphism.codomain).dim)
+            for name, morphism in self._morphisms.items()
+            if isinstance(morphism, LearnedFunction)
+        }
+
     @staticmethod
     def _reject_unknown_let_calls(
         node: LetExprNode,
@@ -6320,6 +6404,11 @@ class _ProgramsMixin:
                 globs_dict = globals_ or {}
                 if func_name in globs_dict and func_name not in LET_INTERNAL_KEYS:
                     target = globs_dict[func_name]
+                    if isinstance(target, LearnedFunction):
+                        values = [fn(env) for fn in arg_fns]
+                        return target.apply_values(
+                            *(torch.as_tensor(value) for value in values)
+                        )
                     if callable(target):
                         args = [fn(env) for fn in arg_fns]
                         try:
