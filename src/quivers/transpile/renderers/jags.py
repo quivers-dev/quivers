@@ -427,6 +427,7 @@ class JAGSRenderer(RendererBase):
         # Cache decl_plates so the deterministic emitter can re-index
         # let-expression refs by their declared batch_dims.
         jctx.decl_plates = build_decl_plates(ir)
+        jctx.input_plates = {inp.name: inp.plate for inp in ir.inputs}
 
         _vertex(jctx, "src", "source_file")
         # A site whose family JAGS cannot name, every `marginalize`
@@ -3369,6 +3370,9 @@ def _rewrite_arg(
         )
         info = ctx.latent_plate_info.get(arg.name)
         if info is None:
+            input_plate = ctx.input_plates.get(arg.name)
+            if input_plate is not None and not arg.indices:
+                return _index_input_at_row(arg, input_plate, axis_to_lv)
             if new_indices == arg.indices:
                 return arg
             return IRArgRef(name=arg.name, indices=new_indices)
@@ -3458,6 +3462,55 @@ def _rewrite_arg(
     return arg
 
 
+def _index_input_at_row(
+    arg: IRArgRef,
+    plate: Plate,
+    axis_to_lv: dict[str, str],
+) -> IRArgRef:
+    """Read a per-row host datum at the row the enclosing loops visit.
+
+    A data input declared over batch axes is one value per row of
+    those axes; a site inside a loop over such an axis reads its row,
+    exactly as a plated latent is read. Each leading batch axis the
+    surrounding plate iterates indexes through that plate's loop
+    variable; trailing batch axes it does not iterate are read whole
+    (a slice per axis), followed by one slice per event axis, so the
+    consumer receives the event it reads. A datum whose leading axis
+    the surrounding loops do not iterate is read whole, as written.
+
+    Parameters
+    ----------
+    arg : IRArgRef
+        The unindexed reference to the datum.
+    plate : Plate
+        The datum's declared plate.
+    axis_to_lv : dict[str, str]
+        Each iterated axis name mapped to its loop variable.
+
+    Returns
+    -------
+    IRArgRef
+        The reference indexed at the current row, or `arg` unchanged.
+    """
+    led: list[IRArg] = []
+    for dim in plate.batch_dims:
+        axis = _dim_name(dim)
+        if axis not in axis_to_lv:
+            break
+        led.append(IRArgRef(name=axis_to_lv[axis]))
+    rest = plate.batch_dims[len(led) :]
+    if not led or any(_dim_name(dim) in axis_to_lv for dim in rest):
+        return arg
+    return IRArgRef(
+        name=arg.name,
+        indices=(
+            *led,
+            *(_event_range_ir(dim) for dim in rest),
+            *(_event_range_ir(dim) for dim in plate.event_dims),
+        ),
+    )
+
+
 def _has_trailing(indices: tuple[IRArg, ...], suffix: tuple[IRArg, ...]) -> bool:
     """Return True iff `indices` ends with `suffix` (by name equality).
 
@@ -3518,6 +3571,10 @@ class _JAGSCtx(RenderContext):
         #: `_emit_deterministic` to re-index plated var references
         #: inside lifted let-expressions.
         self.decl_plates: dict[str, Plate] = {}
+        #: Declared plate of every host data input, read by
+        #: `_rewrite_arg` to index a per-row datum at the row the
+        #: enclosing loops visit.
+        self.input_plates: dict[str, Plate] = {}
         #: For every previously-bound latent name, record the
         #: (fallback_loop_var, event_dims, axis_names) used at its
         #: sample site. The fallback loop var is used when no
