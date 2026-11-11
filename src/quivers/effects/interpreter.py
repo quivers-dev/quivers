@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import weakref
 from collections.abc import Callable, Mapping
+from typing import TypeIs
 
 import torch
 
@@ -108,8 +109,25 @@ from quivers.effects.program_module import SOURCE_PROTOCOL
 #: The name of the wrapper computation a run evaluates.
 RUN = "__run"
 
+type HostValue = (
+    torch.Tensor
+    | int
+    | float
+    | bool
+    | str
+    | TorchSampleable
+    | tuple[HostValue, ...]
+    | None
+)
+"""A value a host step produces or consumes: a tensor, a number, a
+string, a sampleable, ``None``, or a tuple of such values."""
 
-def host_value(value: object) -> bool:
+type RunValue = torch.Tensor | tuple[RunValue, ...]
+"""A let or score value computed from one run's bindings: a tensor or a
+tuple of them."""
+
+
+def host_value(value: object) -> TypeIs[HostValue]:
     """Whether a value is one a host step may produce or consume.
 
     Parameters
@@ -357,6 +375,31 @@ def _split_observations(
     return sites, supplied, data
 
 
+def _host(argument: object) -> HostValue:
+    """Narrow the argument a host function receives to a host value.
+
+    Parameters
+    ----------
+    argument : object
+        The argument the ``Compute`` handler passed.
+
+    Returns
+    -------
+    HostValue
+        The same argument.
+
+    Raises
+    ------
+    TypeError
+        If the argument is not a host value.
+    """
+    if not host_value(argument):
+        raise TypeError(
+            f"a host step received a {type(argument).__name__}, not a host value"
+        )
+    return argument
+
+
 def _environment(step: HostStep, argument: object) -> dict[str, torch.Tensor]:
     """Rebuild the host environment a step reads from its argument tuple.
 
@@ -513,7 +556,7 @@ def _sequence(step: Scan, value: torch.Tensor) -> torch.Tensor:
     )
 
 
-def _plated(morphism: object) -> bool:
+def _plated(morphism: torch.nn.Module | None) -> bool:
     """Whether a site's morphism draws a plate's rows rather than one value.
 
     A plated site's value in one run is laid out along its plate's rows,
@@ -522,8 +565,8 @@ def _plated(morphism: object) -> bool:
 
     Parameters
     ----------
-    morphism : object
-        The site's morphism.
+    morphism : torch.nn.Module | None
+        The site's morphism, or ``None`` for a label no draw uses.
 
     Returns
     -------
@@ -535,12 +578,12 @@ def _plated(morphism: object) -> bool:
     return isinstance(morphism, PlateDraw | VectorisedObserve | MarginalizedFactor)
 
 
-def _event_numel(morphism: object) -> int | None:
+def _event_numel(morphism: torch.nn.Module | None) -> int | None:
     """The number of elements a site that is not plated draws in one run.
 
     Parameters
     ----------
-    morphism : object
+    morphism : torch.nn.Module | None
         The site's morphism, or ``None`` for a label no draw uses.
 
     Returns
@@ -773,17 +816,17 @@ class _RunAxis:
         return self._flags[key]
 
 
-def _with_run_axis(value: object) -> object:
+def _with_run_axis(value: RunValue) -> RunValue:
     """Give a value computed for one run its leading run axis back.
 
     Parameters
     ----------
-    value : object
+    value : RunValue
         A tensor or a tuple of tensors computed from one run's values.
 
     Returns
     -------
-    object
+    RunValue
         The value with a leading axis of length one on every tensor.
 
     Raises
@@ -896,17 +939,17 @@ class _HostSteps:
         if step.kind == "score":
             return lambda argument, _context: self._score(step, argument)
         if step.kind == "pack":
-            return lambda argument, _context: self._pack(step, argument)
+            return lambda argument, _context: self._pack(step, _host(argument))
         if step.kind == "site":
             return lambda _argument, _context: self._site(step)
         if step.kind == "scan_length":
-            return lambda argument, _context: self._scan_length(step, argument)
+            return lambda argument, _context: self._scan_length(step, _host(argument))
         if step.kind == "scan_initial":
-            return lambda argument, _context: self._scan_initial(step, argument)
+            return lambda argument, _context: self._scan_initial(step, _host(argument))
         if step.kind == "scan_entry":
-            return lambda argument, _context: self._scan_entry(step, argument)
+            return lambda argument, _context: self._scan_entry(step, _host(argument))
         if step.kind == "scan_state":
-            return lambda argument, _context: self._scan_state(step, argument)
+            return lambda argument, _context: self._scan_state(step, _host(argument))
         raise ValueError(f"unknown host step kind {step.kind!r}")
 
     def _split_input(self, argument: object, _context: ClauseContext) -> object:
@@ -1170,19 +1213,19 @@ class _HostSteps:
         self.axis.record(step.program, spec.name, carried)
         return value
 
-    def _pack(self, step: HostStep, argument: object) -> object:
+    def _pack(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """Assemble a called program's input from its parameters.
 
         Parameters
         ----------
         step : HostStep
             The step, of the called program.
-        argument : object
+        argument : HostValue
             The environment tuple, holding the parameters in order.
 
         Returns
         -------
-        object
+        torch.Tensor
             The parameters stacked along the feature axis, the layout
             the program's input split reads.
         """
@@ -1191,7 +1234,7 @@ class _HostSteps:
         assert params is not None
         return step.program._stack_tensors([env[name] for name in params])
 
-    def _site(self, step: HostStep) -> object:
+    def _site(self, step: HostStep) -> str:
         """Address the next occurrence of a site reached once per position.
 
         Parameters
@@ -1201,7 +1244,7 @@ class _HostSteps:
 
         Returns
         -------
-        object
+        str
             ``"<label>@<n>"``, ``n`` counting the run's earlier
             occurrences of the label from zero.
         """
@@ -1212,19 +1255,19 @@ class _HostSteps:
         self.run.reached.add(address)
         return address
 
-    def _scan_length(self, step: HostStep, argument: object) -> object:
+    def _scan_length(self, step: HostStep, argument: HostValue) -> int:
         """The number of positions a scan runs over.
 
         Parameters
         ----------
         step : HostStep
             The step.
-        argument : object
+        argument : HostValue
             The environment tuple, holding the sequence.
 
         Returns
         -------
-        object
+        int
             The sequence's length.
         """
         spec = step.spec
@@ -1232,19 +1275,19 @@ class _HostSteps:
         (value,) = _environment(step, argument).values()
         return int(_sequence(spec, value).shape[1])
 
-    def _scan_initial(self, step: HostStep, argument: object) -> object:
+    def _scan_initial(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """A scan's initial state, one row per row of the sequence.
 
         Parameters
         ----------
         step : HostStep
             The step.
-        argument : object
+        argument : HostValue
             The environment tuple, holding the sequence.
 
         Returns
         -------
-        object
+        torch.Tensor
             The initial state, ``(batch, dim H)``: the scan's own when it
             has one, else zero.
         """
@@ -1259,19 +1302,19 @@ class _HostSteps:
         dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
         return torch.zeros(batch, int(width), device=value.device, dtype=dtype)
 
-    def _scan_state(self, step: HostStep, argument: object) -> object:
+    def _scan_state(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """The state a scan's step returned, carried to the next position.
 
         Parameters
         ----------
         step : HostStep
             The step.
-        argument : object
+        argument : HostValue
             The environment tuple, holding the returned state.
 
         Returns
         -------
-        object
+        torch.Tensor
             The state, ``(batch, dim H)``.
 
         Raises
@@ -1292,19 +1335,19 @@ class _HostSteps:
             )
         return value
 
-    def _scan_entry(self, step: HostStep, argument: object) -> object:
+    def _scan_entry(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """The entry a scan reads at a position.
 
         Parameters
         ----------
         step : HostStep
             The step.
-        argument : object
+        argument : HostValue
             The environment tuple, holding the sequence and the position.
 
         Returns
         -------
-        object
+        torch.Tensor
             ``(batch,)`` for a discrete entry, else ``(batch, dim)``.
         """
         spec = step.spec
@@ -1926,6 +1969,21 @@ def _stack_runs(
     """
 
     def combine(name: str, values: list[torch.Tensor]) -> torch.Tensor:
+        """Join one returned variable's per-run values along the run axis.
+
+        Parameters
+        ----------
+        name : str
+            The returned variable.
+        values : list[torch.Tensor]
+            Its value in each run.
+
+        Returns
+        -------
+        torch.Tensor
+            The values concatenated when each already leads with the
+            run axis, else stacked along a new one.
+        """
         if axis.carries(program, name):
             return torch.cat(values, dim=0)
         return torch.stack(values, dim=0)
