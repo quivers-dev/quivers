@@ -165,9 +165,7 @@ def test_lexical_uncertainty_rsa_matches_the_paper_recursion(alpha: float) -> No
     program = load(str(_ROOT / "docs/examples/qiec/lexical-uncertainty-rsa.qvr"))
     speakers = program.run("lexical_speakers", alpha, 1e-6).value
     listener = program.run("lexical_listener", alpha, 1e-6).value
-    reference_speakers, reference_listener = _lexical_uncertainty_reference(
-        alpha, 1e-6
-    )
+    reference_speakers, reference_listener = _lexical_uncertainty_reference(alpha, 1e-6)
     for row, reference_row in zip(speakers, reference_speakers, strict=True):
         assert tuple(row) == pytest.approx(tuple(reference_row), rel=1e-9, abs=1e-12)
     assert tuple(listener) == pytest.approx(tuple(reference_listener), abs=1e-12)

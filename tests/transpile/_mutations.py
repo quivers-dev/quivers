@@ -837,8 +837,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old='gamma_lpdf(y[m_Resp] | nu[m_Resp],rate[m_Resp])',
-                    new='gamma_lpdf(y[m_Resp] | rate[m_Resp],nu[m_Resp])',
+                    old="gamma_lpdf(y[m_Resp] | nu[m_Resp],rate[m_Resp])",
+                    new="gamma_lpdf(y[m_Resp] | rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),
@@ -846,8 +846,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="numpyro",
             rewrites=(
                 SourceRewrite(
-                    old='Gamma(concentration=nu,rate=rate),obs=y',
-                    new='Gamma(concentration=rate,rate=nu),obs=y',
+                    old="Gamma(concentration=nu,rate=rate),obs=y",
+                    new="Gamma(concentration=rate,rate=nu),obs=y",
                 ),
             ),
         ),
@@ -855,8 +855,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="pyro",
             rewrites=(
                 SourceRewrite(
-                    old='Gamma(nu,rate),obs=y',
-                    new='Gamma(rate,nu),obs=y',
+                    old="Gamma(nu,rate),obs=y",
+                    new="Gamma(rate,nu),obs=y",
                 ),
             ),
         ),
@@ -882,8 +882,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old='Gamma.(nu, inv(rate) )',
-                    new='Gamma.(rate, inv(nu) )',
+                    old="Gamma.(nu, inv(rate) )",
+                    new="Gamma.(rate, inv(nu) )",
                 ),
             ),
         ),
@@ -891,8 +891,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="gen",
             rewrites=(
                 SourceRewrite(
-                    old='gamma(nu[m_Resp], inv(rate[m_Resp]) )',
-                    new='gamma(rate[m_Resp], inv(nu[m_Resp]) )',
+                    old="gamma(nu[m_Resp], inv(rate[m_Resp]) )",
+                    new="gamma(rate[m_Resp], inv(nu[m_Resp]) )",
                 ),
             ),
         ),
@@ -900,8 +900,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="jags",
             rewrites=(
                 SourceRewrite(
-                    old='dgamma(nu[m_Resp],rate[m_Resp])',
-                    new='dgamma(rate[m_Resp],nu[m_Resp])',
+                    old="dgamma(nu[m_Resp],rate[m_Resp])",
+                    new="dgamma(rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),
@@ -909,8 +909,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="bugs",
             rewrites=(
                 SourceRewrite(
-                    old='dgamma(nu[m_Resp],rate[m_Resp])',
-                    new='dgamma(rate[m_Resp],nu[m_Resp])',
+                    old="dgamma(nu[m_Resp],rate[m_Resp])",
+                    new="dgamma(rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),

@@ -240,8 +240,7 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "factor_analysis",
             "obs_idx",
-            "Gathers the loading row of W and the uniqueness psi over the "
-            "ObsDim plate",
+            "Gathers the loading row of W and the uniqueness psi over the ObsDim plate",
         ),
         (
             "gamma_regression",
@@ -298,8 +297,7 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "tree_categorical",
             "verb_idx",
-            "Gathers each response's row of leaf probabilities over the "
-            "Verb plate",
+            "Gathers each response's row of leaf probabilities over the Verb plate",
         ),
         (
             "zip_regression",

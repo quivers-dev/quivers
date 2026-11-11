@@ -792,7 +792,13 @@ def _reconstruct_parametric_pooling(
     theta = spread * z
     if variant == "drop_common_mean":
         school_mean = theta
-    elif variant in ("", "ignore_spread", "unconstrain_tau", "unit_standard_error", "plate_mean"):
+    elif variant in (
+        "",
+        "ignore_spread",
+        "unconstrain_tau",
+        "unit_standard_error",
+        "plate_mean",
+    ):
         school_mean = mu + theta
     else:
         raise _unknown_variant("parametric_pooling", variant)
@@ -1373,8 +1379,7 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "parametric_pooling",
         "unconstrain_tau",
-        "the `HalfCauchy` spread is scored in log space, adding a "
-        "`log tau` Jacobian.",
+        "the `HalfCauchy` spread is scored in log space, adding a `log tau` Jacobian.",
         1.8,
     ),
     _Mutant(
@@ -1409,8 +1414,7 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "pmf",
         "unit_rating_scale",
-        "the ratings are scored at unit scale instead of at the sampled "
-        "`sigma`.",
+        "the ratings are scored at unit scale instead of at the sampled `sigma`.",
         600.0,
     ),
     _Mutant(

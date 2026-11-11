@@ -173,9 +173,7 @@ def test_labeled_return_tuple_keys_program_output() -> None:
     tau = torch.tensor(3.0)
     theta = tau * z
     mu = torch.tensor(1.5)
-    out = model.rsample(
-        x, observations={"se": se, "mu": mu, "tau": tau, "theta$z": z}
-    )
+    out = model.rsample(x, observations={"se": se, "mu": mu, "tau": tau, "theta$z": z})
     assert isinstance(out, dict)
     assert set(out.keys()) == {"effects", "mean"}
     assert torch.allclose(out["effects"], theta)
