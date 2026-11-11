@@ -25,9 +25,12 @@ bulk effective sample size diagnostics computed across chains.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import math
-from typing import Literal
+from pathlib import Path
+import time
+from typing import Literal, cast
 
 import torch
 from torch.distributions import constraints as _constraints
@@ -38,10 +41,21 @@ from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.trace_types import Trace
 from quivers.inference.guides.base import Guide
+from quivers.inference.mcmc.checkpoint import (
+    CHECKPOINT_FILENAME,
+    CHECKPOINT_FORMAT_VERSION,
+    MCMCCheckpoint,
+    _CheckpointHeader,
+    _digest,
+    read_checkpoint,
+    tensor_digest,
+    write_checkpoint,
+)
 from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    StateValue,
     _check_observed_support,
     _with_generator,
 )
@@ -55,6 +69,22 @@ latent space: ``"prior"`` draws a small seeded standard-normal
 perturbation of the origin, ``"zero"`` starts at the origin, and
 ``"guide"`` maps one draw of a fitted guide into the unconstrained
 space."""
+
+
+StopReason = Literal["draws", "seconds", "evaluations"]
+"""Why a chain stopped: ``"draws"`` when it collected every draw,
+``"seconds"`` when `MCMC`'s ``max_seconds`` ran out, and
+``"evaluations"`` when its ``max_evaluations`` did."""
+
+MCMCPhase = Literal["warmup", "sampling"]
+"""The phase of a chain's transition: adaptation or sampling."""
+
+MCMCCallback = Callable[[int, int, KernelState, MCMCPhase], None]
+"""A progress hook ``callback(chain, iteration, state, phase)``, called
+after every transition with the chain's index, the transition's index
+within its phase (counted from zero), the state it produced, and the
+phase. It runs in the sampling loop; it should not draw from the
+chain's generator or modify the state."""
 
 
 @dataclass
@@ -102,6 +132,31 @@ class MCMCResult:
         mean of the component's ``"accepted"`` statistic over the
         transitions that ran it, ``nan`` for a chain in which it never
         ran. Empty for a kernel that is not composite.
+    sample_stats : dict[str, torch.Tensor]
+        Per-draw sampler statistics, each of shape ``(num_chains,
+        num_samples)`` and dtype ``float64``, keyed as the kernel's
+        `KernelState.stats`: for `NUTSKernel` ``"accept_prob"``,
+        ``"accepted"``, ``"diverged"`` (``0.0`` or ``1.0``),
+        ``"step_size"``, ``"tree_depth"``, ``"num_steps"`` (leapfrog
+        steps), and ``"energy"`` (the Hamiltonian at the draw);
+        `HMCKernel` the same without ``"tree_depth"``. A composite's
+        entries carry each component's name as a prefix
+        (``"nuts.energy"``), and an entry a transition did not report
+        (an unselected mixture component's) is ``nan``.
+    stopped_by : tuple[StopReason, ...]
+        Why each chain stopped: ``"draws"`` when it finished,
+        ``"seconds"`` or ``"evaluations"`` when a budget stopped it.
+    num_draws : torch.Tensor
+        Post-warmup draws each chain made, shape ``(num_chains,)``. When
+        a budget stops a chain early, every per-draw quantity keeps the
+        first ``min(num_draws)`` draws of each chain, and ``num_samples``
+        is that number.
+    num_evaluations : torch.Tensor
+        Potential evaluations per chain, gradient ones included, over
+        every call of `MCMC.run` and `MCMC.resume`. Shape
+        ``(num_chains,)``.
+    num_gradient_evaluations : torch.Tensor
+        Gradient evaluations per chain. Shape ``(num_chains,)``.
     """
 
     samples: dict[str, torch.Tensor]
@@ -113,6 +168,22 @@ class MCMCResult:
     num_warmup: int
     num_samples: int
     component_acceptance: dict[str, torch.Tensor] = field(default_factory=dict)
+    sample_stats: dict[str, torch.Tensor] = field(default_factory=dict)
+    stopped_by: tuple[StopReason, ...] = ()
+    num_draws: torch.Tensor = field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    )
+    num_evaluations: torch.Tensor = field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    )
+    num_gradient_evaluations: torch.Tensor = field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    )
+
+    @property
+    def truncated(self) -> bool:
+        """Whether a budget stopped any chain before its last draw."""
+        return any(reason != "draws" for reason in self.stopped_by)
 
     @property
     def num_chains(self) -> int:
@@ -298,13 +369,286 @@ def _diagnostics(
     return r_hat, ess
 
 
+class _ChainRecord:
+    """The progress of one chain: everything a checkpoint stores for it.
+
+    Attributes
+    ----------
+    phase : str
+        ``"warmup"``, ``"sampling"``, or ``"done"``.
+    iteration : int
+        Transitions completed in the current phase.
+    state : KernelState
+        The chain's state.
+    kernel_state : dict[str, StateValue]
+        The kernel's `MCMCKernel.state_dict` at the last checkpoint.
+    generator_state : torch.Tensor
+        The chain generator's state at the last checkpoint.
+    draws : dict[str, list[torch.Tensor]]
+        Each site's post-warmup draws.
+    log_densities : list[float]
+        The log-density at each draw.
+    stats : list[dict[str, float]]
+        Each draw's transition statistics.
+    divergences : int
+        Post-warmup divergent transitions.
+    evaluations : int
+        Potential evaluations over the chain's life.
+    gradient_evaluations : int
+        Gradient evaluations over the chain's life.
+    stopped_by : str | None
+        Why the chain last stopped.
+    """
+
+    __slots__ = (
+        "phase",
+        "iteration",
+        "state",
+        "kernel_state",
+        "generator_state",
+        "draws",
+        "log_densities",
+        "stats",
+        "divergences",
+        "evaluations",
+        "gradient_evaluations",
+        "stopped_by",
+    )
+
+    def __init__(
+        self, phase: str, state: KernelState, site_names: tuple[str, ...]
+    ) -> None:
+        self.phase = phase
+        self.iteration = 0
+        self.state = state
+        self.kernel_state: dict[str, StateValue] = {}
+        self.generator_state = torch.empty(0, dtype=torch.uint8)
+        self.draws: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
+        self.log_densities: list[float] = []
+        self.stats: list[dict[str, float]] = []
+        self.divergences = 0
+        self.evaluations = 0
+        self.gradient_evaluations = 0
+        self.stopped_by: str | None = None
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The record as a checkpoint stores it.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            Every attribute, draws stacked per site.
+        """
+        stats: list[StateValue] = [dict(entry) for entry in self.stats]
+        return {
+            "phase": self.phase,
+            "iteration": self.iteration,
+            "state": self.state.state_dict(),
+            "kernel_state": self.kernel_state,
+            "generator_state": self.generator_state,
+            "draws": {
+                name: torch.stack(values) if values else None
+                for name, values in self.draws.items()
+            },
+            "log_densities": torch.tensor(self.log_densities, dtype=torch.float64),
+            "stats": stats,
+            "divergences": self.divergences,
+            "evaluations": self.evaluations,
+            "gradient_evaluations": self.gradient_evaluations,
+            "stopped_by": self.stopped_by,
+        }
+
+    @classmethod
+    def from_state_dict(
+        cls, state: StateValue, site_names: tuple[str, ...]
+    ) -> "_ChainRecord":
+        """Rebuild a record from a checkpoint.
+
+        Parameters
+        ----------
+        state : StateValue
+            What `state_dict` stored.
+        site_names : tuple[str, ...]
+            The run's sites.
+
+        Returns
+        -------
+        _ChainRecord
+            The record.
+
+        Raises
+        ------
+        ValueError
+            If the stored record is malformed or holds other sites.
+        """
+        if not isinstance(state, dict):
+            raise ValueError("MCMC.resume: a chain record is not a dictionary")
+        kernel_state = state.get("kernel_state")
+        generator_state = state.get("generator_state")
+        draws = state.get("draws")
+        log_densities = state.get("log_densities")
+        stats = state.get("stats")
+        chain_state = state.get("state")
+        phase, iteration = state.get("phase"), state.get("iteration")
+        divergences = state.get("divergences")
+        evaluations = state.get("evaluations")
+        gradient_evaluations = state.get("gradient_evaluations")
+        stopped_by = state.get("stopped_by")
+        if not (
+            isinstance(kernel_state, dict)
+            and isinstance(generator_state, torch.Tensor)
+            and isinstance(draws, dict)
+            and isinstance(log_densities, torch.Tensor)
+            and isinstance(stats, list)
+            and isinstance(chain_state, dict)
+            and phase in ("warmup", "sampling", "done")
+            and isinstance(iteration, int)
+            and isinstance(divergences, int)
+            and isinstance(evaluations, int)
+            and isinstance(gradient_evaluations, int)
+            and (stopped_by is None or isinstance(stopped_by, str))
+        ):
+            raise ValueError("MCMC.resume: a chain record is malformed")
+        if set(draws) != set(site_names):
+            raise ValueError(
+                f"MCMC.resume: the checkpoint's draws are of sites {sorted(draws)}; "
+                f"the run's sites are {sorted(site_names)}"
+            )
+        assert isinstance(phase, str)
+        record = cls(phase, KernelState.from_state_dict(chain_state), site_names)
+        record.iteration = iteration
+        record.kernel_state = kernel_state
+        record.generator_state = generator_state
+        for name, stacked in draws.items():
+            if stacked is None:
+                continue
+            if not isinstance(stacked, torch.Tensor):
+                raise ValueError(f"MCMC.resume: the draws of {name!r} are malformed")
+            record.draws[name] = list(stacked.unbind(0))
+        record.log_densities = log_densities.tolist()
+        for entry in stats:
+            if not isinstance(entry, dict):
+                raise ValueError("MCMC.resume: a draw's statistics are malformed")
+            record.stats.append(
+                {k: float(v) for k, v in entry.items() if isinstance(v, float)}
+            )
+        record.divergences = divergences
+        record.evaluations = evaluations
+        record.gradient_evaluations = gradient_evaluations
+        record.stopped_by = stopped_by
+        return record
+
+
+class _RunSetup:
+    """What one call of `MCMC.run` or `MCMC.resume` derives from the
+    model and data.
+
+    Attributes
+    ----------
+    model : MonadicProgram
+        The model.
+    x : torch.Tensor
+        The one-row input.
+    observations : dict[str, torch.Tensor]
+        The data.
+    registry : LatentRegistry
+        The flat vector's registry, without the Gibbs sites.
+    potential : PotentialFn
+        The potential.
+    gibbs_sites : frozenset[str]
+        The kernel's Gibbs sites.
+    gibbs_morphisms : dict[str, ContinuousMorphism]
+        Each Gibbs site's distribution.
+    site_names : tuple[str, ...]
+        Every sampled site, the registry's first.
+    """
+
+    __slots__ = (
+        "model",
+        "x",
+        "observations",
+        "registry",
+        "potential",
+        "gibbs_sites",
+        "gibbs_morphisms",
+        "site_names",
+    )
+
+    def __init__(
+        self,
+        model: MonadicProgram,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+        registry: LatentRegistry,
+        potential: PotentialFn,
+        gibbs_sites: frozenset[str],
+        gibbs_morphisms: dict[str, ContinuousMorphism],
+    ) -> None:
+        self.model = model
+        self.x = x
+        self.observations = observations
+        self.registry = registry
+        self.potential = potential
+        self.gibbs_sites = gibbs_sites
+        self.gibbs_morphisms = gibbs_morphisms
+        self.site_names = (*registry.names, *sorted(gibbs_sites))
+
+    def fingerprint(self) -> str:
+        """A digest of the model and data the run samples.
+
+        It covers the registry's layout, the Gibbs sites, the input and
+        every datum, and the potential's value at two fixed positions
+        under Gibbs values drawn from a fixed generator, so a change to a
+        prior, a likelihood, or the data changes it.
+
+        Returns
+        -------
+        str
+            The hexadecimal digest.
+        """
+        dim = self.registry.total_unconstrained_dim
+        gibbs = MCMC._initial_gibbs_values(
+            self.model,
+            self.x,
+            self.observations,
+            self.gibbs_sites,
+            torch.Generator().manual_seed(0),
+        )
+        probe = self.potential.condition(gibbs) if gibbs else self.potential
+        with torch.no_grad():
+            values = [
+                float(probe.log_density(point))
+                for point in (torch.zeros(dim), torch.linspace(-0.5, 0.5, dim))
+            ]
+        layout: list[StateValue] = [
+            [
+                site.name,
+                list(site.constrained_shape),
+                list(site.unconstrained_shape),
+                str(site.support),
+            ]
+            for site in self.registry.sites.values()
+        ]
+        description: dict[str, StateValue] = {
+            "layout": layout,
+            "gibbs": sorted(self.gibbs_sites),
+            "x": tensor_digest(self.x),
+            "data": {
+                name: tensor_digest(torch.as_tensor(value))
+                for name, value in sorted(self.observations.items())
+            },
+            "probes": values,
+        }
+        return _digest(description)
+
+
 class MCMC:
     """MCMC chain runner.
 
     Parameters
     ----------
     kernel : MCMCKernel
-        Markov kernel (e.g. `HMCKernel`, `NUTSKernel`).
+        Markov kernel (e.g. `HMCKernel`, `NUTSKernel`, or a composite).
     num_warmup : int
         Number of adaptation steps. The kernel's adaptation
         machinery (dual averaging, Welford covariance) runs over
@@ -323,6 +667,25 @@ class MCMC:
         Caller-owned CPU generator used to draw one base seed per
         `run`. The generator advances, while Torch's global RNG does
         not. Mutually exclusive with ``seed``.
+    checkpoint : MCMCCheckpoint, optional
+        Where and how often to checkpoint the chains, so that `resume`
+        can continue an interrupted run exactly.
+    max_seconds : float, optional
+        Wall-clock budget per chain and per call of `run` or `resume`.
+    max_evaluations : int, optional
+        Budget of potential evaluations (gradient ones included) per
+        chain and per call.
+    callback : MCMCCallback, optional
+        Progress hook called after every transition.
+
+    Raises
+    ------
+    ValueError
+        If a count or budget is out of range, ``seed`` and
+        ``generator`` are both given, or ``generator`` is not on the
+        CPU.
+    TypeError
+        If ``seed`` is not an int or ``generator`` not a generator.
     """
 
     def __init__(
@@ -335,6 +698,10 @@ class MCMC:
         *,
         seed: int | None = None,
         generator: torch.Generator | None = None,
+        checkpoint: MCMCCheckpoint | None = None,
+        max_seconds: float | None = None,
+        max_evaluations: int | None = None,
+        callback: MCMCCallback | None = None,
     ) -> None:
         if num_warmup < 0:
             raise ValueError(f"MCMC: num_warmup must be >= 0, got {num_warmup}")
@@ -357,6 +724,12 @@ class MCMC:
                     "MCMC: generator must be a CPU generator because MCMC "
                     "currently runs chain state on CPU"
                 )
+        if max_seconds is not None and not max_seconds > 0:
+            raise ValueError(f"MCMC: max_seconds must be > 0, got {max_seconds}")
+        if max_evaluations is not None and max_evaluations < 1:
+            raise ValueError(
+                f"MCMC: max_evaluations must be >= 1, got {max_evaluations}"
+            )
         self.kernel = kernel
         self.num_warmup = num_warmup
         self.num_samples = num_samples
@@ -364,6 +737,10 @@ class MCMC:
         self.init_strategy = init_strategy
         self.seed = seed
         self.generator = generator
+        self.checkpoint = checkpoint
+        self.max_seconds = max_seconds
+        self.max_evaluations = max_evaluations
+        self.callback = callback
 
     def _run_seed(self) -> int:
         """Return the base seed for one `run` without using global RNG state."""
@@ -476,6 +853,11 @@ class MCMC:
         every proposal. During sampling only positions outside the
         model's support score ``-inf``; other errors propagate.
 
+        With a ``checkpoint`` the chains are checkpointed as they run,
+        and `resume` continues them. With a budget, a chain stops at the
+        first transition boundary past it, and the result records why
+        in `MCMCResult.stopped_by`.
+
         Parameters
         ----------
         model : MonadicProgram
@@ -500,13 +882,139 @@ class MCMC:
             outside its site's support, a chain's initial position is
             not finite, or the log-density at an initial position is
             not finite.
+        FileExistsError
+            If ``checkpoint`` names a directory that already holds a
+            checkpoint; `resume` continues it.
         Exception
             Any error the program raises at an initial position, or
             raises during sampling for a reason other than a position
             outside its support.
         """
-        _require_one_run(x, "MCMC.run")
-        _check_observed_support(model, observations, "MCMC.run")
+        if self.checkpoint is not None and self.checkpoint.path.exists():
+            raise FileExistsError(
+                f"MCMC.run: {self.checkpoint.path} already holds a checkpoint; "
+                "continue it with MCMC.resume, or remove it to start afresh"
+            )
+        setup = self._setup(model, x, observations, "MCMC.run")
+        header = self._header(setup, self._run_seed())
+        records: list[_ChainRecord | None] = [None] * self.num_chains
+        return self._execute(setup, header, records, guide)
+
+    def resume(
+        self,
+        directory: str | Path,
+        model: MonadicProgram,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+        guide: Guide | None = None,
+    ) -> MCMCResult:
+        """Continue a run from its checkpoint.
+
+        Finished chains are kept as they are; a chain a budget or an
+        interruption stopped continues from its last checkpoint; chains
+        not yet started start as `run` would start them. The draws are
+        bit for bit those of an uninterrupted run with the same seed.
+        Budgets apply afresh to this call. Further checkpoints follow
+        this instance's ``checkpoint``, if any.
+
+        Parameters
+        ----------
+        directory : str | Path
+            The directory holding the checkpoint.
+        model : MonadicProgram
+            The program the checkpoint was written for.
+        x : torch.Tensor
+            The input it was written for.
+        observations : dict[str, torch.Tensor]
+            The data it was written for.
+        guide : Guide, optional
+            Fitted guide, for chains not yet started under
+            ``init_strategy="guide"``.
+
+        Returns
+        -------
+        MCMCResult
+            Posterior draws and diagnostics of every chain.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``directory`` holds no checkpoint.
+        ValueError
+            If the checkpoint is of another format version, or was
+            written for a different model or data, kernel
+            configuration, run settings, or seed.
+        """
+        stored_header, stored_chains = read_checkpoint(
+            Path(directory) / CHECKPOINT_FILENAME
+        )
+        setup = self._setup(model, x, observations, "MCMC.resume")
+        header = self._header(setup, stored_header.run_seed)
+        for field_name, what in (
+            ("model_fingerprint", "a different model or data"),
+            ("kernel_fingerprint", "a different kernel configuration"),
+            (
+                "run_fingerprint",
+                "different run settings (warmup, samples, chains, or initialization)",
+            ),
+        ):
+            if getattr(header, field_name) != getattr(stored_header, field_name):
+                raise ValueError(
+                    f"MCMC.resume: the checkpoint in {directory} was written for "
+                    f"{what}; resume it with the model, data, kernel, and settings "
+                    "it was written with"
+                )
+        if self.seed is not None and self.seed != stored_header.run_seed:
+            raise ValueError(
+                f"MCMC.resume: the checkpoint was written with seed "
+                f"{stored_header.run_seed}, not {self.seed}"
+            )
+        if len(stored_chains) != self.num_chains:
+            raise ValueError(
+                f"MCMC.resume: the checkpoint holds {len(stored_chains)} chains, "
+                f"not {self.num_chains}"
+            )
+        records: list[_ChainRecord | None] = [
+            None
+            if stored is None
+            else _ChainRecord.from_state_dict(stored, setup.site_names)
+            for stored in stored_chains
+        ]
+        return self._execute(setup, header, records, guide)
+
+    def _setup(
+        self,
+        model: MonadicProgram,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+        consumer: str,
+    ) -> _RunSetup:
+        """Check the inputs and build the registry and potential.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model.
+        x : torch.Tensor
+            The input.
+        observations : dict[str, torch.Tensor]
+            The data.
+        consumer : str
+            The method named in errors.
+
+        Returns
+        -------
+        _RunSetup
+            The derived structures.
+
+        Raises
+        ------
+        ValueError
+            If the input has several rows, the data are outside their
+            support, or the kernel's Gibbs sites do not fit the model.
+        """
+        _require_one_run(x, consumer)
+        _check_observed_support(model, observations, consumer)
         # The latents are the sites one run at (x, observations) reaches,
         # every position of a scan included. The run draws its latents
         # from a forked stream, so Torch's global RNG is left as it was.
@@ -515,7 +1023,7 @@ class MCMC:
                 recorded = trace(model, x, observations=observations)
         except Exception as error:
             error.add_note(
-                "MCMC.run: raised while recording the run its latents are read "
+                f"{consumer}: raised while recording the run its latents are read "
                 "from, before any sampling"
             )
             raise
@@ -523,103 +1031,392 @@ class MCMC:
         gibbs_morphisms = _check_gibbs_sites(recorded, gibbs_sites)
         registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = PotentialFn(model, registry, x, observations)
+        return _RunSetup(
+            model, x, observations, registry, potential, gibbs_sites, gibbs_morphisms
+        )
 
-        site_names = (*registry.names, *sorted(gibbs_sites))
-        per_chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
-        per_chain_log_density = torch.empty(self.num_chains, self.num_samples)
-        per_chain_accept = torch.empty(self.num_chains)
-        per_chain_divergences = torch.empty(self.num_chains, dtype=torch.int64)
-        component_accepted: list[dict[str, tuple[float, int]]] = []
-        run_seed = self._run_seed()
+    def _header(self, setup: _RunSetup, run_seed: int) -> _CheckpointHeader:
+        """The checkpoint header of a run.
 
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        run_seed : int
+            The run's base seed.
+
+        Returns
+        -------
+        _CheckpointHeader
+            The header.
+        """
+        settings: dict[str, StateValue] = {
+            "num_warmup": self.num_warmup,
+            "num_samples": self.num_samples,
+            "num_chains": self.num_chains,
+            "init_strategy": self.init_strategy,
+        }
+        return _CheckpointHeader(
+            format_version=CHECKPOINT_FORMAT_VERSION,
+            library="quivers",
+            model_fingerprint=setup.fingerprint(),
+            kernel_fingerprint=_digest(self.kernel.configuration()),
+            run_fingerprint=_digest(settings),
+            run_seed=run_seed,
+        )
+
+    def _start_chain(
+        self,
+        setup: _RunSetup,
+        chain: int,
+        generator: torch.Generator,
+        guide: Guide | None,
+    ) -> _ChainRecord:
+        """Initialize a chain and enter its first phase.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        chain : int
+            The chain's index.
+        generator : torch.Generator
+            The chain's generator.
+        guide : Guide | None
+            The guide for ``init_strategy="guide"``.
+
+        Returns
+        -------
+        _ChainRecord
+            The chain's record, in warmup (or sampling, with no warmup).
+
+        Raises
+        ------
+        ValueError
+            If the initial position is not finite or scores a
+            non-finite log-density.
+        """
+        init_pos = self._initial_position(setup.registry, guide, generator)
+        if not torch.isfinite(init_pos).all():
+            raise ValueError(
+                f"MCMC.run: chain {chain} initial_position must contain "
+                "only finite values"
+            )
+        gibbs_values = self._initial_gibbs_values(
+            setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
+        )
+        chain_potential = (
+            setup.potential.condition(gibbs_values) if gibbs_values else setup.potential
+        )
+        try:
+            chain_potential.check_initial(init_pos)
+        except Exception as error:
+            error.add_note(
+                f"MCMC.run: raised while scoring chain {chain}'s initial "
+                "position, before any sampling"
+            )
+            raise
+        self.kernel._set_generator(generator)
+        state = self.kernel.init(
+            setup.registry, setup.model, setup.x, setup.observations, init_pos
+        )
+        state.gibbs_values = gibbs_values
+        if self.num_warmup > 0:
+            self.kernel.start_adaptation(self.num_warmup)
+            return _ChainRecord("warmup", state, setup.site_names)
+        return _ChainRecord("sampling", _begin_sampling(state), setup.site_names)
+
+    def _execute(
+        self,
+        setup: _RunSetup,
+        header: _CheckpointHeader,
+        records: list[_ChainRecord | None],
+        guide: Guide | None,
+    ) -> MCMCResult:
+        """Run every unfinished chain and assemble the result.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        header : _CheckpointHeader
+            The checkpoint header.
+        records : list[_ChainRecord | None]
+            Each chain's progress, ``None`` for a chain not yet started.
+        guide : Guide | None
+            The guide for ``init_strategy="guide"``.
+
+        Returns
+        -------
+        MCMCResult
+            Every chain's draws and diagnostics.
+        """
         for chain in range(self.num_chains):
-            chain_generator = self._chain_generator(run_seed, chain)
-            init_pos = self._initial_position(registry, guide, chain_generator)
-            if not torch.isfinite(init_pos).all():
-                raise ValueError(
-                    f"MCMC.run: chain {chain} initial_position must contain "
-                    "only finite values"
+            record = records[chain]
+            if record is not None and record.phase == "done":
+                continue
+            generator = self._chain_generator(header.run_seed, chain)
+            if record is None:
+                record = self._start_chain(setup, chain, generator, guide)
+                records[chain] = record
+            else:
+                self.kernel._set_generator(generator)
+                self.kernel.init(
+                    setup.registry,
+                    setup.model,
+                    setup.x,
+                    setup.observations,
+                    record.state.position,
                 )
-            gibbs_values = self._initial_gibbs_values(
-                model, x, observations, gibbs_sites, chain_generator
-            )
-            chain_potential = (
-                potential.condition(gibbs_values) if gibbs_values else potential
-            )
-            try:
-                chain_potential.check_initial(init_pos)
-            except Exception as error:
-                error.add_note(
-                    f"MCMC.run: raised while scoring chain {chain}'s initial "
-                    "position, before any sampling"
-                )
-                raise
-            self.kernel._set_generator(chain_generator)
-            state = self.kernel.init(registry, model, x, observations, init_pos)
-            state.gibbs_values = gibbs_values
-            # Warmup.
-            if self.num_warmup > 0:
-                self.kernel.start_adaptation(self.num_warmup)
-                for _ in range(self.num_warmup):
-                    state = self._transition(state, potential)
+                self.kernel.load_state_dict(record.kernel_state)
+                generator.set_state(record.generator_state)
+            self._advance(setup, header, records, chain, record, generator)
+        finished = [record for record in records if record is not None]
+        return self._result(setup, finished)
+
+    def _advance(
+        self,
+        setup: _RunSetup,
+        header: _CheckpointHeader,
+        records: list[_ChainRecord | None],
+        chain: int,
+        record: _ChainRecord,
+        generator: torch.Generator,
+    ) -> None:
+        """Run one chain until it finishes or a budget stops it.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        header : _CheckpointHeader
+            The checkpoint header.
+        records : list[_ChainRecord | None]
+            Every chain's record, for checkpoints.
+        chain : int
+            The chain's index.
+        record : _ChainRecord
+            Its record, advanced in place.
+        generator : torch.Generator
+            Its generator.
+        """
+        potential = setup.potential
+        started = time.monotonic()
+        last_write = started
+        since_write = 0
+        evaluations_at_start = potential.num_evaluations
+        record.stopped_by = None
+        while True:
+            if record.phase == "warmup" and record.iteration == self.num_warmup:
                 self.kernel.stop_adaptation()
-            # Reset accept-count so the reported rate excludes warmup.
-            sampling_state = KernelState(
-                position=state.position,
-                log_density=state.log_density,
-                grad_log_density=state.grad_log_density,
-                step_count=state.step_count,
-                accept_count=0,
-                diverged=False,
-                extras=state.extras,
-                stats=state.stats,
-                gibbs_values=state.gibbs_values,
+                record.state = _begin_sampling(record.state)
+                record.phase = "sampling"
+                record.iteration = 0
+                continue
+            if record.phase == "sampling" and record.iteration == self.num_samples:
+                record.phase = "done"
+                record.stopped_by = "draws"
+                self._write(header, records, record, generator)
+                return
+            spent = potential.num_evaluations - evaluations_at_start
+            reason: StopReason | None = None
+            if self.max_seconds is not None and (
+                time.monotonic() - started >= self.max_seconds
+            ):
+                reason = "seconds"
+            elif self.max_evaluations is not None and spent >= self.max_evaluations:
+                reason = "evaluations"
+            if reason is not None:
+                record.stopped_by = reason
+                self._write(header, records, record, generator)
+                return
+            evaluations = potential.num_evaluations
+            gradients = potential.num_gradient_evaluations
+            record.state = self._transition(record.state, potential)
+            record.evaluations += potential.num_evaluations - evaluations
+            record.gradient_evaluations += (
+                potential.num_gradient_evaluations - gradients
             )
-            chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
-            sampling_divergences = 0
-            accepted: dict[str, tuple[float, int]] = {}
-            for s in range(self.num_samples):
-                sampling_state = self._transition(sampling_state, potential)
-                if sampling_state.diverged:
-                    sampling_divergences += 1
-                draws = self._to_constrained(registry, sampling_state.position)
-                for n, v in draws.items():
-                    chain_samples[n].append(v)
-                for n in gibbs_sites:
-                    chain_samples[n].append(
-                        _gibbs_draw(sampling_state.gibbs_values[n], gibbs_morphisms[n])
-                    )
-                per_chain_log_density[chain, s] = sampling_state.log_density
-                for key, value in sampling_state.stats.items():
-                    if key.endswith(".accepted"):
-                        total, count = accepted.get(key, (0.0, 0))
-                        accepted[key] = (total + value, count + 1)
-            per_chain_accept[chain] = sampling_state.accept_count / float(
-                self.num_samples
-            )
-            per_chain_divergences[chain] = sampling_divergences
-            component_accepted.append(accepted)
-            for n, draws_list in chain_samples.items():
-                stacked = torch.stack(draws_list, dim=0)
-                per_chain_samples[n].append(stacked)
+            phase: MCMCPhase = "warmup" if record.phase == "warmup" else "sampling"
+            if phase == "sampling":
+                self._record_draw(setup, record)
+            if self.callback is not None:
+                self.callback(chain, record.iteration, record.state, phase)
+            record.iteration += 1
+            since_write += 1
+            if self.checkpoint is not None and (
+                (
+                    self.checkpoint.every is not None
+                    and since_write >= self.checkpoint.every
+                )
+                or (
+                    self.checkpoint.every_seconds is not None
+                    and time.monotonic() - last_write >= self.checkpoint.every_seconds
+                )
+            ):
+                self._write(header, records, record, generator)
+                since_write = 0
+                last_write = time.monotonic()
 
-        # Stack per-chain → (num_chains, num_samples, *site_shape).
+    def _record_draw(self, setup: _RunSetup, record: _ChainRecord) -> None:
+        """Append the chain's current state to its draws.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        record : _ChainRecord
+            The chain's record.
+        """
+        state = record.state
+        if state.diverged:
+            record.divergences += 1
+        for name, value in self._to_constrained(setup.registry, state.position).items():
+            record.draws[name].append(value)
+        for name in setup.gibbs_sites:
+            record.draws[name].append(
+                _gibbs_draw(state.gibbs_values[name], setup.gibbs_morphisms[name])
+            )
+        record.log_densities.append(float(state.log_density))
+        record.stats.append(dict(state.stats))
+
+    def _write(
+        self,
+        header: _CheckpointHeader,
+        records: list[_ChainRecord | None],
+        record: _ChainRecord,
+        generator: torch.Generator,
+    ) -> None:
+        """Checkpoint every chain, capturing the running chain's kernel
+        and generator.
+
+        Parameters
+        ----------
+        header : _CheckpointHeader
+            The header.
+        records : list[_ChainRecord | None]
+            Every chain's record.
+        record : _ChainRecord
+            The running chain's record.
+        generator : torch.Generator
+            The running chain's generator.
+        """
+        record.kernel_state = self.kernel.state_dict()
+        record.generator_state = generator.get_state()
+        if self.checkpoint is None:
+            return
+        write_checkpoint(
+            self.checkpoint.path,
+            header,
+            [None if r is None else r.state_dict() for r in records],
+        )
+
+    def _result(self, setup: _RunSetup, records: list[_ChainRecord]) -> MCMCResult:
+        """Assemble the result from every chain's record.
+
+        Every per-draw quantity keeps the first ``min(num_draws)`` draws
+        of each chain, so chains a budget cut short line up; the
+        per-chain totals cover every draw each chain made.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        records : list[_ChainRecord]
+            Every chain's record.
+
+        Returns
+        -------
+        MCMCResult
+            The result.
+        """
+        num_draws = [len(record.log_densities) for record in records]
+        kept = min(num_draws)
         samples: dict[str, torch.Tensor] = {}
-        for n, chain_draws in per_chain_samples.items():
-            samples[n] = torch.stack(chain_draws, dim=0)
-
+        for name in setup.site_names:
+            per_chain = []
+            for record in records:
+                draws = record.draws[name][:kept]
+                if draws:
+                    per_chain.append(torch.stack(draws))
+                else:
+                    per_chain.append(self._empty_draws(setup, record, name))
+            samples[name] = torch.stack(per_chain)
+        log_densities = torch.tensor(
+            [record.log_densities[:kept] for record in records], dtype=torch.float32
+        ).reshape(len(records), kept)
+        keys = sorted(
+            {key for record in records for entry in record.stats for key in entry}
+        )
+        sample_stats = {
+            key: torch.tensor(
+                [
+                    [entry.get(key, float("nan")) for entry in record.stats[:kept]]
+                    for record in records
+                ],
+                dtype=torch.float64,
+            ).reshape(len(records), kept)
+            for key in keys
+        }
+        acceptance = torch.tensor(
+            [
+                record.state.accept_count / count if count else float("nan")
+                for record, count in zip(records, num_draws, strict=True)
+            ]
+        )
         r_hat, ess = _diagnostics(samples)
         return MCMCResult(
             samples=samples,
-            log_densities=per_chain_log_density,
-            acceptance_rates=per_chain_accept,
-            divergence_counts=per_chain_divergences,
+            log_densities=log_densities,
+            acceptance_rates=acceptance,
+            divergence_counts=torch.tensor(
+                [record.divergences for record in records], dtype=torch.int64
+            ),
             r_hat=r_hat,
             ess=ess,
             num_warmup=self.num_warmup,
-            num_samples=self.num_samples,
-            component_acceptance=_component_acceptance(component_accepted),
+            num_samples=kept,
+            component_acceptance=_component_acceptance(
+                [record.stats for record in records]
+            ),
+            sample_stats=sample_stats,
+            stopped_by=tuple(
+                cast(StopReason, record.stopped_by or "draws") for record in records
+            ),
+            num_draws=torch.tensor(num_draws, dtype=torch.int64),
+            num_evaluations=torch.tensor(
+                [record.evaluations for record in records], dtype=torch.int64
+            ),
+            num_gradient_evaluations=torch.tensor(
+                [record.gradient_evaluations for record in records], dtype=torch.int64
+            ),
         )
+
+    def _empty_draws(
+        self, setup: _RunSetup, record: _ChainRecord, name: str
+    ) -> torch.Tensor:
+        """No draws of a site, at the site's shape.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        record : _ChainRecord
+            A chain's record, whose state gives a Gibbs site's shape.
+        name : str
+            The site.
+
+        Returns
+        -------
+        torch.Tensor
+            A tensor of shape ``(0, *site_shape)``.
+        """
+        if name in setup.gibbs_sites:
+            draw = _gibbs_draw(
+                record.state.gibbs_values[name], setup.gibbs_morphisms[name]
+            )
+            return torch.empty((0, *draw.shape), dtype=draw.dtype)
+        return torch.empty((0, *setup.registry[name].constrained_shape))
 
     def _transition(self, state: KernelState, potential: PotentialFn) -> KernelState:
         """Advance a chain by one kernel transition.
@@ -782,32 +1579,76 @@ def _check_gibbs_sites(
 
 
 def _component_acceptance(
-    per_chain: list[dict[str, tuple[float, int]]],
+    per_chain: list[list[dict[str, float]]],
 ) -> dict[str, torch.Tensor]:
-    """Per-component acceptance rates from accumulated statistics.
+    """Per-component acceptance rates from every draw's statistics.
 
     Parameters
     ----------
-    per_chain : list[dict[str, tuple[float, int]]]
-        For each chain, each ``"<component>.accepted"`` statistic's
-        post-warmup sum and the number of transitions that reported it.
+    per_chain : list[list[dict[str, float]]]
+        For each chain, each post-warmup transition's statistics.
 
     Returns
     -------
     dict[str, torch.Tensor]
         Each component's acceptance rate, shape ``(num_chains,)``, keyed
-        by its (possibly dotted, for nested composites) name; ``nan`` for
-        a chain in which it never ran.
+        by its (possibly dotted, for nested composites) name: the mean
+        of its ``"<name>.accepted"`` statistic over the transitions that
+        reported it, ``nan`` for a chain in which none did.
     """
-    keys = sorted({key for chain in per_chain for key in chain})
+    keys = sorted(
+        {
+            key
+            for chain in per_chain
+            for entry in chain
+            for key in entry
+            if key.endswith(".accepted")
+        }
+    )
     out: dict[str, torch.Tensor] = {}
     for key in keys:
         rates = []
         for chain in per_chain:
-            total, count = chain.get(key, (0.0, 0))
-            rates.append(total / count if count else float("nan"))
+            values = [entry[key] for entry in chain if key in entry]
+            rates.append(sum(values) / len(values) if values else float("nan"))
         out[key.removesuffix(".accepted")] = torch.tensor(rates)
     return out
 
 
-__all__ = ["MCMC", "MCMCResult", "InitStrategy"]
+def _begin_sampling(state: KernelState) -> KernelState:
+    """The state a chain's sampling phase starts from.
+
+    The acceptance count restarts so that the reported rate excludes
+    warmup, and the divergence flag clears.
+
+    Parameters
+    ----------
+    state : KernelState
+        The last warmup state.
+
+    Returns
+    -------
+    KernelState
+        The same position, cache, and Gibbs values.
+    """
+    return KernelState(
+        position=state.position,
+        log_density=state.log_density,
+        grad_log_density=state.grad_log_density,
+        step_count=state.step_count,
+        accept_count=0,
+        diverged=False,
+        extras=state.extras,
+        stats=state.stats,
+        gibbs_values=state.gibbs_values,
+    )
+
+
+__all__ = [
+    "MCMC",
+    "MCMCResult",
+    "InitStrategy",
+    "StopReason",
+    "MCMCPhase",
+    "MCMCCallback",
+]
