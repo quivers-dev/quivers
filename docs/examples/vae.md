@@ -102,7 +102,8 @@ model = prog.morphism
 encoder, decoder = prog.encoder, prog.decoder
 
 N, latent_dim, obs_dim = 512, 2, 5
-x_in = torch.zeros(N, 1)
+# One run of the program: its N rows come from the `Row` plate.
+x_in = torch.zeros(1, 1)
 
 
 def twisted_strip(z):
@@ -137,7 +138,7 @@ loc, scale = raw[:, :obs_dim], raw[:, obs_dim:].exp()
 Normal = torch.distributions.Normal
 hand = Normal(0.0, 1.0).log_prob(true_z).sum() + Normal(loc, scale).log_prob(y).sum()
 log_joint_true = model.log_joint(x_in, {"y": y, "z": true_z})
-assert torch.allclose(log_joint_true, hand.expand(N), rtol=1e-5)
+assert torch.allclose(log_joint_true, hand.reshape(1), rtol=1e-5)
 print(f"log joint at the true codes: {log_joint_true[0].item():.1f} (hand-written {float(hand):.1f})")
 ```
 
