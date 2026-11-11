@@ -8,7 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **`OrderedProbit`, `InverseWishart`, and `MatrixNormal` are drawn and observed inline.** `observe y : Row <- OrderedProbit(eta=eta, cutpoints=cuts)`, `sample S : K <- InverseWishart(df=nu, scale_tril=L)`, and `sample B <- MatrixNormal(loc=M, row_covariance=U, col_covariance=V) [over=[Rows, Cols]]` sample and score on the compiled runtime as on the reference machine: an ordered probit scores each category in log space from the normal distribution function, accurate far into either tail; an inverse Wishart is the inverse of a `Wishart(df, scale_tril=L)` draw, the conventional `IW(df, Psi)` with `Psi = (L L^T)^-1`; a matrix normal's row-major entries have covariance `U (x) V`. Stan, NumPyro, Pyro, and PyMC render the ordered probit (Pyro through a grafted class), Stan, NumPyro, Pyro, and Turing render the inverse Wishart from a literal factor, converted to each library's scale, and every target with a matrix normal renders it; every other target refuses by name.
+- **MCMC and SVI move a positive-definite latent site through an unconstrained space.** An inverse Wishart's or a Wishart's site is `d (d + 1) / 2` real coordinates filling its Cholesky factor, the diagonal through the exponential, with the log-Jacobian `d log 2 + sum_i (d - i + 2) x_ii` of that map in the latent registry.
+
 - **Alternative parameterizations in source.** `MultivariateNormal` and `Wishart` take `covariance_matrix` or `precision_matrix` in place of `scale_tril`, and `Bernoulli`, `Binomial`, `Geometric`, and `NegativeBinomial` take `logits` in place of `probs`; the keywords a draw writes select the parameterization, and a draw naming two is refused at the draw. Both execution paths score each as `torch.distributions` does with the same keywords, logits in log space so an observation stays finite where its probability rounds to zero or one. Each transpile target receives the parameterization under its own spelling where its library has it (Stan `bernoulli_logit`, `binomial_logit`, `multi_normal_prec`; PyMC `logit_p` and `tau`; Turing `BernoulliLogit` and `BinomialLogit`; the `logits=` and `precision_matrix=` keywords of Pyro, NumPyro, and Edward2), a literal precision matrix inverted into its covariance where it has not, and refuses any other under `family:<Family>:<keyword>`.
+
+### Changed
+
+- **A matrix parameter filled by a free name beside `[over=...]` event axes is a matrix,** a matrix normal's mean as much as a covariance; vector parameters beside event axes stay one broadcast value. `FamilyParameter.event_dims` ties both axes of a `Wishart` or `InverseWishart` scale to the sample's first axis, `(0, 0)`, so a datum filling one is square, and a `Real N` codomain sizes a returned vector or square matrix only.
+
+### Fixed
+
+- **`ConditionalMatrixNormal` scores and draws with covariance `U (x) V` over the matrix's row-major entries,** through the density the inline family uses, where it had read the column-major Kronecker factor against row-major entries; `ConditionalInverseWishart` likewise shares the inline inverse Wishart.
+- **A compiled program whose matrix parameter only the data size is refused at the draw** with a located diagnostic, where `qvr check` had stopped on an uncaught error.
 
 ## [0.27.0] - 2026-11-11
 
