@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from quivers.dsl.ast_nodes import (
     DrawArg,
+    DrawArgDist,
     DrawArgIndex,
     DrawArgList,
     DrawArgName,
@@ -159,6 +160,106 @@ def matrix_rows(arg: DrawArgList) -> tuple[tuple[Atom, ...], ...]:
             )
         rows.append(list_atoms(item))
     return tuple(rows)
+
+
+def is_literal(arg: DrawArg) -> bool:
+    """Whether an argument is a number or a nested list of numbers.
+
+    Parameters
+    ----------
+    arg : DrawArg
+        The argument, named or positional.
+
+    Returns
+    -------
+    bool
+        True for a numeric literal and for a vector or matrix literal
+        whose every entry is one; False for a name, an indexed
+        reference, or a nested family.
+    """
+    value = argument_value(arg)
+    if isinstance(value, DrawArgScalar):
+        return True
+    if isinstance(value, DrawArgList):
+        return all(is_literal(item) for item in value.items)
+    return False
+
+
+def argument_text(arg: DrawArg) -> str:
+    """Render a draw argument as the source spells it.
+
+    Parameters
+    ----------
+    arg : DrawArg
+        The argument.
+
+    Returns
+    -------
+    str
+        The surface text: ``scale=q``, ``theta[i]``, ``[0.0, 1.0]``,
+        ``Normal(loc=0.0, scale=1.0)``.
+
+    Raises
+    ------
+    TypeError
+        If ``arg`` is not a `DrawArg` variant this module knows.
+    """
+    if isinstance(arg, DrawArgNamed):
+        return f"{arg.parameter}={argument_text(arg.value)}"
+    if isinstance(arg, DrawArgScalar):
+        return repr(arg.value)
+    if isinstance(arg, DrawArgName):
+        return arg.text
+    if isinstance(arg, DrawArgIndex):
+        return f"{arg.name}[{', '.join(arg.indices)}]"
+    if isinstance(arg, DrawArgList):
+        return "[" + ", ".join(argument_text(item) for item in arg.items) + "]"
+    if isinstance(arg, DrawArgDist):
+        inner = ", ".join(argument_text(item) for item in arg.args)
+        return f"{arg.family}({inner})"
+    raise TypeError(f"argument_text: unknown DrawArg {type(arg).__name__}")
+
+
+def kernel_argument_refusal(
+    morphism: str, family: str, args: tuple[DrawArg, ...]
+) -> tuple[DrawArg, str] | None:
+    """Explain why a kernel declaration's family arguments are refused.
+
+    A kernel declared ``~ Family(...)`` either fixes its family with
+    literal arguments, one complete schema of numbers, or leaves the
+    argument list empty and takes every parameter from its learned
+    parameter source. An argument that names a value (``scale=q``)
+    has nothing to read in a declaration, which binds no program
+    value, so every execution path refuses it with this message.
+
+    Parameters
+    ----------
+    morphism : str
+        The declared morphism's name.
+    family : str
+        The family its initializer names.
+    args : tuple[DrawArg, ...]
+        The initializer's arguments.
+
+    Returns
+    -------
+    tuple[DrawArg, str] | None
+        The first argument that is not a literal and the refusal
+        naming it, or ``None`` when every argument is a literal.
+    """
+    offending = next((arg for arg in args if not is_literal(arg)), None)
+    if offending is None:
+        return None
+    text = argument_text(offending)
+    return offending, (
+        f"kernel morphism {morphism!r}: family argument `{text}` of "
+        f"`~ {family}(...)` is not a literal, and a morphism declaration "
+        f"binds no value for it to read. A kernel's family arguments are "
+        f"literals that fix every parameter, or absent, when every parameter "
+        f"comes from the kernel's learned parameter source. To draw with "
+        f"`{text}` as a parameter, draw from the family in a program step, "
+        f"where the value is bound (`sample s <- {family}(..., {text})`)."
+    )
 
 
 __all__ = []

@@ -426,6 +426,41 @@ class MixedInlineDistribution(ContinuousMorphism):
     def support(self) -> _constraints.Constraint:
         return self._support
 
+    def with_domain(self, domain: AnySpace) -> MixedInlineDistribution:
+        """Return the same all-literal family on a declared input space.
+
+        Parameters
+        ----------
+        domain : AnySpace
+            Input space whose values select no family parameters.
+
+        Returns
+        -------
+        MixedInlineDistribution
+            The family with every parameter a literal, reading its
+            input only for the number of rows.
+
+        Raises
+        ------
+        ValueError
+            If a parameter is read from the input, whose columns the
+            new domain would not carry.
+        """
+        if any(kind == "var" for kind, _ in self._param_spec):
+            raise ValueError(
+                "MixedInlineDistribution.with_domain: a parameter is read from "
+                "the input, so the input space is fixed by the parameters"
+            )
+        return MixedInlineDistribution(
+            domain,
+            self.codomain,
+            self._param_spec,
+            self._dist_builder,
+            discrete=self._discrete,
+            support=self._support,
+            param_event_ranks=self._param_event_ranks,
+        )
+
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Reconstruct full parameter list from input + stored literals.
 
