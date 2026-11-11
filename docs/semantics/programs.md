@@ -558,6 +558,8 @@ $$
 \delta_{(\phi,\, \phi.\mathit{arr}[\phi.\mathit{idx}])}.
 $$
 
+A subscript of several index arrays, $\mathit{arr}[\iota_1, \ldots, \iota_k]$ for $v : A_1 \times \cdots \times A_k \to B$ and fibrations $\iota_j : N \to A_j$ over one $N$, pulls $v$ back along their pairing $\langle \iota_1, \ldots, \iota_k \rangle : N \to A_1 \times \cdots \times A_k$, so its entry at $n$ is $v(\iota_1(n), \ldots, \iota_k(n))$. A fixed index stands for the constant fibration at its value. The fibrations share their domain $N$, and a subscript whose index arrays range over different domains has no pairing and is refused.
+
 ### 2.10 Score (factor)
 
 A score is supplied on the log scale. [Adding $w$ to the log joint](https://docs.webppl.org/en/master/inference/conditioning.html#factor) multiplies
