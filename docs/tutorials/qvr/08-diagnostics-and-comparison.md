@@ -160,7 +160,7 @@ call for checking the reliability of the leave-one-out approximation.
 
 ## Try this
 
-- Run the eight-schools fit from chapter 3 through this pipeline. Inspect `result.total_divergences` before conversion, because the current adapter stores aggregate diagnostics rather than a per-draw `sample_stats/diverging` variable.
+- Run the eight-schools fit from chapter 3 through this pipeline, and locate its divergences in parameter space with the per-draw `sample_stats/diverging` variable the adapter writes from [`MCMCResult.sample_stats`](../../guides/inference-mcmc.md#checkpoints-budgets-and-sampler-statistics).
 - Add a `Cauchy` likelihood model alongside the `Normal` one and compare them on a dataset with outliers.
 - Slice the posterior tree by chain (`tree.posterior.sel(chain=0)`) and confirm individual chains are converging to the same place.
 
