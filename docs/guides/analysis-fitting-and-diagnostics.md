@@ -158,8 +158,88 @@ for a user-chosen
 [test statistic](../api/diagnostics/predictive_checks.md),
 optionally grouped by a named dim.
 
-No information-criterion math is reimplemented here; every
-analytics primitive comes from ArviZ.
+No information-criterion math is reimplemented here; LOO, comparison,
+and predictive checks come from ArviZ.
+
+### Convergence diagnostics for any draws
+
+[`rhat`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.rhat),
+[`ess`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.ess),
+[`mcse`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.mcse), and
+[`summary`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.summary)
+take any tensor laid out `(num_chains, num_draws, *event_shape)` and
+return one value per event coordinate. They follow the definitions of
+Vehtari et al. [@vehtari2021rhat] and need only torch, which is why
+[`MCMCResult`](../api/inference/mcmc.md) computes its `r_hat`, `ess`,
+and `ess_tail` through them. A quantity derived from posterior draws (a
+ratio of parameters, a predictive probability, a label-invariant
+summary of a mixture) and the output of a hand-written sampling loop
+are thus diagnosed with the estimators a run reports, and the numbers
+are comparable.
+
+Each estimator answers a different question.
+[R-hat](https://mc-stan.org/docs/reference-manual/analysis.html#potential-scale-reduction)
+compares split halves of the chains after replacing every draw by the
+normal score of its rank, and reports the larger of that statistic and
+the same statistic for the absolute deviations from the median; the
+second detects chains that agree on location but disagree on scale.
+Values near 1 are consistent with mixing, and Vehtari et al. suggest
+1.01 as a threshold. Bulk
+[effective sample size](https://mc-stan.org/docs/reference-manual/analysis.html#effective-sample-size.section)
+measures precision for location summaries such as the mean and the
+median, while tail ESS (the smaller of the ESS values for the 5% and
+95% quantiles) measures precision for interval endpoints, which a
+sampler that explores the tails slowly may estimate far less precisely
+than the bulk. The Monte Carlo standard error converts an ESS into the
+error of one summary: `mcse(draws, method="mean")`, `method="sd"`, or
+`method="quantile", prob=p`.
+
+```python
+import torch
+from quivers.diagnostics import ess, mcse, rhat, summary
+
+# Four chains of a hand-written random-walk Metropolis sampler for a
+# standard normal target, started from dispersed points.
+generator = torch.Generator().manual_seed(0)
+num_chains, num_draws = 4, 2000
+position = 3.0 * torch.randn(num_chains, generator=generator)
+draws = torch.empty(num_chains, num_draws)
+for t in range(num_draws):
+    proposal = position + 0.8 * torch.randn(num_chains, generator=generator)
+    log_ratio = 0.5 * (position**2 - proposal**2)
+    accept = torch.rand(num_chains, generator=generator).log() < log_ratio
+    position = torch.where(accept, proposal, position)
+    draws[:, t] = position
+
+print(rhat(draws))                              # close to 1
+print(ess(draws), ess(draws, method="tail"))    # far below the 8000 draws
+print(mcse(draws, method="quantile", prob=0.95))
+
+# A derived quantity keeps the chain and draw axes.
+second_moment = draws**2
+print(rhat(second_moment), ess(second_moment))
+
+report = summary({"x": draws, "x_squared": second_moment})
+print(report["x"].quantiles, report["x"].mcse_quantiles)
+```
+
+[`summary`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.summary)
+returns one
+[`ConvergenceSummary`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.ConvergenceSummary)
+per site, holding the posterior mean, standard deviation, and
+quantiles beside every diagnostic above, so `summary(result.samples)`
+tabulates a whole MCMC run.
+
+Some inputs have no meaningful diagnostic, and the estimators return
+NaN for them rather than a number that would read as valid: a
+coordinate with a NaN or infinite draw, fewer than four draws per
+chain, or a constant value (and, for R-hat, fewer than two chains).
+The constant case departs from ArviZ, which reports the total draw
+count as the ESS of a constant chain; a sampler stuck at its initial
+value would otherwise look perfectly mixed. Chains that are each
+constant but sit at different values give an infinite R-hat. On every
+other input the estimators agree with ArviZ's `rhat`, `ess`, and
+`mcse` to floating-point rounding.
 
 ## Algebra-guided training tooling
 

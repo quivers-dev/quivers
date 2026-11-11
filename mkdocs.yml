@@ -406,6 +406,7 @@ nav:
       - Column Encoding: api/data/encoding.md
     - Diagnostics:
       - Overview: api/diagnostics/index.md
+      - Convergence Diagnostics: api/diagnostics/convergence.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
       - Predictive Checks: api/diagnostics/predictive_checks.md

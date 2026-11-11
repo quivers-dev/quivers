@@ -4,6 +4,18 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.0] - 2026-11-11
+
+### Added
+
+- **Convergence diagnostics for any chain-by-draw tensor: `rhat`, `ess`, `mcse`, and `summary` in `quivers.diagnostics`.** Each takes draws laid out `(num_chains, num_draws, *event_shape)` and returns one float64 value per event coordinate: rank-normalized split R-hat (the larger of the bulk and folded statistics), bulk, tail, mean, sd, and quantile effective sample sizes, and Monte Carlo standard errors of the mean, the standard deviation, and a quantile, following Vehtari et al. (2021). `summary` returns a `ConvergenceSummary` per site with the posterior mean, standard deviation, and quantiles beside every diagnostic. The estimators need only torch and agree with ArviZ's to floating-point rounding; a coordinate with a non-finite draw, fewer than four draws per chain, or a constant value (and, for R-hat, fewer than two chains) gives NaN.
+- **`MCMCResult.ess_tail`,** the per-site tail effective sample size.
+
+### Changed
+
+- **Breaking: `MCMCResult` derives its diagnostics from its draws.** `r_hat`, `ess`, and `ess_tail` are computed on first access by `quivers.diagnostics.rhat` and `quivers.diagnostics.ess` and are float64; the constructor no longer takes `r_hat` or `ess`. A constant coordinate's ESS is NaN.
+- **`quivers.diagnostics` imports without the `diagnostics` extra.** The convergence estimators load with the package; the ArviZ-backed functions (`to_datatree`, `compare`, `loo`, `posterior_predictive_check`, `loo_pit`, and their siblings) load on first access and need ArviZ installed.
+
 ## [0.27.0] - 2026-11-11
 
 ### Added
