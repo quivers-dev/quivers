@@ -195,12 +195,9 @@ def test_kernel_windows_reflect_mode_and_metric() -> None:
         1000
     ) == AdaptationSchedule().windows(1000)
     custom = AdaptationSchedule(init_buffer=5, term_buffer=5, base_window=5)
-    assert (
-        HMCKernel(
-            mass_matrix="dense", adaptation="windowed", adaptation_schedule=custom
-        ).adaptation_windows(200)
-        == custom.windows(200)
-    )
+    assert HMCKernel(
+        mass_matrix="dense", adaptation="windowed", adaptation_schedule=custom
+    ).adaptation_windows(200) == custom.windows(200)
     # An identity metric is never adapted: one fast window.
     assert HMCKernel(adaptation="windowed").adaptation_windows(300) == (
         AdaptationWindow(start=0, stop=300, adapts_metric=False),
@@ -277,7 +274,10 @@ def _run_warmup(
 def _ess_per_coordinate(draws: torch.Tensor) -> torch.Tensor:
     """Effective sample size of each column of a ``(n, D)`` draw matrix."""
     return torch.stack(
-        [_ess(draws[:, d].to(torch.float64).unsqueeze(0)) for d in range(draws.shape[1])]
+        [
+            _ess(draws[:, d].to(torch.float64).unsqueeze(0))
+            for d in range(draws.shape[1])
+        ]
     )
 
 
@@ -352,7 +352,9 @@ def test_windowed_metric_matches_the_target_covariance(dense: bool) -> None:
 
     estimate = kernel.inverse_mass_matrix
     draws = positions[last.start : last.stop]
-    error, tolerance = _metric_error(estimate, covariance, draws, last.stop - last.start)
+    error, tolerance = _metric_error(
+        estimate, covariance, draws, last.stop - last.start
+    )
     assert error < tolerance, (error, tolerance)
 
 
@@ -417,14 +419,34 @@ def _location_scale_model() -> MonadicProgram:
     [
         (
             HMCKernel(step_size=0.1, num_steps=5, mass_matrix="diagonal"),
-            [0.5788787603378296, 0.6797456741333008, 0.7778991460800171, 0.7101612091064453],
-            [0.8588930368423462, 0.8565139174461365, 0.8598603010177612, 0.8965176343917847],
+            [
+                0.5788787603378296,
+                0.6797456741333008,
+                0.7778991460800171,
+                0.7101612091064453,
+            ],
+            [
+                0.8588930368423462,
+                0.8565139174461365,
+                0.8598603010177612,
+                0.8965176343917847,
+            ],
             0.16133334028900623,
         ),
         (
             NUTSKernel(max_tree_depth=4, mass_matrix="dense"),
-            [0.5872042775154114, 0.5872042775154114, 0.6138293743133545, 0.7573347091674805],
-            [1.039720058441162, 1.039720058441162, 0.867976188659668, 0.7471525073051453],
+            [
+                0.5872042775154114,
+                0.5872042775154114,
+                0.6138293743133545,
+                0.7573347091674805,
+            ],
+            [
+                1.039720058441162,
+                1.039720058441162,
+                0.867976188659668,
+                0.7471525073051453,
+            ],
             0.1469486534707658,
         ),
     ],
