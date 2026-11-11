@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 99 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 100 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 61 / 99    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 73 / 99    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 81 / 99    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 75 / 99    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 65 / 99    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 89 / 99    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 78 / 99    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 90 / 99    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 78 / 99    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 75 / 99    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 78 / 99    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 62 / 100   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 74 / 100   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 82 / 100   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 76 / 100   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 66 / 100   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 90 / 100   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 79 / 100   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 91 / 100   |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 79 / 100   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 76 / 100   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 79 / 100   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -210,6 +210,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_score_host_weight`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_select`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_template_substitution`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_tensor_builtins`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.4 Option values
 
