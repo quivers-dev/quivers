@@ -10,8 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **`scan(cell, init=h0)` starts a scan from a binding of its scanning program.** Any site or `let` the program binds before the scan can be the initial state, with gradients reaching it; a binding of the state's type is read as it is, and a scalar binding is the one entry of a one-wide state. A name the program does not bind before the scan, or a binding of another type, is refused where the scan is written, and `qvr check` reports it as a diagnostic. `Scan` gains `initial_from`, and `ScanMorphism(cell, init=<name>)` names the binding it needs when run on its own.
 
+### Changed
+
+- **Breaking: a kernel's family arguments are literals.** A kernel declared `~ Family(...)` fixes its family with numbers, vectors, or matrices that fill one complete schema, or leaves the list empty and takes every parameter from its learned parameter source. An argument that reads a name, as in `~ Normal(scale=q)` or `~ Categorical(logits=scores)`, is refused at that argument by `loads()`, the checked elaboration, and every transpile target, naming the argument and the program-step form that draws with it.
+
 ### Fixed
 
+- **`qvr check` reads a kernel declared with family arguments.** Its family diagnostics name the declaration (every name of a plural one), and a refused argument is a located diagnostic rather than a traceback.
+- **A kernel's literal vector and matrix family arguments fix its family on the compiled runtime.** `~ Dirichlet(concentration=[1.0, 2.0, 3.0])`, `~ MultivariateNormal(loc=[...], scale_tril=[[...]])`, and `~ Normal(loc=[...], scale=2.0)` score the declared family with no learned parameters, as the reference machine does.
 - **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
 
 ## [0.26.0] - 2026-11-11

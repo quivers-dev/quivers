@@ -114,7 +114,11 @@ morphism prior : A -> R ~ Normal(loc=0.0, scale=1.0)
 ```
 
 It has no learned lookup table. By contrast, a bare `~ Normal` requests a
-parameter source conditional on the morphism's input. Inline distribution
+parameter source conditional on the morphism's input. A declaration's family
+arguments are literals (numbers, vectors, or matrices) that fill one complete
+schema, or absent; an argument that reads a name, as in `~ Normal(scale=q)`,
+is refused at that argument on every path, since a declaration binds no value
+for it to read. Inline distribution
 applications in `sample` and `observe` steps may mix literal and variable
 arguments, but every argument is named. A call must match one complete schema;
 for instance, `Normal(loc=mean, scale=sigma)` may reverse its source order

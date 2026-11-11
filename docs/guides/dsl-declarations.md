@@ -250,7 +250,14 @@ An explicit all-literal family call fixes the family instead:
 `morphism prior : A -> R ~ Normal(loc=0.0, scale=1.0)` ignores its input and draws
 from that Normal for every element of `A`. It has no learned parameter
 table. Leave the arguments off, as in `~ Normal`, when the input should
-select parameters through the kernel's parameter source.
+select parameters through the kernel's parameter source. A literal may be a
+number, a vector, or a matrix, as in
+`~ Dirichlet(concentration=[1.0, 2.0, 3.0])`. Every path refuses a family
+argument that reads a name, such as `~ Normal(scale=q)`, at that argument: a
+declaration binds no value for it to read, and a kernel does not mix learned
+and given parameters. A draw that needs a given scale around a computed mean
+says so in a program step, `sample s <- Normal(loc=m, scale=q)`, where both
+values are bound.
 
 <!-- compile: false -->
 ```qvr
