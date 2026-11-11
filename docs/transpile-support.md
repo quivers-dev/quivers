@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 100 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 103 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 100   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 100   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 79 / 100   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 73 / 100   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 100   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 87 / 100   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 76 / 100   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 88 / 100   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 76 / 100   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 73 / 100   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 76 / 100   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 103   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 103   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 79 / 103   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 73 / 103   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 103   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 87 / 103   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 76 / 103   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 88 / 103   |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 76 / 103   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 73 / 103   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 76 / 103   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -170,10 +170,13 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
@@ -445,7 +448,7 @@ QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its d
 
 ### `scan:no-lowering:cell`
 
-Refused for: `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`.
+Refused for: `steps/scan_bidirectional`, `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`, `steps/scan_outputs_all`, `steps/scan_reverse`.
 
 Reported kinds:
 
@@ -453,7 +456,7 @@ Reported kinds:
 scan:no-lowering:cell
 ```
 
-Every backend reports it in the same words. `bugs` on `steps/scan_cell_reads_matrix` reports:
+Every backend reports it in the same words. `bugs` on `steps/scan_bidirectional` reports:
 
 ```text
 `scan(cell)` threads `cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
