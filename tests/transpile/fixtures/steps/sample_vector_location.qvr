@@ -1,0 +1,11 @@
+# Exercises an unplated latent whose location is a let-bound vector: `b`
+# draws one Normal per entry of `z`, each at its own entry, and `y` reads
+# `b` at its position in turn.
+object Feat : FinSet 3
+program p : Feat -> Feat
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feat]
+    let z = tanh(a)
+    sample b <- Normal(loc=z, scale=0.5)
+    observe y <- Normal(loc=b, scale=0.5)
+    return b
+export p
