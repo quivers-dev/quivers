@@ -1297,9 +1297,7 @@ class _DeclarationsMixin:
         domain = self._resolve_any_space(decl.domain)
         codomain = self._resolve_any_space(decl.codomain)
         for side, space in (("domain", domain), ("codomain", codomain)):
-            factors = (
-                space.components if isinstance(space, ProductSpace) else (space,)
-            )
+            factors = space.components if isinstance(space, ProductSpace) else (space,)
             if not all(isinstance(factor, ContinuousSpace) for factor in factors):
                 raise CompileError(
                     f"function morphism {name!r}: its {side} {space!s} is not a "
