@@ -451,6 +451,20 @@ def _reads_repeatedly(name: str, body: surface.LetExprNode) -> bool:
     reads = 0
 
     def visit(node: surface.LetExprNode, nested: bool) -> bool:
+        """Whether the name is read more than once, or under a binder.
+
+        Parameters
+        ----------
+        node : surface.LetExprNode
+            The expression.
+        nested : bool
+            Whether the expression sits under a binder.
+
+        Returns
+        -------
+        bool
+            Whether a read found so far needs the value shared.
+        """
         nonlocal reads
         if isinstance(node, surface.LetExprVar):
             if node.name == name:
@@ -488,6 +502,18 @@ def _replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
     """
 
     def rewrite(term: _ValueTerm) -> _ValueTerm:
+        """Replace each variable the replacements name, sharing unchanged terms.
+
+        Parameters
+        ----------
+        term : _ValueTerm
+            The term.
+
+        Returns
+        -------
+        _ValueTerm
+            The rewritten term, the input itself where nothing changed.
+        """
         if isinstance(term, Var):
             return replacements.get(term.local, term)
         if isinstance(term, tuple):
@@ -3391,6 +3417,20 @@ class _Elaborator(
         inner = context
 
         def share(value: Value, value_type: TypeExpr) -> Var:
+            """Bind a value to a fresh local and read it through that local.
+
+            Parameters
+            ----------
+            value : Value
+                The value.
+            value_type : TypeExpr
+                Its type.
+
+            Returns
+            -------
+            Var
+                The reference to the new local.
+            """
             nonlocal inner
             local = self._shared_local("fold_acc", value_type, inner)
             bindings.append(LetBinding(local, value))

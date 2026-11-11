@@ -533,6 +533,18 @@ def _rename_expr(
     substitution.update(values)
 
     def substitute_objects(node: LetExprNode) -> LetExprNode:
+        """Rename the objects a factor's binders range over.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        LetExprNode
+            The expression, its factor binders' objects renamed.
+        """
         if not isinstance(node, LetExprFactor):
             return node
         return node.with_(

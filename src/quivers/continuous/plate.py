@@ -252,7 +252,13 @@ class PlateDraw(ContinuousMorphism):
 
     @property
     def index_shape(self) -> tuple[int, ...]:
-        """The extents of the plate's axes, outermost first."""
+        """The extents of the plate's axes, outermost first.
+
+        Returns
+        -------
+        tuple[int, ...]
+            The extents.
+        """
         return self._index_shape
 
     @property
@@ -500,6 +506,11 @@ class VectorisedObserve(ContinuousMorphism):
 
         Empty for one variate per row; ``(|B|, |C|)`` for an observation
         drawn over leading ``over`` axes beyond its family's event rank.
+
+        Returns
+        -------
+        tuple[int, ...]
+            The extents.
         """
         return self._array_shape
 

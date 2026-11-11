@@ -401,6 +401,19 @@ def _let_space(
     """
 
     def shape(node: LetExprNode) -> tuple[int | None, int] | None:
+        """The plate rows and per-row width of a let expression's value.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        tuple[int | None, int] | None
+            The rows (``None`` for a value shared by every row) and the
+            width of one row, or ``None`` when they cannot be read.
+        """
         if isinstance(node, LetExprLiteral):
             return (None, 1)
         if isinstance(node, LetExprVar):
@@ -2227,6 +2240,18 @@ class _ProgramsMixin:
                 )
 
         def substitute_objects(node: LetExprNode) -> LetExprNode:
+            """Rename the objects a factor's binders range over.
+
+            Parameters
+            ----------
+            node : LetExprNode
+                The expression.
+
+            Returns
+            -------
+            LetExprNode
+                The expression, its factor binders' objects renamed.
+            """
             if not isinstance(node, LetExprFactor):
                 return node
             return node.with_(

@@ -3404,6 +3404,18 @@ def _stan_expression(
     lines: list[str] = []
 
     def hoisted(item: IRQiecValue) -> IRQiecValue:
+        """Emit a let value's bindings as statements and return its body.
+
+        Parameters
+        ----------
+        item : IRQiecValue
+            The value.
+
+        Returns
+        -------
+        IRQiecValue
+            The value with every let binding emitted ahead of it.
+        """
         if isinstance(item, IRQiecLetValue):
             for binding in item.bindings:
                 bound = _stan_value(hoisted(binding.value), computation)

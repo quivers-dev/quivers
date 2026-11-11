@@ -73,11 +73,37 @@ def lkj_cholesky_rsample(
     shape = torch.Size(sample_shape) + concentration.shape
 
     def draw_beta(first: float, second: torch.Tensor) -> torch.Tensor:
+        """Draw Beta variates, reparameterized, one per sample.
+
+        Parameters
+        ----------
+        first : float
+            The first shape.
+        second : torch.Tensor
+            The second shape.
+
+        Returns
+        -------
+        torch.Tensor
+            The draws, with the sample dimensions leading.
+        """
         return D.Beta(torch.full_like(second, first), second).rsample(
             torch.Size(sample_shape)
         )
 
     def draw_direction(size: int) -> list[torch.Tensor]:
+        """Draw independent standard normal coordinates.
+
+        Parameters
+        ----------
+        size : int
+            The number of coordinates.
+
+        Returns
+        -------
+        list[torch.Tensor]
+            One tensor of draws per coordinate.
+        """
         noise = torch.randn(
             (size, *shape), dtype=concentration.dtype, device=concentration.device
         )

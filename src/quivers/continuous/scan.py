@@ -252,6 +252,18 @@ class ScanMorphism(ContinuousMorphism):
         trajectory is a deterministic function of the coordinates and
         the input, and the same coordinates always produce the same
         final state.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input sequence, in either layout `_as_sequence` reads.
+        base : torch.Tensor
+            Standard-normal coordinates, one cell's block per position.
+
+        Returns
+        -------
+        torch.Tensor
+            The final state.
         """
         return self.trajectory_from_base(x, base)[:, -1, :]
 

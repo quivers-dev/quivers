@@ -91,6 +91,17 @@ def name_plate_map(ir: IRProgram) -> dict[str, Plate]:
     axis (and so needs the observe's `via` index to reach the
     observation axis), and the trailing event extent supplies the
     class count of a `class_index` atom set.
+
+    Parameters
+    ----------
+    ir : IRProgram
+        The plan.
+
+    Returns
+    -------
+    dict[str, Plate]
+        Each input's, site's, deterministic's and marginalized latent's
+        plate, by name.
     """
     out: dict[str, Plate] = {}
     for inp in ir.inputs:

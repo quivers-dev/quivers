@@ -695,6 +695,20 @@ def _render_truncating(
     symbols = _TRUNCATION_SYMBOLS[ctx.target]
 
     def apply(name: str, *operands: str) -> str:
+        """Call a math builtin by the target's spelling.
+
+        Parameters
+        ----------
+        name : str
+            The builtin.
+        *operands : str
+            The rendered operands.
+
+        Returns
+        -------
+        str
+            The call's vertex.
+        """
         # `sign` and `abs` are math builtins, spelled by the shared table.
         path = native_path(ctx.target, name, len(operands))
         return call(
@@ -704,6 +718,18 @@ def _render_truncating(
         )
 
     def operand(expr: LetExprNode) -> str:
+        """Render one operand.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The operand.
+
+        Returns
+        -------
+        str
+            Its vertex.
+        """
         return render_let_expr_python(ctx, expr)
 
     quotient = apply(
@@ -1272,6 +1298,18 @@ def render_deterministic_python(ctx: PyCtx, node: IRDeterministic) -> str:
     coordinate is stacked into a target array, and so is a uniform
     factor over two or more binders, one stack per binder; every other
     binding is its expression rendered directly.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        The render state.
+    node : IRDeterministic
+        The binding.
+
+    Returns
+    -------
+    str
+        The vertex of the binding's right-hand side.
     """
     expr = node.expr
     if (

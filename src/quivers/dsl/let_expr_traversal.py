@@ -119,6 +119,18 @@ def map_let_expr(
     """
 
     def rebuild(node: surface.LetExprNode) -> surface.LetExprNode:
+        """Rebuild an expression with the rewrite applied below it.
+
+        Parameters
+        ----------
+        node : surface.LetExprNode
+            The expression.
+
+        Returns
+        -------
+        surface.LetExprNode
+            The rebuilt expression.
+        """
         if isinstance(
             node,
             surface.LetExprLiteral
