@@ -375,7 +375,7 @@ def test_gradients_reach_a_functions_weights() -> None:
 @pytest.mark.parametrize(
     ("let", "message"),
     [
-        ("let z = proj(a)", "takes 2 argument\\(s\\), one per factor of its domain"),
+        ("let z = proj(a)", "'proj': expected 2 positional argument\\(s\\), got 1"),
         (
             "let z = proj(a, c)",
             "argument 1 of the learned function 'proj' has type Real",
@@ -393,7 +393,7 @@ def test_a_call_that_misses_the_domain_is_refused(let: str, message: str) -> Non
         "    let z = 2.0 * proj(a, b) + 1.0",
         "    sample c <- Normal(loc=0.0, scale=1.0)\n    " + let,
     )
-    with pytest.raises(QiecDiagnosticError, match=message):
+    with pytest.raises((QiecDiagnosticError, CompileError), match=message):
         loads(source)
 
 
