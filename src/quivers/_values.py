@@ -19,9 +19,10 @@ class's declared fields:
   - `OPAQUE_BY_VALUE` (``"value"``): the value is compared by content.
     Scalars compare by type and value (``1``, ``1.0``, and ``True``
     differ); tuples elementwise; mappings by their key set and values;
-    numpy arrays exactly, by dtype, shape, and bytes; nested models by
-    their own equality. Arrays are stored as C-contiguous read-only
-    copies and mappings as read-only proxies, made at construction, so
+    an object exporting a read-only buffer (a numpy array, say) exactly,
+    by its element format, shape, and bytes in logical order; nested
+    models by their own equality. A buffer must be read-only when the
+    model is built, and mappings are stored as read-only proxies, so
     neither the comparison nor the cached hash can go stale.
   - `OPAQUE_BY_IDENTITY` (``"identity"``): the value is compared by
     object identity. This is the policy for live runtime objects
@@ -42,13 +43,14 @@ without an import cycle.
 from __future__ import annotations
 
 import hashlib
+import struct
+import sys
 from collections.abc import Callable, Hashable, Mapping
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal, Protocol, Self, cast
 
 import didactic.api as dx
-import numpy as np
 
 __all__: list[str] = []
 
@@ -66,6 +68,37 @@ OPAQUE_BY_IDENTITY: Mapping[str, OpaquePolicy] = MappingProxyType(
     {POLICY_KEY: "identity"}
 )
 """Field extras declaring that an opaque field compares by identity."""
+
+FREEZE_KEY = "quivers.opaque_freeze"
+"""The field-extras key under which a value field names its freezer."""
+
+type Freezer = Callable[[HeldValue], HeldValue]
+"""A function returning an immutable equivalent of a field's value."""
+
+
+def opaque_by_value[V: HeldValue](
+    freeze: Callable[[V], V],
+) -> Mapping[str, OpaquePolicy | Callable[[V], V]]:
+    """Field extras for a value field whose owner freezes its values.
+
+    A buffer compared by value must be read-only, and only the library
+    that made it can copy it read-only (a numpy array, by a copy whose
+    writeable flag is cleared). A field holding such buffers names the
+    function that does so; the model applies it to the field's value
+    when it is built, before checking the value is immutable.
+
+    Parameters
+    ----------
+    freeze : Callable[[V], V]
+        The function returning an immutable equivalent of a value.
+
+    Returns
+    -------
+    Mapping[str, OpaquePolicy | Callable[[V], V]]
+        The extras: the value policy and the freezer.
+    """
+    return MappingProxyType({POLICY_KEY: "value", FREEZE_KEY: freeze})
+
 
 _HASH_ATTR = "_quivers_value_hash"
 
@@ -87,77 +120,127 @@ class _Marker(Enum):
 _SCALAR_TYPES: tuple[type, ...] = (str, bytes, bool, int, float, complex, type(None))
 
 
-class _ArrayKey:
-    """The comparison key of a numpy array.
+#: The struct codes of integer elements, signed and unsigned. Codes of
+#: one signedness and size denote the same element type (an exporter
+#: may write a 64-bit integer as ``l`` or ``q``), so a buffer's integer
+#: format is keyed by signedness and size.
+_SIGNED_CODES = frozenset("bhilqn")
+_UNSIGNED_CODES = frozenset("BHILQN")
 
-    Two keys are equal exactly when the arrays share dtype and shape
-    and their bytes agree (for object arrays, when their elements'
-    keys agree); the hash is a digest of the same data.
+#: The byte-order prefixes that mean the platform's own order.
+_NATIVE_ORDER = frozenset(
+    {"", "@", "="} | ({"<"} if sys.byteorder == "little" else {">", "!"})
+)
+
+
+def _element_format(view: memoryview) -> Hashable:
+    """The element type a buffer's format string names.
+
+    Parameters
+    ----------
+    view : memoryview
+        The buffer.
+
+    Returns
+    -------
+    Hashable
+        The format, with a native byte-order prefix dropped and an
+        integer code read as its signedness and size.
+    """
+    fmt = view.format
+    order = fmt[0] if fmt and fmt[0] in "@=<>!" else ""
+    code = fmt[len(order) :]
+    native = order in _NATIVE_ORDER
+    if code in _SIGNED_CODES or code in _UNSIGNED_CODES:
+        signed = code in _SIGNED_CODES
+        return ("integer", native or order, signed, struct.calcsize(order + code))
+    return ("format", native or order, code)
+
+
+class _BufferKey:
+    """The comparison key of a read-only buffer, a numpy array say.
+
+    Two keys are equal exactly when the buffers share element type and
+    shape and their bytes in logical (C) order agree; the hash is a
+    digest of the same data. A buffer of Python object references has
+    no key: its bytes are addresses, not values.
     """
 
-    __slots__ = ("_array", "_elements")
+    __slots__ = ("_bytes", "_format", "_shape")
 
-    def __init__(self, array: np.ndarray) -> None:
-        """Wrap a C-contiguous array.
+    def __init__(self, view: memoryview) -> None:
+        """Key a buffer by its element type, shape, and bytes.
 
         Parameters
         ----------
-        array : np.ndarray
-            The array to key.
+        view : memoryview
+            The buffer, read in logical order whatever its strides.
 
         Raises
         ------
         TypeError
-            If an object array holds an element without a value key.
+            If the buffer holds Python object references.
         """
-        self._array = np.ascontiguousarray(array)
-        self._elements: tuple[Hashable, ...] | None = None
-        if array.dtype.hasobject:
-            children: list[ValueModel] = []
-            self._elements = tuple(
-                _value_key(cast("HeldValue", v), children)
-                for v in self._array.ravel().tolist()
+        if "O" in view.format:
+            raise TypeError(
+                "an array of Python objects compared by value has no content "
+                "key; hold numbers, or declare the field with identity semantics"
             )
-            if children:
-                raise TypeError(
-                    "an object array compared by value cannot hold a model "
-                    "with value semantics"
-                )
+        self._format = _element_format(view)
+        self._shape = tuple(view.shape or ())
+        self._bytes = view.tobytes()
 
-    def __eq__(self, other: _ArrayKey | HeldValue) -> bool:  # type: ignore[override]
-        """Compare two array keys exactly.
+    def __eq__(self, other: _BufferKey | HeldValue) -> bool:  # type: ignore[override]
+        """Compare two buffer keys exactly.
 
         Parameters
         ----------
-        other : _ArrayKey or HeldValue
+        other : _BufferKey or HeldValue
             The value to compare against.
 
         Returns
         -------
         bool
-            ``True`` when dtype, shape, and data agree.
+            ``True`` when element type, shape, and bytes agree.
         """
-        if not isinstance(other, _ArrayKey):
+        if not isinstance(other, _BufferKey):
             return NotImplemented
-        left, right = self._array, other._array
-        if left.dtype != right.dtype or left.shape != right.shape:
-            return False
-        if self._elements is not None:
-            return self._elements == other._elements
-        return left.data.cast("B") == right.data.cast("B")
+        return (
+            self._format == other._format
+            and self._shape == other._shape
+            and self._bytes == other._bytes
+        )
 
     def __hash__(self) -> int:
-        """Hash the array's dtype, shape, and a digest of its data.
+        """Hash the element type, shape, and a digest of the bytes.
 
         Returns
         -------
         int
             The hash.
         """
-        if self._elements is not None:
-            return hash((self._array.dtype.str, self._array.shape, self._elements))
-        digest = hashlib.blake2b(self._array.data.cast("B"), digest_size=16)
-        return hash((self._array.dtype.str, self._array.shape, digest.digest()))
+        digest = hashlib.blake2b(self._bytes, digest_size=16).digest()
+        return hash((self._format, self._shape, digest))
+
+
+def _buffer(value: HeldValue) -> memoryview | None:
+    """The buffer a value exports, if it exports one.
+
+    Parameters
+    ----------
+    value : HeldValue
+        The value.
+
+    Returns
+    -------
+    memoryview | None
+        A view of the value's buffer, or ``None`` for a value that
+        exports none.
+    """
+    try:
+        return memoryview(cast("bytes", value))
+    except TypeError:
+        return None
 
 
 def _value_key(value: HeldValue, children: list[ValueModel]) -> Hashable:
@@ -180,8 +263,9 @@ def _value_key(value: HeldValue, children: list[ValueModel]) -> Hashable:
     ------
     TypeError
         If the value (or a value nested in it) has no content key: a
-        mutable list or set, or an object of a type outside the
-        supported scalars, containers, arrays, classes, and models.
+        mutable list or set, a buffer of Python objects, or an object of
+        a type outside the supported scalars, containers, buffers,
+        classes, and models.
     """
     if isinstance(value, ValueModel):
         children.append(value)
@@ -192,10 +276,9 @@ def _value_key(value: HeldValue, children: list[ValueModel]) -> Hashable:
         return (type(value), value)
     if isinstance(value, type):
         return value
-    if isinstance(value, np.ndarray):
-        return _ArrayKey(value)
-    if isinstance(value, np.generic):
-        return (type(value), value.item())
+    view = _buffer(value)
+    if view is not None:
+        return _BufferKey(view)
     if isinstance(value, tuple):
         items = cast("tuple[HeldValue, ...]", value)
         return (tuple, tuple(_value_key(v, children) for v in items))
@@ -224,8 +307,9 @@ def _value_key(value: HeldValue, children: list[ValueModel]) -> Hashable:
 def _freeze(value: HeldValue) -> HeldValue:
     """Return an immutable equivalent of a value compared by content.
 
-    Arrays become C-contiguous read-only copies, mappings become
-    read-only proxies over a copy, and tuples are frozen elementwise.
+    A buffer (an array, say) must already be read-only, since only its
+    owner can make a read-only copy of it; mappings become read-only
+    proxies over a copy, and tuples are frozen elementwise.
 
     Parameters
     ----------
@@ -240,18 +324,19 @@ def _freeze(value: HeldValue) -> HeldValue:
     Raises
     ------
     TypeError
-        If the value is a mutable list or set, or has no content key.
+        If the value is a mutable list or set, a writable buffer, or has
+        no content key.
     """
-    if isinstance(value, np.ndarray):
-        if (
-            value.flags.owndata
-            and not value.flags.writeable
-            and value.flags.c_contiguous
-        ):
-            return value
-        frozen = np.array(value, copy=True, order="C")
-        frozen.setflags(write=False)
-        return frozen
+    view = _buffer(value)
+    if view is not None:
+        if not view.readonly:
+            raise TypeError(
+                "a buffer compared by value must be read-only when the model "
+                "is built; pass a read-only copy (for a numpy array, one whose "
+                "writeable flag is cleared)"
+            )
+        _BufferKey(view)
+        return value
     if isinstance(value, tuple):
         items = cast("tuple[HeldValue, ...]", value)
         return tuple(_freeze(v) for v in items)
@@ -334,10 +419,12 @@ class ValueModel(dx.Model):
 
     Subclasses declare each opaque field's policy through its extras,
     as ``dx.field(opaque=True, extras=OPAQUE_BY_VALUE)`` or
-    ``dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)``; see the module
-    docstring for what each policy compares. Construction rejects an
-    opaque field without a declared policy, and freezes every field
-    compared by value.
+    ``dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)``, or, for a
+    field holding buffers its owner freezes,
+    ``dx.field(opaque=True, extras=opaque_by_value(freeze))``; see the
+    module docstring for what each policy compares. Construction rejects
+    an opaque field without a declared policy, applies each field's
+    freezer, and freezes every field compared by value.
     """
 
     @dx.model_validator()
@@ -364,8 +451,12 @@ class ValueModel(dx.Model):
                     "policy; pass extras=OPAQUE_BY_VALUE or extras=OPAQUE_BY_IDENTITY"
                 )
             if policy == "value":
+                freezer = spec.extras.get(FREEZE_KEY)
                 try:
-                    side_table[name] = _freeze(side_table[name])
+                    value = side_table[name]
+                    if callable(freezer):
+                        value = cast("Freezer", freezer)(value)
+                    side_table[name] = _freeze(value)
                 except TypeError as exc:
                     raise TypeError(f"{cls.__name__}.{name}: {exc}") from exc
 

@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import copy
 import pickle
+import subprocess
+import sys
+import textwrap
+from collections.abc import Mapping
 from typing import Literal
 
 import didactic.api as dx
@@ -14,11 +18,34 @@ import numpy as np
 import pytest
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._values import (
+    OPAQUE_BY_IDENTITY,
+    OPAQUE_BY_VALUE,
+    ValueModel,
+    opaque_by_value,
+)
+
+
+def _read_only(values: np.ndarray) -> np.ndarray:
+    """A C-contiguous read-only copy, as a model holding arrays makes."""
+    frozen = np.array(values, copy=True, order="C")
+    frozen.setflags(write=False)
+    return frozen
+
+
+def _read_only_columns(columns: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """A read-only copy of each array of a mapping."""
+    return {name: _read_only(column) for name, column in columns.items()}
 
 
 class _Column(ValueModel):
     name: str
+    data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
+
+
+class _RawColumn(ValueModel):
+    """A column that keeps the buffer it is given, as given."""
+
     data: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
@@ -28,7 +55,9 @@ class _Table(ValueModel):
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     arrays: dict[str, np.ndarray] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+        default_factory=dict,
+        opaque=True,
+        extras=opaque_by_value(_read_only_columns),
     )
     levels: dict[str, tuple[str, ...]] = {}
     handle: torch.Tensor | None = dx.field(
@@ -99,13 +128,114 @@ def test_nan_arrays_with_equal_bits_are_equal():
     assert hash(left) == hash(right)
 
 
-def test_object_arrays_compare_by_element():
-    left = _Column(name="x", data=np.array(["a", 1], dtype=object))
-    right = _Column(name="x", data=np.array(["a", 1], dtype=object))
-    other = _Column(name="x", data=np.array(["a", 2], dtype=object))
-    assert left == right
-    assert hash(left) == hash(right)
-    assert left != other
+def test_object_arrays_have_no_content_key():
+    # An object array's buffer holds addresses, not values.
+    with pytest.raises(dx.ValidationError, match="array of Python objects"):
+        _Column(name="x", data=np.array(["a", 1], dtype=object))
+
+
+def test_a_writable_buffer_is_refused():
+    with pytest.raises(dx.ValidationError, match="must be read-only"):
+        _RawColumn(data=np.arange(3.0))
+    assert _RawColumn(data=_read_only(np.arange(3.0))) == _RawColumn(
+        data=_read_only(np.arange(3.0))
+    )
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        np.asfortranarray(np.arange(12.0).reshape(3, 4)),
+        np.arange(24.0).reshape(3, 8)[:, ::2],
+        np.arange(12.0).reshape(4, 3).T.copy().T.T,
+    ],
+    ids=["fortran-order", "sliced", "transposed-copy"],
+)
+def test_any_memory_layout_compares_by_logical_content(layout: np.ndarray):
+    expected = np.ascontiguousarray(layout)
+    raw = _RawColumn(data=layout if not layout.flags.writeable else _ro_view(layout))
+    assert raw == _RawColumn(data=_read_only(expected))
+    assert hash(raw) == hash(_RawColumn(data=_read_only(expected)))
+    assert _Column(name="x", data=layout) == _Column(name="x", data=expected)
+
+
+def _ro_view(array: np.ndarray) -> np.ndarray:
+    """A read-only view sharing the array's memory and strides."""
+    view = array.view()
+    view.setflags(write=False)
+    return view
+
+
+def test_zero_size_arrays_compare_by_shape():
+    assert _Column(name="x", data=np.zeros((0, 3))) == _Column(
+        name="x", data=np.zeros((0, 3))
+    )
+    assert _Column(name="x", data=np.zeros((0, 3))) != _Column(
+        name="x", data=np.zeros((3, 0))
+    )
+    assert _Column(name="x", data=np.zeros((0,))) != _Column(
+        name="x", data=np.zeros((0,), dtype=np.int64)
+    )
+
+
+def test_same_bytes_under_another_dtype_or_shape_differ():
+    floats = np.arange(4.0)
+    assert _Column(name="x", data=floats) != _Column(
+        name="x", data=floats.view(np.int64)
+    )
+    assert _Column(name="x", data=floats) != _Column(
+        name="x", data=floats.reshape(2, 2)
+    )
+    assert hash(_Column(name="x", data=floats)) != hash(
+        _Column(name="x", data=floats.reshape(2, 2))
+    )
+
+
+def test_integer_codes_of_one_size_and_signedness_are_one_type():
+    assert np.dtype(np.int64) == np.dtype(np.longlong)
+    assert _Column(name="x", data=np.arange(3, dtype=np.int64)) == _Column(
+        name="x", data=np.arange(3, dtype=np.longlong)
+    )
+    assert _Column(name="x", data=np.arange(3, dtype=np.int64)) != _Column(
+        name="x", data=np.arange(3, dtype=np.uint64)
+    )
+
+
+def test_quivers_imports_and_compares_buffers_without_numpy():
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import sys
+
+        class _NoNumpy(importlib.abc.MetaPathFinder):
+            def find_spec(self, name, path=None, target=None):
+                if name == "numpy" or name.startswith("numpy."):
+                    raise ModuleNotFoundError(f"No module named {name!r}")
+                return None
+
+        sys.meta_path.insert(0, _NoNumpy())
+        import didactic.api as dx
+        import quivers
+        from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+
+        assert "numpy" not in sys.modules
+
+        class Blob(ValueModel):
+            data: memoryview = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+        same = Blob(data=memoryview(b"abcd")) == Blob(data=memoryview(b"abcd"))
+        differ = Blob(data=memoryview(b"abcd")) != Blob(data=memoryview(b"abce"))
+        hashed = hash(Blob(data=memoryview(b"abcd"))) == hash(
+            Blob(data=memoryview(b"abcd"))
+        )
+        print(same, differ, hashed)
+        """
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["True", "True", "True"]
 
 
 def test_arrays_are_stored_as_read_only_copies():
@@ -203,13 +333,13 @@ def test_opaque_field_without_a_policy_is_rejected():
 
 
 @pytest.mark.parametrize(
-    "arrays",
-    [{"a": [1, 2]}, {"a": {1, 2}}, {"a": torch.ones(2)}],
-    ids=["list", "set", "tensor"],
+    "children",
+    [([1, 2],), ({1, 2},), (torch.ones(2),), (bytearray(b"ab"),)],
+    ids=["list", "set", "tensor", "writable-buffer"],
 )
-def test_value_fields_reject_values_without_a_content_key(arrays):
-    with pytest.raises(dx.ValidationError, match="_Table.arrays"):
-        _Table(arrays=arrays)
+def test_value_fields_reject_values_without_a_content_key(children: tuple):
+    with pytest.raises(dx.ValidationError, match="_Node.children"):
+        _Node(label="n", children=children)
 
 
 def test_with_refreezes_and_rehashes():

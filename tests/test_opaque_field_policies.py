@@ -6,9 +6,9 @@ values that differ in that field as equal. These checks fail when any
 such field appears:
 
 - statically, every ``dx.field(..., opaque=True, ...)`` call in the
-  source tree passes ``extras=OPAQUE_BY_VALUE`` or
-  ``extras=OPAQUE_BY_IDENTITY``, including modules the host cannot
-  import;
+  source tree passes ``extras=OPAQUE_BY_VALUE``,
+  ``extras=OPAQUE_BY_IDENTITY``, or ``extras=opaque_by_value(freeze)``,
+  including modules the host cannot import;
 - at runtime, every `didactic.api.Model` subclass defined in quivers
   that has an opaque field is a `quivers._values.ValueModel`, declares
   a valid policy for each opaque field, and does not replace the shared
@@ -30,7 +30,7 @@ import quivers
 from quivers._values import ValueModel, opaque_policy
 
 _SRC = Path(quivers.__file__).resolve().parent
-_POLICIES = {"OPAQUE_BY_VALUE", "OPAQUE_BY_IDENTITY"}
+_POLICIES = {"OPAQUE_BY_VALUE", "OPAQUE_BY_IDENTITY", "opaque_by_value"}
 
 
 def _opaque_field_calls(tree: ast.AST) -> Iterator[ast.Call]:
@@ -48,10 +48,16 @@ def _opaque_field_calls(tree: ast.AST) -> Iterator[ast.Call]:
 
 
 def _declared_policy(call: ast.Call) -> str | None:
-    """The policy constant passed as ``extras``, if any."""
+    """The policy constant, or policy helper, passed as ``extras``, if any."""
     for keyword in call.keywords:
-        if keyword.arg == "extras" and isinstance(keyword.value, ast.Name):
+        if keyword.arg != "extras":
+            continue
+        if isinstance(keyword.value, ast.Name):
             return keyword.value.id
+        if isinstance(keyword.value, ast.Call) and isinstance(
+            keyword.value.func, ast.Name
+        ):
+            return keyword.value.func.id
     return None
 
 
@@ -67,8 +73,8 @@ def test_every_opaque_field_in_the_source_declares_a_policy():
             if _declared_policy(call) not in _POLICIES:
                 missing.append(f"{path.relative_to(_SRC.parent)}:{call.lineno}")
     assert not missing, (
-        "opaque fields without extras=OPAQUE_BY_VALUE or extras=OPAQUE_BY_IDENTITY: "
-        + ", ".join(missing)
+        "opaque fields without extras=OPAQUE_BY_VALUE, extras=OPAQUE_BY_IDENTITY, "
+        "or extras=opaque_by_value(...): " + ", ".join(missing)
     )
 
 
@@ -78,9 +84,17 @@ def test_the_static_scan_detects_an_undeclared_opaque_field():
         "    a: int = dx.field(opaque=True)\n"
         "    b: int = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)\n"
         "    c: int = dx.field(opaque=True, extras={'k': 'v'})\n"
+        "    d: int = dx.field(opaque=True, extras=opaque_by_value(f))\n"
+        "    e: int = dx.field(opaque=True, extras=dict(k='v'))\n"
     )
     calls = list(_opaque_field_calls(ast.parse(source)))
-    assert [_declared_policy(c) in _POLICIES for c in calls] == [False, True, False]
+    assert [_declared_policy(c) in _POLICIES for c in calls] == [
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
 
 
 def _import_all_modules() -> list[str]:

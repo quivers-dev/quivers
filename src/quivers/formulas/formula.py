@@ -38,7 +38,7 @@ import narwhals as nw
 import numpy as np
 from narwhals.typing import IntoDataFrame
 
-from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 
 
 #: R-style transforms wired into formulae's evaluation namespace.
@@ -63,6 +63,43 @@ _R_TRANSFORMS = {
     "cosh": np.cosh,
     "tanh": np.tanh,
 }
+
+
+def _read_only(values: np.ndarray) -> np.ndarray:
+    """A C-contiguous read-only copy of an array.
+
+    A model compares its arrays by content and caches its hash, so it
+    keeps a copy no caller can write through.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        The array, or anything ``np.array`` reads as one.
+
+    Returns
+    -------
+    np.ndarray
+        The copy, with its writeable flag cleared.
+    """
+    frozen = np.array(values, copy=True, order="C")
+    frozen.setflags(write=False)
+    return frozen
+
+
+def _read_only_columns(columns: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Read-only copies of each column of a mapping.
+
+    Parameters
+    ----------
+    columns : Mapping[str, np.ndarray]
+        The columns, by name.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        A read-only copy of each column, by name.
+    """
+    return {name: _read_only(column) for name, column in columns.items()}
 
 
 class FixedColumn(ValueModel):
@@ -94,7 +131,7 @@ class FixedColumn(ValueModel):
     name: str
     qvr_name: str
     is_intercept: bool = False
-    data: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
 
 
 class RandomTerm(dx.Model):
@@ -149,7 +186,9 @@ class Formula(ValueModel):
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     random_terms: tuple[RandomTerm, ...] = ()
-    response_values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    response_values: np.ndarray = dx.field(
+        opaque=True, extras=opaque_by_value(_read_only)
+    )
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
 
@@ -188,12 +227,16 @@ class FormulaData(ValueModel):
 
     formula: str = ""
     response_name: str = ""
-    response_values: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    response_values: np.ndarray = dx.field(
+        opaque=True, extras=opaque_by_value(_read_only)
+    )
     fixed_column_names: Mapping[str, tuple[str, str]] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
     )
     fixed_column_data: Mapping[str, np.ndarray] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+        default_factory=dict,
+        opaque=True,
+        extras=opaque_by_value(_read_only_columns),
     )
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
