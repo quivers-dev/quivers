@@ -35,7 +35,26 @@ using Gen, Distributions, JSON3
 
 include("/io/_reshape.jl")
 
-function _trace_site_arities(source::String)
+# The source with every line break inside square brackets made a space:
+# the renderer lays a matrix literal out one row per line, which would
+# split a `@trace` call across lines for the address scans below. The
+# scans read the result; the model is evaluated from the source itself.
+function _join_bracketed_lines(source::AbstractString)
+    depth = 0
+    out = IOBuffer()
+    for ch in source
+        if ch == '['
+            depth += 1
+        elseif ch == ']'
+            depth = max(depth - 1, 0)
+        end
+        print(out, (ch == '\n' && depth > 0) ? ' ' : ch)
+    end
+    return String(take!(out))
+end
+
+function _trace_site_arities(raw::String)
+    source = _join_bracketed_lines(raw)
     # The Gen renderer emits trace sites in two forms (and two
     # macro-call shapes, space-separated and parenthesised):
     #

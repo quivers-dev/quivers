@@ -4,17 +4,33 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.27.0] - 2026-11-11
 
 ### Added
 
-- **Convergence diagnostics for any chain-by-draw tensor: `rhat`, `ess`, `mcse`, and `summary` in `quivers.diagnostics`.** Each takes draws laid out `(num_chains, num_draws, *event_shape)` and returns one float64 value per event coordinate: rank-normalized split R-hat (the larger of the bulk and folded statistics), bulk, tail, mean, sd, and quantile effective sample sizes, and Monte Carlo standard errors of the mean, the standard deviation, and a quantile, following Vehtari et al. (2021). `summary` returns a `ConvergenceSummary` per site with the posterior mean, standard deviation, and quantiles beside every diagnostic. The estimators need only torch and agree with ArviZ's to floating-point rounding; a coordinate with a non-finite draw, fewer than four draws per chain, or a constant value (and, for R-hat, fewer than two chains) gives NaN.
-- **`MCMCResult.ess_tail`,** the per-site tail effective sample size.
+- **`FamilyParameter.event_dims`** records, for each axis of a family parameter, the axis of the family's sample it has the extent of: a `MultivariateNormal`'s `scale_tril` is `(0, 0)`, a `Wishart`'s `(0, 1)`, a `MatrixNormal`'s `col_covariance` `(1, 1)`.
 
-### Changed
+### Fixed
 
-- **Breaking: `MCMCResult` derives its diagnostics from its draws.** `r_hat`, `ess`, and `ess_tail` are computed on first access by `quivers.diagnostics.rhat` and `quivers.diagnostics.ess` and are float64; the constructor no longer takes `r_hat` or `ess`. A constant coordinate's ESS is NaN.
-- **`quivers.diagnostics` imports without the `diagnostics` extra.** The convergence estimators load with the package; the ArviZ-backed functions (`to_datatree`, `compare`, `loo`, `posterior_predictive_check`, `loo_pit`, and their siblings) load on first access and need ArviZ installed.
+- **A host vector or matrix filling a parameter of an unplated draw is sized by the draw.** A free name filling a tensor parameter of a draw with no batch axes is one tensor over the parameter's own axes, which the family ties to its sample's: the extents come from the plate's event axes or the arguments already sized, and an axis nothing in the draw sizes is one open extent every datum tied to it shares. A later use fixes an open extent: an `[over=...]` event axis of a draw reading the value, another reading of the same datum, or the `Real N` codomain of a program returning it. A tied argument whose extent differs from the sample axis it spans, and a datum read at two sizes, are refused at the draw, naming both extents. A Cholesky factor or covariance filled by a free name beside `[over=...]` event axes is a matrix over them, not a broadcast scalar.
+- **The compiled runtime scores `MultivariateNormal`, `LowRankMVN`, and `Wishart` at host and program-valued vector and matrix parameters.** Each parameter is read at its checked shape, a matrix's flat columns restored to its rows, so `MultivariateNormal(loc=m0, scale_tril=L)` and `Wishart(df=4.0, scale_tril=L)` with host `m0` and `L` sample and score as `torch.distributions` does and as the reference machine does; an unplated multivariate draw takes its event size from `[over=...]` or its checked extents, and one whose size nothing in the program fixes is refused when the program is built, naming the draw. A host tensor over its own axes is one value, not plate rows.
+- **Every transpile target renders an unplated multivariate draw over the event axes its type states,** so Stan declares an unplated `MultivariateNormal` or `Wishart` site without an `[over=...]` clause.
+
+## [0.26.2] - 2026-11-11
+
+### Fixed
+
+- **Every transpile target scores a subscript of several index vectors one entry per position.** `M[r_idx, c_idx]` on a host table or on a matrix the program builds with `factor` renders as `M[r_idx[n], c_idx[n]]` at each row `n` on every target, matching the checked type, the reference machine, and the compiled runtime.
+- **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
+- **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
+- **Transpiled programs read host tables of open extents and factor tables inside arithmetic.** Stan declares each open extent of a host input (`M_extent0`) as an integer datum, PyMC sizes its coordinates from the input array, Pyro casts an index input read entrywise to integers, and the Python targets stack a `factor` that appears as an operand into an array, where it had been a Python list that `+` concatenated.
+- **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
+
+## [0.26.1] - 2026-11-11
+
+### Fixed
+
+- **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
 
 ## [0.26.0] - 2026-11-11
 
@@ -111,6 +127,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A declaration reports its own diagnostics before the checked module's.**
 - **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
 - **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, and the compiled runtime.
 
 #### Reference machine
 
