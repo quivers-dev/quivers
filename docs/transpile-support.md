@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 92 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 95 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 92    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 92    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 92    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 92    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 92    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 92    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 92    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 92    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 92    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 92    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 92    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 95    |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 95    |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 95    |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 95    |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 95    |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 95    |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 95    |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 95    |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 95    |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 95    |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 95    |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -167,6 +167,9 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
@@ -401,6 +404,22 @@ Each backend words it differently; this is bugs's. `bugs` on `schema_chart_parse
 
 ```text
 QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `scan:no-lowering:cell`
+
+Refused for: `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`.
+
+Reported kinds:
+
+```text
+scan:no-lowering:cell
+```
+
+Every backend reports it in the same words. `bugs` on `steps/scan_cell_reads_matrix` reports:
+
+```text
+`scan(cell)` threads `cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
 ```
 
 ### `scan:no-lowering:fwd_cell`
