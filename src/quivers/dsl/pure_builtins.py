@@ -58,9 +58,7 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "threshold": lambda a, t, v: _F.threshold(a, t, v),
     "glu": lambda a: _F.glu(a, dim=-1),
     "normalize": lambda a, p=None: (
-        a / a.sum(dim=-1, keepdim=True)
-        if p is None
-        else _F.normalize(a, p=p, dim=-1)
+        a / a.sum(dim=-1, keepdim=True) if p is None else _F.normalize(a, p=p, dim=-1)
     ),
     "exp": lambda a: torch.exp(a),
     "expm1": lambda a: torch.expm1(a),
