@@ -194,6 +194,86 @@ def site_plates(
     return program.site_plates.get(spec.names[0], ())
 
 
+def subsampled_rows(
+    site: str,
+    axes: tuple[tuple[str, int | None], ...],
+    subsets: dict[str, torch.Tensor],
+) -> tuple[tuple[torch.Tensor, ...], float] | None:
+    """The rows a site is scored at, and its factor, under subsampled plates.
+
+    Parameters
+    ----------
+    site : str
+        The site's label, for the diagnostic.
+    axes : tuple[tuple[str, int | None], ...]
+        The site's plate axes, outermost first, as `site_plates` gives
+        them.
+    subsets : dict[str, torch.Tensor]
+        The rows kept of each subsampled plate, by name.
+
+    Returns
+    -------
+    tuple[tuple[torch.Tensor, ...], float] | None
+        One index per plate axis (the subset's rows along a subsampled
+        axis, every row along another) and the product over the
+        subsampled axes of the axis's extent over the subset's size;
+        ``None`` for a site in no subsampled plate.
+
+    Raises
+    ------
+    ValueError
+        If a subsampled plate of the site has no fixed extent, or the
+        subset leaves it.
+    """
+    if not any(name in subsets for name, _ in axes):
+        return None
+    rows: list[torch.Tensor] = []
+    factor = 1.0
+    for name, extent in axes:
+        if extent is None:
+            raise ValueError(
+                f"site {site!r} ranges over plate {name!r}, whose extent the "
+                "program leaves to its data; a subsampled plate needs a fixed "
+                "number of rows"
+            )
+        index = subsets.get(name)
+        if index is None:
+            rows.append(torch.arange(extent))
+            continue
+        if int(index.max()) >= extent:
+            raise ValueError(
+                f"subsample({name!r}): the index holds row {int(index.max())}, "
+                f"beyond the {extent} rows of the plate at site {site!r}"
+            )
+        rows.append(index)
+        factor *= extent / int(index.numel())
+    return tuple(rows), factor
+
+
+def active_subsets() -> dict[str, torch.Tensor]:
+    """The rows kept of each plate the current thread's stack subsamples.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        The index of each subsampled plate, by name.
+
+    Raises
+    ------
+    ValueError
+        If two active handlers subsample one plate.
+    """
+    subsets: dict[str, torch.Tensor] = {}
+    for handler in active_subsamples():
+        if handler.plate in subsets:
+            raise ValueError(
+                f"subsample({handler.plate!r}) is active twice; a plate takes "
+                "one subset per run"
+            )
+        subsets[handler.plate] = handler.index
+    return subsets
+
+
 def subsample(plate: str, index: torch.Tensor) -> SubsampleHandler:
     """Return a `SubsampleHandler` scoring a plate at a subset of its rows.
 

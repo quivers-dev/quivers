@@ -29,6 +29,7 @@ introspection.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 import didactic.api as dx
 import torch
@@ -36,6 +37,7 @@ import torch.nn as nn
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.subsample import active_subsets
 from quivers.inference.registry import LatentRegistry
 
 # A module reference, resolved at call time: the effects package imports
@@ -80,6 +82,43 @@ class Guide(nn.Module, ABC):
     """
 
     _registry: LatentRegistry
+
+    scores_subsampled_rows: ClassVar[bool] = False
+    """Whether `log_prob` scores a latent in a subsampled plate at the
+    subset's rows, scaled as the model's sites are. A guide whose density
+    does not split over a plate's rows leaves it ``False`` and refuses
+    such a latent through `check_subsampling`."""
+
+    def check_subsampling(self) -> None:
+        """Refuse a latent in a subsampled plate this guide cannot score by rows.
+
+        Under a [`subsample`][quivers.effects.subsample] block the model
+        scores a plate's latents at the subset's rows, scaled; the
+        guide's density must match, or the objective is not an unbiased
+        estimate of the full one. A guide that scores rows declares
+        `scores_subsampled_rows`.
+
+        Raises
+        ------
+        ValueError
+            If a subsampled plate holds one of the guide's latents and
+            the guide does not score a plate's rows separately.
+        """
+        subsets = active_subsets()
+        if not subsets or self.scores_subsampled_rows:
+            return
+        plates = self.registry.model.site_plates
+        for name in self.registry.names:
+            axes = plates.get(name.split("@")[0], ())
+            held = sorted(plate for plate, _ in axes if plate in subsets)
+            if held:
+                raise ValueError(
+                    f"{type(self).__name__} cannot score latent {name!r} in the "
+                    f"subsampled plate {held[0]!r} at the subset's rows, since "
+                    "its density does not split over the plate; use "
+                    "AutoNormalGuide (or AutoDeltaGuide) for the plate's "
+                    "latents, or leave the plate unsubsampled"
+                )
 
     @classmethod
     def build_registry(

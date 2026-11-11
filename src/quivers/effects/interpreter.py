@@ -59,7 +59,7 @@ from quivers.effects.program_module import (
     site_label,
 )
 from quivers.effects.sites import TorchSampleable
-from quivers.effects.subsample import site_plates
+from quivers.effects.subsample import site_plates, subsampled_rows
 from quivers.effects.trace_handler import TraceHandler
 from quivers.qiec.builtins import (
     PARAM_GET,
@@ -406,32 +406,16 @@ def _subsampled_rows(
     """
     if not run.subsamples:
         return None
-    axes = site_plates(step.program, spec)
-    if not any(name in run.subsamples for name, _ in axes):
-        return None
     label = step.site
-    if not isinstance(morphism, PlateDraw | VectorisedObserve):
+    assert label is not None
+    found = subsampled_rows(label, site_plates(step.program, spec), run.subsamples)
+    if found is not None and not isinstance(morphism, PlateDraw | VectorisedObserve):
         raise ValueError(
             f"site {label!r} ranges over a subsampled plate, but it draws from "
             f"{type(morphism).__name__}, which has no density per plate row; "
             "only a plate draw or a plated observation can be subsampled"
         )
-    rows: list[torch.Tensor] = []
-    factor = 1.0
-    for name, extent in axes:
-        if extent is None:
-            raise ValueError(
-                f"site {label!r} ranges over plate {name!r}, whose extent the "
-                "program leaves to its data; a subsampled plate needs a fixed "
-                "number of rows"
-            )
-        index = run.subsamples.get(name)
-        if index is None:
-            rows.append(torch.arange(extent))
-            continue
-        rows.append(index)
-        factor *= extent / int(index.numel())
-    return tuple(rows), factor
+    return found
 
 
 def _split_observations(
