@@ -359,8 +359,9 @@ def _fit_mcmc(program, observations, *, sampler, num_warmup, num_samples, num_ch
         num_samples=num_samples,
         num_chains=num_chains,
     )
-    n_obs = int(observations[next(iter(observations))].shape[0])
-    x = torch.zeros(n_obs, 1, dtype=torch.long)
+    # One run of the program: its observation rows come from the data
+    # through the formula's plate, not from the input's rows.
+    x = torch.zeros(1, 1, dtype=torch.long)
     return mcmc.run(program, x, observations)
 
 
@@ -394,7 +395,9 @@ def _fit_svi(
     optimizer = torch.optim.Adam(parameters, lr=1e-2)
     svi = SVI(program, guide, optimizer, ELBO())
     n_obs = int(observations[next(iter(observations))].shape[0])
-    x = torch.zeros(n_obs, 1, dtype=torch.long)
+    # One run of the program: its observation rows come from the data
+    # through the formula's plate, not from the input's rows.
+    x = torch.zeros(1, 1, dtype=torch.long)
     for _ in range(num_steps):
         step_observations = observations
         if predictor is not None:

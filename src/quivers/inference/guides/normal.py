@@ -29,6 +29,12 @@ class AutoNormalGuide(Guide):
         Variable names treated as observations (skipped in the
         guide; their values flow through the conditioning data
         dict at trace time).
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     init_scale : float
         Initial scale (in unconstrained space) of every latent.
         Default ``0.1``; small enough to keep the guide near its
@@ -40,9 +46,14 @@ class AutoNormalGuide(Guide):
         model: MonadicProgram,
         observed_names: set[str],
         init_scale: float = 0.1,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         init_log_scale = float(torch.tensor(init_scale).log().item())
 
         for site in self._registry.sites.values():

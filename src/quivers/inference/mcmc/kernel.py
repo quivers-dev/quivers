@@ -31,7 +31,7 @@ from torch.distributions import Distribution
 
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
-from quivers.inference.registry import LatentRegistry
+from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
 
@@ -185,6 +185,7 @@ class PotentialFn:
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
     ) -> None:
+        _require_one_run(x, "PotentialFn")
         self._model = model
         self._registry = registry
         self._x = x

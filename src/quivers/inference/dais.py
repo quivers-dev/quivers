@@ -60,6 +60,7 @@ import torch.nn.functional as F
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.guides.base import Guide, GuideDraw
+from quivers.inference.registry import _require_one_run
 
 
 class AutoDAIS(Guide):
@@ -83,8 +84,9 @@ class AutoDAIS(Guide):
         observations, and is valid for any of them, though the chain
         is tuned for these.
     x : torch.Tensor
-        Program input fed to the model's log-joint inside the bridges.
-        Default ``torch.zeros(1, 1)``.
+        Program input fed to the model's log-joint inside the bridges:
+        one row, since the bridges target one run's posterior. Default
+        ``torch.zeros(1, 1)``.
     num_steps : int
         Number of Hamiltonian transitions along the path; at least 1.
         Default ``8``.
@@ -102,7 +104,8 @@ class AutoDAIS(Guide):
     ValueError
         If ``num_steps < 1``, ``leapfrog_steps < 1``,
         ``init_step_size <= 0``, ``init_temperature`` is outside
-        ``(0, 1)``, or the base registry has no continuous latents.
+        ``(0, 1)``, the base registry has no continuous latents, or
+        ``x`` has more than one row.
     """
 
     def __init__(
@@ -136,6 +139,7 @@ class AutoDAIS(Guide):
         self._model = model
         self._observations = observations
         self._x = x if x is not None else torch.zeros(1, 1)
+        _require_one_run(self._x, "AutoDAIS")
         self._num_steps = num_steps
         self._leapfrog_steps = leapfrog_steps
         self._D = self._registry.total_unconstrained_dim

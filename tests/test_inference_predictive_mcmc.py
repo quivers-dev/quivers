@@ -162,12 +162,13 @@ def test_predictive_shapes_agree_for_guide_and_mcmc_posteriors(batch: int) -> No
     for name in from_mcmc:
         assert from_mcmc[name].shape == from_guide[name].shape, name
     assert from_mcmc["sigma"].shape == (6, batch)
-    assert from_mcmc["by_subj"].shape == (6, 4)
+    # A plated site carries the run axis once there is more than one run.
+    assert from_mcmc["by_subj"].shape == ((6, 4) if batch == 1 else (6, batch, 4))
 
 
 def test_predictive_feeds_each_mcmc_draw_unchanged() -> None:
-    """Every predictive latent is one recorded posterior draw,
-    expanded across the input's batch axis."""
+    """Every predictive latent is one recorded posterior draw, shared by
+    every run of the input."""
     model = _plate_model()
     observations = {"subj_idx": _SUBJ_IDX, "r": torch.linspace(-1.0, 1.0, 12)}
     result = MCMC(
@@ -182,8 +183,10 @@ def test_predictive_feeds_each_mcmc_draw_unchanged() -> None:
     for k in range(8):
         sigma_row = draws["sigma"][k]
         assert torch.equal(sigma_row, sigma_row[:1].expand(3))
+        by_subj_rows = draws["by_subj"][k]
+        assert torch.equal(by_subj_rows, by_subj_rows[:1].expand(3, 4))
         same_draw = (recorded_sigma == sigma_row[0]) & (
-            recorded_by_subj == draws["by_subj"][k]
+            recorded_by_subj == by_subj_rows[0]
         ).all(dim=-1)
         assert same_draw.any()
 
@@ -200,8 +203,9 @@ def test_predictive_rejects_an_mcmc_result_for_another_model() -> None:
         num_warmup=0,
         num_samples=2,
     )
-    with pytest.raises(ValueError, match="not latent sample sites"):
-        Predictive(model, stranger)
+    predictive = Predictive(model, stranger)
+    with pytest.raises(ValueError, match="not sample sites of the model"):
+        predictive(torch.zeros(1, 1), observations={"subj_idx": _SUBJ_IDX})
 
 
 # ---------------------------------------------------------------------------

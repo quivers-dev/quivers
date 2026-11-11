@@ -119,7 +119,9 @@ def _gradient_of_bound(
     for _ in range(repeats):
         for parameter in parameters:
             parameter.grad = None
-        loss = objective(problem.model, guide, x, {})
+        # The loss of ``batch`` independent runs is the sum of their
+        # one-run losses; their mean is the one-run loss.
+        loss = objective(problem.model, guide, x, {}) / batch
         (sign * loss).backward()
         grads = []
         for parameter in parameters:
@@ -420,10 +422,10 @@ def test_rws_wake_updates_hold_the_draws_fixed() -> None:
         d_log_q_d_mu = (z - mu) / sigma**2
         d_log_q_d_log_sigma = ((z - mu) / sigma) ** 2 - 1.0
         d_log_p_d_theta = (z - theta).sum(-1)
-        batch = x.shape[0]
-        expected_mu = -(w[..., None] * d_log_q_d_mu).sum((0, 1)) / batch
-        expected_log_sigma = -(w[..., None] * d_log_q_d_log_sigma).sum((0, 1)) / batch
-        expected_theta = -(w * d_log_p_d_theta).sum() / batch
+        # The loss sums the three independent runs' terms.
+        expected_mu = -(w[..., None] * d_log_q_d_mu).sum((0, 1))
+        expected_log_sigma = -(w[..., None] * d_log_q_d_log_sigma).sum((0, 1))
+        expected_theta = -(w * d_log_p_d_theta).sum()
     assert torch.allclose(loc.grad, expected_mu, atol=1e-10)
     assert torch.allclose(log_scale.grad, expected_log_sigma, atol=1e-10)
     assert torch.allclose(problem.theta.grad, expected_theta, atol=1e-10)
@@ -436,8 +438,12 @@ def test_rws_guide_gradient_targets_the_inclusive_kl() -> None:
     d/dlog sigma = 1 - (1 + (mu - theta)^2) / sigma^2."""
     torch.manual_seed(5)
     problem = _Problem(theta=_THETA, mu=_MU, sigma=_SIGMA)
-    loss = RWS(num_particles=256)(problem.model, problem.guide, torch.zeros(200, 1), {})
-    loss.backward()
+    runs = 200
+    loss = RWS(num_particles=256)(
+        problem.model, problem.guide, torch.zeros(runs, 1), {}
+    )
+    # The mean over the independent runs is the one-run loss.
+    (loss / runs).backward()
     mu = torch.tensor(_MU)
     sigma = torch.tensor(_SIGMA)
     expected_mu = (mu - _THETA) / sigma**2
@@ -557,7 +563,8 @@ def test_chivi_reports_a_cubo_estimate_biased_downward_at_finite_k() -> None:
         with torch.no_grad():
             values = torch.tensor(
                 [
-                    float(objective(problem.model, problem.guide, x, {}))
+                    # The mean over the 2000 independent runs.
+                    float(objective(problem.model, problem.guide, x, {})) / 2000
                     for _ in range(4)
                 ]
             )

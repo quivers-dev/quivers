@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch.distributions import constraints as _constraints
@@ -52,9 +52,12 @@ from torch.distributions.transforms import Transform
 
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous.program_steps import Draw, Observe
+from quivers.continuous.program_steps import Call, Draw, Observe, Scan
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
+
+if TYPE_CHECKING:
+    from quivers.effects.trace_types import Trace
 
 
 def _unconstrained_event_dim(
@@ -113,6 +116,38 @@ def _apply_transform(transform: Transform, value: torch.Tensor) -> torch.Tensor:
             f"{type(out).__name__}, not a tensor"
         )
     return out
+
+
+def _require_one_run(x: torch.Tensor, consumer: str) -> None:
+    """Refuse an input of more than one row for a one-run posterior.
+
+    An input of ``B`` rows is ``B`` independent runs of the whole
+    program, each with its own latents. MCMC, the Laplace approximation,
+    and annealed importance sampling target the posterior of one run's
+    latents, so they take a one-row input; the rows a program observes
+    come from its data and its plates, not from the input's rows.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        The program input.
+    consumer : str
+        The name the error reports.
+
+    Raises
+    ------
+    ValueError
+        If ``x`` has more than one row.
+    """
+    rows = int(x.shape[0]) if x.dim() else 1
+    if rows != 1:
+        raise ValueError(
+            f"{consumer}: the input has {rows} rows, and an input of {rows} rows "
+            f"is {rows} independent runs of the program, each with its own "
+            f"latents; {consumer} targets the posterior of one run. Pass one "
+            f"input row (for instance torch.zeros(1, ...)): the rows a program "
+            f"observes come from its data and its plates, not from the input"
+        )
 
 
 @dataclass(frozen=True)
@@ -187,11 +222,13 @@ class LatentSite:
         `MCMCResult.ess` hold ``constrained_shape``.
 
         The values a program's `MonadicProgram.log_joint`, a trace,
-        and a guide exchange are *trace-side* values, which add the
-        program's ``(batch, ...)`` input axis to non-plate sites:
-        ``(batch, *constrained_shape)``. Plate sites carry no batch
-        axis and appear at ``constrained_shape`` on both sides.
-        `LatentRegistry.trace_values` performs that lift.
+        and a guide exchange carry the run axis of the program's input,
+        whose ``B`` rows are ``B`` independent runs: a non-plate site
+        is ``(B, *constrained_shape)`` (``(1, *constrained_shape)`` in
+        one run), and a plate site is ``constrained_shape`` in one run,
+        or one value every run shares, and ``(B, *constrained_shape)``
+        given or recorded per run. `LatentRegistry.trace_values` lifts
+        one draw to the values runs share.
 
         A correlation-Cholesky site's draw is a lower-triangular
         ``(d, d)`` factor, so its event shape is ``(d, d)`` rather
@@ -215,6 +252,162 @@ class LatentSite:
         if self.is_plate:
             return (self.plate_index_size, self.unconstrained_dim)
         return (self.unconstrained_dim,)
+
+
+def _latent_site(
+    name: str,
+    morphism: ContinuousMorphism,
+    names: int,
+    spec_index: int,
+    flat_offset: int,
+) -> LatentSite:
+    """Describe one latent site from the morphism it draws from.
+
+    Parameters
+    ----------
+    name : str
+        The site's name.
+    morphism : ContinuousMorphism
+        The site's prior.
+    names : int
+        How many variables the draw binds; a destructuring draw splits
+        its codomain evenly among them.
+    spec_index : int
+        The position, in ``model.steps``, of the step that reaches the
+        site.
+    flat_offset : int
+        The site's first index in the flat unconstrained vector.
+
+    Returns
+    -------
+    LatentSite
+        The site.
+    """
+    is_plate = isinstance(morphism, PlateDraw)
+    if is_plate:
+        plate = cast(PlateDraw, morphism)
+        inner = plate.family
+        inner_cod = inner.codomain
+        if isinstance(inner_cod, ContinuousSpace):
+            constrained_dim = max(1, math.prod(inner_cod.event_shape))
+        else:
+            constrained_dim = 1
+        support = inner.support
+        plate_index_size = plate.index_size
+        plate_shape = plate.index_shape
+    else:
+        cod = morphism.codomain
+        if isinstance(cod, ContinuousSpace):
+            total_dim = math.prod(cod.event_shape)
+            constrained_dim = max(1, total_dim // max(1, names))
+        else:
+            constrained_dim = 1
+        support = morphism.support
+        plate_index_size = 0
+        plate_shape = ()
+    unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
+    flat_length = (
+        plate_index_size * unconstrained_dim if is_plate else unconstrained_dim
+    )
+    return LatentSite(
+        name=name,
+        morphism=morphism,
+        support=support,
+        bijector=biject_to(support),
+        constrained_dim=constrained_dim,
+        unconstrained_dim=unconstrained_dim,
+        is_plate=is_plate,
+        plate_index_size=plate_index_size,
+        spec_index=spec_index,
+        flat_offset=flat_offset,
+        flat_length=flat_length,
+        plate_shape=plate_shape,
+    )
+
+
+def _drawing_programs(program: MonadicProgram) -> bool:
+    """Whether a program draws, directly or in a program it calls or scans.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    bool
+        ``True`` when any of its steps, or its callees' or scanned
+        cells' steps, is a draw or an observation.
+    """
+    for spec in program.steps:
+        if isinstance(spec, Draw | Observe):
+            return True
+        if isinstance(spec, Call | Scan):
+            inner = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(inner, MonadicProgram) and _drawing_programs(inner):
+                return True
+    return False
+
+
+def _input_dependent_sites(program: MonadicProgram) -> bool:
+    """Whether a program reaches sites that its steps alone do not list.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    bool
+        ``True`` when it calls or scans a program that draws.
+    """
+    for spec in program.steps:
+        if isinstance(spec, Call | Scan):
+            inner = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(inner, MonadicProgram) and _drawing_programs(inner):
+                return True
+    return False
+
+
+def _reaching_steps(program: MonadicProgram) -> dict[str, int]:
+    """The step of a program through which each site label is reached.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    dict[str, int]
+        Each variable a draw binds, directly or in a program a step
+        calls or scans, mapped to that step's position in
+        ``program.steps``.
+    """
+
+    def drawn(inner: MonadicProgram) -> list[str]:
+        names: list[str] = []
+        for spec in inner.steps:
+            if isinstance(spec, Draw | Observe):
+                names.extend(spec.names)
+            elif isinstance(spec, Call | Scan):
+                callee = spec.program if isinstance(spec, Call) else spec.step
+                if isinstance(callee, MonadicProgram):
+                    names.extend(drawn(callee))
+        return names
+
+    positions: dict[str, int] = {}
+    for index, spec in enumerate(program.steps):
+        if isinstance(spec, Draw | Observe):
+            for name in spec.names:
+                positions.setdefault(name, index)
+        elif isinstance(spec, Call | Scan):
+            callee = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(callee, MonadicProgram):
+                for name in drawn(callee):
+                    positions.setdefault(name, index)
+    return positions
 
 
 class LatentRegistry:
@@ -284,6 +477,13 @@ class LatentRegistry:
             support, bijector, dims, and flat-vector offsets.
         """
         observed: frozenset[str] = frozenset(observed_names)
+        if _input_dependent_sites(model):
+            raise ValueError(
+                "LatentRegistry.from_model: the program scans or calls a program "
+                "that draws, so how many latent sites it has depends on its "
+                "input; build the registry from a run with "
+                "LatentRegistry.from_trace(model, trace(model, x, observations))"
+            )
         sites: dict[str, LatentSite] = {}
         flat_cursor = 0
 
@@ -299,56 +499,68 @@ class LatentRegistry:
                         f"LatentRegistry: morphism module for site "
                         f"{var!r} is unregistered on the model"
                     )
-                morph_cm = cast(ContinuousMorphism, morph)
-                is_plate = isinstance(morph_cm, PlateDraw)
-                if is_plate:
-                    plate = cast(PlateDraw, morph_cm)
-                    inner = plate.family
-                    inner_cod = inner.codomain
-                    if isinstance(inner_cod, ContinuousSpace):
-                        constrained_dim = max(1, math.prod(inner_cod.event_shape))
-                    else:
-                        constrained_dim = 1
-                    support = inner.support
-                    plate_index_size = plate.index_size
-                    plate_shape = plate.index_shape
-                else:
-                    cod = morph_cm.codomain
-                    if isinstance(cod, ContinuousSpace):
-                        total_dim = math.prod(cod.event_shape)
-                        constrained_dim = max(1, total_dim // max(1, len(spec.names)))
-                    else:
-                        constrained_dim = 1
-                    support = morph_cm.support
-                    plate_index_size = 0
-                    plate_shape = ()
-
-                unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
-                bijector = biject_to(support)
-
-                flat_length = (
-                    plate_index_size * unconstrained_dim
-                    if is_plate
-                    else unconstrained_dim
+                site = _latent_site(
+                    var,
+                    cast(ContinuousMorphism, morph),
+                    len(spec.names),
+                    spec_idx,
+                    flat_cursor,
                 )
-
-                sites[var] = LatentSite(
-                    name=var,
-                    morphism=morph_cm,
-                    support=support,
-                    bijector=bijector,
-                    constrained_dim=constrained_dim,
-                    unconstrained_dim=unconstrained_dim,
-                    is_plate=is_plate,
-                    plate_index_size=plate_index_size,
-                    spec_index=spec_idx,
-                    flat_offset=flat_cursor,
-                    flat_length=flat_length,
-                    plate_shape=plate_shape,
-                )
-                flat_cursor += flat_length
+                sites[var] = site
+                flat_cursor += site.flat_length
 
         return cls(sites, observed, model)
+
+    @classmethod
+    def from_trace(cls, model: MonadicProgram, recorded: Trace) -> "LatentRegistry":
+        """Assemble the registry from a run of the model.
+
+        Every sample site the run reached that is neither observed nor
+        intervened on is a latent, in the order the run reached it. A
+        site a scan reaches once per position is one latent per
+        position, ``"<label>@<n>"``, so a scanned program cell's latent
+        trajectory is inferred site by site, as many as the input's
+        sequence has positions. Build ``recorded`` with
+        ``trace(model, x, observations)`` at the input and data the
+        latents are inferred at.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            Compiled probabilistic program.
+        recorded : Trace
+            A trace of one run of ``model``.
+
+        Returns
+        -------
+        LatentRegistry
+            Fully populated registry with each latent's morphism,
+            support, bijector, dims, and flat-vector offsets.
+        """
+        reached = _reaching_steps(model)
+        sites: dict[str, LatentSite] = {}
+        observed: set[str] = set()
+        flat_cursor = 0
+        for label, record in recorded.sites.items():
+            if record.morphism is None or record.is_deterministic:
+                continue
+            if record.is_observed:
+                observed.update(label.split(","))
+                continue
+            names = label.split(",")
+            base = label.rpartition("@")[0] or label
+            spec_index = reached.get(base.split(",")[0], -1)
+            for var in names:
+                site = _latent_site(
+                    var if len(names) > 1 else label,
+                    record.morphism,
+                    len(names),
+                    spec_index,
+                    flat_cursor,
+                )
+                sites[site.name] = site
+                flat_cursor += site.flat_length
+        return cls(sites, frozenset(observed), model)
 
     # ------------------------------------------------------------------
     # Iteration / lookup

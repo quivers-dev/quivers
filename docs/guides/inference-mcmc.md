@@ -30,6 +30,13 @@ Gradient-based MCMC is an alternative to fitting a variational family. The kerne
 gradients flow through
 [`torch.autograd.grad`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad.html).
 
+MCMC targets the posterior of one run of the program, so `MCMC.run`
+takes a one-row input, such as `x = torch.zeros(1, 1)`, and refuses more
+rows: [an input of `B` rows is `B` independent runs](inference-foundations.md#input-rows-are-independent-runs),
+and the rows a program observes come from its data and its plates. Its
+latents are the sites one run at `(x, observations)` reaches, every
+position of a scanned program cell included.
+
 <!-- python: skip -->
 ```python
 from quivers.inference import NUTSKernel, MCMC
@@ -206,9 +213,9 @@ the observations gives a [posterior predictive check](analysis-fitting-and-diagn
 [`Guide`](../api/inference/guide.md) or an
 [`MCMCResult`](../api/inference/mcmc.md). With an
 `MCMCResult`, it iterates over posterior samples instead of calling
-`guide.rsample`, expanding each non-plate draw across the input's
-batch axis, so both posteriors yield predictive draws of shape
-`(num_samples, batch, ...)` for non-plate sites.
+`guide.rsample`; each recorded draw is one value every run of the
+predictive input shares, so both posteriors yield predictive draws of
+shape `(num_samples, batch, ...)` for non-plate sites.
 
 <!-- python: skip -->
 ```python

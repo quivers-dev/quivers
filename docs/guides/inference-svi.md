@@ -383,6 +383,14 @@ for epoch in range(100):
 The `step` method computes the ELBO loss, backpropagates gradients,
 and steps the optimizer.
 
+Each row of the input is an independent run of the model, with its own
+latent draws from the guide, and every objective sums its per-run terms;
+a minibatch of rows is therefore a minibatch of runs. A program whose
+observations live in a plate, with its rows given in `observations`,
+takes a one-row input instead: its rows come from its data and its
+plates, and repeating the input row would only add copies of the same
+run.
+
 ## Predictive sampling
 
 The posterior predictive has two sources of variation: uncertainty about

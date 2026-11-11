@@ -38,7 +38,10 @@ with gradients to the mixture logits through the stratum weights. An
 estimator that needs fixed draws (`ScoreFunction`) gets independent
 `Guide.rsample` draws instead, detached before they are scored.
 Per-draw log-densities are stacked along a leading axis of shape
-``(N, batch)``. The draws run in a Python ``for`` loop over
+``(N, batch)``. An input of ``batch`` rows is that many independent
+runs of the model, each with its own latent draws, so every objective
+sums its per-run terms: the loss of ``B`` runs is the sum of ``B``
+one-run losses, and its optimum is the one-run optimum. The draws run in a Python ``for`` loop over
 ``num_particles``, since the model's runtime path is not vectorized
 over a Monte Carlo dimension; the per-step cost scales linearly in the
 number of draws.
@@ -99,14 +102,15 @@ class Objective(nn.Module, ABC):
         guide : Guide
             The variational guide.
         x : torch.Tensor
-            Program input, shape ``(batch, ...)``.
+            Program input, shape ``(batch, ...)``: one row per
+            independent run of the model.
         observations : dict[str, torch.Tensor]
             Observed-site values.
 
         Returns
         -------
         torch.Tensor
-            Scalar loss.
+            Scalar loss: the sum of the per-run losses.
         """
         ...
 
@@ -285,7 +289,7 @@ class _PowerMeanBound(Objective):
         self.estimator.check(
             self.power, int(particles.log_p.shape[0]), particles.stratified
         )
-        return -self.estimator.surrogate(self.power, particles).mean()
+        return -self.estimator.surrogate(self.power, particles).sum()
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +574,7 @@ class ChiVI(Objective):
     **What is reported.** The returned tensor's *value* is the
     :math:`K`-sample estimate
     :math:`\widehat{\mathrm{CUBO}}_n = \tfrac{1}{n} \log \hat L_n`,
-    averaged over the batch, directly comparable to the negated
+    summed over the runs, directly comparable to the negated
     `ELBO` loss for the sandwich :math:`\mathrm{ELBO} \le \log p(y)
     \le \mathrm{CUBO}_n`. Its *gradient* is the stabilised gradient of
     :math:`\hat L_n` above, not the gradient of the reported value.
@@ -654,7 +658,7 @@ class ChiVI(Objective):
         log_ratio = (particles.log_p - particles.log_q).detach()
         cubo = power_mean_bound(log_ratio, particles.log_weights.detach(), self.n)
         surrogate = self.estimator.moment_surrogate(self.n, particles)
-        return (cubo + surrogate - surrogate.detach()).mean()
+        return (cubo + surrogate - surrogate.detach()).sum()
 
 
 # ---------------------------------------------------------------------------
@@ -737,7 +741,7 @@ class RWS(Objective):
             w_tilde = torch.softmax(log_w, dim=0)
         wake_theta = -(w_tilde * log_p_all).sum(dim=0)
         wake_phi = -(w_tilde * log_q_all).sum(dim=0)
-        return (wake_theta + wake_phi).mean()
+        return (wake_theta + wake_phi).sum()
 
 
 # ---------------------------------------------------------------------------

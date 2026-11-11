@@ -38,6 +38,10 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.registry import LatentRegistry
 
+# A module reference, resolved at call time: the effects package imports
+# this module while `quivers.inference.trace` is still initializing.
+import quivers.inference.trace as _trace
+
 
 class GuideDraw(ValueModel):
     """One weighted draw from a guide, scored by the guide.
@@ -82,12 +86,40 @@ class Guide(nn.Module, ABC):
         cls,
         model: MonadicProgram,
         observed_names: set[str] | frozenset[str],
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> LatentRegistry:
-        """Convenience wrapper around
-        `LatentRegistry.from_model` so guide constructors
-        can do ``self._registry = self.build_registry(model, obs)``
-        without an extra import."""
-        return LatentRegistry.from_model(model, observed_names)
+        """Build the latent registry a guide is constructed against.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model.
+        observed_names : set[str] | frozenset[str]
+            The names observed, for a registry read off the model's
+            steps.
+        x : torch.Tensor | None
+            A program input. When given, the registry is built from a
+            run of the model at ``x`` and ``observations`` with
+            `LatentRegistry.from_trace`, so every site the run reaches
+            is a latent, every position of a scan included; the run
+            draws from a forked stream, leaving Torch's global RNG as it
+            was. Required for a program that scans or calls a program
+            that draws.
+        observations : dict[str, torch.Tensor] | None
+            The observed values and host data of that run.
+
+        Returns
+        -------
+        LatentRegistry
+            The registry.
+        """
+        if x is None:
+            return LatentRegistry.from_model(model, observed_names)
+        with torch.random.fork_rng(devices=[]):
+            recorded = _trace.trace(model, x, observations=dict(observations or {}))
+        return LatentRegistry.from_trace(model, recorded)
 
     @property
     def registry(self) -> LatentRegistry:

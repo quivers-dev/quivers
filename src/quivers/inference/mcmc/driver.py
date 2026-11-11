@@ -38,7 +38,8 @@ from quivers.inference.mcmc.kernel import (
     MCMCKernel,
     PotentialFn,
 )
-from quivers.inference.registry import LatentRegistry
+from quivers.inference.registry import LatentRegistry, _require_one_run
+from quivers.inference.trace import trace
 
 
 InitStrategy = Literal["prior", "zero", "guide"]
@@ -473,7 +474,9 @@ class MCMC:
         Raises
         ------
         ValueError
-            If a chain's initial position is not finite, an observed
+            If ``x`` has more than one row (MCMC targets the posterior
+            of one run), a chain's initial position is not finite, an
+            observed
             value is not finite, or the log-density at an initial
             position is not finite.
         Exception
@@ -481,8 +484,13 @@ class MCMC:
             raises during sampling for a reason other than a position
             outside its support.
         """
-        observed_names = set(observations.keys())
-        registry = LatentRegistry.from_model(model, observed_names)
+        _require_one_run(x, "MCMC.run")
+        # The latents are the sites one run at (x, observations) reaches,
+        # every position of a scan included. The run draws its latents
+        # from a forked stream, so Torch's global RNG is left as it was.
+        with torch.random.fork_rng(devices=[]):
+            recorded = trace(model, x, observations=observations)
+        registry = LatentRegistry.from_trace(model, recorded)
         potential = PotentialFn(model, registry, x, observations)
 
         site_names = registry.names
