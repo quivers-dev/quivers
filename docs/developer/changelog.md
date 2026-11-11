@@ -9,10 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **Windowed warmup for `HMCKernel` and `NUTSKernel`.** `adaptation="windowed"` follows Stan's schedule, given by an `AdaptationSchedule` (`init_buffer`, `base_window`, `term_buffer`, defaults 75 / 25 / 50): an initial fast interval tunes only the step size; doubling slow windows each estimate the metric afresh, install it regularised as `n/(n+5) * cov + 1e-3 * 5/(n+5)` at the window's end, and restart dual averaging from a step size re-initialized under the new metric; a terminal fast interval tunes the step size under the final metric. A warmup too short for the buffers rescales them to 15% / 75% / 10%, and one under 20 iterations estimates no metric. `adaptation_windows(num_warmup)` returns the windows as `AdaptationWindow` records, and `inverse_mass_matrix` reports the metric in use. `adaptation="single"`, the default, adapts as before and reproduces its fixed-seed draws.
+- **Composable MCMC kernels.** `CycleKernel` applies its components in turn on every transition and `MixtureKernel` applies one chosen with fixed probabilities (drawing its warmup choices up front, so each component adapts over exactly the transitions that select it); both forward the chain-local generator and warmup to every component, and accept a sequence or a name-to-kernel mapping. `MetropolisKernel` moves the flat vector by a `Proposal` (`propose(position, generator) -> (candidate, log_correction)`, optional `bind(registry)`), scoring candidates by log-density alone and evaluating the gradient only on acceptance; `RandomWalkProposal` and `IndependenceProposal` (with an optional defensive mixture) are provided. `GibbsKernel` updates named latent sites held outside the flat vector, by enumerating a boolean or bounded integer support element by element or by a user `GibbsUpdate`, so discrete latents are sampled alongside HMC and NUTS.
+- **`KernelState.stats` and `KernelState.gibbs_values`.** Every transition records its statistics (`"accepted"`, `"accept_prob"`, and kernel-specific entries such as `"tree_depth"` and `"step_size"`; a composite prefixes each component's with its name), and the state holds the Gibbs sites' current trace-side values.
+- **`PotentialFn.condition`, `PotentialFn.conditioned_values`, and `PotentialFn.registry`.** A potential conditioned on the values of sites outside its registry scores the flat vector given them.
+- **`MCMCResult.component_acceptance`** reports each component's post-warmup acceptance rate per chain, and `MCMCResult.samples` includes the Gibbs sites at their constrained shapes.
+- **`LatentRegistry.from_trace(..., exclude=...)`** leaves named latent sites out of the flat vector.
 
 ### Changed
 
 - **Breaking: `MCMCKernel.start_adaptation` takes the number of warmup transitions,** `start_adaptation(num_warmup)`, so that a kernel can lay out a warmup schedule. `MCMC.run` passes it; a custom kernel overrides the new signature.
+- **`MCMC.run` names the discrete latent sites a kernel cannot move** and refuses the run, pointing to `GibbsKernel` or marginalization. For a composite kernel, `MCMCResult.acceptance_rates` counts a transition as accepted when it moved the chain.
 
 ## [0.26.0] - 2026-11-11
 

@@ -23,8 +23,10 @@ adapts trajectory length to avoid continuing a path that turns back.
 *Warmup* tunes the sampler before the retained draws. Separate *chains*
 allow comparison of runs started from different initial values.
 Successive draws within each chain remain correlated. The registry's unconstrained coordinates accommodate positive
-or bounded continuous latents; these gradient-based kernels do not
-automatically sample arbitrary discrete latent sites.
+or bounded continuous latents. The gradient-based kernels move only
+those coordinates; a discrete latent site is sampled by a
+[Gibbs block](#composing-kernels) composed with them, or marginalized
+in the model.
 
 Gradient-based MCMC is an alternative to fitting a variational family. The kernel runs on the registry's unconstrained vector;
 gradients flow through
@@ -187,6 +189,103 @@ terminal interval may then last only a few iterations, too few for dual
 averaging to settle, which is why `"single"` remains the default. Under
 `"single"` mode the fixed-seed draws of a run are those the kernels have
 always produced.
+
+## Composing kernels
+
+`MCMC` drives one kernel, and that kernel may be built from several. If
+each kernel leaves the posterior invariant, so does applying them in
+turn and so does choosing one at random with fixed probabilities
+[@tierney1994markov]. Thus a chain may interleave NUTS with cheap
+Metropolis-Hastings moves that cross between modes NUTS connects only
+slowly, or alternate Gibbs updates of discrete latents with NUTS on the
+continuous ones.
+
+- [`MetropolisKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MetropolisKernel)
+  moves the flat unconstrained vector by a
+  [`Proposal`](../api/inference/mcmc.md#quivers.inference.mcmc.Proposal),
+  which returns a candidate and its log Hastings correction
+  $\log q(z \mid z') - \log q(z' \mid z)$ [@hastings1970monte]. The
+  kernel scores the candidate by its log-density alone and evaluates
+  the gradient only when it accepts, so a gradient kernel that follows
+  reuses it.
+  [`RandomWalkProposal`](../api/inference/mcmc.md#quivers.inference.mcmc.RandomWalkProposal)
+  is a symmetric Gaussian walk, and
+  [`IndependenceProposal`](../api/inference/mcmc.md#quivers.inference.mcmc.IndependenceProposal)
+  draws from a fixed distribution over the flat vector (a Gaussian fitted
+  to a variational guide, for instance), optionally a defensive mixture
+  with a heavier-tailed one [@hesterberg1995weighted]. A proposal that
+  needs the layout of the flat vector, to swap two exchangeable blocks
+  for instance, overrides `Proposal.bind` to receive the registry.
+- [`GibbsKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.GibbsKernel)
+  updates named latent sites from their full conditional
+  [@geman1984stochastic]. `MCMC.run` leaves these sites out of the
+  registry, keeps their values in `KernelState.gibbs_values`, and hands
+  every kernel the potential conditioned on them
+  ([`PotentialFn.condition`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.condition)).
+  A site with a boolean or bounded integer support (a Bernoulli or
+  Categorical draw, a plate of them) is updated by enumeration, element
+  by element; any other block takes an `update=` function
+  ([`GibbsUpdate`](../api/inference/mcmc.md#quivers.inference.mcmc.GibbsUpdate))
+  that draws from its full conditional, such as a conjugate update. Every
+  discrete latent must belong to a Gibbs block, and `MCMC.run` raises
+  naming any that does not.
+- [`CycleKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.CycleKernel)
+  applies its components in order on every transition, and
+  [`MixtureKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MixtureKernel)
+  applies one, chosen with fixed probabilities. Both forward the
+  chain-local generator and warmup to every component; a mixture draws
+  its warmup choices when warmup starts, so each component adapts over
+  exactly the transitions that select it.
+
+<!-- python: skip -->
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference.mcmc import (
+    MCMC,
+    CycleKernel,
+    GibbsKernel,
+    MetropolisKernel,
+    NUTSKernel,
+    RandomWalkProposal,
+)
+
+model = loads(
+    "object Obs : FinSet 6\n"
+    "program p : Obs -> Obs\n"
+    "    sample loc <- Normal(loc=0.0, scale=3.0)\n"
+    "    sample side <- Categorical(probs=[0.5, 0.5])\n"
+    "    let m = loc * sign[side]\n"
+    "    observe y : Obs <- Normal(loc=m, scale=1.0)\n"
+    "    return loc\n"
+    "export p\n"
+).morphism
+
+kernel = CycleKernel(
+    {
+        "side": GibbsKernel(["side"]),
+        "nuts": NUTSKernel(),
+        "walk": MetropolisKernel(RandomWalkProposal(2.0)),
+    }
+)
+result = MCMC(kernel, num_warmup=300, num_samples=500, num_chains=2, seed=0).run(
+    model,
+    torch.zeros(1, 1),
+    {"y": torch.full((6,), 1.5), "sign": torch.tensor([-1.0, 1.0])},
+)
+print(result.samples["side"].shape)    # (2, 500): Gibbs sites are in the samples
+print(result.component_acceptance)     # {"nuts": ..., "side": ..., "walk": ...}
+```
+
+A transition's statistics are in `KernelState.stats`, each component's
+under its name (`"nuts.tree_depth"`), and
+[`MCMCResult`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMCResult)
+reports each component's acceptance rate per chain in
+`component_acceptance`. For a composite kernel, `acceptance_rates` counts a
+transition as accepted when it moved the chain. Enumeration evaluates the
+model's log joint once per value of each element, so a large discrete
+block may need an `update=` function that exploits its structure.
 
 ## Hybrid samplers
 
