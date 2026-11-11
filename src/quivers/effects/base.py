@@ -196,6 +196,9 @@ class RunContext:
     vectorized
         Whether this execution carries all ``runs`` runs of the call at
         once, every value leading with the run axis of length ``runs``.
+    subsamples
+        The rows of each subsampled plate the run scores, by plate name,
+        as the `SubsampleHandler` entries on the stack register them.
     """
 
     kernel: ProgramKernel
@@ -214,6 +217,7 @@ class RunContext:
     carries_run_axis: Callable[[MonadicProgram, str], bool] = _no_run_axis
     site_carries_run_axis: Callable[[str], bool] = _no_site_run_axis
     vectorized: bool = False
+    subsamples: dict[str, torch.Tensor] = field(default_factory=dict)
 
     @property
     def result_type(self) -> TypeExpr:

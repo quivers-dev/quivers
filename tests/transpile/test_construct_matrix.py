@@ -217,6 +217,37 @@ _EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data"
     "family:OrderedLogistic"
 )
 
+# A host Cholesky factor is known only at run time, and a host mean beside
+# a literal factor meets each target's literal-matrix limits.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_mvn_host_loc"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_host_loc"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_host_loc"): (
+            "family:MultivariateNormal:non-ref-covariance"
+        ),
+    }
+)
+for _backend in (
+    "bugs",
+    "church",
+    "edward2",
+    "gen",
+    "jags",
+    "numpyro",
+    "pymc",
+    "pyro",
+    "stan",
+    "turing",
+    "webppl",
+):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_mvn_host_factor")] = (
+        "family:MultivariateNormal:scale_tril"
+    )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "sample_wishart_host_factor")] = (
+        "family:Wishart:scale_tril"
+    )
+
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.
 _EXPECTED_ORTHOGONAL_RAISES.update(

@@ -50,6 +50,7 @@ from quivers.transpile.renderers._python_helpers import (
     render_deterministic_python,
     render_let_expr_python,
     string_literal,
+    subscript,
     with_statement,
 )
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
@@ -258,11 +259,24 @@ class PyMCRenderer(RendererBase):
         for inp in ir.inputs:
             self._collect_dims(inp.plate, seen)
         self._collect_dims_in_body(ir.body, seen)
+        # An open extent is the length of an input axis it sizes, which
+        # the input's own array carries.
+        extents: dict[str, tuple[str, int]] = {}
+        for inp in ir.inputs:
+            dims = (*inp.plate.batch_dims, *inp.plate.event_dims)
+            for position, dim in enumerate(dims):
+                if isinstance(dim, DimDynamic):
+                    extents.setdefault(dim.size_name, (inp.name, position))
 
         d = py.v(py.fresh("dict"), "dictionary")
         for name, dim in seen.items():
             key = string_literal(py, name)
-            value = self._np_arange(py, dim)
+            source = extents.get(dim.size_name) if isinstance(dim, DimDynamic) else None
+            value = (
+                self._np_arange_of_axis(py, *source)
+                if source is not None
+                else self._np_arange(py, dim)
+            )
             pair = py.v(py.fresh("pair"), "pair")
             py.e(pair, key, "key")
             py.e(pair, value, "value")
@@ -283,6 +297,29 @@ class PyMCRenderer(RendererBase):
             elif isinstance(node, IRMarginalize):
                 self._collect_dims(node.plate, seen)
                 self._collect_dims_in_body(node.scope, seen)
+
+    def _np_arange_of_axis(self, py: PyCtx, name: str, position: int) -> str:
+        """Emit `np.arange(np.shape(<name>)[<position>])`.
+
+        Parameters
+        ----------
+        py : PyCtx
+            The render state.
+        name : str
+            The input whose axis gives the length.
+        position : int
+            The axis.
+
+        Returns
+        -------
+        str
+            The vertex of the call.
+        """
+        shape = call(
+            py, attribute(py, ("np", "shape")), positional=(identifier(py, name),)
+        )
+        length = subscript(py, shape, (number_literal(py, position),))
+        return call(py, attribute(py, ("np", "arange")), positional=(length,))
 
     def _np_arange(self, py: PyCtx, dim: Dim) -> str:
         """Emit `np.arange(<size>)` for a static dim, or

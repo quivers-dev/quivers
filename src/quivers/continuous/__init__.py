@@ -42,6 +42,7 @@ from quivers.continuous import (
     families,
     family_spec,
     flows,
+    log_space,
     measure,
     morphisms,
     ordered,
@@ -61,6 +62,7 @@ from quivers.continuous.deterministic import *  # noqa: F403
 from quivers.continuous.families import *  # noqa: F403
 from quivers.continuous.family_spec import *  # noqa: F403
 from quivers.continuous.flows import *  # noqa: F403
+from quivers.continuous.log_space import *  # noqa: F403
 from quivers.continuous.measure import *  # noqa: F403
 from quivers.continuous.morphisms import *  # noqa: F403
 from quivers.continuous.ordered import *  # noqa: F403
@@ -89,6 +91,8 @@ if TYPE_CHECKING:
         make_fixed_halfcauchy,
         make_fixed_halfnormal,
         make_fixed_lkj_cholesky,
+        make_fixed_log_gamma,
+        make_fixed_logit_beta,
         make_fixed_logitnormal,
         make_fixed_lognormal,
         make_fixed_normal,
@@ -115,6 +119,8 @@ _INLINE_EXPORTS = (
     "make_fixed_halfcauchy",
     "make_fixed_halfnormal",
     "make_fixed_lkj_cholesky",
+    "make_fixed_log_gamma",
+    "make_fixed_logit_beta",
     "make_fixed_logitnormal",
     "make_fixed_lognormal",
     "make_fixed_normal",
@@ -172,6 +178,7 @@ __all__ += families.__all__
 __all__ += ordered.__all__
 __all__ += _ordered.__all__
 __all__ += _zip_hurdle.__all__
+__all__ += log_space.__all__
 __all__ += boundaries.__all__
 __all__ += flows.__all__
 __all__ += scan.__all__
@@ -197,6 +204,8 @@ __all__ += [
     "make_fixed_halfcauchy",
     "make_fixed_halfnormal",
     "make_fixed_lkj_cholesky",
+    "make_fixed_log_gamma",
+    "make_fixed_logit_beta",
     "make_fixed_logitnormal",
     "make_fixed_lognormal",
     "make_fixed_normal",
