@@ -547,10 +547,7 @@ class _HamiltonianKernel(MCMCKernel):
         potential : PotentialFn
             The target.
         """
-        if state.step_count == 0:
-            ld, g = potential.value_and_grad(state.position)
-            state.log_density = ld
-            state.grad_log_density = g
+        self._evaluate_first(state, potential)
         if self.is_adapting and self._pending_step_size_init:
             self._restart_step_size(state, potential, self._step_size)
 
@@ -892,6 +889,13 @@ class HMCKernel(_HamiltonianKernel):
             accept_count=state.accept_count + accept_count_delta,
             diverged=diverged,
             extras={**state.extras, "accept_prob": accept_prob},
+            stats={
+                "accepted": float(accept_count_delta),
+                "accept_prob": accept_prob,
+                "diverged": float(diverged),
+                "step_size": eps,
+            },
+            gibbs_values=state.gibbs_values,
         )
         self._adapt(new_state, potential, accept_prob)
         return new_state
@@ -1346,6 +1350,14 @@ class NUTSKernel(_HamiltonianKernel):
             accept_count=state.accept_count + (1 if accepted else 0),
             diverged=diverged,
             extras={**state.extras, "accept_prob": accept_prob, "tree_depth": depth},
+            stats={
+                "accepted": float(accepted),
+                "accept_prob": accept_prob,
+                "diverged": float(diverged),
+                "step_size": eps,
+                "tree_depth": float(depth),
+            },
+            gibbs_values=state.gibbs_values,
         )
         self._adapt(new_state, potential, accept_prob)
         return new_state

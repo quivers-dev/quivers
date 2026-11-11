@@ -15,6 +15,13 @@ Public surface (the kernels and driver are also re-exported from
   kernels share.
 * `AdaptationSchedule`, `AdaptationWindow`, and `AdaptationMode`: the
   Stan-style windowed warmup schedule the kernels follow by default.
+* `MetropolisKernel` with a `Proposal` (`RandomWalkProposal`,
+  `IndependenceProposal`): Metropolis-Hastings moves on the flat
+  vector.
+* `GibbsKernel`: Gibbs blocks over named latent sites held outside the
+  flat vector, discrete ones included, updated by enumeration or by a
+  `GibbsUpdate`.
+* `CycleKernel` and `MixtureKernel`: compositions of kernels.
 * `MCMC`: chain orchestrator with warmup, parallel chains, an
   `InitStrategy`, and posterior diagnostics (split-:math:`\\hat R`,
   effective sample size).
@@ -31,12 +38,20 @@ from quivers.inference.mcmc.adapt import (
     WelfordCovariance,
     find_reasonable_step_size,
 )
+from quivers.inference.mcmc.compose import CycleKernel, MixtureKernel
 from quivers.inference.mcmc.driver import MCMC, InitStrategy, MCMCResult
+from quivers.inference.mcmc.gibbs import GibbsKernel, GibbsUpdate
 from quivers.inference.mcmc.hmc import HMCKernel, MassMatrixKind, NUTSKernel
 from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+)
+from quivers.inference.mcmc.metropolis import (
+    IndependenceProposal,
+    MetropolisKernel,
+    Proposal,
+    RandomWalkProposal,
 )
 
 __all__ = [
@@ -46,6 +61,14 @@ __all__ = [
     "HMCKernel",
     "NUTSKernel",
     "MassMatrixKind",
+    "MetropolisKernel",
+    "Proposal",
+    "RandomWalkProposal",
+    "IndependenceProposal",
+    "GibbsKernel",
+    "GibbsUpdate",
+    "CycleKernel",
+    "MixtureKernel",
     "AdaptationMode",
     "AdaptationSchedule",
     "AdaptationWindow",

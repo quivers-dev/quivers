@@ -25,19 +25,23 @@ bulk effective sample size diagnostics computed across chains.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Literal
 
 import torch
+from torch.distributions import constraints as _constraints
 
+from quivers.continuous.plate import PlateDraw
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.trace_types import Trace
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
     _check_observed_support,
+    _with_generator,
 )
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
@@ -58,7 +62,8 @@ class MCMCResult:
     Attributes
     ----------
     samples : dict[str, torch.Tensor]
-        Per-site posterior draws on the constrained support.
+        Per-site posterior draws on the constrained support, the sites a
+        `GibbsKernel` updates included.
         Shape ``(num_chains, num_samples, *site_shape)``, where
         ``site_shape`` is the site's `LatentSite.constrained_shape`:
         ``()`` for a scalar site, ``(d,)`` for a vector site, and
@@ -71,7 +76,9 @@ class MCMCResult:
         every posterior draw. Shape ``(num_chains, num_samples)``.
     acceptance_rates : torch.Tensor
         Per-chain post-warmup acceptance rate. Shape
-        ``(num_chains,)``.
+        ``(num_chains,)``. For a composite kernel a transition counts as
+        accepted when it moved the chain (its position or a Gibbs
+        value).
     divergence_counts : torch.Tensor
         Per-chain post-warmup divergence count. Shape
         ``(num_chains,)``.
@@ -86,6 +93,13 @@ class MCMCResult:
         across chains. Same shape convention as `r_hat`.
     num_warmup : int
     num_samples : int
+    component_acceptance : dict[str, torch.Tensor]
+        For a composite kernel, each component's post-warmup acceptance
+        rate per chain, shape ``(num_chains,)``, keyed by component name
+        (``"outer.inner"`` for a component of a nested composite): the
+        mean of the component's ``"accepted"`` statistic over the
+        transitions that ran it, ``nan`` for a chain in which it never
+        ran. Empty for a kernel that is not composite.
     """
 
     samples: dict[str, torch.Tensor]
@@ -96,6 +110,7 @@ class MCMCResult:
     ess: dict[str, torch.Tensor]
     num_warmup: int
     num_samples: int
+    component_acceptance: dict[str, torch.Tensor] = field(default_factory=dict)
 
     @property
     def num_chains(self) -> int:
@@ -266,6 +281,9 @@ def _diagnostics(
         n_chains = draws.shape[0]
         n_samples = draws.shape[1]
         flat = draws.reshape(n_chains, n_samples, -1)
+        if not flat.dtype.is_floating_point:
+            # The draws of a discrete Gibbs site are integer codes.
+            flat = flat.to(torch.float64)
         n_coords = flat.shape[-1]
         rh = torch.empty(n_coords)
         es = torch.empty(n_coords)
@@ -499,14 +517,17 @@ class MCMC:
                 "from, before any sampling"
             )
             raise
-        registry = LatentRegistry.from_trace(model, recorded)
+        gibbs_sites = self.kernel.gibbs_sites
+        gibbs_plates = _check_gibbs_sites(recorded, gibbs_sites)
+        registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = PotentialFn(model, registry, x, observations)
 
-        site_names = registry.names
+        site_names = (*registry.names, *sorted(gibbs_sites))
         per_chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
         per_chain_log_density = torch.empty(self.num_chains, self.num_samples)
         per_chain_accept = torch.empty(self.num_chains)
         per_chain_divergences = torch.empty(self.num_chains, dtype=torch.int64)
+        component_accepted: list[dict[str, tuple[float, int]]] = []
         run_seed = self._run_seed()
 
         for chain in range(self.num_chains):
@@ -517,8 +538,14 @@ class MCMC:
                     f"MCMC.run: chain {chain} initial_position must contain "
                     "only finite values"
                 )
+            gibbs_values = self._initial_gibbs_values(
+                model, x, observations, gibbs_sites, chain_generator
+            )
+            chain_potential = (
+                potential.condition(gibbs_values) if gibbs_values else potential
+            )
             try:
-                potential.check_initial(init_pos)
+                chain_potential.check_initial(init_pos)
             except Exception as error:
                 error.add_note(
                     f"MCMC.run: raised while scoring chain {chain}'s initial "
@@ -527,11 +554,12 @@ class MCMC:
                 raise
             self.kernel._set_generator(chain_generator)
             state = self.kernel.init(registry, model, x, observations, init_pos)
+            state.gibbs_values = gibbs_values
             # Warmup.
             if self.num_warmup > 0:
                 self.kernel.start_adaptation(self.num_warmup)
                 for _ in range(self.num_warmup):
-                    state = self.kernel.step(state, potential)
+                    state = self._transition(state, potential)
                 self.kernel.stop_adaptation()
             # Reset accept-count so the reported rate excludes warmup.
             sampling_state = KernelState(
@@ -542,21 +570,32 @@ class MCMC:
                 accept_count=0,
                 diverged=False,
                 extras=state.extras,
+                stats=state.stats,
+                gibbs_values=state.gibbs_values,
             )
             chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
             sampling_divergences = 0
+            accepted: dict[str, tuple[float, int]] = {}
             for s in range(self.num_samples):
-                sampling_state = self.kernel.step(sampling_state, potential)
+                sampling_state = self._transition(sampling_state, potential)
                 if sampling_state.diverged:
                     sampling_divergences += 1
                 draws = self._to_constrained(registry, sampling_state.position)
                 for n, v in draws.items():
                     chain_samples[n].append(v)
+                for n in gibbs_sites:
+                    value = sampling_state.gibbs_values[n]
+                    chain_samples[n].append(value if gibbs_plates[n] else value[0])
                 per_chain_log_density[chain, s] = sampling_state.log_density
+                for key, value in sampling_state.stats.items():
+                    if key.endswith(".accepted"):
+                        total, count = accepted.get(key, (0.0, 0))
+                        accepted[key] = (total + value, count + 1)
             per_chain_accept[chain] = sampling_state.accept_count / float(
                 self.num_samples
             )
             per_chain_divergences[chain] = sampling_divergences
+            component_accepted.append(accepted)
             for n, draws_list in chain_samples.items():
                 stacked = torch.stack(draws_list, dim=0)
                 per_chain_samples[n].append(stacked)
@@ -576,7 +615,154 @@ class MCMC:
             ess=ess,
             num_warmup=self.num_warmup,
             num_samples=self.num_samples,
+            component_acceptance=_component_acceptance(component_accepted),
         )
+
+    def _transition(self, state: KernelState, potential: PotentialFn) -> KernelState:
+        """Advance a chain by one kernel transition.
+
+        Parameters
+        ----------
+        state : KernelState
+            The current state.
+        potential : PotentialFn
+            The run's potential, conditioned here on the state's Gibbs
+            values.
+
+        Returns
+        -------
+        KernelState
+            The next state.
+        """
+        if state.gibbs_values:
+            potential = potential.condition(state.gibbs_values)
+        return self.kernel.step(state, potential)
+
+    @staticmethod
+    def _initial_gibbs_values(
+        model: MonadicProgram,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+        gibbs_sites: frozenset[str],
+        generator: torch.Generator,
+    ) -> dict[str, torch.Tensor]:
+        """Draw a chain's starting values of the Gibbs sites.
+
+        The values come from one run of the model at the data, drawn
+        from the chain's generator: each Gibbs site from its prior given
+        the sites drawn before it.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model.
+        x : torch.Tensor
+            The one-row input.
+        observations : dict[str, torch.Tensor]
+            The data.
+        gibbs_sites : frozenset[str]
+            The Gibbs sites.
+        generator : torch.Generator
+            The chain's generator.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Trace-side values of the Gibbs sites; empty when there are
+            none, in which case the generator is not used.
+        """
+        if not gibbs_sites:
+            return {}
+        recorded = _with_generator(
+            generator, lambda: trace(model, x, observations=observations)
+        )
+        return {name: recorded.sites[name].value.detach() for name in gibbs_sites}
+
+
+def _check_gibbs_sites(recorded: Trace, gibbs_sites: frozenset[str]) -> dict[str, bool]:
+    """Check the kernel's Gibbs sites against a run of the model.
+
+    Parameters
+    ----------
+    recorded : Trace
+        A run of the model at the data.
+    gibbs_sites : frozenset[str]
+        The sites the kernel updates outside the flat vector.
+
+    Returns
+    -------
+    dict[str, bool]
+        Whether each Gibbs site is a plate site.
+
+    Raises
+    ------
+    ValueError
+        If a Gibbs site is not a latent sample site of the run, or a
+        latent site with a discrete support is not a Gibbs site.
+    """
+    latent = {
+        label: record
+        for label, record in recorded.sites.items()
+        if record.morphism is not None
+        and not record.is_deterministic
+        and not record.is_observed
+    }
+    unknown = sorted(name for name in gibbs_sites if name not in latent)
+    if unknown:
+        raise ValueError(
+            f"MCMC.run: the kernel's Gibbs sites {unknown} are not latent sample "
+            f"sites of the run; its latent sites are {sorted(latent)}"
+        )
+    discrete = []
+    for label, record in latent.items():
+        morphism = record.morphism
+        support = (
+            morphism.family.support
+            if isinstance(morphism, PlateDraw)
+            else getattr(morphism, "support", None)
+        )
+        if (
+            isinstance(support, _constraints.Constraint)
+            and support.is_discrete
+            and label not in gibbs_sites
+        ):
+            discrete.append(label)
+    if discrete:
+        raise ValueError(
+            f"MCMC.run: the latent sites {sorted(discrete)} are discrete, and the "
+            "kernel moves only a continuous vector; sample them with a GibbsKernel "
+            "in a CycleKernel or MixtureKernel, or marginalize them in the model"
+        )
+    return {name: isinstance(latent[name].morphism, PlateDraw) for name in gibbs_sites}
+
+
+def _component_acceptance(
+    per_chain: list[dict[str, tuple[float, int]]],
+) -> dict[str, torch.Tensor]:
+    """Per-component acceptance rates from accumulated statistics.
+
+    Parameters
+    ----------
+    per_chain : list[dict[str, tuple[float, int]]]
+        For each chain, each ``"<component>.accepted"`` statistic's
+        post-warmup sum and the number of transitions that reported it.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Each component's acceptance rate, shape ``(num_chains,)``, keyed
+        by its (possibly dotted, for nested composites) name; ``nan`` for
+        a chain in which it never ran.
+    """
+    keys = sorted({key for chain in per_chain for key in chain})
+    out: dict[str, torch.Tensor] = {}
+    for key in keys:
+        rates = []
+        for chain in per_chain:
+            total, count = chain.get(key, (0.0, 0))
+            rates.append(total / count if count else float("nan"))
+        out[key.removesuffix(".accepted")] = torch.tensor(rates)
+    return out
 
 
 __all__ = ["MCMC", "MCMCResult", "InitStrategy"]

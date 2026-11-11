@@ -21,8 +21,9 @@ the kernel itself.
 
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -191,6 +192,20 @@ class KernelState:
     extras : dict
         Per-kernel additional state (e.g. NUTS tree depth, HMC
         step-size adaptation cumulants).
+    stats : dict[str, float]
+        Statistics of the most recent transition, replaced by every
+        `MCMCKernel.step`: ``"accepted"`` (``1.0`` or ``0.0``) and
+        ``"accept_prob"`` for every kernel, with kernel-specific entries
+        such as ``"tree_depth"``. A composite kernel prefixes each
+        component's entries with the component's name and a dot
+        (``"nuts.accepted"``).
+    gibbs_values : dict[str, torch.Tensor]
+        Current values of the sites a `GibbsKernel` updates, which sit
+        outside the flat vector. Each is held as a trace-side value, the
+        layout `MonadicProgram.log_joint` consumes: a non-plate site
+        carries a leading run axis of one, a plate site has its
+        constrained shape. ``log_density`` and ``grad_log_density`` are
+        those of the potential conditioned on these values.
     """
 
     position: torch.Tensor
@@ -200,6 +215,8 @@ class KernelState:
     accept_count: int = 0
     diverged: bool = False
     extras: dict = field(default_factory=dict)
+    stats: dict[str, float] = field(default_factory=dict)
+    gibbs_values: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
 class PotentialFn:
@@ -259,7 +276,66 @@ class PotentialFn:
         self._model = model
         self._registry = registry
         self._x = x
+        self._base_observations = observations
+        self._conditioned: dict[str, torch.Tensor] = {}
         self._observations = observations
+
+    @property
+    def registry(self) -> LatentRegistry:
+        """The registry whose flat vector the potential is a function of."""
+        return self._registry
+
+    @property
+    def conditioned_values(self) -> dict[str, torch.Tensor]:
+        """The site values `condition` fixed, keyed by site name."""
+        return dict(self._conditioned)
+
+    def condition(self, values: Mapping[str, torch.Tensor]) -> "PotentialFn":
+        """The potential with further sites held at given values.
+
+        The returned potential scores the flat vector exactly as this
+        one does, with ``values`` added to the observations
+        `MonadicProgram.log_joint` receives. It replaces, rather than
+        adds to, any values this potential was itself conditioned on,
+        so conditioning on a chain's current `KernelState.gibbs_values`
+        is always relative to the data the potential was built with.
+        Conditioning is what lets a `GibbsKernel` hold sites outside the
+        flat vector: the other kernels move the flat vector under the
+        potential conditioned on the Gibbs sites' current values.
+
+        Parameters
+        ----------
+        values : Mapping[str, torch.Tensor]
+            Trace-side values of sites outside the registry (a non-plate
+            site with a leading run axis of one, a plate site at its
+            constrained shape).
+
+        Returns
+        -------
+        PotentialFn
+            A potential of the same class sharing the model, registry,
+            input, and data.
+
+        Raises
+        ------
+        ValueError
+            If a name in ``values`` is a site of the registry or one of
+            the observations.
+        """
+        clash = sorted(
+            name
+            for name in values
+            if name in self._registry or name in self._base_observations
+        )
+        if clash:
+            raise ValueError(
+                f"PotentialFn.condition: {clash} are latent sites of the registry "
+                "or observations, so they cannot also be conditioned on"
+            )
+        conditioned = copy.copy(self)
+        conditioned._conditioned = dict(values)
+        conditioned._observations = {**self._base_observations, **values}
+        return conditioned
 
     def log_density(self, z: torch.Tensor) -> torch.Tensor:
         """Unconstrained-space log-density (Jacobian-corrected).
@@ -461,6 +537,39 @@ class MCMCKernel(ABC):
         """
         self._generator = generator
 
+    @property
+    def gibbs_sites(self) -> frozenset[str]:
+        """The latent sites this kernel updates outside the flat vector.
+
+        `MCMC.run` leaves these sites out of the registry, holds their
+        values in `KernelState.gibbs_values`, and conditions the
+        potential on them. A kernel that moves only the flat vector has
+        none; a `GibbsKernel` has its blocks, and a composite kernel the
+        union of its components'.
+        """
+        return frozenset()
+
+    @staticmethod
+    def _evaluate_first(state: KernelState, potential: PotentialFn) -> None:
+        """Fill in the log-density and gradient of a chain's first state.
+
+        A kernel's `init` returns a state whose log-density and
+        gradient are placeholders, since the potential is not known to
+        `init`; the first transition of the chain (``step_count == 0``)
+        evaluates them before using them.
+
+        Parameters
+        ----------
+        state : KernelState
+            The state a transition starts from.
+        potential : PotentialFn
+            The target.
+        """
+        if state.step_count == 0:
+            ld, g = potential.value_and_grad(state.position)
+            state.log_density = ld
+            state.grad_log_density = g
+
     @abstractmethod
     def init(
         self,
@@ -500,6 +609,37 @@ class MCMCKernel(ABC):
     def stop_adaptation(self) -> None:
         """Freeze the kernel's adapted parameters."""
         self.is_adapting = False
+
+
+def _with_generator[T](generator: torch.Generator | None, draw: Callable[[], T]) -> T:
+    """Run a draw that uses Torch's global RNG on a given generator.
+
+    `torch.distributions` samplers and the program's own draws read the
+    global generator. The draw runs in a forked global state seeded from
+    ``generator``, which then advances by what the draw consumed, so the
+    caller's stream is used and the global state is left as it was.
+
+    Parameters
+    ----------
+    generator : torch.Generator | None
+        The CPU generator to draw from; ``None`` draws from a forked
+        copy of the global state, leaving it untouched.
+    draw : Callable[[], T]
+        The draw.
+
+    Returns
+    -------
+    T
+        What ``draw`` returns.
+    """
+    with torch.random.fork_rng(devices=[]):
+        if generator is not None:
+            torch.random.set_rng_state(generator.get_state())
+        try:
+            return draw()
+        finally:
+            if generator is not None:
+                generator.set_state(torch.random.get_rng_state())
 
 
 __all__ = ["KernelState", "PotentialFn", "MCMCKernel"]
