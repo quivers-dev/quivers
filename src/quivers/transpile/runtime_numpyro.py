@@ -137,8 +137,8 @@ class LogitBeta(numpyro.distributions.Distribution):
         first = self.concentration1
         second = self.concentration0
         return (
-            first * jss.log_expit(value)
-            + second * jss.log_expit(-value)
+            first * -jnp.logaddexp(0.0, -value)
+            + second * -jnp.logaddexp(0.0, value)
             - jss.gammaln(first)
             - jss.gammaln(second)
             + jss.gammaln(first + second)
