@@ -1,0 +1,14 @@
+# A gather of a matrix row: `mu` is one matrix over `Class` and `Dim`,
+# and `mu[z]` reads the row of `mu` each row's class picks.
+object Class : FinSet 3
+object Dim : FinSet 2
+object Row : FinSet 4
+object Val : Real 1
+
+program p : Row -> Val
+    sample mu <- Normal(loc=0.0, scale=2.0) [over=[Class, Dim]]
+    sample z : Row <- Categorical(probs=[0.2, 0.3, 0.5])
+    observe x : Row <- Normal(loc=mu[z], scale=1.0) [over=Dim]
+    return z
+
+export p

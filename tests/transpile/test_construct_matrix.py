@@ -270,6 +270,20 @@ for _category, _fixture in (
 _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
     "sample:discrete-latent"
 )
+# A gather by a sampled class draws that class, which Stan cannot carry;
+# BUGS / JAGS take no list-literal probability vector; Turing has no
+# lift of a residual event axis over a plate, and WebPPL carries one
+# batch axis.
+for _fixture in ("observe_gather_event_vector", "observe_gather_matrix_row"):
+    _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", _fixture)] = "sample:discrete-latent"
+    _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", _fixture)] = "arg:list-literal"
+    _EXPECTED_ORTHOGONAL_RAISES[("jags", "steps", _fixture)] = "arg:list-literal"
+_EXPECTED_ORTHOGONAL_RAISES[("turing", "steps", "observe_gather_matrix_row")] = (
+    "sample:event-axis-lift"
+)
+_EXPECTED_ORTHOGONAL_RAISES[("webppl", "steps", "observe_gather_matrix_row")] = (
+    "batch-rank:2"
+)
 # An ordinal outcome is scored by a family only some targets' libraries
 # carry; BUGS also has no list-literal cutpoint vector.
 _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "observe_ordinal_code")] = (

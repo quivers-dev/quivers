@@ -1,0 +1,13 @@
+# A gather from an event vector: `mu` is one vector over `Class`, and
+# `mu[z]` reads the entry of `mu` each row's class picks.
+object Class : FinSet 3
+object Row : FinSet 4
+object Val : Real 1
+
+program p : Row -> Val
+    sample mu <- Normal(loc=0.0, scale=2.0) [over=Class]
+    sample z : Row <- Categorical(probs=[0.2, 0.3, 0.5])
+    observe x : Row <- Normal(loc=mu[z], scale=1.0)
+    return z
+
+export p

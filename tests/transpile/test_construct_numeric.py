@@ -398,6 +398,43 @@ def _sample_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _gather_event_vector(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Each row's class picking one entry of an event vector.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    mu, z, x = v["mu"], v["z"], v["x"]
+    return (
+        D.Normal(0.0, 2.0).log_prob(mu).sum()
+        + D.Categorical(probs=torch.tensor([0.2, 0.3, 0.5])).log_prob(z).sum()
+        + D.Normal(mu[z], 1.0).log_prob(x).sum()
+    )
+
+
+def _gather_matrix_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Each row's class picking one row of a matrix.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    return _gather_event_vector(v)
+
+
 def _observe_ordinal_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """An ordered-logistic outcome over three zero-based classes.
 
@@ -422,6 +459,10 @@ def _observe_ordinal_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
 _DATA: dict[str, dict[str, Host]] = {
     "steps/observe_class_code": {"y": [0, 2, 1, 1, 0]},
     "steps/sample_class_code": {"x": [-0.5, 4.0, 1.2, 3.3]},
+    "steps/observe_gather_event_vector": {"x": [0.1, 1.7, 1.2, 2.4]},
+    "steps/observe_gather_matrix_row": {
+        "x": [0.1, -0.3, 1.7, 0.2, 1.2, 1.1, 2.4, -0.8]
+    },
     "steps/observe_ordinal_code": {"y": [0, 2, 1, 1]},
     "let_expressions/let_plated_list_operand": {"y": [0.5, 1.0, 2.5, 2.0]},
     "steps/marginalize_let_probs": {"y": [4, 6, 5]},
@@ -455,6 +496,16 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"probs": [0.2, 0.3, 0.5], "mu": [-1.0, 0.5, 2.0], "z": [0, 2, 1, 2]},
         {"probs": [0.6, 0.3, 0.1], "mu": [0.3, -0.7, 1.1], "z": [2, 2, 0, 1]},
         {"probs": [0.25, 0.5, 0.25], "mu": [1.5, 1.0, -0.5], "z": [1, 0, 0, 2]},
+    ],
+    "steps/observe_gather_event_vector": [
+        {"mu": [-1.0, 0.5, 2.0], "z": [0, 2, 1, 2]},
+        {"mu": [0.3, -0.7, 1.1], "z": [2, 2, 0, 1]},
+        {"mu": [1.5, 1.0, -0.5], "z": [1, 0, 0, 2]},
+    ],
+    "steps/observe_gather_matrix_row": [
+        {"mu": [-1.0, 0.3, 0.5, 1.2, 2.0, -0.4], "z": [0, 2, 1, 2]},
+        {"mu": [0.3, 0.8, -0.7, 0.1, 1.1, -1.3], "z": [2, 2, 0, 1]},
+        {"mu": [1.5, -0.2, 1.0, 0.6, -0.5, 0.9], "z": [1, 0, 0, 2]},
     ],
     "steps/observe_ordinal_code": [{"eta": -0.8}, {"eta": 0.3}, {"eta": 1.6}],
     "let_expressions/let_plated_list_operand": [{"mu": -0.6}, {"mu": 0.7}, {"mu": 1.3}],
@@ -507,6 +558,8 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
 _SHAPES: dict[str, dict[str, list[int]]] = {
     "steps/observe_class_code": {"probs": [3], "y": [5]},
     "steps/sample_class_code": {"probs": [3], "mu": [3], "z": [4], "x": [4]},
+    "steps/observe_gather_event_vector": {"mu": [3], "z": [4], "x": [4]},
+    "steps/observe_gather_matrix_row": {"mu": [3, 2], "z": [4], "x": [4, 2]},
     "steps/observe_ordinal_code": {"eta": [], "y": [4]},
     "let_expressions/let_plated_list_operand": {"mu": [], "y": [4]},
     "steps/marginalize_let_probs": {"r": [], "y": [3]},
@@ -536,6 +589,8 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
 _INTEGERS: dict[str, frozenset[str]] = {
     "steps/observe_class_code": frozenset({"y"}),
     "steps/sample_class_code": frozenset({"z"}),
+    "steps/observe_gather_event_vector": frozenset({"z"}),
+    "steps/observe_gather_matrix_row": frozenset({"z"}),
     "steps/observe_ordinal_code": frozenset({"y"}),
     "steps/marginalize_let_probs": frozenset({"y"}),
     "steps/marginalize_body_let_chain": frozenset({"y"}),
@@ -550,6 +605,8 @@ _INTEGERS: dict[str, frozenset[str]] = {
 _ORACLES: dict[str, Oracle] = {
     "steps/observe_class_code": _observe_class_code,
     "steps/sample_class_code": _sample_class_code,
+    "steps/observe_gather_event_vector": _gather_event_vector,
+    "steps/observe_gather_matrix_row": _gather_matrix_row,
     "steps/observe_ordinal_code": _observe_ordinal_code,
     "steps/marginalize_let_probs": _let_probs,
     "steps/marginalize_let_vector_probs": _let_vector_probs,
@@ -586,6 +643,20 @@ _REFUSED: dict[tuple[str, str], str] = {
     ("let_expressions/let_row_gather_sampled", "bugs"): "observe:class-code",
     ("steps/observe_class_code", "bugs"): "observe:class-code",
     ("steps/sample_class_code", "stan"): "sample:discrete-latent",
+    **{
+        (fixture, backend): kind
+        for fixture in (
+            "steps/observe_gather_event_vector",
+            "steps/observe_gather_matrix_row",
+        )
+        for backend, kind in (
+            ("stan", "sample:discrete-latent"),
+            ("bugs", "arg:list-literal"),
+            ("jags", "arg:list-literal"),
+        )
+    },
+    ("steps/observe_gather_matrix_row", "turing"): "sample:event-axis-lift",
+    ("steps/observe_gather_matrix_row", "webppl"): "batch-rank:2",
     ("steps/observe_ordinal_code", "bugs"): "arg:list-literal",
     ("steps/observe_ordinal_code", "church"): "family:OrderedLogistic",
     ("steps/observe_ordinal_code", "edward2"): "family:OrderedLogistic",
