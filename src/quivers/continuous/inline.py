@@ -65,6 +65,7 @@ from quivers.core._util import EPS
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
 from quivers.dsl.ast_nodes import (
+    DrawArg,
     DrawArgDist,
     DrawArgIndex,
     DrawArgList,
@@ -1815,7 +1816,7 @@ def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
 
 
 def _inline_argument(
-    arg: object,
+    arg: DrawArg | float | str | Indexed,
 ) -> tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]:
     """Classify one inline family argument for the compiled runtime.
 
@@ -1830,7 +1831,7 @@ def _inline_argument(
 
     Parameters
     ----------
-    arg : object
+    arg : DrawArg | float | str | Indexed
         The argument: a tagged draw argument, or its plain form (a
         number, a name, or an `Indexed` gather).
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -165,7 +165,7 @@ def _candidate_atoms(
     )
 
 
-def _category_depth(value: object) -> int:
+def _category_depth(value: Hashable) -> int:
     """Constructor-tree depth of a chart category or item.
 
     Atoms, bound variables, integer literals, and positions count as
@@ -180,7 +180,7 @@ def _category_depth(value: object) -> int:
 
     Parameters
     ----------
-    value : object
+    value : Hashable
         A chart item, category, or field of one.
 
     Returns
@@ -376,12 +376,12 @@ def _bindings_key(bindings: dict) -> str:
     return "_".join(f"{k}_{encode(v)}" for k, v in items) or BASE_WEIGHT_KEY
 
 
-def _pattern_wildcards(pattern: object) -> set[str]:
+def _pattern_wildcards(pattern: LexiconPattern | str | int) -> set[str]:
     """The wildcard names an agenda pattern mentions.
 
     Parameters
     ----------
-    pattern : object
+    pattern : LexiconPattern | str | int
         A converted rule pattern: a `Wildcard`, a ground leaf, or a
         tuple of patterns.
 

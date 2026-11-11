@@ -30,7 +30,7 @@ hole in it.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Hashable, Iterator, Sequence
 from dataclasses import fields, is_dataclass, replace
 from typing import Literal, cast
 
@@ -403,7 +403,7 @@ class _LetFloater:
             The values.
         renamed : dict[Local, Value]
             The term each local bound by an enclosing hoisted binding is
-            now read through.
+            read through once hoisted.
 
         Returns
         -------
@@ -429,7 +429,7 @@ class _LetFloater:
             The value.
         renamed : dict[Local, Value]
             The term each local bound by an enclosing hoisted binding is
-            now read through.
+            read through once hoisted.
 
         Returns
         -------
@@ -535,13 +535,13 @@ class _LetFloater:
         return tuple(lifted), replace(value, body=body)
 
 
-def _local_names(term: object) -> set[str]:
+def _local_names(term: Computation) -> set[str]:
     """Every local name a checked term binds or reads.
 
     Parameters
     ----------
-    term : object
-        A value, a computation, or any record or tuple holding them.
+    term : Computation
+        The computation, whose values and records are walked in turn.
 
     Returns
     -------
@@ -549,7 +549,7 @@ def _local_names(term: object) -> set[str]:
         The names.
     """
     found: set[str] = set()
-    pending: list[object] = [term]
+    pending: list[Hashable] = [term]
     while pending:
         item = pending.pop()
         if isinstance(item, Local):

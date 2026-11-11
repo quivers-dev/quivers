@@ -75,7 +75,7 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.scan import ScanMorphism
-from quivers.core.morphisms import as_torch_module
+from quivers.core.morphisms import Morphism, as_torch_module
 from quivers.qiec.types import TypeExpr
 
 
@@ -198,12 +198,12 @@ def _bound_names(step: Step) -> tuple[str, ...]:
     raise TypeError(f"{type(step).__name__} is not a program step")
 
 
-def _runs_a_scan(morphism: object) -> bool:
+def _runs_a_scan(morphism: ContinuousMorphism | Morphism) -> bool:
     """Whether a morphism runs a scan.
 
     Parameters
     ----------
-    morphism : object
+    morphism : ContinuousMorphism | Morphism
         A draw's morphism.
 
     Returns
