@@ -2281,8 +2281,9 @@ def make_inline_distribution(
                 vtype = variable_types[lookup_name]
                 if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
                     # A gather selects whole rows of a plate, so the
-                    # argument is one row wide.
-                    var_dim = vtype.row_width
+                    # argument is one row wide; a gather from a vector
+                    # with no plate rows selects one of its coordinates.
+                    var_dim = vtype.row_width if vtype.plate_rows is not None else 1
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
             param_spec.append(("var", var_dim))

@@ -19,7 +19,10 @@ class MaskHandler(EffectHandler):
     Parameters
     ----------
     mask_tensor : torch.Tensor
-        The mask, broadcast against each contribution.
+        The mask, broadcast against each contribution. For a call on an
+        input of ``B > 1`` rows, a mask whose leading axis has length
+        ``B`` gates each run by its own entry; any other mask applies to
+        every run.
     """
 
     def __init__(self, mask_tensor: torch.Tensor) -> None:
@@ -39,6 +42,9 @@ class MaskHandler(EffectHandler):
             The transformer.
         """
         mask = self.mask
+        if run.runs > 1 and mask.dim() >= 1 and int(mask.shape[0]) == run.runs:
+            # A mask laid out one entry per run gates each run by its own.
+            mask = mask[run.run_index : run.run_index + 1]
 
         def masked(weight: object) -> object:
             """Mask one contribution.

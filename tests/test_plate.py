@@ -370,7 +370,7 @@ def test_inline_family_response_keeps_its_plate_shape() -> None:
 
     torch.manual_seed(0)
     program = loads(
-        "object Resp : FinSet 6\n"
+        "object Resp : FinSet 8\n"
         "program ord : Resp -> Resp\n"
         "    observe y : Resp <- OrderedLogistic(predictor=eta, cutpoints=cuts)\n"
         "    return y\n"
@@ -384,7 +384,7 @@ def test_inline_family_response_keeps_its_plate_shape() -> None:
         "eta": torch.randn(n),
         "cuts": torch.linspace(-2.0, 2.0, 5),
     }
-    out = model.log_joint(torch.zeros(n, 1), obs)
+    out = model.log_joint(torch.zeros(1, 1), obs)
     assert torch.isfinite(out).all()
 
 
@@ -415,5 +415,5 @@ def test_inline_family_response_keeps_its_plate_shape_with_sampled_parameters() 
         "eta": torch.randn(n),
         "cuts": torch.linspace(-2.0, 2.0, 5),
     }
-    out = model.log_joint(torch.zeros(n, 1), obs)
+    out = model.log_joint(torch.zeros(1, 1), obs)
     assert torch.isfinite(out).all()

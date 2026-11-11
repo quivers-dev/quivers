@@ -49,7 +49,7 @@ PDS-style nested programs::
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol, cast
 
 import torch
@@ -79,6 +79,7 @@ from quivers.qiec.types import TypeExpr
 def _lookup_arg(
     env: Mapping[str, torch.Tensor],
     arg: StepArgument,
+    carries: Callable[[str], bool] | None = None,
 ) -> torch.Tensor:
     """Resolve a draw or observe argument against the environment.
 
@@ -90,6 +91,12 @@ def _lookup_arg(
         A binding's name, or an
         [`Indexed`][quivers.continuous.program_steps.Indexed] gather,
         which indexes the binding at each index binding in turn.
+    carries : Callable[[str], bool] | None
+        Whether a binding leads with the run axis of one run of the
+        program. A gather is taken within the run: the run axis is
+        dropped from the table and the indices before indexing and
+        restored on the result, so an index never reads the run axis.
+        ``None`` treats no binding as carrying it.
 
     Returns
     -------
@@ -105,11 +112,18 @@ def _lookup_arg(
         if arg.name not in env:
             raise KeyError(arg.name)
         tensor = env[arg.name]
+        carried = carries is not None and carries(arg.name)
+        if carried:
+            tensor = tensor[0]
         for ix in arg.indices:
             if ix not in env:
                 raise KeyError(ix)
-            tensor = tensor[env[ix]]
-        return tensor
+            index = env[ix]
+            if carries is not None and carries(ix):
+                index = index[0]
+                carried = True
+            tensor = tensor[index]
+        return tensor.unsqueeze(0) if carried else tensor
     if arg in env:
         return env[arg]
     raise KeyError(arg)
@@ -610,6 +624,7 @@ class MonadicProgram(ContinuousMorphism):
         spec: Draw | Observe,
         x: torch.Tensor,
         env: dict[str, torch.Tensor],
+        carries: Callable[[str], bool] | None = None,
     ) -> torch.Tensor:
         """Resolve the input tensor for a draw step.
 
@@ -621,6 +636,9 @@ class MonadicProgram(ContinuousMorphism):
             The raw program input.
         env : dict[str, torch.Tensor]
             Current variable environment.
+        carries : Callable[[str], bool] | None
+            Whether a binding leads with the run axis, which a gathered
+            argument indexes past.
 
         Returns
         -------
@@ -639,7 +657,7 @@ class MonadicProgram(ContinuousMorphism):
         # shared ``(D,)`` vector or a per-row ``(N, D)`` block.
         # Any other single argument passes through, promoted to a column
         # when it is a rank-1 float.
-        parts = [_lookup_arg(env, a) for a in spec.args]
+        parts = [_lookup_arg(env, a, carries) for a in spec.args]
         morph = self._modules.get(step_key(spec))
         event_ranks = getattr(morph, "_param_event_ranks", None)
         param_spec = getattr(morph, "_param_spec", None)

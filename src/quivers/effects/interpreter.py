@@ -31,6 +31,9 @@ import torch
 
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import extract_morphism
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
+from quivers.continuous.spaces import ContinuousSpace
+from quivers.continuous.program_steps import Call as CallStep
 from quivers.continuous.program_steps import Draw, Let, Observe, Scan, Score
 from quivers.continuous.programs import install_evaluator
 
@@ -510,6 +513,251 @@ def _sequence(step: Scan, value: torch.Tensor) -> torch.Tensor:
     )
 
 
+def _plated(morphism: object) -> bool:
+    """Whether a site's morphism draws a plate's rows rather than one value.
+
+    A plated site's value in one run is laid out along its plate's rows,
+    with no leading run axis; every other site's value in one run leads
+    with a run axis of length one.
+
+    Parameters
+    ----------
+    morphism : object
+        The site's morphism.
+
+    Returns
+    -------
+    bool
+        ``True`` for a `PlateDraw` or a `VectorisedObserve`.
+    """
+    return isinstance(morphism, PlateDraw | VectorisedObserve)
+
+
+def _event_numel(morphism: object) -> int | None:
+    """The number of elements a site that is not plated draws in one run.
+
+    Parameters
+    ----------
+    morphism : object
+        The site's morphism, or ``None`` for a label no draw uses.
+
+    Returns
+    -------
+    int | None
+        The width of a continuous codomain, one for a discrete codomain,
+        or ``None`` when the site has no morphism.
+    """
+    if morphism is None:
+        return None
+    codomain = getattr(morphism, "codomain", None)
+    if isinstance(codomain, ContinuousSpace):
+        return int(getattr(codomain, "dim"))
+    return 1
+
+
+def _plated_value(
+    morphism: PlateDraw | VectorisedObserve, value: torch.Tensor
+) -> torch.Tensor:
+    """Lay one run's value of a plated site out along its plate's rows.
+
+    Parameters
+    ----------
+    morphism : PlateDraw | VectorisedObserve
+        The site's morphism.
+    value : torch.Tensor
+        One run's value, holding the plate's elements in any layout,
+        such as one with a leading axis of length one.
+
+    Returns
+    -------
+    torch.Tensor
+        The value at the observation's response layout, or at the
+        plate draw's latent layout.
+    """
+    if isinstance(morphism, VectorisedObserve):
+        return value.reshape(morphism.response.shape)
+    return morphism.canonical_latent(value)
+
+
+def _plated_numel(morphism: PlateDraw | VectorisedObserve) -> int:
+    """The number of elements a plated site's value holds in one run.
+
+    Parameters
+    ----------
+    morphism : PlateDraw | VectorisedObserve
+        The site's morphism.
+
+    Returns
+    -------
+    int
+        The plate's rows times each row's width.
+    """
+    if isinstance(morphism, VectorisedObserve):
+        return int(morphism.response.numel())
+    return int(getattr(morphism.codomain, "dim"))
+
+
+class _RunAxis:
+    """Which bindings of one run carry the leading run axis.
+
+    Within one run, a value read from the program's input, from a site
+    that is not plated, or from a let or score computed from such a
+    value leads with a run axis of length one; a plated site's value,
+    host data every run shares, and a let computed only from those do
+    not. Draws, the input, and the parameters of called and scanned
+    programs are classified from the program's structure; a let's or a
+    score's flag is recorded when the run computes it.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program the run executes.
+    per_run_data : Mapping[str, bool]
+        For each host datum the run reads, whether it was given one
+        value per run (and so carries the run axis).
+    """
+
+    def __init__(
+        self, program: MonadicProgram, per_run_data: Mapping[str, bool]
+    ) -> None:
+        self._flags: dict[tuple[int, str], bool] = {}
+        self._aliases: dict[tuple[int, str], tuple[int, str]] = {}
+        self._parents: dict[int, int] = {}
+        top = id(program)
+        self._flags[(top, INPUT_NAME)] = True
+        for name, per_run in per_run_data.items():
+            self._flags[(top, name)] = per_run
+        self._index(program, entry=True)
+
+    def _index(self, program: MonadicProgram, *, entry: bool) -> None:
+        """Classify a program's parameters and draws, and its callees'.
+
+        Parameters
+        ----------
+        program : MonadicProgram
+            The program.
+        entry : bool
+            Whether the program is the one the run executes, whose
+            parameters split the run's input.
+        """
+        key = id(program)
+        if entry and program._params is not None:
+            for name in program._params:
+                self._flags[(key, name)] = True
+        for spec in program.steps:
+            if isinstance(spec, Draw | Observe):
+                morphism = program.step_module(spec)
+                flag = not _plated(morphism)
+                for name in (*spec.names, ",".join(spec.names)):
+                    self._flags[(key, name)] = flag
+            elif isinstance(spec, CallStep):
+                callee = spec.program
+                assert isinstance(callee, MonadicProgram)
+                parameters = (
+                    callee._params if callee._params is not None else (INPUT_NAME,)
+                )
+                for parameter, argument in zip(parameters, spec.args, strict=True):
+                    self._aliases[(id(callee), parameter)] = (key, argument)
+                self._flags[(id(callee), INPUT_NAME)] = True
+                self._parents[id(callee)] = key
+                self._aliases[(key, spec.name)] = (
+                    id(callee),
+                    callee._return_vars[0],
+                )
+                self._index(callee, entry=False)
+            elif isinstance(spec, Scan):
+                body = spec.step
+                assert isinstance(body, MonadicProgram)
+                self._flags[(key, spec.name)] = True
+                self._parents[id(body)] = key
+                self._flags[(id(body), INPUT_NAME)] = True
+                for name in body._params or ():
+                    self._flags[(id(body), name)] = True
+                self._index(body, entry=False)
+
+    def record(self, program: MonadicProgram, name: str, flag: bool) -> None:
+        """Record whether a computed binding carries the run axis.
+
+        Parameters
+        ----------
+        program : MonadicProgram
+            The program the binding belongs to.
+        name : str
+            The binding.
+        flag : bool
+            Whether it carries the run axis.
+        """
+        self._flags[(id(program), name)] = flag
+
+    def carries(self, program: MonadicProgram, name: str) -> bool:
+        """Whether a binding of a program carries the run axis.
+
+        Parameters
+        ----------
+        program : MonadicProgram
+            The program the binding belongs to.
+        name : str
+            The binding.
+
+        Returns
+        -------
+        bool
+            Its flag.
+
+        Raises
+        ------
+        RuntimeError
+            If the binding is neither classified nor computed yet.
+        """
+        key = (id(program), name)
+        seen: set[tuple[int, str]] = set()
+        while key not in self._flags:
+            if key in seen:
+                raise RuntimeError(
+                    f"the run cannot tell whether {name!r} carries the run axis"
+                )
+            seen.add(key)
+            if key in self._aliases:
+                key = self._aliases[key]
+            elif key[0] in self._parents:
+                # A called or scanned program reads the bindings of the
+                # program it runs in that it does not bind itself.
+                key = (self._parents[key[0]], key[1])
+            else:
+                raise RuntimeError(
+                    f"the run cannot tell whether {name!r} carries the run axis"
+                )
+        return self._flags[key]
+
+
+def _with_run_axis(value: object) -> object:
+    """Give a value computed for one run its leading run axis back.
+
+    Parameters
+    ----------
+    value : object
+        A tensor or a tuple of tensors computed from one run's values.
+
+    Returns
+    -------
+    object
+        The value with a leading axis of length one on every tensor.
+
+    Raises
+    ------
+    TypeError
+        If the value is neither a tensor nor a tuple of tensors.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.unsqueeze(0)
+    if isinstance(value, tuple):
+        return tuple(_with_run_axis(item) for item in value)
+    raise TypeError(
+        f"a binding computed from per-run values is a {type(value).__name__}, "
+        "not a tensor or a tuple of tensors"
+    )
+
+
 class _HostSteps:
     """The host functions serving one program's ``Compute`` instances.
 
@@ -521,10 +769,57 @@ class _HostSteps:
         The program input.
     """
 
-    def __init__(self, run: RunContext, x: torch.Tensor) -> None:
+    def __init__(self, run: RunContext, x: torch.Tensor, axis: _RunAxis) -> None:
         self.run = run
         self.program = run.kernel.program
         self.x = x
+        self.axis = axis
+
+    def _one_run(
+        self, step: HostStep, env: dict[str, torch.Tensor]
+    ) -> tuple[dict[str, torch.Tensor], bool]:
+        """Drop the run axis from the values of an environment that carry it.
+
+        A let or score step is a function of one run's values: the run
+        axis is removed before it runs and restored on its result, so a
+        reduction, an index, or a collection it builds reads the
+        binding's own axes and never the run's.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step, whose program names the bindings.
+        env : dict[str, torch.Tensor]
+            The bindings the step reads.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], bool]
+            The bindings at one run's shape, and whether any of them
+            carried the run axis.
+
+        Raises
+        ------
+        RuntimeError
+            If a binding classified as carrying the run axis does not
+            lead with an axis of length one.
+        """
+        stripped: dict[str, torch.Tensor] = {}
+        carried = False
+        for name, value in env.items():
+            if isinstance(value, torch.Tensor) and self.axis.carries(
+                step.program, name
+            ):
+                if value.dim() == 0 or int(value.shape[0]) != 1:
+                    raise RuntimeError(
+                        f"binding {name!r} carries the run axis but has shape "
+                        f"{tuple(value.shape)}"
+                    )
+                stripped[name] = value[0]
+                carried = True
+            else:
+                stripped[name] = value
+        return stripped, carried
 
     def function(self, step: HostStep) -> Callable[[object, ClauseContext], object]:
         """The host function of a step.
@@ -646,7 +941,12 @@ class _HostSteps:
         env = _environment(step, argument)
         morphism = step.program.step_module(spec)
         assert isinstance(morphism, ContinuousMorphism)
-        inp = step.program._resolve_input(spec, self._input(spec, env), env)
+        inp = step.program._resolve_input(
+            spec,
+            self._input(spec, env),
+            env,
+            lambda name: self.axis.carries(step.program, name),
+        )
         assert step.site is not None
         values = self._parameters(step.site, morphism, context)
         if values:
@@ -725,7 +1025,12 @@ class _HostSteps:
         assert module is not None
         categorical = extract_morphism(module)
         assert categorical is not None
-        inp = step.program._resolve_input(spec, self._input(spec, env), env)
+        inp = step.program._resolve_input(
+            spec,
+            self._input(spec, env),
+            env,
+            lambda name: self.axis.carries(step.program, name),
+        )
         return step.program._apply_categorical_morphism(
             categorical, inp, self.x.shape[0]
         )
@@ -774,12 +1079,28 @@ class _HostSteps:
         if step.program is self.program:
             supplied = self.run.supplied.get(spec.name)
             if supplied is not None:
+                # A supplied value stands in for the computed one, so it
+                # carries the run axis exactly when the computed value
+                # would: when a binding the let reads carries it.
+                _, carried = self._one_run(step, _environment(step, argument))
+                if carried and (supplied.dim() == 0 or int(supplied.shape[0]) != 1):
+                    supplied = supplied.unsqueeze(0)
+                self.axis.record(step.program, spec.name, carried)
                 return supplied
         env = _environment(step, argument)
         if isinstance(spec.value, str):
+            self.axis.record(
+                step.program, spec.name, self.axis.carries(step.program, spec.value)
+            )
             return env[spec.value]
         if callable(spec.value):
-            return spec.value(env)
+            stripped, carried = self._one_run(step, env)
+            value = spec.value(stripped)
+            if carried:
+                value = _with_run_axis(value)
+            self.axis.record(step.program, spec.name, carried)
+            return value
+        self.axis.record(step.program, spec.name, True)
         return torch.full((self.x.shape[0],), float(spec.value), device=self.x.device)
 
     def _score(self, step: HostStep, argument: object) -> object:
@@ -799,7 +1120,12 @@ class _HostSteps:
         """
         spec = step.spec
         assert isinstance(spec, Score)
-        return spec.score(_environment(step, argument))
+        stripped, carried = self._one_run(step, _environment(step, argument))
+        value = spec.score(stripped)
+        if carried:
+            value = _with_run_axis(value)
+        self.axis.record(step.program, spec.name, carried)
+        return value
 
     def _pack(self, step: HostStep, argument: object) -> object:
         """Assemble a called program's input from its parameters.
@@ -1074,7 +1400,7 @@ def check_host_data(
     program: MonadicProgram,
     data: Mapping[str, torch.Tensor | float | int],
     runs: int | None = None,
-) -> None:
+) -> dict[str, bool]:
     """Refuse host data that does not inhabit the program's checked types.
 
     The checked elaboration types every free name a program reads, and
@@ -1100,6 +1426,13 @@ def check_host_data(
         The length of the input batch, whose axis a datum may lead with;
         ``None`` admits no such axis.
 
+    Returns
+    -------
+    dict[str, bool]
+        For each checked datum supplied, whether it leads with the input
+        batch's axis, one value per run, rather than one value every run
+        shares.
+
     Raises
     ------
     ValueError
@@ -1109,6 +1442,7 @@ def check_host_data(
         If a datum's element type is not the one its checked type names.
     """
     extents: dict[str, tuple[int, str]] = {}
+    per_run_data: dict[str, bool] = {}
     for name, expected in program.host_data_types.items():
         if name not in data:
             continue
@@ -1133,6 +1467,7 @@ def check_host_data(
                 f"program reads it at type {rendered}, of shape "
                 f"{admissible}{shared}; supply data of that shape"
             )
+        per_run_data[name] = per_run != supplied
         dimensions = layout
         for dimension, extent in zip(dimensions, per_run):
             if not isinstance(dimension, IndexVariable):
@@ -1149,6 +1484,7 @@ def check_host_data(
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
+    return per_run_data
 
 
 def _matching_layout(
@@ -1240,12 +1576,257 @@ def run_program(
         never reaches.
     """
     sites, supplied, data = _split_observations(program, observations or {})
-    check_host_data(program, data, runs=int(x.shape[0]) if x.dim() else None)
+    runs = int(x.shape[0]) if x.dim() else 1
+    per_run_data = check_host_data(program, data, runs=runs if x.dim() else None)
     kernel = _cached_kernel(program, tuple(sorted(data)))
     _check_sequence_layouts(kernel, observations or {})
-    run = RunContext(kernel, host_value, observations=dict(sites), supplied=supplied)
+    if runs <= 1:
+        run_sites = {
+            label: _run_slice(kernel, label, value, 1, 0)
+            for label, value in sites.items()
+        }
+        output, _ = _run_once(
+            program, kernel, x, run_sites, supplied, data, per_run_data, 0, 1
+        )
+        return output
+    outputs: list[torch.Tensor | dict[str, torch.Tensor]] = []
+    axis: _RunAxis | None = None
+    for index in range(runs):
+        run_sites = {
+            label: _run_slice(kernel, label, value, runs, index)
+            for label, value in sites.items()
+        }
+        run_supplied = {
+            name: _per_run_value(name, value, runs, index)
+            for name, value in supplied.items()
+        }
+        run_data = {
+            name: value[index : index + 1] if per_run_data.get(name, False) else value
+            for name, value in data.items()
+        }
+        output, axis = _run_once(
+            program,
+            kernel,
+            x[index : index + 1],
+            run_sites,
+            run_supplied,
+            run_data,
+            per_run_data,
+            index,
+            runs,
+        )
+        outputs.append(output)
+    assert axis is not None
+    return _stack_runs(program, outputs, axis)
+
+
+def _run_slice(
+    kernel: ProgramKernel, label: str, value: torch.Tensor, runs: int, index: int
+) -> torch.Tensor:
+    """One run's value of a site given for every run of a call.
+
+    A site's value for a call of ``runs`` runs is laid out either one
+    value per run, along a leading axis of length ``runs`` ahead of the
+    value one run takes, or as one value every run shares. A plated
+    site's one-run value holds its plate's rows; any other site's leads
+    with a run axis of length one.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding, which names each site's morphism.
+    label : str
+        The site's label or occurrence address.
+    value : torch.Tensor
+        The value given.
+    runs : int
+        The number of runs.
+    index : int
+        The run.
+
+    Returns
+    -------
+    torch.Tensor
+        The run's value.
+
+    Raises
+    ------
+    ValueError
+        If the value is laid out neither way.
+    """
+    morphism = _site_morphism(kernel, label)
+    if isinstance(morphism, PlateDraw | VectorisedObserve):
+        single = _plated_numel(morphism)
+        if (
+            runs > 1
+            and value.dim() >= 1
+            and int(value.shape[0]) == runs
+            and value.numel() == runs * single
+        ):
+            return _plated_value(morphism, value[index])
+        if value.numel() == single:
+            return _plated_value(morphism, value)
+        if runs == 1:
+            return value
+        layout = f"{single} elements, or {runs} runs of {single}"
+    else:
+        single = _event_numel(morphism)
+        if single is not None and value.numel() == single:
+            # One value every run shares, at one run's layout: led by
+            # the run axis of length one.
+            if value.dim() >= 1 and int(value.shape[0]) == 1:
+                return value
+            return value.unsqueeze(0)
+        if runs == 1:
+            return value
+        if (
+            value.dim() >= 1
+            and int(value.shape[0]) == runs
+            and (single is None or value.numel() == runs * single)
+        ):
+            return value[index : index + 1]
+        layout = (
+            f"{runs} runs of one value"
+            if single is None
+            else f"{single} elements, or {runs} runs of {single}"
+        )
+    raise ValueError(
+        f"site {label!r} has a value of shape {tuple(value.shape)}, but an input "
+        f"of {runs} rows runs the program {runs} times, so its value has "
+        f"{layout}"
+    )
+
+
+def _per_run_value(
+    name: str, value: torch.Tensor, runs: int, index: int
+) -> torch.Tensor:
+    """One run's value of a let binding supplied for every run of a call.
+
+    Parameters
+    ----------
+    name : str
+        The binding, unused.
+    value : torch.Tensor
+        The value given: one per run along a leading axis of length
+        ``runs``, or one every run shares.
+    runs : int
+        The number of runs.
+    index : int
+        The run.
+
+    Returns
+    -------
+    torch.Tensor
+        The run's slice, leading with an axis of length one, of a value
+        laid out one per run; the value itself otherwise.
+    """
+    del name
+    if value.dim() >= 1 and int(value.shape[0]) == runs:
+        return value[index : index + 1]
+    return value
+
+
+def _stack_runs(
+    program: MonadicProgram,
+    outputs: list[torch.Tensor | dict[str, torch.Tensor]],
+    axis: _RunAxis,
+) -> torch.Tensor | dict[str, torch.Tensor]:
+    """Stack the outputs of a call's runs along the run axis.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    outputs : list[torch.Tensor | dict[str, torch.Tensor]]
+        Each run's output.
+    axis : _RunAxis
+        The classification of the program's bindings, which says
+        whether each returned variable leads with the run axis already.
+
+    Returns
+    -------
+    torch.Tensor | dict[str, torch.Tensor]
+        The outputs, one per run along the leading axis.
+    """
+
+    def combine(name: str, values: list[torch.Tensor]) -> torch.Tensor:
+        if axis.carries(program, name):
+            return torch.cat(values, dim=0)
+        return torch.stack(values, dim=0)
+
+    if program._return_is_single:
+        return combine(
+            program._return_vars[0],
+            [output for output in outputs if isinstance(output, torch.Tensor)],
+        )
+    keys = program._return_labels if program._return_labels else program._return_vars
+    return {
+        key: combine(name, [cast_dict(output)[key] for output in outputs])
+        for key, name in zip(keys, program._return_vars, strict=True)
+    }
+
+
+def _run_once(
+    program: MonadicProgram,
+    kernel: ProgramKernel,
+    x: torch.Tensor,
+    sites: dict[str, torch.Tensor],
+    supplied: dict[str, torch.Tensor],
+    data: dict[str, torch.Tensor],
+    per_run_data: Mapping[str, bool],
+    run_index: int,
+    runs: int,
+) -> tuple[torch.Tensor | dict[str, torch.Tensor], _RunAxis]:
+    """Execute one run of a program on the reference machine.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    kernel : ProgramKernel
+        Its encoding at the run's host data.
+    x : torch.Tensor
+        The run's input, one row.
+    sites : dict[str, torch.Tensor]
+        The run's values at declared sites.
+    supplied : dict[str, torch.Tensor]
+        The run's values standing in for let bindings.
+    data : dict[str, torch.Tensor]
+        The run's host data.
+    per_run_data : Mapping[str, bool]
+        Whether each checked host datum was given one value per run; a
+        datum the program does not type is one value every run shares.
+    run_index : int
+        The run's position among the call's runs.
+    runs : int
+        The number of runs the call makes.
+
+    Returns
+    -------
+    tuple[torch.Tensor | dict[str, torch.Tensor], _RunAxis]
+        The run's output and the classification of its bindings.
+
+    Raises
+    ------
+    ValueError
+        If a value is given for an occurrence of a scanned site the run
+        never reaches.
+    """
+    axis = _RunAxis(program, {name: per_run_data.get(name, False) for name in data})
+    run = RunContext(
+        kernel,
+        host_value,
+        observations=dict(sites),
+        supplied=supplied,
+        run_index=run_index,
+        runs=runs,
+        slice_value=lambda label, value: _run_slice(
+            kernel, label, value, runs, run_index
+        ),
+        carries_run_axis=axis.carries,
+    )
     stack = list(_handler_stack())
-    steps = _HostSteps(run, x)
+    steps = _HostSteps(run, x, axis)
     result_type = kernel.result_type
 
     def record(request: RuntimeRequest, weight: object) -> None:
@@ -1460,10 +2041,10 @@ def run_program(
         handler.finish(run, output)
     if program._return_is_single:
         assert isinstance(output, torch.Tensor)
-        return output
+        return output, axis
     assert isinstance(output, tuple)
     keys = program._return_labels if program._return_labels else program._return_vars
-    return {key: value for key, value in zip(keys, output, strict=True)}
+    return {key: value for key, value in zip(keys, output, strict=True)}, axis
 
 
 def sample_program(
@@ -1543,9 +2124,10 @@ def log_joint(
     """The joint log density of a program at values for all of its draws.
 
     The program runs on the reference machine under the handler stack
-    with every draw conditioned on its given value, and the joint is
-    the sum of the site densities the run accumulated, one term per
-    site, over the input's batch axis.
+    with every draw conditioned on its given value. An input of ``B``
+    rows is ``B`` independent runs of the whole program, and the joint
+    is one number per run: the sum of that run's site densities. The
+    joint of all the runs together is the sum of the result.
 
     Parameters
     ----------
@@ -1556,12 +2138,13 @@ def log_joint(
     intermediates : Mapping[str, torch.Tensor]
         A value for every draw the program makes, keyed by variable
         name or by return label, together with any host data its steps
-        read by name.
+        read by name. A value is given either once per run, along a
+        leading axis of length ``B``, or once for every run to share.
 
     Returns
     -------
     torch.Tensor
-        The joint log density, shaped ``(batch,)``.
+        The joint log density of each run, shaped ``(B,)``.
 
     Raises
     ------
@@ -1584,17 +2167,7 @@ def log_joint(
             and not site.is_deterministic
         ):
             raise KeyError(name)
-    # The accumulator takes the widest dtype among the densities: a
-    # zero-dimensional float64 density added to a float32 batch of zeros
-    # would otherwise be demoted to float32.
-    dtype = torch.get_default_dtype()
-    for site in handler.trace.sites.values():
-        if site.log_prob.is_floating_point():
-            dtype = torch.promote_types(dtype, site.log_prob.dtype)
-    total = torch.zeros(x.shape[0], device=x.device, dtype=dtype)
-    for site in handler.trace.sites.values():
-        total = total + site.log_prob
-    return total
+    return handler.total_log_joint(x.device)
 
 
 class _ReferenceEvaluator:

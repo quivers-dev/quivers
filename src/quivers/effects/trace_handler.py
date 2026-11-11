@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import torch
 
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.program_steps import Let, Score
 from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.program_module import HostStep
@@ -29,86 +30,19 @@ from quivers.qiec.builtins import (
 )
 
 
-def _narrowest_shape(log_probs: list[torch.Tensor]) -> tuple[int, ...]:
-    """The widest shape no site has to be replicated into.
-
-    Shapes are right-aligned (a missing leading axis reads as extent
-    1, exactly as broadcasting reads it) and the extent kept for each
-    axis is the smallest any site carries there. Adding sites at that
-    shape can only ever reduce a site, never repeat one.
-
-    Parameters
-    ----------
-    log_probs : list of torch.Tensor
-        Per-site log-densities that carry density. An empty list has
-        no axis to agree on and gives the scalar shape.
-
-    Returns
-    -------
-    tuple of int
-        Target shape, right-aligned against every site.
-    """
-    if not log_probs:
-        return ()
-    rank = max(log_prob.dim() for log_prob in log_probs)
-    extents: list[int] = []
-    for axis in range(rank):
-        smallest = None
-        for log_prob in log_probs:
-            offset = rank - log_prob.dim()
-            here = 1 if axis < offset else int(log_prob.shape[axis - offset])
-            smallest = here if smallest is None else min(smallest, here)
-        assert smallest is not None
-        extents.append(smallest)
-    return tuple(extents)
-
-
-def _reduce_to(log_prob: torch.Tensor, target: tuple[int, ...]) -> torch.Tensor:
-    """Sum ``log_prob`` over every axis where it is wider than ``target``.
-
-    The reduction keeps the axis at extent 1 rather than dropping it,
-    so the result still lines up with ``target`` under the addition
-    that follows and no term is repeated by that addition. An axis
-    ``target`` does not reach at all belongs to a site of higher rank
-    than any density-carrying one, and is summed away outright rather
-    than kept, so it cannot widen the joint either.
-
-    Parameters
-    ----------
-    log_prob : torch.Tensor
-        One site's log-density.
-    target : tuple of int
-        Shape from
-        [`_narrowest_shape`][quivers.effects.trace_handler._narrowest_shape],
-        right-aligned against ``log_prob``.
-
-    Returns
-    -------
-    torch.Tensor
-        ``log_prob`` with its lane axes summed out.
-    """
-    rank = len(target)
-    while log_prob.dim() > rank:
-        log_prob = log_prob.sum(dim=0)
-    offset = rank - log_prob.dim()
-    axes = [
-        axis - offset
-        for axis in range(rank)
-        if axis >= offset and int(log_prob.shape[axis - offset]) > target[axis]
-    ]
-    if not axes:
-        return log_prob
-    return log_prob.sum(dim=axes, keepdim=True)
-
-
 class TraceHandler(EffectHandler):
     """Record every site visited during a program's execution.
 
     Produces a `Trace` whose ``sites`` dict is keyed by variable name,
     whose ``output`` is the program's return value, and whose
-    ``log_joint`` is the sum of every site's ``log_prob``. A
-    `TraceHandler` is single-use: run the program under one instance,
-    read `trace`, then discard. The handler takes no configuration.
+    ``log_joint`` is the sum of every site's ``log_prob``. A call on an
+    input of ``B`` rows makes ``B`` independent runs: the trace records
+    each run's sites and lays them out along a leading run axis, so a
+    site's ``log_prob`` holds one density per run, shape ``(B,)``, and
+    its ``value`` holds one value per run (a plated site's rows after
+    the run axis). A `TraceHandler` is single-use: run the program under
+    one instance, read `trace`, then discard. The handler takes no
+    configuration.
     """
 
     def __init__(self) -> None:
@@ -116,6 +50,8 @@ class TraceHandler(EffectHandler):
         self._recorder = TraceRecorder()
         self._steps: dict[object, HostStep] = {}
         self._occurrences: dict[object, int] = {}
+        self._run_sites: list[dict[str, SampleSite]] = []
+        self._run_axes: dict[str, bool] = {}
 
     def install(self, run: RunContext) -> tuple[Installation, ...]:
         """Install observers of the sites and of the let and score steps.
@@ -132,6 +68,8 @@ class TraceHandler(EffectHandler):
             each let and score step's ``Compute`` instance.
         """
         kernel = run.kernel
+        self._recorder = TraceRecorder()
+        self._occurrences = {}
         installations = [
             Installation(
                 kernel.random,
@@ -182,13 +120,61 @@ class TraceHandler(EffectHandler):
             the value it returns.
         """
         del output
+        sites: dict[str, SampleSite] = {}
         for event in self._recorder.events:
             if event.operation == RANDOM_SAMPLE:
-                self._record_site(run, event)
+                self._record_site(run, event, sites)
             else:
-                self._record_step(run, event)
+                self._record_step(run, event, sites)
+        self._run_sites.append(sites)
+        if run.run_index == run.runs - 1:
+            self._merge_runs()
 
-    def _record_site(self, run: RunContext, event: TraceEvent) -> None:
+    def _merge_runs(self) -> None:
+        """Lay the recorded runs' sites out along the run axis.
+
+        A site's one-run value that leads with the run axis (any site
+        not plated, and any let or score computed from such a value) is
+        concatenated along it; any other one-run value gains the run
+        axis by stacking. Each run's density of a site is summed to one
+        number, so the site's ``log_prob`` is ``(B,)``.
+
+        Raises
+        ------
+        RuntimeError
+            If a value classified as leading with the run axis does not.
+        """
+        runs = self._run_sites
+        for name, first in runs[0].items():
+            per_run = [sites[name] for sites in runs]
+            if len(per_run) == 1:
+                value = first.value
+            elif self._run_axes[name]:
+                for site in per_run:
+                    if site.value.dim() == 0 or int(site.value.shape[0]) != 1:
+                        raise RuntimeError(
+                            f"site {name!r} leads with the run axis but its value "
+                            f"in one run has shape {tuple(site.value.shape)}"
+                        )
+                value = torch.cat([site.value for site in per_run], dim=0)
+            else:
+                value = torch.stack([site.value for site in per_run], dim=0)
+            log_prob = torch.stack([site.log_prob.sum() for site in per_run])
+            self.trace.sites[name] = SampleSite(
+                name=name,
+                morphism=first.morphism,
+                value=value,
+                log_prob=log_prob,
+                is_observed=any(site.is_observed for site in per_run),
+                is_deterministic=first.is_deterministic,
+                sampleable=first.sampleable,
+                address=first.address,
+                metadata=dict(first.metadata),
+            )
+
+    def _record_site(
+        self, run: RunContext, event: TraceEvent, sites: dict[str, SampleSite]
+    ) -> None:
         """Record one sample site from its trace event.
 
         Parameters
@@ -197,6 +183,8 @@ class TraceHandler(EffectHandler):
             The run.
         event : TraceEvent
             The recorded request and answer.
+        sites : dict[str, SampleSite]
+            The run's sites, which the site joins.
         """
         label, sampleable = event.arguments
         assert isinstance(label, str)
@@ -216,7 +204,10 @@ class TraceHandler(EffectHandler):
             log_prob = torch.zeros(
                 value.shape[:1] if value.dim() > 0 else (1,), device=value.device
             )
-        self.trace.sites[label] = SampleSite(
+        self._run_axes[label] = not isinstance(
+            sampleable.declared, PlateDraw | VectorisedObserve
+        )
+        sites[label] = SampleSite(
             name=label,
             morphism=sampleable.declared,
             value=value,
@@ -228,7 +219,9 @@ class TraceHandler(EffectHandler):
             metadata=dict(run.annotations.get(label, {})),
         )
 
-    def _record_step(self, run: RunContext, event: TraceEvent) -> None:
+    def _record_step(
+        self, run: RunContext, event: TraceEvent, sites: dict[str, SampleSite]
+    ) -> None:
         """Record one let or score step from its trace event.
 
         Parameters
@@ -237,6 +230,8 @@ class TraceHandler(EffectHandler):
             The run.
         event : TraceEvent
             The recorded request and answer.
+        sites : dict[str, SampleSite]
+            The run's sites, which the binding joins.
         """
         step = self._steps[event.instance]
         assert isinstance(step.spec, Let | Score)
@@ -259,7 +254,8 @@ class TraceHandler(EffectHandler):
             log_prob = self._step_contribution(run, step, event, value)
         else:
             log_prob = torch.zeros((), device=value.device)
-        self.trace.sites[name] = SampleSite(
+        self._run_axes[name] = run.carries_run_axis(step.program, step.spec.name)
+        sites[name] = SampleSite(
             name=name,
             morphism=None,
             value=value,
@@ -306,38 +302,23 @@ class TraceHandler(EffectHandler):
             return torch.zeros_like(value)
         return total
 
-    def total_log_joint(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Sum every site's ``log_prob`` into the joint density.
-
-        The accumulator uses the narrowest right-aligned shape shared
-        by the nonzero site contributions. Wider axes are summed before
-        addition so broadcasting cannot duplicate scalar terms. Zero
-        contributions do not determine the target shape but are still
-        added.
+    def total_log_joint(self, device: torch.device) -> torch.Tensor:
+        """Sum every site's density into the joint, one per run.
 
         Parameters
         ----------
-        batch_size : int
-            Leading extent of the program input. Not consulted: the
-            joint's shape follows from the sites themselves, and a
-            program whose sites reduce their own plate axes has a
-            joint narrower than its input.
         device : torch.device
             Device the accumulator seeds on.
 
         Returns
         -------
         torch.Tensor
-            The joint log-density.
+            The joint log-density of each run, shape ``(B,)``.
         """
-        del batch_size
-        contributions = [site.log_prob for site in self.trace.sites.values()]
-        target = _narrowest_shape(
-            [lp for lp in contributions if not bool(torch.all(lp == 0))]
-        )
-        total = torch.zeros((), device=device)
-        for log_prob in contributions:
-            total = total + _reduce_to(log_prob, target)
+        runs = len(self._run_sites)
+        total = torch.zeros(runs, device=device)
+        for site in self.trace.sites.values():
+            total = total + site.log_prob
         return total
 
 

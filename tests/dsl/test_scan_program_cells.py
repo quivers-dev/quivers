@@ -392,7 +392,8 @@ def test_a_cell_reads_the_scanning_programs_bindings() -> None:
     torch.manual_seed(4)
     program = _program(OUTER_BINDINGS)
     tokens = torch.randint(0, 5, (4, 6))
-    assert program.rsample(tokens).shape == (4,)
+    # Four runs, each drawing the four rows of its `Resp` plate.
+    assert program.rsample(tokens).shape == (4, 4)
     run = trace(program, tokens)
     assert {"a", "b", "next_token"} <= set(run.sites)
     assert [f"h$x_in@{t}" for t in range(6)] == [

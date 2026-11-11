@@ -166,7 +166,8 @@ def test_labeled_return_tuple_keys_program_output() -> None:
     prog = load(str(_EXAMPLE))
     model = prog.morphism
     assert isinstance(model, MonadicProgram)
-    x = torch.zeros(8, 1)
+    # One run of the program: its eight rows come from its plate.
+    x = torch.zeros(1, 1)
     torch.manual_seed(0)
     out = model.rsample(x)
     assert isinstance(out, dict)
@@ -175,7 +176,7 @@ def test_labeled_return_tuple_keys_program_output() -> None:
 
     z = torch.randn(8)
     theta = 0.6 * z
-    sigma = torch.full((8, 1), 0.8)
+    sigma = torch.full((1, 1), 0.8)
     y = torch.linspace(-1.0, 1.0, 8)
     by_label = {"effects": theta, "scale": sigma, "theta$z": z, "y": y}
     by_var = {"theta": theta, "sigma": sigma, "theta$z": z, "y": y}

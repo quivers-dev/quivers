@@ -54,7 +54,10 @@ class ClampHandler(EffectHandler):
             Installation(
                 kernel.random,
                 condition_handler(
-                    self.data,
+                    {
+                        name: run.slice_value(name, value)
+                        for name, value in self.data.items()
+                    },
                     score_instance=kernel.score.entry.instance,
                     result_validator=run.validator,
                     missing=MissingValuePolicy.FORWARD,

@@ -41,7 +41,7 @@ class ReplayHandler(EffectHandler):
         """
         kernel = run.kernel
         values = {
-            name: site.value
+            name: run.slice_value(name, site.value)
             for name, site in self._trace.sites.items()
             if not site.is_deterministic or site.morphism is not None
         }

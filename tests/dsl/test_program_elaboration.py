@@ -1330,7 +1330,8 @@ def test_a_network_kernel_reads_its_layers_at_every_row() -> None:
     torch.manual_seed(0)
     x = torch.randn(6, 2)
     y = torch.randn(6, 1)
-    classic = trace(monadic, torch.zeros(6, 1), observations={"y": y, "x": x}).log_joint
+    # One run of the program: its six rows come from the data.
+    classic = trace(monadic, torch.zeros(1, 1), observations={"y": y, "x": x}).log_joint
     assert classic is not None
     classic = classic.detach()
     module = _module(NETWORK_KERNEL)
