@@ -282,7 +282,7 @@ jobs:
   # save them for the next run to split by.
   update-test-durations:
     name: Update recorded test durations
-    needs: test
+    needs: [test, test-slow]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -397,11 +397,17 @@ jobs:
   # Slow tier. The default addopts deselect `slow`, so the gallery sweep
   # and the recovery benchmarks run only here: an example whose prose or
   # code stops matching the library fails CI rather than rotting
-  # unnoticed.
+  # unnoticed. Sharded across runners by recorded durations, like the
+  # unit tier; each shard runs its tests one at a time, since a single
+  # recovery benchmark already uses every core of its runner.
   test-slow:
-    name: Test slow tier
+    name: Test slow tier (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -411,8 +417,44 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Run slow tests
-        run: python -m pytest tests/ -m slow -q --durations 40
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Snapshot restored test durations
+        run: |
+          if [ -f .test_durations ]; then
+            cp .test_durations "$RUNNER_TEMP/test_durations.before.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/test_durations.before.json"
+          fi
+
+      - name: Run slow test shard
+        run: >-
+          python -m pytest tests/ -m slow -v
+          --splits 4 --group ${{ matrix.shard }}
+          --splitting-algorithm least_duration
+          --store-durations --durations-path .test_durations
+          --durations 25
+
+      - name: Extract this shard's measured durations
+        if: success()
+        run: |
+          jq --slurpfile before "$RUNNER_TEMP/test_durations.before.json" \
+            'with_entries(select($before[0][.key] != .value))' \
+            .test_durations > "test-durations-slow-${{ matrix.shard }}.json"
+
+      - name: Upload this shard's measured durations
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-slow-${{ matrix.shard }}
+          path: test-durations-slow-${{ matrix.shard }}.json
+          retention-days: 1
 
   # One stable check for branch protection to require: it passes only
   # when every job above passed or was deliberately skipped.
