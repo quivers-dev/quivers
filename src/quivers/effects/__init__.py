@@ -51,6 +51,7 @@ from quivers.effects import (
     replay as _replay,
     scale as _scale,
     sites as _sites,
+    subsample as _subsample,
     trace_handler as _trace_handler,
     trace_types as _trace_types,
 )
@@ -68,6 +69,7 @@ from quivers.effects.program_module import *  # noqa: F403
 from quivers.effects.replay import *  # noqa: F403
 from quivers.effects.scale import *  # noqa: F403
 from quivers.effects.sites import *  # noqa: F403
+from quivers.effects.subsample import *  # noqa: F403
 from quivers.effects.trace_handler import *  # noqa: F403
 from quivers.effects.trace_types import *  # noqa: F403
 from quivers.effects.reparam import (
@@ -105,5 +107,6 @@ __all__ += _program_module.__all__
 __all__ += _replay.__all__
 __all__ += _scale.__all__
 __all__ += _sites.__all__
+__all__ += _subsample.__all__
 __all__ += _trace_handler.__all__
 __all__ += _trace_types.__all__

@@ -1,0 +1,14 @@
+# Exercises a network kernel whose weights are latent sites,
+# `[weights=latent]`; no target has a form for its affine layers applied
+# to drawn weights, so every target refuses it by its network.
+object Feat : Real 1
+object Val : Real 1
+object Item : FinSet 3
+
+morphism net : Feat -> Val [weights=latent, prior_scale=0.5] ~ Normal
+
+program p : Item -> Val
+    observe y : Item <- net(x)
+    return y
+
+export p

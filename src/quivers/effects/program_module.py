@@ -134,8 +134,10 @@ class HostStep:
         the address of a site reached once per scan position,
         ``"scan_length"`` and ``"scan_initial"`` for a scan's sequence
         length and initial state, ``"scan_entry"`` for the entry at a
-        scan position, and ``"scan_state"`` for the state a scan's step
-        returns.
+        scan position, ``"scan_state"`` for the state a scan's step
+        returns, and ``"scan_states"`` and ``"scan_collect"`` for the
+        states a scan with ``outputs="all"`` gathers, before its first
+        position and after each.
     spec
         The step record the host part serves, or ``None`` for the input
         split and an input pack.
@@ -460,9 +462,11 @@ class _Frame:
         self.names[name] = local
 
 
-#: The reserved names a scan's helper reads its position and sequence under.
+#: The reserved names a scan's helper reads its position, sequence, and
+#: gathered states under.
 SCAN_POSITION = "_scan_position"
 SCAN_SEQUENCE = "_scan_sequence"
+SCAN_STATES = "_scan_states"
 
 
 def _row(binds: Sequence[tuple[Local, Computation]]) -> list[RowEntry]:
@@ -558,6 +562,32 @@ def scanned_sites(program: MonadicProgram) -> frozenset[str]:
         elif isinstance(spec, CallStep):
             assert isinstance(spec.program, MonadicProgram)
             found |= scanned_sites(spec.program)
+    return frozenset(found)
+
+
+def reversed_scan_sites(program: MonadicProgram) -> frozenset[str]:
+    """The labels of the sites a reversed scan reaches once per position.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    frozenset[str]
+        The labels of the sites the step programs of its reversed scans
+        reach, through the programs its steps call, at any depth. A
+        reversed scan reaches them first at its last position.
+    """
+    found: set[str] = set()
+    for spec in program.steps:
+        if isinstance(spec, Scan) and spec.reverse:
+            assert isinstance(spec.step, MonadicProgram)
+            found |= _reached_sites(spec.step)
+        elif isinstance(spec, CallStep):
+            assert isinstance(spec.program, MonadicProgram)
+            found |= reversed_scan_sites(spec.program)
     return frozenset(found)
 
 
@@ -1249,11 +1279,15 @@ class _Builder:
     def _scan(self, frame: _Frame, program: MonadicProgram, spec: Scan) -> None:
         """Encode a scan: a recursive helper running the step per position.
 
-        The helper takes the position, the sequence, its length, the
-        state, and every binding visible at the scan; it answers the
-        state once the position reaches the length, and otherwise runs
-        the step program at the position's entry and recurs at the
-        next position with the state the step returned.
+        The helper takes the count of positions visited, the sequence,
+        its length, the state, the states gathered so far when the scan
+        returns every state, and every binding visible at the scan; it
+        answers the state (or the gathered states) once the count
+        reaches the length, and otherwise runs the step program at the
+        entry of the next position visited (the count's position, or
+        for a reversed scan the one that many from the end) and recurs
+        with the state the step returned, gathered into the states in
+        input order.
 
         Parameters
         ----------
@@ -1288,6 +1322,11 @@ class _Builder:
             INT,
             reads=(source_name,),
         )
+        if spec.initial_from is not None and frame.lookup(spec.initial_from) is None:
+            raise ValueError(
+                f"scan {spec.name!r} starts from {spec.initial_from!r}, which "
+                f"nothing binds before the scan"
+            )
         initial = self._host(
             frame,
             f"__scan_initial_{spec.name}",
@@ -1295,12 +1334,33 @@ class _Builder:
             spec,
             program,
             state_type,
-            reads=(source_name,),
+            reads=(
+                (source_name,)
+                if spec.initial_from is None
+                else (source_name, spec.initial_from)
+            ),
         )
+        gathers = spec.outputs == "all"
+        result_type: TypeExpr = state_type
+        gathered: Local | None = None
+        if gathers:
+            # The gathered states carry the position axis the state type
+            # does not name, so they are typed nominally, as a let is.
+            result_type = REAL
+            gathered = self._host(
+                frame,
+                f"__scan_states_{spec.name}",
+                "scan_states",
+                spec,
+                program,
+                result_type,
+                reads=(source_name,),
+            )
         carried_names = [
             name
             for name in frame.visible()
-            if name not in (SCAN_POSITION, SCAN_SEQUENCE)
+            if name not in (SCAN_POSITION, SCAN_SEQUENCE, SCAN_STATES)
+            and not name.startswith("__scan_states_")
         ]
         carried: list[Local] = []
         for name in carried_names:
@@ -1315,6 +1375,7 @@ class _Builder:
         sequence = body.local(SCAN_SEQUENCE, source.type)
         count = body.local("_scan_length", INT)
         state = body.local("_scan_state", state_type)
+        states = body.local(SCAN_STATES, result_type) if gathers else None
         passed = [
             body.local(name, local.type)
             for name, local in zip(carried_names, carried, strict=True)
@@ -1323,6 +1384,8 @@ class _Builder:
             inner.bind(name, local)
         inner.bind(SCAN_POSITION, position)
         inner.bind(SCAN_SEQUENCE, sequence)
+        if states is not None:
+            inner.bind(SCAN_STATES, states)
         entry = self._host(
             inner,
             "__scan_entry",
@@ -1348,6 +1411,21 @@ class _Builder:
                 reads=step._return_vars,
             )
         )
+        following_states: tuple[Value, ...] = ()
+        if states is not None:
+            following_states = (
+                Var(
+                    self._host(
+                        step_frame,
+                        "__scan_states_next",
+                        "scan_collect",
+                        spec,
+                        program,
+                        result_type,
+                        reads=(SCAN_STATES, "__scan_next"),
+                    )
+                ),
+            )
         # The helper's row is what one position performs, which is also
         # what the recursion performs.
         row = EffectRow(tuple(_row(body.binds)))
@@ -1369,9 +1447,10 @@ class _Builder:
                 Var(sequence),
                 Var(count),
                 following,
+                *following_states,
                 *(Var(local) for local in passed),
             ),
-            state_type,
+            result_type,
             row,
             origin,
         )
@@ -1387,16 +1466,27 @@ class _Builder:
                 identity,
                 helper_name,
                 (),
-                (position, sequence, count, state, *passed),
-                If(finished, Return(Var(state)), _chain(body.binds, recur)),
-                ComputationType(row, state_type),
+                (
+                    position,
+                    sequence,
+                    count,
+                    state,
+                    *(() if states is None else (states,)),
+                    *passed,
+                ),
+                If(
+                    finished,
+                    Return(Var(state if states is None else states)),
+                    _chain(body.binds, recur),
+                ),
+                ComputationType(row, result_type),
                 _origin(("computations", helper_name), "computation", self.module),
             )
         )
         self._bind(
             frame,
             spec.name,
-            state_type,
+            result_type,
             Call(
                 identity,
                 helper_name,
@@ -1406,9 +1496,10 @@ class _Builder:
                     Var(source),
                     Var(length),
                     Var(initial),
+                    *(() if gathered is None else (Var(gathered),)),
                     *(Var(local) for local in carried),
                 ),
-                state_type,
+                result_type,
                 row,
                 origin,
             ),

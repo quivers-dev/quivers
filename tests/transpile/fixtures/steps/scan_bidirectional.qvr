@@ -1,0 +1,28 @@
+# Exercises `fan` pairing a forward and a reversed every-state scan
+# position by position, read by a third scan.
+object Val : Real 1
+object Pair : Real 2
+
+program cell(u_t, h_prev) : Val * Val -> Val
+    let m = 0.8 * h_prev + u_t
+    sample f <- Normal(loc=m, scale=0.5)
+    return f
+
+program back(u_t, h_prev) : Val * Val -> Val
+    let n = 0.6 * h_prev - u_t
+    sample b <- Normal(loc=n, scale=0.5)
+    return b
+
+program tag(p_t, s_prev) : Pair * Val -> Val
+    let k = p_t[0] - p_t[1] + 0.3 * s_prev
+    sample s <- Normal(loc=k, scale=0.5)
+    observe r <- Normal(loc=s, scale=0.5)
+    return s
+
+define both = fan(scan(cell, outputs=all), scan(back, outputs=all, reverse=true))
+define tagger = both >> scan(tag, outputs=all)
+
+program prog : Val -> Val
+    sample tags <- tagger
+    return tags
+export prog

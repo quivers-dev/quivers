@@ -1,0 +1,15 @@
+# Exercises a learned function with no weights, `param_source=identity`
+# under a `tanh` output, called in a let; every target spells it as the
+# output nonlinearity of its argument.
+object Item : FinSet 3
+object Val : Real 1
+
+morphism squash : Val -> Val [role=function, param_source=identity, output=tanh]
+
+program p : Item -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    let m = 2.0 * squash(mu)
+    observe y : Item <- Normal(loc=m, scale=1.0)
+    return m
+
+export p

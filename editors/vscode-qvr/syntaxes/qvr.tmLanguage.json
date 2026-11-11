@@ -134,7 +134,7 @@
     },
     "keyword-structural": {
       "name": "keyword.declaration.structural.qvr",
-      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
+      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|outputs|reverse|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
     },
     "keyword-deduction": {
       "name": "keyword.declaration.deduction.qvr",
@@ -196,7 +196,7 @@
     },
     "distribution-family": {
       "name": "support.type.distribution.qvr",
-      "match": "\\b(Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogNormal|Logistic|LogisticNormal|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
+      "match": "\\b(Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogGamma|LogNormal|Logistic|LogisticNormal|LogitBeta|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
     },
     "qiec-option-value": {
       "comment": "QIEC handler-forwarding option values.",

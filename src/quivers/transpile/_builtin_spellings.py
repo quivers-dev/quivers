@@ -77,6 +77,10 @@ ELABORATED_BUILTINS: frozenset[str] = frozenset(
 #: keeps every builtin under its QVR name.
 NEUTRAL_TARGET = "ir"
 
+#: The compiled runtime, which reads let expressions under their QVR
+#: names, as the source writes them.
+RUNTIME_TARGET = "runtime"
+
 
 class BuiltinSpelling(dx.TaggedUnion, discriminator="kind"):
     """How one target spells one math builtin."""
@@ -892,7 +896,7 @@ def builtin_spelling(target: str, func: str, arity: int) -> BuiltinSpelling | No
         If the target has no table, or its table has no entry for the
         builtin.
     """
-    if MATH_BUILTINS.get(func) != arity or target == NEUTRAL_TARGET:
+    if MATH_BUILTINS.get(func) != arity or target in (NEUTRAL_TARGET, RUNTIME_TARGET):
         return None
     table = BUILTIN_SPELLINGS.get(target)
     if table is None or func not in table:
@@ -1053,6 +1057,7 @@ __all__ = [
     "ELABORATED_BUILTINS",
     "MATH_BUILTINS",
     "NEUTRAL_TARGET",
+    "RUNTIME_TARGET",
     "WEBPPL_RUNTIME_BUILTINS",
     "BuiltinSpelling",
     "ClosedForm",
