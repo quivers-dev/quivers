@@ -2543,7 +2543,7 @@ _LAST_AXIS_REDUCERS: dict[str, str] = {
 }
 
 
-def _js_event_rank(expr: LetExprNode, ranks: dict[str, int]) -> int:
+def _js_event_rank(expr: LetExprNode, ranks: Mapping[str, int]) -> int:
     """Infer the event rank of a let-expression at emit time.
 
     Leaf variables read their rank from ``ranks``; compound
@@ -2576,7 +2576,7 @@ def _js_event_rank(expr: LetExprNode, ranks: dict[str, int]) -> int:
 
 
 def _needs_last_axis(
-    expr: LetExprNode, ranks: dict[str, int], full_ranks: dict[str, int]
+    expr: LetExprNode, ranks: Mapping[str, int], full_ranks: Mapping[str, int]
 ) -> bool:
     """Whether a reduction's argument needs the last-axis runtime helper.
 
@@ -2584,9 +2584,9 @@ def _needs_last_axis(
     ----------
     expr : LetExprNode
         The reduction's argument.
-    ranks : dict[str, int]
+    ranks : Mapping[str, int]
         Each name's event rank.
-    full_ranks : dict[str, int]
+    full_ranks : Mapping[str, int]
         Each name's batch and event axes together.
 
     Returns
@@ -2600,7 +2600,7 @@ def _needs_last_axis(
 
 
 def _reduce_last_axis(
-    expr: LetExprNode, ranks: dict[str, int], full_ranks: dict[str, int]
+    expr: LetExprNode, ranks: Mapping[str, int], full_ranks: Mapping[str, int]
 ) -> LetExprNode:
     """Rewrite every reduction over a positive-rank argument into the
     matching ``_qvr_<f>_last`` runtime-helper call.
