@@ -16,7 +16,10 @@ from itertools import product as _cartesian_product
 from typing import Literal, cast
 import torch
 from torch.distributions import constraints as _constraints
-from quivers.continuous.deterministic import LearnedFunction
+from quivers.continuous.deterministic import (
+    LearnedFunction,
+    learned_function_draw_message,
+)
 from quivers.continuous.family_spec import FAMILY_REGISTRY, FamilySpec
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -4422,6 +4425,10 @@ class _ProgramsMixin:
         """
         if draw.morphism in self._morphisms:
             morph = self._morphisms[draw.morphism]
+            if isinstance(morph, LearnedFunction):
+                raise CompileError(
+                    learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
             if draw.args is not None:
                 for a in draw.args:
                     # A named morphism consumes only identifier

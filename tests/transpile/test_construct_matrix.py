@@ -176,6 +176,12 @@ for _backend in _BACKENDS:
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"
         )
+# A learned function's network weights are model-internal, neither sites
+# nor data, so every target refuses a weighted function by its network.
+for _backend in _BACKENDS:
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "function_linear")] = (
+        "param-source:linear"
+    )
 # BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
 # QVR reduction collapses only the last.
 for _backend in ("bugs", "jags"):

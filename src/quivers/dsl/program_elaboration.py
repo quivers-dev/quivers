@@ -186,6 +186,7 @@ from quivers.dsl.let_expr_traversal import (
     walk_let_expr,
 )
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
+from quivers.continuous.deterministic import learned_function_draw_message
 from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
@@ -3746,9 +3747,7 @@ class _ProgramElaboration:
             morphism = self._function_morphism(candidate.func)
             if morphism is None:
                 return candidate
-            value, type_ = self._function_call(
-                morphism, candidate, scope, state, node
-            )
+            value, type_ = self._function_call(morphism, candidate, scope, state, node)
             serial = state.function_calls
             state.function_calls += 1
             name = f"{candidate.func}__call{serial}"
@@ -4940,6 +4939,10 @@ class _ProgramElaboration:
             If the morphism cannot be resolved to a family, or the
             arguments and plate do not type.
         """
+        if self._function_morphism(step.morphism) is not None:
+            self._fail(
+                step, learned_function_draw_message(step.morphism), code="qiec-program"
+            )
         if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.

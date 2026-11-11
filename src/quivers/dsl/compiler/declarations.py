@@ -1319,6 +1319,19 @@ class _DeclarationsMixin:
         source_text = get_option_call_text(
             decl.options, "param_source", line=decl.line, col=decl.col
         )
+        if (
+            source_text is not None
+            and source_text.strip() == "identity"
+            and isinstance(domain, ProductSpace)
+        ):
+            entry = find_option(decl.options, "param_source")
+            raise CompileError(
+                f"function morphism {name!r}: an identity function passes one "
+                f"input through, but its domain {domain!s} is a product; select "
+                f"a learned source (linear or mlp) to read several inputs",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
         activation = get_option_name(
             decl.options, "activation", line=decl.line, col=decl.col
         )

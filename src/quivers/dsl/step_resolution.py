@@ -545,7 +545,23 @@ def _reject_reachable_param_source(
     while frontier:
         name, chain = frontier.pop(0)
         decl = morphisms.get(name)
-        if decl is not None:
+        if decl is not None and _role_of(decl) == "function":
+            kind = param_source_kind(decl, target="qvr-transpile") or "linear"
+            if kind != "identity":
+                raise StepResolutionError(
+                    "qvr-transpile",
+                    [
+                        f"param-source:{kind}",
+                        f"the learned function {name!r} (line {line}, through "
+                        f"{' -> '.join((*chain, name))}) applies a {kind!r} "
+                        f"network whose weights are model-internal: they are "
+                        f"neither sites the program declares nor data a target "
+                        f"is given, so no target can compute the value it "
+                        f"returns. Only a `param_source=identity` function, "
+                        f"which has no weights, transpiles.",
+                    ],
+                )
+        elif decl is not None:
             kind = param_source_kind(decl, target="qvr-transpile")
             if kind is not None:
                 position = seed_position if not chain else _COMPOSITE_POSITION

@@ -227,6 +227,26 @@ def function_factor_widths(space: AnySpace) -> tuple[int, ...]:
     return (_event_width(space),)
 
 
+def learned_function_draw_message(name: str) -> str:
+    """The refusal of a ``sample`` or ``observe`` that draws from a function.
+
+    Parameters
+    ----------
+    name : str
+        The learned function's name.
+
+    Returns
+    -------
+    str
+        The message every path raises.
+    """
+    return (
+        f"the learned function {name!r} is deterministic, so no step draws "
+        f"from it; bind its value with `let v = {name}(...)` and draw from a "
+        f"family around it, as in `sample s <- Normal(loc=v, scale=...)`"
+    )
+
+
 class LearnedFunction(DeterministicMorphism):
     """A learned deterministic map ``f : X -> Y`` between continuous spaces.
 
@@ -412,6 +432,7 @@ __all__ = [
     "FunctionOutput",
     "LearnedFunction",
     "function_factor_widths",
+    "learned_function_draw_message",
     "cholesky_quad_form_morphism",
     "cumsum_morphism",
     "softmax_morphism",
