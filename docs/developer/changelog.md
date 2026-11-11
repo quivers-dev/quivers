@@ -4,12 +4,6 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-
-- **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
-
 ## [0.26.0] - 2026-11-11
 
 ### Added
@@ -105,6 +99,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A declaration reports its own diagnostics before the checked module's.**
 - **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
 - **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, and the compiled runtime.
 
 #### Reference machine
 
