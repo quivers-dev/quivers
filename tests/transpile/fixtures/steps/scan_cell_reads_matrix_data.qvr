@@ -1,0 +1,18 @@
+# Exercises a scan over a program cell that reads a matrix the scanning
+# program does not bind: the matrix is host data of the scanning program,
+# with open extents the scan passes to its step.
+object In : Real 2
+object Hid : FinSet 2
+object State : Real 2
+
+program cell(x_t, h_prev) : In * State -> State
+    let m = tanh(sum(factor i : Hid, j : Hid in M[i, j] * h_prev[j]) + x_t)
+    observe o <- Normal(loc=m, scale=0.3)
+    return m
+
+define run_all = scan(cell)
+
+program prog : In -> State
+    sample h <- run_all
+    return h
+export prog

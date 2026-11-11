@@ -163,6 +163,18 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "marginalize:ungrouped-over-plate"
         )
+# A scan's sequence extent is runtime data, not a declared object a target
+# can use as a loop bound, so every target refuses a scan by its cell's
+# name, whatever bindings the cell reads.
+for _backend in _BACKENDS:
+    for _fixture in (
+        "scan_cell_reads_vector",
+        "scan_cell_reads_matrix",
+        "scan_cell_reads_matrix_data",
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "scan:no-lowering:cell"
+        )
 # BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
 # QVR reduction collapses only the last.
 for _backend in ("bugs", "jags"):
