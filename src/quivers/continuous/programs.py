@@ -364,7 +364,8 @@ class ProgramEvaluator(Protocol):
         Returns
         -------
         torch.Tensor
-            The joint log density.
+            The joint log density of each run of the input, shape
+            ``(B,)``.
         """
         ...
 
@@ -901,7 +902,9 @@ class MonadicProgram(ContinuousMorphism):
         Parameters
         ----------
         x : torch.Tensor
-            Program input.
+            Program input. Its ``B`` rows are ``B`` independent runs of
+            the program, whose outputs stack along a leading run axis
+            (ahead of a plated value's rows).
         sample_shape : torch.Size
             Additional leading sample dimensions; each element is one
             independent run of the program.
@@ -1021,19 +1024,28 @@ class MonadicProgram(ContinuousMorphism):
         its given value, under the active handler stack, so the joint
         is the one [`trace`][quivers.inference.trace.trace] reports.
 
+        An input of ``B`` rows is ``B`` independent runs of the whole
+        program, and the joint is one number per run; the joint of all
+        the runs is the sum of the result. The rows the program
+        observes come from its data and its plates, not from the input,
+        so a program whose observations live in a plate is scored on a
+        one-row input.
+
         Parameters
         ----------
         x : torch.Tensor
-            Program input.
+            Program input, one row per run.
         intermediates : dict[str, torch.Tensor]
             Values for ALL bound variables (keyed by variable name
             or by return label if labels are set), together with any
-            host data the steps read by name.
+            host data the steps read by name. A value is given either
+            once per run, along a leading axis of length ``B``, or once
+            for every run to share.
 
         Returns
         -------
         torch.Tensor
-            Joint log-density. Shape (batch,).
+            The joint log-density of each run, shape ``(B,)``.
 
         Raises
         ------

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import torch
 
-from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.program_steps import Let, Score
 from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.program_module import HostStep
@@ -28,6 +27,39 @@ from quivers.qiec.builtins import (
     TraceRecorder,
     trace_handler,
 )
+
+
+def _per_run_density(name: str, log_prob: torch.Tensor, runs: int) -> torch.Tensor:
+    """A site's density in each of the runs one execution carried together.
+
+    Parameters
+    ----------
+    name : str
+        The site, for the error.
+    log_prob : torch.Tensor
+        The density the execution recorded, leading with the run axis;
+        zero for a deterministic binding.
+    runs : int
+        The number of runs.
+
+    Returns
+    -------
+    torch.Tensor
+        One density per run, shape ``(runs,)``.
+
+    Raises
+    ------
+    RuntimeError
+        If a nonzero density does not lead with the run axis.
+    """
+    if log_prob.dim() >= 1 and int(log_prob.shape[0]) == runs:
+        return log_prob.reshape(runs, -1).sum(dim=-1)
+    if bool(torch.all(log_prob == 0)):
+        return torch.zeros(runs, dtype=log_prob.dtype, device=log_prob.device)
+    raise RuntimeError(
+        f"site {name!r} recorded a density of shape {tuple(log_prob.shape)} "
+        f"for {runs} runs executed together"
+    )
 
 
 class TraceHandler(EffectHandler):
@@ -52,6 +84,7 @@ class TraceHandler(EffectHandler):
         self._occurrences: dict[object, int] = {}
         self._run_sites: list[dict[str, SampleSite]] = []
         self._run_axes: dict[str, bool] = {}
+        self._vectorized_runs = 0
 
     def install(self, run: RunContext) -> tuple[Installation, ...]:
         """Install observers of the sites and of the let and score steps.
@@ -127,6 +160,8 @@ class TraceHandler(EffectHandler):
             else:
                 self._record_step(run, event, sites)
         self._run_sites.append(sites)
+        if run.vectorized:
+            self._vectorized_runs = run.runs
         if run.run_index == run.runs - 1:
             self._merge_runs()
 
@@ -159,7 +194,10 @@ class TraceHandler(EffectHandler):
                 value = torch.cat([site.value for site in per_run], dim=0)
             else:
                 value = torch.stack([site.value for site in per_run], dim=0)
-            log_prob = torch.stack([site.log_prob.sum() for site in per_run])
+            if self._vectorized_runs:
+                log_prob = _per_run_density(name, first.log_prob, self._vectorized_runs)
+            else:
+                log_prob = torch.stack([site.log_prob.sum() for site in per_run])
             self.trace.sites[name] = SampleSite(
                 name=name,
                 morphism=first.morphism,
@@ -204,9 +242,7 @@ class TraceHandler(EffectHandler):
             log_prob = torch.zeros(
                 value.shape[:1] if value.dim() > 0 else (1,), device=value.device
             )
-        self._run_axes[label] = not isinstance(
-            sampleable.declared, PlateDraw | VectorisedObserve
-        )
+        self._run_axes[label] = run.site_carries_run_axis(label)
         sites[label] = SampleSite(
             name=label,
             morphism=sampleable.declared,
@@ -315,7 +351,7 @@ class TraceHandler(EffectHandler):
         torch.Tensor
             The joint log-density of each run, shape ``(B,)``.
         """
-        runs = len(self._run_sites)
+        runs = self._vectorized_runs or len(self._run_sites)
         total = torch.zeros(runs, device=device)
         for site in self.trace.sites.values():
             total = total + site.log_prob

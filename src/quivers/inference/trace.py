@@ -51,16 +51,19 @@ def trace(
     program : MonadicProgram
         The program to trace.
     x : torch.Tensor
-        Program input. Shape ``(batch, ...)``.
+        Program input, shape ``(B, ...)``: ``B`` independent runs of
+        the program.
     observations : dict[str, torch.Tensor] or None
         Values to clamp observed variables to. Keys are variable
-        names, values are tensors of the appropriate shape.
+        names; a value is given once per run, along a leading axis of
+        length ``B``, or once for every run to share.
 
     Returns
     -------
     Trace
-        Complete execution trace with all sites, output, and
-        log-joint.
+        Complete execution trace: each site's value laid out along the
+        run axis, its density per run, ``(B,)``, and the joint of each
+        run, ``(B,)``.
     """
     with TraceHandler() as handler:
         output = run_program(program, x, observations)

@@ -132,6 +132,23 @@ def _no_run_axis(program: MonadicProgram, name: str) -> bool:
     return False
 
 
+def _no_site_run_axis(label: str) -> bool:
+    """The default site classifier, which marks no site.
+
+    Parameters
+    ----------
+    label : str
+        The site's label, unused.
+
+    Returns
+    -------
+    bool
+        ``False``.
+    """
+    del label
+    return False
+
+
 @dataclass(slots=True)
 class RunContext:
     """What one run shares with the handlers installed on it.
@@ -173,6 +190,12 @@ class RunContext:
     carries_run_axis
         Whether a binding of a program, by name, carries this run's
         leading axis of length one.
+    site_carries_run_axis
+        Whether a site's value in this run, by label, carries the run's
+        leading axis of length one.
+    vectorized
+        Whether this execution carries all ``runs`` runs of the call at
+        once, every value leading with the run axis of length ``runs``.
     """
 
     kernel: ProgramKernel
@@ -189,6 +212,8 @@ class RunContext:
     runs: int = 1
     slice_value: Callable[[str, torch.Tensor], torch.Tensor] = _shared_value
     carries_run_axis: Callable[[MonadicProgram, str], bool] = _no_run_axis
+    site_carries_run_axis: Callable[[str], bool] = _no_site_run_axis
+    vectorized: bool = False
 
     @property
     def result_type(self) -> TypeExpr:

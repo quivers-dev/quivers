@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 
 import torch
 
-from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
@@ -528,9 +528,11 @@ def _plated(morphism: object) -> bool:
     Returns
     -------
     bool
-        ``True`` for a `PlateDraw` or a `VectorisedObserve`.
+        ``True`` for a `PlateDraw`, a `VectorisedObserve`, or the
+        observation a ``marginalize`` block integrates over its plate,
+        a `MarginalizedFactor`.
     """
-    return isinstance(morphism, PlateDraw | VectorisedObserve)
+    return isinstance(morphism, PlateDraw | VectorisedObserve | MarginalizedFactor)
 
 
 def _event_numel(morphism: object) -> int | None:
@@ -623,6 +625,7 @@ class _RunAxis:
         self._flags: dict[tuple[int, str], bool] = {}
         self._aliases: dict[tuple[int, str], tuple[int, str]] = {}
         self._parents: dict[int, int] = {}
+        self._sites: dict[str, bool] = {}
         top = id(program)
         self._flags[(top, INPUT_NAME)] = True
         for name, per_run in per_run_data.items():
@@ -650,6 +653,7 @@ class _RunAxis:
                 flag = not _plated(morphism)
                 for name in (*spec.names, ",".join(spec.names)):
                     self._flags[(key, name)] = flag
+                self._sites[",".join(spec.names)] = flag
             elif isinstance(spec, CallStep):
                 callee = spec.program
                 assert isinstance(callee, MonadicProgram)
@@ -674,6 +678,45 @@ class _RunAxis:
                 for name in body._params or ():
                     self._flags[(id(body), name)] = True
                 self._index(body, entry=False)
+
+    def given(self, program: MonadicProgram, label: str, flag: bool) -> None:
+        """Record whether a site's given value carries the run axis.
+
+        A value given for a site decides the flag by its own layout: an
+        observation laid out along a plate's rows carries no run axis
+        whatever morphism scores it.
+
+        Parameters
+        ----------
+        program : MonadicProgram
+            The program the run executes, whose site it is.
+        label : str
+            The site's label.
+        flag : bool
+            Whether the run's value leads with the run axis.
+        """
+        self._sites[label] = flag
+        names = label.split(",")
+        for name in (*names, label):
+            self._flags[(id(program), name)] = flag
+
+    def site(self, label: str) -> bool:
+        """Whether a site's value in one run carries the run axis.
+
+        Parameters
+        ----------
+        label : str
+            The site's label, or ``"<label>@<n>"`` for an occurrence of
+            a site a scan reaches once per position.
+
+        Returns
+        -------
+        bool
+            The site's flag; ``True`` for a site no step names.
+        """
+        base, at, occurrence = label.rpartition("@")
+        key = base if at and occurrence.isdigit() else label
+        return self._sites.get(key, True)
 
     def record(self, program: MonadicProgram, name: str, flag: bool) -> None:
         """Record whether a computed binding carries the run axis.
@@ -1552,6 +1595,12 @@ def run_program(
 ) -> torch.Tensor | dict[str, torch.Tensor]:
     """Execute a program on the reference machine under the handler stack.
 
+    An input of ``B`` rows is ``B`` independent runs of the whole program.
+    Each run reads its slice of every value given one per run (a leading
+    axis of length ``B``) and the whole of every value the runs share;
+    the handlers on the stack are installed on every run, and the runs'
+    outputs stack along a leading run axis.
+
     Parameters
     ----------
     program : MonadicProgram
@@ -1587,6 +1636,21 @@ def run_program(
         }
         output, _ = _run_once(
             program, kernel, x, run_sites, supplied, data, per_run_data, 0, 1
+        )
+        return output
+    vectorized = _vectorized_sites(program, kernel, sites, supplied, data, runs)
+    if vectorized is not None:
+        output, _ = _run_once(
+            program,
+            kernel,
+            x,
+            vectorized,
+            supplied,
+            data,
+            per_run_data,
+            runs - 1,
+            runs,
+            vectorized=True,
         )
         return output
     outputs: list[torch.Tensor | dict[str, torch.Tensor]] = []
@@ -1655,6 +1719,13 @@ def _run_slice(
         If the value is laid out neither way.
     """
     morphism = _site_morphism(kernel, label)
+    if isinstance(morphism, MarginalizedFactor):
+        # The rows a marginalized block observes, which the block's
+        # integrated score reads: one set per run along a leading axis
+        # of length ``runs``, or one set every run shares.
+        if runs > 1 and value.dim() >= 2 and int(value.shape[0]) == runs:
+            return value[index]
+        return value
     if isinstance(morphism, PlateDraw | VectorisedObserve):
         single = _plated_numel(morphism)
         if (
@@ -1695,6 +1766,111 @@ def _run_slice(
         f"of {runs} rows runs the program {runs} times, so its value has "
         f"{layout}"
     )
+
+
+def _vectorized_sites(
+    program: MonadicProgram,
+    kernel: ProgramKernel,
+    sites: Mapping[str, torch.Tensor],
+    supplied: Mapping[str, torch.Tensor],
+    data: Mapping[str, torch.Tensor],
+    runs: int,
+) -> dict[str, torch.Tensor] | None:
+    """The site values for executing every run of a call at once, if it can.
+
+    Runs execute together when the program is a chain of single-variable
+    draws and observations from morphisms that are not plated, with no
+    let, score, call, or scan step and no host data: each such morphism
+    scores and draws one value per row of its input, so a run axis
+    leading every value keeps the runs apart exactly as running them one
+    by one does. Every given value must be one draw per run or one draw
+    every run shares, which is expanded across the runs.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    kernel : ProgramKernel
+        Its encoding, which names each site's morphism.
+    sites : Mapping[str, torch.Tensor]
+        The values given at sites, for every run.
+    supplied : Mapping[str, torch.Tensor]
+        The values given for let bindings.
+    data : Mapping[str, torch.Tensor]
+        The host data.
+    runs : int
+        The number of runs.
+
+    Returns
+    -------
+    dict[str, torch.Tensor] | None
+        The site values, each leading with the run axis, or ``None``
+        when the runs execute one by one.
+    """
+    if supplied or data:
+        return None
+    for spec in program.steps:
+        if not isinstance(spec, Draw | Observe) or len(spec.names) != 1:
+            return None
+        morphism = program.step_module(spec)
+        if (
+            not isinstance(morphism, ContinuousMorphism)
+            or isinstance(morphism, MonadicProgram)
+            or _plated(morphism)
+        ):
+            return None
+    together: dict[str, torch.Tensor] = {}
+    for label, value in sites.items():
+        morphism = _site_morphism(kernel, label)
+        single = _event_numel(morphism)
+        if single is None:
+            return None
+        if (
+            value.dim() >= 1
+            and int(value.shape[0]) == runs
+            and value.numel() == runs * single
+        ):
+            rows = value
+        elif value.numel() == single:
+            one = _run_slice(kernel, label, value, 1, 0)
+            rows = one.expand(runs, *one.shape[1:])
+        else:
+            return None
+        codomain = getattr(morphism, "codomain", None)
+        if isinstance(codomain, ContinuousSpace) and len(codomain.event_shape) == 1:
+            # A continuous draw is one row of its event per run, so a
+            # scalar's runs are a column, never a row the event reads.
+            rows = rows.reshape(runs, single)
+        together[label] = rows
+    return together
+
+
+def _site_carries(kernel: ProgramKernel, label: str, value: torch.Tensor) -> bool:
+    """Whether one run's given value of a site leads with the run axis.
+
+    Parameters
+    ----------
+    kernel : ProgramKernel
+        The program's encoding, which names each site's morphism.
+    label : str
+        The site's label.
+    value : torch.Tensor
+        The run's value, as `_run_slice` lays it out.
+
+    Returns
+    -------
+    bool
+        ``False`` for a plated site and for an observation laid out
+        along rows, whose element count is not one draw's; ``True`` for
+        one draw led by the run axis.
+    """
+    morphism = _site_morphism(kernel, label)
+    if _plated(morphism):
+        return False
+    single = _event_numel(morphism)
+    if single is None:
+        return value.dim() >= 1 and int(value.shape[0]) == 1
+    return value.numel() == single and value.dim() >= 1 and int(value.shape[0]) == 1
 
 
 def _per_run_value(
@@ -1776,8 +1952,14 @@ def _run_once(
     per_run_data: Mapping[str, bool],
     run_index: int,
     runs: int,
+    *,
+    vectorized: bool = False,
 ) -> tuple[torch.Tensor | dict[str, torch.Tensor], _RunAxis]:
     """Execute one run of a program on the reference machine.
+
+    With ``vectorized``, the call's ``runs`` runs execute together, each
+    value leading with the run axis; see `_vectorized_sites` for the
+    programs this applies to.
 
     Parameters
     ----------
@@ -1800,6 +1982,8 @@ def _run_once(
         The run's position among the call's runs.
     runs : int
         The number of runs the call makes.
+    vectorized : bool
+        Whether this execution carries every run of the call at once.
 
     Returns
     -------
@@ -1813,6 +1997,9 @@ def _run_once(
         never reaches.
     """
     axis = _RunAxis(program, {name: per_run_data.get(name, False) for name in data})
+    for label, value in sites.items():
+        if "@" not in label:
+            axis.given(program, label, _site_carries(kernel, label, value))
     run = RunContext(
         kernel,
         host_value,
@@ -1820,10 +2007,16 @@ def _run_once(
         supplied=supplied,
         run_index=run_index,
         runs=runs,
-        slice_value=lambda label, value: _run_slice(
-            kernel, label, value, runs, run_index
+        slice_value=(
+            (lambda label, value: value)
+            if vectorized
+            else (
+                lambda label, value: _run_slice(kernel, label, value, runs, run_index)
+            )
         ),
         carries_run_axis=axis.carries,
+        site_carries_run_axis=axis.site,
+        vectorized=vectorized,
     )
     stack = list(_handler_stack())
     steps = _HostSteps(run, x, axis)

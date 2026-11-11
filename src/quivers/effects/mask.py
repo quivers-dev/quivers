@@ -42,7 +42,12 @@ class MaskHandler(EffectHandler):
             The transformer.
         """
         mask = self.mask
-        if run.runs > 1 and mask.dim() >= 1 and int(mask.shape[0]) == run.runs:
+        if (
+            not run.vectorized
+            and run.runs > 1
+            and mask.dim() >= 1
+            and int(mask.shape[0]) == run.runs
+        ):
             # A mask laid out one entry per run gates each run by its own.
             mask = mask[run.run_index : run.run_index + 1]
 
