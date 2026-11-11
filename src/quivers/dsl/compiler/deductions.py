@@ -814,7 +814,7 @@ class _DeductionsMixin:
             raise CompileError(
                 f"{first.message} (required by normalize=lhs)", first.line, first.col
             )
-        lexicon_weights: dict[int, nn.Parameter] = {}
+        lexicon_weights: dict[int, torch.Tensor] = {}
 
         def _free_weight(production: Production) -> torch.Tensor:
             if not production.learnable:
