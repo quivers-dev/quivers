@@ -862,7 +862,7 @@ def render_let_expr_python(
         # vertex itself; no separate operator vertex is needed. QVR's
         # `&&` and `||` act entry by entry, which on Booleans and on
         # Boolean arrays alike is Python's `&` and `|`.
-        op = _PY_LOGICAL.get(expr.op, expr.op)
+        op: str = _PY_LOGICAL[expr.op] if expr.op in _PY_LOGICAL else expr.op
         b = ctx.v(ctx.fresh("bop"), "binary_operator")
         ctx.constraint(b, "field:operator", op)
         ctx.constraint(b, "chose-alt-fingerprint", op)
