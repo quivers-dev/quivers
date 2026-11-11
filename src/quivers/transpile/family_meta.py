@@ -1019,7 +1019,11 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": "dmnorm",
         },
         arg_aliases={
-            "pymc": {"loc": "mu", "covariance_matrix": "cov"},
+            "pymc": {
+                "loc": "mu",
+                "covariance_matrix": "cov",
+                "precision_matrix": "tau",
+            },
             "webppl": {"loc": "mu", "covariance_matrix": "cov"},
         },
         structured_lowering=StructuredSampleLowering(
@@ -1093,7 +1097,11 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": "dwish",
         },
         arg_aliases={
-            "numpyro": {"df": "concentration", "covariance_matrix": "scale_matrix"},
+            "numpyro": {
+                "df": "concentration",
+                "covariance_matrix": "scale_matrix",
+                "precision_matrix": "rate_matrix",
+            },
             "pymc": {"df": "nu", "covariance_matrix": "V"},
         },
     ),
@@ -1210,7 +1218,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": "dbern",
         },
         arg_aliases={
-            "pymc": {"probs": "p"},
+            "pymc": {"probs": "p", "logits": "logit_p"},
             "webppl": {"probs": "p"},
         },
     ),
@@ -1313,7 +1321,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": "dbin",
         },
         arg_aliases={
-            "pymc": {"probs": "p", "total_count": "n"},
+            "pymc": {"probs": "p", "total_count": "n", "logits": "logit_p"},
             "webppl": {"probs": "p", "total_count": "n"},
         },
     ),

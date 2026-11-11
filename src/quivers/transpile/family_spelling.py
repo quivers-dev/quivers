@@ -194,6 +194,24 @@ def can_spell(target: str, family: str) -> bool:
     )
 
 
+#: Alternative parameterizations no speller here reads: a first-class
+#: construction naming one is refused rather than spelled positionally
+#: as the canonical parameter.
+_UNSPELLED_ALTERNATIVES: frozenset[tuple[str, str]] = frozenset(
+    {
+        *(
+            (family, "logits")
+            for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+        ),
+        *(
+            (family, name)
+            for family in ("MultivariateNormal", "Wishart")
+            for name in ("covariance_matrix", "precision_matrix")
+        ),
+    }
+)
+
+
 def spell_distribution(
     target: str,
     family: str,
@@ -230,6 +248,15 @@ def spell_distribution(
     if not can_spell(target, family):
         raise UnsupportedConstruct(
             f"qvr-{target}", [f"qiec:distribution:{family}:no-{target}-spelling"]
+        )
+    alternative = next(
+        (name for name in arguments if (family, name) in _UNSPELLED_ALTERNATIVES),
+        None,
+    )
+    if alternative is not None:
+        raise UnsupportedConstruct(
+            f"qvr-{target}",
+            [f"qiec:distribution:{family}:{alternative}:no-{target}-spelling"],
         )
     record = FAMILIES[family]
     speller = _SPELLERS[target]

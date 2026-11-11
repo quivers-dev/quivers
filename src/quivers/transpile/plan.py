@@ -1451,6 +1451,7 @@ class _ProgramWalk:
                     "pass the result as probs"
                 ],
             )
+        args, arg_names = self._parameterization(family, args, arg_names)
         constraint = _apply_declared_bounds(
             from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
             plate,
@@ -1521,6 +1522,71 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _parameterization(
+        self, family: str, args: tuple[IRArg, ...], arg_names: tuple[str, ...]
+    ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
+        """Hand an alternative parameterization to the target as it reads it.
+
+        A target whose library has the parameterization the source wrote
+        receives it unchanged, under the keyword the renderer spells it
+        with. A literal precision matrix reaches a target without a
+        precision parameterization inverted, as the covariance it is the
+        inverse of. Any other alternative a target has no spelling for is
+        refused by name.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        args : tuple[IRArg, ...]
+            The call's wire arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+
+        Returns
+        -------
+        tuple[tuple[IRArg, ...], tuple[str, ...]]
+            The arguments and names the target receives.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the target has no spelling for the parameterization.
+        """
+        target = self.planner.target
+        for position, name in enumerate(arg_names):
+            natives = _NATIVE_ALTERNATIVES.get((family, name))
+            if natives is None or target in natives:
+                continue
+            argument = args[position]
+            if name == "precision_matrix" and isinstance(argument, IRArgMatrix):
+                inverse = _literal_inverse(argument)
+                if inverse is not None:
+                    return (
+                        tuple(
+                            inverse if index == position else item
+                            for index, item in enumerate(args)
+                        ),
+                        tuple(
+                            "covariance_matrix" if index == position else item
+                            for index, item in enumerate(arg_names)
+                        ),
+                    )
+            raise UnsupportedConstruct(
+                f"qvr-{target}",
+                [
+                    f"family:{family}:{name}: {target} has no {family} "
+                    f"parameterized by its {name}"
+                    + (
+                        "; write the matrix as a literal, which is inverted "
+                        "into the covariance"
+                        if name == "precision_matrix"
+                        else "; write the probability the logits name as probs"
+                    )
+                ],
+            )
+        return args, arg_names
 
     def _tensor_parameter_input(
         self, family: str, parameter: str, value: Value
@@ -2367,6 +2433,94 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+_EVERY_TARGET: frozenset[str] = frozenset(
+    {
+        "ir",
+        "bugs",
+        "church",
+        "edward2",
+        "gen",
+        "jags",
+        "numpyro",
+        "pymc",
+        "pyro",
+        "stan",
+        "turing",
+        "webppl",
+    }
+)
+
+#: The targets whose library takes each alternative parameterization as
+#: written, keyed by family and parameter. Every other target receives a
+#: literal precision matrix inverted and refuses anything else.
+_NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
+    ("Bernoulli", "logits"): frozenset(
+        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+    ),
+    ("Binomial", "logits"): frozenset(
+        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+    ),
+    ("Geometric", "logits"): frozenset({"ir", "edward2", "numpyro", "pyro"}),
+    ("NegativeBinomial", "logits"): frozenset({"ir", "edward2", "pyro"}),
+    ("MultivariateNormal", "covariance_matrix"): _EVERY_TARGET,
+    ("MultivariateNormal", "precision_matrix"): frozenset(
+        {"ir", "bugs", "jags", "numpyro", "pymc", "pyro", "stan"}
+    ),
+    ("Wishart", "covariance_matrix"): _EVERY_TARGET,
+    ("Wishart", "precision_matrix"): frozenset({"ir", "numpyro", "pyro"}),
+}
+
+
+def _literal_inverse(matrix: IRArgMatrix) -> IRArgMatrix | None:
+    """The inverse of a literal matrix, by Gauss-Jordan elimination.
+
+    Parameters
+    ----------
+    matrix : IRArgMatrix
+        The matrix, square with numeric entries.
+
+    Returns
+    -------
+    IRArgMatrix | None
+        Its inverse in double precision, or ``None`` when an entry is not
+        a number, the matrix is not square, or it is singular.
+    """
+    if not all(
+        isinstance(entry, IRArgNumber) for row in matrix.rows for entry in row.elements
+    ):
+        return None
+    rows = [
+        [cast(IRArgNumber, entry).value for entry in row.elements]
+        for row in matrix.rows
+    ]
+    size = len(rows)
+    if any(len(row) != size for row in rows):
+        return None
+    work = [
+        [*row, *(1.0 if column == index else 0.0 for column in range(size))]
+        for index, row in enumerate(rows)
+    ]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(work[row][column]))
+        if work[pivot][column] == 0.0:
+            return None
+        work[column], work[pivot] = work[pivot], work[column]
+        lead = work[column][column]
+        work[column] = [value / lead for value in work[column]]
+        for row in range(size):
+            if row != column and work[row][column] != 0.0:
+                factor = work[row][column]
+                work[row] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(work[row], work[column], strict=True)
+                ]
+    return IRArgMatrix(
+        rows=tuple(
+            IRArgList(elements=tuple(IRArgNumber(value=value) for value in row[size:]))
+            for row in work
+        )
+    )
 
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
