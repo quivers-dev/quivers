@@ -2623,8 +2623,9 @@ class _ProgramElaboration:
 
         Each binding names a left-hand side of several productions and a
         probability vector over them, in the order
-        `DeductionSystem.production_groups` lists; the table holds the
-        logarithm of every entry, groups in order. A value drawn at a
+        `DeductionSystem.production_groups` lists; the table holds each
+        entry's log-probability once the vector is renormalized,
+        ``log p_q - log sum p``, groups in order. A value drawn at a
         sample site must come from a family whose support is the simplex.
 
         Parameters
@@ -2641,7 +2642,7 @@ class _ProgramElaboration:
         Returns
         -------
         Value
-            The table, a vector of reals.
+            The table, a vector of reals: log-probabilities.
 
         Raises
         ------
@@ -2724,13 +2725,31 @@ class _ProgramElaboration:
         entries: list[Value] = []
         path = ("programs", state.declaration.name, "parses", parse.deduction)
         for label, group in bound.items():
-            for position in range(len(group.productions)):
+            size = len(group.productions)
+            probabilities = [
+                Gather(values[label], LiteralValue(position, INT), REAL)
+                for position in range(size)
+            ]
+            total: Value = probabilities[0]
+            for item in probabilities[1:]:
+                total = self._primitive(
+                    "add_real", (total, item), node, (*path, "table", label, "total")
+                )
+            normalizer = self._primitive(
+                "log", (total,), node, (*path, "table", label, "normalizer")
+            )
+            for position, item in enumerate(probabilities):
                 entries.append(
                     self._primitive(
-                        "log",
-                        (Gather(values[label], LiteralValue(position, INT), REAL),),
+                        "sub_real",
+                        (
+                            self._primitive(
+                                "log", (item,), node, (*path, "table", label, position)
+                            ),
+                            normalizer,
+                        ),
                         node,
-                        (*path, "table", label, position),
+                        (*path, "table", label, position, "normalized"),
                     )
                 )
         return TensorValue(

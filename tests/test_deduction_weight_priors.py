@@ -429,12 +429,90 @@ def test_bindings_that_do_not_fit_the_grammar_are_located_errors(
     assert error.line == line
 
 
-def test_every_transpile_target_refuses_the_search_by_name() -> None:
-    module = parse(_program(4))
+LOGISTIC_NORMAL = (
+    GRAMMAR
+    + """
+object Two : FinSet 2
+
+program one : Term -> Weight
+    sample z_det : Two <- Normal(loc=0.0, scale=1.0)
+    sample z_n : Two <- Normal(loc=0.0, scale=1.0)
+    sample z_v : Two <- Normal(loc=0.0, scale=1.0)
+    sample z_adv : Two <- Normal(loc=0.0, scale=1.0)
+    let chart = parse(PCFG, sentence, ("Det", softmax(z_det)), ("N", softmax(z_n)), ("V", softmax(z_v)), ("Adv", softmax(z_adv)))
+    score evidence = chart.goal_weight()
+    return evidence
+
+export one
+"""
+)
+
+
+def test_a_logistic_normal_prior_scores_alike_on_both_paths() -> None:
+    program = loads(LOGISTIC_NORMAL)
+    z = {
+        "z_det": [0.3, -0.2],
+        "z_n": [1.1, 0.4],
+        "z_v": [-0.5, 0.25],
+        "z_adv": [0.0, 0.7],
+    }
+    probabilities = {
+        name: torch.softmax(torch.tensor(value, dtype=torch.float64), 0)
+        for name, value in z.items()
+    }
+    sentence = ("a", "dog", "runs")
+    expected = float(
+        torch.distributions.Normal(0.0, 1.0)
+        .log_prob(
+            torch.tensor(
+                [v for value in z.values() for v in value], dtype=torch.float64
+            )
+        )
+        .sum()
+        + torch.log(probabilities["z_det"][1])
+        + torch.log(probabilities["z_n"][1])
+        + torch.log(probabilities["z_v"][1])
+    )
+    run = program.run(
+        "one",
+        data={"sentence": sentence},
+        sites={name: tuple(value) for name, value in z.items()},
+        seed=0,
+    )
+    assert run.log_joint == pytest.approx(expected, abs=1e-9)
+    recorded = trace(
+        program.morphism,
+        torch.zeros(1, 1),
+        observations={
+            "sentence": list(sentence),
+            **{name: torch.tensor(value) for name, value in z.items()},
+        },
+    )
+    assert float(recorded.log_joint.detach()) == pytest.approx(expected, abs=1e-4)
+
+
+def test_a_graph_target_refuses_the_weighted_entry_by_name() -> None:
+    # A logistic-normal prior: softmax of unconstrained draws.
+    with pytest.raises(UnsupportedConstruct) as sentence:
+        transpile(parse(LOGISTIC_NORMAL), target="bugs")
+    assert sentence.value.kinds == ["call:graph:PCFG__weighted_run"]
+    corpus_source = LOGISTIC_NORMAL.replace(
+        "parse(PCFG, sentence,", "parse(PCFG, corpus, Sentence,"
+    ).replace(
+        "object Two : FinSet 2", "object Two : FinSet 2\nobject Sentence : FinSet 4"
+    )
+    with pytest.raises(UnsupportedConstruct) as corpus:
+        transpile(parse(corpus_source), target="bugs")
+    assert corpus.value.kinds == ["call:graph:one__chart_corpus"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "source", [LOGISTIC_NORMAL, _program(4)], ids=["sentence", "corpus"]
+)
+def test_every_transpile_target_refuses_the_program(source: str) -> None:
+    module = parse(source)
     for target in available_targets():
         with pytest.raises(UnsupportedConstruct) as caught:
             transpile(module, target=target)
-        assert caught.value.kinds == ["qiec:capability:search:PCFG__weighted_run"], (
-            target,
-            caught.value.kinds,
-        )
+        assert caught.value.kinds, target

@@ -109,7 +109,7 @@ from quivers.stochastic.categories import (
     SlashCategory,
     UnitCategory,
 )
-from quivers.stochastic.productions import ProductionGroup, ProductionKey
+from quivers.stochastic.productions import Production, ProductionGroup, ProductionKey
 from quivers.stochastic.schema import (
     SCHEMA_REGISTRY,
     PatternBinarySchema,
@@ -2276,7 +2276,7 @@ class _DeductionElaboration:
         supplies is elaborated a second time, ``weighted``: the
         computations that read weights (the axiom, the derivation and its
         closure, and the entry with its convergence) take one more
-        argument, the table of the free log-weights of every production
+        argument, the table of the log-probabilities of every production
         in a group of several, and read their weights from it instead of
         the ``Param`` store. They are named ``<D>__weighted_<suffix>``
         and share the item family, the instances, the handlers, and the
@@ -2513,8 +2513,28 @@ class _DeductionElaboration:
             )
         if system.depth is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
+        normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
+        if system.normalized and not weighted:
+            for index, group in enumerate(system.groups):
+                if len(group.productions) > 1 and any(
+                    member.learnable for member in group.productions
+                ):
+                    normalizers.append(
+                        (
+                            declare(
+                                system.name(f"lhs{index}"),
+                                (),
+                                (),
+                                REAL,
+                                EffectRow((params.entry,)),
+                            ),
+                            group,
+                        )
+                    )
         context = _Context(self, system, signatures, params, n, table, threaded)
-        computations: list[NamedComputation] = []
+        computations: list[NamedComputation] = [
+            context.normalizer(signature, group) for signature, group in normalizers
+        ]
         if not weighted:
             computations.extend(
                 (
@@ -5685,13 +5705,14 @@ class _Context:
         """Read a production's log-probability in its group, then continue.
 
         The production's group holds every rule and lexicon entry that
-        rewrites its left-hand side. Each member's free log-weight is
-        its learned parameter, read under the name the agenda engine
-        keys it by, or zero for a member that is not learnable, and the
-        production's weight is its own free log-weight minus the
-        log-sum-exp of the group's, computed stably about the group's
-        largest free log-weight: the entry of the group's
-        ``log_softmax`` the agenda engine reads.
+        rewrites its left-hand side. In the weighted variant the
+        production's log-probability is its entry of the table the
+        program supplies. Otherwise each member's free log-weight is its
+        learned parameter, read under the name the agenda engine keys it
+        by, or zero for a member that is not learnable, and the
+        production's weight is its own free log-weight minus the group's
+        log-sum-exp, which the group's normalizer computation answers:
+        the entry of the group's ``log_softmax`` the agenda engine reads.
 
         Parameters
         ----------
@@ -5703,21 +5724,106 @@ class _Context:
         Returns
         -------
         Computation
-            The parameter reads, innermost the continuation.
+            The reads, innermost the continuation.
         """
         system = self.system
-        group = next(
-            group
-            for group in system.groups
+        index, group = next(
+            (index, group)
+            for index, group in enumerate(system.groups)
             if any(production.key == key for production in group.productions)
         )
-        path = ("productions", group.label)
         if len(group.productions) == 1:
             # A production alone in its group has probability one.
             return continue_with(self.weight_of(LiteralValue(0.0, REAL)))
+        if self.table is not None:
+            entry = Gather(Var(self.table), _int(system.table[key]), REAL)
+            return continue_with(self.weight_of(entry))
+        production = next(item for item in group.productions if item.key == key)
+        if not any(member.learnable for member in group.productions):
+            # Every member has free log-weight zero: a uniform group.
+            return continue_with(
+                self.weight_of(LiteralValue(-math.log(len(group.productions)), REAL))
+            )
+
+        def normalized(own: Value) -> Computation:
+            """Subtract the group's log-sum-exp from the own free weight.
+
+            Parameters
+            ----------
+            own : Value
+                The production's free log-weight.
+
+            Returns
+            -------
+            Computation
+                The normalizer's call, then the continuation.
+            """
+            return self.bind(
+                "normalizer",
+                REAL,
+                self.call(system.name(f"lhs{index}"), ()),
+                lambda normalizer: continue_with(
+                    self.weight_of(self.primitive("sub_real", own, Var(normalizer)))
+                ),
+            )
+
+        if not production.learnable:
+            return normalized(LiteralValue(0.0, REAL))
+        return self.bind(
+            "free",
+            REAL,
+            self.parameter(
+                _string(self.parameter_name(production)),
+                "productions",
+                group.label,
+                "parameter",
+            ),
+            lambda free: normalized(Var(free)),
+        )
+
+    def parameter_name(self, production: Production) -> str:
+        """The ``Param`` name of a learnable production's free weight.
+
+        Parameters
+        ----------
+        production : Production
+            The production.
+
+        Returns
+        -------
+        str
+            ``<D>.rule.<r>:`` for a rule, ``<D>.lex.<i>`` for an entry.
+        """
+        system = self.system
+        if production.kind == "rule":
+            return (
+                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
+            )
+        return f"{system.decl.name}.lex.{production.index}"
+
+    def normalizer(
+        self, signature: ComputationSignature, group: ProductionGroup
+    ) -> NamedComputation:
+        """The log-sum-exp of one group's free log-weights.
+
+        The free weights are read from ``Param`` (zero for a member that
+        is not learnable) and summed stably about their maximum.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+        group : ProductionGroup
+            The group, of several productions.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
 
         def read(position: int, values: list[Value]) -> Computation:
-            """Read the group's free log-weights from a member on.
+            """Read the free log-weights from a member on.
 
             Parameters
             ----------
@@ -5729,62 +5835,49 @@ class _Context:
             Returns
             -------
             Computation
-                The reads, innermost the normalized weight.
+                The reads, innermost the log-sum-exp.
             """
             if position == len(group.productions):
-                return continue_with(self.weight_of(normalized(values)))
+                return Return(self.log_sum_exp(values))
             production = group.productions[position]
-            if self.table is not None:
-                entry = Gather(
-                    Var(self.table), _int(system.table[production.key]), REAL
-                )
-                return read(position + 1, [*values, entry])
             if not production.learnable:
                 return read(position + 1, [*values, LiteralValue(0.0, REAL)])
-            name = (
-                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
-                if production.kind == "rule"
-                else f"{system.decl.name}.lex.{production.index}"
-            )
             return self.bind(
                 "free",
                 REAL,
-                self.parameter(_string(name), *path, position, "parameter"),
+                self.parameter(
+                    _string(self.parameter_name(production)),
+                    "normalizers",
+                    group.label,
+                    position,
+                ),
                 lambda free: read(position + 1, [*values, Var(free)]),
             )
 
-        def normalized(values: list[Value]) -> Value:
-            """The production's own entry of the group's ``log_softmax``.
+        return self.computation(signature, (), read(0, []))
 
-            Parameters
-            ----------
-            values : list[Value]
-                The group's free log-weights, in member order.
+    def log_sum_exp(self, values: list[Value]) -> Value:
+        """``log(sum(exp(v)))`` computed about the largest value.
 
-            Returns
-            -------
-            Value
-                The weight, a ``Real``.
-            """
-            own = next(
-                values[position]
-                for position, production in enumerate(group.productions)
-                if production.key == key
-            )
-            peak = values[0]
-            for value in values[1:]:
-                peak = self.primitive("max_real", peak, value)
-            total: Value | None = None
-            for value in values:
-                term = self.primitive("exp", self.primitive("sub_real", value, peak))
-                total = (
-                    term if total is None else self.primitive("add_real", total, term)
-                )
-            assert total is not None
-            normalizer = self.primitive("add_real", peak, self.primitive("log", total))
-            return self.primitive("sub_real", own, normalizer)
+        Parameters
+        ----------
+        values : list[Value]
+            Reals, at least one.
 
-        return read(0, [])
+        Returns
+        -------
+        Value
+            The log-sum-exp, a ``Real``.
+        """
+        peak = values[0]
+        for value in values[1:]:
+            peak = self.primitive("max_real", peak, value)
+        total: Value | None = None
+        for value in values:
+            term = self.primitive("exp", self.primitive("sub_real", value, peak))
+            total = term if total is None else self.primitive("add_real", total, term)
+        assert total is not None
+        return self.primitive("add_real", peak, self.primitive("log", total))
 
     # -- entry ------------------------------------------------------------
 
