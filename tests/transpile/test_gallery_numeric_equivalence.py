@@ -199,6 +199,11 @@ for _scan_model in (
 # reads factor extents from plate cardinalities and refuses.
 _EXPECTED_TRANSPILE_RAISES[("gen", "tree_categorical")] = "let-expr:LetExprFactor:gen"
 
+# BUGS has no data block to shift tree_categorical's zero-based class
+# codes to the one-based codes `dcat` reads, and no free log-density
+# statement to score them otherwise.
+_EXPECTED_TRANSPILE_RAISES[("bugs", "tree_categorical")] = "observe:class-code"
+
 for _neural_model in (
     "deep_markov",
     "seq2seq",
