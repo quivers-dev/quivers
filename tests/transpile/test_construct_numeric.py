@@ -378,7 +378,7 @@ def _observe_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
 
 
 def _sample_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
-    """A drawn class read as a subscript and as a number.
+    """A class drawn per row, read as a subscript and as a number.
 
     Parameters
     ----------
@@ -394,7 +394,7 @@ def _sample_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     return (
         D.Dirichlet(torch.ones(3)).log_prob(probs)
         + D.Normal(0.0, 1.0).log_prob(mu).sum()
-        + D.Categorical(probs=probs).log_prob(z)
+        + D.Categorical(probs=probs).log_prob(z).sum()
         + D.Normal(mu[z] + z, 1.0).log_prob(x).sum()
     )
 
@@ -453,9 +453,9 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"probs": [0.25, 0.5, 0.25]},
     ],
     "steps/sample_class_code": [
-        {"probs": [0.2, 0.3, 0.5], "mu": [-1.0, 0.5, 2.0], "z": 0},
-        {"probs": [0.6, 0.3, 0.1], "mu": [0.3, -0.7, 1.1], "z": 2},
-        {"probs": [0.25, 0.5, 0.25], "mu": [1.5, 1.0, -0.5], "z": 1},
+        {"probs": [0.2, 0.3, 0.5], "mu": [-1.0, 0.5, 2.0], "z": [0, 2, 1, 2]},
+        {"probs": [0.6, 0.3, 0.1], "mu": [0.3, -0.7, 1.1], "z": [2, 2, 0, 1]},
+        {"probs": [0.25, 0.5, 0.25], "mu": [1.5, 1.0, -0.5], "z": [1, 0, 0, 2]},
     ],
     "steps/observe_ordinal_code": [{"eta": -0.8}, {"eta": 0.3}, {"eta": 1.6}],
     "let_expressions/let_plated_list_operand": [{"mu": -0.6}, {"mu": 0.7}, {"mu": 1.3}],
@@ -507,7 +507,7 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
 #: The shape of every name a point carries; a scalar's is empty.
 _SHAPES: dict[str, dict[str, list[int]]] = {
     "steps/observe_class_code": {"probs": [3], "y": [5]},
-    "steps/sample_class_code": {"probs": [3], "mu": [3], "z": [], "x": [4]},
+    "steps/sample_class_code": {"probs": [3], "mu": [3], "z": [4], "x": [4]},
     "steps/observe_ordinal_code": {"eta": [], "y": [4]},
     "let_expressions/let_plated_list_operand": {"mu": [], "y": [4]},
     "steps/marginalize_let_probs": {"r": [], "y": [3]},
