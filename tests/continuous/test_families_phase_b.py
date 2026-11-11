@@ -369,4 +369,4 @@ class TestFamilyMetaWiring:
         # names, or leaving, changes what `transpile` accepts.
         from quivers.transpile.family_meta import FAMILY_META
 
-        assert len(FAMILY_META) == 58
+        assert len(FAMILY_META) == 60

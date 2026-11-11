@@ -163,8 +163,8 @@ from quivers.transpile.renderers._stan_helpers import (
 #: when it is discrete. The keys are the `target_names["stan"]`
 #: entries of [`FAMILY_META`][quivers.transpile.family_meta.FAMILY_META]
 #: plus the helper densities grafted from `runtime_stan_functions.stan`
-#: (`continuous_bernoulli`, `kumaraswamy`, `logit_normal`,
-#: `matrix_normal`). A Stan sampling name absent from this table has
+#: (`continuous_bernoulli`, `kumaraswamy`, `log_gamma`, `logit_beta`,
+#: `logit_normal`, `matrix_normal`). A Stan sampling name absent from this table has
 #: no log-density form, and
 #: [`StanRenderer._log_density_name`][quivers.transpile.renderers.stan.StanRenderer]
 #: raises rather than emit a `~` statement that would drop constants.
@@ -189,6 +189,8 @@ _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "lkj_corr": "lpdf",
     "lkj_corr_cholesky": "lpdf",
     "logistic": "lpdf",
+    "log_gamma": "lpdf",
+    "logit_beta": "lpdf",
     "logit_normal": "lpdf",
     "lognormal": "lpdf",
     "matrix_normal": "lpdf",
@@ -4410,6 +4412,8 @@ _STAN_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
         "ContinuousBernoulli",
         "MatrixNormal",
         "LogitNormal",
+        "LogGamma",
+        "LogitBeta",
     }
 )
 

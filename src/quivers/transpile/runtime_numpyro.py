@@ -7,7 +7,9 @@ supports: [`LogitNormal`][torch.distributions.LogitNormal],
 [`FisherSnedecor`][torch.distributions.FisherSnedecor],
 [`LogisticNormal`][torch.distributions.LogisticNormal],
 [`OneHotCategorical`][torch.distributions.OneHotCategorical], and
-[`OrderedProbit`][quivers.transpile.family_meta.OrderedProbit]. The
+[`OrderedProbit`][quivers.transpile.family_meta.OrderedProbit],
+[`LogGamma`][quivers.continuous.log_space.LogGamma], and
+[`LogitBeta`][quivers.continuous.log_space.LogitBeta]. The
 [`NumPyroRenderer`][quivers.transpile.renderers.numpyro.NumPyroRenderer]
 grafts the class definitions it needs from this module into the
 emitted source, so the transpiled program is a self-contained,
@@ -20,7 +22,8 @@ agrees with the QVR model.
 The class bodies reference only names the emitted module already
 binds: ``numpyro`` (with its ``numpyro.distributions`` and
 ``numpyro.distributions.transforms`` submodules), ``jnp``
-(``jax.numpy``), and ``jss`` (``jax.scipy.special``). The renderer
+(``jax.numpy``), ``jss`` (``jax.scipy.special``), and ``jrandom``
+(``jax.random``). The renderer
 emits the matching imports before the grafted classes; the imports
 here keep this module directly importable and unit-testable.
 """
@@ -28,6 +31,7 @@ here keep this module directly importable and unit-testable.
 from __future__ import annotations
 
 import jax.numpy as jnp
+import jax.random as jrandom
 import jax.scipy.special as jss
 import numpyro
 import numpyro.distributions
@@ -56,6 +60,108 @@ class LogitNormal(numpyro.distributions.TransformedDistribution):
             numpyro.distributions.transforms.SigmoidTransform(),
             validate_args=validate_args,
         )
+
+
+class LogGamma(numpyro.distributions.Distribution):
+    """``log(G)`` for ``G ~ Gamma(concentration, rate)`` on the real line.
+
+    The density ``a (log r + y) - r exp(y) - gammaln(a)`` is exact for
+    every finite ``y``. Draws stay in log space through the shape
+    augmentation ``log G' + log(U) / a`` with ``G' ~ Gamma(a + 1)``
+    and ``U ~ Uniform(0, 1]``, so a small shape never forms a Gamma
+    draw that underflows; ``G'`` carries NumPyro's implicit
+    reparameterization gradient.
+    """
+
+    arg_constraints = {
+        "concentration": numpyro.distributions.constraints.positive,
+        "rate": numpyro.distributions.constraints.positive,
+    }
+    support = numpyro.distributions.constraints.real
+    reparametrized_params = ["concentration", "rate"]
+
+    def __init__(self, concentration, rate, *, validate_args=None):
+        self.concentration = jnp.asarray(concentration, dtype=jnp.result_type(float))
+        self.rate = jnp.asarray(rate, dtype=jnp.result_type(float))
+        batch_shape = jnp.broadcast_shapes(
+            jnp.shape(self.concentration), jnp.shape(self.rate)
+        )
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def log_prob(self, value):
+        log_rate = jnp.log(self.rate)
+        return (
+            self.concentration * (log_rate + value)
+            - jnp.exp(value + log_rate)
+            - jss.gammaln(self.concentration)
+        )
+
+    def sample(self, key, sample_shape=()):
+        shape = sample_shape + self.batch_shape
+        concentration = jnp.broadcast_to(self.concentration, shape)
+        boost_key, uniform_key = jrandom.split(key)
+        boosted = numpyro.distributions.Gamma(concentration + 1.0).sample(boost_key)
+        uniform = jrandom.uniform(uniform_key, shape, dtype=concentration.dtype)
+        return (
+            jnp.log(boosted)
+            + jnp.log1p(-uniform) / concentration
+            - jnp.log(jnp.broadcast_to(self.rate, shape))
+        )
+
+
+class LogitBeta(numpyro.distributions.Distribution):
+    """``logit(P)`` for ``P ~ Beta(concentration1, concentration0)``.
+
+    The density ``a log_sigmoid(x) + b log_sigmoid(-x) - log B(a, b)``
+    is exact for every finite ``x``. A draw is the difference of two
+    unit-rate log-Gamma draws, each made in log space by the shape
+    augmentation ``log G' + log(U) / a``.
+    """
+
+    arg_constraints = {
+        "concentration1": numpyro.distributions.constraints.positive,
+        "concentration0": numpyro.distributions.constraints.positive,
+    }
+    support = numpyro.distributions.constraints.real
+    reparametrized_params = ["concentration1", "concentration0"]
+
+    def __init__(self, concentration1, concentration0, *, validate_args=None):
+        self.concentration1 = jnp.asarray(
+            concentration1, dtype=jnp.result_type(float)
+        )
+        self.concentration0 = jnp.asarray(
+            concentration0, dtype=jnp.result_type(float)
+        )
+        batch_shape = jnp.broadcast_shapes(
+            jnp.shape(self.concentration1), jnp.shape(self.concentration0)
+        )
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def log_prob(self, value):
+        first = self.concentration1
+        second = self.concentration0
+        return (
+            first * jss.log_expit(value)
+            + second * jss.log_expit(-value)
+            - jss.gammaln(first)
+            - jss.gammaln(second)
+            + jss.gammaln(first + second)
+        )
+
+    def sample(self, key, sample_shape=()):
+        shape = sample_shape + self.batch_shape
+        first = jnp.broadcast_to(self.concentration1, shape)
+        second = jnp.broadcast_to(self.concentration0, shape)
+        keys = jrandom.split(key, 4)
+        draws = []
+        for shape_value, boost_key, uniform_key in (
+            (first, keys[0], keys[1]),
+            (second, keys[2], keys[3]),
+        ):
+            boosted = numpyro.distributions.Gamma(shape_value + 1.0).sample(boost_key)
+            uniform = jrandom.uniform(uniform_key, shape, dtype=shape_value.dtype)
+            draws.append(jnp.log(boosted) + jnp.log1p(-uniform) / shape_value)
+        return draws[0] - draws[1]
 
 
 class HalfStudentT(numpyro.distributions.FoldedDistribution):
@@ -288,7 +394,9 @@ __all__ = [
     "ContinuousBernoulli",
     "FisherSnedecor",
     "HalfStudentT",
+    "LogGamma",
     "LogisticNormal",
+    "LogitBeta",
     "LogitNormal",
     "OneHotCategorical",
     "OrderedProbit",
