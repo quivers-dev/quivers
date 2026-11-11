@@ -290,7 +290,7 @@ class WebPPLRenderer(RendererBase):
         # sites resolve through normal JS name lookup.
         if (
             any(_ir_uses_family(ir.body, f) for f in _WEBPPL_RUNTIME_HELPER_FAMILIES)
-            or _ir_emits_qvr_bcast(ir, self._name_rank)
+            or _ir_emits_qvr_bcast(ir, self._name_event_rank, self._name_rank)
             or _ir_uses_webppl_math(ir.body)
             or _ir_reduces_event_axis(ir.body, self._name_event_rank, self._name_rank)
             or _ir_has_marginalize(ir.body)
@@ -1530,25 +1530,21 @@ class WebPPLRenderer(RendererBase):
         `_qvr_bcast` helper, since a JavaScript operator would coerce
         an array to `NaN`.
         """
-        expr = _reduce_last_axis(node.expr, self._name_event_rank, self._name_rank)
-        rank = let_expr_rank(expr, self._name_rank)
-        dims = (*node.plate.batch_dims, *node.plate.event_dims)
         js = _JsLetCtx(ctx.sb, lambda p: self._fresh(ctx, p), self._cards)
-        if rank == 0 or not dims:
-            rhs = render_let_expr_javascript(
-                js, _vectorize_let_expr(expr, self._name_rank)
-            )
+        dims = (*node.plate.batch_dims, *node.plate.event_dims)
+        loop_var = self._fresh_loop_var()
+        emitted, by_row = _emitted_let_expr(
+            node, self._name_event_rank, self._name_rank, loop_var
+        )
+        if not by_row:
+            rhs = render_let_expr_javascript(js, emitted)
             self._emit_var_decl(ctx, self._body_vid, node.name, rhs)
             self._binding_plates[node.name] = node.plate
             self._binding_supports[node.name] = node.constraint
             return
-        loop_var = self._fresh_loop_var()
-        row = take_row(expr, LetExprVar(name=loop_var), self._name_rank, "webppl")
         body_block = self._fresh(ctx, "lbody")
         ctx.sb.vertex(body_block, "statement_block")
-        body_vid = render_let_expr_javascript(
-            js, _vectorize_let_expr(row, self._name_rank)
-        )
+        body_vid = render_let_expr_javascript(js, emitted)
         self._emit_return_statement(ctx, body_block, body_vid)
         lam = self._function_expression(ctx, (loop_var, "_"), body_block)
         rows = self._zero_array(ctx, self._dim_size_value(ctx, dims[0]))
@@ -2837,15 +2833,63 @@ def _vectorize_let_expr(expr: LetExprNode, ranks: Mapping[str, int]) -> LetExprN
     return expr
 
 
-def _ir_emits_qvr_bcast(ir: IRProgram, ranks: Mapping[str, int]) -> bool:
-    """True iff a deterministic binding or score in ``ir`` applies an
-    operator to an array operand, which the renderer emits as a
+def _emitted_let_expr(
+    node: IRDeterministic,
+    event_ranks: Mapping[str, int],
+    ranks: Mapping[str, int],
+    loop_var: str,
+) -> tuple[LetExprNode, bool]:
+    """The expression the renderer emits for a deterministic binding.
+
+    A binding with no axis, or with no plate, is its whole expression; a
+    binding with a leading axis is built one row at a time, so it is the
+    row the loop variable reads through `take_row`. Either is vectorized,
+    so an operator over an array the expression still holds is a
+    `_qvr_bcast` call.
+
+    Parameters
+    ----------
+    node : IRDeterministic
+        The binding.
+    event_ranks : Mapping[str, int]
+        The event rank of each name the plan binds.
+    ranks : Mapping[str, int]
+        The rank of each name the plan binds.
+    loop_var : str
+        The row loop's variable.
+
+    Returns
+    -------
+    tuple[LetExprNode, bool]
+        The emitted expression, and whether it is a row of a
+        ``mapIndexed`` over the leading axis.
+    """
+    expr = _reduce_last_axis(node.expr, event_ranks, ranks)
+    dims = (*node.plate.batch_dims, *node.plate.event_dims)
+    if let_expr_rank(expr, ranks) == 0 or not dims:
+        return _vectorize_let_expr(expr, ranks), False
+    row = take_row(expr, LetExprVar(name=loop_var), ranks, "webppl")
+    return _vectorize_let_expr(row, ranks), True
+
+
+def _ir_emits_qvr_bcast(
+    ir: IRProgram, event_ranks: Mapping[str, int], ranks: Mapping[str, int]
+) -> bool:
+    """True iff an expression the renderer emits for ``ir`` applies an
+    operator to an array operand, which it emits as a
     [`_qvr_bcast`][quivers.transpile.runtime_webppl] call.
+
+    A top-level binding is judged by the expression it is emitted as
+    (its row, when it is built one row at a time), a score by its whole
+    expression, and a binding inside a marginalize scope by its whole
+    expression.
 
     Parameters
     ----------
     ir : IRProgram
         The plan.
+    event_ranks : Mapping[str, int]
+        The event rank of each name the plan binds.
     ranks : Mapping[str, int]
         The rank of each name the plan binds.
 
@@ -2854,7 +2898,23 @@ def _ir_emits_qvr_bcast(ir: IRProgram, ranks: Mapping[str, int]) -> bool:
     bool
         Whether the runtime helper must be grafted.
     """
-    return _body_emits_qvr_bcast(ir.body, ranks)
+    bcast = frozenset({"_qvr_bcast"})
+    for node in ir.body:
+        if isinstance(node, IRDeterministic):
+            emitted, _by_row = _emitted_let_expr(node, event_ranks, ranks, "__row")
+            if _let_expr_calls_any(emitted, bcast):
+                return True
+        elif isinstance(node, IRScore):
+            emitted = _vectorize_let_expr(
+                _reduce_last_axis(node.expr, event_ranks, ranks), ranks
+            )
+            if _let_expr_calls_any(emitted, bcast):
+                return True
+        elif isinstance(node, IRMarginalize) and _body_emits_qvr_bcast(
+            node.scope, ranks
+        ):
+            return True
+    return False
 
 
 #: QVR math primitives the WebPPL runtime supplies as elementwise
@@ -2922,8 +2982,8 @@ def _let_expr_calls_any(expr: LetExprNode, names: frozenset[str]) -> bool:
 
 
 def _body_emits_qvr_bcast(body: tuple[IRNode, ...], ranks: Mapping[str, int]) -> bool:
-    """Recursive worker for `_ir_emits_qvr_bcast`, descending into
-    marginalize scopes.
+    """Whether a marginalize scope's statements apply an operator to an
+    array operand, descending into nested scopes.
 
     Parameters
     ----------
