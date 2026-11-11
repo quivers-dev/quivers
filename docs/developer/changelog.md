@@ -9,7 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - **`concat` and `slice` in let expressions.** `concat(a, b, ...)` joins two or more tensors of one element type along their last axis, the leading axes agreeing and the last extents adding; `slice(v, start, length)` keeps `length` entries of the last axis from `start`, both bounds non-negative integer literals. Both are checked (a number where a tensor belongs, disagreeing element types or leading axes, a non-literal or out-of-range bound are refused at the argument), run on the reference machine and the compiled runtime, and transpile to every target, so a scan can carry a state of several parts, such as an LSTM's hidden and cell state, as one vector. BUGS and JAGS refuse a `concat` or `slice` of a table by name.
-
 - **`select(c, a, b)` and `real` / `int` of a Boolean in let expressions.** `select` takes `a` where the `Bool` condition holds and `b` elsewhere, entry by entry, broadcasting a number among its operands; both branches are of one type and both are evaluated, so the gradient is the taken branch's wherever the untaken branch is finite. `real(c)` and `int(c)` read a `Bool` as one or zero, so a mask such as `factor i : Pos, j : Pos in real(j <= i)` needs no integer clamp. Every transpile target computes them (`torch.where`, `jnp.where`, `pymc.math.switch`, `tf.where`, Stan's `c ? a : b`, Julia's `ifelse.`, JAGS's `ifelse`, and BUGS's `b + c * (a - b)`).
 
 ### Fixed
