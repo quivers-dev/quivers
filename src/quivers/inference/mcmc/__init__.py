@@ -13,6 +13,8 @@ Public surface (the kernels and driver are also re-exported from
 * `DualAveraging`, `WelfordCovariance`, and
   `find_reasonable_step_size`: the warmup adaptation primitives the
   kernels share.
+* `AdaptationSchedule`, `AdaptationWindow`, and `AdaptationMode`: the
+  Stan-style windowed warmup schedule the kernels follow by default.
 * `MCMC`: chain orchestrator with warmup, parallel chains, an
   `InitStrategy`, and posterior diagnostics (split-:math:`\\hat R`,
   effective sample size).
@@ -22,6 +24,9 @@ Public surface (the kernels and driver are also re-exported from
 from __future__ import annotations
 
 from quivers.inference.mcmc.adapt import (
+    AdaptationMode,
+    AdaptationSchedule,
+    AdaptationWindow,
     DualAveraging,
     WelfordCovariance,
     find_reasonable_step_size,
@@ -41,6 +46,9 @@ __all__ = [
     "HMCKernel",
     "NUTSKernel",
     "MassMatrixKind",
+    "AdaptationMode",
+    "AdaptationSchedule",
+    "AdaptationWindow",
     "DualAveraging",
     "WelfordCovariance",
     "find_reasonable_step_size",

@@ -484,8 +484,17 @@ class MCMCKernel(ABC):
         function is constructed once per `MCMC.run` and
         re-used across every step / chain."""
 
-    def start_adaptation(self) -> None:
-        """Enter the adaptation (warmup) phase."""
+    def start_adaptation(self, num_warmup: int) -> None:
+        """Enter the adaptation (warmup) phase.
+
+        Parameters
+        ----------
+        num_warmup : int
+            Number of warmup transitions that follow before
+            `stop_adaptation`, so that a kernel can lay out a warmup
+            schedule.
+        """
+        del num_warmup
         self.is_adapting = True
 
     def stop_adaptation(self) -> None:

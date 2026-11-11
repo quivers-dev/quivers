@@ -121,6 +121,79 @@ exposes per-chain divergence counts via `divergence_counts` (with
 `total_divergences` summing across chains), and posterior log
 densities per draw via `log_densities`.
 
+### Windowed warmup
+
+By default both kernels adapt in one phase (`adaptation="single"`):
+dual averaging runs over the whole warmup under the initial metric, the
+covariance estimate accumulates every warmup position, and the metric is
+installed once, when warmup ends. Two problems may follow on a target
+whose scales differ from one. The estimate includes the initial
+transient, which can inflate it by orders of magnitude when a chain
+starts far from the typical set, and the frozen step size was tuned
+for the identity metric rather than the metric the chain samples with.
+
+`adaptation="windowed"` follows Stan's schedule instead
+[@stanHmcTuning]. An
+[`AdaptationSchedule`](../api/inference/mcmc.md#quivers.inference.mcmc.AdaptationSchedule)
+splits the warmup into three phases: (i) an initial fast interval
+(`init_buffer`, default 75 iterations) that adapts only the step size;
+(ii) slow windows, the first `base_window` (default 25) iterations long
+and each later one twice as long, that each accumulate a fresh
+covariance estimate and install it, regularised as
+$\frac{n}{n+5}\hat\Sigma + 10^{-3}\frac{5}{n+5} I$, at the window's
+end, after which the step size is re-initialized by doubling or halving
+under the new metric and dual averaging restarts from it; and (iii) a
+terminal fast interval (`term_buffer`, default 50) that tunes the step
+size under the final metric. When the window after next would not fit
+before the terminal interval, the current slow window is stretched to
+reach it. A warmup too short for the buffers
+(`init_buffer + base_window + term_buffer > num_warmup`) rescales them
+to 15% / 75% / 10% of the warmup, and a warmup of fewer than 20
+iterations estimates no metric at all.
+[`NUTSKernel.adaptation_windows`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel.adaptation_windows)
+returns the windows a given warmup will run, as
+[`AdaptationWindow`](../api/inference/mcmc.md#quivers.inference.mcmc.AdaptationWindow)
+records, and `inverse_mass_matrix` reports the metric in use.
+
+<!-- python: skip -->
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference.mcmc import MCMC, AdaptationSchedule, NUTSKernel
+
+model = loads(
+    "object Obs : FinSet 20\n"
+    "program p : Obs -> Obs\n"
+    "    sample mu <- Normal(loc=0.0, scale=10.0)\n"
+    "    sample tau <- HalfNormal(scale=0.1)\n"
+    "    observe y : Obs <- Normal(loc=mu, scale=tau)\n"
+    "    return mu\n"
+    "export p\n"
+).morphism
+
+kernel = NUTSKernel(
+    mass_matrix="diagonal",
+    adaptation="windowed",
+    adaptation_schedule=AdaptationSchedule(init_buffer=75, term_buffer=50, base_window=25),
+)
+for window in kernel.adaptation_windows(500):
+    print(window.start, window.stop, window.adapts_metric)
+# 0 75 False, 75 100 True, 100 150 True, 150 250 True, 250 450 True, 450 500 False
+
+result = MCMC(kernel, num_warmup=500, num_samples=500, num_chains=2, seed=0).run(
+    model, torch.zeros(1, 1), {"y": 3.0 + 0.1 * torch.randn(20)}
+)
+print(kernel.step_size, kernel.inverse_mass_matrix)
+```
+
+The windowed schedule suits warmups long enough for its buffers, 150
+iterations under the defaults. A shorter warmup is rescaled, and its
+terminal interval may then last only a few iterations, too few for dual
+averaging to settle, which is why `"single"` remains the default. Under
+`"single"` mode the fixed-seed draws of a run are those the kernels have
+always produced.
+
 ## Hybrid samplers
 
 `r_hat` compares variation within chains with variation between chains.
