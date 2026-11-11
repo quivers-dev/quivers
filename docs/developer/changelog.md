@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Alternative parameterizations in source.** `MultivariateNormal` and `Wishart` take `covariance_matrix` or `precision_matrix` in place of `scale_tril`, and `Bernoulli`, `Binomial`, `Geometric`, and `NegativeBinomial` take `logits` in place of `probs`; the keywords a draw writes select the parameterization, and a draw naming two is refused at the draw. Both execution paths score each as `torch.distributions` does with the same keywords, logits in log space so an observation stays finite where its probability rounds to zero or one. Each transpile target receives the parameterization under its own spelling where its library has it (Stan `bernoulli_logit`, `binomial_logit`, `multi_normal_prec`; PyMC `logit_p` and `tau`; Turing `BernoulliLogit` and `BinomialLogit`; the `logits=` and `precision_matrix=` keywords of Pyro, NumPyro, and Edward2), a literal precision matrix inverted into its covariance where it has not, and refuses any other under `family:<Family>:<keyword>`.
+
 - **`FamilyParameter.event_dims`** records, for each axis of a family parameter, the axis of the family's sample it has the extent of: a `MultivariateNormal`'s `scale_tril` is `(0, 0)`, a `Wishart`'s `(0, 1)`, a `MatrixNormal`'s `col_covariance` `(1, 1)`.
 
 ### Fixed

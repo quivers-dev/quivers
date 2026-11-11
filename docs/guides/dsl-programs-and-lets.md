@@ -716,6 +716,55 @@ compiled runtime sizes every parameter when it builds the program, so it
 refuses a multivariate draw whose event size nothing in the program
 fixes, and the message lists the ways to fix it.
 
+### Alternative parameterizations
+
+Several families accept more than one complete set of keywords, and the
+keywords a draw writes select the parameterization; a draw naming two
+of them, such as `Bernoulli(probs=p, logits=l)`, is refused at the draw.
+
+| Family | Keyword sets |
+|---|---|
+| `MultivariateNormal` | `(loc, scale_tril)`, `(loc, covariance_matrix)`, `(loc, precision_matrix)` |
+| `Wishart` | `(df, scale_tril)`, `(df, covariance_matrix)`, `(df, precision_matrix)` |
+| `Bernoulli`, `Geometric`, `Categorical` | `(probs)`, `(logits)` |
+| `Binomial`, `NegativeBinomial` | `(total_count, probs)`, `(total_count, logits)` |
+
+```qvr
+object Row : FinSet 6
+object One : FinSet 1
+object Dim : FinSet 2
+
+program logistic : One -> One
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    # The log-odds go straight to the family: no sigmoid in a let.
+    observe y : Row <- Bernoulli(logits=eta)
+    return eta
+
+program gaussian_precision : One -> One
+    sample v <- MultivariateNormal(loc=[0.0, 0.0], precision_matrix=[[2.0, -0.5], [-0.5, 1.0]]) [over=Dim]
+    return v
+
+export logistic
+export gaussian_precision
+```
+
+The compiled runtime and the reference machine score each
+parameterization as `torch.distributions` does when built with the same
+keywords. Logits are scored in log space, `log p = -softplus(-l)` and
+`log (1 - p) = -softplus(l)`, so an observation stays finite where the
+probability itself rounds to zero or one: the tests check logits up to
+`|l| = 30`, where the probability form scores `-inf` in single precision.
+
+A transpile target receives the parameterization its library has under
+its own spelling (Stan's `bernoulli_logit`, `binomial_logit`, and
+`multi_normal_prec`, PyMC's `logit_p` and `tau`, Turing's
+`BernoulliLogit` and `BinomialLogit`, the `logits=` and
+`precision_matrix=` keywords of Pyro, NumPyro, and Edward2). A literal
+precision matrix reaches a target without a precision parameterization
+inverted into the covariance it is the inverse of; any other alternative
+a target has no spelling for is refused under `family:<Family>:<keyword>`.
+The [support page](../transpile-support.md) lists every outcome.
+
 For conditional distributions (input-conditional, learned-parameter
 form), use a [`morphism f : A -> B ~ Family`](dsl-declarations.md#kernel)
 declaration instead.
