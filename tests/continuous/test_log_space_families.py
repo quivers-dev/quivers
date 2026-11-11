@@ -37,6 +37,8 @@ from quivers.continuous import (
 from quivers.core.objects import FinSet
 from quivers.dsl import loads, parse
 from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+from quivers.inference import LatentRegistry
+from quivers.inference.trace import trace
 from quivers.qiec import validate_module
 from quivers.qiec.distributions import ReferenceBackend
 from quivers.qiec.program_runtime import run_program
@@ -619,7 +621,26 @@ def test_the_compiled_runtime_and_the_reference_machine_agree() -> None:
         assert reference.log_joint == pytest.approx(expected, rel=1e-9)
 
 
-def test_reference_sampler_matches_the_torch_sampler() -> None:
+def test_inference_sees_the_sites_on_the_real_line_with_the_identity_bijector() -> None:
+    """A latent of either family is unconstrained, so the potential a
+    sampler or a guide works on is the exact density itself."""
+    program = loads(_SOURCE).morphism
+    y = torch.tensor(_Y, dtype=torch.float64)
+    registry = LatentRegistry.from_trace(
+        program, trace(program, torch.zeros(1, 1), {"y": y})
+    )
+    for name in ("rate", "weight"):
+        site = registry[name]
+        assert site.support is constraints.real
+        assert isinstance(site.bijector, D.transforms.identity_transform.__class__)
+    joint = program.log_joint(
+        torch.zeros(1, 1),
+        {"y": y, "rate": _f64(-650.0), "weight": _f64(-480.0)},
+    )
+    assert torch.isfinite(joint).all()
+
+
+def test_the_reference_sampler_matches_the_closed_form_moments() -> None:
     """Both samplers' means sit within Monte Carlo error of the closed form."""
     backend = ReferenceBackend()
     rng = random.Random(43)
