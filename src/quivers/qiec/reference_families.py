@@ -2937,6 +2937,18 @@ def _lkj_sample(size: int, concentration: float, rng: random.Random) -> Matrix:
     """
 
     def draw_direction(count: int) -> list[float]:
+        """Draw independent standard normal coordinates.
+
+        Parameters
+        ----------
+        count : int
+            The number of coordinates.
+
+        Returns
+        -------
+        list[float]
+            The coordinates.
+        """
         return [rng.gauss(0.0, 1.0) for _ in range(count)]
 
     rows = onion_cholesky_rows(
