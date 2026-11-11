@@ -84,6 +84,7 @@ PROBE_MODULES = frozenset(
         "test_expected_offsets",
         "test_export_equivalence",
         "test_gallery_numeric_equivalence",
+        "test_log_space_family_numeric",
         "test_marginalize_numeric",
         "test_matrix_family_numeric",
         "test_numeric_equivalence",
@@ -95,6 +96,7 @@ PROBE_MODULES = frozenset(
         "test_qiec_distributions",
         "test_qiec_fixture_equivalence",
         "test_reduction_numeric",
+        "test_tensor_parameter_numeric",
         "test_vector_parameter_numeric",
         "test_via_fibration_numeric",
     }

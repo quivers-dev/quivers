@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 102 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 106 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 61 / 102   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 73 / 102   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 83 / 102   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 74 / 102   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 65 / 102   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 92 / 102   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 80 / 102   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 93 / 102   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 81 / 102   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 76 / 102   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 79 / 102   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 60 / 106   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 71 / 106   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 80 / 106   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 74 / 106   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 64 / 106   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 88 / 106   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 77 / 106   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 89 / 106   |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 77 / 106   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 74 / 106   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 77 / 106   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -141,25 +141,22 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                                        | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_factor_let_rows`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_gathered_prior_data`        | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_gather`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_value`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_probs`                  | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_vector_probs`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_step`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_bernoulli_logits`               | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_bernoulli_logits_rows`          | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                     | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_per_row_datum_scale`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_per_row_gamma_rate`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
@@ -167,15 +164,21 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
@@ -196,6 +199,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_expr_var`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_factor_index_arithmetic` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_fold_shared_accumulator` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_function_identity`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -278,6 +282,38 @@ bugs cannot transpile this program:
   - the module's `contraction_decl` declaration declares a contraction: a morphism built by folding several input morphisms together over their shared axes, with the product and sum of the fold taken from the `rule=` composition rule it names. Its meaning lives entirely in that algebra. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for a morphism defined by contracting other morphisms over an algebra's fold. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. A contraction has no counterpart to emit. Write the quantities you want scored as explicit `sample` / `observe` steps of a `program ... :` block, or evaluate the contraction in quivers and pass its result in as data.
 ```
 
+### `family:MultivariateNormal:scale_tril`
+
+Refused for: `steps/observe_mvn_host_factor`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `steps/observe_mvn_host_factor` reports:
+
+```text
+bugs cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+### `family:Wishart:scale_tril`
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `steps/sample_wishart_host_factor` reports:
+
+```text
+bugs cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
 ### `loss_decl`
 
 Refused for: `options/option_call`, `options/option_string`, `statements/loss_decl`.
@@ -292,6 +328,42 @@ Each backend words it differently; this is bugs's. `bugs` on `options/option_cal
 
 ```text
 the module's `loss_decl` declaration declares a training objective attached to a program, a deduction, an encoder or a decoder. A loss is something an optimiser minimises, not a term of the model's density. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for an optimisation objective separate from the joint it scores. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. If the term belongs in the density, write it as a `score` step inside the program; if it is an optimiser objective, keep it in quivers, which is where training happens.
+```
+
+### `param-source:linear`
+
+Refused for: `steps/function_linear`.
+
+Reported kinds:
+
+```text
+param-source:linear
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_linear` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'shift' (line 10, through shift) applies a 'linear' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+```
+
+### `param-source:linear:latent`
+
+Refused for: `steps/kernel_latent_weights`.
+
+Reported kinds:
+
+```text
+param-source:linear:latent
+```
+
+Every backend reports it in the same words. `bugs` on `steps/kernel_latent_weights` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the network of 'net' (line 11, through net) draws its weights as latent sites, but no target has a form for the network's affine layers applied to drawn weights. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.`, which has no explanation registered yet; please report it.
 ```
 
 ### `param-source:mlp`
@@ -415,7 +487,7 @@ QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its d
 
 ### `scan:no-lowering:cell`
 
-Refused for: `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`.
+Refused for: `steps/scan_bidirectional`, `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`, `steps/scan_outputs_all`, `steps/scan_reverse`.
 
 Reported kinds:
 
@@ -423,7 +495,7 @@ Reported kinds:
 scan:no-lowering:cell
 ```
 
-Every backend reports it in the same words. `bugs` on `steps/scan_cell_reads_matrix` reports:
+Every backend reports it in the same words. `bugs` on `steps/scan_bidirectional` reports:
 
 ```text
 `scan(cell)` threads `cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
@@ -605,7 +677,7 @@ bugs cannot transpile this program:
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -615,7 +687,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`bugs` on `steps/sample_mvn_sampled_loc` reports:
+`bugs` on `steps/sample_mvn_host_loc` reports:
 
 ```text
 bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -673,24 +745,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. bugs cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`bugs` on `steps/observe_bernoulli_logits` reports:
-
-```text
-bugs cannot score a draw from `Bernoulli`: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:BetaBinomial:no-bugs-distribution`**
@@ -874,24 +928,6 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`bugs` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -912,9 +948,9 @@ marginalize:ungrouped-over-plate:z
 
 **`observe:class-code:w`**
 
-Refused for: `steps/marginalize_gathered_prior_data`, [`lda`](examples/lda.md).
+Refused for: [`lda`](examples/lda.md).
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -922,7 +958,7 @@ Reported kinds:
 observe:class-code:w: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
 ```
 
-`bugs` on `steps/marginalize_gathered_prior_data` reports:
+`bugs` on `lda` reports:
 
 ```text
 bugs cannot emit this `observe` step: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
@@ -973,7 +1009,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1023,24 +1059,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`church` on `steps/observe_bernoulli_logits` reports:
-
-```text
-church cannot score a draw from `Bernoulli`: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:BetaBinomial:no-church-target`**
@@ -1277,24 +1295,6 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`church` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1371,24 +1371,6 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`edward2` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1445,24 +1427,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`gen` on `steps/observe_bernoulli_logits` reports:
-
-```text
-gen cannot score a draw from `Bernoulli`: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Categorical:logits`**
@@ -1591,24 +1555,6 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`gen` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1625,24 +1571,6 @@ marginalize:ungrouped-over-plate:z
 
 ```text
 `marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
-**`marginalize:weight-plate:theta_tok`**
-
-Refused for: `steps/marginalize_gathered_prior_data`.
-
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:weight-plate:theta_tok: the atom weights reference a name with no declared plate
-```
-
-`gen` on `steps/marginalize_gathered_prior_data` reports:
-
-```text
-gen cannot marginalize this latent out: the atom weights reference a name with no declared plate
 ```
 
 ### jags
@@ -1739,24 +1667,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
 ```
 
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`jags` on `steps/observe_bernoulli_logits` reports:
-
-```text
-jags cannot score a draw from `Bernoulli`: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1777,7 +1687,7 @@ jags cannot score a draw from `Categorical`: the target only exposes the probabi
 
 **`family:MultivariateNormal:non-ref-covariance`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1902,24 +1812,6 @@ let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the in
 jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
 ```
 
-**`let-expr:elementwise-axis-operator:jags`**
-
-Refused for: `steps/marginalize_gathered_prior_data`.
-
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-let-expr:elementwise-axis-operator:jags: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
-```
-
-`jags` on `steps/marginalize_gathered_prior_data` reports:
-
-```text
-jags-helper cannot lift an infix operator over an axis inside a `let`: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
-```
-
 **`marginalize:ungrouped-over-plate:state`**
 
 Refused for: [`hmm`](examples/hmm.md).
@@ -1936,24 +1828,6 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`jags` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -2127,24 +2001,6 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`pymc` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -2497,24 +2353,6 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
-**`marginalize:ungrouped-over-plate:tau`**
-
-Refused for: `steps/marginalize_factor_let_rows`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:ungrouped-over-plate:tau
-```
-
-`turing` on `steps/marginalize_factor_let_rows` reports:
-
-```text
-`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -2531,24 +2369,6 @@ marginalize:ungrouped-over-plate:z
 
 ```text
 `marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
-```
-
-**`marginalize:weight-plate:theta_tok`**
-
-Refused for: `steps/marginalize_gathered_prior_data`.
-
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-marginalize:weight-plate:theta_tok: the atom weights reference a name with no declared plate
-```
-
-`turing` on `steps/marginalize_gathered_prior_data` reports:
-
-```text
-turing cannot marginalize this latent out: the atom weights reference a name with no declared plate
 ```
 
 **`sample:event-axis-lift:x`**
@@ -2644,24 +2464,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`webppl` on `steps/observe_bernoulli_logits` reports:
-
-```text
-webppl cannot score a draw from `Bernoulli`: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Categorical:logits`**

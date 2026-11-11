@@ -30,9 +30,9 @@ hole in it.
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable, Iterator, Sequence
-from dataclasses import fields, is_dataclass, replace
-from typing import Literal, cast
+from collections.abc import Iterator, Sequence
+from dataclasses import fields, replace
+from typing import cast
 
 from torch.distributions import Distribution
 
@@ -48,15 +48,9 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprBinOp,
-    LetExprCall,
     LetExprFactor,
-    LetExprIndex,
-    LetExprList,
-    LetExprLiteral,
     LetExprNode,
     LetExprString,
-    LetExprUnaryOp,
     LetExprVar,
     LetFactorBinder,
     LetFactorCase,
@@ -71,14 +65,12 @@ from quivers.qiec.terms import (
     Bind,
     Call,
     Comprehension,
-    ConstructorValue,
     Computation,
     DistributionValue,
     Gather,
     Handle,
     KernelMatrix,
     LetBinding,
-    LetValue,
     LiteralValue,
     Local,
     LogDensity,
@@ -88,9 +80,7 @@ from quivers.qiec.terms import (
     PlateShape,
     PrimitiveApplication,
     Projection,
-    Reduction,
     Return,
-    Rowwise,
     SegmentSum,
     SiteValue,
     TableMap,
@@ -101,14 +91,13 @@ from quivers.qiec.terms import (
     WeightSum,
 )
 from quivers.dsl.program_elaboration import GAP_CODE
-from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.dsl.qiec_lowering import (
-    _replace_locals,
     QiecDiagnosticError,
     has_qiec_surface,
     lower_qvr_to_qiec,
 )
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.canonical import sampled_element, tensor_shape
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import (
     INT,
     IndexLiteral,
@@ -116,7 +105,6 @@ from quivers.qiec.types import (
     IndexVariable,
     StaticArgument,
     TypeExpr,
-    render_static,
 )
 import didactic.api as dx
 
@@ -141,7 +129,6 @@ from quivers.transpile.ir import (
     IRArgNumber,
     IRArgRef,
     IRCall,
-    IRQiecValueExpr,
     IRDataInput,
     IRDeterministic,
     IRMarginalize,
@@ -176,40 +163,19 @@ from quivers.transpile.lower import (
     object_shapes,
     pick_program,
 )
-from quivers.transpile.qiec_ir import IRQiecStatic, IRQiecValue, _convert, lower_qiec_ir
-from quivers.transpile._builtin_spellings import spell_builtin
+from quivers.transpile.qiec_ir import IRQiecStatic, _convert, lower_qiec_ir
+from quivers.transpile._pure_calls import (
+    _VALUE_TYPES,
+    _TRANSPARENT,
+    _LetFloater,
+    _expression,
+    _local_names,
+    pure_call_bindings,
+)
 
 #: The registry's name for a structured family's constructor argument
 #: where the two differ.
 _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kernel"}}
-
-#: Primitives that are conversions the target's arithmetic performs on
-#: its own, so they read back as their operand.
-_TRANSPARENT: frozenset[str] = frozenset({"int_to_real", "as_weight", "weight_value"})
-
-#: Targets whose arithmetic keeps two integers integral: Stan's `/`
-#: truncates `int / int`. On them a conversion to real is not
-#: transparent, so `int_to_real(x)` reads back as `1.0 * x`, which is
-#: the same number and a real.
-_INTEGRAL_ARITHMETIC_TARGETS: frozenset[str] = frozenset({"stan"})
-
-#: Targets whose arithmetic does not promote an integer operand to a
-#: real one: TensorFlow refuses a product of a float and an int tensor.
-#: On them a conversion to real reads back as an explicit `real(x)`.
-_STRICT_DTYPE_TARGETS: frozenset[str] = frozenset({"edward2"})
-
-#: Integer division and remainder, which truncate toward zero. A target
-#: whose `/` and `%` on two integers do so reads them as the operators;
-#: every other target reads them as these calls, which each renderer
-#: spells with its own truncating division and remainder.
-_TRUNCATING_CALLS: dict[str, str] = {"div_int": "quot", "mod_int": "rem"}
-
-#: Unary primitives the expression language writes as operators.
-_UNARY_OPERATORS: dict[str, Literal["-", "not"]] = {
-    "neg_int": "-",
-    "neg_real": "-",
-    "not": "not",
-}
 
 
 class _Planner:
@@ -312,256 +278,6 @@ class _Planner:
         )
 
 
-#: The value terms a plan walks into when reading a pair's components
-#: back: every variant of `Value`, as one runtime tuple.
-_VALUE_TYPES: tuple[type, ...] = tuple(
-    item for item in Value.__value__.__args__ if isinstance(item, type)
-)
-
-
-class _LetFloater:
-    """Hoist the bindings of every :class:`LetValue` in a value to the front.
-
-    A plan states a program as a sequence of target statements, and the
-    target expression vocabulary has no binding form, so a value's
-    shared intermediates become statements of their own ahead of the
-    statement that reads them. Each binding is hoisted once, under a
-    fresh name the targets accept, so a term that reads a binding many
-    times keeps its size on every target. A binding inside a
-    comprehension reads the comprehension's index, so it is hoisted as
-    the comprehension of its value over the same axis and each read
-    becomes that tensor at the index.
-
-    Parameters
-    ----------
-    occupied : set[str]
-        Every name the program already uses, which no hoisted binding
-        may take.
-    """
-
-    def __init__(self, occupied: set[str]) -> None:
-        self.occupied = occupied
-
-    def fresh(self, name: str) -> str:
-        """A name no statement of the program uses yet.
-
-        Parameters
-        ----------
-        name : str
-            The binder's name in the checked term.
-
-        Returns
-        -------
-        str
-            The name without its leading underscores, which several
-            targets reject, suffixed until it is unused.
-        """
-        base = name.lstrip("_") or "shared"
-        candidate = base
-        suffix = 0
-        while candidate in self.occupied:
-            suffix += 1
-            candidate = f"{base}_{suffix}"
-        self.occupied.add(candidate)
-        return candidate
-
-    def computation(
-        self, first: Computation
-    ) -> tuple[tuple[LetBinding, ...], Computation]:
-        """Hoist the bindings out of the values a statement reads.
-
-        Parameters
-        ----------
-        first : Computation
-            The computation one program statement performs.
-
-        Returns
-        -------
-        tuple[tuple[LetBinding, ...], Computation]
-            The hoisted bindings in evaluation order, and the
-            computation reading them by name. A computation other than
-            a return, a request, or a call is returned unchanged.
-        """
-        if isinstance(first, Return):
-            bindings, value = self.value(first.value, {})
-            return bindings, Return(value)
-        if isinstance(first, Perform):
-            bindings, arguments = self.values(first.request.arguments, {})
-            return bindings, Perform(replace(first.request, arguments=arguments))
-        if isinstance(first, Call):
-            bindings, arguments = self.values(first.arguments, {})
-            return bindings, replace(first, arguments=arguments)
-        return (), first
-
-    def values(
-        self, items: tuple[Value, ...], renamed: dict[Local, Value]
-    ) -> tuple[tuple[LetBinding, ...], tuple[Value, ...]]:
-        """Hoist the bindings out of several values in order.
-
-        Parameters
-        ----------
-        items : tuple[Value, ...]
-            The values.
-        renamed : dict[Local, Value]
-            The term each local bound by an enclosing hoisted binding is
-            read through once hoisted.
-
-        Returns
-        -------
-        tuple[tuple[LetBinding, ...], tuple[Value, ...]]
-            The hoisted bindings, and the values reading them.
-        """
-        hoisted: list[LetBinding] = []
-        results: list[Value] = []
-        for item in items:
-            bindings, result = self.value(item, renamed)
-            hoisted.extend(bindings)
-            results.append(result)
-        return tuple(hoisted), tuple(results)
-
-    def value(
-        self, value: Value, renamed: dict[Local, Value]
-    ) -> tuple[tuple[LetBinding, ...], Value]:
-        """Hoist the bindings out of one value.
-
-        Parameters
-        ----------
-        value : Value
-            The value.
-        renamed : dict[Local, Value]
-            The term each local bound by an enclosing hoisted binding is
-            read through once hoisted.
-
-        Returns
-        -------
-        tuple[tuple[LetBinding, ...], Value]
-            The hoisted bindings in evaluation order, each reading only
-            program names and earlier hoisted bindings, and the value
-            with no ``LetValue`` left in it.
-        """
-        if isinstance(value, Var):
-            return (), renamed.get(value.local, value)
-        if isinstance(value, LetValue):
-            hoisted: list[LetBinding] = []
-            scope = dict(renamed)
-            for binding in value.bindings:
-                inner, bound = self.value(binding.value, scope)
-                hoisted.extend(inner)
-                local = Local(self.fresh(binding.binder.name), binding.binder.type)
-                hoisted.append(LetBinding(local, bound))
-                scope[binding.binder] = Var(local)
-            inner, body = self.value(value.body, scope)
-            return (*hoisted, *inner), body
-        if isinstance(value, Comprehension):
-            inner, body = self.value(value.body, renamed)
-            if not inner:
-                return (), replace(value, body=body)
-            return self._stacked(value, inner, body)
-        changes: dict[
-            str, Value | tuple[Value, ...] | tuple[tuple[str, Value], ...]
-        ] = {}
-        hoisted = []
-        for field in fields(value):
-            current = getattr(value, field.name)
-            if isinstance(current, _VALUE_TYPES):
-                inner, result = self.value(cast(Value, current), renamed)
-                hoisted.extend(inner)
-                changes[field.name] = result
-            elif isinstance(current, tuple) and current:
-                if all(isinstance(item, _VALUE_TYPES) for item in current):
-                    inner, results = self.values(
-                        cast(tuple[Value, ...], current), renamed
-                    )
-                    hoisted.extend(inner)
-                    changes[field.name] = results
-                elif all(
-                    isinstance(item, tuple)
-                    and len(item) == 2
-                    and isinstance(item[1], _VALUE_TYPES)
-                    for item in current
-                ):
-                    pairs: list[tuple[str, Value]] = []
-                    for name, item in cast(tuple[tuple[str, Value], ...], current):
-                        inner, result = self.value(item, renamed)
-                        hoisted.extend(inner)
-                        pairs.append((name, result))
-                    changes[field.name] = tuple(pairs)
-        return tuple(hoisted), replace(value, **changes) if changes else value
-
-    def _stacked(
-        self,
-        value: Comprehension,
-        hoisted: tuple[LetBinding, ...],
-        body: Value,
-    ) -> tuple[tuple[LetBinding, ...], Value]:
-        """Hoist a comprehension body's bindings over the comprehension's axis.
-
-        Parameters
-        ----------
-        value : Comprehension
-            The comprehension.
-        hoisted : tuple[LetBinding, ...]
-            The bindings hoisted out of its body, which may read its
-            index.
-        body : Value
-            The body reading them.
-
-        Returns
-        -------
-        tuple[tuple[LetBinding, ...], Value]
-            One binding per hoisted binding, holding the comprehension of
-            its value over the axis, and the comprehension whose body
-            reads each at the index.
-        """
-        index = Var(value.binder)
-        stacked: dict[Local, Value] = {}
-        lifted: list[LetBinding] = []
-        for binding in hoisted:
-            _, bound = self.value(binding.value, stacked)
-            element = binding.binder.type
-            split = tensor_shape(element)
-            tensor = (
-                tensor_type(element, (value.extent,))
-                if split is None
-                else tensor_type(split[0], (value.extent, *split[1]))
-            )
-            local = Local(binding.binder.name, tensor)
-            lifted.append(
-                LetBinding(
-                    local, Comprehension(value.binder, value.extent, bound, tensor)
-                )
-            )
-            stacked[binding.binder] = Gather(Var(local), index, element)
-        _, body = self.value(body, stacked)
-        return tuple(lifted), replace(value, body=body)
-
-
-def _local_names(term: Computation) -> set[str]:
-    """Every local name a checked term binds or reads.
-
-    Parameters
-    ----------
-    term : Computation
-        The computation, whose values and records are walked in turn.
-
-    Returns
-    -------
-    set[str]
-        The names.
-    """
-    found: set[str] = set()
-    pending: list[Hashable] = [term]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, Local):
-            found.add(item.name)
-        elif isinstance(item, tuple):
-            pending.extend(item)
-        elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
-    return found
-
-
 class _ProgramWalk:
     """The derivation of one program's body and inputs.
 
@@ -603,6 +319,11 @@ class _ProgramWalk:
         self.head_nodes: list[IRNode] = []
         self.axes: dict[str, tuple[str, ...]] = {
             parameter.name: parameter.axes for parameter in entry.parameters
+        }
+        self.data_parameters: dict[str, ProgramParameter] = {
+            parameter.name: parameter
+            for parameter in entry.parameters
+            if parameter.role == "data"
         }
         self.local_types: dict[str, TypeExpr] = {}
         self.via: str | None = None
@@ -1168,10 +889,10 @@ class _ProgramWalk:
             expression language has no form for; such a call is made
             through the target's host runtime.
         """
-        shared = _pure_body(callee, call.arguments, binder.type)
-        if shared is None:
+        found = pure_call_bindings(callee, call.arguments, binder.type, self.floater)
+        if found is None:
             return None
-        hoisted, result = self.floater.value(shared, {})
+        hoisted, result = found
         try:
             for binding in hoisted:
                 self._expr(binding.value)
@@ -1580,6 +1301,7 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
+            self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
@@ -1603,6 +1325,43 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _tensor_parameter_input(
+        self, family: str, parameter: str, value: Value
+    ) -> None:
+        """Declare a host tensor filling a family's whole tensor parameter.
+
+        A datum that is one value of a vector or matrix parameter, such as
+        a multivariate normal's host mean or Cholesky factor, is declared
+        over the parameter's own axes as event axes, so a target reads it
+        as one vector or matrix rather than an array of scalars.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        parameter : str
+            The family parameter the value fills.
+        value : Value
+            The value.
+        """
+        record = FAMILIES.get(family)
+        if not isinstance(value, Var) or record is None:
+            return
+        datum = self.data_parameters.get(value.local.name)
+        if (
+            datum is None
+            or datum.per_row
+            or parameter not in record.parameter_names
+            or record.parameter(parameter).rank == 0
+        ):
+            return
+        dims = _typed_dims(datum.type, datum.axes)
+        if len(dims) != record.parameter(parameter).rank:
+            return
+        self.structured_inputs.setdefault(
+            datum.name, (CSReal(), Plate(event_dims=dims, batch_dims=()))
+        )
 
     def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
         """Hand a Cholesky factor to the target as it reads it.
@@ -2370,8 +2129,16 @@ def _plate_of(
     Plate
         Batch and event dimensions named after the axes.
     """
-    del marginalized, distribution, walk
+    del marginalized, walk
     event = tuple(_axis_dim(axis) for axis in plate.event)
+    record = FAMILIES.get(distribution.name)
+    if not plate.event and record is not None and record.name in _SAMPLE_EVENT_FAMILIES:
+        # A multivariate normal's or a Wishart's own event axes are those
+        # of its sample, which an unplated construction's type states.
+        sampled = sampled_element(distribution.result_type)
+        dims = _typed_dims(sampled, ()) if sampled is not None else ()
+        if len(dims) >= record.event_rank:
+            event = dims[len(dims) - record.event_rank :]
     if meta.qvr_name == "LKJCholesky" and len(event) == 2 and event[0] == event[1]:
         # A correlation factor is square over one axis, which the
         # plan states once.
@@ -2436,6 +2203,12 @@ _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
     ),
 }
 
+#: The families an unplated construction of which is planned over its
+#: sample's own event axes, as an ``[over=...]`` clause would name them.
+_SAMPLE_EVENT_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN", "Wishart"}
+)
+
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     """Whether a construction is a structured family's.
@@ -2477,67 +2250,6 @@ def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     )
 
 
-def _axis_name_of(extent: IndexTerm, cards: dict[str, int]) -> str:
-    """The object an extent names.
-
-    Parameters
-    ----------
-    extent : IndexTerm
-        The extent.
-    cards : dict[str, int]
-        The object cardinalities.
-
-    Returns
-    -------
-    str
-        The first object with that cardinality, or the extent rendered.
-    """
-    if isinstance(extent, IndexLiteral):
-        for name, size in cards.items():
-            if size == extent.value:
-                return name
-    if isinstance(extent, IndexVariable):
-        return extent.name
-    return render_static(extent)
-
-
-def _row_reduction(value: Value) -> tuple[str, Value] | None:
-    """A reduction along a tensor's last axis, as the operator and tensor.
-
-    The elaboration writes ``sum(x)`` over a tensor of rank two or
-    more as a comprehension over the leading axes of the reduction of
-    each row; the wire form is the call itself.
-
-    Parameters
-    ----------
-    value : Value
-        The value.
-
-    Returns
-    -------
-    tuple[str, Value] | None
-        The operator and the tensor reduced, or ``None`` when the
-        value is not such a comprehension.
-    """
-    if not isinstance(value, Comprehension):
-        return None
-    body = value.body
-    inner = _row_reduction(body)
-    if inner is not None:
-        operator, reduced = inner
-    elif isinstance(body, Reduction):
-        operator, reduced = body.operator, body.value
-    else:
-        return None
-    if (
-        isinstance(reduced, Gather)
-        and isinstance(reduced.index, Var)
-        and reduced.index.local == value.binder
-    ):
-        return operator, reduced.value
-    return None
-
-
 def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | None:
     """A literal spread over a vector, as the literal and the shape.
 
@@ -2569,208 +2281,6 @@ def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | Non
             literal, shape = inner
             return literal, (value.extent.value, *shape)
     return None
-
-
-def _expression(
-    value: Value, cards: dict[str, int], target: str, program: str
-) -> LetExprNode:
-    """A pure value as a let expression.
-
-    Parameters
-    ----------
-    value : Value
-        The value.
-    cards : dict[str, int]
-        The object cardinalities, which name a comprehension's axis.
-    target : str
-        The transpile target, for diagnostics.
-    program : str
-        The program the value belongs to, for diagnostics.
-
-    Returns
-    -------
-    LetExprNode
-        The expression the renderers translate.
-
-    Raises
-    ------
-    UnsupportedConstruct
-        If the value has no expression form.
-    """
-    if isinstance(value, Var):
-        return LetExprVar(name=value.local.name)
-    if isinstance(value, LiteralValue):
-        if isinstance(value.value, bool):
-            return LetExprLiteral(value=float(value.value), integral=True)
-        if isinstance(value.value, int | float):
-            return LetExprLiteral(
-                value=float(value.value), integral=isinstance(value.value, int)
-            )
-        if isinstance(value.value, str):
-            return LetExprString(value=value.value)
-    if isinstance(value, PrimitiveApplication):
-        if value.name == "int_to_real" and target in _INTEGRAL_ARITHMETIC_TARGETS:
-            return LetExprBinOp(
-                op="*",
-                left=LetExprLiteral(value=1.0),
-                right=_expression(value.arguments[0], cards, target, program),
-            )
-        if value.name == "int_to_real" and target in _STRICT_DTYPE_TARGETS:
-            return LetExprCall(
-                func="real",
-                args=(_expression(value.arguments[0], cards, target, program),),
-            )
-        if value.name in _TRANSPARENT:
-            return _expression(value.arguments[0], cards, target, program)
-        truncating = _TRUNCATING_CALLS.get(value.name)
-        if truncating is not None and target not in _INTEGRAL_ARITHMETIC_TARGETS:
-            return LetExprCall(
-                func=truncating,
-                args=tuple(
-                    _expression(argument, cards, target, program)
-                    for argument in value.arguments
-                ),
-            )
-        operator = PRIMITIVE_OPERATORS.get(value.name)
-        if operator is not None and len(value.arguments) == 2:
-            left, right = value.arguments
-            return LetExprBinOp(
-                op=operator,
-                left=_expression(left, cards, target, program),
-                right=_expression(right, cards, target, program),
-            )
-        unary = _UNARY_OPERATORS.get(value.name)
-        if unary is not None and len(value.arguments) == 1:
-            return LetExprUnaryOp(
-                op=unary,
-                operand=_expression(value.arguments[0], cards, target, program),
-            )
-        builtin = PRIMITIVE_BUILTINS.get(value.name)
-        if builtin is not None:
-            return spell_builtin(
-                target,
-                builtin,
-                tuple(
-                    _expression(argument, cards, target, program)
-                    for argument in value.arguments
-                ),
-            )
-    if isinstance(value, Gather):
-        array = _expression(value.value, cards, target, program)
-        index = _expression(value.index, cards, target, program)
-        if isinstance(array, LetExprIndex):
-            # Nested gathers read back as one multi-index subscript.
-            return LetExprIndex(array=array.array, indices=(*array.indices, index))
-        return LetExprIndex(array=array, indices=(index,))
-    if isinstance(value, TensorValue):
-        return LetExprList(
-            items=tuple(
-                _expression(item, cards, target, program) for item in value.items
-            )
-        )
-    if isinstance(value, Reduction):
-        return LetExprCall(
-            func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
-        )
-    rowwise = _row_reduction(value)
-    if rowwise is not None:
-        operator, reduced = rowwise
-        return LetExprCall(
-            func=operator, args=(_expression(reduced, cards, target, program),)
-        )
-    if isinstance(value, Rowwise):
-        return LetExprCall(
-            func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
-        )
-    if isinstance(value, Comprehension):
-        axis = _axis_name_of(value.extent, cards)
-        binder = LetFactorBinder(var=value.binder.name, index=TypeName(name=axis))
-        body = _expression(value.body, cards, target, program)
-        if isinstance(body, LetExprFactor) and body.body is not None:
-            # Nested comprehensions read back as one factor over
-            # every binder.
-            return LetExprFactor(binders=(binder, *body.binders), body=body.body)
-        return LetExprFactor(binders=(binder,), body=body)
-    if isinstance(value, WeightSum):
-        return LetExprCall(
-            func="sum", args=(_expression(value.value, cards, target, program),)
-        )
-    if isinstance(value, LogDensity):
-        raise UnsupportedConstruct(
-            f"qvr-{target}",
-            [f"qiec:expression:log_density:{program}"],
-        )
-    if isinstance(value, ConstructorValue):
-        # A constructor value reaches a callee through the target's QIEC
-        # runtime; its fields are values of the model body.
-        return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
-    if isinstance(value, Projection):
-        # A component of a product, as the source subscripts a tuple.
-        return LetExprIndex(
-            array=_expression(value.value, cards, target, program),
-            indices=(LetExprLiteral(value=float(value.position)),),
-        )
-    raise UnsupportedConstruct(
-        f"qvr-{target}",
-        [f"qiec:expression:{type(value).__name__}:{program}"],
-    )
-
-
-def _pure_body(
-    callee: NamedComputation,
-    arguments: tuple[Value, ...],
-    result_type: TypeExpr,
-) -> Value | None:
-    """A pure computation's body at the arguments, as one shared value.
-
-    Parameters
-    ----------
-    callee : NamedComputation
-        The computation called.
-    arguments : tuple[Value, ...]
-        The call's arguments, one per parameter.
-    result_type : TypeExpr
-        The type of the call's result.
-
-    Returns
-    -------
-    Value | None
-        A [`LetValue`][quivers.qiec.LetValue] binding each parameter to
-        its argument (a variable or literal argument is read in place)
-        and each of the body's bindings to its value, whose body is the
-        returned value; ``None`` when the computation
-        performs an effect, takes static arguments, or does anything but
-        bind pure values and return one.
-    """
-    if callee.type.effects.entries or callee.telescope:
-        return None
-    if len(arguments) != len(callee.parameters):
-        return None
-    # A variable or literal argument is read in place; any other is
-    # bound once, like the body's own bindings.
-    replaced: dict[Local, Value] = {}
-    bindings: list[LetBinding] = []
-    for parameter, argument in zip(callee.parameters, arguments, strict=True):
-        if isinstance(argument, Var | LiteralValue):
-            replaced[parameter] = argument
-        else:
-            bindings.append(LetBinding(parameter, argument))
-    node: Computation = callee.body
-    while isinstance(node, Bind):
-        if not isinstance(node.first, Return):
-            return None
-        bindings.append(
-            LetBinding(node.binder, _replace_locals(node.first.value, replaced))
-        )
-        node = node.then
-    if not isinstance(node, Return):
-        return None
-    body = _replace_locals(node.value, replaced)
-    if not bindings:
-        return body
-    return LetValue(tuple(bindings), body, result_type)
 
 
 def _lower_static(argument: StaticArgument) -> IRQiecStatic:

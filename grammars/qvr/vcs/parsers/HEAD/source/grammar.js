@@ -1957,8 +1957,20 @@ module.exports = grammar({
     scan_expr: $ => seq(
       'scan', '(',
       field('inner', $._expr),
-      optional(seq(',', 'init', '=', field('init', $.identifier))),
+      repeat(seq(',', $._scan_option)),
       ')',
+    ),
+
+    /* The options of a scan, in any order: where the state starts
+     * (`init`), whether the scan's value is its final state or every
+     * state (`outputs=last` or `outputs=all`), and whether it visits
+     * the positions from the last to the first (`reverse`). The
+     * walker refuses a repeated option and an `outputs` value other
+     * than `all` or `last`. */
+    _scan_option: $ => choice(
+      seq('init', '=', field('init', $.identifier)),
+      seq('outputs', '=', field('outputs', $.identifier)),
+      seq('reverse', '=', field('reverse', $.let_bool)),
     ),
 
     parser_expr: $ => seq(

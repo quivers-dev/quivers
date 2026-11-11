@@ -338,6 +338,7 @@ nav:
       - Chart Parsers: api/stochastic/parsers.md
       - Inside Algorithm: api/stochastic/inside.md
       - Agenda: api/stochastic/agenda.md
+      - Productions: api/stochastic/productions.md
       - Deduction Library: api/stochastic/stdlib.md
       - Deduction Systems:
         - Overview: api/stochastic/deduction.md
@@ -349,6 +350,7 @@ nav:
       - Overview: api/continuous/spaces.md
       - Morphisms: api/continuous/morphisms.md
       - Families: api/continuous/families.md
+      - Log-Space Families: api/continuous/log_space.md
       - Parameter Sources: api/continuous/param_source.md
       - Ordered and Zero-Inflated: api/continuous/ordered.md
       - Family Registry: api/continuous/family_spec.md
@@ -406,6 +408,8 @@ nav:
       - Column Encoding: api/data/encoding.md
     - Diagnostics:
       - Overview: api/diagnostics/index.md
+      - Convergence Diagnostics: api/diagnostics/convergence.md
+      - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
