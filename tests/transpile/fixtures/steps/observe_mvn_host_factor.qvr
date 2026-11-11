@@ -1,0 +1,10 @@
+# A multivariate normal whose mean and Cholesky factor are host data, and a
+# plated observation over the event axis that fixes the data's extent.
+object Dk : FinSet 2
+object Row : FinSet 3
+object One : FinSet 1
+program mvn_host_factor : One -> One
+    sample mu <- MultivariateNormal(loc=m0, scale_tril=L)
+    observe y : Row <- MultivariateNormal(loc=mu, scale_tril=L) [over=Dk]
+    return y
+export mvn_host_factor
