@@ -20,7 +20,7 @@ from quivers.continuous import MonadicProgram
 from quivers.dsl import loads
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.inference import MCMC, NUTSKernel
-from quivers.inference.mcmc.driver import _ess
+from quivers.diagnostics import ess as effective_sample_size
 from quivers.inference.trace import trace
 
 AFFINE = """
@@ -140,7 +140,7 @@ def test_nuts_on_a_program_calling_a_computation_recovers_the_posterior() -> Non
     ).run(program, torch.zeros(1, 1), {"y": y, "t": t})
     for index, name in enumerate("ab"):
         draws = result.samples[name].to(torch.float64)
-        ess = float(_ess(draws))
+        ess = float(effective_sample_size(draws, method="mean"))
         sd = math.sqrt(float(covariance[index, index]))
         assert abs(float(draws.mean()) - float(mean[index])) < 5.0 * sd / math.sqrt(ess)
 
