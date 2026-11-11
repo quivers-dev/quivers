@@ -183,6 +183,27 @@ def _role_of(decl: MorphismDecl) -> str | None:
     return None
 
 
+def _weights_latent(decl: MorphismDecl) -> bool:
+    """Whether a morphism declares ``[weights=latent]``.
+
+    Parameters
+    ----------
+    decl
+        The declaration.
+
+    Returns
+    -------
+    bool
+        ``True`` when its network's weights are latent sites.
+    """
+    return any(
+        entry.key == "weights"
+        and isinstance(entry.value, OptionName)
+        and entry.value.value == "latent"
+        for entry in decl.options
+    )
+
+
 def param_source_kind(decl: MorphismDecl, *, target: str) -> str | None:
     """Return the parameter-source kind a morphism declaration names
     in its ``[param_source=...]`` option, or ``None`` when it carries
@@ -545,6 +566,20 @@ def _reject_reachable_param_source(
     while frontier:
         name, chain = frontier.pop(0)
         decl = morphisms.get(name)
+        if decl is not None and _weights_latent(decl):
+            kind = param_source_kind(decl, target="qvr-transpile") or "linear"
+            raise StepResolutionError(
+                "qvr-transpile",
+                [
+                    f"param-source:{kind}:latent",
+                    f"the network of {name!r} (line {line}, through "
+                    f"{' -> '.join((*chain, name))}) draws its weights as latent "
+                    f"sites, but no target has a form for the network's affine "
+                    f"layers applied to drawn weights. Write the layers as "
+                    f"`factor` comprehensions over sampled weight matrices to "
+                    f"transpile the model.",
+                ],
+            )
         if decl is not None and _role_of(decl) == "function":
             kind = param_source_kind(decl, target="qvr-transpile") or "linear"
             if kind != "identity":

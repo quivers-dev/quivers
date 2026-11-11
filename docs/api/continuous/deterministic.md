@@ -17,6 +17,10 @@ coordinates, followed by an output nonlinearity. It is what a
 `let z = f(a, b)` calls its
 [`apply_values`][quivers.continuous.deterministic.LearnedFunction.apply_values]
 with one value per domain factor. Its weights are ordinary module parameters,
-fit as point estimates.
+fit as point estimates, unless it is constructed with `latent=<name>`: its
+weights are then read from the sites
+[`network_weight_sites`][quivers.continuous.deterministic.network_weight_sites]
+names, passed to each evaluation, as a `[weights=latent]` declaration draws
+them.
 
 ::: quivers.continuous.deterministic

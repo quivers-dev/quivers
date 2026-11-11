@@ -55,7 +55,9 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl.structural_elaboration import _StructuralElaboration
+from quivers.dsl.latent_weights import LatentWeightsError, expand_latent_weights
 from quivers.dsl.program_elaboration import (
+    LATENT_WEIGHT_HEADS,
     ObjectInfo,
     _extent,
     _fixed_extent,
@@ -787,6 +789,16 @@ def lower_qvr_to_qiec(
 
     if module_name is None:
         module_name = _module_name(file_path)
+    try:
+        module = expand_latent_weights(module, LATENT_WEIGHT_HEADS)
+    except LatentWeightsError as error:
+        raise QiecDiagnosticError(
+            str(error),
+            code="qiec-program",
+            file=file_path,
+            line=error.line,
+            column=error.col,
+        ) from error
     source = QvrQiecSource(
         qiec_projection(module), module_name, file_path, elaborate_programs
     )

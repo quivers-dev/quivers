@@ -25,7 +25,7 @@ _STEP = """\
 object Driver : Real 2
 object State : Real 3
 morphism transition : Driver * State -> State {options}~ {family}
-program step : Driver * State -> State
+program step(u_t, s_prev) : Driver * State -> State
     sample s <- transition(u_t, s_prev)
     return s
 export step

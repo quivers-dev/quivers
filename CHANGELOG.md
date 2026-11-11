@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.44.0] - 2026-11-11
+
+### Added
+
+- **Latent network weights, `[weights=latent, prior_scale=s]`.** A network kernel (`~ Family` with a `linear` or `mlp` source) or a learned function draws every weight and bias of its network as a latent site with an independent `Normal(0, s)` prior (`s` defaults to 1), once per run, in each program without value parameters that uses it; a scan's cell and a called program read the weights their caller draws. The sites are named `<f>_param_layer<k>_weight`, `<f>_param_layer<k>_bias`, `<f>_param_weight`, and `<f>_param_bias`, enter traces and the latent registry, and the compiled runtime applies the network at the drawn weights, so guides, MCMC, and `Predictive` treat a Bayesian neural network kernel as any other model. A draw through a latent-weight kernel names its inputs; a latent-weight morphism in a `define` without a scan, malformed options, and a network without weights (identity, attention, lookup) are refused. Every transpile target refuses the network as `param-source:<kind>:latent`. `LearnedFunction` takes `latent=<name>`, with `network_weight_sites` and `weight_site_names` in `quivers.continuous`.
+
+### Fixed
+
+- **The checked elaboration reads a kernel with an explicit `[param_source=linear]`** as it reads one with the default linear source, rather than reporting it as a gap.
+
 ## [0.43.0] - 2026-11-11
 
 ### Added

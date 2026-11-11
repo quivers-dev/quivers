@@ -39,6 +39,7 @@ from quivers.continuous.deterministic import (
 )
 from quivers.continuous.flows import ConditionalFlow
 from quivers.continuous.inline import make_inline_distribution
+from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.param_source import FunctionActivation, function_source
 from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.core.morphisms import (
@@ -61,6 +62,7 @@ from quivers.dsl.ast_nodes import (
     DrawArg,
     DrawArgNamed,
     ExprIdent,
+    OptionEntry,
     MorphismDecl,
     RuleDecl,
     SchemaDecl,
@@ -97,6 +99,8 @@ from quivers.dsl.compiler._prelude import (
     _wrap_join_dim,
 )
 from quivers.dsl.compiler.programs import _ProgramsMixin
+from quivers.dsl.latent_weights import network_kind
+from quivers.dsl.program_elaboration import LATENT_WEIGHT_HEADS
 from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.stochastic import StochasticMorphism
 from quivers.stochastic.categories import (
@@ -193,6 +197,8 @@ _MORPHISM_OPTION_KEYS: frozenset[str] = frozenset(
         "temperature",
         "activation",
         "output",
+        "weights",
+        "prior_scale",
     }
 )
 
@@ -222,13 +228,17 @@ _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
             "temperature",
             "over",
             "iid",
+            "weights",
+            "prior_scale",
         }
     ),
     "embed": frozenset(),
     "discretize": frozenset({"bins"}),
     "let": frozenset({"over", "iid"}),
     # `_compile_function_role` builds the network and its output map.
-    "function": frozenset({"param_source", "activation", "output"}),
+    "function": frozenset(
+        {"param_source", "activation", "output", "weights", "prior_scale"}
+    ),
 }
 
 
@@ -342,6 +352,9 @@ class _DeclarationsMixin:
     _morphisms: dict
     _groups: dict[str, list[str]]
     _module: Module
+    # Supplied by `_ProgramsMixin`: splits a latent-weight kernel into
+    # the network a draw applies and the family it draws from.
+    _register_latent_kernel: Callable[[str, ContinuousMorphism], None]
 
     # ``_resolve_type``, ``_resolve_any_space``, ``_compile_expr``
     # come from `_ResolutionMixin` and
@@ -874,6 +887,7 @@ class _DeclarationsMixin:
             )
         role = self._resolve_morphism_role(decl, name)
         self._check_role_options(decl, name, role)
+        self._check_weights_options(decl, name, role)
         replicate = get_option_int(
             decl.options,
             "replicate",
@@ -929,6 +943,88 @@ class _DeclarationsMixin:
                 f"morphism under a role that reads it.",
                 entry.line or decl.line,
                 entry.col or decl.col,
+            )
+
+    def _check_weights_options(self, decl: MorphismDecl, name: str, role: str) -> None:
+        """Validate the ``weights`` and ``prior_scale`` options.
+
+        Parameters
+        ----------
+        decl : MorphismDecl
+            The declaration.
+        name : str
+            The declared name.
+        role : str
+            Its resolved role.
+
+        Raises
+        ------
+        CompileError
+            If ``weights`` is not ``point`` or ``latent``, ``prior_scale``
+            is not a positive number or is given without latent weights,
+            or latent weights are declared on a morphism whose network has
+            no weights to draw: an identity network, a lookup table, an
+            attention or embedding source, or a kernel without a family.
+        """
+        weights_entry = find_option(decl.options, "weights")
+        scale_entry = find_option(decl.options, "prior_scale")
+        if weights_entry is None and scale_entry is None:
+            return
+
+        def at(entry: OptionEntry | None) -> tuple[int, int]:
+            if entry is not None and entry.line:
+                return entry.line, entry.col
+            return decl.line, decl.col
+
+        mode = get_option_name(
+            decl.options, "weights", line=decl.line, col=decl.col, default="point"
+        )
+        if mode not in ("point", "latent"):
+            raise CompileError(
+                f"morphism {name!r}: weights={mode} is neither ``point`` (fit "
+                f"as estimates) nor ``latent`` (drawn as sites)",
+                *at(weights_entry),
+            )
+        if scale_entry is not None:
+            scale = get_option_float(
+                decl.options, "prior_scale", line=decl.line, col=decl.col
+            )
+            if mode != "latent":
+                raise CompileError(
+                    f"morphism {name!r}: prior_scale is the scale of the prior "
+                    f"on latent weights; declare weights=latent to use it",
+                    *at(scale_entry),
+                )
+            if scale is None or not float(scale) > 0.0:
+                raise CompileError(
+                    f"morphism {name!r}: prior_scale must be a positive number",
+                    *at(scale_entry),
+                )
+        if mode != "latent":
+            return
+        kind = network_kind(decl)
+        if kind not in ("linear", "mlp"):
+            raise CompileError(
+                f"morphism {name!r}: weights=latent draws the weights of a linear "
+                f"or mlp network, and a {kind!r} source has none to draw",
+                *at(weights_entry),
+            )
+        family = decl.init_family.family if decl.init_family is not None else None
+        if family is None and isinstance(decl.init_expr, ExprIdent):
+            family = decl.init_expr.name
+        if role == "kernel" and family not in LATENT_WEIGHT_HEADS:
+            raise CompileError(
+                f"morphism {name!r}: weights=latent draws a network's weights, "
+                f"and a kernel's network supplies the parameters of a family; "
+                f"declare it ``~ Family`` with one of "
+                f"{', '.join(sorted(LATENT_WEIGHT_HEADS))}",
+                *at(weights_entry),
+            )
+        if role not in ("kernel", "function"):
+            raise CompileError(
+                f"morphism {name!r}: weights=latent applies to a network kernel or "
+                f"a learned function, not role={role}",
+                *at(weights_entry),
             )
 
     def _resolve_morphism_role(self, decl: MorphismDecl, name: str) -> str:
@@ -1180,6 +1276,7 @@ class _DeclarationsMixin:
             for member in names:
                 self._morphisms[member] = fixed
             return
+        latent = get_option_name(decl.options, "weights", default="point") == "latent"
         for member in names:
             morph = self._make_continuous_morphism(
                 domain,
@@ -1188,6 +1285,8 @@ class _DeclarationsMixin:
                 decl,
             )
             self._morphisms[member] = morph
+            if latent:
+                self._register_latent_kernel(member, morph)
 
     def _compile_embed_role(
         self,
@@ -1361,8 +1460,17 @@ class _DeclarationsMixin:
                     entry.line if entry is not None and entry.line else decl.line,
                     entry.col if entry is not None and entry.line else decl.col,
                 ) from error
+            latent = (
+                member
+                if get_option_name(decl.options, "weights", default="point") == "latent"
+                else None
+            )
             self._morphisms[member] = LearnedFunction(
-                domain, codomain, source, output=cast(FunctionOutput, output)
+                domain,
+                codomain,
+                source,
+                output=cast(FunctionOutput, output),
+                latent=latent,
             )
 
     # family-construction plumbing ------------------------------------

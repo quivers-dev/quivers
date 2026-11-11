@@ -332,6 +332,12 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "Categorical": (("logits", "identity"),),
 }
 
+#: The number of parameter heads of each family whose kernel a network
+#: supplies, which sizes a latent-weight network's output layer.
+LATENT_WEIGHT_HEADS: dict[str, int] = {
+    family: len(heads) for family, heads in _CONDITIONAL_HEADS.items()
+}
+
 #: Families whose kernel head is one row of logits over the codomain's
 #: elements rather than one coordinate per real dimension.
 _LOGIT_HEAD_FAMILIES: frozenset[str] = frozenset({"Bernoulli", "Categorical"})
@@ -8523,7 +8529,7 @@ class _ProgramElaboration:
             return None
         if f"embed:{step.morphism}" in kinds:
             return ResolvedDist("Normal", (), step.morphism)
-        if "param-source:mlp" not in kinds:
+        if "param-source:mlp" not in kinds and "param-source:linear" not in kinds:
             return None
         family = _bare_init_family(morphism)
         if family is None or family not in _CONDITIONAL_HEADS:
