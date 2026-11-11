@@ -609,11 +609,6 @@ _KNOWN_DEFECTS: dict[tuple[str, str], str] = {
         )
         for backend in ("numpyro", "pyro")
     },
-    ("steps/sample_class_code", "edward2"): (
-        "a drawn class read as a number (`real(z)`) is emitted without its "
-        "conversion, and TensorFlow refuses to add the int32 class to a "
-        "float32 value"
-    ),
     ("steps/sample_class_code", "pyro"): (
         "the drawn class reaches the model as a float tensor, which torch "
         "refuses as a subscript (`mu[z]`)"
