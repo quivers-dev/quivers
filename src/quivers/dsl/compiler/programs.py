@@ -778,6 +778,67 @@ _LET_SPECIAL_CALLS: frozenset[str] = frozenset(
 )
 
 
+def _checked_layout(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    reads: frozenset[str],
+    extents: Mapping[str, tuple[int, ...]],
+    result: str,
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a let body on its operands' checked shapes.
+
+    Within one run, the runtime holds a number drawn from a continuous
+    family, or read from a one-coordinate input, as a vector of one
+    entry. Elementwise arithmetic cannot tell the difference, but a
+    body that lays numbers out along a new axis (a list literal or a
+    ``factor``) or reduces one would read that stray axis as data:
+    ``[h, 1.0]`` would be ``(2, 1)`` rather than the checked ``(2,)``.
+    Each operand the checked program types as a number is thus handed
+    to the body as a number, and a result the checked program types as
+    a number is given back the one-entry layout its operands had.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, LetValue]], LetValue]
+        The compiled body.
+    reads : frozenset[str]
+        The names the body reads.
+    extents : Mapping[str, tuple[int, ...]]
+        The checked extents of the program's bindings, ``()`` for a
+        number.
+    result : str
+        The name the body's value is bound to.
+
+    Returns
+    -------
+    Callable[[dict[str, LetValue]], LetValue]
+        The body, reading and returning values at their checked layout.
+    """
+    numbers = frozenset(name for name in reads if extents.get(name) == ())
+    if not numbers:
+        return function
+    returns_number = extents.get(result) == ()
+
+    def _run(env: dict[str, LetValue]) -> LetValue:
+        view = dict(env)
+        unwrapped = False
+        for name in numbers:
+            value = env.get(name)
+            if isinstance(value, torch.Tensor) and tuple(value.shape) == (1,):
+                view[name] = value.reshape(())
+                unwrapped = True
+        value = function(view)
+        if (
+            unwrapped
+            and returns_number
+            and isinstance(value, torch.Tensor)
+            and value.dim() == 0
+        ):
+            return value.reshape(1)
+        return value
+
+    return _run
+
+
 def _unknown_let_call(
     node: LetExprNode,
     globals_: Mapping[str, LetValue | frozenset[str]],
@@ -3711,18 +3772,26 @@ class _ProgramsMixin:
                         step.line,
                         step.col,
                     )
+                    reads = _let_expr_reads(step.value)
                     compiled_fn = reading(
-                        self._locate_let_failure(
-                            self._compile_let_expr(
-                                step.value,
-                                globals_=deductions_globals,
+                        _checked_layout(
+                            self._locate_let_failure(
+                                self._compile_let_expr(
+                                    step.value,
+                                    globals_=deductions_globals,
+                                ),
+                                "let",
+                                step.name,
+                                step.line,
+                                step.col,
                             ),
-                            "let",
+                            reads,
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {},
                             step.name,
-                            step.line,
-                            step.col,
                         ),
-                        _let_expr_reads(step.value),
+                        reads,
                     )
                     bound_vars[step.name] = None
                     let_space = _let_space(step.value, bound_vars, parameter_spaces)
@@ -3757,18 +3826,26 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
+                reads = _let_expr_reads(step.value)
                 compiled_fn = reading(
-                    self._locate_let_failure(
-                        self._compile_let_expr(
-                            step.value,
-                            globals_=deductions_globals,
+                    _checked_layout(
+                        self._locate_let_failure(
+                            self._compile_let_expr(
+                                step.value,
+                                globals_=deductions_globals,
+                            ),
+                            "score",
+                            step.name,
+                            step.line,
+                            step.col,
                         ),
-                        "score",
+                        reads,
+                        self._value_extents_stack[-1]
+                        if self._value_extents_stack
+                        else {},
                         step.name,
-                        step.line,
-                        step.col,
                     ),
-                    _let_expr_reads(step.value),
+                    reads,
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -4160,9 +4237,21 @@ class _ProgramsMixin:
                     bstep.line,
                     bstep.col,
                 )
+                body_reads = _let_expr_reads(bstep.value)
                 fn = reading(
-                    self._compile_let_expr(bstep.value, globals_=deductions_globals),
-                    _let_expr_reads(bstep.value),
+                    _checked_layout(
+                        self._compile_let_expr(
+                            bstep.value, globals_=deductions_globals
+                        ),
+                        body_reads,
+                        (
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {}
+                        ),
+                        bstep.name,
+                    ),
+                    body_reads,
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
