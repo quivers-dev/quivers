@@ -31,7 +31,7 @@ export p
 _SPELLINGS: dict[str, tuple[str, str]] = {
     "pyro": ('rounding_mode="trunc"', "torch.fmod("),
     "numpyro": ("jnp.floor_divide(jnp.abs(", "jnp.subtract("),
-    "pymc": ("pymc.pytensorf.pt.int_div(", "pymc.pytensorf.pt.sub("),
+    "pymc": ("pymc.pytensorf.pt.mul(pymc.pytensorf.pt.sign(", "pymc.pytensorf.pt.sub("),
     "edward2": ("tf.math.floordiv(tf.math.abs(", "tf.math.subtract("),
     "turing": ("div(0 - 3, 2)", "rem(0 - 3, 2)"),
     "gen": ("div(0 - 3, 2)", "rem(0 - 3, 2)"),

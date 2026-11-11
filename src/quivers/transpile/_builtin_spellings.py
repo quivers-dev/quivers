@@ -416,7 +416,7 @@ _PYMC: dict[str, BuiltinSpelling] = {
     "digamma": _pt("psi"),
     "reciprocal": _pt("reciprocal"),
     "square": _pt("sqr"),
-    "sign": _pt("sgn"),
+    "sign": _pt("sign"),
     "trunc": _pt("trunc"),
     "round": _pt("round_half_to_even"),
     **_common("rsqrt", "logsigmoid", *_ACTIVATIONS),

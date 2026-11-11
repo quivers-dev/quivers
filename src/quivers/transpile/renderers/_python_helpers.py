@@ -624,28 +624,22 @@ def _is_factor_tower(ctx: PyCtx, expr: LetExprNode) -> bool:
     return isinstance(expr, LetExprVar) and expr.name in ctx.factor_towers
 
 
-#: Each NumPy-like target's sign, absolute value, flooring division,
-#: product, and difference, from which its truncating integer division
-#: and remainder are built as calls, which need no parentheses wherever
-#: they appear.
+#: Each NumPy-like target's flooring division, product, and difference,
+#: from which, with the sign and absolute value the shared builtin table
+#: spells, its truncating integer division and remainder are built as
+#: calls, which need no parentheses wherever they appear.
 _TRUNCATION_SYMBOLS: dict[str, dict[str, tuple[str, ...]]] = {
     "numpyro": {
-        "sign": ("jnp", "sign"),
-        "abs": ("jnp", "abs"),
         "floor_divide": ("jnp", "floor_divide"),
         "multiply": ("jnp", "multiply"),
         "subtract": ("jnp", "subtract"),
     },
     "pymc": {
-        "sign": ("pymc", "math", "sgn"),
-        "abs": ("pymc", "math", "abs"),
         "floor_divide": ("pymc", "pytensorf", "pt", "int_div"),
         "multiply": ("pymc", "pytensorf", "pt", "mul"),
         "subtract": ("pymc", "pytensorf", "pt", "sub"),
     },
     "edward2": {
-        "sign": ("tf", "math", "sign"),
-        "abs": ("tf", "math", "abs"),
         "floor_divide": ("tf", "math", "floordiv"),
         "multiply": ("tf", "math", "multiply"),
         "subtract": ("tf", "math", "subtract"),
@@ -701,7 +695,13 @@ def _render_truncating(
     symbols = _TRUNCATION_SYMBOLS[ctx.target]
 
     def apply(name: str, *operands: str) -> str:
-        return call(ctx, attribute(ctx, symbols[name]), positional=operands)
+        # `sign` and `abs` are math builtins, spelled by the shared table.
+        path = native_path(ctx.target, name, len(operands))
+        return call(
+            ctx,
+            attribute(ctx, symbols[name] if path is None else path),
+            positional=operands,
+        )
 
     def operand(expr: LetExprNode) -> str:
         return render_let_expr_python(ctx, expr)
