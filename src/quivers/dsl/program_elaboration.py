@@ -1022,6 +1022,114 @@ def _tie_extents(
             extents[wanted.name] = given
 
 
+def _specialized_scan_step(
+    elaborator: _Elaborator,
+    step_name: str,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> str:
+    """The scan step specialized to the bindings its cell reads.
+
+    A program cell is elaborated on its own, so a name it reads
+    without binding it is typed from its uses there, as host data: a
+    scalar for a bare use, a table of open extents for a subscripted
+    one. When the scanning program binds that name before the scan,
+    the cell reads the binding, so it is elaborated again with each
+    such name at its binding's type, under a name of its own, and the
+    step program calls that specialization.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    step_name : str
+        The step program the scan runs.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's state, whose helpers gain the
+        specialized step and cell.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    str
+        The specialized step program's name, or ``step_name`` when no
+        binding of the scanning program differs from the type the
+        cell reads its name at.
+    """
+    step_decl = elaborator._program_declarations.get(step_name)
+    if step_decl is None:
+        return step_name
+    suffix = f"__in_{state.declaration.name}_{node.name}"
+    draws = list(step_decl.draws)
+    changed = False
+    for index, draw in enumerate(step_decl.draws):
+        if not isinstance(draw, CallStep):
+            continue
+        cell_decl = elaborator._program_declarations.get(draw.call.callee)
+        cell_entry = next(
+            (item for item in elaborator.entries if item.name == draw.call.callee), None
+        )
+        if cell_decl is None or cell_entry is None:
+            continue
+        pins: dict[str, TypeExpr] = {}
+        for parameter in cell_entry.parameters:
+            if parameter.role in ("domain", "observation"):
+                continue
+            binding = scope.lookup(parameter.name)
+            if binding is not None and binding.type != parameter.type:
+                pins[parameter.name] = binding.type
+        if not pins:
+            continue
+        cell_name = f"{cell_decl.name}{suffix}"
+        state.helpers.extend(
+            _elaborate_nested_program(elaborator, cell_decl.with_(name=cell_name), pins)
+        )
+        draws[index] = draw.with_(call=draw.call.with_(callee=cell_name))
+        changed = True
+    if not changed:
+        return step_name
+    specialized = step_decl.with_(name=f"{step_name}{suffix}", draws=tuple(draws))
+    state.helpers.extend(_elaborate_nested_program(elaborator, specialized, {}))
+    return specialized.name
+
+
+def _elaborate_nested_program(
+    elaborator: _Elaborator, declaration: ProgramDecl, pins: Mapping[str, TypeExpr]
+) -> tuple[NamedComputation, ...]:
+    """Elaborate a program while another program is being elaborated.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    declaration : ProgramDecl
+        The program.
+    pins : Mapping[str, TypeExpr]
+        Types fixed for free names the program reads.
+
+    Returns
+    -------
+    tuple[NamedComputation, ...]
+        The program's computation and its helpers.
+    """
+    saved_state = elaborator._program_state
+    saved_macros = elaborator._lambda_macros
+    saved_pins = elaborator._pinned_types
+    elaborator._lambda_macros = {}
+    elaborator._pinned_types = dict(pins)
+    elaborator._program_declarations[declaration.name] = declaration
+    try:
+        return elaborator._elaborate_program(declaration)
+    finally:
+        elaborator._program_state = saved_state
+        elaborator._lambda_macros = saved_macros
+        elaborator._pinned_types = saved_pins
+
+
 def _unify_free_shapes(
     expr: LetExprNode,
     free: frozenset[str],
@@ -2624,108 +2732,6 @@ class _ProgramElaboration:
                     code="qiec-program",
                 )
 
-    def _specialized_scan_step(
-        self: _Elaborator,
-        step_name: str,
-        scope: _Scope,
-        state: _ProgramState,
-        node: LetStep,
-    ) -> str:
-        """The scan step specialized to the bindings its cell reads.
-
-        A program cell is elaborated on its own, so a name it reads
-        without binding it is typed from its uses there, as host data: a
-        scalar for a bare use, a table of open extents for a subscripted
-        one. When the scanning program binds that name before the scan,
-        the cell reads the binding, so it is elaborated again with each
-        such name at its binding's type, under a name of its own, and the
-        step program calls that specialization.
-
-        Parameters
-        ----------
-        step_name : str
-            The step program the scan runs.
-        scope : _Scope
-            The scanning program's scope at the scan.
-        state : _ProgramState
-            The scanning program's state, whose helpers gain the
-            specialized step and cell.
-        node : LetStep
-            The scan's step.
-
-        Returns
-        -------
-        str
-            The specialized step program's name, or ``step_name`` when no
-            binding of the scanning program differs from the type the
-            cell reads its name at.
-        """
-        step_decl = self._program_declarations.get(step_name)
-        if step_decl is None:
-            return step_name
-        suffix = f"__in_{state.declaration.name}_{node.name}"
-        draws = list(step_decl.draws)
-        changed = False
-        for index, draw in enumerate(step_decl.draws):
-            if not isinstance(draw, CallStep):
-                continue
-            cell_decl = self._program_declarations.get(draw.call.callee)
-            cell_entry = next(
-                (item for item in self.entries if item.name == draw.call.callee), None
-            )
-            if cell_decl is None or cell_entry is None:
-                continue
-            pins: dict[str, TypeExpr] = {}
-            for parameter in cell_entry.parameters:
-                if parameter.role in ("domain", "observation"):
-                    continue
-                binding = scope.lookup(parameter.name)
-                if binding is not None and binding.type != parameter.type:
-                    pins[parameter.name] = binding.type
-            if not pins:
-                continue
-            cell_name = f"{cell_decl.name}{suffix}"
-            state.helpers.extend(
-                self._elaborate_nested_program(cell_decl.with_(name=cell_name), pins)
-            )
-            draws[index] = draw.with_(call=draw.call.with_(callee=cell_name))
-            changed = True
-        if not changed:
-            return step_name
-        specialized = step_decl.with_(name=f"{step_name}{suffix}", draws=tuple(draws))
-        state.helpers.extend(self._elaborate_nested_program(specialized, {}))
-        return specialized.name
-
-    def _elaborate_nested_program(
-        self: _Elaborator, declaration: ProgramDecl, pins: Mapping[str, TypeExpr]
-    ) -> tuple[NamedComputation, ...]:
-        """Elaborate a program while another program is being elaborated.
-
-        Parameters
-        ----------
-        declaration : ProgramDecl
-            The program.
-        pins : Mapping[str, TypeExpr]
-            Types fixed for free names the program reads.
-
-        Returns
-        -------
-        tuple[NamedComputation, ...]
-            The program's computation and its helpers.
-        """
-        saved_state = self._program_state
-        saved_macros = self._lambda_macros
-        saved_pins = self._pinned_types
-        self._lambda_macros = {}
-        self._pinned_types = dict(pins)
-        self._program_declarations[declaration.name] = declaration
-        try:
-            return self._elaborate_program(declaration)
-        finally:
-            self._program_state = saved_state
-            self._lambda_macros = saved_macros
-            self._pinned_types = saved_pins
-
     def _scan_call(
         self: _Elaborator,
         scan: tuple[str, str, str | None],
@@ -2771,7 +2777,7 @@ class _ProgramElaboration:
             reads.
         """
         written, source, init = scan
-        step_name = self._specialized_scan_step(written, scope, state, node)
+        step_name = _specialized_scan_step(self, written, scope, state, node)
         signature = self.computation_signatures.get(step_name)
         step_entry = next(
             (item for item in self.entries if item.name == step_name), None
