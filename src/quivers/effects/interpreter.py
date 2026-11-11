@@ -59,6 +59,7 @@ from quivers.effects.program_module import (
     site_label,
 )
 from quivers.effects.sites import TorchSampleable
+from quivers.effects.subsample import site_plates
 from quivers.effects.trace_handler import TraceHandler
 from quivers.qiec.builtins import (
     PARAM_GET,
@@ -262,6 +263,28 @@ class _ParameterizedMorphism(ContinuousMorphism):
         """
         return self._call("log_prob", x, y)
 
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Score a subset of a plate's rows under the supplied parameters.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The value scored.
+        *rows : torch.Tensor
+            One index per plate axis, as the inner morphism's
+            ``log_prob_rows`` reads them.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density of the kept rows.
+        """
+        return self._call("log_prob_rows", x, y, *rows)
+
     def __getattr__(self, name: str) -> torch.Tensor | torch.nn.Module:
         """Read a submodule, or any other attribute from the inner morphism.
 
@@ -283,6 +306,132 @@ class _ParameterizedMorphism(ContinuousMorphism):
             if name == "_inner":
                 raise
             return getattr(super().__getattr__("_inner"), name)
+
+
+class _SubsampledMorphism(ContinuousMorphism):
+    """A plated site's morphism scored at a subset of its plate rows, rescaled.
+
+    Parameters
+    ----------
+    inner : ContinuousMorphism
+        The site's morphism, run under any parameters a ``Param`` handler
+        supplied; it scores a subset of rows through ``log_prob_rows``.
+    rows : tuple[torch.Tensor, ...]
+        One index per plate axis of the site, outermost first: the
+        subset's rows along a subsampled axis, every row along another.
+    factor : float
+        The product, over the subsampled axes, of the axis's extent over
+        the subset's size.
+    """
+
+    def __init__(
+        self,
+        inner: ContinuousMorphism,
+        rows: tuple[torch.Tensor, ...],
+        factor: float,
+    ) -> None:
+        super().__init__(inner.domain, inner.codomain)
+        self._inner = inner
+        self._rows = rows
+        self._factor = factor
+
+    def rsample(  # type: ignore[override]
+        self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
+    ) -> torch.Tensor:
+        """Draw every row of the plate, as the inner morphism does.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        sample_shape : torch.Size
+            Extra sample dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            The draw.
+        """
+        return self._inner.rsample(x, sample_shape)
+
+    def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """The subset's log density times the plate's factor.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The site's value.
+
+        Returns
+        -------
+        torch.Tensor
+            ``factor`` times the summed log density of the kept rows.
+        """
+        log_prob_rows = getattr(self._inner, "log_prob_rows")
+        return self._factor * log_prob_rows(x, y, *self._rows)
+
+
+def _subsampled_rows(
+    run: RunContext,
+    step: HostStep,
+    spec: Draw | Observe,
+    morphism: ContinuousMorphism,
+) -> tuple[tuple[torch.Tensor, ...], float] | None:
+    """The rows a site is scored at under the run's subsampled plates.
+
+    Parameters
+    ----------
+    run : RunContext
+        The run, with the subsets its handlers registered.
+    step : HostStep
+        The site's host step.
+    spec : Draw | Observe
+        The site's step record.
+    morphism : ContinuousMorphism
+        The site's declared morphism.
+
+    Returns
+    -------
+    tuple[tuple[torch.Tensor, ...], float] | None
+        One index per plate axis of the site and the site's factor, or
+        ``None`` for a site in no subsampled plate.
+
+    Raises
+    ------
+    ValueError
+        If the site is in a subsampled plate but its morphism has no
+        per-row density, or the plate's extent at the site is not fixed.
+    """
+    if not run.subsamples:
+        return None
+    axes = site_plates(step.program, spec)
+    if not any(name in run.subsamples for name, _ in axes):
+        return None
+    label = step.site
+    if not isinstance(morphism, PlateDraw | VectorisedObserve):
+        raise ValueError(
+            f"site {label!r} ranges over a subsampled plate, but it draws from "
+            f"{type(morphism).__name__}, which has no density per plate row; "
+            "only a plate draw or a plated observation can be subsampled"
+        )
+    rows: list[torch.Tensor] = []
+    factor = 1.0
+    for name, extent in axes:
+        if extent is None:
+            raise ValueError(
+                f"site {label!r} ranges over plate {name!r}, whose extent the "
+                "program leaves to its data; a subsampled plate needs a fixed "
+                "number of rows"
+            )
+        index = run.subsamples.get(name)
+        if index is None:
+            rows.append(torch.arange(extent))
+            continue
+        rows.append(index)
+        factor *= extent / int(index.numel())
+    return tuple(rows), factor
 
 
 def _split_observations(
@@ -1035,11 +1184,19 @@ class _HostSteps:
         )
         assert step.site is not None
         values = self._parameters(step.site, morphism, context)
-        if values:
-            return TorchSampleable(
-                _ParameterizedMorphism(morphism, values), inp, declared=morphism
-            )
-        return TorchSampleable(morphism, inp)
+        drawing: ContinuousMorphism = (
+            _ParameterizedMorphism(morphism, values) if values else morphism
+        )
+        subsampled = _subsampled_rows(self.run, step, spec, morphism)
+        if subsampled is not None:
+            rows, factor = subsampled
+            annotations = self.run.annotations.setdefault(step.site, {})
+            annotations["subsample_scale"] = factor
+            annotations["subsample_rows"] = rows
+            drawing = _SubsampledMorphism(drawing, rows, factor)
+        if drawing is morphism:
+            return TorchSampleable(morphism, inp)
+        return TorchSampleable(drawing, inp, declared=morphism)
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext
