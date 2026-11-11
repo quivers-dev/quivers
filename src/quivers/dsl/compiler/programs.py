@@ -10,7 +10,7 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Collection, Hashable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
@@ -134,6 +134,7 @@ from quivers.dsl.let_expr_traversal import (
     free_let_names,
     map_let_expr,
     substitute_let_expr,
+    walk_let_expr,
 )
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
@@ -758,6 +759,69 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 # operations in V-Cat morphisms); users wanting a different axis
 # write the contraction via the typed ``contraction`` declaration.
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
+
+#: The calls the let evaluator implements itself rather than through
+#: the builtin table: the collection combinators, which read a lambda,
+#: and the deduction and term operations.
+_LET_SPECIAL_CALLS: frozenset[str] = frozenset(
+    {
+        "length",
+        "map",
+        "filter",
+        "fold",
+        "logsumexp_over",
+        "parse",
+        "subst",
+        "compose",
+        "cholesky_quad_form",
+    }
+)
+
+
+def _unknown_let_call(
+    node: LetExprNode,
+    globals_: Mapping[str, LetValue | frozenset[str]],
+    bound: Collection[str],
+) -> LetExprCall | None:
+    """The first call in a let expression to a name the evaluator lacks.
+
+    The let evaluator resolves a call against its builtin table, its own
+    combinators, the static globals it is compiled with (compiled
+    deductions and injected callables), and the declared constructors.
+    A call naming none of them fails whenever it runs, so it is reported
+    when the program compiles instead.
+
+    Parameters
+    ----------
+    node : LetExprNode
+        The let's value.
+    globals_ : Mapping[str, LetValue | frozenset[str]]
+        The static globals the expression is compiled with.
+    bound : Collection[str]
+        The names the program binds before the let, which a call may
+        name when one of them holds a function.
+
+    Returns
+    -------
+    LetExprCall | None
+        The first such call in preorder, or ``None``.
+    """
+    constructors = globals_.get(LET_CONSTRUCTORS_KEY, frozenset())
+    assert isinstance(constructors, frozenset)
+    for candidate in walk_let_expr(node):
+        if not isinstance(candidate, LetExprCall):
+            continue
+        name = candidate.func
+        if (
+            name in _LET_EXPR_BUILTINS
+            or name in _LET_SPECIAL_CALLS
+            or (name in globals_ and name not in LET_INTERNAL_KEYS)
+            or name in constructors
+            or name in bound
+        ):
+            continue
+        return candidate
+    return None
 
 
 def _expected_call_arity(target: object) -> int | None:
@@ -3638,6 +3702,15 @@ class _ProgramsMixin:
                     self._validate_let_expr_vars(step.value, bound_vars, step)
                     deductions_globals = dict(getattr(self, "_deductions", {}))
                     deductions_globals["__index_size__"] = self._resolve_index_size
+                    self._reject_unknown_let_calls(
+                        step.value,
+                        deductions_globals,
+                        bound_vars,
+                        "let",
+                        step.name,
+                        step.line,
+                        step.col,
+                    )
                     compiled_fn = reading(
                         self._locate_let_failure(
                             self._compile_let_expr(
@@ -3675,6 +3748,15 @@ class _ProgramsMixin:
                 self._validate_let_expr_vars(step.value, bound_vars, step)
                 deductions_globals = dict(getattr(self, "_deductions", {}))
                 deductions_globals["__index_size__"] = self._resolve_index_size
+                self._reject_unknown_let_calls(
+                    step.value,
+                    deductions_globals,
+                    bound_vars,
+                    "score",
+                    step.name,
+                    step.line,
+                    step.col,
+                )
                 compiled_fn = reading(
                     self._locate_let_failure(
                         self._compile_let_expr(
@@ -4069,6 +4151,15 @@ class _ProgramsMixin:
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
             if isinstance(bstep, LetStep):
+                self._reject_unknown_let_calls(
+                    bstep.value,
+                    deductions_globals,
+                    local_bv,
+                    "let",
+                    bstep.name,
+                    bstep.line,
+                    bstep.col,
+                )
                 fn = reading(
                     self._compile_let_expr(bstep.value, globals_=deductions_globals),
                     _let_expr_reads(bstep.value),
@@ -5146,6 +5237,51 @@ class _ProgramsMixin:
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
 
         return _run
+
+    @staticmethod
+    def _reject_unknown_let_calls(
+        node: LetExprNode,
+        globals_: Mapping[str, LetValue | frozenset[str]],
+        bound: Collection[str],
+        kind: str,
+        name: str,
+        line: int,
+        col: int,
+    ) -> None:
+        """Refuse a let or score body that calls a name nothing defines.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The body.
+        globals_ : Mapping[str, LetValue | frozenset[str]]
+            The static globals the body is compiled with.
+        bound : Collection[str]
+            The names bound before the step.
+        kind : str
+            ``"let"`` or ``"score"``, for the message.
+        name : str
+            The binding's name.
+        line : int
+            The step's source line, used when the call has none.
+        col : int
+            The step's source column, used when the call has none.
+
+        Raises
+        ------
+        CompileError
+            If a call names no builtin, combinator, global, constructor,
+            or earlier binding, located at the call.
+        """
+        call = _unknown_let_call(node, globals_, bound)
+        if call is None:
+            return
+        raise CompileError(
+            f"{kind} {name!r}: unknown function {call.func!r} in let expression; "
+            f"it names no builtin, no constructor, and nothing bound earlier",
+            call.line or line,
+            call.col if call.line else col,
+        )
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep
