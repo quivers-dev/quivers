@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.42.0] - 2026-11-11
+
+### Changed
+
+- **Breaking: a kernel's family arguments are literals.** A kernel declared `~ Family(...)` fixes its family with numbers, vectors, or matrices that fill one complete schema, or leaves the list empty and takes every parameter from its learned parameter source. An argument that reads a name, as in `~ Normal(scale=q)` or `~ Categorical(logits=scores)`, is refused at that argument by `loads()`, the checked elaboration, and every transpile target, naming the argument and the program-step form that draws with it.
+
+### Fixed
+
+- **`qvr check` reads a kernel declared with family arguments.** Its family diagnostics name the declaration (every name of a plural one), and a refused argument is a located diagnostic rather than a traceback.
+- **A kernel's literal vector and matrix family arguments fix its family on the compiled runtime.** `~ Dirichlet(concentration=[1.0, 2.0, 3.0])`, `~ MultivariateNormal(loc=[...], scale_tril=[[...]])`, and `~ Normal(loc=[...], scale=2.0)` score the declared family with no learned parameters, as the reference machine does.
+
 ## [0.41.0] - 2026-11-11
 
 ### Added
