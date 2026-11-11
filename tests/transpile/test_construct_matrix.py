@@ -165,13 +165,16 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
         )
 # A scan's sequence extent is runtime data, not a declared object a target
 # can use as a loop bound, so every target refuses a scan by its cell's
-# name, whatever bindings the cell reads.
+# name, whatever bindings the cell reads and whatever its options.
 for _backend in _BACKENDS:
     for _fixture in (
         "scan_cell_reads_vector",
         "scan_cell_reads_matrix",
         "scan_cell_reads_matrix_data",
         "scan_initial_binding",
+        "scan_outputs_all",
+        "scan_reverse",
+        "scan_bidirectional",
     ):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"
