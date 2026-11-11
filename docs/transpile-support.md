@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 99 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 105 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 99    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 99    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 78 / 99    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 72 / 99    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 99    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 86 / 99    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 75 / 99    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 87 / 99    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 75 / 99    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 72 / 99    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 75 / 99    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 60 / 105   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 71 / 105   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 80 / 105   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 74 / 105   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 64 / 105   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 88 / 105   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 77 / 105   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 89 / 105   |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 77 / 105   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 74 / 105   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 77 / 105   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -142,7 +142,6 @@ One minimal program per surface construct, so a `no` here isolates the construct
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -155,6 +154,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -163,16 +163,21 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
@@ -197,6 +202,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_pairwise_gather`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_plated_list_operand`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_pow`                     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_real_division`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -275,6 +281,38 @@ bugs cannot transpile this program:
   - the module's `contraction_decl` declaration declares a contraction: a morphism built by folding several input morphisms together over their shared axes, with the product and sum of the fold taken from the `rule=` composition rule it names. Its meaning lives entirely in that algebra. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for a morphism defined by contracting other morphisms over an algebra's fold. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. A contraction has no counterpart to emit. Write the quantities you want scored as explicit `sample` / `observe` steps of a `program ... :` block, or evaluate the contraction in quivers and pass its result in as data.
 ```
 
+### `family:MultivariateNormal:scale_tril`
+
+Refused for: `steps/observe_mvn_host_factor`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `steps/observe_mvn_host_factor` reports:
+
+```text
+bugs cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+### `family:Wishart:scale_tril`
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `steps/sample_wishart_host_factor` reports:
+
+```text
+bugs cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
+```
+
 ### `loss_decl`
 
 Refused for: `options/option_call`, `options/option_string`, `statements/loss_decl`.
@@ -307,24 +345,6 @@ Every backend reports it in the same words. `bugs` on `steps/function_linear` re
 no transpile target can transpile this program:
   - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
   - no transpile target can transpile this program. The refusal is tagged `the learned function 'shift' (line 10, through shift) applies a 'linear' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
-```
-
-### `param-source:linear:latent`
-
-Refused for: `steps/kernel_latent_weights`.
-
-Reported kinds:
-
-```text
-param-source:linear:latent
-```
-
-Every backend reports it in the same words. `bugs` on `steps/kernel_latent_weights` reports:
-
-```text
-no transpile target can transpile this program:
-  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
-  - no transpile target can transpile this program. The refusal is tagged `the network of 'net' (line 11, through net) draws its weights as latent sites, but no target has a form for the network's affine layers applied to drawn weights. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.`, which has no explanation registered yet; please report it.
 ```
 
 ### `param-source:mlp`
@@ -448,7 +468,7 @@ QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its d
 
 ### `scan:no-lowering:cell`
 
-Refused for: `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`.
+Refused for: `steps/scan_bidirectional`, `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`, `steps/scan_outputs_all`, `steps/scan_reverse`.
 
 Reported kinds:
 
@@ -456,7 +476,7 @@ Reported kinds:
 scan:no-lowering:cell
 ```
 
-Every backend reports it in the same words. `bugs` on `steps/scan_cell_reads_matrix` reports:
+Every backend reports it in the same words. `bugs` on `steps/scan_bidirectional` reports:
 
 ```text
 `scan(cell)` threads `cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
@@ -638,7 +658,7 @@ bugs cannot transpile this program:
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -648,7 +668,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`bugs` on `steps/sample_mvn_sampled_loc` reports:
+`bugs` on `steps/sample_mvn_host_loc` reports:
 
 ```text
 bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -970,7 +990,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1648,7 +1668,7 @@ jags cannot score a draw from `Categorical`: the target only exposes the probabi
 
 **`family:MultivariateNormal:non-ref-covariance`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 

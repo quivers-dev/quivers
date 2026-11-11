@@ -1,0 +1,21 @@
+# Exercises a scan that returns every state, `scan(cell, outputs=all)`,
+# stacked under a second scan that runs over those states.
+object Val : Real 1
+
+program cell(u_t, h_prev) : Val * Val -> Val
+    let m = 0.8 * h_prev + u_t
+    sample h <- Normal(loc=m, scale=0.5)
+    return h
+
+program upper(a_t, g_prev) : Val * Val -> Val
+    let n = 0.5 * g_prev + a_t
+    sample g <- Normal(loc=n, scale=0.5)
+    observe r <- Normal(loc=g, scale=0.5)
+    return g
+
+define deep = scan(cell, outputs=all) >> scan(upper)
+
+program prog : Val -> Val
+    sample last <- deep
+    return last
+export prog

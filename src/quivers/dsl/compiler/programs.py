@@ -10,10 +10,11 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
+import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
 from quivers.continuous.deterministic import (
@@ -135,7 +136,9 @@ from quivers.dsl.compiler._deduction_terms import (
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
     expand_program_scans,
+    ScanCall,
     is_learned_scan_init,
+    positions_let_call,
     scan_let_call,
 )
 from quivers.dsl.let_expr_traversal import (
@@ -143,6 +146,7 @@ from quivers.dsl.let_expr_traversal import (
     free_let_names,
     map_let_expr,
     substitute_let_expr,
+    walk_let_expr,
 )
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
@@ -151,6 +155,8 @@ from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
+from quivers.qiec.terms import Var as QiecVar
+from quivers.transpile._pure_calls import inline_pure_call
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
@@ -216,9 +222,7 @@ def _let_expr_reads(node: LetExprNode) -> frozenset[str]:
     return frozenset(free_let_names(node))
 
 
-def _checked_real_space(
-    name: str, type_: TypeExpr, axes: tuple[str, ...]
-) -> Euclidean | None:
+def _checked_real_space(name: str, type_: TypeExpr, per_row: bool) -> Euclidean | None:
     """The Euclidean space a checked real-valued datum occupies.
 
     Parameters
@@ -227,8 +231,9 @@ def _checked_real_space(
         The datum's name.
     type_ : TypeExpr
         Its checked type.
-    axes : tuple[str, ...]
-        The plate axes its values range over, outermost first.
+    per_row : bool
+        Whether the datum holds one value per row of a plate, along its
+        leading extent.
 
     Returns
     -------
@@ -253,7 +258,7 @@ def _checked_real_space(
         return Euclidean(name=f"_{name}", dim=1)
     total = math.prod(extents)
     return Euclidean(
-        name=f"_{name}", dim=total, plate_rows=extents[0] if axes else None
+        name=f"_{name}", dim=total, plate_rows=extents[0] if per_row else None
     )
 
 
@@ -497,6 +502,70 @@ def _first_call_step(steps: tuple[ProgramStep, ...]) -> CallStep | None:
     return None
 
 
+def _names_in(steps: tuple[ProgramStep, ...]) -> set[str]:
+    """Every name a program's steps bind or read.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The steps.
+
+    Returns
+    -------
+    set[str]
+        The names: every bound variable and every variable an
+        expression reads, host data included.
+    """
+    found: set[str] = set()
+
+    def visit(node: dx.Model | tuple[dx.Model | str, ...]) -> None:
+        if isinstance(node, LetExprVar):
+            found.add(node.name)
+        if isinstance(node, tuple):
+            for item in node:
+                if not isinstance(item, str):
+                    visit(item)
+            return
+        specs = getattr(type(node), "__field_specs__", None)
+        if specs is None:
+            return
+        for field_name in specs:
+            value = getattr(node, field_name, None)
+            if field_name in ("name", "var") and isinstance(value, str):
+                found.add(value)
+            elif field_name == "vars" and isinstance(value, tuple):
+                found.update(item for item in value if isinstance(item, str))
+            elif isinstance(value, tuple) or hasattr(type(value), "__field_specs__"):
+                visit(value)
+
+    visit(steps)
+    return found
+
+
+def _fresh_name(base: str, occupied: set[str]) -> str:
+    """A name not in ``occupied``, which it joins.
+
+    Parameters
+    ----------
+    base : str
+        The preferred name.
+    occupied : set[str]
+        The names in use.
+
+    Returns
+    -------
+    str
+        ``base``, or ``base`` with a numeric suffix.
+    """
+    candidate = base.lstrip("_") or "arg"
+    suffix = 0
+    while candidate in occupied:
+        suffix += 1
+        candidate = f"{base.lstrip('_') or 'arg'}_{suffix}"
+    occupied.add(candidate)
+    return candidate
+
+
 def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
     """Whether a program body calls a named computation anywhere.
 
@@ -538,7 +607,7 @@ def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.append(scan[0])
+                found.append(scan.step)
     return tuple(found)
 
 
@@ -781,6 +850,130 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 # write the contraction via the typed ``contraction`` declaration.
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
 
+#: The calls the let evaluator implements itself rather than through
+#: the builtin table: the collection combinators, which read a lambda,
+#: and the deduction and term operations.
+_LET_SPECIAL_CALLS: frozenset[str] = frozenset(
+    {
+        "length",
+        "map",
+        "filter",
+        "fold",
+        "logsumexp_over",
+        "parse",
+        "subst",
+        "compose",
+        "cholesky_quad_form",
+    }
+)
+
+
+def _checked_layout(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    reads: frozenset[str],
+    extents: Mapping[str, tuple[int, ...]],
+    result: str,
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a let body on its operands' checked shapes.
+
+    Within one run, the runtime holds a number drawn from a continuous
+    family, or read from a one-coordinate input, as a vector of one
+    entry. Elementwise arithmetic cannot tell the difference, but a
+    body that lays numbers out along a new axis (a list literal or a
+    ``factor``) or reduces one would read that stray axis as data:
+    ``[h, 1.0]`` would be ``(2, 1)`` rather than the checked ``(2,)``.
+    Each operand the checked program types as a number is thus handed
+    to the body as a number, and a result the checked program types as
+    a number is given back the one-entry layout its operands had.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, LetValue]], LetValue]
+        The compiled body.
+    reads : frozenset[str]
+        The names the body reads.
+    extents : Mapping[str, tuple[int, ...]]
+        The checked extents of the program's bindings, ``()`` for a
+        number.
+    result : str
+        The name the body's value is bound to.
+
+    Returns
+    -------
+    Callable[[dict[str, LetValue]], LetValue]
+        The body, reading and returning values at their checked layout.
+    """
+    numbers = frozenset(name for name in reads if extents.get(name) == ())
+    if not numbers:
+        return function
+    returns_number = extents.get(result) == ()
+
+    def _run(env: dict[str, LetValue]) -> LetValue:
+        view = dict(env)
+        unwrapped = False
+        for name in numbers:
+            value = env.get(name)
+            if isinstance(value, torch.Tensor) and tuple(value.shape) == (1,):
+                view[name] = value.reshape(())
+                unwrapped = True
+        value = function(view)
+        if (
+            unwrapped
+            and returns_number
+            and isinstance(value, torch.Tensor)
+            and value.dim() == 0
+        ):
+            return value.reshape(1)
+        return value
+
+    return _run
+
+
+def _unknown_let_call(
+    node: LetExprNode,
+    globals_: Mapping[str, LetValue | frozenset[str]],
+    bound: Collection[str],
+) -> LetExprCall | None:
+    """The first call in a let expression to a name the evaluator lacks.
+
+    The let evaluator resolves a call against its builtin table, its own
+    combinators, the static globals it is compiled with (compiled
+    deductions and injected callables), and the declared constructors.
+    A call naming none of them fails whenever it runs, so it is reported
+    when the program compiles instead.
+
+    Parameters
+    ----------
+    node : LetExprNode
+        The let's value.
+    globals_ : Mapping[str, LetValue | frozenset[str]]
+        The static globals the expression is compiled with.
+    bound : Collection[str]
+        The names the program binds before the let, which a call may
+        name when one of them holds a function.
+
+    Returns
+    -------
+    LetExprCall | None
+        The first such call in preorder, or ``None``.
+    """
+    constructors = globals_.get(LET_CONSTRUCTORS_KEY, frozenset())
+    assert isinstance(constructors, frozenset)
+    for candidate in walk_let_expr(node):
+        if not isinstance(candidate, LetExprCall):
+            continue
+        name = candidate.func
+        if (
+            name in _LET_EXPR_BUILTINS
+            or name in _LET_SPECIAL_CALLS
+            or (name in globals_ and name not in LET_INTERNAL_KEYS)
+            or name in constructors
+            or name in bound
+        ):
+            continue
+        return candidate
+    return None
+
 
 def _drawn_weights(
     function: LearnedFunction, env: Mapping[str, "LetValue"], name: str
@@ -1016,11 +1209,109 @@ def _infer_wiring_from_signature(
 #   the posterior-block ``over`` model reference.
 # * ``contraction`` declarations read the composition ``rule``, the
 #   explicit einsum ``wiring`` escape hatch, and the ``share`` list.
+_MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN"}
+)
+"""Families whose sample is one real vector over the event axis."""
+
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
 _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
 _PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "over"})
 _CONTRACTION_OPTION_KEYS: frozenset[str] = frozenset({"rule", "wiring", "share"})
+
+
+def _compile_parse_call(
+    node: LetExprCall, arg_fns: list[Callable[[dict], object]]
+) -> Callable[[dict], object]:
+    """Compile ``parse(D, input[, Plate][, (lhs, probabilities)...])``.
+
+    The first argument names a compiled deduction and the second is its
+    input: a sentence, or with a plate object as the third argument, a
+    corpus of sentences, one per row, whose goal weight is the semiring
+    product of the sentences'. The remaining arguments bind production
+    probabilities to a grammar normalized per left-hand side, each a pair
+    of a left-hand side's label and a probability vector over its
+    productions; the deduction checks that they cover its groups.
+
+    Parameters
+    ----------
+    node : LetExprCall
+        The call.
+    arg_fns : list[Callable[[dict], object]]
+        Its compiled arguments.
+
+    Returns
+    -------
+    Callable[[dict], object]
+        The evaluator, answering a `ChartView` for a sentence and a
+        `CorpusChart` for a corpus.
+
+    Raises
+    ------
+    CompileError
+        If the call has fewer than two arguments, a binding is not a
+        pair of a string label and a value, a label is bound twice, or
+        (when evaluated) the first argument is no deduction.
+    """
+    if len(node.args) < 2:
+        raise CompileError(
+            "parse() takes a deduction and its input, then optionally a plate "
+            "object and (left-hand side, probabilities) pairs"
+        )
+    rest = list(node.args[2:])
+    corpus = bool(rest) and isinstance(rest[0], LetExprVar)
+    if corpus:
+        rest = rest[1:]
+    labels: list[str] = []
+    for argument in rest:
+        if not (
+            isinstance(argument, LetExprTuple)
+            and len(argument.items) == 2
+            and isinstance(argument.items[0], LetExprString)
+        ):
+            raise CompileError(
+                'parse() binds production probabilities as ("<left-hand side>", '
+                "<probabilities>) pairs after its input and optional plate",
+                argument.line,
+                argument.col,
+            )
+        label = argument.items[0].value
+        if label in labels:
+            raise CompileError(
+                f"parse() binds the left-hand side {label!r} twice",
+                argument.line,
+                argument.col,
+            )
+        labels.append(label)
+    pair_fns = arg_fns[len(node.args) - len(rest) :]
+    target_fn, input_fn = arg_fns[0], arg_fns[1]
+
+    def _parse(env: dict) -> object:
+        system = target_fn(env)
+        if not isinstance(system, DeductionSystem):
+            raise CompileError(
+                f"parse() first arg must be a DeductionSystem, "
+                f"got {type(system).__name__}"
+            )
+        probabilities: dict[str, torch.Tensor] | None = None
+        if labels:
+            probabilities = {}
+            for label, pair_fn in zip(labels, pair_fns, strict=True):
+                pair = pair_fn(env)
+                assert isinstance(pair, tuple) and len(pair) == 2
+                value = pair[1]
+                tensor = (
+                    value if isinstance(value, torch.Tensor) else torch.tensor(value)
+                )
+                probabilities[label] = tensor.reshape(tensor.shape[-1:])
+        source = input_fn(env)
+        if corpus:
+            assert isinstance(source, Sequence)
+            return system.corpus(list(source), probabilities)
+        return system(source, probabilities)
+
+    return _parse
 
 
 class _ProgramsMixin:
@@ -1917,6 +2208,108 @@ class _ProgramsMixin:
             self._rename_step(step, type_subst, value_subst, rename)
             for step in expanded_body
         )
+
+    def _inline_pure_calls(
+        self, program: str, steps: tuple[ProgramStep, ...]
+    ) -> tuple[ProgramStep, ...]:
+        """Replace every call of a pure computation by its body.
+
+        A call ``let y <- f(a, b)`` of a computation that performs no
+        effect, takes no static arguments, and is a chain of pure
+        bindings ending in a return becomes let steps: an argument that
+        is not a name is bound to a fresh name first, each of the
+        callee's bindings is bound under a fresh name with its
+        parameters read as the arguments, and ``y`` is bound to the
+        result. The analysis is the transpile planner's
+        (`inline_pure_call`), so the compiled runtime and every target
+        inline the same calls. The program then compiles to a
+        `MonadicProgram`, differentiable like any other, and a call
+        that is not inlinable is left in place.
+
+        Parameters
+        ----------
+        program : str
+            The program's name, for diagnostics.
+        steps : tuple[ProgramStep, ...]
+            The program's steps, searched through marginalization
+            scopes.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The steps with every pure call inlined.
+        """
+        if not _calls_a_computation(steps):
+            return steps
+        module = self.qiec_module
+        if module is None or module.gap:
+            return steps
+        computations = {item.name: item for item in module.computations}
+        occupied = _names_in(steps)
+        cards = {
+            name: obj.cardinality
+            for name, obj in self._objects.items()
+            if isinstance(obj, FinSet)
+        }
+
+        def rewrite(body: tuple[ProgramStep, ...]) -> tuple[ProgramStep, ...]:
+            out: list[ProgramStep] = []
+            for step in body:
+                if isinstance(step, MarginalizeStep) and step.scope:
+                    out.append(step.with_(scope=rewrite(step.scope)))
+                    continue
+                if not isinstance(step, CallStep):
+                    out.append(step)
+                    continue
+                callee = computations.get(step.call.callee)
+                if (
+                    callee is None
+                    or step.call.static_arguments
+                    or len(step.call.arguments) != len(callee.parameters)
+                ):
+                    out.append(step)
+                    continue
+                bound: list[ProgramStep] = []
+                arguments: list[QiecVar] = []
+                for parameter, argument in zip(
+                    callee.parameters, step.call.arguments, strict=True
+                ):
+                    if isinstance(argument, LetExprVar):
+                        name = argument.name
+                    else:
+                        name = _fresh_name(f"{step.name}_{parameter.name}", occupied)
+                        bound.append(
+                            LetStep(
+                                name=name,
+                                value=argument,
+                                line=step.line,
+                                col=step.col,
+                            )
+                        )
+                    arguments.append(QiecVar(Local(name, parameter.type)))
+                inlined = inline_pure_call(
+                    callee,
+                    tuple(arguments),
+                    callee.type.result,
+                    occupied,
+                    cards,
+                    program,
+                )
+                if inlined is None:
+                    out.append(step)
+                    continue
+                hoisted, result = inlined
+                out.extend(bound)
+                out.extend(
+                    LetStep(name=name, value=value, line=step.line, col=step.col)
+                    for name, value in hoisted
+                )
+                out.append(
+                    LetStep(name=step.name, value=result, line=step.line, col=step.col)
+                )
+            return tuple(out)
+
+        return rewrite(steps)
 
     @staticmethod
     def _refuse_computation_calls(program: str, steps: tuple[ProgramStep, ...]) -> None:
@@ -2825,7 +3218,9 @@ class _ProgramsMixin:
                     decl.line,
                     decl.col,
                 )
-            self._program_templates[decl.name] = decl
+            self._program_templates[decl.name] = decl.with_(
+                draws=self._inline_pure_calls(decl.name, decl.draws)
+            )
             return None
         if decl.name in self._morphisms:
             raise CompileError(
@@ -2848,6 +3243,7 @@ class _ProgramsMixin:
                     decl.col,
                 )
         decl, scan_effects = self._expand_cell_scans(decl)
+        decl = decl.with_(draws=self._inline_pure_calls(decl.name, decl.draws))
         decl = decl.with_(draws=self._latent_kernel_draws(decl.draws))
         if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
@@ -3694,10 +4090,25 @@ class _ProgramsMixin:
                         step.col,
                     )
                 scan = scan_let_call(step.value)
-                if scan is not None and scan[0] in self._scan_step_declarations:
+                if scan is not None and scan.step in self._scan_step_declarations:
                     steps.append(self._compile_scan(step, scan, decl, bound_vars))
                     continue
-                bundle = _draw_bundle(step.value, bound_vars)
+                # Sequences paired position by position are laid end to
+                # end along the feature axis, after the position axis,
+                # as per-row vectors bundled by a fan are.
+                bundle = positions_let_call(step.value)
+                if bundle is not None and not all(
+                    isinstance(bound_vars.get(name), ContinuousSpace) for name in bundle
+                ):
+                    raise CompileError(
+                        f"let {step.name!r} pairs {', '.join(bundle)} position by "
+                        f"position, which are not all sequences of continuous "
+                        f"states bound before it",
+                        step.line,
+                        step.col,
+                    )
+                if bundle is None:
+                    bundle = _draw_bundle(step.value, bound_vars)
                 if bundle is not None:
                     steps.append(Let(name=step.name, value=_concatenation(bundle)))
                     bound_vars[step.name] = ProductSpace(
@@ -3728,18 +4139,35 @@ class _ProgramsMixin:
                     # resolution.
                     self._validate_let_expr_vars(step.value, bound_vars, step)
                     deductions_globals = self._let_globals()
+                    self._reject_unknown_let_calls(
+                        step.value,
+                        deductions_globals,
+                        bound_vars,
+                        "let",
+                        step.name,
+                        step.line,
+                        step.col,
+                    )
+                    reads = self._let_reads(step.value)
                     compiled_fn = reading(
-                        self._locate_let_failure(
-                            self._compile_let_expr(
-                                step.value,
-                                globals_=deductions_globals,
+                        _checked_layout(
+                            self._locate_let_failure(
+                                self._compile_let_expr(
+                                    step.value,
+                                    globals_=deductions_globals,
+                                ),
+                                "let",
+                                step.name,
+                                step.line,
+                                step.col,
                             ),
-                            "let",
+                            reads,
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {},
                             step.name,
-                            step.line,
-                            step.col,
                         ),
-                        self._let_reads(step.value),
+                        reads,
                     )
                     bound_vars[step.name] = None
                     let_space = _let_space(
@@ -3769,18 +4197,35 @@ class _ProgramsMixin:
                     )
                 self._validate_let_expr_vars(step.value, bound_vars, step)
                 deductions_globals = self._let_globals()
+                self._reject_unknown_let_calls(
+                    step.value,
+                    deductions_globals,
+                    bound_vars,
+                    "score",
+                    step.name,
+                    step.line,
+                    step.col,
+                )
+                reads = self._let_reads(step.value)
                 compiled_fn = reading(
-                    self._locate_let_failure(
-                        self._compile_let_expr(
-                            step.value,
-                            globals_=deductions_globals,
+                    _checked_layout(
+                        self._locate_let_failure(
+                            self._compile_let_expr(
+                                step.value,
+                                globals_=deductions_globals,
+                            ),
+                            "score",
+                            step.name,
+                            step.line,
+                            step.col,
                         ),
-                        "score",
+                        reads,
+                        self._value_extents_stack[-1]
+                        if self._value_extents_stack
+                        else {},
                         step.name,
-                        step.line,
-                        step.col,
                     ),
-                    self._let_reads(step.value),
+                    reads,
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -4077,20 +4522,25 @@ class _ProgramsMixin:
     def _compile_scan(
         self,
         step: LetStep,
-        scan: tuple[str, str, str | None],
+        scan: ScanCall,
         decl: ProgramDecl,
         bound_vars: dict[str, AnySpace | None],
     ) -> Scan:
         """Compile ``let h = scan(step, xs)`` over a scan's step program.
 
+        A scan with ``outputs=all`` binds its every state, which carries
+        a position axis after the batch; the name is bound to the
+        state's space, the space of each entry, as the sequence a later
+        scan reads is.
+
         Parameters
         ----------
         step : LetStep
             The let.
-        scan : tuple[str, str, str | None]
-            The step program's name, the sequence's name, and the
-            initial state's name when there is one: a binding of the
-            program, or a learned initial state's input.
+        scan : ScanCall
+            The scan: its step program, its sequence, its initial
+            state's name when there is one (a binding of the program,
+            or a learned initial state's input), and its options.
         decl : ProgramDecl
             The program the let belongs to.
         bound_vars : dict[str, AnySpace | None]
@@ -4106,7 +4556,7 @@ class _ProgramsMixin:
         CompileError
             If the sequence is neither bound nor the program's input.
         """
-        step_name, source_name, init = scan
+        step_name, source_name, init = scan.step, scan.sequence, scan.init
         body = self._scan_step(step_name)
         source: str | None
         if source_name in bound_vars:
@@ -4149,6 +4599,8 @@ class _ProgramsMixin:
             source=source,
             initial=initial,
             initial_from=initial_from,
+            outputs=scan.outputs,
+            reverse=scan.reverse,
         )
 
     def _compile_call(
@@ -4299,9 +4751,30 @@ class _ProgramsMixin:
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
             if isinstance(bstep, LetStep):
+                self._reject_unknown_let_calls(
+                    bstep.value,
+                    deductions_globals,
+                    local_bv,
+                    "let",
+                    bstep.name,
+                    bstep.line,
+                    bstep.col,
+                )
+                body_reads = self._let_reads(bstep.value)
                 fn = reading(
-                    self._compile_let_expr(bstep.value, globals_=deductions_globals),
-                    self._let_reads(bstep.value),
+                    _checked_layout(
+                        self._compile_let_expr(
+                            bstep.value, globals_=deductions_globals
+                        ),
+                        body_reads,
+                        (
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {}
+                        ),
+                        bstep.name,
+                    ),
+                    body_reads,
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
@@ -4692,6 +5165,12 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                     )
+            except ValueError:
+                # An inline family the checked program cannot size is
+                # refused here; when the checked program itself fails to
+                # lower, its located diagnostic says why first.
+                _ = self.qiec_module
+                raise
             except TypeError as exc:
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
@@ -4815,11 +5294,21 @@ class _ProgramsMixin:
         entry = next((e for e in module.entries if e.name == program), None)
         if entry is None:
             return {}
+        plates = {axis.name for site in entry.sites for axis in site.batch}
         spaces: dict[str, AnySpace] = {}
         for parameter in entry.parameters:
             if parameter.role != "data":
                 continue
-            space = _checked_real_space(parameter.name, parameter.type, parameter.axes)
+            # A datum ranges over a plate when it fills a plated draw's
+            # parameter one row at a time, or when it is a vector a let
+            # reads along a plate's rows; a tensor over its own axes,
+            # such as a Cholesky factor, is one value.
+            space = _checked_real_space(
+                parameter.name,
+                parameter.type,
+                parameter.per_row
+                or (len(parameter.axes) == 1 and parameter.axes[0] in plates),
+            )
             if space is not None:
                 spaces[parameter.name] = space
         return spaces
@@ -5210,17 +5699,23 @@ class _ProgramsMixin:
         event_size = (
             self._axis_event_size(event_axis) if event_axis is not None else None
         )
+        checked_event = self._checked_event_extents(
+            family, argument_by_name, var_names[0]
+        )
         matrix_spec = self._matrix_family_spec(family)
         if matrix_spec is not None:
             # A matrix-valued family takes its ``K x K`` shape from the
             # width in scope: the ``[over=...]`` axis when one is
-            # written, otherwise the object the draw is annotated with.
-            # Neither is optional, since the underlying distribution
-            # needs ``K`` at construction and a scalar codomain would
-            # build it at ``K = 1``.
+            # written, else the extents the checked program gives the
+            # draw, otherwise the object the draw is annotated with.
+            # None is optional, since the underlying distribution needs
+            # ``K`` at construction and a scalar codomain would build it
+            # at ``K = 1``.
             matrix_dim = (
                 event_size
                 if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
                 else self._axis_event_size(program_codomain)
             )
             if matrix_dim is None or matrix_dim < 2:
@@ -5236,8 +5731,45 @@ class _ProgramsMixin:
             return self._matrix_codomain(
                 matrix_spec, matrix_dim, var_names[0], line, col
             )
+        record = FAMILIES.get(family)
+        if (
+            record is not None
+            and record.event_rank == 1
+            and record.event_sources
+            and family in _MULTIVARIATE_REAL_FAMILIES
+        ):
+            # A multivariate real family samples a vector over its event
+            # axis: the ``[over=...]`` axis when one is written, else the
+            # extent the checked program gives its event source.
+            width = (
+                event_size
+                if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
+                else None
+            )
+            if width is None:
+                # A checked program that fails to lower says why first.
+                _ = self.qiec_module
+                raise CompileError(
+                    f"{family} draw of {var_names[0]!r} fixes no event size the "
+                    f"compiled runtime can build it at: name its axis with "
+                    f"``[over=K]``, annotate it (``{var_names[0]} : K <- "
+                    f"{family}(...)``), or give its "
+                    f"{' or '.join(map(repr, record.event_sources))} a fixed size",
+                    line,
+                    col,
+                )
+            return Euclidean(name=f"_{var_names[0]}", dim=width)
         if event_size is not None and event_size > 1:
-            if family in ("Normal", "LogitNormal", "Uniform", "TruncatedNormal"):
+            if family in (
+                "Normal",
+                "LogitNormal",
+                "Uniform",
+                "TruncatedNormal",
+                "LogGamma",
+                "LogitBeta",
+            ):
                 return Euclidean(name=f"_{var_names[0]}", dim=event_size)
             if family in (
                 "Exponential",
@@ -5353,6 +5885,49 @@ class _ProgramsMixin:
         else:
             return Euclidean(name=f"_{var_names[0]}", dim=1)
 
+    def _checked_event_extents(
+        self,
+        family: str,
+        arguments: Mapping[str, object],
+        site: str,
+    ) -> tuple[int, ...] | None:
+        """The event extents the checked program gives an inline draw.
+
+        Parameters
+        ----------
+        family : str
+            The family's source name.
+        arguments : Mapping[str, object]
+            The draw's arguments by parameter name.
+        site : str
+            The name the draw binds.
+
+        Returns
+        -------
+        tuple[int, ...] | None
+            The trailing event-rank extents of the argument the family's
+            event shape comes from, a list literal's length for a vector,
+            else of the draw's own checked value; ``None`` when none is
+            fixed or the family has no event axes.
+        """
+        record = FAMILIES.get(family)
+        if record is None or record.event_rank == 0:
+            return None
+        rank = record.event_rank
+        extents = self._value_extents_stack[-1] if self._value_extents_stack else {}
+        for name in record.event_sources:
+            argument = arguments.get(name)
+            if isinstance(argument, DrawArgName):
+                checked = extents.get(argument.text)
+                if checked is not None and len(checked) >= rank:
+                    return tuple(checked[len(checked) - rank :])
+            if isinstance(argument, DrawArgList) and argument.items and rank == 1:
+                return (len(argument.items),)
+        own = extents.get(site)
+        if own is not None and len(own) >= rank:
+            return tuple(own[len(own) - rank :])
+        return None
+
     @staticmethod
     def _locate_let_failure(
         fn: Callable[[dict[str, "LetValue"]], "LetValue"],
@@ -5435,6 +6010,51 @@ class _ProgramsMixin:
             for name, morphism in self._morphisms.items()
             if isinstance(morphism, LearnedFunction)
         }
+
+    @staticmethod
+    def _reject_unknown_let_calls(
+        node: LetExprNode,
+        globals_: Mapping[str, LetValue | frozenset[str]],
+        bound: Collection[str],
+        kind: str,
+        name: str,
+        line: int,
+        col: int,
+    ) -> None:
+        """Refuse a let or score body that calls a name nothing defines.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The body.
+        globals_ : Mapping[str, LetValue | frozenset[str]]
+            The static globals the body is compiled with.
+        bound : Collection[str]
+            The names bound before the step.
+        kind : str
+            ``"let"`` or ``"score"``, for the message.
+        name : str
+            The binding's name.
+        line : int
+            The step's source line, used when the call has none.
+        col : int
+            The step's source column, used when the call has none.
+
+        Raises
+        ------
+        CompileError
+            If a call names no builtin, combinator, global, constructor,
+            or earlier binding, located at the call.
+        """
+        call = _unknown_let_call(node, globals_, bound)
+        if call is None:
+            return
+        raise CompileError(
+            f"{kind} {name!r}: unknown function {call.func!r} in let expression; "
+            f"it names no builtin, no constructor, and nothing bound earlier",
+            call.line or line,
+            call.col if call.line else col,
+        )
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep
@@ -5702,6 +6322,14 @@ class _ProgramsMixin:
             def _method(env: dict):
                 receiver = recv_fn(env)
                 args = [fn(env) for fn in arg_fns]
+                if (
+                    method == "goal_weight"
+                    and not args
+                    and isinstance(receiver, torch.Tensor)
+                ):
+                    # In a checked program a deduction's answer is its
+                    # goal's inside weight, which ``goal_weight()`` reads.
+                    return receiver
                 fn = getattr(receiver, method, None)
                 if fn is None:
                     raise CompileError(
@@ -5838,26 +6466,7 @@ class _ProgramsMixin:
                     ]
                     return torch.logsumexp(torch.stack(coll), dim=0)
                 if func_name == "parse":
-                    # parse(D, input) — invoke a registered deduction
-                    # on an axiom list / input. The first arg is a
-                    # let_var naming a compiled DeductionSystem; the
-                    # remaining arg is the input to feed it.
-                    # The runtime env carries a `__compiler__` key
-                    # set by the program runner with the compiled
-                    # deductions dict.
-                    if len(arg_fns) != 2:
-                        raise CompileError(
-                            "parse() takes exactly two arguments: "
-                            "deduction-name and input"
-                        )
-                    ded = arg_fns[0](env)
-                    inp = arg_fns[1](env)
-                    if hasattr(ded, "__call__"):
-                        return ded(inp)
-                    raise CompileError(
-                        f"parse() first arg must be a DeductionSystem, "
-                        f"got {type(ded).__name__}"
-                    )
+                    return _compile_parse_call(node, arg_fns)(env)
                 if func_name == "subst":
                     # subst(term, var, value) — capture-avoiding
                     # substitution on a structural LF term. Walks the

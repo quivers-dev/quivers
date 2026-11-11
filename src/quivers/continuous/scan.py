@@ -18,7 +18,13 @@ A -> H that, at runtime:
 2. Initializes hidden state h_0 (zeros or a learned parameter).
 3. At each step t, concatenates x[:, t, :] with h to form the
    cell input, then calls cell.rsample to produce the new h.
-4. Returns the final hidden state h_T of shape (batch, dim_H).
+4. Returns the final hidden state h_T of shape (batch, dim_H), or,
+   with ``outputs="all"``, every state, shape (batch, seq_len, dim_H).
+
+With ``reverse=True`` the scan visits the positions from the last to
+the first, so its final state is the one after position 0; a returned
+trajectory is still laid out in input order, its entry ``t`` being the
+state after reading position ``t``.
 
 The scan's type in the categorical framework is:
 
@@ -32,13 +38,18 @@ Initialization strategies
 - ``"zeros"``: h_0 = 0 (default).
 - ``"learned"``: h_0 is a learnable nn.Parameter.
 
+Outputs
+-------
+- ``"last"``: the state after the last position visited (default).
+- ``"all"``: the state after every position, in input order.
+
 Examples
 --------
 >>> from quivers.continuous.spaces import Euclidean, ProductSpace
 >>> from quivers.continuous.families import ConditionalNormal
 >>> A = Euclidean(name="input", dim=32)
 >>> H = Euclidean(name="hidden", dim=64)
->>> cell = ConditionalNormal(ProductSpace(A, H), H, scale=0.1)
+>>> cell = ConditionalNormal(ProductSpace(components=(A, H)), H)
 >>> scanned = ScanMorphism(cell, init="zeros")
 >>> scanned.domain   # Euclidean(name="input", dim=32)
 >>> scanned.codomain # Euclidean(name="hidden", dim=64)
@@ -47,6 +58,8 @@ Examples
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -122,7 +135,7 @@ class ScanMorphism(ContinuousMorphism):
         h_0 = init
         h_t = cell(concat(x_t, h_{t-1}))  for t = 1..T
 
-    The scan returns the final hidden state h_T.
+    The scan returns the final hidden state h_T, or every state.
 
     Parameters
     ----------
@@ -137,14 +150,40 @@ class ScanMorphism(ContinuousMorphism):
         scan that starts from a binding runs as a step of that program,
         which supplies the binding; run on its own it has no initial
         state and raises.
+    outputs : Literal["last", "all"]
+        ``"last"`` (default) returns the state after the last position
+        the scan visits; ``"all"`` returns the state after every
+        position, ``(batch, seq_len, hidden_dim)`` in input order.
+    reverse : bool
+        Whether the scan visits the positions from the last to the
+        first. A reversed scan's final state is the one after position
+        0, and its trajectory is still indexed by input position.
+
+    Raises
+    ------
+    ValueError
+        If ``init`` is not a strategy or a binding name, or ``outputs``
+        is neither ``"last"`` nor ``"all"``.
     """
 
-    def __init__(self, cell: ContinuousMorphism, init: str = "zeros") -> None:
+    def __init__(
+        self,
+        cell: ContinuousMorphism,
+        init: str = "zeros",
+        outputs: Literal["last", "all"] = "last",
+        reverse: bool = False,
+    ) -> None:
         input_space = _extract_input_space(cell)
         hidden_space = cell.codomain
         super().__init__(input_space, hidden_space)
+        if outputs not in ("last", "all"):
+            raise ValueError(
+                f"unknown scan outputs {outputs!r}; expected 'last' or 'all'"
+            )
         self._cell = cell
         self._init_strategy = init
+        self._outputs: Literal["last", "all"] = outputs
+        self._reverse = reverse
         self._input_dim = _event_dim(input_space)
         self._hidden_dim = _event_dim(hidden_space)
         if init == "learned":
@@ -166,6 +205,62 @@ class ScanMorphism(ContinuousMorphism):
         """
         return self._cell
 
+    @property
+    def outputs(self) -> Literal["last", "all"]:
+        """What the scan returns.
+
+        Returns
+        -------
+        Literal["last", "all"]
+            ``"last"`` for the final state, ``"all"`` for every state.
+        """
+        return self._outputs
+
+    @property
+    def reverse(self) -> bool:
+        """Whether the scan visits the positions from the last to the first.
+
+        Returns
+        -------
+        bool
+            ``True`` for a right-to-left scan.
+        """
+        return self._reverse
+
+    def _order(self, seq_len: int) -> list[int]:
+        """The positions in the order the scan visits them.
+
+        Parameters
+        ----------
+        seq_len : int
+            The number of positions.
+
+        Returns
+        -------
+        list[int]
+            ``0 .. seq_len - 1``, or the reverse for a reversed scan.
+        """
+        positions = list(range(seq_len))
+        return positions[::-1] if self._reverse else positions
+
+    def _value(self, trajectory: torch.Tensor) -> torch.Tensor:
+        """The scan's value given its trajectory in input order.
+
+        Parameters
+        ----------
+        trajectory : torch.Tensor
+            Every state, ``(..., seq_len, hidden_dim)``, in input order.
+
+        Returns
+        -------
+        torch.Tensor
+            The trajectory for ``outputs="all"``; otherwise the state
+            after the last position visited, ``(..., hidden_dim)``.
+        """
+        if self._outputs == "all":
+            return trajectory
+        return trajectory[..., 0 if self._reverse else -1, :]
+
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
     ) -> torch.Tensor:
@@ -185,17 +280,19 @@ class ScanMorphism(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            Final hidden state. Shape ``(batch, hidden_dim)``,
-            or ``(*sample_shape, batch, hidden_dim)`` if
-            sample_shape is non-empty.
+            The final hidden state, shape ``(batch, hidden_dim)``, or
+            with ``outputs="all"`` every state, ``(batch, seq_len,
+            hidden_dim)`` in input order; ``sample_shape`` leads either
+            when non-empty.
         """
         x = self._as_sequence(x)
         batch, seq_len, _ = x.shape
         h = self._initial_state(batch, x)
-        for t in range(seq_len):
+        states: dict[int, torch.Tensor] = {}
+        for index, t in enumerate(self._order(seq_len)):
             x_t = x[:, t, :]
             cell_input = torch.cat([x_t, h], dim=-1)
-            if t == 0 and len(sample_shape) > 0:
+            if index == 0 and len(sample_shape) > 0:
                 h = self._cell.rsample(cell_input, sample_shape)
                 h = self._flatten_cell_output(h)
                 if len(sample_shape) > 0 and h.dim() > 2:
@@ -206,7 +303,10 @@ class ScanMorphism(ContinuousMorphism):
                     cell_input = torch.cat([x_t, h], dim=-1)
                 h = self._cell.rsample(cell_input)
                 h = self._flatten_cell_output(h)
-        return h
+            states[t] = h
+        if self._outputs == "last":
+            return h
+        return torch.stack([states[t] for t in range(seq_len)], dim=-2)
 
     def _initial_state(self, batch: int, x: torch.Tensor) -> torch.Tensor:
         """The hidden state the recurrence starts from, shaped ``(batch, H)``.
@@ -267,10 +367,10 @@ class ScanMorphism(ContinuousMorphism):
     def push_base(self, x: torch.Tensor, base: torch.Tensor) -> torch.Tensor:
         """Run the recurrence on supplied coordinates instead of draws.
 
-        Time step ``t`` reads the ``t``-th block of ``base``, so the
-        trajectory is a deterministic function of the coordinates and
-        the input, and the same coordinates always produce the same
-        final state.
+        The ``k``-th position the scan visits reads the ``k``-th block
+        of ``base``, so the trajectory is a deterministic function of
+        the coordinates and the input, and the same coordinates always
+        produce the same value.
 
         Parameters
         ----------
@@ -282,9 +382,10 @@ class ScanMorphism(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            The final state.
+            The scan's value: the final state, or every state for
+            ``outputs="all"``.
         """
-        return self.trajectory_from_base(x, base)[:, -1, :]
+        return self._value(self.trajectory_from_base(x, base))
 
     def push_base_scored(
         self, x: torch.Tensor, base: torch.Tensor
@@ -306,7 +407,8 @@ class ScanMorphism(ContinuousMorphism):
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
-            The final state, shape ``(batch, hidden_dim)``, and the
+            The scan's value (the final state, shape ``(batch,
+            hidden_dim)``, or every state for ``outputs="all"``) and the
             trajectory's log-density, shape ``(batch,)``.
 
         Raises
@@ -315,7 +417,7 @@ class ScanMorphism(ContinuousMorphism):
             If the cell declares no reparameterization.
         """
         trajectory = self.trajectory_from_base(x, base)
-        return trajectory[:, -1, :], self.log_prob(x, trajectory)
+        return self._value(trajectory), self.log_prob(x, trajectory)
 
     def trajectory_from_base(self, x: torch.Tensor, base: torch.Tensor) -> torch.Tensor:
         """Every state the recurrence reaches on supplied coordinates.
@@ -326,14 +428,14 @@ class ScanMorphism(ContinuousMorphism):
             Input sequence, in either layout `_as_sequence` reads.
         base : torch.Tensor
             Standard-normal coordinates, shape ``(batch, dimension)``
-            for the dimension `base_dimension` reports at ``x``; time
-            step ``t`` reads the ``t``-th block.
+            for the dimension `base_dimension` reports at ``x``; the
+            ``k``-th position visited reads the ``k``-th block.
 
         Returns
         -------
         torch.Tensor
             The states :math:`h_1, \\ldots, h_T`, shape
-            ``(batch, seq_len, hidden_dim)``.
+            ``(batch, seq_len, hidden_dim)``, in input order.
 
         Raises
         ------
@@ -350,22 +452,23 @@ class ScanMorphism(ContinuousMorphism):
             )
         batch, seq_len, _ = seq.shape
         h = self._initial_state(batch, seq)
-        states: list[torch.Tensor] = []
-        for t in range(seq_len):
+        states: dict[int, torch.Tensor] = {}
+        for index, t in enumerate(self._order(seq_len)):
             cell_input = torch.cat([seq[:, t, :], h], dim=-1)
-            block = base[:, t * step : (t + 1) * step]
+            block = base[:, index * step : (index + 1) * step]
             h = self._flatten_cell_output(self._cell.push_base(cell_input, block))
-            states.append(h)
-        return torch.stack(states, dim=1)
+            states[t] = h
+        return torch.stack([states[t] for t in range(seq_len)], dim=1)
 
     def rsample_trajectory(self, x: torch.Tensor) -> torch.Tensor:
         """Draw the recurrence's whole trajectory.
 
         The trajectory is the value
         [`log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
-        scores; its last state is what
+        scores; for ``outputs="last"``, its state after the last
+        position visited is what
         [`rsample`][quivers.continuous.scan.ScanMorphism.rsample]
-        returns.
+        returns, and for ``outputs="all"`` it is that value.
 
         Parameters
         ----------
@@ -376,17 +479,17 @@ class ScanMorphism(ContinuousMorphism):
         -------
         torch.Tensor
             The states :math:`h_1, \\ldots, h_T`, shape
-            ``(batch, seq_len, hidden_dim)``.
+            ``(batch, seq_len, hidden_dim)``, in input order.
         """
         seq = self._as_sequence(x)
         batch, seq_len, _ = seq.shape
         h = self._initial_state(batch, seq)
-        states: list[torch.Tensor] = []
-        for t in range(seq_len):
+        states: dict[int, torch.Tensor] = {}
+        for t in self._order(seq_len):
             cell_input = torch.cat([seq[:, t, :], h], dim=-1)
             h = self._flatten_cell_output(self._cell.rsample(cell_input))
-            states.append(h)
-        return torch.stack(states, dim=1)
+            states[t] = h
+        return torch.stack([states[t] for t in range(seq_len)], dim=1)
 
     @staticmethod
     def _flatten_cell_output(
@@ -462,7 +565,10 @@ class ScanMorphism(ContinuousMorphism):
 
         .. math::
 
-            \\sum_{t=1}^{T} \\log p(h_t \\mid x_t, h_{t-1}).
+            \\sum_{t=1}^{T} \\log p(h_t \\mid x_t, h_{t-1}),
+
+        with :math:`h_{t+1}` in place of :math:`h_{t-1}` for a reversed
+        scan, whose trajectory is still indexed by input position.
 
         The final state alone has a density only as a marginal over the
         states before it, which the scan does not compute, so a final
@@ -527,6 +633,9 @@ class ScanMorphism(ContinuousMorphism):
             log p(h_1, ..., h_T | x_{1:T}) =
                 sum_t log p(h_t | x_t, h_{t-1})
 
+        over the positions in the order the scan visits them, so a
+        reversed scan conditions each state on the one after it.
+
         Parameters
         ----------
         x : torch.Tensor
@@ -557,7 +666,7 @@ class ScanMorphism(ContinuousMorphism):
         states = hidden_states.reshape(batch, seq_len, self._hidden_dim)
         h = self._initial_state(batch, seq)
         total = torch.zeros(batch, device=seq.device, dtype=h.dtype)
-        for t in range(seq_len):
+        for t in self._order(seq_len):
             h_t = states[:, t, :]
             cell_input = torch.cat([seq[:, t, :], h], dim=-1)
             total = total + self._cell.log_prob(cell_input, h_t)
@@ -566,7 +675,9 @@ class ScanMorphism(ContinuousMorphism):
 
     def __repr__(self) -> str:
         init = f", init={self._init_strategy}" if self._init_strategy != "zeros" else ""
-        return f"ScanMorphism({self._cell!r}{init})"
+        outputs = f", outputs={self._outputs}" if self._outputs != "last" else ""
+        reverse = ", reverse=True" if self._reverse else ""
+        return f"ScanMorphism({self._cell!r}{init}{outputs}{reverse})"
 
 
 __all__ = [
