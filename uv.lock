@@ -1773,7 +1773,7 @@ wheels = [
 
 [[package]]
 name = "quivers"
-version = "0.25.2"
+version = "0.26.0"
 source = { editable = "." }
 dependencies = [
     { name = "didactic" },
@@ -1805,6 +1805,7 @@ dev = [
 diagnostics = [
     { name = "arviz" },
     { name = "netcdf4" },
+    { name = "numpy" },
     { name = "xarray" },
 ]
 docs = [
@@ -1820,6 +1821,7 @@ formulas = [
     { name = "formulae" },
     { name = "narwhals" },
     { name = "netcdf4" },
+    { name = "numpy" },
     { name = "scikit-learn" },
     { name = "xarray" },
 ]
@@ -1862,6 +1864,8 @@ requires-dist = [
     { name = "netcdf4", marker = "extra == 'diagnostics'", specifier = ">=1.7" },
     { name = "netcdf4", marker = "extra == 'formulas'", specifier = ">=1.7" },
     { name = "numpy", marker = "extra == 'dev'" },
+    { name = "numpy", marker = "extra == 'diagnostics'" },
+    { name = "numpy", marker = "extra == 'formulas'" },
     { name = "pandas", marker = "extra == 'dev'" },
     { name = "panproto", specifier = ">=0.74.4" },
     { name = "panproto-grammars-all", specifier = ">=0.74.4" },
