@@ -2371,9 +2371,9 @@ def _plate_of(
     del marginalized, walk
     event = tuple(_axis_dim(axis) for axis in plate.event)
     record = FAMILIES.get(distribution.name)
-    if not plate.event and record is not None and record.event_rank:
-        # A multivariate family's own event axes are those of its sample,
-        # which an unplated construction's type states.
+    if not plate.event and record is not None and record.name in _SAMPLE_EVENT_FAMILIES:
+        # A multivariate normal's or a Wishart's own event axes are those
+        # of its sample, which an unplated construction's type states.
         sampled = sampled_element(distribution.result_type)
         dims = _typed_dims(sampled, ()) if sampled is not None else ()
         if len(dims) >= record.event_rank:
@@ -2521,6 +2521,13 @@ def _literal_inverse(matrix: IRArgMatrix) -> IRArgMatrix | None:
             for row in work
         )
     )
+
+
+#: The families an unplated construction of which is planned over its
+#: sample's own event axes, as an ``[over=...]`` clause would name them.
+_SAMPLE_EVENT_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN", "Wishart"}
+)
 
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:

@@ -479,6 +479,13 @@ class StanRenderer(RendererBase):
         # makes the pretty-printer drop it.
         for kind in self._needed_blocks(ir):
             self._ensure_block(ctx, kind)
+        # An input of an open extent, such as a host table `M` typed
+        # `Tensor[Real]([M_extent0, M_extent1])`, is declared at a size
+        # Stan reads as data, so each extent is an integer datum first.
+        for inp in ir.inputs:
+            for dim in (*inp.plate.batch_dims, *inp.plate.event_dims):
+                if isinstance(dim, DimDynamic):
+                    self._declare_extent(ctx, dim.size_name)
         # IRDataInput entries land in `data`.
         for inp in ir.inputs:
             self.declare(
@@ -991,6 +998,33 @@ class StanRenderer(RendererBase):
         ctx.sb.constraint(nm, "literal-value", name)
         ctx.sb.edge(decl, nm, "name")
         return decl
+
+    def _declare_extent(self, ctx: RenderContext, name: str) -> None:
+        """Declare an open extent as a non-negative integer datum.
+
+        Parameters
+        ----------
+        ctx : RenderContext
+            The render call's mutable state.
+        name : str
+            The extent's name, which the declarations of the inputs it
+            sizes read.
+        """
+        if name in self._declared["data"]:
+            return
+        self._declared["data"].add(name)
+        parent = self._ensure_block(ctx, "data")
+        decl = self._fresh(ctx, "decl")
+        ctx.sb.vertex(decl, "top_var_decl_no_assign")
+        ctx.sb.edge(parent, decl, "child_of")
+        tvt = self._fresh(ctx, "tvt")
+        ctx.sb.vertex(tvt, "top_var_type")
+        self._emit_int_type(ctx, tvt, lower=0, upper=None)
+        ctx.sb.edge(decl, tvt, "child_of")
+        nm = self._fresh(ctx, "ident")
+        ctx.sb.vertex(nm, "identifier")
+        ctx.sb.constraint(nm, "literal-value", name)
+        ctx.sb.edge(decl, nm, "name")
 
     def _emit_type(
         self,
