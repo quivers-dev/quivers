@@ -49,6 +49,7 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
+from quivers.transpile.renderers._rows import scalar_parameter, visited_position
 from quivers.transpile.renderers._ranks import (
     carried_dims,
     name_plate_map,
@@ -636,6 +637,9 @@ class _ArgCtx:
     # Every loop of the step, its residual event axes included: the axis
     # a gathered element carries reads the loop over that axis.
     axis_loops: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Whether the argument being rendered fills a rank-0 family
+    # parameter, which reads one entry per drawn element.
+    scalar_slot: bool = False
 
 
 def _render_arg(gx: _GenCtx, arg: IRArg, *, arg_ctx: _ArgCtx) -> str:
@@ -683,7 +687,13 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
 
     if ref.indices:
         rendered = tuple(
-            _one_higher(gx, _render_arg(gx, idx, arg_ctx=arg_ctx), idx)
+            _one_higher(
+                gx,
+                _render_arg(
+                    gx, idx, arg_ctx=dataclasses.replace(arg_ctx, scalar_slot=False)
+                ),
+                idx,
+            )
             for idx in ref.indices
         )
         # Each axis the gathered element carries is read at the step's
@@ -696,6 +706,13 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
             for dim in carried_dims(ref, gx.name_plates)
         )
         return _index_into(gx, base, (*rendered, *carried))
+
+    visited = visited_position(gx.name_plates.get(ref.name), arg_ctx.axis_loops)
+    if arg_ctx.scalar_slot and visited:
+        # Every axis of the value is one the step visits, a vector over
+        # a residual event axis included, and the parameter reads one
+        # entry per draw: the draw at a position reads the entry there.
+        return _index_into(gx, base, tuple(_ident(gx, lv) for lv in visited))
 
     if not decl_axes:
         return base
@@ -1518,7 +1535,13 @@ class GenRenderer(RendererBase):
         callee_name = _gen_target_name(family)
         arg_vids: list[str] = []
         for arg, name in zip(args, arg_names, strict=False):
-            rendered = _render_arg(gx, arg, arg_ctx=arg_ctx)
+            rendered = _render_arg(
+                gx,
+                arg,
+                arg_ctx=dataclasses.replace(
+                    arg_ctx, scalar_slot=scalar_parameter(family, name)
+                ),
+            )
             rendered = _broadcast_arg_to_event(
                 gx,
                 rendered,
@@ -2364,6 +2387,7 @@ class _GenMarginalizer(TuringRenderer):
             input_plates={item.name: item.plate for item in ir.inputs},
             sample_plates={},
             batch_shaped_names=set(),
+            name_plates=gx.name_plates,
             shapes=gx.shapes,
             module=ir.module,
         )

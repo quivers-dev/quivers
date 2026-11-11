@@ -105,6 +105,7 @@ from quivers.transpile.renderers._base import (
     reorder_weibull_args,
 )
 from quivers.transpile.renderers._qiec import render_computations_static
+from quivers.transpile.renderers._rows import scalar_parameter, visited_position
 
 
 #: The backend key consulted in
@@ -1698,12 +1699,14 @@ class JAGSRenderer(RendererBase):
             **_FAMILY_ALIAS_OVERRIDE.get(family, {}),
         }
         renamed_pairs: list[tuple[str, IRArg]] = []
+        scalar_slots: list[bool] = []
         for arg_name, arg in zip(arg_names, args, strict=False):
             emitted_name = aliases.get(arg_name, arg_name)
             transform = _alias_transform_for(family, emitted_name)
             if transform is not None and emitted_name != arg_name:
                 arg = IRArgTransform(inner=arg, transform=transform)
             renamed_pairs.append((emitted_name, arg))
+            scalar_slots.append(scalar_parameter(family, arg_name))
 
         # Append the trailing `df` argument for families whose JAGS
         # target is `dt(mu, tau, k)`. Cauchy / HalfCauchy fix k = 1.
@@ -1745,8 +1748,18 @@ class JAGSRenderer(RendererBase):
         # latent. The rewrite is idempotent on its output by construction
         # (the appended event-range sentinels are not themselves latents).
         rewritten_args = tuple(
-            (n, _rewrite_arg(ctx, a, batch_loop_names, axis_to_lv, via))
-            for n, a in renamed_pairs
+            (
+                n,
+                _rewrite_arg(
+                    ctx,
+                    a,
+                    batch_loop_names,
+                    axis_to_lv,
+                    via,
+                    scalar_slot=position < len(scalar_slots) and scalar_slots[position],
+                ),
+            )
+            for position, (n, a) in enumerate(renamed_pairs)
         )
 
         sr = self._build_stochastic_relation(
@@ -1889,6 +1902,7 @@ class JAGSRenderer(RendererBase):
                 loop_var_names,
                 axis_to_lv,
                 via,
+                scalar_slot=True,
             )
             vid, kind = self._render_arg_with_kind(ctx, rewritten)
             ctx.sb.edge(trunc, vid, "child_of")
@@ -3345,6 +3359,8 @@ def _rewrite_arg(
     loop_vars: tuple[str, ...],
     axis_to_lv: dict[str, str],
     via: str | None,
+    *,
+    scalar_slot: bool = False,
 ) -> IRArg:
     """Thread latent loop-vars + event ranges + via fibration through
     every ref nested inside `arg`.
@@ -3362,6 +3378,32 @@ def _rewrite_arg(
     surrounding plate does not iterate indexes through the caller's
     `via` fibration where there is one, and through the latent's own
     fallback loop var otherwise.
+
+    An unindexed ref to any other declared value whose every axis the
+    loops visit, filling a rank-0 family parameter (`scalar_slot`),
+    is read at the loops' position: a vector `z` over `Feat` filling
+    a `Normal`'s location under a loop over `Feat` is `z[m_Feat]`.
+
+    Parameters
+    ----------
+    ctx : _JAGSCtx
+        The render context.
+    arg : IRArg
+        The argument.
+    loop_vars : tuple[str, ...]
+        The site's batch loop variables.
+    axis_to_lv : dict[str, str]
+        Each visited axis name mapped to its loop variable.
+    via : str | None
+        The fibration the site reads its groups through, if any.
+    scalar_slot : bool
+        Whether the argument fills a rank-0 family parameter.
+
+    Returns
+    -------
+    IRArg
+        The argument with every reference indexed at the loops'
+        position.
     """
     if isinstance(arg, IRArgRef):
         new_indices = tuple(
@@ -3369,9 +3411,11 @@ def _rewrite_arg(
         )
         info = ctx.latent_plate_info.get(arg.name)
         if info is None:
-            visited = _visited_position(ctx.decl_plates.get(arg.name), axis_to_lv)
-            if visited and not arg.indices:
-                return IRArgRef(name=arg.name, indices=visited)
+            visited = visited_position(ctx.decl_plates.get(arg.name), axis_to_lv)
+            if scalar_slot and visited and not arg.indices:
+                return IRArgRef(
+                    name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited)
+                )
             if new_indices == arg.indices:
                 return arg
             return IRArgRef(name=arg.name, indices=new_indices)
@@ -3449,51 +3493,20 @@ def _rewrite_arg(
         )
         return IRArgMatrix(rows=rows)
     if isinstance(arg, IRArgTransform):
-        inner = _rewrite_arg(ctx, arg.inner, loop_vars, axis_to_lv, via)
+        inner = _rewrite_arg(
+            ctx, arg.inner, loop_vars, axis_to_lv, via, scalar_slot=scalar_slot
+        )
         operand = (
             None
             if arg.operand is None
-            else _rewrite_arg(ctx, arg.operand, loop_vars, axis_to_lv, via)
+            else _rewrite_arg(
+                ctx, arg.operand, loop_vars, axis_to_lv, via, scalar_slot=scalar_slot
+            )
         )
         if inner is arg.inner and operand is arg.operand:
             return arg
         return IRArgTransform(inner=inner, transform=arg.transform, operand=operand)
     return arg
-
-
-def _visited_position(
-    declared: Plate | None, axis_to_lv: dict[str, str]
-) -> tuple[IRArg, ...]:
-    """The loop position at which a value over the visited axes is read.
-
-    A value whose every axis, batch then event, is one the surrounding
-    loops visit holds one entry per position: a vector `z` over `Feat`
-    filling a scalar family replicated over `Feat` is read as
-    `z[m_Feat]`, where the bare `z` would hand the scalar slot the
-    whole vector.
-
-    Parameters
-    ----------
-    declared : Plate | None
-        The value's declared plate, if the program declares it.
-    axis_to_lv : dict[str, str]
-        Each visited axis name mapped to its loop variable.
-
-    Returns
-    -------
-    tuple[IRArg, ...]
-        One loop-variable index per axis of the value, in order; empty
-        when the value is undeclared, has no axes, repeats an axis, or
-        has an axis the loops do not visit.
-    """
-    if declared is None:
-        return ()
-    names = tuple(_dim_name(dim) for dim in (*declared.batch_dims, *declared.event_dims))
-    if not names or len(set(names)) != len(names):
-        return ()
-    if any(name not in axis_to_lv for name in names):
-        return ()
-    return tuple(IRArgRef(name=axis_to_lv[name]) for name in names)
 
 
 def _has_trailing(indices: tuple[IRArg, ...], suffix: tuple[IRArg, ...]) -> bool:
