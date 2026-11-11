@@ -6,12 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **`concat` and `slice` in let expressions.** `concat(a, b, ...)` joins two or more tensors of one element type along their last axis, the leading axes agreeing and the last extents adding; `slice(v, start, length)` keeps `length` entries of the last axis from `start`, both bounds non-negative integer literals. Both are checked (a number where a tensor belongs, disagreeing element types or leading axes, a non-literal or out-of-range bound are refused at the argument), run on the reference machine and the compiled runtime, and transpile to every target, so a scan can carry a state of several parts, such as an LSTM's hidden and cell state, as one vector. BUGS and JAGS refuse a `concat` or `slice` of a table by name.
+
 ### Fixed
 
 - **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, the compiled runtime, and every transpile target; an `Int` index stands for one value at every row, and index vectors of two shapes in one subscript are refused at the subscript.
 - **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
 - **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
 - **Transpiled programs read host tables of open extents and factor tables inside arithmetic.** Stan declares each open extent of a host input (`M_extent0`) as an integer datum, PyMC sizes its coordinates from the input array, Pyro casts an index input read entrywise to integers, and the Python targets stack a `factor` that appears as an operand into an array, where it had been a Python list that `+` concatenated.
+- **Transpiled list literals and factor tables keep their array shape.** PyMC and Edward2 stack a list-literal let into an array, as Pyro and NumPyro do, so arithmetic between two of them is elementwise; Julia targets count a factor's entry axes when deciding whether a binding spans its plate, and nest a factor whose entry is a list; Church gives each nested map its own variable when two axes of a binding share a name.
 - **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
 
 ## [0.26.0] - 2026-11-11
