@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from quivers.dsl.ast_nodes import (
@@ -119,8 +119,12 @@ from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_operation,
     instantiate_telescope,
+    substitute_computation,
+    substitute_index,
+    substitute_plate,
     substitute_row,
     substitute_type,
+    substitute_value,
 )
 from quivers.qiec.terms import (
     AffineMap,
@@ -319,6 +323,11 @@ _LOGIT_HEAD_FAMILIES: frozenset[str] = frozenset({"Bernoulli", "Categorical"})
 #: Families whose sample is an index into their own alphabet, with the
 #: argument naming the alphabet.
 _CLASS_INDEX_FAMILIES: dict[str, str] = {"Categorical": "probs"}
+
+_MATRIX_CONSTRAINTS: frozenset[str] = frozenset({"lower_cholesky", "positive_definite"})
+"""Parameter constraints a matrix meets only as a whole: a broadcast scalar
+is no Cholesky factor or covariance, so a free name filling such a
+parameter is a matrix even beside a plate's event axes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1526,8 +1535,28 @@ class _ProgramElaboration:
         state.tables = _gathered_tables(declaration.draws)
         state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
+        self._unify_result_extents(declaration, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
+        if state.extent_solution:
+            # Steps elaborated before an extent was fixed read it open;
+            # the body, its sites, and the telescope take the fixed one.
+            substitution = self._extent_substitution(state)
+            body = substitute_computation(body, substitution)
+            result_type = substitute_type(result_type, substitution)
+            for name in state.extent_solution:
+                state.extents.pop(name, None)
+            state.sites = [
+                replace(
+                    site,
+                    batch=fixed.batch,
+                    event=fixed.event,
+                )
+                for site in state.sites
+                for fixed in (
+                    substitute_plate(PlateShape(site.batch, site.event), substitution),
+                )
+            ]
         row_entries: list[RowEntry] = []
         if state.uses_random:
             row_entries.append(random.entry)
@@ -1790,7 +1819,9 @@ class _ProgramElaboration:
             root = root.outer
         existing = root.locals.get(name)
         if existing is not None:
-            if existing.type != type_:
+            if existing.type != type_ and not self._unify_types(
+                existing.type, type_, scope, state
+            ):
                 self._fail(
                     node,
                     f"program input {name!r} is read as {self._render(type_)} "
@@ -1799,7 +1830,7 @@ class _ProgramElaboration:
                 )
             if scope is not root:
                 scope.referenced.add(name)
-            return existing
+            return root.locals[name]
         if scope.lookup(name) is not None:
             self._fail(
                 node,
@@ -3425,17 +3456,7 @@ class _ProgramElaboration:
         rank = state.tables.get(name)
         if rank is not None:
             rank += state.table_events.get(name, 0)
-            dimensions: list[IndexTerm] = []
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions.append(IndexVariable(extent_name, NAT))
-            return tensor_type(element, tuple(dimensions))
+            return tensor_type(element, self._open_extents(name, rank, state))
         if axis is None:
             return element
         return tensor_type(element, (axis.size,))
@@ -3674,6 +3695,42 @@ class _ProgramElaboration:
             name: (elements.get(name, REAL), axes.get(name))
             for name in set(elements) | set(axes)
         }
+
+    def _unify_result_extents(
+        self: _Elaborator, declaration: ProgramDecl, scope: _Scope, state: _ProgramState
+    ) -> None:
+        """Fix the open extents of a returned value to the program's codomain.
+
+        A program declared ``p : A -> D`` with ``D`` a ``Real N`` object
+        returns a value of ``D``: each axis of a returned real tensor
+        whose extent only the data would fix, such as a draw whose mean
+        is a host vector, has ``N`` entries.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+        scope : _Scope
+            The body's scope.
+        state : _ProgramState
+            The program's accumulating state.
+        """
+        if len(declaration.return_vars) != 1:
+            return
+        local = scope.lookup(declaration.return_vars[0])
+        info = _object_expr_info(declaration.codomain, self._program_objects)
+        if local is None or info is None or info.real_width is None:
+            return
+        shape = tensor_shape(local.type)
+        if shape is None or shape[0] != REAL:
+            return
+        width = _extent(info.real_width)
+        open_sizes = [
+            size
+            for size in (self._resolved_extent(item, state) for item in shape[1])
+            if isinstance(size, IndexVariable) and size.name in state.open_extents
+        ]
+        self._unify_extents([(size, width) for size in open_sizes], scope, state)
 
     def _program_return(
         self: _Elaborator, declaration: ProgramDecl, scope: _Scope, state: _ProgramState
@@ -4397,6 +4454,9 @@ class _ProgramElaboration:
                 for name, value in arguments
             ]
         arguments = self._widen_alphabet(record, morphism, arguments, scope, step)
+        arguments, plate = self._unify_event_shape(
+            record, arguments, plate, scope, state, step
+        )
         path = ("programs", state.declaration.name, "sites", site, "distribution")
         value = DistributionValue(
             record.id,
@@ -4416,6 +4476,69 @@ class _ProgramElaboration:
         )
         self._value_type(value, scope.context(), step)
         return value
+
+    def _unify_event_shape(
+        self: _Elaborator,
+        record: DistributionFamily,
+        arguments: list[tuple[str, Value]],
+        plate: PlateShape,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> tuple[list[tuple[str, Value]], PlateShape]:
+        """Fix the open extents of a draw's event source to its event axes.
+
+        A family whose plate names its event axes samples over them, so
+        the argument its event shape comes from has their extents: an
+        open extent of that argument, a host datum's size the data would
+        otherwise fix, is fixed to the axis's size. Extents that are not
+        open and differ are left for the kernel to report.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        arguments : list[tuple[str, Value]]
+            The lowered arguments.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        tuple[list[tuple[str, Value]], PlateShape]
+            The arguments and plate at every extent fixed so far.
+        """
+        supplied = record.event_argument(arguments)
+        if (
+            supplied is not None
+            and record.event_rank
+            and len(plate.event) >= record.event_rank
+        ):
+            shape = tensor_shape(self._value_type(supplied[1], scope.context(), node))
+            if shape is not None and len(shape[1]) >= record.event_rank:
+                natural = shape[1][len(shape[1]) - record.event_rank :]
+                trailing = plate.event[len(plate.event) - record.event_rank :]
+                self._unify_extents(
+                    [
+                        (size, axis.size)
+                        for size, axis in zip(natural, trailing, strict=True)
+                    ],
+                    scope,
+                    state,
+                )
+        if not state.extent_solution:
+            return arguments, plate
+        substitution = self._extent_substitution(state)
+        return (
+            [(name, substitute_value(value, substitution)) for name, value in arguments],
+            substitute_plate(plate, substitution),
+        )
 
     def _plated_type(
         self: _Elaborator, value: DistributionValue, scope: _Scope, node: object
@@ -4948,13 +5071,16 @@ class _ProgramElaboration:
                 f"parameters ({', '.join(record.parameter_names)})",
                 code="qiec-program",
             )
-        arguments: list[tuple[str, Value]] = []
-        for parameter, argument in zip(record.parameters, raw, strict=False):
-            value = self._draw_argument(argument, parameter, plate, scope, state, step)
-            if via is not None and group is not None:
-                value = self._fibred(value, via, group, plate, scope, state, step)
-            arguments.append((parameter.name, value))
-        return arguments
+        return self._lower_family_parameters(
+            record,
+            list(zip(record.parameters, raw, strict=False)),
+            step,
+            plate,
+            scope,
+            state,
+            via,
+            group,
+        )
 
     def _named_family_arguments(
         self: _Elaborator,
@@ -5001,7 +5127,7 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
 
-        arguments: list[tuple[str, Value]] = []
+        pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]] = []
         for parameter_name in selected:
             try:
                 parameter = _semantic_family_parameter(
@@ -5021,11 +5147,166 @@ class _ProgramElaboration:
                     record, [argument], step, plate, state
                 )
                 argument = bundled[0]
+            pairs.append((parameter, argument))
+        return self._lower_family_parameters(
+            record, pairs, step, plate, scope, state, via, group
+        )
+
+    def _lower_family_parameters(
+        self: _Elaborator,
+        record: DistributionFamily,
+        pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]],
+        step: SampleStep | ObserveStep | MarginalizeStep,
+        plate: PlateShape,
+        scope: _Scope,
+        state: _ProgramState,
+        via: tuple[str, ...] | None,
+        group: PlateAxis | None,
+    ) -> list[tuple[str, Value]]:
+        """Lower each argument against its parameter, sizing free names by the draw.
+
+        A free name filling a tensor parameter whose axes the family ties
+        to its sample's (a multivariate normal's mean and Cholesky
+        factor, a Wishart's scale) takes those axes' extents from the
+        draw: the plate's trailing event axes when it names enough, else
+        the arguments already typed. An axis nothing in the draw fixes is
+        one open extent, shared by every free name the family ties to it.
+        Free names are therefore lowered after the arguments that may fix
+        their extents.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        pairs : list[tuple[FamilyParameter, DrawArg | str | float | _Spread]]
+            Each parameter with the argument filling it, in order.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        via : str | None
+            The fibration of a grouped observation.
+        group : PlateAxis | None
+            The grouping axis in force.
+
+        Returns
+        -------
+        list[tuple[str, Value]]
+            The named arguments, in the order of ``pairs``.
+        """
+        event: dict[int, IndexTerm] = {}
+        if record.event_rank and len(plate.event) >= record.event_rank:
+            trailing = plate.event[len(plate.event) - record.event_rank :]
+            event = {position: axis.size for position, axis in enumerate(trailing)}
+        values: dict[int, Value] = {}
+        tied: list[int] = []
+        for position, (parameter, argument) in enumerate(pairs):
+            if self._tied_free_name(parameter, argument, plate, scope) is not None:
+                tied.append(position)
+                continue
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
+            values[position] = value
+            if parameter.event_dims:
+                shape = tensor_shape(self._value_type(value, scope.context(), step))
+                if shape is not None and len(shape[1]) >= parameter.rank:
+                    own = shape[1][len(shape[1]) - parameter.rank :]
+                    for size, dim in zip(own, parameter.event_dims, strict=True):
+                        if dim is not None and dim not in event:
+                            event[dim] = self._resolved_extent(size, state)
+        for position in tied:
+            parameter, argument = pairs[position]
+            name = self._tied_free_name(parameter, argument, plate, scope)
+            assert name is not None
+            extents: list[IndexTerm] = []
+            for axis, dim in enumerate(parameter.event_dims):
+                if dim is not None and dim in event:
+                    extents.append(event[dim])
+                    continue
+                extent = self._open_extent(
+                    f"{name}_extent" if parameter.rank == 1 else f"{name}_extent{axis}",
+                    state,
+                )
+                if dim is not None:
+                    event[dim] = extent
+                extents.append(extent)
+            values[position] = self._draw_argument(
+                argument,
+                parameter,
+                plate,
+                scope,
+                state,
+                step,
+                extents=tuple(extents),
+            )
+        if state.extent_solution:
+            # A free name's typing may fix an extent an argument lowered
+            # before it reads.
+            substitution = self._extent_substitution(state)
+            values = {
+                position: substitute_value(value, substitution)
+                for position, value in values.items()
+            }
+        arguments: list[tuple[str, Value]] = []
+        for position, (parameter, _) in enumerate(pairs):
+            value = values[position]
             if via is not None and group is not None:
                 value = self._fibred(value, via, group, plate, scope, state, step)
             arguments.append((parameter.name, value))
         return arguments
+
+    def _tied_free_name(
+        self: _Elaborator,
+        parameter: FamilyParameter,
+        argument: DrawArg | str | float | _Spread,
+        plate: PlateShape,
+        scope: _Scope,
+    ) -> str | None:
+        """The free name filling a parameter whose axes the draw sizes.
+
+        Parameters
+        ----------
+        parameter : FamilyParameter
+            The parameter.
+        argument : DrawArg | str | float | _Spread
+            The argument filling it.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+
+        Returns
+        -------
+        str | None
+            The name, when the argument is a name nothing binds, the
+            family ties the parameter's axes to its sample's, and the
+            draw reads the name as a tensor over those axes: with no
+            plate, one value per row of a plate with no event axes, or
+            beside event axes a matrix whose structure no scalar
+            broadcast fills. ``None`` otherwise.
+        """
+        if not parameter.event_dims:
+            return None
+        if isinstance(argument, DrawArgNamed):
+            argument = argument.value
+        if isinstance(argument, DrawArgName):
+            name = argument.text
+        elif (
+            isinstance(argument, str)
+            and not _is_number_text(argument)
+            and "[" not in argument
+        ):
+            name = argument
+        else:
+            return None
+        if scope.lookup(name) is not None or name in self._program_morphisms:
+            return None
+        if plate.event and parameter.constraint not in _MATRIX_CONSTRAINTS:
+            return None
+        return name
 
     def _bundle_vector_argument(
         self: _Elaborator,
@@ -5123,6 +5404,7 @@ class _ProgramElaboration:
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        extents: tuple[IndexTerm, ...] | None = None,
     ) -> Value:
         """Lower one draw argument against the parameter it fills.
 
@@ -5141,6 +5423,9 @@ class _ProgramElaboration:
             The program's accumulating state.
         node : object
             The source node.
+        extents : tuple[IndexTerm, ...] | None
+            The extents the draw fixes for each axis of a free name
+            filling the parameter; ``None`` when it fixes none.
 
         Returns
         -------
@@ -5175,11 +5460,19 @@ class _ProgramElaboration:
             return _literal(argument.value, integral)
         if isinstance(argument, DrawArgNamed):
             return self._draw_argument(
-                argument.value, parameter, plate, scope, state, node
+                argument.value, parameter, plate, scope, state, node, extents
             )
         elif isinstance(argument, DrawArgName):
             return self._named_argument(
-                argument.text, element, rank, constraint, plate, scope, state, node
+                argument.text,
+                element,
+                rank,
+                constraint,
+                plate,
+                scope,
+                state,
+                node,
+                extents,
             )
         if isinstance(argument, DrawArgIndex):
             return self._indexed_argument(
@@ -5206,7 +5499,7 @@ class _ProgramElaboration:
             indices = tuple(item.rstrip("]") for item in rest.split("["))
             return self._indexed_argument(base, indices, element, scope, state, node)
         return self._named_argument(
-            text, element, rank, constraint, plate, scope, state, node
+            text, element, rank, constraint, plate, scope, state, node, extents
         )
 
     def _named_argument(
@@ -5219,6 +5512,7 @@ class _ProgramElaboration:
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        extents: tuple[IndexTerm, ...] | None = None,
     ) -> Value:
         """Lower a bare name in argument position.
 
@@ -5226,13 +5520,16 @@ class _ProgramElaboration:
         is that distribution when a sampleable is expected; any other
         name is a data input. Filling a parameter of a plated draw whose
         plate names no event axes, it holds one value per row: its type is
-        the plate's first batch axis, then one open extent per axis of the
-        parameter, and a datum without the plate axis is a value every row
-        shares. Filling a parameter of a draw whose plate names event axes
-        (`[over=...]`), it is one value of the parameter's element type,
-        which the plate broadcasts. Filling a tensor parameter of a draw
-        with no plate, it is a tensor of open extents; filling a scalar
-        parameter of such a draw, one value of its element type.
+        the plate's first batch axis, then the parameter's own axes, and a
+        datum without the plate axis is a value every row shares. Filling
+        a tensor parameter of a draw with no batch axes, it is one tensor
+        over the parameter's own axes. A parameter's own axes are the
+        ``extents`` the draw fixes, when given, and otherwise one open
+        extent each. Filling any other parameter of a draw whose plate
+        names event axes (`[over=...]`), it is one value of the
+        parameter's element type, which the plate broadcasts; filling a
+        scalar parameter of a draw with no plate, one value of its
+        element type.
 
         Parameters
         ----------
@@ -5252,6 +5549,9 @@ class _ProgramElaboration:
             The program's accumulating state.
         node : object
             The source node.
+        extents : tuple[IndexTerm, ...] | None
+            The extent of each of the parameter's own axes, as the draw
+            fixes them; ``None`` when the draw fixes none.
 
         Returns
         -------
@@ -5264,26 +5564,21 @@ class _ProgramElaboration:
         morphism = self._program_morphisms.get(name)
         if morphism is not None and constraint == "sampleable":
             return self._morphism_distribution(morphism, name, scope, state, node)
-        if rank > 0 and plate.empty:
-            # Nothing in the step fixes the input's extents, so each one
-            # is a static index parameter of the program: the input is
-            # typed over fresh index variables the program's telescope
-            # binds, and a run reads their values off the data it is
-            # given.
-            dimensions: list[IndexVariable] = []
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions.append(IndexVariable(extent_name, NAT))
+        if rank > 0 and not plate.batch and (plate.empty or extents is not None):
+            # A draw with no batch axes reads the input as one tensor over
+            # the parameter's own axes. An axis the draw does not fix is a
+            # static index parameter of the program: the input is typed
+            # over a fresh index variable the program's telescope binds,
+            # and a run reads its value off the data it is given.
+            own = (
+                extents
+                if extents is not None
+                else self._open_extents(name, rank, state)
+            )
             return Var(
                 self._declare_parameter(
                     name,
-                    tensor_type(element, tuple(dimensions)),
+                    tensor_type(element, own),
                     "data",
                     scope,
                     state,
@@ -5294,21 +5589,19 @@ class _ProgramElaboration:
             # A parameter of a plated draw takes one value per row, as a
             # name a let feeds to the draw does: the host datum ranges over
             # the plate's first batch axis, then over the parameter's own
-            # axes, each an open extent the data fix. A datum without the
-            # plate axis is one value every row shares.
+            # axes. A datum without the plate axis is one value every row
+            # shares.
             axis = plate.batch[0]
-            dimensions_per_row: list[IndexTerm] = [axis.size]
-            axes_per_row: list[str] = [axis.name]
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions_per_row.append(IndexVariable(extent_name, NAT))
-                axes_per_row.append(extent_name)
+            own = (
+                extents
+                if extents is not None
+                else self._open_extents(name, rank, state)
+            )
+            dimensions_per_row: list[IndexTerm] = [axis.size, *own]
+            axes_per_row: list[str] = [
+                axis.name,
+                *self._axes_of_type(tensor_type(element, own))[:rank],
+            ]
             local = self._declare_parameter(
                 name,
                 tensor_type(element, tuple(dimensions_per_row)),
@@ -5321,7 +5614,222 @@ class _ProgramElaboration:
             state.per_row.add(name)
             state.batch_shapes[name] = (axis.size,)
             return Var(local)
+        if rank > 0 and extents is not None:
+            # A tensor parameter whose axes the draw's event fixes, such
+            # as a Cholesky factor beside an ``[over=...]`` plate, is one
+            # tensor every row shares.
+            return Var(
+                self._declare_parameter(
+                    name,
+                    tensor_type(element, extents),
+                    "data",
+                    scope,
+                    state,
+                    node,
+                )
+            )
         return Var(self._declare_parameter(name, element, "data", scope, state, node))
+
+    def _open_extents(
+        self: _Elaborator, name: str, rank: int, state: _ProgramState
+    ) -> tuple[IndexTerm, ...]:
+        """Fresh open extents for each axis of a free name's value.
+
+        Parameters
+        ----------
+        name : str
+            The free name.
+        rank : int
+            How many axes its value has.
+        state : _ProgramState
+            The program's accumulating state, whose telescope binds each
+            extent.
+
+        Returns
+        -------
+        tuple[IndexTerm, ...]
+            One index variable per axis, named after the name and the
+            axis's position, or the term a later use fixed it to.
+        """
+        return tuple(
+            self._open_extent(
+                f"{name}_extent" if rank == 1 else f"{name}_extent{position}", state
+            )
+            for position in range(rank)
+        )
+
+    def _open_extent(self: _Elaborator, name: str, state: _ProgramState) -> IndexTerm:
+        """The open extent of a given name, bound by the program's telescope.
+
+        Parameters
+        ----------
+        name : str
+            The extent's name.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        IndexTerm
+            The extent's index variable, or the term a use has fixed it
+            to.
+        """
+        if name in state.extent_solution:
+            return state.extent_solution[name]
+        if name not in state.extents:
+            state.extents[name] = IndexBinder(name, NAT)
+            state.open_extents.add(name)
+        return IndexVariable(name, NAT)
+
+    @staticmethod
+    def _resolved_extent(term: IndexTerm, state: _ProgramState) -> IndexTerm:
+        """An extent with every open extent a use has fixed replaced.
+
+        Parameters
+        ----------
+        term : IndexTerm
+            The extent.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        IndexTerm
+            The term the extent equals.
+        """
+        if isinstance(term, IndexVariable) and term.identity is None:
+            return state.extent_solution.get(term.name, term)
+        return term
+
+    def _unify_extents(
+        self: _Elaborator,
+        pairs: Sequence[tuple[IndexTerm, IndexTerm]],
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> bool:
+        """Fix open extents so that each pair of extents is one extent.
+
+        An open extent a free name's typing introduced equals whatever it
+        meets: a declared object's size, a literal, or another extent.
+        Two extents neither of which is open, such as two different
+        literals, do not unify. Each fix is applied to every name bound
+        so far, so later uses read the fixed types.
+
+        Parameters
+        ----------
+        pairs : Sequence[tuple[IndexTerm, IndexTerm]]
+            The extents that must be equal.
+        scope : _Scope
+            The scope in force, whose bindings and enclosing ones take
+            the fixed types.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        bool
+            Whether every pair unifies. Fixes found before a pair that
+            does not unify are kept.
+        """
+        changed = False
+        unified = True
+        for left, right in pairs:
+            left = self._resolved_extent(left, state)
+            right = self._resolved_extent(right, state)
+            if left == right:
+                continue
+            if isinstance(left, IndexVariable) and left.name in state.open_extents:
+                variable, term = left, right
+            elif isinstance(right, IndexVariable) and right.name in state.open_extents:
+                variable, term = right, left
+            else:
+                unified = False
+                continue
+            fixed = StaticSubstitution((), ((variable.name, term),), ())
+            state.extent_solution = {
+                name: substitute_index(value, fixed)
+                for name, value in state.extent_solution.items()
+            }
+            state.extent_solution[variable.name] = term
+            changed = True
+        if changed:
+            self._apply_extent_solution(scope, state)
+        return unified
+
+    def _unify_types(
+        self: _Elaborator,
+        left: TypeExpr,
+        right: TypeExpr,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> bool:
+        """Fix open extents so that two tensor types are one type.
+
+        Parameters
+        ----------
+        left : TypeExpr
+            One type.
+        right : TypeExpr
+            The other.
+        scope : _Scope
+            The scope in force.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        bool
+            Whether the types are equal once their open extents are
+            fixed: tensors of one element and rank whose extents unify.
+        """
+        left_shape = tensor_shape(left)
+        right_shape = tensor_shape(right)
+        if (
+            left_shape is None
+            or right_shape is None
+            or left_shape[0] != right_shape[0]
+            or len(left_shape[1]) != len(right_shape[1])
+        ):
+            return False
+        return self._unify_extents(
+            list(zip(left_shape[1], right_shape[1], strict=True)), scope, state
+        )
+
+    def _extent_substitution(self: _Elaborator, state: _ProgramState) -> StaticSubstitution:
+        """The substitution fixing every open extent a use has fixed.
+
+        Parameters
+        ----------
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        StaticSubstitution
+            Each fixed extent to its term.
+        """
+        return StaticSubstitution((), tuple(state.extent_solution.items()), ())
+
+    def _apply_extent_solution(
+        self: _Elaborator, scope: _Scope, state: _ProgramState
+    ) -> None:
+        """Retype every name bound so far at the fixed extents.
+
+        Parameters
+        ----------
+        scope : _Scope
+            The scope in force; it and every enclosing scope are retyped.
+        state : _ProgramState
+            The program's accumulating state.
+        """
+        substitution = self._extent_substitution(state)
+        current: _Scope | None = scope
+        while current is not None:
+            for name, local in list(current.locals.items()):
+                fixed = substitute_type(local.type, substitution)
+                if fixed != local.type:
+                    current.locals[name] = Local(local.name, fixed)
+            current = current.outer
 
     def _indexed_argument(
         self: _Elaborator,
@@ -7111,6 +7619,12 @@ class _ProgramState:
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
+    open_extents
+        The open extents a free name's typing introduced, which a later
+        use may fix: a declared object, or another extent.
+    extent_solution
+        Each open extent a use has fixed, to the term it equals, with no
+        solved extent on any right-hand side.
     template_objects
         The object parameters bound as objects of the body while the
         program elaborates.
@@ -7131,6 +7645,8 @@ class _ProgramState:
     pending_alphabet: PlateAxis | None = None
     current_site: str = ""
     extents: dict[str, IndexBinder] = field(default_factory=dict)
+    open_extents: set[str] = field(default_factory=set)
+    extent_solution: dict[str, IndexTerm] = field(default_factory=dict)
     template_objects: list[str] = field(default_factory=list)
     input_shapes: dict[str, tuple[TypeApplication, PlateAxis | None]] = field(
         default_factory=dict
