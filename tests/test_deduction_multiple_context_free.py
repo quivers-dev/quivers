@@ -157,9 +157,11 @@ def test_copy_language_weights_agree() -> None:
 @pytest.mark.slow
 def test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators() -> None:
     program = load(_EXAMPLES / "wmcfg.qvr")
-    tokens = "mer em Hans es huus hälfed aastriiche".split()
+    # The shortest sentence the grammar licenses: one accusative pair
+    # inside the finite cluster's own pair.
+    tokens = "mer d'chind es huus lönd aastriiche".split()
     view = program.deductions["WMCFG"](tokens)
-    assert [item for item, _ in view.goal_items] == [("span", 0, 7, ("atom", "S"))]
+    assert [item for item, _ in view.goal_items] == [("span", 0, 6, ("atom", "S"))]
     agenda = float(view.goal_weight().detach())
     checked = run_deduction(program.qiec, "WMCFG", tokens=tokens).weight
     assert agenda == 0.0
