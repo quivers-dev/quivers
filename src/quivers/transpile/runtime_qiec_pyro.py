@@ -108,6 +108,14 @@ _qvr_qiec_host_math.update(
         "ceil": _qvr_qiec_torch(_qvr_qiec_torch_module.ceil),
         "round": _qvr_qiec_torch(_qvr_qiec_torch_module.round),
         "trunc": _qvr_qiec_torch(_qvr_qiec_torch_module.trunc),
+        "select_real": _qvr_qiec_torch(_qvr_qiec_torch_module.where),
+        "select_int": _qvr_qiec_torch(_qvr_qiec_torch_module.where),
+        "bool_to_real": _qvr_qiec_torch(
+            lambda value: value.to(_qvr_qiec_torch_module.get_default_dtype())
+        ),
+        "bool_to_int": _qvr_qiec_torch(
+            lambda value: value.to(_qvr_qiec_torch_module.int64)
+        ),
         "real_to_int": _qvr_qiec_torch(
             lambda value: _qvr_qiec_torch_module.trunc(value).to(
                 _qvr_qiec_torch_module.int64
