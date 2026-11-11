@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import torch.nn as nn
+from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.continuous.morphisms import AnySpace
 from quivers.continuous.programs import MonadicProgram
@@ -32,6 +33,8 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     ObjectExpr,
 )
+from quivers.dsl.latent_weights import LatentWeightsError, expand_latent_weights
+from quivers.dsl.program_elaboration import LATENT_WEIGHT_HEADS
 from quivers.dsl.compiler._prelude import (
     CompileError,
     _CompiledContraction,
@@ -100,6 +103,10 @@ class Compiler(
         self._qiec_source: Module | None = None
         self._qiec_module_name = module_name
         self._qiec_file_path = file_path
+        try:
+            module = expand_latent_weights(module, LATENT_WEIGHT_HEADS)
+        except LatentWeightsError as error:
+            raise CompileError(str(error), error.line, error.col) from error
         if lower_qiec and has_qiec_surface(module):
             self._qiec_source = module
             module = non_qiec_projection(module)
@@ -153,6 +160,9 @@ class Compiler(
         self._scan_step_declarations: dict[str, ProgramDecl] = {}
         self._scan_step_programs: dict[str, MonadicProgram] = {}
         self._scan_initial_states: dict[str, nn.Parameter] = {}
+        # The network of each latent-weight kernel, which a draw through
+        # the kernel applies at the run's drawn weights.
+        self._latent_networks: dict[str, LearnedFunction] = {}
 
     @property
     def categories(self) -> list[str]:

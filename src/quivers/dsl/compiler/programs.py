@@ -46,6 +46,7 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.programs import MonadicProgram, _lookup_arg
 from quivers.effects.checked_program import CheckedProgram
+from quivers.continuous.param_source import IdentitySource, ParamSource
 from quivers.continuous.spaces import (
     CholeskyFactor,
     ContinuousSpace,
@@ -402,7 +403,7 @@ def _let_space(
         The spaces of host data and of earlier lets.
     functions : Mapping[str, int]
         The codomain width of each learned function by name; a call of
-        one is a value of that width shared by every row.
+        one has that width per row of its arguments.
 
     Returns
     -------
@@ -452,7 +453,14 @@ def _let_space(
         ):
             return shape(node.args[0])
         if isinstance(node, LetExprCall) and node.func in functions:
-            return (None, functions[node.func])
+            # A network maps each row of its arguments: its value has
+            # their plate rows, if any, and its codomain's width.
+            rows: int | None = None
+            for argument in node.args:
+                found = shape(argument)
+                if found is not None and found[0] is not None:
+                    rows = found[0]
+            return (rows, functions[node.func])
         return None
 
     found = shape(expr)
@@ -774,6 +782,46 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
 
 
+def _drawn_weights(
+    function: LearnedFunction, env: Mapping[str, "LetValue"], name: str
+) -> dict[str, torch.Tensor] | None:
+    """The drawn values of a latent network's weights, read from a run.
+
+    Parameters
+    ----------
+    function : LearnedFunction
+        The network.
+    env : Mapping[str, LetValue]
+        The run's bindings.
+    name : str
+        The name the network is called by, for the error.
+
+    Returns
+    -------
+    dict[str, torch.Tensor] | None
+        Each weight site's value; ``None`` for point weights.
+
+    Raises
+    ------
+    CompileError
+        If a weight site is not bound in the run.
+    """
+    sites = function.latent_sites
+    if not sites:
+        return None
+    drawn: dict[str, torch.Tensor] = {}
+    for site in sites.values():
+        value = env.get(site)
+        if not isinstance(value, torch.Tensor):
+            raise CompileError(
+                f"the latent network {name!r} reads its weight {site!r}, which "
+                f"the run does not bind; a program without value parameters "
+                f"that uses the network draws it"
+            )
+        drawn[site] = value
+    return drawn
+
+
 def _let_callees(steps: Sequence[ProgramStep]) -> tuple[str, ...]:
     """The callees a body's lets and scores call, in first-use order.
 
@@ -997,6 +1045,7 @@ class _ProgramsMixin:
     _trans_singletons: dict
     _trans_constructors: dict
     _module: Module
+    _latent_networks: dict[str, LearnedFunction]
     _scan_step_declarations: dict[str, ProgramDecl]
     _scan_step_programs: dict[str, MonadicProgram]
     _scan_initial_states: dict[str, torch.nn.Parameter]
@@ -2799,6 +2848,7 @@ class _ProgramsMixin:
                     decl.col,
                 )
         decl, scan_effects = self._expand_cell_scans(decl)
+        decl = decl.with_(draws=self._latent_kernel_draws(decl.draws))
         if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
             # computation: the callee's body is a term of the module,
@@ -3689,7 +3739,7 @@ class _ProgramsMixin:
                             step.line,
                             step.col,
                         ),
-                        _let_expr_reads(step.value),
+                        self._let_reads(step.value),
                     )
                     bound_vars[step.name] = None
                     let_space = _let_space(
@@ -3730,7 +3780,7 @@ class _ProgramsMixin:
                         step.line,
                         step.col,
                     ),
-                    _let_expr_reads(step.value),
+                    self._let_reads(step.value),
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -3830,7 +3880,7 @@ class _ProgramsMixin:
         # as a submodule for its weights to reach the optimizer.
         for callee in _let_callees(expanded_draws):
             function = self._morphisms.get(callee)
-            if isinstance(function, LearnedFunction):
+            if isinstance(function, LearnedFunction) and not function.latent_sites:
                 prog.add_module(f"_function_{callee}", function)
         if step_program:
             return prog
@@ -3855,6 +3905,119 @@ class _ProgramsMixin:
         else:
             self._morphisms[decl.name] = prog
         return None
+
+    def _latent_kernel_draws(
+        self, steps: tuple[ProgramStep, ...]
+    ) -> tuple[ProgramStep, ...]:
+        """Draw through each latent-weight kernel at its drawn weights.
+
+        A kernel declared ``[weights=latent]`` reads its network's
+        weights from the run's sites rather than from its own
+        parameters. Each ``sample`` or ``observe`` through one becomes a
+        ``let`` that applies the network, at the drawn weights, to the
+        step's arguments, followed by the same step drawn from the
+        kernel's family with an identity parameter source over that
+        network output, so the family reads the parameters the network
+        writes exactly as the kernel would.
+
+        Parameters
+        ----------
+        steps : tuple[ProgramStep, ...]
+            A program body, marginalization scopes included.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The body with every such step rewritten.
+
+        Raises
+        ------
+        CompileError
+            If a draw through a latent-weight kernel names no argument,
+            or an argument that is not a binding.
+        """
+        rewritten: list[ProgramStep] = []
+        for step in steps:
+            if isinstance(step, MarginalizeStep):
+                rewritten.append(
+                    step.with_(scope=self._latent_kernel_draws(step.scope))
+                )
+                continue
+            if not isinstance(step, SampleStep | ObserveStep):
+                rewritten.append(step)
+                continue
+            network = self._latent_networks.get(step.morphism)
+            if network is None:
+                rewritten.append(step)
+                continue
+            arguments = tuple(step.args or ())
+            if not arguments or not all(
+                isinstance(argument, DrawArgName) for argument in arguments
+            ):
+                raise CompileError(
+                    f"the latent-weight kernel {step.morphism!r} is drawn from "
+                    f"with its inputs named, as in `{step.morphism}(x)`; each "
+                    f"argument is a binding or a host datum",
+                    step.line,
+                    step.col,
+                )
+            site = step.vars[0] if step.vars else "value"
+            raw = f"{step.morphism}__raw_{site}"
+            rewritten.append(
+                LetStep(
+                    name=raw,
+                    value=LetExprCall(
+                        func=f"{step.morphism}__network",
+                        args=tuple(
+                            LetExprVar(name=cast(DrawArgName, argument).text)
+                            for argument in arguments
+                        ),
+                    ),
+                    line=step.line,
+                    col=step.col,
+                )
+            )
+            rewritten.append(
+                step.with_(
+                    morphism=f"{step.morphism}__family",
+                    args=(DrawArgName(text=raw),),
+                )
+            )
+        return tuple(rewritten)
+
+    def _register_latent_kernel(self, name: str, kernel: ContinuousMorphism) -> None:
+        """Split a latent-weight kernel into its network and its family.
+
+        Parameters
+        ----------
+        name : str
+            The kernel's name.
+        kernel : ContinuousMorphism
+            The compiled kernel, a conditional family over a parameter
+            source.
+
+        Raises
+        ------
+        CompileError
+            If the kernel has no parameter source to split off.
+        """
+        source = getattr(kernel, "param_source", None)
+        if not isinstance(source, torch.nn.Module) or not hasattr(source, "param_dim"):
+            raise CompileError(
+                f"kernel {name!r} declares latent weights, but its family has no "
+                f"parameter source to draw them for"
+            )
+        width = int(cast(ParamSource, source).param_dim)
+        raw_space = Euclidean(name=f"{name}__raw", dim=width)
+        family = type(kernel)(
+            raw_space, kernel.codomain, param_source=IdentitySource(width)
+        )
+        network = LearnedFunction(
+            kernel.domain, raw_space, cast(ParamSource, source), latent=name
+        )
+        self._morphisms[f"{name}__family"] = family
+        self._morphisms[f"{name}__network"] = network
+        self._latent_networks[name] = network
 
     def _expand_cell_scans(self, decl: ProgramDecl) -> tuple[ProgramDecl, set[str]]:
         """Expand the steps of a program that run a scan.
@@ -4138,7 +4301,7 @@ class _ProgramsMixin:
             if isinstance(bstep, LetStep):
                 fn = reading(
                     self._compile_let_expr(bstep.value, globals_=deductions_globals),
-                    _let_expr_reads(bstep.value),
+                    self._let_reads(bstep.value),
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
@@ -5238,6 +5401,27 @@ class _ProgramsMixin:
         found["__index_size__"] = self._resolve_index_size
         return found
 
+    def _let_reads(self, expr: LetExprNode) -> frozenset[str]:
+        """The bindings a let expression reads, latent network weights included.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        frozenset[str]
+            The expression's free names, and the weight sites of every
+            latent learned function it calls.
+        """
+        reads = set(_let_expr_reads(expr))
+        for callee in free_let_callees(expr):
+            function = self._morphisms.get(callee)
+            if isinstance(function, LearnedFunction):
+                reads |= set(function.latent_sites.values())
+        return frozenset(reads)
+
     def _function_widths(self) -> dict[str, int]:
         """The codomain width of every learned function, by name.
 
@@ -5797,8 +5981,10 @@ class _ProgramsMixin:
                     target = globs_dict[func_name]
                     if isinstance(target, LearnedFunction):
                         values = [fn(env) for fn in arg_fns]
+                        drawn = _drawn_weights(target, env, func_name)
                         return target.apply_values(
-                            *(torch.as_tensor(value) for value in values)
+                            *(torch.as_tensor(value) for value in values),
+                            weights=drawn,
                         )
                     if callable(target):
                         args = [fn(env) for fn in arg_fns]
