@@ -527,7 +527,13 @@ class LatentRegistry:
         return cls(sites, observed, model)
 
     @classmethod
-    def from_trace(cls, model: MonadicProgram, recorded: Trace) -> "LatentRegistry":
+    def from_trace(
+        cls,
+        model: MonadicProgram,
+        recorded: Trace,
+        *,
+        exclude: frozenset[str] | set[str] = frozenset(),
+    ) -> "LatentRegistry":
         """Assemble the registry from a run of the model.
 
         Every sample site the run reached that is neither observed nor
@@ -539,12 +545,19 @@ class LatentRegistry:
         ``trace(model, x, observations)`` at the input and data the
         latents are inferred at.
 
+        Sites named in ``exclude`` are left out: they are latent, but
+        held outside the flat vector, as the sites a `GibbsKernel`
+        updates are, and they need not have a support the registry can
+        biject onto (a discrete site, for instance).
+
         Parameters
         ----------
         model : MonadicProgram
             Compiled probabilistic program.
         recorded : Trace
             A trace of one run of ``model``.
+        exclude : frozenset[str] | set[str]
+            Latent sites to leave out of the registry.
 
         Returns
         -------
@@ -563,6 +576,8 @@ class LatentRegistry:
                 observed.update(label.split(","))
                 continue
             names = label.split(",")
+            if label in exclude or any(name in exclude for name in names):
+                continue
             base = label.rpartition("@")[0] or label
             spec_index = reached.get(base.split(",")[0], -1)
             for var in names:
