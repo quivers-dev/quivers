@@ -300,6 +300,45 @@ def test_a_gathered_argument_indexes_within_its_run() -> None:
         torch.testing.assert_close(joint.sum(), expected.to(joint.dtype))
 
 
+SHARED_HEAD = """
+object In : Real 2
+object Hidden : Real 3
+object Tok : FinSet 4
+object Resp : FinSet 5
+morphism enc : In -> Hidden ~ Normal
+morphism head : Hidden -> Tok ~ Categorical
+program p : In -> Tok
+    sample h <- enc
+    observe y : Resp <- head(h)
+    return y
+export p
+"""
+
+
+@pytest.mark.parametrize("runs", [1, 2, 3])
+def test_a_plate_shares_one_runs_vector_across_its_rows(runs: int) -> None:
+    """A per-run vector a plated kernel reads is one input every row of
+    the plate shares, not a row per coordinate: each run's ``h`` maps
+    through the head's weight matrix once, to logits for all its rows."""
+    torch.manual_seed(3)
+    model = _model(SHARED_HEAD)
+    x = torch.randn(runs, 2)
+    h = torch.randn(runs, 3)
+    y = torch.randint(0, 4, (runs, 5))
+    enc = model.get_submodule("_step_h.param_source.linear")
+    head = model.get_submodule("_step_y._family.param_source.linear")
+    with torch.no_grad():
+        joint = model.log_joint(x, {"h": h, "y": y})
+        raw = torch.nn.functional.linear(x, enc.weight, enc.bias)
+        logits = torch.nn.functional.linear(h, head.weight, head.bias)
+        expected = Normal(raw[:, :3], raw[:, 3:].exp()).log_prob(h).sum(-1) + (
+            Categorical(logits=logits.unsqueeze(1)).log_prob(y).sum(-1)
+        )
+        recorded = trace(model, x)
+    torch.testing.assert_close(joint, expected.to(joint.dtype))
+    assert recorded.sites["y"].value.numel() == runs * 5
+
+
 # ---------------------------------------------------------------------------
 # Forward sampling keeps the run axis apart from plate rows
 # ---------------------------------------------------------------------------

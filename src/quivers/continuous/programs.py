@@ -59,7 +59,9 @@ from quivers.continuous.morphisms import (
     AnySpace,
     ContinuousMorphism,
     SampledComposition,
+    _event_dim,
 )
+from quivers.continuous.spaces import ProductSpace
 from quivers.continuous.program_steps import (
     Call,
     Draw,
@@ -149,6 +151,31 @@ def _arg_carries(arg: StepArgument, carries: Callable[[str], bool]) -> bool:
     if isinstance(arg, Indexed):
         return carries(arg.name) or any(carries(ix) for ix in arg.indices)
     return carries(arg)
+
+
+def _argument_widths(domain: AnySpace, count: int) -> tuple[int | None, ...]:
+    """The event width of each argument a morphism's domain reads.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The morphism's domain.
+    count : int
+        How many arguments the step passes.
+
+    Returns
+    -------
+    tuple[int | None, ...]
+        One width per argument: the whole domain's for a single
+        argument, a product factor's for each of as many arguments as
+        the product has factors, and ``None`` where the domain does not
+        split that way.
+    """
+    if count == 1:
+        return (_event_dim(domain),)
+    if isinstance(domain, ProductSpace) and len(domain.components) == count:
+        return tuple(_event_dim(component) for component in domain.components)
+    return (None,) * count
 
 
 def _bound_names(step: Step) -> tuple[str, ...]:
@@ -685,9 +712,15 @@ class MonadicProgram(ContinuousMorphism):
         if carries is not None and isinstance(morph, PlateDraw | VectorisedObserve):
             # A plate's parameters are read along its rows within one
             # run: the run axis a value carries is not one of its rows.
+            # A value holding one event of its domain factor is a single
+            # input every row shares, and keeps its leading axis.
+            widths = _argument_widths(morph.domain, len(parts))
             parts = [
-                part[0] if _arg_carries(arg, carries) else part
-                for part, arg in zip(parts, spec.args, strict=True)
+                part
+                if not _arg_carries(arg, carries)
+                or (width is not None and part[0].numel() == width)
+                else part[0]
+                for part, arg, width in zip(parts, spec.args, widths, strict=True)
             ]
             carries = None
         event_ranks = getattr(morph, "_param_event_ranks", None)
