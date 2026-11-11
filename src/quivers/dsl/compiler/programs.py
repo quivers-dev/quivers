@@ -353,9 +353,11 @@ _ENTRYWISE_BUILTINS = frozenset(
         "abs",
         "exp",
         "expm1",
+        "int",
         "log",
         "log1p",
         "neg",
+        "real",
         "reciprocal",
         "relu",
         "rsqrt",
@@ -4014,6 +4016,12 @@ class _ProgramsMixin:
         # single terminal `observe`.
         local_bv: dict[str, AnySpace | None] = dict(bound_vars)
         local_bv[latent_name] = None
+        # At each atom the latent is one value, so a let over it is typed
+        # as its operands give and the observation reads it at that width.
+        parameter_spaces = (
+            self._parameter_space_stack[-1] if self._parameter_space_stack else {}
+        )
+        parameter_spaces[latent_name] = Euclidean(name=f"_{latent_name}", dim=1)
         deductions_globals = dict(getattr(self, "_deductions", {}))
         deductions_globals["__index_size__"] = self._resolve_index_size
         body_lets: list[tuple[str, Callable]] = []
@@ -4026,6 +4034,9 @@ class _ProgramsMixin:
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
+                let_space = _let_space(bstep.value, local_bv, parameter_spaces)
+                if let_space is not None:
+                    parameter_spaces[bstep.name] = let_space
             elif isinstance(bstep, VectorisedObserveStep):
                 if observe_step is not None:
                     raise CompileError(
@@ -4210,6 +4221,10 @@ class _ProgramsMixin:
                             theta = torch.stack(
                                 [t.expand(common) for t in parts], dim=-1
                             )
+                            if theta.dim() == 1:
+                                # Values shared by every row at this atom
+                                # stack to one row of their columns.
+                                theta = theta.unsqueeze(0)
                     ll_cols.append(_obs_family.log_prob(theta, response))
                 per_class = torch.stack(ll_cols, dim=-1)
                 if log_prior.dim() < per_class.dim():
