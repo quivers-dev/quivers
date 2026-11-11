@@ -23,6 +23,7 @@ import torch
 import torch.distributions as D
 
 from quivers.dsl import loads
+from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.inference import (
     ELBO,
     MCMC,
@@ -96,7 +97,9 @@ def _inputs(seed: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return x, o, matrix
 
 
-def _given(binding: str, o: torch.Tensor, matrix: torch.Tensor) -> dict[str, torch.Tensor]:
+def _given(
+    binding: str, o: torch.Tensor, matrix: torch.Tensor
+) -> dict[str, torch.Tensor]:
     given = {f"o@{t}": o[:, t] for t in range(T)}
     if binding == "host matrix":
         given["M"] = matrix
@@ -146,7 +149,9 @@ def test_compiled_runtime_matches_the_torch_oracle(binding: str, position: str) 
     recorded = trace(program.morphism, x, observations=_given(binding, o, matrix))
     name = _name(binding)
     value = matrix if binding == "host matrix" else recorded.sites[name].value
-    shape = {"scalar": (), "vector": (2,), "matrix": (2, 2), "host matrix": (2, 2)}[binding]
+    shape = {"scalar": (), "vector": (2,), "matrix": (2, 2), "host matrix": (2, 2)}[
+        binding
+    ]
     states = (
         [recorded.sites[f"s@{t}"].value.reshape(2).double() for t in range(T)]
         if position == "sample"
@@ -163,18 +168,27 @@ def _host(value: list) -> tuple:
 
 
 @pytest.mark.parametrize(("binding", "position"), CASES)
-def test_reference_machine_matches_the_torch_oracle(binding: str, position: str) -> None:
+def test_reference_machine_matches_the_torch_oracle(
+    binding: str, position: str
+) -> None:
     program = loads(_source(binding, position))
     x, o, matrix = _inputs(2)
     generator = torch.Generator().manual_seed(3)
-    shape = {"scalar": (), "vector": (2,), "matrix": (2, 2), "host matrix": (2, 2)}[binding]
+    shape = {"scalar": (), "vector": (2,), "matrix": (2, 2), "host matrix": (2, 2)}[
+        binding
+    ]
     value = (
         matrix.double()
         if binding == "host matrix"
         else 0.5 * torch.randn(shape, generator=generator, dtype=torch.float64)
     )
-    states = [torch.randn(2, generator=generator, dtype=torch.float64) for _ in range(T)]
-    data: dict[str, object] = {"in": _host(x[0].double().tolist()), "o": _host(o[0].double().tolist())}
+    states = [
+        torch.randn(2, generator=generator, dtype=torch.float64) for _ in range(T)
+    ]
+    data: dict[str, object] = {
+        "in": _host(x[0].double().tolist()),
+        "o": _host(o[0].double().tolist()),
+    }
     sites: dict[str, object] = {}
     if binding == "host matrix":
         data["M"] = _host(value.tolist())
@@ -202,7 +216,9 @@ def test_gradients_reach_the_binding_through_every_position(binding: str) -> Non
     reference = value.detach().double().requires_grad_(True)
     _oracle(binding, "observe", x.double(), o.double(), reference, []).backward()
     assert value.grad is not None and reference.grad is not None
-    torch.testing.assert_close(value.grad.double(), reference.grad, rtol=1e-4, atol=1e-6)
+    torch.testing.assert_close(
+        value.grad.double(), reference.grad, rtol=1e-4, atol=1e-6
+    )
 
 
 def test_a_cell_reading_an_unbound_vector_name_keeps_the_host_data_rule() -> None:
@@ -250,14 +266,18 @@ def _gaussian_data() -> tuple[torch.Tensor, torch.Tensor]:
     return x, o
 
 
-def _exact_posterior(x: torch.Tensor, o: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _exact_posterior(
+    x: torch.Tensor, o: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Mean and standard deviations of (b_0, b_1, s_0, ..., s_3) given o."""
     size = 2 + STEPS
     rows: list[torch.Tensor] = []
     targets: list[float] = []
     precisions: list[float] = []
 
-    def residual(coefficients: dict[int, float], target: float, variance: float) -> None:
+    def residual(
+        coefficients: dict[int, float], target: float, variance: float
+    ) -> None:
         row = torch.zeros(size, dtype=torch.float64)
         for index, coefficient in coefficients.items():
             row[index] = coefficient
@@ -277,7 +297,9 @@ def _exact_posterior(x: torch.Tensor, o: torch.Tensor) -> tuple[torch.Tensor, to
     weights = torch.diag(torch.tensor(precisions, dtype=torch.float64))
     precision = design.T @ weights @ design
     covariance = torch.linalg.inv(precision)
-    mean = covariance @ (design.T @ weights @ torch.tensor(targets, dtype=torch.float64))
+    mean = covariance @ (
+        design.T @ weights @ torch.tensor(targets, dtype=torch.float64)
+    )
     return mean, covariance.diagonal().sqrt()
 
 
@@ -285,7 +307,9 @@ def test_the_latent_registry_holds_every_position() -> None:
     x, o = _gaussian_data()
     model = loads(GAUSSIAN).morphism
     observations = {f"o@{t}": o[:, t] for t in range(STEPS)}
-    registry = LatentRegistry.from_trace(model, trace(model, x, observations=observations))
+    registry = LatentRegistry.from_trace(
+        model, trace(model, x, observations=observations)
+    )
     assert registry.names == ("b", "s@0", "s@1", "s@2", "s@3")
 
 
@@ -299,16 +323,19 @@ def test_nuts_recovers_the_exact_posterior_of_the_per_position_sites() -> None:
     x, o = _gaussian_data()
     model = loads(GAUSSIAN).morphism
     observations = {f"o@{t}": o[:, t] for t in range(STEPS)}
-    result = MCMC(NUTSKernel(), num_warmup=300, num_samples=500, num_chains=2, seed=0).run(
-        model, x, observations
-    )
+    result = MCMC(
+        NUTSKernel(), num_warmup=300, num_samples=500, num_chains=2, seed=0
+    ).run(model, x, observations)
     mean, sd = _exact_posterior(x, o)
     draws = torch.cat(
         [result.samples["b"].reshape(-1, 2)]
         + [result.samples[f"s@{t}"].reshape(-1, 1) for t in range(STEPS)],
         dim=1,
     ).double()
-    ess = torch.cat([result.ess["b"].reshape(-1)] + [result.ess[f"s@{t}"].reshape(-1) for t in range(STEPS)])
+    ess = torch.cat(
+        [result.ess["b"].reshape(-1)]
+        + [result.ess[f"s@{t}"].reshape(-1) for t in range(STEPS)]
+    )
     assert float(ess.min()) >= 200
     assert torch.all((draws.mean(0) - mean).abs() <= 4.5 * sd / math.sqrt(200))
     assert torch.all((draws.std(0) / sd - 1.0).abs() <= 0.25)
@@ -335,3 +362,29 @@ def test_svi_recovers_the_exact_posterior_mean_of_the_per_position_sites() -> No
     estimate = torch.stack(iterates).mean(0).double()
     mean, sd = _exact_posterior(x, o)
     assert torch.all((estimate - mean).abs() <= 0.2 * sd)
+
+
+def test_a_cell_reads_a_let_bound_vector_of_the_scanning_program() -> None:
+    source = _source("vector", "observe").replace(
+        "    sample b : Hid <- Normal(loc=0.0, scale=0.5)\n",
+        "    sample a : Hid <- Normal(loc=0.0, scale=0.5)\n    let b = 2.0 * a\n",
+    )
+    program = loads(source)
+    x, o, _ = _inputs(6)
+    torch.manual_seed(7)
+    recorded = trace(program.morphism, x, observations=_given("vector", o, o))
+    a = recorded.sites["a"].value.reshape(2).double()
+    expected = _oracle("vector", "observe", x.double(), o.double(), 2.0 * a, [])
+    # The oracle's prior term is for b ~ N(0, 0.5); the program's is for a.
+    expected = expected - D.Normal(0.0, 0.5).log_prob(2.0 * a).sum()
+    expected = expected + D.Normal(0.0, 0.5).log_prob(a).sum()
+    assert float(recorded.log_joint) == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_a_cell_that_indexes_a_scalar_binding_is_refused_where_it_reads_it() -> None:
+    source = _source("matrix", "observe").replace(
+        "    sample W : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]\n",
+        "    sample W <- Normal(loc=0.0, scale=0.5)\n",
+    )
+    with pytest.raises(QiecDiagnosticError, match="Real"):
+        loads(source)

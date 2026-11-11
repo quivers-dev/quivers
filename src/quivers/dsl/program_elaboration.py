@@ -2910,9 +2910,7 @@ class _ProgramElaboration:
                 f"scan helper {name!r} is declared twice",
                 code="qiec-program",
             )
-        mentioned = _index_variables_in(
-            (local.type, *(item.type for item in passed))
-        )
+        mentioned = _index_variables_in((local.type, *(item.type for item in passed)))
         telescope = tuple(
             binder for name_, binder in state.extents.items() if name_ in mentioned
         )
