@@ -110,7 +110,7 @@ class ClosedForm(BuiltinSpelling):
     ----------
     body
         The definition, reading its arguments as the variables
-        ``__arg0`` and ``__arg1``. A call to a math builtin inside it is
+        ``__arg0``, ``__arg1``, and ``__arg2``. A call to a math builtin inside it is
         spelled by the same target's table in turn; a call to any other
         name is a function of the target's own.
     kind
@@ -172,6 +172,7 @@ class Refusal(BuiltinSpelling):
 
 _X = LetExprVar(name="__arg0")
 _Y = LetExprVar(name="__arg1")
+_Z = LetExprVar(name="__arg2")
 
 
 def _lit(value: float) -> LetExprLiteral:
@@ -342,6 +343,7 @@ _PYRO: dict[str, BuiltinSpelling] = {
     "max": _native("torch", "maximum"),
     "min": _native("torch", "minimum"),
     "pow": _native("torch", "pow"),
+    "select": _native("torch", "where"),
 }
 
 _NUMPYRO: dict[str, BuiltinSpelling] = {
@@ -396,6 +398,7 @@ _NUMPYRO: dict[str, BuiltinSpelling] = {
     "max": _native("jnp", "maximum"),
     "min": _native("jnp", "minimum"),
     "pow": _native("jnp", "power"),
+    "select": _native("jnp", "where"),
 }
 
 
@@ -451,6 +454,7 @@ _PYMC: dict[str, BuiltinSpelling] = {
     "max": _pmath("maximum"),
     "min": _pmath("minimum"),
     "pow": _pt("pow"),
+    "select": _pmath("switch"),
 }
 
 
@@ -511,6 +515,7 @@ _EDWARD2: dict[str, BuiltinSpelling] = {
     "max": _tfmath("maximum"),
     "min": _tfmath("minimum"),
     "pow": _tfmath("pow"),
+    "select": _native("tf", "where"),
 }
 
 
@@ -570,6 +575,7 @@ _STAN: dict[str, BuiltinSpelling] = {
     **_common(*_ACTIVATIONS),
     "max": Dedicated(reason="`max` of two integers, `fmax` of reals"),
     "min": Dedicated(reason="`min` of two integers, `fmin` of reals"),
+    "select": Dedicated(reason="the conditional operator `c ? a : b`"),
 }
 
 
@@ -622,6 +628,7 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
         "pow": Dedicated(reason="the broadcast power `.^`"),
         "max": Dedicated(reason="the broadcast `max.(a, b)`"),
         "min": Dedicated(reason="the broadcast `min.(a, b)`"),
+        "select": Dedicated(reason="the broadcast `ifelse.(c, a, b)`"),
     }
 
 
@@ -654,6 +661,7 @@ WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "log1p",
         "log2",
         "round",
+        "select",
         "sign",
         "sin",
         "sinh",
@@ -711,6 +719,7 @@ CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "max",
         "min",
         "pow",
+        "select",
     }
 )
 
@@ -792,6 +801,9 @@ _BUGS: dict[str, BuiltinSpelling] = {
         )
     ),
     **_refuse("BUGS and JAGS have no digamma function", "digamma"),
+    # OpenBUGS has no conditional function; `b + c * (a - b)` is `select`
+    # wherever both branches are finite.
+    "select": _form(_op("+", _Z, _op("*", _X, _op("-", _Y, _Z)))),
     **_common(
         "ceil",
         "expm1",
@@ -835,7 +847,7 @@ BUILTIN_SPELLINGS: Mapping[str, Mapping[str, BuiltinSpelling]] = {
         "webppl": _WEBPPL,
         "church": _CHURCH,
         "bugs": _BUGS,
-        "jags": _BUGS,
+        "jags": {**_BUGS, "select": _native("ifelse")},
     }.items()
 }
 
@@ -898,6 +910,8 @@ def _instantiate(
             return args[0]
         if body.name == _Y.name:
             return args[1]
+        if body.name == _Z.name:
+            return args[2]
         return body
     if isinstance(body, LetExprBinOp):
         return LetExprBinOp(

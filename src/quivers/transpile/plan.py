@@ -186,6 +186,16 @@ _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kerne
 #: its own, so they read back as their operand.
 _TRANSPARENT: frozenset[str] = frozenset({"int_to_real", "as_weight", "weight_value"})
 
+#: The conversions of a Boolean to a number, as the values ``select``
+#: takes where the Boolean holds and where it does not.
+_BOOL_CONVERSIONS: dict[str, tuple[LetExprLiteral, LetExprLiteral]] = {
+    "bool_to_real": (LetExprLiteral(value=1.0), LetExprLiteral(value=0.0)),
+    "bool_to_int": (
+        LetExprLiteral(value=1.0, integral=True),
+        LetExprLiteral(value=0.0, integral=True),
+    ),
+}
+
 #: Targets whose arithmetic keeps two integers integral: Stan's `/`
 #: truncates `int / int`. On them a conversion to real is not
 #: transparent, so `int_to_real(x)` reads back as `1.0 * x`, which is
@@ -2524,6 +2534,15 @@ def _expression(
             return LetExprUnaryOp(
                 op=unary,
                 operand=_expression(value.arguments[0], cards, target, program),
+            )
+        if value.name in _BOOL_CONVERSIONS:
+            # A Boolean read as a number is one where it holds and zero
+            # elsewhere: the conditional value every target spells.
+            one, zero = _BOOL_CONVERSIONS[value.name]
+            return spell_builtin(
+                target,
+                "select",
+                (_expression(value.arguments[0], cards, target, program), one, zero),
             )
         builtin = PRIMITIVE_BUILTINS.get(value.name)
         if builtin is not None:

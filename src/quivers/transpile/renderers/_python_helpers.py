@@ -497,6 +497,35 @@ _POINTWISE_OPERAND_SYMBOLS: dict[str, tuple[str, ...]] = {
 _PYMC_TENSOR: tuple[str, ...] = ("pymc", "pytensorf", "pt", "as_tensor_variable")
 
 
+def _reads_a_name(expr: LetExprNode) -> bool:
+    """Whether an expression reads a bound name anywhere.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        ``False`` for an expression of literals alone, which the
+        emitted program computes as a Python number or Boolean.
+    """
+    if isinstance(expr, LetExprVar):
+        return True
+    if isinstance(expr, LetExprBinOp):
+        return _reads_a_name(expr.left) or _reads_a_name(expr.right)
+    if isinstance(expr, LetExprUnaryOp):
+        return _reads_a_name(expr.operand)
+    if isinstance(expr, LetExprCall):
+        return any(_reads_a_name(argument) for argument in expr.args)
+    if isinstance(expr, LetExprIndex):
+        return True
+    if isinstance(expr, LetExprList):
+        return any(_reads_a_name(item) for item in expr.items)
+    return False
+
+
 def _symbolic_index(expr: LetExprNode) -> bool:
     """Whether an index expression calls a builtin, so PyMC builds it as a tensor.
 
@@ -522,6 +551,12 @@ def _symbolic_index(expr: LetExprNode) -> bool:
         )
     return False
 
+
+#: The comparison operators, which Python spells as QVR does.
+_PY_COMPARISONS: frozenset[str] = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+#: QVR's Boolean connectives as the elementwise Python operators.
+_PY_LOGICAL: dict[str, str] = {"&&": "&", "||": "|"}
 
 #: Eager builtin names come from the same capability registry as the compiler.
 _MATH_BUILTIN_NAMES = EAGER_BUILTIN_NAMES
@@ -804,14 +839,33 @@ def render_let_expr_python(
         v = ctx.v(ctx.fresh("str"), "string")
         ctx.literal(v, json.dumps(expr.value))
         return v
+    if isinstance(expr, LetExprBinOp) and expr.op in _PY_COMPARISONS:
+        # A comparison is Python's `comparison_operator`, whose operator
+        # field is plural (`operators`) because Python chains them; each
+        # array library compares entry by entry.
+        c = ctx.v(ctx.fresh("cmp"), "comparison_operator")
+        ctx.constraint(c, "field:operators", expr.op)
+        ctx.constraint(c, "chose-alt-fingerprint", expr.op)
+        ctx.e(
+            c, _render_python_operand(ctx, expr.left, index_slot=index_slot), "child_of"
+        )
+        ctx.e(
+            c,
+            _render_python_operand(ctx, expr.right, index_slot=index_slot),
+            "child_of",
+        )
+        return c
     if isinstance(expr, LetExprBinOp):
         # Python tree-sitter's `binary_operator` has CHOICE alts per
         # operator (`+`, `-`, `*`, `**`, etc.). The walker discriminates
         # via the `field:operator` constraint on the binary_operator
-        # vertex itself; no separate operator vertex is needed.
+        # vertex itself; no separate operator vertex is needed. QVR's
+        # `&&` and `||` act entry by entry, which on Booleans and on
+        # Boolean arrays alike is Python's `&` and `|`.
+        op = _PY_LOGICAL.get(expr.op, expr.op)
         b = ctx.v(ctx.fresh("bop"), "binary_operator")
-        ctx.constraint(b, "field:operator", expr.op)
-        ctx.constraint(b, "chose-alt-fingerprint", expr.op)
+        ctx.constraint(b, "field:operator", op)
+        ctx.constraint(b, "chose-alt-fingerprint", op)
         ctx.e(
             b,
             _render_python_operand(ctx, expr.left, index_slot=index_slot),
@@ -891,10 +945,23 @@ def render_let_expr_python(
             or (pointwise and len(expr.args) == 2)
             else None
         )
-        for a in expr.args:
+        for position, a in enumerate(expr.args):
             rendered = render_let_expr_python(ctx, a)
             if operand is not None:
                 rendered = call(ctx, attribute(ctx, operand), positional=(rendered,))
+            elif (
+                ctx.target == "pymc"
+                and expr.func == "select"
+                and position == 0
+                and not _reads_a_name(a)
+            ):
+                # PyTensor refuses a Python Boolean as a tensor, and a
+                # comparison of numbers alone (a factor binder, unrolled,
+                # against a bound) is one; NumPy's array of it is
+                # accepted.
+                rendered = call(
+                    ctx, attribute(ctx, ("np", "asarray")), positional=(rendered,)
+                )
             ctx.e(args, rendered, "child_of")
         # A reducing primitive (``sum``, ``mean``, ...) collapses the
         # last axis of its argument. The renamed callee already targets

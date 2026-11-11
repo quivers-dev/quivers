@@ -128,6 +128,11 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
         else float(a)
     ),
     "int": lambda a: a.to(dtype=torch.int64) if isinstance(a, torch.Tensor) else int(a),
+    "select": lambda cond, a, b: torch.where(
+        torch.as_tensor(cond, dtype=torch.bool),
+        torch.as_tensor(a),
+        torch.as_tensor(b),
+    ),
     "weight": lambda a: a,
     "weight_value": lambda a: a,
     "concat": lambda *parts: torch.cat(parts, dim=-1),
@@ -153,8 +158,12 @@ _BINARY_PRIMITIVES: Mapping[LetBinaryOperator, Mapping[TypeExpr, str]] = {
 
 #: Builtin name and argument types to the primitive that implements it.
 _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
-    "real": {(INT,): "int_to_real"},
-    "int": {(REAL,): "real_to_int"},
+    "real": {(INT,): "int_to_real", (BOOL,): "bool_to_real"},
+    "int": {(REAL,): "real_to_int", (BOOL,): "bool_to_int"},
+    "select": {
+        (BOOL, REAL, REAL): "select_real",
+        (BOOL, INT, INT): "select_int",
+    },
     "exp": {(REAL,): "exp"},
     "log": {(REAL,): "log"},
     "sqrt": {(REAL,): "sqrt"},

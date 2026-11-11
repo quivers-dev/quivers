@@ -271,8 +271,9 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
 
 
 #: Let calls Julia spells under another name: integer division and
-#: remainder truncate toward zero, as Julia's `div` and `rem` do.
-_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem"}
+#: remainder truncate toward zero, as Julia's `div` and `rem` do, and
+#: `select(c, a, b)` is Julia's `ifelse`, which evaluates both branches.
+_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem", "select": "ifelse"}
 
 #: QVR builtins whose two-argument form is pointwise, which Julia spells
 #: as a broadcast call.
@@ -729,8 +730,9 @@ def _emit_call(
     `_emit_axis_reduction`, which names that axis; a nested tower
     reduces each of its rows; a vector reduces whole, which is the
     same.
-    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`;
-    `pow(a, b)` emits the broadcast power `a .^ b`.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`,
+    and `select(c, a, b)` emits `ifelse.(c, a, b)`; `pow(a, b)` emits
+    the broadcast power `a .^ b`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
@@ -760,7 +762,9 @@ def _emit_call(
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
     # `max(a, b)` of two arrays compares them as wholes and returns one,
     # so the binary form always broadcasts.
-    pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
+    pointwise = (func in _BINARY_POINTWISE_CALLS and len(args) == 2) or (
+        func == "select" and len(args) == 3
+    )
     kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
     ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")
