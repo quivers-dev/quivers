@@ -78,7 +78,7 @@ canonical forms). The non-trivial cases:
 | `Dirichlet(α)` | `dirichlet(α)` | identity (scalar broadcast via `rep_vector`) | 0 |
 | `Categorical(probs=p)` | `categorical(p)` scoring the code `y + 1` | $y \mapsto y + 1$ | 0 |
 | `Bernoulli(p)` | `bernoulli(p)` | identity | 0 |
-| `LogitNormal(μ, σ)` | not supported (no native `logit_normal_lpdf`) | — | raises `family:LogitNormal` |
+| `LogitNormal(mu=μ, sigma=σ)` | `logit_normal(μ, σ)`, a grafted `logit_normal_lpdf` (Stan ships none): `normal_lpdf(logit(y) \| μ, σ) - log(y) - log1m(y)`, on a parameter declared `<lower = 0, upper = 1>` | identity | 0 |
 | other families | consult the target registry | family-specific mapping or refusal | check the emitted density |
 
 QVR codes a Categorical value from zero and Stan's `categorical`
