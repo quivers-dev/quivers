@@ -66,9 +66,9 @@ jobs:
           CIBW_ARCHS: auto64
           CIBW_SKIP: "*-musllinux_*"
           CIBW_TEST_REQUIRES: >-
-            didactic==0.17.1
-            panproto==0.74.4
-            panproto-grammars-all==0.74.4
+            didactic==0.18.2
+            panproto==0.77.0
+            panproto-grammars-all==0.77.0
           CIBW_TEST_COMMAND: >-
             python "{project}/tools/release_wheel_smoke.py" "{project}"
         with:

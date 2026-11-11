@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **JAGS reads a per-row host datum at the loop's row.** A datum that fills a family parameter of a plated site, such as a known standard error `Normal(loc=mu, scale=se)`, renders as `se[m_School]`, as BUGS renders it, where JAGS rejected the unindexed vector.
 - **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
 - **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
+- **Transpiling a deeply nested expression is linear in its depth.** quivers requires `didactic>=0.18.2`, whose models keep a nested child as built rather than re-encoding it at every level, so a let that sums twelve builtin calls transpiles in a fraction of a second where it had taken most of a minute. The floor brings `panproto` and `panproto-grammars-all` to `0.77.0`, which that `didactic` requires.
 
 ## [0.46.0] - 2026-11-11
 
