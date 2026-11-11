@@ -1521,11 +1521,6 @@ def _perturb_integer(
     """
     if work.numel() == 0:
         return work
-    magnitude = max(
-        1.0,
-        _INTEGER_STEP_FRACTION * float(work.abs().mean().item()),
-    )
-    moved = torch.round(work + torch.round(noise * magnitude))
     attested_low = float(work.min().item())
     attested_high = float(work.max().item())
     if attested_low < attested_high:
@@ -1533,14 +1528,59 @@ def _perturb_integer(
         high = min(upper, attested_high)
     elif math.isfinite(lower) and math.isfinite(upper):
         low, high = lower, upper
+        if work.numel() == 1 and high > low:
+            return _redraw_single_count(work, noise, low, high)
     else:
         return work
+    magnitude = max(
+        1.0,
+        _INTEGER_STEP_FRACTION * float(work.abs().mean().item()),
+    )
+    moved = torch.round(work + torch.round(noise * magnitude))
     if low > high:
         return work
     clamped = moved.clamp(min=low, max=high)
     if torch.equal(clamped, work):
         return _nudge_frozen_integer(work, noise, low, high)
     return clamped
+
+
+def _redraw_single_count(
+    work: torch.Tensor,
+    noise: torch.Tensor,
+    low: float,
+    high: float,
+) -> torch.Tensor:
+    """Move a single count to another value of its declared window.
+
+    A lone count has no spread to scale a step by, and a step scaled
+    by its own magnitude sends independent seeds to the same neighbour.
+    The noise is mapped through the standard-normal CDF to a uniform
+    position among the window's other values, so every other value is
+    equally likely and the count always moves.
+
+    Parameters
+    ----------
+    work : torch.Tensor
+        The count, one entry.
+    noise : torch.Tensor
+        Standard-normal noise of the same shape.
+    low : float
+        The window's least admissible value.
+    high : float
+        The window's greatest admissible value, above ``low``.
+
+    Returns
+    -------
+    torch.Tensor
+        The moved count, with ``work``'s shape and dtype.
+    """
+    others = int(high - low)
+    uniform = 0.5 * (1.0 + math.erf(float(noise.flatten()[0].item()) / math.sqrt(2.0)))
+    offset = 1 + min(others - 1, int(uniform * others))
+    current = int(work.flatten()[0].item()) - int(low)
+    moved = int(low) + (current + offset) % (others + 1)
+    return torch.full_like(work, moved)
 
 
 def _nudge_frozen_integer(

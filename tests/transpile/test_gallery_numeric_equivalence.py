@@ -584,12 +584,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -71.1627197265625,
     ),
     "seq2seq": (
-        -15812.892578125,
-        -15826.595703125,
-        -15821.7587890625,
-        -15847.22265625,
-        -15836.48046875,
-        -15819.671875,
+        -488.5443420410156,
+        -487.85491943359375,
+        -489.553466796875,
+        -490.8770751953125,
+        -489.0007629394531,
+        -489.3353576660156,
     ),
     "vae": (
         -41.807464599609375,
@@ -636,7 +636,8 @@ against a guess. The raw-`torch.distributions` reconstructions in
 `test_oracle_reference_strength.py` sum the same per-site terms in a
 different order and grouping, while the CI probe replays the trace on
 independent runners. The largest observed difference is **two**
-float32 ULPs (`seq2seq`, 1.95e-03 at magnitude 15,836);
+float32 ULPs (1.95e-03, on a feed-forward chain's joint of magnitude
+15,836);
 `continuous_hmm`'s independent reconstruction differs by one ULP
 (6.10e-05 at magnitude 736). Eight ULPs is two bits of headroom above
 the measured worst case.
@@ -702,8 +703,8 @@ def reference_pin_atol(reference: float) -> float:
     quotienting out an additive constant. Its scalar floor therefore
     cannot cap this function below a representable float32 step.
 
-    The largest pinned magnitudes are `seq2seq`'s roughly 15,800-nat
-    joints, where eight float32 ULPs are 7.81e-03. The tightest bound is
+    The largest pinned magnitudes are `zip_regression`'s roughly
+    760-nat joints, where eight float32 ULPs are 4.88e-04. The tightest bound is
     9.54e-07, the magnitude-1 floor, which
     binds wherever a joint lands below 2
     (`kumaraswamy_bounded_outcome` at its first latents point,

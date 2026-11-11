@@ -274,7 +274,7 @@ def _reconstruct_seq2seq(
     """`seq2seq.qvr`:
 
         sample h          <- backbone
-        observe next_token : Resp <- lm_head(h)
+        observe next_token <- lm_head(h)
 
     with `backbone = (encoder @ decoder) >> cross`, each tower
     `embed >> stack(block, 2)`, and each block
@@ -300,8 +300,8 @@ def _reconstruct_seq2seq(
         )
     known = (
         "",
-        "plate_mean",
         "drop_encoder_tower",
+        "drop_decoder_tower",
         "drop_cross_factor",
     )
     if variant not in known:
@@ -341,7 +341,7 @@ def _reconstruct_seq2seq(
         .sum(-1)
     )
 
-    head = "_step_next_token._family.param_source.linear."
+    head = "_step_next_token.param_source.linear."
     logits = F.linear(
         values["h"],
         weights[head + "weight"],
@@ -353,11 +353,11 @@ def _reconstruct_seq2seq(
 
     if variant == "drop_encoder_tower":
         encoder_term = torch.zeros_like(encoder_term)
+    if variant == "drop_decoder_tower":
+        decoder_term = torch.zeros_like(decoder_term)
     if variant == "drop_cross_factor":
         cross_term = torch.zeros_like(cross_term)
     latent = encoder_term + decoder_term + cross_term
-    if variant == "plate_mean":
-        return {"h": latent.mean(), "next_token": per_token.mean()}
     return {"h": latent.sum(), "next_token": per_token.sum()}
 
 
@@ -1162,8 +1162,8 @@ _RECONSTRUCTIONS: dict[str, _Reconstruction] = {
             "_step_h.left.left.left.log_sigma",
             "_step_h.left.right.left.centers",
             "_step_h.left.right.left.log_sigma",
-            "_step_next_token._family.param_source.linear.weight",
-            "_step_next_token._family.param_source.linear.bias",
+            "_step_next_token.param_source.linear.weight",
+            "_step_next_token.param_source.linear.bias",
         ),
         "Both embedding tables, the twenty-four block factors "
         "of the two towers, the cross factor and the "
@@ -1307,17 +1307,18 @@ class _Mutant:
 _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "seq2seq",
-        "plate_mean",
-        "the 32-row plate is averaged instead of summed.",
-        10000.0,
-    ),
-    _Mutant(
-        "seq2seq",
         "drop_encoder_tower",
         "the encoder tower's thirteen factors are dropped and only "
         "the decoder's are scored, which is the joint a chain that "
         "scores one arm of a product would report.",
-        7000.0,
+        200.0,
+    ),
+    _Mutant(
+        "seq2seq",
+        "drop_decoder_tower",
+        "the decoder tower's thirteen factors are dropped and only "
+        "the encoder's are scored, the other arm of the same defect.",
+        200.0,
     ),
     _Mutant(
         "seq2seq",
@@ -1325,7 +1326,7 @@ _MUTANTS: tuple[_Mutant, ...] = (
         "the cross factor is dropped, so `h` enters no density at "
         "all and the two towers are scored without the step that "
         "relates them.",
-        1000.0,
+        40.0,
     ),
     _Mutant(
         "deep_markov",
