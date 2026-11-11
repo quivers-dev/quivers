@@ -65,6 +65,7 @@ from quivers.continuous.family_spec import (
 from quivers.core._util import EPS
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
+from quivers.qiec.families import FAMILIES
 from quivers.dsl.ast_nodes import (
     DrawArg,
     DrawArgDist,
@@ -74,7 +75,11 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
 )
-from quivers.dsl.family_schemas import family_parameterizations
+from quivers.dsl.family_schemas import (
+    FAMILY_ALIASES,
+    PARAMETER_ALIASES,
+    family_parameterizations,
+)
 from quivers.dsl.draw_args import bind_family_arguments
 
 
@@ -389,6 +394,14 @@ class MixedInlineDistribution(ContinuousMorphism):
     support : Constraint, optional
         Support of the underlying distribution; used by variational
         guides. Defaults to ``constraints.real``.
+    param_event_ranks : tuple[int, ...], optional
+        The rank of one value of each parameter: 0 for a per-row
+        scalar, 1 for a vector, 2 for a matrix. Defaults to every
+        parameter a scalar.
+    param_shapes : tuple[tuple[int, ...] | None, ...], optional
+        For each parameter of rank two or more read from the input, the
+        shape one row's value has, which its flat columns are laid out
+        in; ``None`` elsewhere. Defaults to none.
     """
 
     def __init__(
@@ -400,6 +413,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         discrete: bool = False,
         support: _constraints.Constraint | None = None,
         param_event_ranks: tuple[int, ...] | None = None,
+        param_shapes: tuple[tuple[int, ...] | None, ...] | None = None,
     ) -> None:
         super().__init__(domain, codomain)
         self._param_spec = param_spec
@@ -422,6 +436,28 @@ class MixedInlineDistribution(ContinuousMorphism):
                 f"{len(self._param_event_ranks)} disagrees with "
                 f"param_spec length {len(param_spec)}"
             )
+        self._param_shapes: tuple[tuple[int, ...] | None, ...] = (
+            param_shapes
+            if param_shapes is not None
+            else tuple(None for _ in param_spec)
+        )
+        if len(self._param_shapes) != len(param_spec):
+            raise ValueError(
+                "MixedInlineDistribution: param_shapes length "
+                f"{len(self._param_shapes)} disagrees with "
+                f"param_spec length {len(param_spec)}"
+            )
+        for (kind, width), rank, shape in zip(
+            param_spec, self._param_event_ranks, self._param_shapes, strict=True
+        ):
+            if kind != "var" or rank < 2:
+                continue
+            if shape is None or len(shape) != rank or math.prod(shape) != width:
+                raise ValueError(
+                    "MixedInlineDistribution: a parameter of rank "
+                    f"{rank} read from the input needs its shape, of "
+                    f"{width} entries; got {shape!r}"
+                )
 
     @property
     def support(self) -> _constraints.Constraint:
@@ -456,17 +492,30 @@ class MixedInlineDistribution(ContinuousMorphism):
         # columns; it only counts the rows.
         widths = self._variable_widths(x.shape[-1]) if positions else []
         variables: list[torch.Tensor] = []
+        batch_ranks: list[int] = []
         var_offset = 0
         for pos, dim in zip(positions, widths, strict=True):
-            is_vector = self._param_event_ranks[pos] >= 1
-            if dim == 1 and not is_vector:
+            event_rank = self._param_event_ranks[pos]
+            shape = self._param_shapes[pos]
+            if dim == 1 and event_rank < 1:
                 variables.append(x[..., var_offset])
+            elif event_rank >= 2:
+                # A matrix parameter's columns are its entries in row-major
+                # order, one row's value per row of the input.
+                assert shape is not None
+                block = x[..., var_offset : var_offset + dim]
+                variables.append(block.reshape(*block.shape[:-1], *shape))
             else:
                 variables.append(x[..., var_offset : var_offset + dim])
+            batch_ranks.append(
+                variables[-1].dim() - (event_rank if event_rank >= 2 else 0)
+            )
             var_offset += dim
         # A literal broadcasts against the widest variable parameter: a
-        # per-row value, with a unit axis for each further axis.
-        rank = max((t.dim() for t in variables), default=1)
+        # per-row value, with a unit axis for each further axis a scalar
+        # or vector parameter carries. A matrix parameter's own axes are
+        # its value's, which a literal does not broadcast along.
+        rank = max(batch_ranks, default=1)
         literal_shape = (x.shape[0],) + (1,) * (rank - 1)
         params: list[torch.Tensor] = []
         supplied = iter(variables)
@@ -688,7 +737,12 @@ class MixedInlineDistribution(ContinuousMorphism):
         target_dim = event_dim + batch_dim
         if not self._discrete:
             while y_in.dim() < target_dim:
-                y_in = y_in.unsqueeze(-1)
+                # A value holding one whole event lacks the batch axes;
+                # any other lacks a trailing coordinate axis.
+                whole_event = event_dim > 0 and tuple(
+                    y_in.shape[y_in.dim() - event_dim :]
+                ) == tuple(dist.event_shape)
+                y_in = y_in.unsqueeze(0) if whole_event else y_in.unsqueeze(-1)
             while y_in.dim() > target_dim and y_in.shape[-1] == 1:
                 y_in = y_in.squeeze(-1)
         lp = dist.log_prob(y_in)
@@ -2458,15 +2512,16 @@ def make_inline_distribution(
         raise ValueError(
             f"inline {family} expects {len(param_names)} args ({', '.join(param_names)}), got {len(args)}"
         )
-    fam_event_ranks = _PARAM_EVENT_RANKS.get(
-        family,
-        tuple(0 for _ in param_names),
+    fam_event_ranks = _PARAM_EVENT_RANKS.get(family) or _registry_event_ranks(
+        family, param_names
     )
     param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
+    param_shapes: list[tuple[int, ...] | None] = []
     var_name_order: list[StepArgument] = []
     total_var_dim = 0
     for i, arg in enumerate(args):
         kind, value = _inline_argument(arg)
+        param_shapes.append(None)
         if kind == "lit" or kind == "const":
             assert isinstance(value, float | torch.Tensor)
             param_spec.append((kind, value))
@@ -2477,12 +2532,28 @@ def make_inline_distribution(
             # one it is left unresolved, for the stacked width to settle.
             var_dim: int | None = None
             lookup_name = arg.name if isinstance(arg, Indexed) else arg
+            event_rank = fam_event_ranks[i]
+            checked = (
+                value_extents.get(lookup_name) if value_extents is not None else None
+            )
             if (
                 isinstance(arg, Indexed)
                 and value_extents is not None
                 and lookup_name in value_extents
             ):
                 var_dim = _gathered_width(arg, value_extents[lookup_name])
+            elif (
+                not isinstance(arg, Indexed)
+                and event_rank >= 1
+                and checked is not None
+                and len(checked) >= event_rank
+            ):
+                # A vector or matrix parameter's own axes are the trailing
+                # ones of its checked value; any leading axis is a plate's.
+                own = tuple(checked[len(checked) - event_rank :])
+                var_dim = math.prod(own)
+                if event_rank >= 2:
+                    param_shapes[-1] = own
             elif variable_types and lookup_name in variable_types:
                 vtype = variable_types[lookup_name]
                 if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
@@ -2494,6 +2565,15 @@ def make_inline_distribution(
                         var_dim = vtype.row_width
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
+            if event_rank >= 2 and param_shapes[-1] is None:
+                raise ValueError(
+                    f"inline {family} reads its {param_names[i]!r} from "
+                    f"{lookup_name!r}, a matrix whose shape the checked program "
+                    "leaves to the data; the compiled runtime sizes every "
+                    "parameter when it builds the program, so fix the draw's "
+                    "event axes with an annotation or ``[over=...]``, or return "
+                    "the draw from a program whose codomain fixes them"
+                )
             param_spec.append(("var", var_dim))
             var_name_order.append(arg)
             total_var_dim += 1 if var_dim is None else var_dim
@@ -2565,8 +2645,40 @@ def make_inline_distribution(
         discrete,
         support=fam_support,
         param_event_ranks=fam_event_ranks,
+        param_shapes=tuple(param_shapes),
     )
     return (morph, tuple(var_name_order) if var_name_order else None)
+
+
+def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int, ...]:
+    """The rank of one value of each parameter, as the family registry records it.
+
+    Parameters
+    ----------
+    family : str
+        The family's source name.
+    parameters : tuple[str, ...]
+        The parameter names the call supplies, in order, as the source
+        spells them.
+
+    Returns
+    -------
+    tuple[int, ...]
+        One rank per parameter: the registry's, through the family's
+        surface aliases, and zero for a parameter the registry does not
+        record.
+    """
+    record = FAMILIES.get(FAMILY_ALIASES.get(family, family))
+    aliases = PARAMETER_ALIASES.get(family, {})
+    ranks: list[int] = []
+    for name in parameters:
+        semantic = aliases.get(name, name)
+        ranks.append(
+            record.parameter(semantic).rank
+            if record is not None and semantic in record.parameter_names
+            else 0
+        )
+    return tuple(ranks)
 
 
 def _make_fixed_selected_parameters(

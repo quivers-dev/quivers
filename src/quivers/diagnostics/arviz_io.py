@@ -19,6 +19,7 @@ import arviz as az
 import torch
 import xarray as xr
 
+from quivers.diagnostics.calibration import SBCResult
 from quivers.inference.mcmc.driver import MCMCResult
 
 
@@ -29,6 +30,20 @@ def _tensor_to_numpy(t: torch.Tensor):
     NUTS).
     """
     return t.detach().cpu().numpy()
+
+
+_ARVIZ_SAMPLE_STATS = {
+    "diverged": "diverging",
+    "tree_depth": "tree_depth",
+    "num_steps": "n_steps",
+    "energy": "energy",
+    "step_size": "step_size",
+    "accept_prob": "acceptance_rate",
+}
+"""ArviZ's ``sample_stats`` names for the kernels' per-draw statistics."""
+
+_ARVIZ_INTEGER_STATS = frozenset({"tree_depth", "num_steps"})
+_ARVIZ_BOOLEAN_STATS = frozenset({"diverged"})
 
 
 def to_datatree(
@@ -49,8 +64,13 @@ def to_datatree(
         Sampler output.  ``posterior.samples[name]`` carries an
         ``(num_chains, num_samples, *site_shape)`` tensor; each
         becomes a posterior variable.  ``log_densities`` populates
-        ``sample_stats/lp``; ``acceptance_rates`` and
-        ``divergence_counts`` populate ``sample_stats``.
+        ``sample_stats/lp``, and each per-draw entry of
+        `MCMCResult.sample_stats` a ``sample_stats`` variable under
+        ArviZ's canonical name: ``diverged`` as ``diverging``
+        (boolean), ``tree_depth`` (integer), ``num_steps`` as
+        ``n_steps`` (integer), ``energy``, ``step_size``, and
+        ``accept_prob`` as ``acceptance_rate``. A composite kernel's
+        component-prefixed entries keep their names.
     observed_data : Mapping[str, torch.Tensor], optional
         Site name to observed tensor (the original data used at
         fit time).  Becomes the ``observed_data`` group.
@@ -89,24 +109,17 @@ def to_datatree(
     sample_stats_group: dict = {
         "lp": _tensor_to_numpy(posterior.log_densities),
     }
-    # acceptance_rate and diverging are per-chain scalars in
-    # quivers; ArviZ expects per-draw arrays.  We broadcast.
-    n_chains = posterior.num_chains
-    n_samples = posterior.num_samples
-    sample_stats_group["mean_acceptance_per_chain"] = (
-        posterior.acceptance_rates.detach()
-        .cpu()
-        .numpy()
-        .reshape(n_chains, 1)
-        .repeat(n_samples, axis=1)
-    )
-    sample_stats_group["total_divergences_per_chain"] = (
-        posterior.divergence_counts.detach()
-        .cpu()
-        .numpy()
-        .reshape(n_chains, 1)
-        .repeat(n_samples, axis=1)
-    )
+    # Per-draw sampler statistics, under ArviZ's canonical names where
+    # one exists and under their own (component-prefixed) names
+    # otherwise.
+    for key, values in posterior.sample_stats.items():
+        name = _ARVIZ_SAMPLE_STATS.get(key, key)
+        array = _tensor_to_numpy(values)
+        if key in _ARVIZ_INTEGER_STATS:
+            array = array.astype("int64")
+        elif key in _ARVIZ_BOOLEAN_STATS:
+            array = array.astype(bool)
+        sample_stats_group[name] = array
     data["sample_stats"] = sample_stats_group
 
     if observed_data:
@@ -224,6 +237,37 @@ def to_datatree_from_svi(
     )
 
 
+def to_datatree_from_sbc(result: SBCResult) -> xr.DataTree:
+    """Convert simulation-based calibration ranks for ArviZ's PIT plots.
+
+    The ranks go into a ``prior_sbc`` group, the group
+    ``arviz_plots.plot_ecdf_pit`` reads by default, with one variable
+    per statistic laid out ``(chain=1, draw=num_simulations)``. Each
+    rank ``r`` in ``{0, ..., L}`` is mapped to ``(r + 1/2) / (L + 1)``,
+    the midpoint of its cell in an even partition of ``[0, 1]``: under
+    calibration the values are uniform on those midpoints, so their
+    ECDF meets the uniform CDF at every cell boundary, and the mapping
+    is symmetric about one half, as the plot's coverage view assumes.
+
+    Parameters
+    ----------
+    result : SBCResult
+        The result of `quivers.diagnostics.calibration`.
+
+    Returns
+    -------
+    xr.DataTree
+        A DataTree with the ``prior_sbc`` group.
+    """
+    pit = (result.ranks.to(dtype=torch.float64) + 0.5) / (result.num_draws + 1)
+    values = _tensor_to_numpy(pit)
+    group = {
+        name: values[None, :, column]
+        for column, name in enumerate(result.statistic_names)
+    }
+    return az.from_dict({"prior_sbc": group})
+
+
 def to_datatree_any(
     fit: MCMCResult
     | Mapping[str, torch.Tensor]
@@ -319,4 +363,9 @@ def to_datatree_any(
     )
 
 
-__all__ = ["to_datatree", "to_datatree_any", "to_datatree_from_svi"]
+__all__ = [
+    "to_datatree",
+    "to_datatree_any",
+    "to_datatree_from_svi",
+    "to_datatree_from_sbc",
+]
