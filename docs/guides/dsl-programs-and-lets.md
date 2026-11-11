@@ -544,6 +544,36 @@ and JAGS refuse `digamma`.
 **Last-axis operations**: `softmax`, `log_softmax`, `cumsum`, `sort`,
 `normalize`.
 
+**Joining and cutting the last axis**: `concat(a, b, ...)` joins two or more
+tensors of one element type along their last axis; their leading axes must
+agree, and the last extents add, so `concat(h, c)` of two `Real 4` vectors is a
+vector of 8 entries and `concat` of two `(2, 3)` tables is `(2, 6)`.
+`slice(v, start, length)` keeps the `length` entries of the last axis from
+`start` (counted from zero), so the result's last extent is `length`. Both
+bounds are non-negative integer literals, since the checked type states the
+slice's extent; a position computed at run time is read with a gather, `v[i]`.
+A number joins as the one-entry vector `[x]`, and a slice past the end of the
+axis, a zero length, a number where a tensor belongs, or tensors of different
+element types or leading axes are refused at the argument. This is how a scan
+carries a state of several parts as one vector, an LSTM's hidden and cell state
+for instance:
+
+<!-- compile: false -->
+```qvr
+let h_prev = slice(state, 0, 4)
+let c_prev = slice(state, 4, 4)
+let c_new = f * c_prev + i * g
+let h_new = o * tanh(c_new)
+let state_new = concat(h_new, c_new)
+```
+
+The checked elaboration writes each call as a tensor of entries selected at
+literal positions, under a comprehension per leading axis, so the reference
+machine and every transpile target compute it with the selections and tensor
+literals they already read; the compiled runtime calls `torch.cat` and a
+last-axis slice. Within one run of the compiled runtime the input-batch axis is
+never among a let's axes, so a `concat` or `slice` never reads it.
+
 **Finite collections**: `map`, `fold`, `length`, and `logsumexp_over` are pure.
 `traverse` sequences a named computation and thus appears on the right
 side of `<-`. See the [collection reference](../reference/qvr/collection-expressions.md)

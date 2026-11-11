@@ -25,11 +25,13 @@ import torch.nn.functional as F
 
 from quivers.dsl import loads
 from quivers.dsl.parser import parse
-from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY, PRIMITIVE_BUILTINS
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
 from quivers.transpile._builtin_spellings import (
     BUILTIN_SPELLINGS,
+    ELABORATED_BUILTINS,
     MATH_BUILTINS,
+    Elaborated,
     Refusal,
 )
 from tests.transpile import _docker, _equivalence
@@ -294,8 +296,14 @@ def test_every_target_settles_every_surface_builtin() -> None:
     assert set(MATH_BUILTINS) == surface
     assert set(_UNARY) | set(_BINARY) == surface
     assert set(BUILTIN_SPELLINGS) == set(_TARGETS)
+    elaborated = {
+        name for name, spec in BUILTIN_REGISTRY.items() if spec.qiec_form == "shape"
+    }
+    assert ELABORATED_BUILTINS == elaborated
     for target in _TARGETS:
-        assert set(BUILTIN_SPELLINGS[target]) == surface, target
+        assert set(BUILTIN_SPELLINGS[target]) == surface | elaborated, target
+        for name in elaborated:
+            assert isinstance(BUILTIN_SPELLINGS[target][name], Elaborated), name
 
 
 @pytest.mark.parametrize("target", _TARGETS)

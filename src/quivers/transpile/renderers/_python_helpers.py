@@ -467,14 +467,18 @@ _LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
     },
 }
 
-#: ``(stack, convert)``: how a list literal becomes an array on the
-#: targets whose arithmetic reads a Python list as a sequence rather
-#: than a vector (`[1.0, 2.0] * mu` repeats or raises on torch and JAX):
-#: each entry is converted to an array and the entries stacked. PyMC
-#: and TensorFlow convert a list operand of their arithmetic themselves.
-_LIST_STACK_SYMBOLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+#: ``(stack, convert)``: how a list literal becomes an array. Python
+#: arithmetic reads a list as a sequence rather than a vector (`[1.0,
+#: 2.0] * mu` repeats or raises, and the product of two lists raises on
+#: every target), so the entries are stacked into the target's array,
+#: each first converted where the stack refuses a Python number
+#: (`convert`); PyTensor's and TensorFlow's stacks promote a number
+#: themselves.
+_LIST_STACK_SYMBOLS: dict[str, tuple[tuple[str, ...], tuple[str, ...] | None]] = {
     "pyro": (("torch", "stack"), ("torch", "as_tensor")),
     "numpyro": (("jnp", "stack"), ("jnp", "asarray")),
+    "pymc": (("pymc", "math", "stack"), None),
+    "edward2": (("tf", "stack"), None),
 }
 
 #: The array constructor each target's pointwise binary call converts its
@@ -968,7 +972,7 @@ def render_let_expr_python(
         stack = _LIST_STACK_SYMBOLS.get(ctx.target)
         for item in expr.items:
             rendered = render_let_expr_python(ctx, item)
-            if stack is not None:
+            if stack is not None and stack[1] is not None:
                 rendered = call(ctx, attribute(ctx, stack[1]), positional=(rendered,))
             ctx.e(lst, rendered, "child_of")
         if stack is None or not expr.items:

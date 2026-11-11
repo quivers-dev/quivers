@@ -130,6 +130,8 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "int": lambda a: a.to(dtype=torch.int64) if isinstance(a, torch.Tensor) else int(a),
     "weight": lambda a: a,
     "weight_value": lambda a: a,
+    "concat": lambda *parts: torch.cat(parts, dim=-1),
+    "slice": lambda a, start, length: a[..., int(start) : int(start) + int(length)],
 }
 
 #: Operator and operand type to the primitive that implements it.
@@ -233,6 +235,16 @@ _ROWWISE: Mapping[str, RowwiseOperator] = {
     "normalize": "normalize",
 }
 
+#: Builtins that rebuild the last axis of their tensor arguments from
+#: selections at static positions: ``concat`` joins tensors along it and
+#: ``slice`` keeps a window of it. The checked lowering writes each as a
+#: tensor of entries chosen by literal positions under one comprehension
+#: per leading axis, so its sizes are known statically.
+_SHAPE_BUILTINS: Mapping[str, frozenset[int]] = {
+    "concat": frozenset(range(2, 65)),
+    "slice": frozenset({3}),
+}
+
 #: Higher-order operations whose types are determined by their collection and
 #: lambda arguments rather than by one first-order primitive signature.
 _COLLECTION_BUILTINS: frozenset[str] = frozenset(
@@ -241,7 +253,13 @@ _COLLECTION_BUILTINS: frozenset[str] = frozenset(
 
 
 type QiecBuiltinForm = Literal[
-    "primitive", "reduction", "rowwise", "collection", "unsupported", "host-only"
+    "primitive",
+    "reduction",
+    "rowwise",
+    "shape",
+    "collection",
+    "unsupported",
+    "host-only",
 ]
 
 
@@ -297,6 +315,8 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
         return "reduction"
     if name in _ROWWISE:
         return "rowwise"
+    if name in _SHAPE_BUILTINS:
+        return "shape"
     if name == "filter":
         return "unsupported"
     if name in _COLLECTION_BUILTINS:
@@ -312,6 +332,8 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
         if name in _BUILTIN_PRIMITIVES:
             arities.update(len(signature) for signature in _BUILTIN_PRIMITIVES[name])
         return frozenset(arities)
+    if form == "shape":
+        return _SHAPE_BUILTINS[name]
     if name in _COLLECTION_ARITIES:
         return _COLLECTION_ARITIES[name]
     return frozenset()
@@ -324,6 +346,8 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
         return "last-axis-reduction"
     if form == "rowwise":
         return "last-axis-transform"
+    if form == "shape":
+        return "last-axis-rebuild"
     if name == "length":
         return "leading-extent"
     if name == "filter":
@@ -344,6 +368,8 @@ BUILTIN_REGISTRY: Mapping[str, BuiltinSpec] = {
         eager_arities=(
             _COLLECTION_ARITIES[name]
             if name in _COLLECTION_ARITIES
+            else _SHAPE_BUILTINS[name]
+            if name in _SHAPE_BUILTINS
             else _eager_arities(EAGER_BUILTINS.get(name))
         ),
         qiec_arities=_qiec_arities(name, form := _qiec_form(name)),
@@ -381,6 +407,9 @@ PRIMITIVE_OPERATORS: Mapping[str, LetBinaryOperator] = {
     for operator, by_type in _BINARY_PRIMITIVES.items()
     for primitive in by_type.values()
 }
+
+#: The builtins that rebuild the last axis of their arguments.
+SHAPE_BUILTINS: frozenset[str] = frozenset(_SHAPE_BUILTINS)
 
 #: The builtin each call primitive reads back as.
 PRIMITIVE_BUILTINS: Mapping[str, str] = {

@@ -304,6 +304,53 @@ def _row_gather_sampled(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _concat_slice(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A packed state of two vectors and a number, split by windows.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    h, c, s = v["h"], v["c"], v["s"]
+    packed = torch.cat([h, c, s.reshape(1)])
+    return (
+        D.Normal(0.0, 1.0).log_prob(h).sum()
+        + D.Normal(0.0, 1.0).log_prob(c).sum()
+        + D.Normal(0.0, 1.0).log_prob(s)
+        + D.Normal(s, 1.0).log_prob(v["y"]).sum()
+        + (packed[3:6] * packed[1:4]).sum()
+        + s * packed.sum()
+    )
+
+
+def _concat_slice_matrix(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Each row of a table joined to itself and cut to two entries.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    h = v["h"]
+    table = torch.stack([(k + 1.0) * h for k in range(2)])
+    window = torch.cat([table, table], dim=-1)[:, 2:4]
+    return (
+        D.Normal(0.0, 1.0).log_prob(h).sum()
+        + D.Normal(window.sum(-1), 1.0).log_prob(v["y"]).sum()
+    )
+
+
 def _pairwise_gather(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """Means for row `n` of `M[r[n], c[n]]` and `a[r[n]] * b[c[n]]`, by loops.
 
@@ -503,6 +550,8 @@ _DATA: dict[str, dict[str, Host]] = {
         "group_idx": [0, 1, 1, 0],
         "y": [0, 2, 1, 1],
     },
+    "let_expressions/let_concat_slice": {"y": [0.3, -1.1]},
+    "let_expressions/let_concat_slice_matrix": {"y": [0.6, -0.4]},
     "let_expressions/let_pairwise_gather": {
         "M": [1.0, -2.0, 0.5, 4.0, -3.0, 6.0],
         "r_idx": [0, 2, 1, 2],
@@ -579,6 +628,16 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"table": [0.5, 0.25, 0.25, 0.1, 0.1, 0.8]},
         {"table": [0.3, 0.4, 0.3, 0.2, 0.5, 0.3]},
     ],
+    "let_expressions/let_concat_slice": [
+        {"h": [0.4, -1.2, 0.7], "c": [-0.8, 0.2, 1.5], "s": 0.9},
+        {"h": [1.1, 0.3, -0.5], "c": [0.6, -0.9, 0.1], "s": -0.3},
+        {"h": [-0.2, 0.8, 1.3], "c": [0.0, 1.4, -0.6], "s": 0.5},
+    ],
+    "let_expressions/let_concat_slice_matrix": [
+        {"h": [0.4, -1.2, 0.7]},
+        {"h": [1.1, 0.3, -0.5]},
+        {"h": [-0.2, 0.8, 1.3]},
+    ],
     "let_expressions/let_pairwise_gather": [
         {"a": [0.3, -1.1, 0.8], "b": [-0.4, 1.5]},
         {"a": [-0.9, 0.2, 1.4], "b": [0.7, -0.6]},
@@ -613,6 +672,8 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "group_idx": [4],
         "y": [4],
     },
+    "let_expressions/let_concat_slice": {"h": [3], "c": [3], "s": [], "y": [2]},
+    "let_expressions/let_concat_slice_matrix": {"h": [3], "y": [2]},
     "let_expressions/let_pairwise_gather": {
         "a": [3],
         "b": [2],
@@ -673,6 +734,8 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_row_gather_sampled": _row_gather_sampled,
     "let_expressions/let_host_matrix_row": _host_matrix_row,
     "let_expressions/let_pairwise_gather": _pairwise_gather,
+    "let_expressions/let_concat_slice": _concat_slice,
+    "let_expressions/let_concat_slice_matrix": _concat_slice_matrix,
     "let_expressions/let_plated_list_operand": _plated_list_operand,
 }
 
@@ -692,6 +755,8 @@ _REFUSED: dict[tuple[str, str], str] = {
         for backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing")
     },
     ("let_expressions/let_host_matrix_row", "bugs"): "let-expr:axis-reduction",
+    ("let_expressions/let_concat_slice_matrix", "bugs"): "let-expr:LetExprFactor:wide",
+    ("let_expressions/let_concat_slice_matrix", "jags"): "let-expr:LetExprFactor:wide",
     ("let_expressions/let_host_matrix_row", "jags"): "let-expr:axis-reduction",
     ("let_expressions/let_row_gather", "bugs"): "observe:class-code",
     ("let_expressions/let_row_gather_sampled", "bugs"): "observe:class-code",
