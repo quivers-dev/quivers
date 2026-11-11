@@ -23,6 +23,8 @@ merges per-part dicts, `log_prob` sums per-part scalars.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import torch
 import torch.nn as nn
 
@@ -91,6 +93,17 @@ class AutoGuideList(Guide):
             "AutoGuideList has no fused registry; access "
             "per-part registries via `guide.part(label).registry`"
         )
+
+    def observe(self, observations: Mapping[str, torch.Tensor]) -> None:
+        """Forward the step's data to every part.
+
+        Parameters
+        ----------
+        observations : Mapping[str, torch.Tensor]
+            Observed values and host data.
+        """
+        for part in self._parts_dict.values():
+            part.observe(observations)
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Concatenate per-part reparameterized draws."""

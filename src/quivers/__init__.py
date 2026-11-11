@@ -264,6 +264,8 @@ from quivers.continuous import (
     ConditionalPareto,
     # families — (0, 1)-valued
     ConditionalKumaraswamy,
+    ConditionalLogGamma,
+    ConditionalLogitBeta,
     ConditionalContinuousBernoulli,
     # families — two-df
     ConditionalFisherSnedecor,
@@ -538,6 +540,8 @@ __all__ = [
     "ConditionalPareto",
     # continuous — families ((0,1)-valued)
     "ConditionalKumaraswamy",
+    "ConditionalLogGamma",
+    "ConditionalLogitBeta",
     "ConditionalContinuousBernoulli",
     # continuous — families (two-df)
     "ConditionalFisherSnedecor",

@@ -43,6 +43,7 @@ from quivers.continuous._zip_hurdle import (
     ZeroOneInflatedBeta,
 )
 from quivers.continuous._lkj import OnionLKJCholesky
+from quivers.continuous.log_space import LogGamma, LogitBeta
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous.family_spec import (
     FamilySpec,
@@ -843,6 +844,31 @@ ConditionalPareto = _make_family(
     "Conditional Pareto(scale(x), alpha(x)). Power-law tail.",
 )
 """Conditional Pareto(scale(x), alpha(x)). Power-law tail."""
+
+# -- log-space families on the real line ---------------------------------------
+#
+# The shape heads use the plain softplus transform: the log-space
+# densities and samplers stay exact for small shapes, so there is no
+# reason to hold the learned shape away from zero as the constrained
+# Beta and Gamma heads do.
+
+ConditionalLogGamma = _make_family(
+    "ConditionalLogGamma",
+    LogGamma,
+    [("concentration", "softplus"), ("rate", "softplus")],
+    "Conditional LogGamma(concentration(x), rate(x)). The log of a Gamma "
+    "variable, scored and sampled on the real line.",
+)
+"""Conditional LogGamma(concentration(x), rate(x)). The log of a Gamma variable, scored and sampled on the real line."""
+
+ConditionalLogitBeta = _make_family(
+    "ConditionalLogitBeta",
+    LogitBeta,
+    [("concentration1", "softplus"), ("concentration0", "softplus")],
+    "Conditional LogitBeta(a(x), b(x)). The logit of a Beta variable, scored "
+    "and sampled on the real line.",
+)
+"""Conditional LogitBeta(a(x), b(x)). The logit of a Beta variable, scored and sampled on the real line."""
 
 # -- (0, 1)-valued distributions ---------------------------------------------
 
@@ -3954,6 +3980,8 @@ __all__ = [
     "ConditionalInverseGamma",
     "ConditionalWeibull",
     "ConditionalPareto",
+    "ConditionalLogGamma",
+    "ConditionalLogitBeta",
     "ConditionalKumaraswamy",
     "ConditionalContinuousBernoulli",
     "ConditionalFisherSnedecor",

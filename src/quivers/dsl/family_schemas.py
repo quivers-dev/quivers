@@ -21,6 +21,8 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "StudentT": ("df", "loc", "scale"),
     "Exponential": ("rate",),
     "Gamma": ("concentration", "rate"),
+    "LogGamma": ("concentration", "rate"),
+    "LogitBeta": ("concentration1", "concentration0"),
     "Chi2": ("df",),
     "HalfCauchy": ("scale",),
     "HalfNormal": ("scale",),

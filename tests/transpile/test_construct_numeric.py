@@ -304,6 +304,31 @@ def _row_gather_sampled(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _pairwise_gather(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Means for row `n` of `M[r[n], c[n]]` and `a[r[n]] * b[c[n]]`, by loops.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    a, b, matrix, rows, cols = v["a"], v["b"], v["M"], v["r_idx"], v["c_idx"]
+    pairs = [(int(rows[n]), int(cols[n])) for n in range(int(rows.shape[0]))]
+    host = torch.stack([matrix[i, j] for i, j in pairs])
+    built = torch.stack([a[i] * b[j] for i, j in pairs])
+    return (
+        D.Normal(0.0, 1.0).log_prob(a).sum()
+        + D.Normal(0.0, 1.0).log_prob(b).sum()
+        + D.Normal(host, 1.0).log_prob(v["y"]).sum()
+        + D.Normal(built, 1.0).log_prob(v["z"]).sum()
+    )
+
+
 def _host_matrix_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """A regression whose mean for row `n` is `sum_k X[n, k] w[design_idx[n], k]`.
 
@@ -478,6 +503,13 @@ _DATA: dict[str, dict[str, Host]] = {
         "group_idx": [0, 1, 1, 0],
         "y": [0, 2, 1, 1],
     },
+    "let_expressions/let_pairwise_gather": {
+        "M": [1.0, -2.0, 0.5, 4.0, -3.0, 6.0],
+        "r_idx": [0, 2, 1, 2],
+        "c_idx": [1, 0, 1, 1],
+        "y": [0.2, -0.7, 1.1, 0.4],
+        "z": [-0.3, 0.9, 0.1, -1.2],
+    },
     "let_expressions/let_host_matrix_row": {
         "design_idx": [0, 0, 0, 0],
         "X": [0.1, 0.4, -0.3, 0.7, -0.2, 0.5, 0.0, 0.3, 0.9, -0.6, 0.2, 0.1],
@@ -547,6 +579,11 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"table": [0.5, 0.25, 0.25, 0.1, 0.1, 0.8]},
         {"table": [0.3, 0.4, 0.3, 0.2, 0.5, 0.3]},
     ],
+    "let_expressions/let_pairwise_gather": [
+        {"a": [0.3, -1.1, 0.8], "b": [-0.4, 1.5]},
+        {"a": [-0.9, 0.2, 1.4], "b": [0.7, -0.6]},
+        {"a": [1.2, 0.5, -0.3], "b": [1.1, 0.4]},
+    ],
     "let_expressions/let_host_matrix_row": [
         {"sigma": 0.8, "w": [0.5, -0.3, 0.2]},
         {"sigma": 1.3, "w": [-0.2, 0.9, 0.4]},
@@ -576,6 +613,15 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "group_idx": [4],
         "y": [4],
     },
+    "let_expressions/let_pairwise_gather": {
+        "a": [3],
+        "b": [2],
+        "M": [3, 2],
+        "r_idx": [4],
+        "c_idx": [4],
+        "y": [4],
+        "z": [4],
+    },
     "let_expressions/let_host_matrix_row": {
         "sigma": [],
         "w": [1, 3],
@@ -583,6 +629,12 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "X": [4, 3],
         "y": [4],
     },
+}
+
+#: Data one target alone reads: Stan declares a host table of open
+#: extents at sizes it reads as integer data.
+_TARGET_DATA: dict[tuple[str, str], dict[str, int]] = {
+    ("let_expressions/let_pairwise_gather", "stan"): {"M_extent0": 3, "M_extent1": 2},
 }
 
 #: The integer-valued names of each fixture; every other name is real.
@@ -599,6 +651,7 @@ _INTEGERS: dict[str, frozenset[str]] = {
     "let_expressions/let_row_gather": frozenset({"group_idx", "y"}),
     "let_expressions/let_row_gather_sampled": frozenset({"group_idx", "y"}),
     "let_expressions/let_host_matrix_row": frozenset({"design_idx"}),
+    "let_expressions/let_pairwise_gather": frozenset({"r_idx", "c_idx"}),
 }
 
 #: Each fixture's independent joint.
@@ -619,6 +672,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_row_gather": _row_gather,
     "let_expressions/let_row_gather_sampled": _row_gather_sampled,
     "let_expressions/let_host_matrix_row": _host_matrix_row,
+    "let_expressions/let_pairwise_gather": _pairwise_gather,
     "let_expressions/let_plated_list_operand": _plated_list_operand,
 }
 
@@ -810,15 +864,16 @@ def test_target_scores_the_reference_joint(
     points = _points(fixture)
     source = transpile(parse(_source(fixture)), target=backend)
     script = pathlib.Path(__file__).parent / "probes" / "_scripts" / script_name
+    extra = _TARGET_DATA.get((fixture, backend), {})
     raw = _docker.run_probe(
         image=image,
         script=script,
         source=source,
         source_ext=ext,
-        points=[{"params": pt.params, "data": pt.data} for pt in points],
+        points=[{"params": pt.params, "data": {**pt.data, **extra}} for pt in points],
         scratch=scratch / fixture.replace("/", "-") / backend,
-        shapes=_SHAPES[fixture],
-        dtypes=_dtypes(fixture),
+        shapes={**_SHAPES[fixture], **{name: [] for name in extra}},
+        dtypes={**_dtypes(fixture), **{name: "int" for name in extra}},
     )
     _equivalence.assert_log_density_match(
         _reference(fixture),
