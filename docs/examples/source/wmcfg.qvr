@@ -35,14 +35,15 @@
 # cluster is discontinuous: in the sentence above,
 # vc(2, 4, 7, 8) covers "em Hans" and "hälfe" with "es huus lönd"
 # in between. fin_acc and fin_dat close the cluster with its finite
-# first verb, making the two components adjacent. Rule weights
-# are keyed by the full binding of each rule's variables.
+# first verb, making the two components adjacent. A rule's weight
+# is keyed by its category bindings; span positions are not part of
+# the key.
 
 object Term : FinSet 16
 
 object LogWeight : Real 1
 
-deduction PMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
+deduction WMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
     atoms S, VC, Nom, Dat, Acc, DetDat, DetAcc, Noun, VDat, VAcc, VDatFin, VAccFin, vc, span, mer, chind, em, es, hans, huus, loend, laa, haelfed, haelfe, aastriiche
     # Noun phrases: the article carries the case.
     rule dat_np : span(I, K, DetDat), span(K, J, Noun) |- span(I, J, Dat) #[learnable]
@@ -77,7 +78,7 @@ deduction PMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
 # the program's log-joint. The program returns that one real number,
 # so its codomain is LogWeight : Real 1.
 program score_sentence : Term -> LogWeight
-    let chart = parse(PMCFG, sentence)
+    let chart = parse(WMCFG, sentence)
     score log_Z = chart.goal_weight()
     return log_Z
 

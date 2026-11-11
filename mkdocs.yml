@@ -236,7 +236,7 @@ nav:
       - WebPPL: semantics/transpile-correctness/webppl.md
   - Examples:
     - Overview: examples/index.md
-    - Amortized Bayesian Semantics: examples/amortized-bayesian-semantics.md
+    - Bayesian Semantics Case Study: examples/bayesian-semantics-case-study.md
     - Bayesian Linear Regression: examples/bayesian-regression.md
     - Beta Regression: examples/beta-regression.md
     - Gamma Regression: examples/gamma-regression.md
@@ -280,7 +280,7 @@ nav:
     - Quantifier Scope: examples/quantifier-scope.md
     - Tree-Structured Categorical: examples/tree-categorical.md
     - Montague NLI: examples/montague-nli.md
-    - PMCFG (WH-movement): examples/pmcfg.md
+    - Weighted Multiple Context-Free Grammar: examples/wmcfg.md
     - Schema-Bundled Chart Parser: examples/schema-chart-parser.md
     - Term Autoencoder: examples/term-autoencoder.md
   - API:

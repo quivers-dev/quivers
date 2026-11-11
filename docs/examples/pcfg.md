@@ -13,8 +13,8 @@ A [probabilistic context-free grammar](https://en.wikipedia.org/wiki/Probabilist
 # items ``span(I, J, N)`` (token range ``[I, J)`` with
 # nonterminal ``N``) under the LogProb semiring. Each production
 # is a specific ``rule`` (no free wildcards on the conclusion):
-# the chart fires only the productions the grammar licenses, the
-# weights are bindings-keyed under ``#[learnable]``, and the
+# the chart fires only the productions the grammar licenses, each
+# ``#[learnable]`` weight is keyed by the rule's category bindings, and the
 # chart's goal weight at ``span(0, n, S)`` is the corpus inside
 # log-probability.
 
@@ -42,8 +42,8 @@ export pcfg_prior
 deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4]
     atoms S, NP, VP, Det, N, V, span, the, a, cat, dog, sleeps, runs
     # Concrete binary productions. Each ``#[learnable]`` allocates
-    # one log-weight per firing binding tuple; with no free
-    # wildcards in the conclusion, there is one weight per rule.
+    # one log-weight per binding of its category variables; these
+    # productions bind only span positions, so each has one weight.
     rule s_np_vp : span(I, K, NP), span(K, J, VP) |- span(I, J, S) #[learnable]
     rule np_det_n : span(I, K, Det), span(K, J, N) |- span(I, J, NP) #[learnable]
     rule vp_v : span(I, J, V) |- span(I, J, VP) #[learnable]

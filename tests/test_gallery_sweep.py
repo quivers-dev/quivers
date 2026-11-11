@@ -68,8 +68,8 @@ _DEDUCTION_CORPORA: dict[str, tuple[str, list[list[str]]]] = {
     "multimodal_tlg": ("MMTLG", [["every", "linguist", "that", "admires", "Kim", "sleeps"]]),
     "type_logical": ("Lambek", [["Kim", "gives", "Lee", "books"]]),
     "pcfg": ("PCFG", [["the", "cat", "sleeps"]]),
-    "pmcfg": (
-        "PMCFG",
+    "wmcfg": (
+        "WMCFG",
         [
             ["mer", "em", "Hans", "es", "huus", "hälfed", "aastriiche"],
             ["mer", "d'chind", "em", "Hans", "es", "huus", "lönd", "hälfe", "aastriiche"],

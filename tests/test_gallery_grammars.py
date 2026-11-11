@@ -157,7 +157,7 @@ def _components(pattern: tuple) -> list[tuple[str, str]]:
 def test_mcfg_productions_are_linear() -> None:
     """Each conclusion component is tiled, left to right, by premise
     intervals, and every premise interval tiles exactly one of them."""
-    system = _deduction("pmcfg", "PMCFG")
+    system = _deduction("wmcfg", "WMCFG")
     for rule in system.rules:
         premise_intervals = [c for p in rule.premises for c in _components(p)]
         unused = list(premise_intervals)
@@ -174,7 +174,7 @@ def test_mcfg_productions_are_linear() -> None:
 def test_mcfg_rank2_items_are_discontinuous() -> None:
     """The example sentence's chart holds a vc item whose two non-empty
     components are separated by other material."""
-    system = _deduction("pmcfg", "PMCFG")
+    system = _deduction("wmcfg", "WMCFG")
     sentence = "mer d'chind em Hans es huus lönd hälfe aastriiche".split()
     items = [item for item, _ in system(sentence).chart.items() if item[0] == "vc"]
     assert ("vc", 2, 4, 7, 8) in items
@@ -228,7 +228,7 @@ def test_mcfg_and_nested_cfg_disagree_on_crossing(
 ) -> None:
     """The MCFG accepts exactly the cross-serial order; the nested CFG
     accepts exactly the mirrored one."""
-    mcfg = _deduction("pmcfg", "PMCFG")
+    mcfg = _deduction("wmcfg", "WMCFG")
     nested = loads(_NESTED_CFG).deductions["Nested"]
     assert _parses(mcfg, sentence) is cross_serial
     assert _parses(nested, sentence) is not cross_serial
@@ -286,7 +286,7 @@ def _cross_serial(length: int) -> set[tuple[str, ...]]:
 def test_cross_serial_description_matches_brute_force(length: int) -> None:
     """Every string over the vocabulary that parses is described, and
     every described string parses."""
-    system = _deduction("pmcfg", "PMCFG")
+    system = _deduction("wmcfg", "WMCFG")
     parsed = {
         words
         for words in itertools.product(_VOCABULARY, repeat=length)
@@ -297,7 +297,7 @@ def test_cross_serial_description_matches_brute_force(length: int) -> None:
 
 def test_cross_serial_description_parses_at_page_length() -> None:
     """The 28 seven-word sentences the page normalizes over all parse."""
-    system = _deduction("pmcfg", "PMCFG")
+    system = _deduction("wmcfg", "WMCFG")
     sentences = _cross_serial(7)
     assert len(sentences) == 28
     assert all(bool(torch.isfinite(system(list(s)).goal_weight())) for s in sentences)

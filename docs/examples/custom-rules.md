@@ -114,7 +114,7 @@ Each rule's body is a sequent: comma-separated premises on the left of `|-`, a s
 
 A variable appearing multiple times in the same rule unifies across occurrences: in `fwd_app`, the `Y` in the first premise must match the `Y` in the second premise. Different rules instantiate independently.
 
-Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the full binding of its pattern variables, the span positions `I`, `J`, `K` as well as the categories `X`, `Y`, `Z` ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Two firings of `fwd_app` at different positions thus carry different weights.
+Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables `X`, `Y`, `Z`, not by the span positions `I`, `J`, `K` ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Two firings of `fwd_app` on the same categories at different positions thus read one weight.
 
 The `score_sentence` program connects the grammar to a probabilistic program: `parse(AB, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
 

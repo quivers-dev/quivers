@@ -443,7 +443,7 @@ def test_a_program_scores_the_weight_a_deduction_answers() -> None:
         "type_logical",
         "quantifier_scope",
         "multimodal_tlg",
-        "pmcfg",
+        "wmcfg",
         "pcfg",
         "montague_nli",
     ],

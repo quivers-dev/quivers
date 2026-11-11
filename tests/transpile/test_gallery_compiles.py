@@ -194,7 +194,7 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
     #     weight from a program, which reaches the same boundary.
     **{
         (backend, stem): "qiec:capability:search"
-        for stem in ("ccg", "custom_rules", "pmcfg")
+        for stem in ("ccg", "custom_rules", "wmcfg")
         for backend in (
             "bugs",
             "church",

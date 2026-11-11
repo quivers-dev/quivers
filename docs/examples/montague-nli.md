@@ -228,8 +228,8 @@ corpus = [
 ]
 
 # Touch every sentence once so the deduction's lazily allocated
-# lexicon- and rule-weight ParameterDicts materialise every binding
-# tuple the fit will see.
+# lexicon- and rule-weight ParameterDicts materialise every weight,
+# one per binding of a rule's category variables, the fit will see.
 for sentence in corpus:
     grammar(sentence).goal_weight()
 
@@ -316,7 +316,7 @@ def entailment_score(premises, nonempty_nouns, hypothesis):
 
 
 # Touch every prover chart once so its rule-weight ParameterDicts
-# allocate every binding tuple before the optimizer reads them.
+# allocate every category-binding weight before the optimizer reads them.
 for premises, nonempty, hypothesis, label in nli:
     entailment_score(premises, nonempty, hypothesis)
 

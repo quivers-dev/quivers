@@ -160,6 +160,6 @@ Start with [Indexed data and total functions](../../tutorials/qvr/09-indexed-dat
 then continue through [Effects and handlers](../../tutorials/qvr/10-effects-and-handlers.md),
 [Parsing as an effectful computation](../../tutorials/qvr/11-parsing-and-search.md),
 and [Structural autoencoders](../../tutorials/qvr/12-structural-autoencoders.md).
-The [Amortized Bayesian Semantics](../../examples/amortized-bayesian-semantics.md)
+The [Bayesian Semantics Case Study](../../examples/bayesian-semantics-case-study.md)
 example combines indexed data, effects, probabilistic programs, and structural
 attachments in one statistical model.

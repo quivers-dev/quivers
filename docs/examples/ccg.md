@@ -134,7 +134,7 @@ recovers.
 
 Each `rule` is a sequent: premises on the left of `|-`, conclusion on the right. `Fwd(X, Y)` constructs the forward-slash category `X/Y`; `Bwd(X, Y)` constructs the backward-slash category `X\Y`, with the result first in both. Adjacent spans whose end / start indices agree fire whichever rule's pattern matches their categories. `Mary` has two lexical entries, the plain `NP` and the type-raised `S/(S\NP)` that forward composition needs; the chart sums over both.
 
-Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the full binding of its pattern variables, the span positions as well as the categories ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires.
+Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables, not by the span positions ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires.
 
 The header's option block sets the remaining knobs: the `semiring=LogProb` option selects log-space inside scores, the `start=S` option declares the goal category for a successful parse, and the `depth=6` option bounds the constructor depth of derived categories to keep the agenda finite.
 

@@ -40,14 +40,15 @@
 # cluster is discontinuous: in the sentence above,
 # vc(2, 4, 7, 8) covers "em Hans" and "hälfe" with "es huus lönd"
 # in between. fin_acc and fin_dat close the cluster with its finite
-# first verb, making the two components adjacent. Rule weights
-# are keyed by the full binding of each rule's variables.
+# first verb, making the two components adjacent. A rule's weight
+# is keyed by its category bindings; span positions are not part of
+# the key.
 
 object Term : FinSet 16
 
 object LogWeight : Real 1
 
-deduction PMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
+deduction WMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
     atoms S, VC, Nom, Dat, Acc, DetDat, DetAcc, Noun, VDat, VAcc, VDatFin, VAccFin, vc, span, mer, chind, em, es, hans, huus, loend, laa, haelfed, haelfe, aastriiche
     # Noun phrases: the article carries the case.
     rule dat_np : span(I, K, DetDat), span(K, J, Noun) |- span(I, J, Dat) #[learnable]
@@ -82,7 +83,7 @@ deduction PMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
 # the program's log-joint. The program returns that one real number,
 # so its codomain is LogWeight : Real 1.
 program score_sentence : Term -> LogWeight
-    let chart = parse(PMCFG, sentence)
+    let chart = parse(WMCFG, sentence)
     score log_Z = chart.goal_weight()
     return log_Z
 
@@ -139,9 +140,9 @@ recovers.
 
 `fin_acc` and `fin_dat` require the finite verb to sit exactly between the objects and the infinitives (`span(K, M, ...)`), which closes the discontinuity, and `clause` attaches the subject *mer*. Every production is linear: each premise interval appears exactly once in the conclusion, in input order.
 
-Every production and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the full binding of its pattern variables, span positions included ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires.
+Every production and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables, the variables that do not fill a chart-position slot ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Span positions are not part of the key, so one production firing at different positions reads one weight.
 
-The `score_sentence` program connects the grammar to a probabilistic program: `parse(PMCFG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
+The `score_sentence` program connects the grammar to a probabilistic program: `parse(WMCFG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
 
 ## DSL features
 
@@ -164,8 +165,8 @@ mismatch. The discontinuous item of the example sentence appears in its chart.
 import torch
 from quivers.dsl import load
 
-prog = load("docs/examples/source/pmcfg.qvr")
-ded = prog.deductions["PMCFG"]
+prog = load("docs/examples/source/wmcfg.qvr")
+ded = prog.deductions["WMCFG"]
 
 
 def parses(sentence):
@@ -241,8 +242,8 @@ print(len(strings), "seven-word sentences")
 assert all(parses(" ".join(s)) for s in strings)
 
 torch.manual_seed(0)
-truth = load("docs/examples/source/pmcfg.qvr").deductions["PMCFG"]
-model = load("docs/examples/source/pmcfg.qvr").deductions["PMCFG"]
+truth = load("docs/examples/source/wmcfg.qvr").deductions["WMCFG"]
+model = load("docs/examples/source/wmcfg.qvr").deductions["WMCFG"]
 
 
 def log_conditional(system):
