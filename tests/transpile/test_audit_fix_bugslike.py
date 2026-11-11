@@ -283,11 +283,7 @@ def test_webppl_array_valued_let_broadcasts() -> None:
     out = transpile(parse(_CHANGEPOINT), target="webppl").decode()
     dense = _dense(out)
     # The `rate` binding combines the array-valued `s` with scalar
-    # rates; every operator must route through `_qvr_bcast`.
-    assert '_qvr_bcast("+"' in dense
-    assert '_qvr_bcast("*"' in dense
-    assert '_qvr_bcast("-"' in dense
-    # The broadcast helper is grafted above the model.
-    assert "var _qvr_bcast = function" in out
-    # The old bug emitted a bare scalar product of the array `s`.
+    # rates. It is built one row at a time, so every operator reads one
+    # entry of `s` and none reaches the whole array.
+    assert "((1-s[__i_2])*rate_before)+(s[__i_2]*rate_after)" in dense
     assert "(1-s)*rate_before" not in dense

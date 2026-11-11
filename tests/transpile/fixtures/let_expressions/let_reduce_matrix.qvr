@@ -1,0 +1,13 @@
+# Exercises a reduction of a table a factor builds over two plates:
+# `sum(pre)` collapses the last (`Unit`) axis of the `Row`-by-`Unit`
+# outer product and keeps one number per `Row`.
+object Row : FinSet 3
+object Unit : FinSet 2
+program prog : Row -> Row
+    sample x : Row <- Normal(loc=0.0, scale=1.0)
+    sample w : Unit <- Normal(loc=0.0, scale=1.0)
+    let pre = factor r : Row, u : Unit in x[r] * w[u]
+    let mu = sum(pre)
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return y
+export prog

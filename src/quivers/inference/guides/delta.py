@@ -30,6 +30,12 @@ class AutoDeltaGuide(Guide):
         Generative model.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     init_value : float
         Initial unconstrained-space coordinate for every latent.
         Default ``0.0``; for the standard bijectors this maps to
@@ -44,9 +50,14 @@ class AutoDeltaGuide(Guide):
         model: MonadicProgram,
         observed_names: set[str],
         init_value: float = 0.0,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
 
         for site in self._registry.sites.values():
             self.register_parameter(

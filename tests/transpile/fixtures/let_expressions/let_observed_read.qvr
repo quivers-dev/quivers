@@ -1,0 +1,14 @@
+# Exercises a `let` that reads a plated observation: the binding must
+# read the observed values on every target, not a fresh draw of the
+# observed variable, so the score it feeds varies with the data alone.
+object Item : FinSet 4
+object Val : Real 1
+
+program p : Item -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=mu, scale=1.0)
+    let resid = y - mu
+    score s = sum(resid * resid) * 0.5
+    return mu
+
+export p

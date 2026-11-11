@@ -65,6 +65,7 @@ from quivers.qiec.types import (
     TypeApplication,
     TypeExpr,
     TypeVariable,
+    render_static,
 )
 
 
@@ -1651,6 +1652,7 @@ def replay_handler(
     extra: ExtraValuePolicy = ExtraValuePolicy.ERROR,
     answer_type: TypeExpr = ANSWER,
     key: str = "replay",
+    type_validator: Callable[[TypeExpr], RuntimeValidator | None] = lambda _type: None,
 ) -> RuntimeHandler:
     """Replay selected sites under an explicit scoring/intervention policy.
 
@@ -1658,8 +1660,10 @@ def replay_handler(
     value; a request at any other site is forwarded to an outer handler.
     A site reached more than once, as a recurrence reaches the sites of
     its step at every position, replays the value keyed ``"<site>@<n>"``
-    at its ``n``-th occurrence, counted from zero, when one is recorded,
-    and the value keyed by the site alone otherwise.
+    at its ``n``-th occurrence, counted from zero. A value keyed by the
+    site alone replays a site reached once; given for a site reached
+    more than once, it is refused rather than replayed at every
+    occurrence.
 
     Parameters
     ----------
@@ -1685,6 +1689,11 @@ def replay_handler(
     key
         Distinguishes this handler from others of the same name,
         entering its derived identity.
+    type_validator
+        The validator for a closed type, or ``None`` where the runtime
+        has none: each replayed value is checked against the type the
+        request instantiates the site at, so a value of the wrong
+        element type is refused where it enters, naming the site.
 
     Returns
     -------
@@ -1753,8 +1762,10 @@ def replay_handler(
             Raises
             ------
             InvalidHandlerError
-                If the request does not carry a site and a sampleable, or
-                the value is scored and the sampleable has no ``log_prob``.
+                If the request does not carry a site and a sampleable, the
+                value is scored and the sampleable has no ``log_prob``, or
+                one value keyed by the site alone is given for a site
+                reached more than once.
             RuntimeTypeMismatch
                 If the recorded value does not inhabit the site's type.
             """
@@ -1765,6 +1776,18 @@ def replay_handler(
             if key_at in values:
                 site_key: object = key_at
             elif site in values:
+                if occurrence > 0 or any(
+                    isinstance(key, str) and key.startswith(f"{site}@")
+                    for key in values
+                ):
+                    # One value for a site reached more than once would be
+                    # replayed at every occurrence, a trajectory the caller
+                    # never gave.
+                    raise InvalidHandlerError(
+                        f"replay {site!r}: the site is reached more than once, "
+                        f"so each occurrence takes its own value under "
+                        f"'{site}@<n>', not one value under {site!r}"
+                    )
                 site_key = site
             else:
                 return Forward()
@@ -1775,6 +1798,13 @@ def replay_handler(
                 request.core.result_type,
                 f"replay {site!r}",
             )
+            site_type = request.core.result_type
+            site_validator = type_validator(site_type)
+            if site_validator is not None and not _accepts(site_validator, value):
+                raise RuntimeTypeMismatch(
+                    f"the value given for site {site!r}, {value!r}, does not "
+                    f"inhabit the site's checked type {render_static(site_type)}"
+                )
             seen.add(site_key)
             if policy is ReplayPolicy.CLAMP_AND_SCORE:
                 assert score_instance is not None

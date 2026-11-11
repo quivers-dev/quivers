@@ -110,7 +110,7 @@ def test_inline_mixture_normal_per_row_gmm_compiles_and_fits() -> None:
     true_sigma = torch.tensor([0.4, 0.5, 0.4])
     comps = torch.distributions.Categorical(true_probs).sample(torch.Size((300,)))
     r = torch.distributions.Normal(true_mu[comps], true_sigma[comps]).sample()
-    x = torch.zeros(300, 1)
+    x = torch.zeros(1, 1)
     obs = {"r": r, "probs": true_probs}
 
     guide = AutoNormalGuide(model, observed_names={"r", "probs"})

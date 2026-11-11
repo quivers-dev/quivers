@@ -25,7 +25,7 @@ components weighs each by its mass.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -85,10 +85,11 @@ class DistributionFamily:
     event_rank
         The rank of one sample: 0 for a scalar family, 1 for a vector
         family, 2 for a matrix family.
-    event_source
-        The parameter whose trailing ``event_rank`` dimensions fix the
-        sample's event shape, or ``None`` when the family is scalar or
-        the shape comes from elsewhere.
+    event_sources
+        The parameters whose trailing ``event_rank`` dimensions fix the
+        sample's event shape, one per alternative parameterization (an
+        application supplies at most one of them), or empty when the
+        family is scalar or the shape comes from elsewhere.
     discrete
         Whether samples are discrete.
     reparameterizable
@@ -115,7 +116,7 @@ class DistributionFamily:
     support: SupportKind
     element: TypeExpr
     event_rank: int
-    event_source: str | None
+    event_sources: tuple[str, ...]
     discrete: bool
     reparameterizable: bool
     compositional: bool
@@ -129,18 +130,24 @@ class DistributionFamily:
         Raises
         ------
         ValueError
-            If two parameters share a name, or ``event_source`` names no
-            parameter.
+            If two parameters share a name, or an event source names no
+            parameter or has a rank below the event rank.
         """
         object.__setattr__(self, "targets", MappingProxyType(dict(self.targets)))
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"family {self.name!r} repeats a parameter name")
-        if self.event_source is not None and self.event_source not in names:
-            raise ValueError(
-                f"family {self.name!r} names event source "
-                f"{self.event_source!r}, which is not a parameter"
-            )
+        for source in self.event_sources:
+            if source not in names:
+                raise ValueError(
+                    f"family {self.name!r} names event source "
+                    f"{source!r}, which is not a parameter"
+                )
+            if self.parameters[names.index(source)].rank < self.event_rank:
+                raise ValueError(
+                    f"family {self.name!r} names event source {source!r}, of "
+                    f"rank below the family's event rank {self.event_rank}"
+                )
 
     @property
     def id(self) -> DistributionId:
@@ -188,6 +195,28 @@ class DistributionFamily:
                 return parameter
         raise KeyError(f"family {self.name!r} has no parameter {name!r}")
 
+    def event_argument[V](
+        self, arguments: Iterable[tuple[str, V]]
+    ) -> tuple[str, V] | None:
+        """The supplied argument that fixes the sample's event shape.
+
+        Parameters
+        ----------
+        arguments : Iterable[tuple[str, V]]
+            An application's named arguments.
+
+        Returns
+        -------
+        tuple[str, V] | None
+            The first argument filling one of `event_sources`, as its
+            name and value, or ``None`` when the application supplies
+            none of them.
+        """
+        for name, value in arguments:
+            if name in self.event_sources:
+                return (name, value)
+        return None
+
 
 _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
@@ -196,7 +225,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -220,7 +249,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -241,7 +270,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -270,7 +299,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -292,7 +321,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="simplex",
         element=REAL,
         event_rank=1,
-        event_source="concentration",
+        event_sources=("concentration",),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -316,7 +345,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -340,7 +369,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -363,7 +392,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -382,7 +411,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -410,7 +439,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -433,7 +462,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -460,7 +489,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -484,7 +513,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -505,7 +534,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -529,7 +558,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -556,7 +585,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -578,7 +607,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -605,7 +634,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -630,7 +659,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -654,7 +683,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -676,7 +705,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -693,7 +722,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -722,7 +751,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=1,
-        event_source="loc",
+        event_sources=("loc",),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -750,7 +779,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=1,
-        event_source="loc",
+        event_sources=("loc",),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -769,7 +798,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -790,13 +819,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="simplex",
         element=REAL,
         event_rank=1,
-        event_source="logits",
+        event_sources=("probs", "logits"),
         discrete=False,
         reparameterizable=True,
         compositional=False,
         targets={
             "edward2": "RelaxedOneHotCategorical",
-            "numpyro": "RelaxedOneHotCategorical",
             "pyro": "RelaxedOneHotCategorical",
         },
     ),
@@ -805,17 +833,18 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         (
             FamilyParameter("df", "positive", 0),
             FamilyParameter("covariance_matrix", "positive_definite", 2),
+            FamilyParameter("precision_matrix", "positive_definite", 2),
+            FamilyParameter("scale_tril", "lower_cholesky", 2),
         ),
         support="positive_definite",
         element=REAL,
         event_rank=2,
-        event_source="covariance_matrix",
+        event_sources=("covariance_matrix", "precision_matrix", "scale_tril"),
         discrete=False,
         reparameterizable=True,
         compositional=False,
         targets={
             "bugs": "dwish",
-            "edward2": "Wishart",
             "jags": "dwish",
             "numpyro": "Wishart",
             "pymc": "Wishart",
@@ -833,7 +862,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive_definite",
         element=REAL,
         event_rank=2,
-        event_source="scale_tril",
+        event_sources=("scale_tril",),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -854,7 +883,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=2,
-        event_source="loc",
+        event_sources=("loc",),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -879,7 +908,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=1,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=True,
@@ -903,7 +932,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -918,7 +947,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="boolean",
         element=BOOL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -943,7 +972,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -967,7 +996,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -995,7 +1024,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1022,7 +1051,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1046,7 +1075,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1071,7 +1100,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -1090,7 +1119,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="simplex",
         element=REAL,
         event_rank=1,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -1106,7 +1135,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="one_hot",
         element=INT,
         event_rank=1,
-        event_source="probs",
+        event_sources=("probs", "logits"),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1122,7 +1151,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="corr_cholesky",
         element=REAL,
         event_rank=2,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -1146,7 +1175,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1170,7 +1199,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1194,7 +1223,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1213,7 +1242,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1233,7 +1262,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1253,7 +1282,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1268,7 +1297,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1285,7 +1314,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="unit_interval",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -1301,7 +1330,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1313,7 +1342,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=True,
@@ -1325,7 +1354,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="dependent",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -1337,7 +1366,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive_definite",
         element=REAL,
         event_rank=2,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=False,
         compositional=False,
@@ -1358,7 +1387,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1381,7 +1410,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1398,7 +1427,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=True,
         reparameterizable=False,
         compositional=False,
@@ -1415,7 +1444,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="real",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,
@@ -1438,7 +1467,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         support="positive",
         element=REAL,
         event_rank=0,
-        event_source=None,
+        event_sources=(),
         discrete=False,
         reparameterizable=True,
         compositional=False,

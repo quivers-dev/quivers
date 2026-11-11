@@ -1,0 +1,16 @@
+# Exercises a marginalized Categorical whose `probs` is a `let`: the latent
+# is enumerated over every atom of its declared index object `K`, and the
+# latent is read as a number (`real(z + 1)`) in the body.
+object Step : FinSet 3
+object K : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample r <- Gamma(concentration=2.0, rate=1.0)
+    let prior = factor k : K in 0.25
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        let rate = r * real(z + 1)
+        observe y : Step <- Poisson(rate=rate)
+    return r
+
+export p

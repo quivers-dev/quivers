@@ -17,6 +17,7 @@ from __future__ import annotations
 import torch
 import torch.distributions as td
 
+from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import loads
 from quivers.dsl.ast_nodes import (
     DrawArgDist,
@@ -202,14 +203,28 @@ export m
 
 
 def _trace_logjoint(src: str, y: torch.Tensor) -> torch.Tensor:
-    program = loads(src)
+    """The log joint of one run of a program observing `y` over its plate.
+
+    Parameters
+    ----------
+    src : str
+        The program source.
+    y : torch.Tensor
+        The observed rows of the program's response plate.
+
+    Returns
+    -------
+    torch.Tensor
+        The run's log joint, a number: every input row is a run of its
+        own, so the program runs once at a one-row input.
+    """
+    model = loads(src).morphism
+    assert isinstance(model, MonadicProgram)
     torch.manual_seed(0)
-    tr = trace(
-        program.morphism,
-        torch.zeros(y.shape[0], 1),
-        observations={"y": y},
-    )
-    return tr.log_joint
+    tr = trace(model, torch.zeros(1, 1), observations={"y": y})
+    assert tr.log_joint is not None
+    (joint,) = tr.log_joint
+    return joint
 
 
 def test_family_keywords_determine_runtime_order() -> None:

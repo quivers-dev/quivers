@@ -49,6 +49,11 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
+from quivers.transpile.renderers._ranks import (
+    carried_dims,
+    name_plate_map,
+    name_rank_map,
+)
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -151,6 +156,10 @@ class _GenCtx:
     # the tuple of batch Dims it lives on, in declaration order. Used
     # to thread loop indices through `IRArgRef` instances.
     decl_axes: dict[str, tuple[Dim, ...]] = dataclasses.field(default_factory=dict)
+    # Each name the plan binds mapped to its whole plate, batch and
+    # event: a gather `mu[z]` carries the axes of `mu` after the indexed
+    # ones, which each take the loop over that axis or a whole `:`.
+    name_plates: dict[str, Plate] = dataclasses.field(default_factory=dict)
     # Cards harvested from the IR for axis-name lookups.
     cards: dict[str, int] = dataclasses.field(default_factory=dict)
     # Morphism declarations needed by wrapper-family rendering.
@@ -624,6 +633,9 @@ class _ArgCtx:
     batch_loops: dict[str, str] = dataclasses.field(default_factory=dict)
     via_indexer: str | None = None
     via_loop_var: str | None = None
+    # Every loop of the step, its residual event axes included: the axis
+    # a gathered element carries reads the loop over that axis.
+    axis_loops: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _render_arg(gx: _GenCtx, arg: IRArg, *, arg_ctx: _ArgCtx) -> str:
@@ -670,8 +682,20 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
     decl_axes = gx.decl_axes.get(ref.name, ())
 
     if ref.indices:
-        rendered = tuple(_render_arg(gx, idx, arg_ctx=arg_ctx) for idx in ref.indices)
-        return _index_into(gx, base, rendered)
+        rendered = tuple(
+            _one_higher(gx, _render_arg(gx, idx, arg_ctx=arg_ctx), idx)
+            for idx in ref.indices
+        )
+        # Each axis the gathered element carries is read at the step's
+        # loop over that axis, or whole when no loop runs over it, so a
+        # row of a matrix is never read through one linear index.
+        carried = tuple(
+            _ident(gx, arg_ctx.axis_loops[str(dim.name)])
+            if str(dim.name) in arg_ctx.axis_loops
+            else _operator(gx, ":")
+            for dim in carried_dims(ref, gx.name_plates)
+        )
+        return _index_into(gx, base, (*rendered, *carried))
 
     if not decl_axes:
         return base
@@ -690,12 +714,39 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
                 _ident(gx, arg_ctx.via_indexer),
                 (_ident(gx, arg_ctx.via_loop_var),),
             )
-            leading.append(via_idx)
+            # The fibration holds zero-based QVR group codes.
+            leading.append(_gen_binary_expr(gx, via_idx, ".+", _integer(gx, 1)))
             continue
 
     if not leading:
         return base
     return _index_into(gx, base, tuple(leading))
+
+
+def _one_higher(gx: _GenCtx, index: str, arg: IRArg) -> str:
+    """Read a plan argument's subscript one higher when it holds a QVR value.
+
+    A program's index covariate or drawn class holds a zero-based QVR
+    value, which Julia reads one higher; a renderer's own loop variable
+    already counts from one.
+
+    Parameters
+    ----------
+    gx : _GenCtx
+        The render context.
+    index : str
+        The rendered subscript.
+    arg : IRArg
+        The subscript's plan argument.
+
+    Returns
+    -------
+    str
+        The subscript, broadcast-shifted with `.+ 1` for a program value.
+    """
+    if not isinstance(arg, IRArgRef) or arg.name not in gx.shapes.program_values:
+        return index
+    return _gen_binary_expr(gx, index, ".+", _integer(gx, 1))
 
 
 def _broadcast_to_shape(
@@ -802,6 +853,36 @@ def _gen_transform_args(gx: _GenCtx, arg_vids: list[str], family: str) -> list[s
     return arg_vids
 
 
+def _row_array_names(body: tuple[IRNode, ...]) -> dict[str, int]:
+    """The sampled names stored as arrays of event vectors.
+
+    A latent drawn under one or more loop axes from a family with its own
+    event axes is allocated as an array, over those axes, whose elements
+    are the family's event vectors (`_emit_storage_alloc`). An entrywise
+    read must index the array and then the vector.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    dict[str, int]
+        Each such name and the number of its outer array axes.
+    """
+    out: dict[str, int] = {}
+    for node in body:
+        if isinstance(node, IRSample):
+            own = _family_event_rank(node.family)
+            outer = len(node.plate.batch_dims) + len(node.plate.event_dims) - own
+            if own > 0 and outer > 0:
+                out[node.name] = outer
+        elif isinstance(node, IRMarginalize):
+            out.update(_row_array_names(node.scope))
+    return out
+
+
 def _family_event_rank(family: str) -> int:
     """The rank of the family's own event shape.
 
@@ -827,6 +908,10 @@ def _gen_target_name(family: str) -> str:
     back to the wrapper-family table when the family is a
     composite-distribution wrapper that has no flat Gen.jl name.
     """
+    if family == "Categorical":
+        # QVR class codes count from zero, Gen's `categorical` from one;
+        # the grafted zero-based form draws and scores QVR codes.
+        return "qvr_categorical"
     meta = FAMILY_META.get(family)
     if meta is not None and "gen" in meta.target_names:
         return meta.target_names["gen"]
@@ -1048,13 +1133,15 @@ class GenRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        gx = _GenCtx(sb=sb, cards={}, morphisms={})
+        gx = _GenCtx(sb=sb, cards={}, morphisms={}, name_plates=name_plate_map(ir))
 
         _harvest_cards(ir, gx)
         gx.shapes = JuliaShapes(
             name_event_rank=name_event_rank_map(ir),
             name_array_rank=name_array_rank_map(ir),
             nested_names=nested_tower_names(ir),
+            program_values=frozenset(name_rank_map(ir)),
+            row_arrays=_row_array_names(ir.body),
         )
 
         # Sort inputs alphabetically so the emitted `model(...)` signature
@@ -1348,6 +1435,9 @@ class GenRenderer(RendererBase):
             batch_loops=batch_loops,
             via_indexer=via,
             via_loop_var=loop_names[-1] if via else None,
+            axis_loops={
+                str(dim.name): lv for dim, lv in zip(loop_dims, loop_names, strict=True)
+            },
         )
         dist_vid = self._build_dist_call(
             family=node.family,
@@ -1626,12 +1716,14 @@ class GenRenderer(RendererBase):
 
         Gen scores the choices a trace holds, so the weight is traced
         as a factor choice: a one-point distribution whose log density
-        is the weight.
+        is the weight. The expression renders elementwise, so a weight
+        it combines with a plated value scales each row before a
+        reduction sums them.
         """
         gx = self._gx
         del ctx
         rhs = render_let_expr_julia(
-            _JlCtxAdapter(gx, "gen"), node.expr, shapes=gx.shapes
+            _JlCtxAdapter(gx, "gen"), node.expr, shapes=gx.shapes, dotted=True
         )
         bind = _assignment(gx, _ident(gx, node.name), rhs)
         gx.place(bind)
@@ -1869,6 +1961,7 @@ _RUNTIME_GEN_PATH = pathlib.Path(__file__).resolve().parent.parent / "runtime_ge
 #: when the IR samples or observes from any of them.
 _GEN_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
     {
+        "Categorical",
         "TruncatedNormal",
         "Logistic",
         "BetaBinomial",

@@ -120,17 +120,15 @@ def nuts_program_from_deduction(
         _paths: list[str] = list(paths),
         _locator: Callable[[str], tuple[torch.nn.Module, str]] = locator,
     ) -> torch.Tensor:
-        site_values = [env[name] for name in _site_names]
-        batch = site_values[0].shape[0]
-        out = torch.zeros(batch, dtype=torch.get_default_dtype())
-        for b in range(batch):
-            overrides = {path: v[b].reshape(()) for path, v in zip(_paths, site_values)}
-            with _swap_named_parameters(_locator, overrides):
-                log_z = torch.zeros(())
-                for sentence in _corpus:
-                    log_z = log_z + _ded(sentence).goal_weight()
-                out[b] = log_z
-        return out
+        # A score step reads one run's values, each site a single draw.
+        overrides = {
+            path: env[name].reshape(()) for path, name in zip(_paths, _site_names)
+        }
+        with _swap_named_parameters(_locator, overrides):
+            log_z = torch.zeros(())
+            for sentence in _corpus:
+                log_z = log_z + _ded(sentence).goal_weight()
+        return log_z.reshape(1)
 
     steps.append(Score(name="log_Z", score=reading(_score_fn, site_names)))
     model = MonadicProgram(

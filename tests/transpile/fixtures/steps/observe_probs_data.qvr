@@ -1,0 +1,9 @@
+# Exercises a host datum filling the probabilities of a plated categorical
+# observe: `weights` holds one probability vector per `Trial` row, and a
+# datum without the row axis is one vector every row shares.
+object Trial : FinSet 5
+program pick : Trial -> Trial
+    sample bias <- Normal(loc=0.0, scale=1.0)
+    observe choice : Trial <- Categorical(probs=weights)
+    return choice
+export pick

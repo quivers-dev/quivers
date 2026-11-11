@@ -29,6 +29,7 @@ import didactic.api as dx
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types as lsp
 
+from quivers.analysis.scope import ScopedRef, resolve_scoped_path
 from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_highlight import (
     SEMANTIC_TOKEN_MODIFIERS,
@@ -220,6 +221,14 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
+        scoped = _scoped_ref_at(doc, params.position.line, params.position.character)
+        if scoped is not None:
+            return lsp.Hover(
+                contents=lsp.MarkupContent(
+                    kind=lsp.MarkupKind.Markdown,
+                    value=_render_scoped_hover(doc, scoped),
+                )
+            )
         name = doc.name_at_position(params.position.line, params.position.character)
         if name is None:
             return None
@@ -244,6 +253,21 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
+        scoped = _scoped_ref_at(doc, params.position.line, params.position.character)
+        if scoped is not None:
+            target = _scoped_ref_position(doc, scoped)
+            if target is None:
+                return None
+            line, col = target
+            return [
+                lsp.Location(
+                    uri=doc.uri,
+                    range=lsp.Range(
+                        start=lsp.Position(line=line, character=col),
+                        end=lsp.Position(line=line, character=col + len(scoped.name)),
+                    ),
+                )
+            ]
         name = doc.name_at_position(params.position.line, params.position.character)
         if name is None:
             return None
@@ -525,6 +549,87 @@ def _apply_partial(source: str, change: lsp.TextDocumentContentChangePartial) ->
     start = offset(rng.start.line, rng.start.character)
     end = offset(rng.end.line, rng.end.character)
     return source[:start] + change.text + source[end:]
+
+
+def _scoped_ref_at(doc: DocumentState, line: int, col: int) -> ScopedRef | None:
+    """The binding a ``::`` scope path at a position resolves to.
+
+    Parameters
+    ----------
+    doc : DocumentState
+        The document.
+    line : int
+        The 0-based line.
+    col : int
+        The 0-based column.
+
+    Returns
+    -------
+    ScopedRef | None
+        The binding the path names up to the segment under the cursor,
+        or ``None`` when no ``::`` path covers the position, the module
+        did not compile, or the path names no binding.
+    """
+    path = doc.scoped_path_at_position(line, col)
+    if path is None or doc.compiler is None:
+        return None
+    return resolve_scoped_path(doc.compiler, path)
+
+
+def _scoped_ref_position(doc: DocumentState, ref: ScopedRef) -> tuple[int, int] | None:
+    """The 0-based position of the token a scoped binding is bound at.
+
+    Parameters
+    ----------
+    doc : DocumentState
+        The document.
+    ref : ScopedRef
+        The binding.
+
+    Returns
+    -------
+    tuple[int, int] | None
+        The line and column of the binding's name on the line its node
+        starts, at or after the node's column; ``None`` when the node
+        carries no source position.
+    """
+    node_line = getattr(ref.node, "line", 0)
+    if not isinstance(node_line, int) or node_line < 1:
+        return None
+    node_col = getattr(ref.node, "col", 0)
+    start = node_col if isinstance(node_col, int) else 0
+    lines = doc.source.splitlines()
+    if node_line - 1 >= len(lines):
+        return None
+    text = lines[node_line - 1]
+    pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(ref.name)}(?![A-Za-z0-9_])")
+    match = pattern.search(text, start)
+    return node_line - 1, match.start() if match is not None else start
+
+
+def _render_scoped_hover(doc: DocumentState, ref: ScopedRef) -> str:
+    """Hover markdown for a binding named by a ``::`` scope path.
+
+    Parameters
+    ----------
+    doc : DocumentState
+        The document.
+    ref : ScopedRef
+        The binding.
+
+    Returns
+    -------
+    str
+        The source line that binds it, when it has one, and its kind
+        and full path.
+    """
+    parts: list[str] = []
+    position = _scoped_ref_position(doc, ref)
+    if position is not None:
+        source = doc.source.splitlines()[position[0]].strip()
+        parts.append(f"```qvr\n{source}\n```")
+    parts.append(f"{ref.kind} `{ref.path}`")
+    return "\n\n".join(parts)
 
 
 def _render_hover(

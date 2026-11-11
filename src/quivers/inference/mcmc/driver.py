@@ -37,8 +37,10 @@ from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    _check_observed_support,
 )
-from quivers.inference.registry import LatentRegistry
+from quivers.inference.registry import LatentRegistry, _require_one_run
+from quivers.inference.trace import trace
 
 
 InitStrategy = Literal["prior", "zero", "guide"]
@@ -57,7 +59,13 @@ class MCMCResult:
     ----------
     samples : dict[str, torch.Tensor]
         Per-site posterior draws on the constrained support.
-        Shape ``(num_chains, num_samples, *site_shape)``.
+        Shape ``(num_chains, num_samples, *site_shape)``, where
+        ``site_shape`` is the site's `LatentSite.constrained_shape`:
+        ``()`` for a scalar site, ``(d,)`` for a vector site, and
+        ``(|A|, ...)`` for a plate site over ``A``. The draws carry
+        no batch axis; `LatentRegistry.trace_values` lifts one draw
+        to the ``(batch, ...)`` values a program's ``log_joint`` and
+        `trace` consume.
     log_densities : torch.Tensor
         Unconstrained-space log-density (Jacobian-corrected) at
         every posterior draw. Shape ``(num_chains, num_samples)``.
@@ -71,7 +79,8 @@ class MCMCResult:
         Per-site rank-normalized folded split-:math:`\\hat R`.
         Each coordinate reports the conservative maximum of the
         rank-normalized and folded statistics. Each site's tensor
-        has the site's shape (one scalar per coordinate).
+        has shape ``site_shape`` (one value per coordinate, so a
+        scalar site's tensor is zero-dimensional).
     ess : dict[str, torch.Tensor]
         Per-site rank-normalized bulk effective sample size pooled
         across chains. Same shape convention as `r_hat`.
@@ -263,7 +272,7 @@ def _diagnostics(
         for c in range(n_coords):
             rh[c] = _split_rhat_1d(flat[:, :, c])
             es[c] = _ess_1d(flat[:, :, c])
-        site_shape = tuple(draws.shape[2:]) or (1,)
+        site_shape = tuple(draws.shape[2:])
         r_hat[name] = rh.reshape(site_shape)
         ess[name] = es.reshape(site_shape)
     return r_hat, ess
@@ -393,42 +402,40 @@ class MCMC:
                 raise ValueError(
                     "MCMC.run: init_strategy='guide' requires a guide argument"
                 )
-            # Sample the guide once, pull out the unconstrained
-            # values, flatten.
-            x = torch.zeros(1, 1)
-            constrained = self._guide_rsample(guide, x, generator)
-            unc: dict[str, torch.Tensor] = {}
-            for site in registry.sites.values():
-                v = constrained[site.name]
-                if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
-                    v_e = v.unsqueeze(-1)
-                else:
-                    v_e = v
-                if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-                    v_e = v_e[0]
-                z = site.bijector.inv(v_e)
-                unc[site.name] = z
+            # Sample the guide once with a batch of one and read that
+            # row back as one draw per site.
+            trace_side = self._guide_rsample(guide, torch.zeros(1, 1), generator)
+            draw = registry.trace_row(trace_side)
+            unc, _ = registry.to_unconstrained(draw)
             return registry.flatten_unconstrained(unc)
         # "prior": draw a fresh standard-normal position, scaled
         # mildly so chains spread out without diverging.
         return 0.1 * torch.randn(D, generator=generator)
 
+    @staticmethod
     def _to_constrained(
-        self,
         registry: LatentRegistry,
         z_flat: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        per_site_unc = registry.unflatten_unconstrained(z_flat)
-        out: dict[str, torch.Tensor] = {}
-        for site in registry.sites.values():
-            z_site = per_site_unc[site.name]
-            if not site.is_plate:
-                z_site = z_site.unsqueeze(0)
-            v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
-            out[site.name] = v
-        return out
+        """Map a flat unconstrained position to one constrained draw
+        per site.
+
+        Parameters
+        ----------
+        registry : LatentRegistry
+            Registry of the sampled model.
+        z_flat : torch.Tensor
+            Flat unconstrained position, shape ``(D,)``.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Each site's draw at `LatentSite.constrained_shape`.
+        """
+        constrained, _ = registry.to_constrained(
+            registry.unflatten_unconstrained(z_flat)
+        )
+        return constrained
 
     def run(
         self,
@@ -438,16 +445,65 @@ class MCMC:
         guide: Guide | None = None,
     ) -> MCMCResult:
         """Run the configured kernel for ``num_chains`` chains of
-        ``num_warmup + num_samples`` steps each."""
-        observed_names = set(observations.keys())
-        registry = LatentRegistry.from_model(model, observed_names)
+        ``num_warmup + num_samples`` steps each.
+
+        Each chain's initial position is scored by
+        `PotentialFn.check_initial` before sampling, so an error in
+        the program or its data (observed values outside a
+        likelihood's support or not finite, mismatched row counts, an
+        error in a custom score function) raises here, with a note
+        naming the chain, rather than producing a chain that rejects
+        every proposal. During sampling only positions outside the
+        model's support score ``-inf``; other errors propagate.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The program to sample.
+        x : torch.Tensor
+            Program input, shape ``(batch, ...)``.
+        observations : dict[str, torch.Tensor]
+            Observed-site values and host data.
+        guide : Guide, optional
+            Fitted guide, required by ``init_strategy="guide"``.
+
+        Returns
+        -------
+        MCMCResult
+            Posterior draws and diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` has more than one row (MCMC targets the posterior
+            of one run), an observed value is not finite or lies
+            outside its site's support, a chain's initial position is
+            not finite, or the log-density at an initial position is
+            not finite.
+        Exception
+            Any error the program raises at an initial position, or
+            raises during sampling for a reason other than a position
+            outside its support.
+        """
+        _require_one_run(x, "MCMC.run")
+        _check_observed_support(model, observations, "MCMC.run")
+        # The latents are the sites one run at (x, observations) reaches,
+        # every position of a scan included. The run draws its latents
+        # from a forked stream, so Torch's global RNG is left as it was.
+        try:
+            with torch.random.fork_rng(devices=[]):
+                recorded = trace(model, x, observations=observations)
+        except Exception as error:
+            error.add_note(
+                "MCMC.run: raised while recording the run its latents are read "
+                "from, before any sampling"
+            )
+            raise
+        registry = LatentRegistry.from_trace(model, recorded)
         potential = PotentialFn(model, registry, x, observations)
 
-        site_shapes: dict[str, tuple[int, ...]] = {
-            site.name: site.constrained_shape or (1,)
-            for site in registry.sites.values()
-        }
-        per_chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_shapes}
+        site_names = registry.names
+        per_chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
         per_chain_log_density = torch.empty(self.num_chains, self.num_samples)
         per_chain_accept = torch.empty(self.num_chains)
         per_chain_divergences = torch.empty(self.num_chains, dtype=torch.int64)
@@ -461,6 +517,14 @@ class MCMC:
                     f"MCMC.run: chain {chain} initial_position must contain "
                     "only finite values"
                 )
+            try:
+                potential.check_initial(init_pos)
+            except Exception as error:
+                error.add_note(
+                    f"MCMC.run: raised while scoring chain {chain}'s initial "
+                    "position, before any sampling"
+                )
+                raise
             self.kernel._set_generator(chain_generator)
             state = self.kernel.init(registry, model, x, observations, init_pos)
             # Warmup.
@@ -479,7 +543,7 @@ class MCMC:
                 diverged=False,
                 extras=state.extras,
             )
-            chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_shapes}
+            chain_samples: dict[str, list[torch.Tensor]] = {n: [] for n in site_names}
             sampling_divergences = 0
             for s in range(self.num_samples):
                 sampling_state = self.kernel.step(sampling_state, potential)

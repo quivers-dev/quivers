@@ -49,7 +49,13 @@ and $c_{F, \mathsf{Edward2}} = 0$.
 **Sample / observe.** `<name> = edward2.<Family>(<args>,
 sample_shape=[B0, B1, ...], name="<name>")` for latents and
 observed variables. For QVR’s [indexed binds](../programs.md#24-indexed-bind-plate), the `sample_shape` argument carries the
-[batch-axis shape](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#basics).
+[batch-axis shape](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#basics). An observed variable also passes
+`value=<name>`, the model argument holding the observation. Its random
+variable therefore holds the data over the whole plate, and a later `let`
+that reads the observed name reads the data. A run with no data draws one
+value per row. When the arguments' broadcast shape is not statically
+known, as for an argument gathered through an index, the observation
+takes no `sample_shape`, and the data's shape stands.
 
 **Plate.** Captured via `sample_shape=[B]`. By TFP's documented
 broadcasting semantics, `sample_shape=[B]` produces a $B$-fold

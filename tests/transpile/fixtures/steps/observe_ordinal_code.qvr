@@ -1,0 +1,11 @@
+# Exercises an observed OrderedLogistic outcome, a class code counted
+# from zero that an ordinal family on a one-based target reads from one.
+object Row : FinSet 4
+object Val : Real 1
+
+program p : Row -> Val
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    observe y : Row <- OrderedLogistic(predictor=eta, cutpoints=[-1.0, 0.5])
+    return eta
+
+export p

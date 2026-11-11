@@ -39,21 +39,23 @@ form.
 from __future__ import annotations
 
 import pathlib
+from collections.abc import Mapping
 
 import panproto
 
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile.renderers._ranks import (
+    carried_dims,
+    let_expr_rank,
+    several_axis_reductions,
+)
+from quivers.transpile.renderers._rows import take_row
 from quivers.transpile.renderers._scheme_helpers import render_let_expr_scheme
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprBinOp,
-    LetExprCall,
     LetExprFactor,
-    LetExprIndex,
-    LetExprList,
     LetExprNode,
-    LetExprUnaryOp,
     LetExprVar,
 )
 from quivers.transpile.ir import (
@@ -65,6 +67,7 @@ from quivers.transpile.ir import (
     CSRealMatrix,
     CSRealVector,
     CSSimplex,
+    Dim,
     DimDynamic,
     DimStatic,
     IRArg,
@@ -144,6 +147,43 @@ _VECTOR_CONSTRAINTS: tuple[type[ConstraintSpec], ...] = (
 )
 
 
+def _index_event_axes(
+    arg: IRArg, event_dims: tuple[Dim, ...], plates: Mapping[str, Plate]
+) -> IRArg:
+    """Read a family argument at the event-axis loops it carries.
+
+    A reference whose value carries one of an observe's event axes (a
+    gathered row ``mu[z]``, or a vector over that axis) is indexed at
+    the loop over each such axis, in the order the value carries them,
+    so the scalar family scores one coordinate per iteration.
+
+    Parameters
+    ----------
+    arg : IRArg
+        The argument.
+    event_dims : tuple[Dim, ...]
+        The observe's event axes, each looped as ``m_<axis>``.
+    plates : Mapping[str, Plate]
+        The plate of each name bound so far.
+
+    Returns
+    -------
+    IRArg
+        The argument, with one trailing index per event axis it carries.
+    """
+    if not isinstance(arg, IRArgRef):
+        return arg
+    looped = {str(dim.name) for dim in event_dims}
+    extra = tuple(
+        IRArgRef(name=f"m_{dim.name}")
+        for dim in carried_dims(arg, plates)
+        if str(dim.name) in looped
+    )
+    if not extra:
+        return arg
+    return IRArgRef(name=arg.name, indices=(*arg.indices, *extra))
+
+
 def _is_scalar_constraint(constraint: ConstraintSpec) -> bool:
     """True iff `constraint` describes a scalar-valued support.
 
@@ -191,19 +231,20 @@ def _denotes_whole_row(expr: LetExprNode, plate: Plate) -> bool:
 
 
 def _plates_align(decl: Plate, surrounding: Plate) -> bool:
-    """True iff `decl`'s batch axes are a left-aligned prefix of
-    `surrounding`'s batch axes.
+    """True iff `decl`'s batch axes and `surrounding`'s agree on their
+    common leading axes.
 
     Purely name-based on `Dim.name`: a ref bound on ``(A,)`` read from
-    a site on ``(A, B)`` aligns on ``A``.
+    a site on ``(A, B)`` aligns on ``A``, and so does a ref bound on
+    ``(A, B)`` read from a site on ``(A,)``, whose row is then the
+    rest of its table (the event a Categorical's `probs` reads).
     """
-    if not decl.batch_dims:
+    if not decl.batch_dims or not surrounding.batch_dims:
         return False
-    decl_names = tuple(d.name for d in decl.batch_dims)
-    surr_names = tuple(d.name for d in surrounding.batch_dims)
-    if len(decl_names) > len(surr_names):
-        return False
-    return decl_names == surr_names[: len(decl_names)]
+    common = min(len(decl.batch_dims), len(surrounding.batch_dims))
+    decl_names = tuple(d.name for d in decl.batch_dims[:common])
+    surr_names = tuple(d.name for d in surrounding.batch_dims[:common])
+    return decl_names == surr_names
 
 
 class ChurchRenderer(RendererBase):
@@ -473,9 +514,24 @@ class ChurchRenderer(RendererBase):
         expr = node.expr
         lift = bool(node.plate.batch_dims) and not _denotes_whole_row(expr, node.plate)
         if lift:
-            loop_name = _loop_name(node.plate)
-            assert loop_name is not None
-            expr = self._index_let_refs(expr, node.plate, loop_name)
+            expr = self._take_loop_rows(expr, node.plate)
+        ranks = {
+            name: len(plate.batch_dims) + len(plate.event_dims)
+            for name, plate in self._binding_plates.items()
+        }
+        found = several_axis_reductions(expr, ranks)
+        if found:
+            # The runtime's `sum` and its kin fold a flat list, so an
+            # argument that still has several axes would not reduce
+            # along its last one alone.
+            raise UnsupportedConstruct(
+                _TARGET,
+                [
+                    f"let-expr:axis-reduction:church: `{found[0].func}(...)` in "
+                    f"{node.name!r} reduces only the last axis of an argument "
+                    "with several axes, which the list fold has no form for"
+                ],
+            )
         expr_id = render_let_expr_scheme(_LetExprCtx(ctx.sb, ctx, self._cards), expr)
         if lift:
             expr_id = self._wrap_in_maps(
@@ -483,52 +539,40 @@ class ChurchRenderer(RendererBase):
             )
         return _list(ctx, (_sym(ctx, "define"), _sym(ctx, node.name), expr_id))
 
-    def _index_let_refs(
-        self, expr: LetExprNode, plate: Plate, loop_name: str
-    ) -> LetExprNode:
-        """Rewrite `expr`, indexing every variable bound on a plate
-        that aligns with `plate` by ``[<loop_name>]``.
+    def _take_loop_rows(self, expr: LetExprNode, plate: Plate) -> LetExprNode:
+        """Read a binding's expression at one iteration of its maps.
 
-        The traversal mirrors
-        `_substitute_ref_indexing`
-        at the let-expression level: only the alignment case applies
-        (let bindings carry no `via` fibration).
+        The binding is built by one ``(map (lambda (m_<axis>) ...)
+        (iota N))`` layer per batch axis, outermost first, and each
+        layer's variable is the zero-based position on its axis. Each
+        operand carrying the binding's leading remaining axis is read
+        at that position through
+        [`take_row`][quivers.transpile.renderers._rows.take_row]; an
+        expression with fewer axes than remain is the same at every
+        position (QVR aligns trailing axes), so that layer selects
+        nothing from it.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The binding's expression.
+        plate : Plate
+            The binding's plate.
+
+        Returns
+        -------
+        LetExprNode
+            The expression for the entry the maps reach.
         """
-        if isinstance(expr, LetExprVar):
-            decl = self._binding_plates.get(expr.name)
-            if decl is not None and _plates_align(decl, plate):
-                return LetExprIndex(array=expr, indices=(LetExprVar(name=loop_name),))
-            return expr
-        if isinstance(expr, LetExprIndex):
-            return LetExprIndex(
-                array=self._index_let_refs(expr.array, plate, loop_name),
-                indices=tuple(
-                    self._index_let_refs(i, plate, loop_name) for i in expr.indices
-                ),
-            )
-        if isinstance(expr, LetExprBinOp):
-            return LetExprBinOp(
-                op=expr.op,
-                left=self._index_let_refs(expr.left, plate, loop_name),
-                right=self._index_let_refs(expr.right, plate, loop_name),
-            )
-        if isinstance(expr, LetExprUnaryOp):
-            return LetExprUnaryOp(
-                operand=self._index_let_refs(expr.operand, plate, loop_name)
-            )
-        if isinstance(expr, LetExprCall):
-            return LetExprCall(
-                func=expr.func,
-                args=tuple(
-                    self._index_let_refs(a, plate, loop_name) for a in expr.args
-                ),
-            )
-        if isinstance(expr, LetExprList):
-            return LetExprList(
-                items=tuple(
-                    self._index_let_refs(i, plate, loop_name) for i in expr.items
-                )
-            )
+        ranks = {
+            name: len(bound.batch_dims) + len(bound.event_dims)
+            for name, bound in self._binding_plates.items()
+        }
+        remaining = len(plate.batch_dims) + len(plate.event_dims)
+        for dim in plate.batch_dims:
+            if let_expr_rank(expr, ranks) == remaining:
+                expr = take_row(expr, LetExprVar(name=f"m_{dim.name}"), ranks, "church")
+            remaining -= 1
         return expr
 
     def _render_gp_forms(
@@ -765,7 +809,7 @@ class ChurchRenderer(RendererBase):
         plates = dict(self._binding_plates)
         atoms = self.marginal_atoms(
             node,
-            support_size=marginal_support_size(node, name_plates=plates),
+            support_size=marginal_support_size(node),
         )
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
         prefix = f"__marg_{node.latent}"
@@ -952,7 +996,7 @@ class ChurchRenderer(RendererBase):
             complement = _list(
                 ctx, (_sym(ctx, "-"), _num(ctx, 1.0), self._render_arg(ctx, probs))
             )
-            forms = (
+            bit_forms = (
                 _define(
                     ctx,
                     zero,
@@ -971,7 +1015,7 @@ class ChurchRenderer(RendererBase):
                     ),
                 ),
             )
-            return (zero, one), forms
+            return (zero, one), bit_forms
         if family != "Categorical":
             raise UnsupportedConstruct(
                 _TARGET,
@@ -1145,9 +1189,24 @@ class ChurchRenderer(RendererBase):
             The emitted vertex id, or ``""`` when nothing is emitted.
         """
         del arg_names
+        # A scalar family observed over event axes scores each event
+        # coordinate on its own: the observe loops those axes too, and
+        # every argument carrying one of them reads it at that loop.
+        event_loops = (
+            plate.event_dims
+            if observed and plate.event_dims and _is_scalar_constraint(constraint)
+            else ()
+        )
+        if event_loops:
+            args = tuple(
+                _index_event_axes(arg, event_loops, self._binding_plates)
+                for arg in args
+            )
         dist_form = self._dist_form(ctx, family, args, plate, via)
         if observed:
-            return _statement(ctx, self._wrap_observe(ctx, name, dist_form, plate))
+            return _statement(
+                ctx, self._wrap_observe(ctx, name, dist_form, plate, event_loops)
+            )
         return self._wrap_sample_define(ctx, name, dist_form, plate, constraint)
 
     def _dist_form(
@@ -1525,15 +1584,36 @@ class ChurchRenderer(RendererBase):
         obs_name: str,
         dist_form: SchemaFragment,
         plate: Plate,
+        event_loops: tuple[Dim, ...] = (),
     ) -> SchemaFragment:
         """`(for-each (lambda (n) (observe <dist> (list-ref <obs> n)))
         (iota (length <obs>)))` over the observation plate.
 
         For higher-rank batch dims the function nests `for-each` from
-        outermost to innermost. For an empty plate the form is a
-        single ``(observe <dist> <obs>)`` (no iteration).
+        outermost to innermost, followed by one per event axis a scalar
+        family scores coordinate by coordinate. For an empty plate the
+        form is a single ``(observe <dist> <obs>)`` (no iteration).
+
+        Parameters
+        ----------
+        ctx : RenderContext
+            The render context.
+        obs_name : str
+            The observed value's name.
+        dist_form : SchemaFragment
+            The distribution form.
+        plate : Plate
+            The observe's plate.
+        event_loops : tuple[Dim, ...]
+            The event axes looped inside the batch axes.
+
+        Returns
+        -------
+        SchemaFragment
+            The observe form.
         """
-        if not plate.batch_dims:
+        loop_dims = (*plate.batch_dims, *event_loops)
+        if not loop_dims:
             return _list(
                 ctx,
                 (
@@ -1545,7 +1625,7 @@ class ChurchRenderer(RendererBase):
         # One `m_<axis>` loop variable per batch dim, matching the
         # loop-variable names the per-row indexing pass threaded into
         # the distribution arguments.
-        loop_vars = tuple(f"m_{dim.name}" for dim in plate.batch_dims)
+        loop_vars = tuple(f"m_{dim.name}" for dim in loop_dims)
         # Build the indexed reference `(list-ref ... obs)` nested per
         # loop, innermost-first to match the lambda nesting.
         obs_ref: SchemaFragment = _sym(ctx, obs_name)
@@ -1556,7 +1636,7 @@ class ChurchRenderer(RendererBase):
         current = innermost
         for lv, dim in zip(
             reversed(loop_vars),
-            reversed(plate.batch_dims),
+            reversed(loop_dims),
             strict=True,
         ):
             size_form = self._dim_size_form(ctx, dim)

@@ -1,0 +1,8 @@
+# A one-hot draw whose probabilities are a sampled simplex.
+object Dim : FinSet 3
+object One : FinSet 1
+program onehot_sampled_probs : One -> One
+    sample q <- Dirichlet(concentration=[1.0, 2.0, 3.0]) [over=Dim]
+    sample h <- OneHotCategorical(probs=q) [over=Dim]
+    return h
+export onehot_sampled_probs

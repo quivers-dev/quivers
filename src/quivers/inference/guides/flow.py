@@ -69,6 +69,12 @@ class AutoNormalizingFlow(Guide):
         Generative model to build a guide for.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     transforms : list[TransformModule]
         Flow stack applied to the standard-Normal base. Each
         `TransformModule` must accept a
@@ -81,9 +87,14 @@ class AutoNormalizingFlow(Guide):
         model: MonadicProgram,
         observed_names: set[str],
         transforms: list[TransformModule],
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         D_total = self._registry.total_unconstrained_dim
         if D_total == 0:
             raise ValueError(
@@ -242,6 +253,12 @@ class AutoIAFGuide(AutoNormalizingFlow):
         Generative model.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     num_flows : int
         Number of IAF blocks in the stack. Default ``4``.
     hidden_dim : int
@@ -258,10 +275,15 @@ class AutoIAFGuide(AutoNormalizingFlow):
         num_flows: int = 4,
         hidden_dim: int | None = None,
         num_hidden_layers: int = 2,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         if num_flows < 1:
             raise ValueError(f"AutoIAFGuide: num_flows must be >= 1, got {num_flows}")
-        registry = Guide.build_registry(model, observed_names)
+        registry = Guide.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         D_total = registry.total_unconstrained_dim
         if hidden_dim is None:
             hidden_dim = max(8, 2 * D_total)
@@ -282,7 +304,7 @@ class AutoIAFGuide(AutoNormalizingFlow):
             layers.append(InverseAutoregressiveTransform(made))
             if i < num_flows - 1:
                 layers.append(_ReversePermutation(D_total))
-        super().__init__(model, observed_names, layers)
+        super().__init__(model, observed_names, layers, x=x, observations=observations)
 
 
 class AutoNeuralSplineGuide(AutoNormalizingFlow):
@@ -299,6 +321,12 @@ class AutoNeuralSplineGuide(AutoNormalizingFlow):
         Generative model.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     num_flows : int
         Number of coupling layers. Default ``4``.
     num_bins : int
@@ -321,12 +349,17 @@ class AutoNeuralSplineGuide(AutoNormalizingFlow):
         tail_bound: float = 3.0,
         hidden_dim: int | None = None,
         num_hidden_layers: int = 2,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         if num_flows < 1:
             raise ValueError(
                 f"AutoNeuralSplineGuide: num_flows must be >= 1, got {num_flows}"
             )
-        registry = Guide.build_registry(model, observed_names)
+        registry = Guide.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         D_total = registry.total_unconstrained_dim
         if D_total < 2:
             raise ValueError(
@@ -358,7 +391,7 @@ class AutoNeuralSplineGuide(AutoNormalizingFlow):
                     tail_bound=tail_bound,
                 )
             )
-        super().__init__(model, observed_names, layers)
+        super().__init__(model, observed_names, layers, x=x, observations=observations)
 
 
 __all__ = [

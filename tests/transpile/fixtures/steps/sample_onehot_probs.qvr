@@ -1,0 +1,7 @@
+# A one-hot draw over three classes from a probability vector.
+object K : FinSet 3
+object One : FinSet 1
+program onehot_probs : One -> One
+    sample v <- OneHotCategorical(probs=[0.2, 0.3, 0.5]) [over=K]
+    return v
+export onehot_probs

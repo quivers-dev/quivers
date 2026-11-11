@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 import random
 
+from quivers.qiec._onion import onion_cholesky_rows
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
     Density,
@@ -2109,7 +2110,8 @@ def _onehotcategorical_sample(a: Mapping[str, object], rng: random.Random) -> ob
     Returns
     -------
     object
-        The drawn indicator vector.
+        The drawn indicator vector, its entries the integers 0 and 1 of
+        the family's `Int` sample element.
     """
     probabilities = simplex(a, "OneHotCategorical")
     uniform = rng.random()
@@ -2120,7 +2122,7 @@ def _onehotcategorical_sample(a: Mapping[str, object], rng: random.Random) -> ob
         if uniform < total:
             chosen = index
             break
-    return tuple(1.0 if index == chosen else 0.0 for index in range(len(probabilities)))
+    return tuple(1 if index == chosen else 0 for index in range(len(probabilities)))
 
 
 def _onehotcategorical_density(a: Mapping[str, object], value: object) -> float:
@@ -2674,7 +2676,9 @@ def _wishart_sample(a: Mapping[str, object], rng: random.Random) -> object:
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters.
+        The family's named parameters: ``df`` and the scale matrix as
+        whichever of ``scale_tril``, ``covariance_matrix``, or
+        ``precision_matrix`` the source wrote.
     rng : random.Random
         The generator to draw from.
 
@@ -2685,9 +2689,7 @@ def _wishart_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """
     return _wishart_sample_at(
         real_parameter(a, "df", "Wishart"),
-        _cholesky(
-            _matrix_parameter(a, "covariance_matrix", "Wishart"), "scale of Wishart"
-        ),
+        _covariance_factor(a, "Wishart"),
         rng,
     )
 
@@ -2698,7 +2700,9 @@ def _wishart_density(a: Mapping[str, object], value: object) -> float:
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters.
+        The family's named parameters: ``df`` and the scale matrix as
+        whichever of ``scale_tril``, ``covariance_matrix``, or
+        ``precision_matrix`` the source wrote.
     value : object
         The matrix evaluated.
 
@@ -2709,9 +2713,7 @@ def _wishart_density(a: Mapping[str, object], value: object) -> float:
     """
     return _wishart_log_prob(
         real_parameter(a, "df", "Wishart"),
-        _cholesky(
-            _matrix_parameter(a, "covariance_matrix", "Wishart"), "scale of Wishart"
-        ),
+        _covariance_factor(a, "Wishart"),
         _as_matrix(value, "Wishart point"),
     )
 
@@ -2914,6 +2916,11 @@ def _lkj_log_normalizer(size: int, concentration: float) -> float:
 def _lkj_sample(size: int, concentration: float, rng: random.Random) -> Matrix:
     """Draw a correlation Cholesky factor by the onion method.
 
+    The construction is ``quivers.qiec._onion.onion_cholesky_rows`` on
+    floats, the implementation the compiled runtime's LKJ families also
+    draw by (Lewandowski, Kurowicka, and Joe 2009, section 3.2,
+    [doi:10.1016/j.jmva.2009.04.008](https://doi.org/10.1016/j.jmva.2009.04.008)).
+
     Parameters
     ----------
     size : int
@@ -2928,17 +2935,27 @@ def _lkj_sample(size: int, concentration: float, rng: random.Random) -> Matrix:
     Matrix
         The lower Cholesky factor of an LKJ correlation matrix.
     """
-    factor = [[0.0] * size for _ in range(size)]
-    factor[0][0] = 1.0
-    for k in range(1, size):
-        beta = concentration + (size - 1 - k) / 2.0
-        radius_squared = rng.betavariate(k / 2.0, beta)
-        direction = [rng.gauss(0.0, 1.0) for _ in range(k)]
-        norm = math.sqrt(math.fsum(item * item for item in direction))
-        for j in range(k):
-            factor[k][j] = math.sqrt(radius_squared) * direction[j] / norm
-        factor[k][k] = math.sqrt(1.0 - radius_squared)
-    return tuple(tuple(row) for row in factor)
+
+    def draw_direction(count: int) -> list[float]:
+        """Draw independent standard normal coordinates.
+
+        Parameters
+        ----------
+        count : int
+            The number of coordinates.
+
+        Returns
+        -------
+        list[float]
+            The coordinates.
+        """
+        return [rng.gauss(0.0, 1.0) for _ in range(count)]
+
+    rows = onion_cholesky_rows(
+        size, concentration, rng.betavariate, draw_direction, math.sqrt
+    )
+    lower = [[1.0], *rows]
+    return tuple(tuple(row) + (0.0,) * (size - len(row)) for row in lower)
 
 
 def _lkj_dimension(value: object, family: str) -> tuple[Matrix, int]:

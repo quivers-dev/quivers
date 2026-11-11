@@ -680,6 +680,7 @@ class CoreRuntimeProvider:
                         policy=_replay_policy(raw_options, definition.name),
                         score_instance=_replay_score_instance(raw_options),
                         answer_type=answer_type,
+                        type_validator=_core_validator,
                     ),
                     "Random",
                 )

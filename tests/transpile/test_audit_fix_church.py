@@ -41,6 +41,7 @@ import subprocess
 
 from quivers.dsl.parser import parse
 from quivers.transpile import transpile
+from quivers.transpile._builtin_spellings import BUILTIN_SPELLINGS, NativeCall
 from quivers.transpile._pipeline import parser_registry
 from tests.transpile import _equivalence, _gallery_data
 from tests.transpile.probes._protocol import Point
@@ -246,13 +247,23 @@ def test_via_fibration_threads_through_group_plate() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sigmoid_and_sum_defined_in_runtime() -> None:
-    """`sigmoid` and `sum` are Church let builtins, so the grafted
-    runtime defines both and every emit carries them."""
+def test_every_church_builtin_spelling_is_defined_in_runtime() -> None:
+    """Every math builtin the shared table spells as a Church procedure
+    is defined in the grafted runtime, as are the reductions a let
+    calls, and an emitted let calls the table's spelling."""
+    runtime = _nospace(_RUNTIME.read_text())
+    natives = {
+        spelling.path[0]
+        for spelling in BUILTIN_SPELLINGS["church"].values()
+        if isinstance(spelling, NativeCall)
+    }
+    assert natives
+    missing = sorted(name for name in natives if f"(define({name}" not in runtime)
+    assert missing == []
+    assert "(define(sumlst)" in runtime
     emitted = _nospace(_church_file(_GALLERY / "beta_regression.qvr"))
-    assert "(sigmoid(list-refetam_Resp))" in emitted
-    assert "(define(sigmoidx)" in emitted
-    assert "(define(sumlst)" in emitted
+    assert "(qvr-exp(-(list-refetam_Resp)))" in emitted
+    assert "(define(qvr-expx)" in emitted
 
 
 # ---------------------------------------------------------------------------

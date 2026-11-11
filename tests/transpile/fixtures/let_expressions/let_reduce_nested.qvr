@@ -1,0 +1,11 @@
+# Exercises reductions nested in one let: `sum(sum(t))` over a rank-3
+# factor collapses its two innermost axes, one at a time, and keeps one
+# number per entry of the outermost.
+object A : FinSet 2
+program prog : A -> A
+    sample w : A <- Normal(loc=0.0, scale=1.0)
+    let t = factor a : A, b : A, c : A in w[a] * w[b] * w[c]
+    let s = sum(sum(t))
+    observe y : A <- Normal(loc=s, scale=1.0)
+    return y
+export prog

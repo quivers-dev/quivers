@@ -62,6 +62,11 @@ class ProgramParameter:
     axes
         The name of each dimension of a tensor-typed parameter, the
         object or extent it ranges over; empty for a scalar.
+    per_row
+        Whether the parameter fills a family parameter of a plated draw
+        directly, so that its leading axis is the draw's plate: a value
+        without that axis is one value shared by every row, which a run
+        broadcasts across the plate.
     tag
         The serialization discriminator; always ``"program_parameter"``.
     """
@@ -70,6 +75,7 @@ class ProgramParameter:
     role: ParameterRole
     type: TypeExpr
     axes: tuple[str, ...] = ()
+    per_row: bool = False
     tag: Literal["program_parameter"] = "program_parameter"
 
 

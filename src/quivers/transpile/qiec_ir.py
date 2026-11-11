@@ -1275,6 +1275,43 @@ class IRQiecComprehension(IRQiecValue):
     kind: Literal["comprehension"] = "comprehension"
 
 
+class IRQiecLetBinding(dx.Model):
+    """One binding of an :class:`IRQiecLetValue`.
+
+    Parameters
+    ----------
+    binder
+        The local the bound value is read through.
+    value
+        The value bound, evaluated once.
+    """
+
+    binder: IRQiecLocal
+    value: IRQiecValue
+
+
+class IRQiecLetValue(IRQiecValue):
+    """A pure value shared by name through sequential bindings.
+
+    Parameters
+    ----------
+    bindings
+        The bindings in evaluation order; each is in scope in the later
+        ones and in the body.
+    body
+        The value the term denotes.
+    result_type
+        The body's type.
+    kind
+        The discriminator; always ``"let"``.
+    """
+
+    bindings: tuple[IRQiecLetBinding, ...]
+    body: IRQiecValue
+    result_type: IRQiecStatic
+    kind: Literal["let"] = "let"
+
+
 class IRQiecTransportValue(IRQiecValue):
     """Transport of a value along kernel-checked equality evidence.
 
@@ -1859,12 +1896,16 @@ class IRQiecProgramParameter(dx.Model):
         Its type.
     axes
         The name of each dimension of a tensor-typed parameter.
+    per_row
+        Whether its leading axis is the plate of the draw it fills, so
+        that a value without that axis is shared by every row.
     """
 
     name: str
     role: str
     type: IRQiecStatic
     axes: tuple[str, ...] = ()
+    per_row: bool = False
 
 
 class IRQiecProgramSite(dx.Model):
@@ -2277,6 +2318,18 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             body=cast(IRQiecValue, _convert(value.body)),
             result_type=cast(IRQiecStatic, _convert(value.result_type)),
         )
+    if isinstance(value, tm.LetValue):
+        return IRQiecLetValue(
+            bindings=tuple(
+                IRQiecLetBinding(
+                    binder=cast(IRQiecLocal, _convert(binding.binder)),
+                    value=cast(IRQiecValue, _convert(binding.value)),
+                )
+                for binding in value.bindings
+            ),
+            body=cast(IRQiecValue, _convert(value.body)),
+            result_type=cast(IRQiecStatic, _convert(value.result_type)),
+        )
     if isinstance(value, tm.AffineMap):
         return IRQiecAffineMap(
             weight=cast(IRQiecValue, _convert(value.weight)),
@@ -2549,6 +2602,7 @@ type QiecFeature = Literal[
     "reduction",
     "rowwise",
     "comprehension",
+    "let",
     "special",
     "activation",
     "weight",
@@ -2684,6 +2738,7 @@ _GENERIC_RUNTIME = QiecTargetCapabilities(
             "reduction",
             "rowwise",
             "comprehension",
+            "let",
             "evidence",
             "transport",
             "attachment",
@@ -2720,6 +2775,7 @@ _STAN_STATIC = QiecTargetCapabilities(
             "if",
             "call",
             "recursion",
+            "let",
         }
     )
 )
@@ -2733,8 +2789,8 @@ def capabilities_for_target(target: str) -> QiecTargetCapabilities:
 
     The eight host-language backends lower the full stable core through the
     QIEC runtime ABI. Stan admits closed, monomorphic, effect-free scalar
-    computations as user-defined functions: binds, scalar primitives,
-    conditionals, calls, and recursion. BUGS and JAGS admit only
+    computations as user-defined functions: binds, shared value bindings,
+    scalar primitives, conditionals, calls, and recursion. BUGS and JAGS admit only
     ``return``/``bind`` computations, which they inline. Unknown targets
     safely retain declaration metadata only.
 
@@ -2896,6 +2952,13 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
             value(item.value)
         elif isinstance(item, IRQiecComprehension):
             required.add("comprehension")
+            value(item.body)
+        elif isinstance(item, IRQiecLetValue):
+            required.add("let")
+            for binding in item.bindings:
+                if not _is_scalar_type(binding.binder.type):
+                    required.add("non-scalar-parameter")
+                value(binding.value)
             value(item.body)
 
     def visit(item: IRQiecComputation) -> None:
@@ -3471,6 +3534,8 @@ __all__ = [
     "IRQiecReduction",
     "IRQiecRowwise",
     "IRQiecComprehension",
+    "IRQiecLetBinding",
+    "IRQiecLetValue",
     "IRQiecTransportValue",
     "IRQiecEffectRequest",
     "IRQiecComputation",

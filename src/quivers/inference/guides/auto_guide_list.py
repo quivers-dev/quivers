@@ -26,7 +26,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from quivers.inference.guides.base import Guide
+from quivers.inference.guides.base import Guide, GuideDraw
 
 
 class AutoGuideList(Guide):
@@ -100,6 +100,46 @@ class AutoGuideList(Guide):
             for name, tensor in part_sample.items():
                 result[name] = tensor
         return result
+
+    def rsample_strata(self, x: torch.Tensor) -> tuple[GuideDraw, ...]:
+        """Product of the parts' strata.
+
+        The parts are independent, so the joint guide's strata are the
+        Cartesian product of the parts' strata: each joint draw merges
+        one draw per part and carries the sums of the parts'
+        log-weights and log-densities. A part that is an
+        `AutoMixtureGuide` thus has its components enumerated inside
+        the list guide, and an `AutoDAIS` part contributes the density
+        of its own trajectory.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Program input. Shape ``(batch, ...)``.
+
+        Returns
+        -------
+        tuple[GuideDraw, ...]
+            ``S`` merged draws, where ``S`` is the product of the parts'
+            stratum counts.
+        """
+        joint: list[GuideDraw] | None = None
+        for part in self._parts_dict.values():
+            part_draws = part.rsample_strata(x)
+            if joint is None:
+                joint = list(part_draws)
+                continue
+            joint = [
+                GuideDraw(
+                    sites={**prefix.sites, **draw.sites},
+                    log_density=prefix.log_density + draw.log_density,
+                    log_weight=prefix.log_weight + draw.log_weight,
+                )
+                for prefix in joint
+                for draw in part_draws
+            ]
+        assert joint is not None
+        return tuple(joint)
 
     def log_prob(
         self,

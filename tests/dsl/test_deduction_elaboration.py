@@ -177,6 +177,7 @@ def test_a_deduction_becomes_a_checked_family_and_computations() -> None:
         "AB__show",
         "AB__goal",
         "AB__fail",
+        "AB__depth",
         "AB__axiom",
         "AB__derive",
         "AB__run",
@@ -277,21 +278,27 @@ def test_rule_weights_are_keyed_by_their_bindings() -> None:
         ):
             for key, parameter in parameters.items():
                 parameter.fill_(0.25 if rule_name == "rule_fwd_app" else -0.5)
+    # The key covers the category variables only; the span positions
+    # I, J, K never enter it, on either evaluator.
     bindings = {
-        "fwd_app": {"I": 0, "K": 1, "J": 2, "X": ("atom", "NP"), "Y": ("atom", "N")},
-        "bwd_app": {
-            "I": 0,
-            "K": 2,
-            "J": 3,
-            "X": ("atom", "S"),
-            "Y": ("atom", "NP"),
-        },
+        "fwd_app": {"X": ("atom", "NP"), "Y": ("atom", "N")},
+        "bwd_app": {"X": ("atom", "S"), "Y": ("atom", "NP")},
+    }
+    classic_keys = {
+        f"{rule_name}.{key}"
+        for rule_name, parameters in classic._rule_module.named_children()
+        for key in parameters.keys()
+    }
+    assert classic_keys == {
+        "rule_fwd_app.X_TSatom_SNPE_Y_TSatom_SNE",
+        "rule_bwd_app.X_TSatom_SSE_Y_TSatom_SNPE",
     }
     for rule_name, binding in bindings.items():
         suffix = "|".join(_render_binding(binding[name]) for name in sorted(binding))
         store[f"AB.rule.{rule_name}:{suffix}"] = (
             0.25 if rule_name == "fwd_app" else -0.5
         )
+    assert set(store) == {"AB.rule.fwd_app:NP|N", "AB.rule.bwd_app:S|NP"}
     run = run_deduction(module, "AB", tokens=tokens, parameters=store)
     assert run.weight == pytest.approx(-0.25)
     assert run.weight == pytest.approx(float(classic(tokens).goal_weight()))
@@ -555,7 +562,13 @@ def test_gallery_grammars_agree_with_the_agenda(
     ("edit", "fragment"),
     [
         (("semiring=SEMIRING", "semiring=Tropical"), "the semirings are"),
-        (("depth=6", ""), "need a depth option"),
+        (
+            (
+                "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y))",
+                "rule bwd_app : span(I, J, Y), span(K, J, Bwd(X, Y))",
+            ),
+            "over its conclusion's whole span beside other premises",
+        ),
         (
             (
                 "|- span(I, J, X) #[learnable]\n    rule bwd_app",
@@ -569,15 +582,6 @@ def test_forms_outside_the_elaboration_are_reported(
     edit: tuple[str, str], fragment: str
 ) -> None:
     source = AB.replace(*edit)
-    if edit[0] == "depth=6":
-        source = source.replace(
-            "[semiring=SEMIRING, start=S, ]", "[semiring=SEMIRING, start=S]"
-        )
-        source = source.replace(
-            "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]",
-            "rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]\n"
-            "    rule lift : span(I, J, N) |- span(I, J, NP)",
-        )
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(source)
     assert fragment in captured.value.message

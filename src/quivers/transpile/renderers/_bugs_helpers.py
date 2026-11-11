@@ -57,6 +57,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import (
     affine_column_offsets,
     Dim,
@@ -79,6 +80,8 @@ from quivers.transpile.ir import (
     LetExprAffineMap,
     Plate,
 )
+from quivers.transpile.renderers._one_based import fold_integers
+from quivers.transpile.renderers._ranks import LAST_AXIS_REDUCTIONS
 from quivers.transpile.renderers._base import IRArgTransform
 
 
@@ -621,6 +624,8 @@ def _render(ctx: _LetEnv, expr: LetExprNode) -> str:
         return _emit_binop(ctx, expr)
     if isinstance(expr, LetExprUnaryOp):
         return _emit_unary(ctx, expr)
+    if isinstance(expr, LetExprCall) and expr.func in ("quot", "rem"):
+        return _render(ctx, _truncating(expr))
     if isinstance(expr, LetExprCall):
         return _emit_reduction_or_call(ctx, expr)
     if isinstance(expr, LetExprIndex):
@@ -785,16 +790,6 @@ def _emit_unary(ctx: _LetEnv, expr: LetExprUnaryOp) -> str:
     return u
 
 
-#: QVR function names that map to a different identifier in the
-#: BUGS / JAGS math library. Most pure-math names (``exp``, ``log``,
-#: ``sqrt``, ``abs``, ``pow``, ...) coincide across targets and need
-#: no rewrite; the logistic sigmoid is the inverse-logit link, which
-#: BUGS / JAGS expose as ``ilogit``.
-_BUGS_FUNCTION_RENAMES: dict[str, str] = {
-    "sigmoid": "ilogit",
-}
-
-
 def _emit_call(
     ctx: _BugsLetCtx,
     func: str,
@@ -806,13 +801,14 @@ def _emit_call(
     The `name` field is an `identifier` vertex; the `arguments` field
     is an `argument_list` whose children carry their grammar kind as
     the edge label (so the panproto walker can pick the right child
-    alternative). QVR-named math primitives (``sigmoid``, ...) are
-    rewritten to their BUGS / JAGS library identifiers (``ilogit``,
-    ...) via
-    `_BUGS_FUNCTION_RENAMES`.
+    alternative). A pointwise math builtin is called by the BUGS / JAGS
+    function
+    [`native_path`][quivers.transpile._builtin_spellings.native_path]
+    names (``sigmoid`` is ``ilogit``, ...).
     """
     c = ctx.v(ctx.fresh("call"), "function_call")
-    name_id = _emit_identifier(ctx, _BUGS_FUNCTION_RENAMES.get(func, func))
+    path = native_path(_target(ctx), func, len(arg_ids))
+    name_id = _emit_identifier(ctx, func if path is None else ".".join(path))
     ctx.e(c, name_id, "name")
     if not arg_ids:
         return c
@@ -841,9 +837,11 @@ def _emit_reduction_or_call(ctx: _LetEnv, expr: LetExprCall) -> str:
     written in terms of has no target form on its own. A reduction of
     a single rank-1 operand passes straight through, because the
     target builtin already contracts the one axis the operand
-    carries. Every other axis-carrying reduction raises.
+    carries. A reduction of an operand with several axes collapses
+    only its last one, which the target builtin cannot spell, so it
+    raises, whichever reduction it is.
     """
-    if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
+    if expr.func in LAST_AXIS_REDUCTIONS and len(expr.args) == 1:
         arg = expr.args[0]
         rank = axis_rank(ctx.decl_plates, arg)
         if rank > 1:
@@ -858,7 +856,11 @@ def _emit_reduction_or_call(ctx: _LetEnv, expr: LetExprCall) -> str:
                     f"reduction"
                 ],
             )
-        if rank == 1 and isinstance(arg, LetExprBinOp):
+        if (
+            rank == 1
+            and isinstance(arg, LetExprBinOp)
+            and expr.func in _AXIS_REDUCING_CALLS
+        ):
             return _emit_contracted_binop(ctx, expr.func, arg)
     return _emit_call(
         ctx,
@@ -1111,31 +1113,107 @@ def _emit_index(ctx: _LetEnv, expr: LetExprIndex) -> str:
     il = ctx.v(ctx.fresh("il"), "index_list")
     ctx.e(iv, il, "indices")
     for idx in expr.indices:
-        cid = _emit_index_slot(ctx, idx)
-        ctx.e(il, cid, _arg_edge_kind(idx))
+        subscript = _index_slot(ctx, idx)
+        ctx.e(il, _render(ctx, subscript), _arg_edge_kind(subscript))
     for dim in residual_event_dims(ctx.decl_plates, expr.array.name, len(expr.indices)):
         ctx.e(il, ctx.range_1_to(dim_upper_text(dim)), "range")
     return iv
 
 
-def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
-    """Emit one index-list child, rebased to the target's origin.
+def _truncating(expr: LetExprCall) -> LetExprNode:
+    """Integer division or remainder in BUGS / JAGS arithmetic.
+
+    BUGS and JAGS hold every value as a real and have no integer
+    division, so the quotient truncating toward zero is
+    ``trunc(a / b)`` and the remainder ``a - b * trunc(a / b)``.
+
+    Parameters
+    ----------
+    expr : LetExprCall
+        A ``quot(a, b)`` or ``rem(a, b)`` call.
+
+    Returns
+    -------
+    LetExprNode
+        The expression in the language's own functions.
+    """
+    dividend, divisor = expr.args
+    quotient = LetExprCall(
+        func="trunc", args=(LetExprBinOp(op="/", left=dividend, right=divisor),)
+    )
+    if expr.func == "quot":
+        return quotient
+    return LetExprBinOp(
+        op="-",
+        left=dividend,
+        right=LetExprBinOp(op="*", left=divisor, right=quotient),
+    )
+
+
+def _reads_program_value(ctx: _LetEnv, idx: LetExprNode) -> bool:
+    """Whether a subscript reads a value the program binds.
+
+    Parameters
+    ----------
+    ctx : _LetEnv
+        The environment, whose declared-plate table names every input,
+        site, and binding of the program.
+    idx : LetExprNode
+        The subscript.
+
+    Returns
+    -------
+    bool
+        True for a bound name or an entry of one, as opposed to a
+        renderer's loop variable.
+    """
+    while isinstance(idx, LetExprIndex):
+        idx = idx.array
+    return isinstance(idx, LetExprVar) and idx.name in ctx.decl_plates
+
+
+def _index_slot(ctx: _LetEnv, idx: LetExprNode) -> LetExprNode:
+    """One index-list child, rebased to the target's origin.
 
     QVR subscripts count from zero; BUGS and JAGS count from one. A
     subscript the source spells as an integer literal (a factor
     binder already substituted to its integer coordinate, or a
-    literal the model wrote itself) is thus emitted one higher.
-    A subscript that names a variable is left alone: a loop variable
-    already runs `1:N`, and an index-valued covariate arrives from
-    the host already lifted to one-based.
+    literal the model wrote itself) is thus emitted one higher, and so
+    is a subscript that reads a program value (an index covariate, or
+    an entry of one, or a drawn class): it holds a QVR code. A
+    renderer's own loop variable already runs `1:N` and is left alone.
 
-    An arithmetic subscript mixes the two conventions with no way to
-    tell which operand carries the origin, so it raises rather than
-    emitting an unadjusted expression.
+    Integer-literal arithmetic (`2 - t` once the binder `t` is
+    substituted) is evaluated first, so it is a literal subscript too,
+    as is a pointwise `max` / `min` of such literals. An arithmetic or
+    call subscript that still reads a name mixes the two conventions
+    with no way to tell which operand carries the origin, so it raises
+    rather than emitting an unadjusted expression.
     """
+    idx = fold_integers(idx)
+    if (
+        isinstance(idx, LetExprCall)
+        and idx.func in ("max", "min")
+        and len(idx.args) == 2
+    ):
+        # A pointwise `max` / `min` of integer literals (a clamped
+        # factor binder, `max(t - 1, 0)` once `t` is substituted) is a
+        # literal subscript too.
+        values = [
+            int(bound.value)
+            for bound in (fold_integers(arg) for arg in idx.args)
+            if isinstance(bound, LetExprLiteral) and float(bound.value).is_integer()
+        ]
+        if len(values) == 2:
+            chosen = max(values) if idx.func == "max" else min(values)
+            return LetExprLiteral(value=float(chosen + 1), integral=True)
     if isinstance(idx, LetExprLiteral):
-        return _emit_number(ctx, float(int(idx.value) + 1))
-    if isinstance(idx, (LetExprBinOp, LetExprUnaryOp)):
+        return LetExprLiteral(value=float(int(idx.value) + 1), integral=True)
+    if _reads_program_value(ctx, idx):
+        return LetExprBinOp(
+            op="+", left=idx, right=LetExprLiteral(value=1.0, integral=True)
+        )
+    if isinstance(idx, (LetExprBinOp, LetExprUnaryOp, LetExprCall)):
         raise UnsupportedConstruct(
             f"qvr-{_target(ctx)}-helper",
             [
@@ -1145,7 +1223,7 @@ def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
                 f"{_target(ctx).upper()} origin"
             ],
         )
-    return _render(ctx, idx)
+    return idx
 
 
 def split_event_dims(
@@ -1819,6 +1897,90 @@ def build_decl_plates(ir: IRProgram) -> dict[str, Plate]:
     return out
 
 
+def hoist_list_operands(
+    node: IRDeterministic, taken: frozenset[str]
+) -> tuple[tuple[IRDeterministic, ...], IRDeterministic]:
+    """Bind each list-literal operand of a plated binding to a name.
+
+    A plated binding is emitted as a loop whose body reads each plated
+    operand at the loop's row. BUGS and JAGS have no subscript on a
+    literal (`c(2.5, 0.5)[i]`), so a list literal combined elementwise
+    with a plated value, as in `ys + [2.5, 0.5, 3.5, 1.0]`, is bound to
+    a fresh name over the plate's trailing axes (QVR aligns an operand
+    of lower rank with the trailing axes), emitted cell by cell like any
+    list `let`, and read at the row through that name.
+
+    Parameters
+    ----------
+    node : IRDeterministic
+        The plated binding.
+    taken : frozenset[str]
+        The names the program already binds.
+
+    Returns
+    -------
+    tuple[tuple[IRDeterministic, ...], IRDeterministic]
+        The bindings that name the literals, in the order they must be
+        emitted, and the binding with each literal replaced by its name.
+    """
+    hoisted: list[IRDeterministic] = []
+    used = set(taken)
+
+    def bind(expr: LetExprNode) -> LetExprNode:
+        """Replace the list literals among an expression's operands.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        LetExprNode
+            The expression reading each literal through its name.
+        """
+        if isinstance(expr, LetExprList):
+            rank = len(list_sizes(expr))
+            if 0 < rank <= len(node.plate.batch_dims):
+                serial = 0
+                name = f"{node.name}_lit{serial}"
+                while name in used:
+                    serial += 1
+                    name = f"{node.name}_lit{serial}"
+                used.add(name)
+                hoisted.append(
+                    IRDeterministic(
+                        name=name,
+                        expr=expr,
+                        constraint=node.constraint,
+                        plate=Plate(
+                            event_dims=(), batch_dims=node.plate.batch_dims[-rank:]
+                        ),
+                    )
+                )
+                return LetExprVar(name=name)
+            return expr
+        if isinstance(expr, LetExprBinOp):
+            return LetExprBinOp(
+                op=expr.op, left=bind(expr.left), right=bind(expr.right)
+            )
+        if isinstance(expr, LetExprUnaryOp):
+            return LetExprUnaryOp(op=expr.op, operand=bind(expr.operand))
+        if isinstance(expr, LetExprCall):
+            return LetExprCall(func=expr.func, args=tuple(bind(a) for a in expr.args))
+        return expr
+
+    if not node.plate.batch_dims or isinstance(node.expr, (LetExprList, LetExprFactor)):
+        return (), node
+    rewritten = bind(node.expr)
+    return tuple(hoisted), IRDeterministic(
+        name=node.name,
+        expr=rewritten,
+        constraint=node.constraint,
+        plate=node.plate,
+    )
+
+
 def index_letexpr_refs(
     expr: LetExprNode,
     decl_plates: dict[str, Plate],
@@ -1857,9 +2019,14 @@ def _index_letexpr_refs_inner(
         if plate is None or not plate.batch_dims:
             return expr
         indices: list[LetExprNode] = []
-        for dim in plate.batch_dims:
+        for position, dim in enumerate(plate.batch_dims):
             lname = axis_to_loop.get(dim.name)
-            if lname is None:
+            if lname is None or any(
+                earlier.name == dim.name for earlier in plate.batch_dims[:position]
+            ):
+                # An axis the loop does not iterate, or a second axis over
+                # the same object (a factor's `A`-by-`A` table), has no
+                # loop variable of its own: the name stays whole.
                 return expr
             indices.append(LetExprVar(name=lname))
         return LetExprIndex(
@@ -1887,13 +2054,24 @@ def _index_letexpr_refs_inner(
             ),
         )
     if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=expr.array,
-            indices=tuple(
-                _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop)
-                for ix in expr.indices
-            ),
+        subscripts = tuple(
+            _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop)
+            for ix in expr.indices
         )
+        # The subscripts select the array's leading axes; an axis left
+        # after them that the surrounding loop iterates is read at the
+        # loop's row too, as a gathered table's class axis is in
+        # `row_table[n, k] <- table[group_idx[n], k]`.
+        trailing: tuple[LetExprNode, ...] = ()
+        if isinstance(expr.array, LetExprVar):
+            plate = decl_plates.get(expr.array.name)
+            if plate is not None:
+                trailing = tuple(
+                    LetExprVar(name=axis_to_loop[str(dim.name)])
+                    for dim in plate.batch_dims[len(subscripts) :]
+                    if str(dim.name) in axis_to_loop
+                )
+        return LetExprIndex(array=expr.array, indices=(*subscripts, *trailing))
     if isinstance(expr, LetExprAffineMap):
         return LetExprAffineMap(
             weight=_index_letexpr_refs_inner(expr.weight, decl_plates, axis_to_loop),
@@ -1915,6 +2093,7 @@ def _index_letexpr_refs_inner(
 
 
 __all__ = [
+    "hoist_list_operands",
     "axis_rank",
     "build_decl_plates",
     "collect_irargref_names",

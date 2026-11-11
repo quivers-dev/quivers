@@ -1,0 +1,15 @@
+# Exercises a marginalized latent read as a number in the body, so its
+# zero-based value, not the target's loop counter, sets the rate.
+object Step : FinSet 3
+object K : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample r <- Gamma(concentration=2.0, rate=1.0)
+    sample prior <- Dirichlet(concentration=1.0) [over=K]
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        let rate = r * real(z + 1)
+        observe y : Step <- Poisson(rate=rate)
+    return r
+
+export p

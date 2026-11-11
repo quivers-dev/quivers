@@ -16,14 +16,16 @@ This package's submodules group the walker logic by topic:
 * `.statements` for the top-level ``_walk_statement`` dispatcher and
   every per-declaration walker (object, morphism, deduction,
   contraction, signature, encoder, decoder, loss, ...).
-* `.core` for the public `parse` / `parse_file` entry points and the
-  whole-tree syntax validation that rejects ERROR and missing nodes.
+* `.core` for the public `parse` / `parse_file` entry points, the
+  whole-tree syntax validation that rejects ERROR and missing nodes, and
+  the refusal of binders spelled as the reserved let words
+  ``RESERVED_LET_WORDS``.
 
 Every public name is re-exported here so ``from quivers.dsl.parser
 import X`` keeps working unchanged.
 """
 
-from quivers.dsl.parser.core import parse, parse_file
+from quivers.dsl.parser.core import RESERVED_LET_WORDS, parse, parse_file
 from quivers.dsl.parser._registry import ParseError
 
-__all__ = ["ParseError", "parse", "parse_file"]
+__all__ = ["RESERVED_LET_WORDS", "ParseError", "parse", "parse_file"]

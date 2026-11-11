@@ -18,16 +18,16 @@
 # Source * Target -> Target in the Giry monad's Kleisli
 # category.
 #
-# Resp is the plate: it indexes the 32 scored rows, one
-# next-token target per (source, target) position pair. Target is
-# the target-side vocabulary, so it is the value space of what
-# lm_head draws and of what the program returns.
+# Each input row is one (source, target) token pair, and one run of
+# the program scores its next target token: the pairs of a corpus are
+# independent runs that share the model's parameters. Target is the
+# target-side vocabulary, so it is the value space of what lm_head
+# draws and of what the program returns.
 #
 # The wiring is inspired by encoder-decoder models, but the
 # branch operations should not be read as a full sequence model.
 
 object Source, Target : FinSet 32
-object Resp : FinSet 32
 object Latent : Real 16
 object HeadOut : Real 4
 object FFHidden, Combined : Real 32
@@ -58,7 +58,7 @@ define backbone = (encoder @ decoder) >> cross
 program seq2seq : Source * Target -> Target
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export seq2seq

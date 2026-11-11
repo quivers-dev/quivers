@@ -52,6 +52,14 @@ divides by the retained probability mass. Thus the half-Normal's factor of
 two is already included, and normalized half-Normal densities agree without
 an additional $\log 2$ discrepancy.
 
+QVR codes a Categorical value from zero and Distributions.jl's
+`Categorical` counts from one. The renderer draws and scores a class
+through `qvr_categorical(p)`, the same distribution over the support
+`0:K-1` (`DiscreteNonParametric(0:K-1, p)`, grafted from the runtime
+helper), so an observed code and a drawn class are QVR codes and a
+subscript reads them one higher. Index covariates arrive zero-based
+too and are read one higher where they subscript.
+
 ## Per-construct emit
 
 **Sample / observe.** `<name> ~ <Family>(<args>)` inside the

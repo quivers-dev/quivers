@@ -172,7 +172,12 @@ define all_twice() : Tensor[Real]([3]) !{} =
     assert run_named(module, "all_twice", ()).value == (2.0, 4.0, 6.0)
     computation = next(item for item in module.computations if item.name == "all_twice")
     assert isinstance(computation.body, Bind)
-    traversal = computation.body.first
+    # The literal source is bound once, and every call reads an item of it.
+    source = computation.body.first
+    assert isinstance(source, Bind)
+    assert isinstance(source.first, Return)
+    assert isinstance(source.first.value, TensorValue)
+    traversal = source.then
     assert isinstance(traversal, Bind)
     assert isinstance(traversal.first, Call)
     second = traversal.then

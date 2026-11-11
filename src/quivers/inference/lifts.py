@@ -37,11 +37,21 @@ import torch.nn as nn
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous.inline import FixedDistribution
-from quivers.continuous.program_steps import Draw, Observe, Score, Step, reading
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
+from quivers.continuous.program_steps import (
+    Call,
+    Draw,
+    Observe,
+    Scan,
+    Score,
+    Step,
+    reading,
+)
 from quivers.continuous.programs import step_key
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import Euclidean
 from quivers.core.objects import Unit
+from quivers.inference.registry import _require_one_run
 
 
 # Distribution constructors accept these scalar / tensor argument
@@ -154,6 +164,31 @@ def _make_normal_prior_morphism(scale: float, dim: int = 1) -> "FixedDistributio
     )
 
 
+def _has_plates(program: MonadicProgram) -> bool:
+    """Whether a program, or a program it calls or scans, has a plate.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    bool
+        ``True`` when a draw or observation of the program, or of a
+        program it calls or scans, is plated.
+    """
+    for spec in program.steps:
+        if isinstance(spec, Draw | Observe):
+            if isinstance(program.step_module(spec), PlateDraw | VectorisedObserve):
+                return True
+        elif isinstance(spec, Call | Scan):
+            inner = spec.program if isinstance(spec, Call) else spec.step
+            if isinstance(inner, MonadicProgram) and _has_plates(inner):
+                return True
+    return False
+
+
 def bayesian_lift_parameters(
     inner_model: nn.Module,
     x: torch.Tensor,
@@ -182,7 +217,10 @@ def bayesian_lift_parameters(
     inner_model : nn.Module
         Module exposing ``log_joint(x, observations) -> Tensor``.
     x : torch.Tensor
-        Input passed to ``inner_model.log_joint``.
+        Input passed to ``inner_model.log_joint``. Its ``B`` rows are
+        ``B`` independent runs of the inner program, whose joints are
+        summed; a program with a plate observes its rows through the
+        plate and takes one row.
     observations : dict[str, torch.Tensor]
         Observations passed to ``inner_model.log_joint``. Names listed in
         ``additional_latents`` must not also occur here.
@@ -199,6 +237,13 @@ def bayesian_lift_parameters(
     -------
     tuple[MonadicProgram, torch.Tensor, dict[str, torch.Tensor]]
         Lifted program, placeholder input, and empty observation mapping.
+
+    Raises
+    ------
+    ValueError
+        If ``inner_model`` has no ``log_joint``, a name is both observed
+        and an additional latent, there is nothing to lift, or a program
+        with a plate is given more than one input row.
     """
     if not hasattr(inner_model, "log_joint"):
         raise ValueError(
@@ -214,6 +259,8 @@ def bayesian_lift_parameters(
             "observed and sampled"
         )
 
+    if isinstance(inner_model, MonadicProgram) and _has_plates(inner_model):
+        _require_one_run(x, "bayesian_lift_parameters")
     inner_log_joint = inner_model.log_joint
 
     params = list(inner_model.named_parameters())
@@ -275,39 +322,35 @@ def bayesian_lift_parameters(
         _inner_obs: dict[str, torch.Tensor] = dict(observations),
         _placeholder_scale: float = placeholder_scale_f,
     ) -> torch.Tensor:
-        ref = env[_param_sites[0]] if _param_sites else env[_latent_sites[0]]
-        batch = ref.shape[0]
-        out = torch.zeros(batch, dtype=torch.get_default_dtype())
-        for b in range(batch):
-            overrides: dict[str, torch.Tensor] = {}
-            for path, shape, name in zip(_param_paths, _param_shapes, _param_sites):
-                v = env[name][b]
-                overrides[path] = v.reshape(shape) if shape else v.reshape(())
-            latent_dict: dict[str, torch.Tensor] = {}
-            placeholder_log_prior = torch.zeros((), dtype=torch.get_default_dtype())
-            for name, shape, site in zip(_latent_names, _latent_shapes, _latent_sites):
-                flat_b = env[site][b]
-                latent_dict[name] = (
-                    flat_b.reshape(shape) if shape else flat_b.reshape(())
+        # The score runs once per run of the lifted program, on that
+        # run's draws of the parameters and latents.
+        overrides: dict[str, torch.Tensor] = {}
+        for path, shape, name in zip(_param_paths, _param_shapes, _param_sites):
+            v = env[name]
+            overrides[path] = v.reshape(shape) if shape else v.reshape(())
+        latent_dict: dict[str, torch.Tensor] = {}
+        placeholder_log_prior = torch.zeros((), dtype=torch.get_default_dtype())
+        for name, shape, site in zip(_latent_names, _latent_shapes, _latent_sites):
+            flat = env[site]
+            latent_dict[name] = flat.reshape(shape) if shape else flat.reshape(())
+            placeholder_log_prior = (
+                placeholder_log_prior
+                + D.Normal(
+                    torch.zeros_like(flat),
+                    torch.full_like(flat, _placeholder_scale),
                 )
-                placeholder_log_prior = (
-                    placeholder_log_prior
-                    + D.Normal(
-                        torch.zeros_like(flat_b),
-                        torch.full_like(flat_b, _placeholder_scale),
-                    )
-                    .log_prob(flat_b)
-                    .sum()
-                )
-            with _swap_named_parameters(_locator, overrides):
-                merged_obs = {**_inner_obs, **latent_dict}
-                ll = inner_log_joint(_inner_x, merged_obs)
-                ll_b = ll.sum() if ll.dim() > 0 else ll
-                # Cancel the placeholder priors on lifted latents
-                # so the net log-density is exactly
-                # ``log p(theta) + log p_inner(z, y | x, theta)``.
-                out[b] = ll_b - placeholder_log_prior
-        return out
+                .log_prob(flat)
+                .sum()
+            )
+        with _swap_named_parameters(_locator, overrides):
+            merged_obs = {**_inner_obs, **latent_dict}
+            # The inner joint of each of the inner input's runs, summed:
+            # the inner program's runs are independent replications.
+            ll = inner_log_joint(_inner_x, merged_obs).sum()
+        # Cancel the placeholder priors on lifted latents so the net
+        # log-density is exactly ``log p(theta) + log p_inner(z, y | x,
+        # theta)``.
+        return ll - placeholder_log_prior
 
     steps.append(
         Score(name="log_lik", score=reading(_score_fn, [*param_sites, *latent_sites]))

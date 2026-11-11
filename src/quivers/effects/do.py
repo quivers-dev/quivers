@@ -60,7 +60,10 @@ class DoHandler(EffectHandler):
             Installation(
                 run.kernel.random,
                 intervene_handler(
-                    self.data,
+                    {
+                        name: run.slice_value(name, value)
+                        for name, value in self.data.items()
+                    },
                     result_validator=run.validator,
                     on_intervene=mark,
                     answer_type=run.result_type,

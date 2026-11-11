@@ -443,6 +443,7 @@ class VectorisedObserveStep(ProgramStep):
     response_var: str = ""
     fibration_var: str | None = None
     fibration_axes: tuple[str, ...] | None = None
+    axes: AxisSpec | None = None
     line: int = 0
     col: int = 0
     kind: Literal["vectorized_observe_step"] = "vectorized_observe_step"

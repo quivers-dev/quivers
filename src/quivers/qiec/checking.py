@@ -97,6 +97,7 @@ from quivers.qiec.terms import (
     Reduction,
     Rowwise,
     Comprehension,
+    LetValue,
     TransportValue,
     TensorValue,
     TupleValue,
@@ -1853,14 +1854,12 @@ def _plated_sample_type(
     )
     plate = value.plate
     natural: tuple[IndexTerm, ...] | None = None
-    if family.event_source is not None and family.event_rank > 0:
-        source = argument_types.get(family.event_source)
-        if source is not None:
-            source_shape = tensor_shape(source)
-            if source_shape is not None and len(source_shape[1]) >= family.event_rank:
-                natural = tuple(
-                    source_shape[1][len(source_shape[1]) - family.event_rank :]
-                )
+    supplied = family.event_argument(argument_types.items())
+    source_name = supplied[0] if supplied is not None else None
+    if supplied is not None and family.event_rank > 0:
+        source_shape = tensor_shape(supplied[1])
+        if source_shape is not None and len(source_shape[1]) >= family.event_rank:
+            natural = tuple(source_shape[1][len(source_shape[1]) - family.event_rank :])
     event_axes = tuple(axis.size for axis in plate.event)
     if family.event_rank > 0:
         if len(event_axes) >= family.event_rank:
@@ -1868,7 +1867,7 @@ def _plated_sample_type(
             if natural is not None and tuple(natural) != tuple(trailing):
                 raise KernelError(
                     f"family {value.name!r} samples the trailing shape of "
-                    f"{family.event_source!r}, {natural!r}, but its plate's "
+                    f"{source_name!r}, {natural!r}, but its plate's "
                     f"event axes end in {trailing!r}",
                     "qiec-distribution",
                 )
@@ -1882,7 +1881,7 @@ def _plated_sample_type(
                 shape is None
                 or shape[0] != element
                 or len(shape[1]) != len(plate.batch) + family.event_rank
-                or family.event_source is not None
+                or family.event_sources
             ):
                 raise KernelError(
                     f"family {value.name!r} samples a Tensor[{element_name}] of "
@@ -2323,9 +2322,10 @@ def infer_value(
     KernelError
         If a local is unbound or carries a type other than the one the
         term claims, if a literal's value does not inhabit its type, if
-        a constructor is applied wrongly, if equality evidence is forged
-        or out of scope, or if an inferred type mentions a rigid variable
-        that escapes its branch.
+        a constructor is applied wrongly, if a let binds a value of a
+        type other than its binder's or rebinds a name in scope, if
+        equality evidence is forged or out of scope, or if an inferred
+        type mentions a rigid variable that escapes its branch.
     """
     if isinstance(value, Var):
         actual = context.local_type(value.local.name)
@@ -2558,6 +2558,29 @@ def infer_value(
             )
         _check_static_variable_scope(expected, context, subject="comprehension type")
         return expected
+    if isinstance(value, LetValue):
+        if not value.bindings:
+            raise KernelError("a let binds at least one value", "qiec-primitive")
+        inner = context
+        for binding in value.bindings:
+            bound = infer_value(binding.value, registry, inner)
+            if bound != binding.binder.type:
+                raise KernelError(
+                    f"let binds {binding.binder.name!r} at "
+                    f"{render_static(binding.binder.type)} a value of type "
+                    f"{render_static(bound)}",
+                    "qiec-primitive",
+                )
+            inner = inner.extend(binding.binder)
+        body = infer_value(value.body, registry, inner)
+        if value.result_type != body:
+            raise KernelError(
+                f"let has type {render_static(body)}, not the claimed "
+                f"{render_static(value.result_type)}",
+                "qiec-primitive",
+            )
+        _check_static_variable_scope(body, context, subject="let type")
+        return body
     if isinstance(value, TupleValue):
         components = tuple(infer_value(item, registry, context) for item in value.items)
         expected = product_type(*components)

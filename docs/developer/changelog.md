@@ -4,18 +4,162 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.26.0] - 2026-11-11
 
 ### Added
 
+- **`Guide.rsample_strata` and `GuideDraw`.** A guide returns its draws with their stratum weights and the guide log-density each objective pairs with them; a mixture guide enumerates its components.
+- **`LatentRegistry.from_trace`, `LatentRegistry.trace_values`, and `LatentRegistry.trace_row`** build a registry from a run and convert between one draw and the `(batch, ...)` trace-side values `log_joint` and the guides exchange.
+- **`PotentialFn.check_initial`** scores a starting position with validation enabled and raises on a non-finite initial log density, naming the offending terms.
+- **`ParticleLogDensities`, `GradientEstimator.check`, `GradientEstimator.surrogate`, and `GradientEstimator.moment_surrogate`** expose the estimator interface, with `power_mean_bound` and `leave_one_out_log_scale` in `quivers.inference`.
+- **`PARAMETER_ALIASES`** in `quivers.dsl` lists the surface keywords that fill a differently named family parameter.
+- **`broadcast_shared_data`** in `quivers.qiec` spreads a shared host datum across its plate.
+- **`LetValue` and `LetBinding`** in `quivers.qiec`, the QIEC form for sequential pure bindings.
+- **`map_let_expr` and `free_let_callees`** in `quivers.dsl`, the let-expression traversal's map and callee scan.
+- **`RESERVED_LET_WORDS`** in `quivers.dsl.parser`.
+- **`ScanMorphism.rsample_trajectory`, `ScanMorphism.trajectory_from_base`, and `ContinuousMorphism.push_base_scored`.** A scan draws its whole trajectory, one state per position, and pushes canonical coordinates to it; a composition scores a scan in its prefix at the trajectory its coordinates select.
+- **`x=` and `observations=` keywords on the guides and `Guide.build_registry`,** which build a guide's latent registry from a run at that input and data, as a program that scans a program cell or calls a drawing program needs.
 - A concepts primer with worked examples of table composition, Bayesian conditioning, continuous densities, monads, and handlers.
 - A shared BibTeX bibliography with author-year citations, references on each page, and checks for unresolved citations.
 
 ### Changed
 
+- **Breaking: an input of several rows is several independent runs of the program.** `MonadicProgram.log_joint` returns one joint per run, shape `(B,)` for an input of `B` rows; `rsample`, `trace`, and `run_program` give each run its slice of every value laid out one per run (a leading axis of length `B`) and the whole of every value the runs share, and a trace records each site with the run axis ahead of a plated site's rows and its density per run. Each let and score sees one run's values, so a factor, collection, reduction, or index never reads the run axis, and a gather indexes within the run. A value given for a site carries the run axis exactly when it is one draw led by it; an observation laid out along a plate's rows is read by its plate.
+- **Breaking: MCMC, `PotentialFn`, the Laplace approximation, `AutoDAIS`, and the Bayesian lift of a plated program take a one-row input** and refuse more rows, naming the fix: the rows a program observes come from its data and its plates. The ELBO-type objectives and `RWS` sum their per-run terms, so a multi-row input estimates `B` copies of the one-run objective and its optimum is the one-run posterior. The formula fitters pass one row. `Predictive` hands each recorded MCMC draw to the model as one value every run shares.
+- **Breaking: MCMC results hold each site at its constrained shape.** `MCMCResult.samples` holds `(num_chains, num_samples, *constrained_shape)` and `r_hat` and `ess` hold `constrained_shape`, with no leading singleton axis on a non-plate site; `LatentSite.constrained_shape` is the bijector's output shape, `(d, d)` for a correlation-Cholesky site. `Predictive` gives guide and MCMC posteriors the same predictive shapes.
+- **Breaking: `PotentialFn` raises on program and data errors.** `log_density` scores `-inf` only for a position outside the model's support (a parameter or value validation error raised by `torch.distributions`, or a `torch.linalg.LinAlgError`); every other error propagates, and `value_and_grad` converts nothing. Building a `PotentialFn` (and so `MCMC.run`) checks each observed site's values against its distribution's support and raises naming the site and the offending values. `MCMC.run` checks every chain's starting position before sampling and raises on mismatched rows, a non-finite initial log density (naming the offending terms), or an error in a score function, noting the chain.
+- **Breaking: `AutoMixtureGuide` draws from the mixture density it scores.** `rsample` picks a component from the categorical weights and returns that component's draw; `hard_rsample` and the Gumbel-softmax temperature controls are removed. Every objective trains a mixture guide on the stratified bounds of the mixture density (the stratified ELBO and SIWAE), with gradients to the mixture logits through the finite sum over components, including mixtures nested in `AutoGuideList`. `DoublyReparameterized` raises on stratified draws.
+- **Breaking: gradient estimators work through surrogates over particle log-densities.** `GradientEstimator` exposes `check` and `surrogate` over `ParticleLogDensities` in place of `negative_objective`; `ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `ChiVI`, and `DReGsBound` hand their draws to the selected estimator, and a pair with no valid estimator raises `ValueError` naming one that is valid (`StickingTheLanding` is refused for multi-draw bounds other than the ELBO). `RWS` takes no `estimator=` argument.
+- **Breaking: `AutoDAIS.log_prob` raises.** The endpoint of an annealed trajectory has no density at arbitrary sites; `rsample_strata` pairs each draw with the extended-space density of its own trajectory, and estimators or objectives that need a density at arbitrary sites raise with a message naming `Reparameterized`.
+- **Breaking: `ChiVI` minimizes the exponentiated CUBO.** The objective is `exp(n CUBO_n) = E_q[(p/q)^n]`, whose estimate and gradient are unbiased; the reported value is the `K`-sample CUBO estimate. `ChiVI` requires `n > 1` and `num_particles >= 2`, and supports the `Reparameterized` and `ScoreFunction` estimators.
+- **Breaking: `ScoreFunction` holds its draws fixed.** The variational gradient is `f * grad log q` with no pathwise term, so guides whose `rsample` is not differentiable train with it.
+- **Breaking: `DistributionFamily.event_source` is `event_sources`,** a tuple: a family's event shape may come from any of its alternative parameterizations, so `RelaxedOneHotCategorical(probs=...)` and `OneHotCategorical` take their event extent from `probs` or `logits` without an `[over]` axis.
+- **Breaking: a family keyword fills only the parameter it names.** A surface keyword reaches a differently named registry parameter only through `PARAMETER_ALIASES`, never by position, and a keyword the family does not declare is refused. `Wishart` declares `covariance_matrix`, `precision_matrix`, and `scale_tril`, and every path reads the one the source wrote.
+- **Breaking: a scan's sites are named after the binding the source wrote.** A scan over a program cell runs the cell's steps as sites of the enclosing program, addressed per position as `<label>@n`; a stochastic morphism cell is drawn at the scan's binding at every position (`<binding>@n`), the chain's prefix at `<binding>$x_in`, and a scan inside a longer chain or a parallel branch at `<binding>$<intermediate>`. Two sites of one program sharing a label are refused, and a program composed other than as a scan's cell is refused.
+- **Breaking: learnable deduction weights are keyed by category bindings.** A learnable rule has one weight, and one parameter name, per distinct binding of its non-position variables, on the agenda and the checked search alike.
+- **Breaking: reserved let words cannot name a binder.** A sample, observe, or marginalize variable, a let, call, or score name, a factor binder, a lambda parameter, or a program parameter spelled `unit`, `true`, `false`, `not`, or `factor` is refused at its own line and column. The words are listed as `RESERVED_LET_WORDS` in `quivers.dsl.parser`.
+- **Breaking: integer division and remainder truncate toward zero** on the compiled runtime and on every transpile target, as on the reference machine, and an integral literal stays an integer on the compiled runtime.
+- **Breaking: `round` rounds a tie to even** on every transpile target, in let expressions and in named computations alike.
+- **Breaking: one-hot draws are integer-valued.** The reference machine draws `OneHotCategorical` as integers, its checked `Tensor[Int]`, and refuses a float value clamped at a one-hot site.
+- **Breaking: every transpile target scores Categorical values as zero-based class codes.** Stan reads an observed code one higher in `categorical_lpmf` and its ordinal relatives; JAGS binds the one-based code in its `data` block; Turing and Gen draw and score through a grafted zero-based categorical; BUGS draws a class as `dcat` read back as `code - 1` and refuses an observed class code, which it cannot score.
+- **Breaking: every program is a scope.** A program without typed parameters resolves as a `program`, with its parameters and sites addressed by `program::site` paths in the REPL, the TUI, the plate graph, and the language server.
+- **Breaking: a reduction collapses the last axis of its argument on every path.** `sum`, `mean`, `prod`, `max`, `min`, and `logsumexp` of a tensor of rank two or more reduce its last axis on the checked elaboration, the reference machine, the compiled runtime, and every renderer; a target that cannot spell the reduction refuses it. `normalize` divides each row by its sum on the compiled runtime.
+- **Breaking: host data must inhabit its checked type.** A free host name's type is inferred from its uses (a gather source takes open extents, a name combined elementwise with plated values takes their plates, a name filling a family parameter of a plated draw holds one value per row), and the compiled runtime refuses host data whose shape or element type contradicts it, naming the datum and both shapes. A datum without the plate axis is one value every row shares.
+- **Breaking: a vector family's annotation is its event axis.** A draw annotated `w : K` from a vector family, with no axis-role clause and no argument fixing another event size, is one variate over `K` on every path; a Dirichlet or OneHotCategorical draw whose event size nothing fixes is refused at the draw.
+- **Breaking: a site or observation listing more over axes than its family's event rank is an independent array** over the leading axes of one variate on the trailing ones, on every path; a matrix-valued family refuses extra axes, and WebPPL refuses the multi-axis plate.
+- **Breaking: the runtime compiler refuses a program whose instantiation calls a named computation,** at the step that calls it, whether the template is called directly or drawn from another program; such a program runs as its checked computation.
+- **Term, formula, dataset, and program-step models compare by value.** `Term` equality and hashing cover its arguments; `Formula`, `FormulaData`, `FixedColumn`, `DatasetSchema`, and `ChainShape` compare every data field; program steps, Kleisli and arrow wrappers, handlers, `BayesianFit`, and `ParticleLogDensities` compare their live objects by identity and their other fields by value. An array field is compared and hashed through the buffer protocol by its element type, shape, and bytes in logical order, whatever its strides, and the formula models hold read-only copies of their arrays. Copies and pickles keep every field.
+- **Breaking: a formula model refuses an array of Python objects.** `Formula`, `FormulaData`, and `FixedColumn` compare their arrays by content, and the bytes of an object-dtype array are addresses rather than values, so such an array is refused by name; pass numeric codes instead.
+- **Breaking: `ScanMorphism.log_prob` scores the trajectory it is given,** one state per position, and refuses a final state alone, whose density is a marginal the scan does not compute. `ScanMorphism.reference_trajectory` is removed.
+- **Breaking: `LatentRegistry.from_model` refuses a program whose latent sites depend on its input,** one that scans a program cell or calls a program that draws, naming `LatentRegistry.from_trace` as the replacement.
+- **Breaking: a scalar family drawn at vector-valued parameters is a variate over their broadcast extent.** With no plate annotation and no axis-role clause, it draws one independent variate per entry, on the checked program, the compiled runtime, and in a scan cell's per-position layout; parameters of different extents are refused at the draw with one located diagnostic naming the draw and both extents.
+- **Breaking: a literal Categorical takes one flat vector of class weights,** and a nested list literal is refused by name at compile time.
+- **Gallery programs run once per corpus.** Plated gallery examples take one input row, so SVI and NUTS condition on their data once and fit the whole data set the plate declares; the language-model examples score one context per input row, each an independent run predicting its own next token; and the custom priors on the factor and tensor-contraction pages draw one value per input row.
 - Expanded intuition throughout the guides, tutorials, examples, semantics, and API reference while stating the assumptions behind formal claims.
 - Integrated links and citations into explanations across the documentation; removed repetitive reading recommendations and unused bibliography entries.
 - Corrected mathematical claims, model descriptions, and source attributions in documentation and docstrings; recorded citation verification and its remaining limitations.
+
+### Fixed
+
+#### Runtime and scoring
+
+- **`import quivers` works without numpy installed.** The core import path compares model fields through the buffer protocol rather than numpy.
+- **Every discrete family samples and scores at its support's dtype.** An unobserved Bernoulli observe site samples and scores its own draws, zero-inflated and hurdle Poisson sites sample, and `OrderedLogistic` scores a vector of responses against a shared predictor; `rsample`, `trace`, and `Predictive` run over every discrete family.
+- **A plated discrete draw holds one class index per row.** A plated `Categorical` or `Bernoulli` scores one family term per row and samples one class per row, with literal or drawn probabilities or logits, read as a number or as a subscript.
+- **LKJ Cholesky factors are LKJ-distributed in every row.** Every forward LKJ draw (the family's `rsample`, trace and prior predictive, `make_fixed_lkj_cholesky`, the variable-concentration builder, `PlateDraw`, and `LKJCorrelationFactor.rsample`) uses the onion method, shared with the reference sampler.
+- **Restricted families draw inside their support at the law of the conditioned base.** Half-normal, half-Cauchy, half-Student-t, truncated-normal, and zero-truncated sites, plated and unplated, draw by inverting the base's CDF over the interval in double precision, or by redrawing a base without an inverse CDF until each entry falls inside.
+- **Inline family parameters have the widths their checked types give.** A sampled scalar added to a plate vector beside per-row host data, a plate-row parameter of an inline family, a per-row vector parameter such as a mixture's weights, and a run's scalar parameter each stack at their own width, so a plated observation with shared parameters draws one value per row and forward sampling draws the value `log_joint` scores.
+- **A gathered family argument has the width of the value it selects.** `mu[z]` over an event vector or a matrix drawn `[over=...]` reads one entry or one row; a gather indexing more axes than its value has is refused.
+- **A list literal fills a vector or matrix family parameter** beside sampled arguments or alone, for Categorical, Dirichlet, MultivariateNormal, LowRankMVN, MixtureNormal, Mixture, OrderedLogistic, OneHotCategorical, and Wishart; a nested distribution or a non-numeric list element filling a value parameter is refused by kind.
+- **A let-bound tuple projects by its static position,** on the compiled runtime and in the checked run.
+- **An ungrouped marginal whose observation reads the latent beside a literal scores the mixture,** as in `Normal(loc=mu[z], scale=1.0)`.
+- **A plated draw reads its parameters along its rows within one run,** so a plate's per-row parameters are its rows and a run's scalar broadcasts across them, and a plated kernel applied to one run's vector reads that vector for every row.
+- **An ungrouped marginal's shared parameters stack as one row of their columns,** so a let over the latent beside a sampled scalar reaches the family as two columns of one row, and a let over the latent is typed from its operands.
+- **A lifted deduction is scored at one run's parameter draws.**
+- **`map` in a program let returns the tensor its checked type names,** for lambdas that return numbers, vectors, a nested map, or a reduction, and a fold over a map runs on the compiled runtime.
+
+#### Inference
+
+- **HMC and NUTS evaluate the target once per leapfrog step,** reusing each step's value and carrying the selected proposal's gradient to the next transition; `PotentialFn.value_and_grad` differentiates under `torch.no_grad()`. Fixed-seed chains are unchanged.
+- **Every objective honors its gradient estimator.** `IWAEBound`, `RenyiBound`, `VRIWAEBound`, and `ChiVI` use the estimator they are given, and `RWS` holds its wake-phase draws fixed, so the model term does not move the guide.
+- **`AutoDAIS` pairs each draw with its own trajectory's weight,** with both densities in the unconstrained space including the bijector log-Jacobian, so `ELBO` with `AutoDAIS` is a lower bound on the evidence.
+- **SVI and MCMC infer the latent trajectory of a scan over a program cell.** The latent registry is built from a trace that reaches every position of the scanned cell.
+
+#### DSL and checking
+
+- **A scan's program cell reads the enclosing program's bindings and scores its observations** at every position against a sequence of observations, on the compiled and the checked path.
+- **A scan inside a program gives the compiled runtime and the reference machine the same sites and density.**
+- **A parametric program template substitutes its parameters through every let-expression form,** so an indexed let, a method receiver, a collection item, and a lambda or factor body take the caller's names, and score and computation-call steps instantiate too.
+- **A host index read inside a program drawn from another program is typed as integral,** so the caller scores and samples it.
+- **A free name filling a family parameter of a plated draw is one value per row,** for scalar and vector-valued parameters alike, so per-row standard errors, trial counts, cutpoints, logits, and probabilities score on the compiled runtime.
+- **Nested reductions over a factor tensor bind their own rows,** so `sum(sum(t))` means the two lets `u = sum(t)` and `s = sum(u)` on every path.
+- **A rule identifier spelled like a declared atom is the atom** on the agenda and the checked search; in a chart-position slot both raise a diagnostic naming the rule, the identifier, and the slot.
+- **A deduction whose items are not all spans derives the same goals on the agenda and in the checked search,** following each item's yield rather than a derivation-depth bound.
+- **A pure `fold` and computed `map`, `fold`, and `traverse` sources are bound once,** through the new `LetValue` form, so lowering is linear in the collection's length however often the body reads the accumulator.
+- **A declaration reports its own diagnostics before the checked module's.**
+- **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
+- **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+
+#### Reference machine
+
+- **`Wishart(scale_tril=...)` scores the matrix the source wrote.**
+- **A clamped site of the wrong element type is refused where it enters,** naming the site, the value, and the checked type.
+- **A shared host datum is spread across its plate** with `broadcast_shared_data` before validation.
+
+#### Transpile (shared)
+
+- **Every target spells every pointwise math builtin with the reference's meaning, or refuses it by name.** A target calls its own function where it has one and otherwise a definition in terms of other builtins; BUGS and JAGS refuse `digamma`. The pointwise `pow` is each target's own power function.
+- **A pure named computation's arguments are bound once,** so the rendered program grows linearly with the depth of a chain of calls.
+- **A marginalized latent is enumerated over its declared index object,** or the width of its probability argument, on every target.
+- **Two-argument `max` and `min` are pointwise on every target,** and an unrolled factor binder stays an integer, so `ys[max(t - 1, 0)]` reads the clamped entry.
+- **One-based targets translate a zero-based index at the subscript itself,** so index arithmetic and value arithmetic are each right on Stan, Turing, Gen, BUGS, and JAGS.
+- **A list-literal operand of a plated let is read at the loop's row** on every loop-indexed target.
+- **A MultivariateNormal or Wishart written with a literal Cholesky factor renders on every target,** multiplied out as `L L^T`; a factor known only at run time is refused by name.
+- **A refusal of one parameter vector per plate row says what the input denotes,** why the target cannot render it, and what to write instead.
+- **A gathered family argument is read by the axes its value carries on every target:** an entry of an event vector or a row of a matrix gathered by a drawn class, on Pyro, NumPyro, Edward2 (through `tf.gather` for a tensor index), Turing, Gen, and Church.
+
+#### Stan
+
+- **A let read by a family argument as an event is declared as a `vector`,** and elementwise arithmetic over one-axis operands is spelled on vectors.
+- **Real literals keep their decimal point,** so `/` over reals is real division.
+- **The lets of a marginalize body are resolved in order** and read at the observation's row, and a two-axis host input is read one row at a time, also inside a typed computation.
+- **A named computation's builtins are spelled by the shared table.**
+
+#### PyMC
+
+- **Integer division takes its sign from `pytensor.tensor.sign`.**
+
+#### Pyro and NumPyro
+
+- **A math builtin applied to a constant or an unrolled factor binder receives a tensor.**
+- **A list literal in let arithmetic is an array,** so `[1.0, 2.0] * mu` computes elementwise.
+- **A sampled vector-valued family parameter is passed through at its shape.**
+- **A site plated over several axes is drawn in its declared axis order,** each plate of the nest given its axis explicitly, outermost leftmost, and an argument that already carries the observation's event axes is not broadcast over them again.
+
+#### Edward2
+
+- **A plated observation carries its data and its plate,** so a let or score that reads the observed name reads the data.
+
+#### Turing and Gen
+
+- **Literals keep the type their source gave them,** so real arithmetic on whole-number reals stays in floating point.
+- **Special functions resolve** through the `SpecialFunctions` module Distributions loads.
+
+#### WebPPL
+
+- **A let is built at its own rank, one row at a time,** so a scalar let reads a plated observation at its indices and a plated let or observe reads one row.
+- **The QIEC runtime rounds a tie to even.**
+- **The runtime helpers are grafted only when an emitted expression calls them.**
+
+#### Church
+
+- **Every math builtin is defined in the runtime,** mapped over nested lists.
+- **A factor whose body has several axes renders,** read one row at a time, as in the `tree_categorical` example.
+
+#### BUGS and JAGS
+
+- **A row gathered from a factor-built table is read at the loop's row,** so the model compiles.
+- **A clamped integer subscript is rebased to the one-based origin.**
 
 ## [0.25.2] - 2026-10-11
 

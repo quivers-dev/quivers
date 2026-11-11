@@ -55,6 +55,7 @@ from quivers.analysis.plate_render import (
 from quivers.analysis.saturation import SaturationWarning, saturation_warnings
 from quivers.analysis.scope import (
     SCOPE_SEPARATOR,
+    TOP_LEVEL_ACCESSORS,
     TOP_LEVEL_KINDS,
     ScopedRef,
     ScopeKind,
@@ -62,6 +63,7 @@ from quivers.analysis.scope import (
     resolve_scoped_path,
     scope_children,
     split_path,
+    top_level_bindings,
 )
 
 __all__ = [
@@ -92,6 +94,7 @@ __all__ = [
     "saturation_warnings",
     # scope
     "SCOPE_SEPARATOR",
+    "TOP_LEVEL_ACCESSORS",
     "TOP_LEVEL_KINDS",
     "ScopedRef",
     "ScopeKind",
@@ -99,4 +102,5 @@ __all__ = [
     "resolve_scoped_path",
     "scope_children",
     "split_path",
+    "top_level_bindings",
 ]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -53,6 +53,12 @@ from quivers.dsl.compiler._deduction_terms import (
     atom_term,
     variable_name,
     variable_term,
+)
+from quivers.dsl.compiler._deduction_positions import (
+    is_pattern_variable,
+    misplaced_positions,
+    position_slots,
+    rule_position_variables,
 )
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
@@ -159,24 +165,38 @@ def _candidate_atoms(
     )
 
 
-def _category_depth(value) -> int:
+def _category_depth(value: Hashable) -> int:
     """Constructor-tree depth of a chart category or item.
 
-    Atoms and bound variables count as depth 0; the tagged pairs
-    ``("atom", "S")`` and ``("var", "#v1")`` are leaves. A wrapping
-    tuple ``(<ctor>, <args>...)`` whose head is a non-tag,
-    non-``"span"`` constructor counts as
+    Atoms, bound variables, integer literals, and positions count as
+    depth 0; the tagged pairs ``("atom", "S")``, ``("var", "#v1")``,
+    and ``("literal", 3)`` are leaves. A ``span`` item has the depth of
+    its category. A product ``("product", (c_1, ..., c_n))`` and any
+    other wrapping tuple ``(<ctor>, <args>...)`` count as
     :math:`1 + \\max_i \\text{depth}(\\text{args}_i)`. Used to gate
     rules that would otherwise rewrite ``A`` into ``Dia(A)`` or
-    ``Cont(A)`` ad infinitum.
+    ``Cont(A)`` ad infinitum; the checked QIEC search measures its
+    conclusions the same way.
+
+    Parameters
+    ----------
+    value : Hashable
+        A chart item, category, or field of one.
+
+    Returns
+    -------
+    int
+        The depth.
     """
     if not isinstance(value, tuple):
         return 0
     if not value:
         return 0
     head = value[0]
-    if head in TERM_LEAF_TAGS:
+    if head in TERM_LEAF_TAGS or head == "literal":
         return 0
+    if head == "product" and len(value) == 2 and isinstance(value[1], tuple):
+        return 1 + max((_category_depth(v) for v in value[1]), default=0)
     if head == "span":
         # span(I, J, C, ...): depth of the surrounding span is the
         # depth of its category subterm, ignoring positional
@@ -313,6 +333,10 @@ def load_lexicon_tsv(
     return rows
 
 
+#: The weight key of a rule binding no non-position variable.
+BASE_WEIGHT_KEY = "BASE"
+
+
 def _bindings_key(bindings: dict) -> str:
     """Stable string key over a binding map.
 
@@ -322,7 +346,19 @@ def _bindings_key(bindings: dict) -> str:
     string and replace structural punctuation with underscore
     sequences. The function is total over any hashable, JSON-stable
     binding values the runtime emits (atoms as `("atom", "S")`,
-    slashed categories as nested tuples, integer indices, …).
+    slashed categories as nested tuples, integers, …). The caller
+    passes only the non-position bindings; the empty map keys as
+    `BASE_WEIGHT_KEY`.
+
+    Parameters
+    ----------
+    bindings : dict
+        The variables to key by and their ground values.
+
+    Returns
+    -------
+    str
+        The key.
     """
 
     def encode(v) -> str:
@@ -337,17 +373,38 @@ def _bindings_key(bindings: dict) -> str:
         return "Q" + repr(v).replace(" ", "")
 
     items = sorted(bindings.items(), key=lambda kv: kv[0])
-    return "_".join(f"{k}_{encode(v)}" for k, v in items) or "BASE"
+    return "_".join(f"{k}_{encode(v)}" for k, v in items) or BASE_WEIGHT_KEY
+
+
+def _pattern_wildcards(pattern: LexiconPattern | str | int) -> set[str]:
+    """The wildcard names an agenda pattern mentions.
+
+    Parameters
+    ----------
+    pattern : LexiconPattern | str | int
+        A converted rule pattern: a `Wildcard`, a ground leaf, or a
+        tuple of patterns.
+
+    Returns
+    -------
+    set[str]
+        The names.
+    """
+    if isinstance(pattern, Wildcard):
+        return {pattern.name}
+    if isinstance(pattern, tuple):
+        return {name for part in pattern for name in _pattern_wildcards(part)}
+    return set()
 
 
 def _make_rule_weight_fn(
     *,
     rule_name: str,
-    param_dict: "nn.ParameterDict",
-    rule_parent: dict,
-    rule_param_dicts: dict,
-    is_learnable: bool,
-    bounded: bool = False,
+    positions: frozenset[str],
+    rule_parent: dict[str, str],
+    rule_param_dicts: dict[str, nn.ParameterDict],
+    rule_learnable: dict[str, bool],
+    rule_bounded: dict[str, bool],
     n_bounded: int = 1,
 ) -> Callable:
     """Build the `weight_fn` for a learnable / parented rule.
@@ -356,18 +413,47 @@ def _make_rule_weight_fn(
 
     * The rule's conclusion weight is
       ``semiring.times(*premise_weights, rule_log_weight)`` where
-      ``rule_log_weight`` is allocated lazily, one ``nn.Parameter`` per
-      distinct binding tuple keyed by `_bindings_key`.
+      ``rule_log_weight`` is one ``nn.Parameter`` per distinct binding
+      of the rule's non-position variables (categories and logical
+      forms), keyed by `_bindings_key`. Chart positions never enter
+      the key, so the rule has one weight at every position and every
+      sentence length; a rule with no non-position variable has
+      exactly one weight, under `BASE_WEIGHT_KEY`.
     * If the rule declares ``parent=other``, the parent's
-      ``rule_log_weight`` (under the same bindings) is added: the
-      total rule contribution is ``self_w + parent_w`` under any
-      semiring whose `times` corresponds to addition in the log
-      semiring (LogProb / Viterbi); for non-additive semirings we
-      fall back to two `semiring.times` calls, which is the
-      semiring-product analog.
-    * If the rule has only a parent and no own learnable parameter
-      (the user declared `parent=other` without `learnable`), the
-      rule contributes only the parent's weight.
+      ``rule_log_weight`` under the same key is added in the log
+      semirings (LogProb / Viterbi), and so on up the parent chain.
+    * A rule in the chain that is not learnable contributes no weight
+      of its own; a bounded rule's raw parameter is mapped below zero
+      by its own ``bounded`` flag.
+
+    Parameters
+    ----------
+    rule_name : str
+        The rule.
+    positions : frozenset[str]
+        The rule's position variables, which the key leaves out.
+    rule_parent : dict[str, str]
+        Each parented rule's parent.
+    rule_param_dicts : dict[str, nn.ParameterDict]
+        Each learnable or parented rule's parameters, by key.
+    rule_learnable : dict[str, bool]
+        Whether each rule declares ``learnable``.
+    rule_bounded : dict[str, bool]
+        Whether each rule declares ``bounded``.
+    n_bounded : int
+        The number of bounded rules, whose log divides each bounded
+        rule's per-firing factor.
+
+    Returns
+    -------
+    Callable
+        The weight function the agenda calls with a firing's bindings,
+        its premise weights, and the semiring.
+
+    Raises
+    ------
+    CompileError
+        At firing time, if the parent chain cycles.
     """
 
     # ``bounded=True`` parameterizes the rule weight as
@@ -388,27 +474,20 @@ def _make_rule_weight_fn(
     def _bounded_weight(raw: torch.Tensor) -> torch.Tensor:
         return -torch.nn.functional.softplus(raw) - bounded_log_cap
 
-    def _rule_log_weight(
-        bindings: dict,
-        own_dict: nn.ParameterDict,
-        own_learnable: bool,
-        rule_nm: str,
-    ) -> torch.Tensor:
-        if not own_learnable:
+    def _rule_log_weight(key: str, rule_nm: str) -> torch.Tensor:
+        own_dict = rule_param_dicts.get(rule_nm)
+        if own_dict is None or not rule_learnable.get(rule_nm, False):
             # No own parameter to add; identity in the additive log
             # semiring (and in LogProb specifically).
             return torch.tensor(0.0)
-        key = _bindings_key(bindings)
         existing = own_dict.get(key)
         if existing is None:
             # Initialise ``raw_param`` to zero: for bounded rules the
             # initial log-weight is ``-log(2) - log(n_bounded)``, a
             # mildly sub-stochastic per-firing rate.
-            init = torch.zeros(())
-            new_p = nn.Parameter(init)
-            own_dict[key] = new_p
-            return _bounded_weight(new_p) if bounded else new_p
-        return _bounded_weight(existing) if bounded else existing
+            existing = nn.Parameter(torch.zeros(()))
+            own_dict[key] = existing
+        return _bounded_weight(existing) if rule_bounded[rule_nm] else existing
 
     def weight_fn(bindings, premise_weights, semiring):
         # 1. Premise product (the default semiring-parsing aggregation).
@@ -423,13 +502,12 @@ def _make_rule_weight_fn(
                 base = semiring.times(base, w)
         # 2. Own contribution. A learned weight is a log weight, so only
         # the log semirings read one; the others multiply by their one.
+        # The key covers the non-position bindings only.
+        key = _bindings_key(
+            {name: value for name, value in bindings.items() if name not in positions}
+        )
         if semiring is SEMIRING_LOG_PROB or semiring is SEMIRING_VITERBI:
-            own_w = _rule_log_weight(
-                bindings,
-                param_dict,
-                is_learnable,
-                rule_name,
-            )
+            own_w = _rule_log_weight(key, rule_name)
         else:
             own_w = torch.tensor(float(semiring.one), dtype=torch.get_default_dtype())
         total = semiring.times(base, own_w)
@@ -446,17 +524,10 @@ def _make_rule_weight_fn(
                     f"rule {rule_name!r}: parent chain cycles at {parent!r}",
                 )
             seen.add(parent)
-            parent_dict = rule_param_dicts.get(parent)
-            if parent_dict is not None:
-                # Parents may themselves be learnable; pick up their
-                # weight on the same bindings.
-                pw = _rule_log_weight(
-                    bindings,
-                    parent_dict,
-                    True,
-                    parent,
-                )
-                total = semiring.times(total, pw)
+            # A learnable parent contributes its weight under the same
+            # key; a parent that only forwards to its own parent
+            # contributes nothing of its own.
+            total = semiring.times(total, _rule_log_weight(key, parent))
             cur = parent
         return total
 
@@ -485,8 +556,10 @@ class _DeductionsMixin:
         `DeductionSystem` and register it under ``decl.name``.
 
         Translates the declarative sequent-style rules into the
-        runtime's `InferenceRule` form (with single-uppercase
-        identifiers treated as wildcard variables). Resolves the
+        runtime's `InferenceRule` form (an identifier that is neither a
+        declared atom nor a numeral is a wildcard variable; an atom's
+        name is the atom, and is rejected in a chart-position slot).
+        Resolves the
         semiring by name. Wires the axiom source — one of:
 
         * a ``lexicon { ... }`` block, compiled into a learnable
@@ -502,6 +575,20 @@ class _DeductionsMixin:
 
         The result is callable as ``parse(NAME, input)`` from
         program bodies, producing a `ChartView`.
+
+        Parameters
+        ----------
+        decl : DeductionDecl
+            The declaration.
+
+        Raises
+        ------
+        CompileError
+            If the deduction is declared twice, an option is unknown or
+            malformed, a rule fills a chart-position slot with an atom
+            or a structured term, a ``parent`` names no rule, or the
+            lexicon or an attached signature or encoder does not
+            resolve.
         """
         if not hasattr(self, "_deductions"):
             self._deductions = {}
@@ -553,19 +640,20 @@ class _DeductionsMixin:
                 decl.col,
             )
 
+        frozen_atoms = frozenset(atoms_set)
+
         def _convert_pattern(texpr):
             if isinstance(texpr, TypeName):
                 name = texpr.name
-                if name in atoms_set:
-                    return atom_term(name)
-                # Variable convention: any identifier not in the
-                # atoms list (and not a numeric literal) is a
-                # wildcard. This permits arbitrary metavariable
-                # names — X, Y, Foo, antecedent — without ad-hoc
-                # capitalisation rules.
+                # Variable convention, shared with the QIEC elaboration:
+                # an identifier that is neither a declared atom nor a
+                # numeral is a wildcard, whatever its spelling; a
+                # declared atom's name is always that atom.
+                if is_pattern_variable(texpr, frozen_atoms):
+                    return Wildcard(name)
                 if name.isdigit():
                     return ("literal", int(name))
-                return Wildcard(name)
+                return atom_term(name)
             if isinstance(texpr, ObjectProduct):
                 return (
                     "product",
@@ -643,14 +731,30 @@ class _DeductionsMixin:
 
         inference_rules: list = []
         # Each rule may carry a ``#[learnable]`` pragma. A learnable
-        # rule allocates one log-weight per distinct binding tuple
-        # observed at run time, owned by a per-deduction
+        # rule has one log-weight per distinct binding of its
+        # non-position variables, owned by a per-deduction
         # ``_rule_module`` so the parameters appear in
-        # ``model.parameters()`` automatically. The conclusion weight
-        # is the semiring product of the premise weights and the
-        # bindings-keyed rule parameter; with no learnable pragma a
-        # rule reduces to the standard semiring-parsing default
-        # (semiring product of premise weights only).
+        # ``model.parameters()`` automatically. Chart positions are
+        # inferred from how the rules use each slot (see
+        # `position_slots`) and never enter the key. The conclusion
+        # weight is the semiring product of the premise weights and
+        # the keyed rule parameter; with no learnable pragma a rule
+        # reduces to the standard semiring-parsing default (semiring
+        # product of premise weights only).
+        slots = position_slots(decl)
+        for misplaced in misplaced_positions(decl, slots):
+            raise CompileError(
+                misplaced.message(decl.name), misplaced.line, misplaced.col
+            )
+        rule_positions = {
+            sr.name: rule_position_variables(decl, slots, sr) for sr in decl.rules
+        }
+        rule_learnable = {
+            sr.name: get_option_flag(sr.options, "learnable") for sr in decl.rules
+        }
+        rule_bounded = {
+            sr.name: get_option_flag(sr.options, "bounded") for sr in decl.rules
+        }
         rule_module = nn.Module()
         rule_param_dicts: dict[str, nn.ParameterDict] = {}
         # ``parent`` pragmas form a directed graph from a
@@ -707,7 +811,6 @@ class _DeductionsMixin:
                     )
                 rule_parent[sr.name] = parent_name
             weight_fn: Callable | None = None
-            bounded_flag = get_option_flag(sr.options, "bounded")
             if is_learnable or parent_name is not None:
                 param_dict = nn.ParameterDict()
                 rule_param_dicts[sr.name] = param_dict
@@ -717,11 +820,11 @@ class _DeductionsMixin:
                 )
                 weight_fn = _make_rule_weight_fn(
                     rule_name=sr.name,
-                    param_dict=param_dict,
+                    positions=rule_positions[sr.name],
                     rule_parent=rule_parent,
                     rule_param_dicts=rule_param_dicts,
-                    is_learnable=is_learnable,
-                    bounded=bounded_flag,
+                    rule_learnable=rule_learnable,
+                    rule_bounded=rule_bounded,
                     n_bounded=max(n_bounded_rules, 1),
                 )
             inference_rules.append(
@@ -732,6 +835,32 @@ class _DeductionsMixin:
                     weight_fn=weight_fn,
                 )
             )
+        # A rule binding no non-position variable has exactly one weight
+        # key, so its parameters (its own and its learnable ancestors')
+        # exist before any input is parsed and an optimizer built on
+        # ``parameters()`` sees them.
+        for rule in inference_rules:
+            if rule.name not in rule_param_dicts:
+                continue
+            variables = {
+                name
+                for pattern in (*rule.premises, rule.conclusion)
+                for name in _pattern_wildcards(pattern)
+            }
+            if variables - rule_positions[rule.name]:
+                continue
+            current: str | None = rule.name
+            visited: set[str] = set()
+            while current is not None and current not in visited:
+                visited.add(current)
+                owned = rule_param_dicts.get(current)
+                if (
+                    owned is not None
+                    and rule_learnable[current]
+                    and BASE_WEIGHT_KEY not in owned
+                ):
+                    owned[BASE_WEIGHT_KEY] = nn.Parameter(torch.zeros(()))
+                current = rule_parent.get(current)
 
         # ---- Axiom source ----
         #
@@ -761,11 +890,13 @@ class _DeductionsMixin:
                 )
             morph = self._morphisms[src_name]
 
-            def _axiom_injector(input_value, _morph=morph):
+            def _morphism_axioms(input_value, _morph=morph):
                 # The morphism is expected to be a callable that,
                 # given the input, returns a list of (item, weight)
                 # pairs.
                 return list(_morph(input_value))
+
+            axiom_injector: Callable = _morphism_axioms
 
             axiom_module = morph if isinstance(morph, nn.Module) else None
         elif decl.lexicon or decl.lexicon_from_file is not None:
@@ -1022,7 +1153,7 @@ class _DeductionsMixin:
             params_local = tuple(param_list)
             _lf_table: dict = {}
 
-            def _axiom_injector(
+            def _lexicon_axioms(
                 input_value,
                 _entries=entries_local,
                 _params=params_local,
@@ -1061,12 +1192,16 @@ class _DeductionsMixin:
                         out.append((item, weight_tensor))
                         _lf_table[item] = lf_val
                 return out
+
+            axiom_injector = _lexicon_axioms
         else:
             # Identity injector — input is already a list of axioms.
-            def _axiom_injector(input_value):
+            def _given_axioms(input_value):
                 if isinstance(input_value, list):
                     return input_value
                 return list(input_value)
+
+            axiom_injector = _given_axioms
 
             axiom_module = None
 
@@ -1177,7 +1312,7 @@ class _DeductionsMixin:
         system = DeductionSystem(
             rules=tuple(inference_rules),
             semiring=semiring,
-            axiom_injector=_axiom_injector,
+            axiom_injector=axiom_injector,
             goal=_goal,
             agenda_factory=agenda_factory,
             max_iterations=(
@@ -1193,18 +1328,8 @@ class _DeductionsMixin:
         # Stash the rule-weight module so its parameters appear in
         # ``model.parameters()`` of any Program that references
         # this deduction. Empty if no rule declared `#[learnable]`.
-        if any(len(d) > 0 or True for d in rule_param_dicts.values()):
+        if rule_param_dicts:
             system._rule_module = rule_module  # type: ignore[attr-defined]
-            # Register as a real submodule so PyTorch's parameter
-            # walker picks up the (lazily allocated) parameters.
-            try:
-                system.add_module("_rule_module", rule_module)
-            except Exception:
-                # ``DeductionSystem`` may not subclass nn.Module in
-                # exotic configurations; in that case the attribute
-                # alone is sufficient because the caller composes
-                # it explicitly.
-                pass
         # Attach a signature / encoder pairing, if declared. The
         # chart-query operations (`chart.embedding(pattern)`) consult
         # this attached encoder to compute on-demand item

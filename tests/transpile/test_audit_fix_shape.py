@@ -194,8 +194,10 @@ def test_topic_mixture_stan_enumerates_topics_per_word() -> None:
     """
     emitted = _nospace(_emit("grouped_topic_mixture", "stan"))
     assert "array[200]vector[3]lps_z=rep_array(rep_vector(0,3),200);" in emitted
-    assert ("lps_z[n_Token,k]=categorical_lpmf(k|theta[word_idx[n_Token]]);") in emitted
-    assert "lps_z[n_Token,k]+=categorical_lpmf(w[n_Token]|phi[k]);" in emitted
+    assert (
+        "lps_z[n_Token,k]=categorical_lpmf(k|theta[word_idx[n_Token]+1]);"
+    ) in emitted
+    assert "lps_z[n_Token,k]+=categorical_lpmf(w[n_Token]+1|phi[k]);" in emitted
     assert "target+=log_sum_exp(lps_z[n_Token]);" in emitted
 
 

@@ -88,6 +88,26 @@ define weighted_total(values : Tensor[Real]([3]), weights : Tensor[Real]([3])) :
     return fold(products, 0.0, total -> value -> total + value)
 ```
 
+QIEC elaborates a fold at its fixed extent, one application of the body
+per item. When the body reads the accumulator more than once, or reads it
+inside a lambda or `factor` whose body runs once per item, each intermediate
+accumulator is bound once and every read refers to that binding. A body
+that reads a whole state at every step, such as a forward-algorithm message
+update whose new components each read every old one, thus elaborates to a
+term that grows linearly in the collection's length, and each step runs
+once:
+
+<!-- compile: qiec -->
+```qvr
+define forward(start : Tensor[Real]([2]), transition : Tensor[Real]([2, 2]), emissions : Tensor[Real]([5, 2])) : Real !{} =
+    let alpha = fold(emissions, start, message -> emission -> map([0, 1], j -> logsumexp_over([0, 1], i -> message[i] + transition[i, j]) + emission[j]))
+    return logsumexp_over(alpha, score -> score)
+```
+
+The same sharing applies to a `map` or `fold` source that is not a
+variable, and to a lambda named by a local binding whose argument the body
+reads more than once: the source or argument is evaluated once and bound.
+
 `logsumexp_over(xs, f)` is the stable log-space reduction of `map(xs, f)`.
 It is useful for finite Bayesian [normalization](../../guides/stochastic.md#normalization):
 

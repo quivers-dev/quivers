@@ -314,27 +314,6 @@ def _qvr_log_densities(
     return log_densities
 
 
-def _stan_points(qvr_points: list[Point]) -> list[Point]:
-    """Translate 0-indexed QVR fibration entries to Stan's 1-indexed form.
-
-    The emitted Stan source declares `array [N] int <lower = 1,
-    upper = N> g;`, so the JSON values supplied to cmdstanpy must
-    live in `[1, N]`. The QVR probe consumes 0-indexed entries
-    natively; this helper shifts each `g` entry by one and leaves
-    every other field of every point unchanged.
-    """
-    shifted: list[Point] = []
-    for pt in qvr_points:
-        data: dict[str, float | int | list[float] | list[int]] = {
-            k: v for k, v in pt.data.items()
-        }
-        raw_g = data.get("g")
-        if isinstance(raw_g, list):
-            data["g"] = [int(v) + 1 for v in raw_g]
-        shifted.append(Point(params=pt.params, data=data))
-    return shifted
-
-
 def _target_log_densities(
     backend: str,
     fixture_source: bytes,
@@ -399,10 +378,7 @@ def test_via_fibration_three_way_agreement(
             target_source = transpile(module, target=backend)
         except UnsupportedConstruct:
             continue
-        target_points = _stan_points(qvr_points) if backend == "stan" else qvr_points
-        lp_target = _target_log_densities(
-            backend, target_source, target_points, scratch
-        )
+        lp_target = _target_log_densities(backend, target_source, qvr_points, scratch)
         if lp_target is None:
             continue
         any_target_ran = True

@@ -168,14 +168,39 @@ Operators associate left within each precedence level:
 
 The registry includes typed scalar primitives, tensor reductions, rowwise
 operations, and the fixed-shape collection forms `map`, `fold`, `length`, and
-`logsumexp_over`. `traverse` is effectful computation syntax rather than a
-pure value. The complete inventory and type restrictions are in
+`logsumexp_over`. A reduction (`sum`, `mean`, `prod`, `max`, `min`,
+`logsumexp`) collapses the last axis of its argument, so a tensor of shape
+`(n, k)` reduces to one of shape `(n,)` and a vector to a number; a rowwise
+operation (`softmax`, `log_softmax`, `cumsum`, `sort`, `normalize`) acts along
+the same axis and keeps the shape. `traverse` is effectful computation syntax
+rather than a pure value. The complete inventory and type restrictions are in
 [Finite collection expressions](collection-expressions.md) and the
 [let-expression guide](../../guides/dsl-programs-and-lets.md#checked-primitive-reference).
 Integer division and remainder truncate toward zero on every target. Mixed
 integer-real arithmetic inserts an explicit conversion when the surrounding
 form permits it. Write a comparison with a negative literal as `x < (-1)`
 because `<-` is the effectful binding token.
+
+### Reserved words
+
+A let expression reads five words as something other than a name:
+
+| Word | Meaning in an expression |
+| --- | --- |
+| `unit` | the unit value, of type `Unit` |
+| `true`, `false` | the Boolean literals |
+| `not` | Boolean negation |
+| `factor` | the start of a factor comprehension |
+
+None of them may name a binder: a `sample`, `observe`, or `marginalize`
+variable (alone or in a tuple pattern), a `let` or `score` name, a factor
+binder, a lambda parameter, or a program parameter. Every later reference to
+such a binder would read the literal or the keyword instead, so the source is
+refused where the binder is written, as in
+`reserved word at line 5, col 11: 'unit' names the unit value in expressions,
+so it cannot name a sample site`. Names that merely contain or capitalize a
+reserved word (`units`, `Unit`, `is_true`) and `in`, which is a keyword only
+between a factor's binders and its body, are ordinary names.
 
 List literals build tensors. `[1, 2, 3]` has integer elements;
 `[1.0, 2.0, 3.0]` has real elements; nested lists add dimensions. Distribution

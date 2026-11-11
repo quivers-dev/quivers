@@ -640,17 +640,12 @@ def test_known_blind_spot_stays_invisible(
 # ---------------------------------------------------------------------
 
 
-_ONE_BASED_MARGINALIZE_BACKENDS = frozenset({"stan"})
-"""Targets whose emitted marginalize fixture declares the grouping
-fibration 1-indexed (`array [20] int <lower = 1, upper = 20> idx;`).
-The QVR trace consumes `idx` 0-indexed, and the fixture ships no
-dtype table for the probe's own index lift to key on, so the shift is
-applied here."""
+def _mixture_probe_points() -> list[_ProbePoint]:
+    """The mixture point set, in QVR's zero-based coding on every target.
 
-
-def _mixture_probe_points(backend: str) -> list[_ProbePoint]:
-    """The mixture point set in `backend`'s index convention."""
-    offset = 1 if backend in _ONE_BASED_MARGINALIZE_BACKENDS else 0
+    Every target reads the grouping fibration `idx` as QVR holds it;
+    a one-based target's program reads it one higher itself.
+    """
     return [
         {
             "params": {
@@ -660,7 +655,7 @@ def _mixture_probe_points(backend: str) -> list[_ProbePoint]:
             },
             "data": {
                 "y": [float(v) for v in point.response],
-                "idx": [i + offset for i in range(len(point.response))],
+                "idx": list(range(len(point.response))),
             },
         }
         for point in _mutations.MARGINALIZE_POINTS
@@ -783,7 +778,7 @@ def test_marginalize_fixture_baseline_is_accepted(backend: str) -> None:
     reference = _mixture_reference()
     target = _run_probe(
         backend=backend,
-        points=_mixture_probe_points(backend),
+        points=_mixture_probe_points(),
         source_text=_emit(_mutations.MARGINALIZE_SOURCE, backend),
         scratch_name=f"marginalize_{backend}_baseline",
     )
@@ -829,7 +824,7 @@ def test_integrated_marginal_replaced_by_draw_is_rejected(
     )
     target = _run_probe(
         backend=backend,
-        points=_mixture_probe_points(backend),
+        points=_mixture_probe_points(),
         source_text=mutant_source,
         scratch_name=f"marginalize_{backend}_{mutation.name}",
     )

@@ -64,7 +64,7 @@ The shipped guides:
 | `AutoNormalizingFlow` | Composed bijector over Normal base | Multimodal or heavy-tailed posteriors; you supply the flow stack. |
 | `AutoIAFGuide` | Inverse autoregressive flow | Flagship NF default; good general-purpose non-Gaussian guide. |
 | `AutoNeuralSplineGuide` | Rational-quadratic spline coupling | Sharper than IAF on bounded support. |
-| `AutoMixtureGuide` | K-component mixture of guides | Multimodal posteriors; specify `num_components`. |
+| `AutoMixtureGuide` | K-component mixture of guides | Multimodal posteriors; pass a list of at least two component guides. The objectives enumerate the components exactly. |
 | `AutoGuideList` | Composition of guides | Assign different guide families to different latent subsets. |
 | `AutoStructured` | Structured Gaussian approximation | Preserve selected posterior dependencies. |
 
@@ -79,8 +79,8 @@ The benchmark grid in `tests/benchmarks/` walks these against synthetic posterio
 | `IWAEBound(K)` | Importance-weighted bound | Tighter than ELBO for `K > 1`. |
 | `RenyiBound(alpha, K)` | Rényi divergence bound | Interpolates ELBO (α=1) and IWAE (α=0). |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE | Mass-covering vs mode-seeking knob via α; tight via K. |
-| `ChiVI(num_particles=K)` | $\chi$-divergence objective | Alternative mass-covering variational objective. |
-| `RWS(num_particles=K)` | Reweighted wake-sleep | Separate model and guide updates from importance weights. |
+| `ChiVI(n, num_particles=K)` | $\chi^n$ upper bound (CUBO) | Mass-covering objective; minimizes $\exp(n\,\mathrm{CUBO}_n)$ with an unbiased gradient and reports the CUBO estimate, which with the ELBO brackets $\log p(y)$. Needs `K >= 2`, $n > 1$, and a guide that starts wider than the posterior. |
+| `RWS(num_particles=K)` | Reweighted wake-sleep (wake phase) | Separate model and guide updates from importance weights, with the draws held fixed; takes no estimator. |
 | `DReGsBound(num_particles=K)` | Doubly reparameterized bound | Importance-weighted objective with DReG guide gradients. |
 
 For most workflows, the default `ELBO()` is the right call. `IWAEBound` matters when the posterior is multimodal and the guide is flow-shaped (the importance weighting tightens the bound; coupling layers exploit it). `RenyiBound` is useful when you specifically want a mass-covering posterior (e.g. for Bayesian-optimization acquisition functions).
@@ -90,9 +90,9 @@ For most workflows, the default `ELBO()` is the right call. `IWAEBound` matters 
 | Estimator | What it does | When |
 |---|---|---|
 | `Reparameterized` | Standard pathwise gradient | Default. |
-| `StickingTheLanding` | Detaches variational params in `log q` | When `q → p*` and you're getting noisy gradients at convergence. |
-| `DoublyReparameterized` | DReG for IWAE | With `IWAEBound(K)` at large K. |
-| `ScoreFunction` | REINFORCE | Discrete (non-reparameterizable) latents you can't `marginalize`. |
+| `StickingTheLanding` | Detaches variational params in `log q` | When `q → p*` and you're getting noisy gradients at convergence. Valid for `ELBO` (and single-draw bounds); the multi-draw bounds reject it. |
+| `DoublyReparameterized` | DReG (generalized to the Rényi, VR-IWAE, and χ bounds) | With `IWAEBound(K)` at large K; not with a mixture guide on a multi-draw bound. |
+| `ScoreFunction` | REINFORCE with the draws held fixed | Guides whose draws are not differentiable. |
 
 `IWAEBound(num_particles=16, estimator=DoublyReparameterized())` combines importance weighting with DReG guide gradients. `K` trades computation and memory for a tighter importance-weighted bound; choose it by profiling rather than relying on a fixed threshold.
 
@@ -152,7 +152,7 @@ Diagnostics to check before trusting the run:
 Two configurations sit between VI and pure MCMC:
 
 - `WarmupThenHMC(guide, kernel, svi_steps, mcmc_warmup, mcmc_samples)` runs `svi_steps` of variational warm-up and then launches MCMC chains initialized from the trained guide. Useful when HMC's warmup wastes a lot of compute exploring tails the guide already knows are empty.
-- `AutoDAIS(base, model, observations, num_steps=..., init_step_size=...)` wraps a base guide with `num_steps` annealed HMC trajectories. It can represent posteriors that a simple mean-field guide misses, at additional cost.
+- `AutoDAIS(base, model, observations, num_steps=..., init_step_size=...)` wraps a base guide with `num_steps` uncorrected Hamiltonian transitions along an annealing path. Each draw carries its own trajectory's importance weight, so `ELBO()` estimates a valid lower bound on the log evidence. It can represent posteriors that a simple mean-field guide misses, at additional cost; use the default `Reparameterized` estimator, since the guide has no density at arbitrary points.
 
 <!-- python: skip -->
 ```python
@@ -190,7 +190,7 @@ Whenever you're unsure which guide handles a model shape, look at
 ## Try this
 
 - Take the eight-schools model from chapter 3 and run every guide on it, comparing posterior `tau` recovery against the NUTS reference.
-- Take the GMM from chapter 4 and compare `AutoMixtureGuide(num_components=4)` with `AutoNormalGuide`, accounting for label switching when you assess mode recovery.
+- Take the GMM from chapter 4 and compare an `AutoMixtureGuide` over four `AutoNormalGuide` components with a single `AutoNormalGuide`, accounting for label switching when you assess mode recovery.
 - Run `AutoDAIS` on the donut posterior (a non-simply-connected support); compare to `AutoIAFGuide`.
 
 ## Next

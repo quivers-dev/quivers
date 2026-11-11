@@ -1,6 +1,5 @@
 using Distributions
 using Random
-using SpecialFunctions
 
 struct HalfStudentT{T<:Real} <: Distributions.ContinuousUnivariateDistribution
     df::T
@@ -69,3 +68,16 @@ function _qvr_rbf_kernel(x::AbstractVector, length_scale::Real, jitter::Real)
     K = [exp(-0.5 * (x[i] - x[j])^2 / length_scale^2) for i in 1:n, j in 1:n]
     return K + jitter * Matrix{Float64}(I, n, n)
 end
+
+# A QVR Categorical draws class codes counting from zero, and
+# Distributions.jl's `Categorical` counts from one. The zero-based
+# family is the same distribution over the support `0:K-1`, so an
+# observed code and a drawn class are scored and returned as QVR
+# codes, and a subscript reads them one higher.
+qvr_categorical(probs::AbstractVector) =
+    Distributions.DiscreteNonParametric(0:(length(probs) - 1), collect(probs))
+
+# One probability vector per observation, whether the table is a
+# matrix (one row each) or already a vector of vectors.
+qvr_rows(table::AbstractMatrix) = eachrow(table)
+qvr_rows(table::AbstractVector) = table

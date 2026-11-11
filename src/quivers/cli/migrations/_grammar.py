@@ -121,9 +121,38 @@ def _compile_command(
     output: Path,
     *,
     platform_name: str | None = None,
+    machine: str | None = None,
 ) -> list[str]:
-    """Build the platform/compiler-specific shared-library command."""
+    """Build the platform/compiler-specific shared-library command.
+
+    On macOS the system compiler is a universal binary that builds for
+    the architecture of the process that runs it, which need not be the
+    interpreter's own (a build started under Rosetta, say); the command
+    names the interpreter's architecture so the library always loads.
+
+    Parameters
+    ----------
+    compiler : str
+        The compiler executable.
+    src_dir : Path
+        The directory of the parser's headers.
+    sources : tuple[Path, ...]
+        The C sources.
+    output : Path
+        The shared library to write.
+    platform_name : str | None
+        The platform, ``sys.platform`` by default.
+    machine : str | None
+        The architecture the library is loaded on,
+        ``platform.machine()`` by default.
+
+    Returns
+    -------
+    list[str]
+        The command.
+    """
     platform_name = platform_name or sys.platform
+    machine = machine or platform.machine()
     compiler_name = Path(compiler).name.lower()
     if platform_name == "win32" and compiler_name in {"cl", "cl.exe"}:
         return [
@@ -139,6 +168,8 @@ def _compile_command(
     flags = ["-O2", "-shared"]
     if platform_name != "win32":
         flags.append("-fPIC")
+    if platform_name == "darwin":
+        flags.extend(["-arch", machine])
     return [
         compiler,
         *flags,
@@ -189,10 +220,12 @@ def _compile_parser(snapshot_dir: Path, revision: str) -> Path:
             "compile the packaged immutable source snapshot",
         )
 
+    # The library is specific to the architecture it is built for, so
+    # each architecture has its own build of a source snapshot.
     cache_dir = (
         Path(tempfile.gettempdir())
         / "quivers-qvr-parsers"
-        / _source_fingerprint(src_dir)
+        / f"{_source_fingerprint(src_dir)}-{platform.machine()}"
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     output = cache_dir / f"qvr{_shared_lib_extension()}"

@@ -22,7 +22,7 @@ back to the groups.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
@@ -39,11 +39,15 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     DrawArgScalar,
     ExprIdent,
+    LetExprBinOp,
     LetExprCall,
     LetExprIndex,
     LetExprLambda,
+    LetExprLiteral,
     LetExprMethodCall,
     LetExprNode,
+    LetExprString,
+    LetExprUnaryOp,
     LetExprVar,
     LetStep,
     MarginalizeStep,
@@ -164,20 +168,29 @@ from quivers.qiec.types import (
     product_type,
     render_static,
 )
-from quivers.dsl.composite_lets import expand_composite_lets
+from quivers.dsl.composite_lets import expand_composite_lets, scan_let_call
 from quivers.dsl.family_schemas import (
-    family_parameter_names,
+    PARAMETER_ALIASES,
     family_parameterizations,
     render_parameterizations,
 )
-from quivers.dsl.let_expr_traversal import free_let_names, walk_let_expr
+from quivers.dsl.let_expr_traversal import (
+    free_let_names,
+    let_expr_children,
+    walk_let_expr,
+)
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
 from quivers.dsl.program_templates import (
     TemplateError,
     instantiate_program,
     template_bindings,
 )
-from quivers.dsl.pure_builtins import HOST_ONLY_BUILTINS, PURE_BUILTINS
+from quivers.dsl.pure_builtins import (
+    _REDUCTIONS,
+    _ROWWISE,
+    HOST_ONLY_BUILTINS,
+    PURE_BUILTINS,
+)
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.step_resolution import (
     ResolvedDist,
@@ -431,37 +444,100 @@ def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
         if isinstance(step, MarginalizeStep):
             found |= _scanned_names(step.scope)
         elif isinstance(step, LetStep):
-            scan = _scan_call(step.value)
+            scan = scan_let_call(step.value)
             if scan is not None:
                 found.add(scan[1])
     return frozenset(found)
 
 
-def _scan_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
-    """Read ``scan(step, xs)`` or ``scan(step, xs, init)`` off a let expression.
+def _own_site_labels(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
+    """The labels of the sites a program body draws or observes itself.
 
     Parameters
     ----------
-    expr : LetExprNode
-        The expression.
+    steps : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes but not
+        into the programs they call or scan with.
 
     Returns
     -------
-    tuple[str, str, str | None] | None
-        The step program's name, the sequence's name, and the learned
-        initial state's name when there is one; ``None`` when the
-        expression is not a scan of names.
+    frozenset[str]
+        The label of every ``sample`` and ``observe`` step and of every
+        marginalized latent.
     """
-    if not isinstance(expr, LetExprCall) or expr.func != "scan":
-        return None
-    if len(expr.args) not in (2, 3) or not all(
-        isinstance(argument, LetExprVar) for argument in expr.args
-    ):
-        return None
-    names = [
-        argument.name for argument in expr.args if isinstance(argument, LetExprVar)
-    ]
-    return names[0], names[1], names[2] if len(names) == 3 else None
+    found: set[str] = set()
+    for step in steps:
+        if isinstance(step, SampleStep | ObserveStep):
+            found.add(",".join(step.vars))
+        elif isinstance(step, MarginalizeStep):
+            found.add(step.var)
+            found |= _own_site_labels(step.scope)
+    return frozenset(found)
+
+
+def reached_site_labels(
+    name: str, declarations: Mapping[str, ProgramDecl]
+) -> frozenset[str]:
+    """The labels of every site a program reaches when it runs.
+
+    A program reaches its own sites, the sites of the programs it calls
+    with ``let y <- p(...)``, which keep their labels, and the sites of
+    the step programs it scans with, which it reaches once per position
+    under the same labels.
+
+    Parameters
+    ----------
+    name : str
+        The program's name.
+    declarations : Mapping[str, ProgramDecl]
+        The module's program declarations, step programs included.
+
+    Returns
+    -------
+    frozenset[str]
+        The labels; empty for a name that is not a program.
+    """
+    found: set[str] = set()
+    pending = [name]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        declaration = declarations.get(current)
+        if declaration is None:
+            continue
+        found |= _own_site_labels(declaration.draws)
+        pending.extend(_callees(declaration.draws))
+    return frozenset(found)
+
+
+def _callees(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
+    """The programs a body calls in place or scans with.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The steps, searched through marginalization scopes.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The callee of every ``let y <- p(...)`` and the step program
+        of every ``let h = scan(step, xs)``.
+    """
+    found: list[str] = []
+    for step in steps:
+        if isinstance(step, CallStep):
+            found.append(step.call.callee)
+        elif isinstance(step, MarginalizeStep):
+            found.extend(_callees(step.scope))
+        elif isinstance(step, LetStep):
+            scan = scan_let_call(step.value)
+            if scan is not None:
+                found.append(scan[0])
+    return tuple(found)
 
 
 def _zero_of(type_: TypeExpr) -> Value:
@@ -851,6 +927,264 @@ def _index_names(expr: LetExprNode) -> list[str]:
     return found
 
 
+def _gathered_tables(steps: Sequence[ProgramStep]) -> dict[str, int]:
+    """The names let expressions only gather from, with the axes they index.
+
+    A name subscripted as ``table[i]`` or ``table[i, j]``, and read no
+    other way, is a lookup table: its extents are those of whatever it
+    tabulates, not of the plate the gather's result ranges over. A name
+    also read whole, as an operand or a draw argument, keeps the type
+    that use gives it.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        The program's steps, marginalization scopes included.
+
+    Returns
+    -------
+    dict[str, int]
+        Each gathered name and how many axes one gather indexes; the
+        largest such count when it is gathered more than once.
+    """
+    tables: dict[str, int] = {}
+    whole: set[str] = set()
+
+    def visit(body: Sequence[ProgramStep]) -> None:
+        """Record the gathers and whole reads of a body's steps.
+
+        Parameters
+        ----------
+        body : Sequence[ProgramStep]
+            The steps.
+        """
+        for step in body:
+            if isinstance(step, MarginalizeStep):
+                visit(step.scope)
+            if isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
+                for argument in step.args or ():
+                    whole.update(_argument_names(argument))
+            if not isinstance(step, LetStep | ScoreStep):
+                continue
+            gathered: dict[str, int] = {}
+            reads: dict[str, int] = {}
+            for node in walk_let_expr(step.value):
+                if isinstance(node, LetExprVar):
+                    reads[node.name] = reads.get(node.name, 0) + 1
+                if not isinstance(node, LetExprIndex):
+                    continue
+                if isinstance(node.array, LetExprVar):
+                    # The innermost subscript of a chain holds the name.
+                    name = node.array.name
+                    gathered[name] = gathered.get(name, 0) + 1
+                rank = len(node.indices)
+                array = node.array
+                while isinstance(array, LetExprIndex):
+                    rank += len(array.indices)
+                    array = array.array
+                if isinstance(array, LetExprVar):
+                    tables[array.name] = max(rank, tables.get(array.name, 0))
+            whole.update(
+                name for name, count in reads.items() if count > gathered.get(name, 0)
+            )
+
+    visit(steps)
+    return {name: rank for name, rank in tables.items() if name not in whole}
+
+
+type _Shape = tuple[IndexTerm, ...]
+"""The dimensions of a value, outermost first; empty for a scalar."""
+
+
+def _unify_free_shapes(
+    expr: LetExprNode,
+    free: frozenset[str],
+    bound_type: Callable[[str], TypeExpr | None],
+    bound_batch: Callable[[str], _Shape],
+) -> tuple[dict[str, _Shape], frozenset[str], _Shape]:
+    """Infer the shapes of free names from the plated operands they meet.
+
+    A free name combined elementwise, by an arithmetic operator or
+    through elementwise calls, with a value ranging over plates takes
+    those plates' extents: it holds one entry per row the value has. A
+    value's event axes, and the axes of a value no plate shapes, do not
+    fix a free name, which a scalar could fill by broadcasting. A free
+    name whose value a reduction or a rowwise operation consumes needs
+    at least one axis; if nothing in the expression fixes its shape, it
+    is reported as ambiguous.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+    free : frozenset[str]
+        The names no step binds.
+    bound_type : Callable[[str], TypeExpr | None]
+        The type of a bound name, or ``None`` for a name the expression
+        binds itself.
+    bound_batch : Callable[[str], _Shape]
+        The plate extents a bound name ranges over, outermost first.
+
+    Returns
+    -------
+    tuple[dict[str, _Shape], frozenset[str], _Shape]
+        The plate extents fixed for each free name a plated operand
+        meets, the free names a reduction consumes that nothing fixes,
+        and the plate extents the expression's value ranges over.
+    """
+    fixed: dict[str, _Shape] = {}
+    reduced: set[str] = set()
+
+    def bare(node: LetExprNode) -> set[str]:
+        """Free names reaching ``node``'s value through elementwise steps.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The operand.
+
+        Returns
+        -------
+        set[str]
+            The names whose shape is the operand's.
+        """
+        if isinstance(node, LetExprVar):
+            return {node.name} if node.name in free else set()
+        if isinstance(node, LetExprBinOp):
+            return bare(node.left) | bare(node.right)
+        if isinstance(node, LetExprUnaryOp):
+            return bare(node.operand)
+        if (
+            isinstance(node, LetExprCall)
+            and node.func not in _REDUCTIONS
+            and node.func in PURE_BUILTINS
+        ):
+            return set().union(*(bare(argument) for argument in node.args))
+        return set()
+
+    def rank(node: LetExprNode) -> int | None:
+        """The number of axes of a value, when the expression fixes it.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The value.
+
+        Returns
+        -------
+        int | None
+            Its rank, or ``None`` when it reads a free name of unknown
+            shape or a form whose rank this walk does not follow.
+        """
+        if isinstance(node, LetExprLiteral | LetExprString):
+            return 0
+        if isinstance(node, LetExprVar):
+            if node.name in free:
+                known = fixed.get(node.name)
+                return None if known is None else len(known)
+            type_ = bound_type(node.name)
+            if type_ is None:
+                return None
+            split = tensor_shape(type_)
+            return 0 if split is None else len(split[1])
+        if isinstance(node, LetExprUnaryOp):
+            return rank(node.operand)
+        if isinstance(node, LetExprBinOp | LetExprCall):
+            children = (
+                (node.left, node.right) if isinstance(node, LetExprBinOp) else node.args
+            )
+            ranks = [rank(child) for child in children]
+            if any(item is None for item in ranks):
+                return None
+            widest = max((item for item in ranks if item is not None), default=0)
+            if (
+                isinstance(node, LetExprCall)
+                and node.func in _REDUCTIONS
+                and len(node.args) == 1
+            ):
+                return max(0, widest - 1)
+            return widest
+        return None
+
+    def batch(node: LetExprNode) -> _Shape | None:
+        """The plate extents a value ranges over.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The value.
+
+        Returns
+        -------
+        _Shape | None
+            Its plate extents, outermost first, or ``None`` when it
+            reads a free name nothing has fixed.
+        """
+        if isinstance(node, LetExprVar):
+            if node.name in free:
+                return fixed.get(node.name)
+            return bound_batch(node.name)
+        if isinstance(node, LetExprUnaryOp):
+            return batch(node.operand)
+        if isinstance(node, LetExprBinOp):
+            left, right = batch(node.left), batch(node.right)
+            if left is None and right is not None:
+                meet(node.left, right)
+                return right
+            if right is None and left is not None:
+                meet(node.right, left)
+                return left
+            if left is None or right is None:
+                return None
+            return left if len(left) >= len(right) else right
+        if isinstance(node, LetExprCall):
+            shapes = [batch(argument) for argument in node.args]
+            if node.func in _REDUCTIONS and len(node.args) == 1:
+                if shapes[0] is None:
+                    reduced.update(bare(node.args[0]))
+                    return None
+                # The last axis is a plate's when the argument has no
+                # event axis after its plates.
+                if shapes[0] and rank(node.args[0]) == len(shapes[0]):
+                    return shapes[0][:-1]
+                return shapes[0]
+            if node.func in _ROWWISE and len(node.args) == 1:
+                if shapes[0] is None:
+                    reduced.update(bare(node.args[0]))
+                return shapes[0]
+            if node.func in PURE_BUILTINS:
+                known = [item for item in shapes if item is not None]
+                if len(known) < len(shapes):
+                    return None
+                return max(known, key=len, default=())
+            return ()
+        for child in let_expr_children(node):
+            batch(child)
+        return ()
+
+    def meet(unknown: LetExprNode, known: _Shape) -> None:
+        """Fix the free names of an operand to a plated partner's extents.
+
+        Parameters
+        ----------
+        unknown : LetExprNode
+            The operand of unknown shape.
+        known : _Shape
+            Its partner's plate extents.
+        """
+        if not known:
+            # A partner over no plate broadcasts a scalar as well as a
+            # vector, so it fixes nothing.
+            return
+        for name in bare(unknown):
+            fixed.setdefault(name, known)
+
+    # A shape fixed late in the walk can settle an operand met earlier.
+    batch(expr)
+    result = batch(expr)
+    return fixed, frozenset(reduced - set(fixed)), result or ()
+
+
 def _argument_names(argument: DrawArg) -> list[str]:
     """The names a draw argument reads.
 
@@ -1189,6 +1523,8 @@ class _ProgramElaboration:
         scope = _Scope()
         self._program_parameters(declaration, scope, state)
         state.input_shapes = self._infer_input_shapes(declaration)
+        state.tables = _gathered_tables(declaration.draws)
+        state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
@@ -1248,6 +1584,7 @@ class _ProgramElaboration:
                         role,
                         scope.locals[name].type,
                         state.parameter_axes.get(name, ()),
+                        per_row=name in state.per_row,
                     )
                     for name, role in state.parameters
                 ),
@@ -2079,7 +2416,7 @@ class _ProgramElaboration:
             call = self._deduction_call(deduction, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
-        scan = _scan_call(step.value)
+        scan = scan_let_call(step.value)
         if scan is not None:
             call = self._scan_call(scan, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
@@ -2087,6 +2424,7 @@ class _ProgramElaboration:
         value = self._let_value(step.value, scope, state, step)
         type_ = self._value_type(value, scope.context(), step.value)
         self._bind_step(scope, step.name, type_, Return(value), step)
+        self._record_batch(step.name, step.value, scope, state)
 
     def _parse_call(self: _Elaborator, expr: LetExprNode) -> tuple[str, str] | None:
         """Read ``parse(D, x)``, a deduction applied to a program input.
@@ -2175,7 +2513,12 @@ class _ProgramElaboration:
         tokens = self._declare_parameter(
             source, tensor_type(STRING, (extent,)), "data", scope, state, node
         )
-        state.uses_params = True
+        params = self.instances.get(PARAMS_INSTANCE)
+        if params is not None and any(
+            entry.instance == params.entry.instance
+            for entry in signature.effects.entries
+        ):
+            state.uses_params = True
         return Call(
             signature.id,
             signature.name,
@@ -2190,6 +2533,62 @@ class _ProgramElaboration:
                 node,
             ),
         )
+
+    def _check_scan_site_labels(
+        self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
+    ) -> None:
+        """Refuse a scan whose step shares a site label with another site.
+
+        A site the step reaches is addressed by its label and its
+        occurrence, ``"<label>@<n>"``, counted over the run. A label
+        the scanning program also draws or observes under, or that
+        another scan or call of the program reaches, would number that
+        site among the step's occurrences, so ``"<label>@0"`` would not
+        name the step's first position. The labels the expansion of a
+        scan synthesizes derive from the program's own bindings and
+        cannot collide; a program cell's own labels can.
+
+        Parameters
+        ----------
+        step_name : str
+            The step program's name.
+        state : _ProgramState
+            The scanning program's accumulating state.
+        node : LetStep
+            The scan's step.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a label is shared.
+        """
+        reached = reached_site_labels(step_name, self._program_declarations)
+        others: list[tuple[str, frozenset[str]]] = [
+            (
+                f"the program {state.declaration.name!r}",
+                _own_site_labels(state.declaration.draws),
+            )
+        ]
+        others.extend(
+            (
+                f"the step {callee!r}",
+                reached_site_labels(callee, self._program_declarations),
+            )
+            for callee in _callees(state.declaration.draws)
+            if callee != step_name
+        )
+        for owner, labels in others:
+            shared = sorted(reached & labels)
+            if shared:
+                self._fail(
+                    node,
+                    f"the scan step {step_name!r} reaches site "
+                    f"{', '.join(repr(label) for label in shared)} at every "
+                    f"position, and {owner} reaches a site under the same "
+                    f"label, so the two would share addresses; rename one "
+                    f"of them",
+                    code="qiec-program",
+                )
 
     def _scan_call(
         self: _Elaborator,
@@ -2256,16 +2655,6 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         entry_type, state_type = signature.parameters[:2]
-        # The step's remaining inputs, the numbers of its parameter
-        # maps, pass through the recurrence from the scanning program.
-        passed: list[Local] = []
-        for parameter in step_entry.parameters[2:]:
-            existing = scope.lookup(parameter.name)
-            if existing is None:
-                existing = self._declare_parameter(
-                    parameter.name, parameter.type, parameter.role, scope, state, node
-                )
-            passed.append(existing)
         local = scope.lookup(source)
         if local is None:
             self._fail(
@@ -2292,6 +2681,51 @@ class _ProgramElaboration:
                 f"not the {render_static(entry_type)} it reads",
                 code="qiec-program",
             )
+        self._check_scan_site_labels(step_name, state, node)
+        # The step's remaining inputs pass through the recurrence from
+        # the scanning program. A name the step reads without binding
+        # it is the scanning program's binding of that name before the
+        # scan, else an input of the scanning program. An observation
+        # the step scores is one observation per position: the scanning
+        # program takes the sequence of them, and position ``t`` reads
+        # its ``t``-th entry.
+        passed: list[Local] = []
+        positional: list[bool] = []
+        for parameter in step_entry.parameters[2:]:
+            if parameter.role == "observation":
+                if scope.lookup(parameter.name) is not None:
+                    self._fail(
+                        node,
+                        f"the scan step {step_name!r} observes "
+                        f"{parameter.name!r} at every position, so the "
+                        f"scanning program cannot also bind {parameter.name!r}",
+                        code="qiec-program",
+                    )
+                observed_shape = tensor_shape(parameter.type)
+                sequence_type: TypeExpr = (
+                    tensor_type(parameter.type, (extent,))
+                    if observed_shape is None
+                    else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
+                )
+                passed.append(
+                    self._declare_parameter(
+                        parameter.name,
+                        sequence_type,
+                        parameter.role,
+                        scope,
+                        state,
+                        node,
+                    )
+                )
+                positional.append(True)
+                continue
+            existing = scope.lookup(parameter.name)
+            if existing is None:
+                existing = self._declare_parameter(
+                    parameter.name, parameter.type, parameter.role, scope, state, node
+                )
+            passed.append(existing)
+            positional.append(False)
         name = f"{state.declaration.name}__{node.name}_scan"
         if name in self.computation_signatures:
             self._fail(
@@ -2369,7 +2803,21 @@ class _ProgramElaboration:
                         signature.id,
                         signature.name,
                         (),
-                        (Var(entry), Var(current), *(Var(item) for item in carried)),
+                        (
+                            Var(entry),
+                            Var(current),
+                            *(
+                                Gather(Var(item), Var(position), parameter.type)
+                                if per_step
+                                else Var(item)
+                                for item, per_step, parameter in zip(
+                                    carried,
+                                    positional,
+                                    step_entry.parameters[2:],
+                                    strict=True,
+                                )
+                            ),
+                        ),
                         state_type,
                         signature.effects,
                         _origin_at(self, (*path, "step"), "call", node),
@@ -2838,23 +3286,57 @@ class _ProgramElaboration:
                 "name has no elaboration",
                 code=GAP_CODE,
             )
+        free = frozenset(
+            name
+            for name in _free_let_names(expr)
+            if scope.lookup(name) is None and name not in self._lambda_macros
+        )
+        fixed, reduced, _ = _unify_free_shapes(
+            expr,
+            free,
+            lambda name: (
+                local.type if (local := scope.lookup(name)) is not None else None
+            ),
+            lambda name: self._batch_of(name, state),
+        )
         for name in _free_let_names(expr):
-            if scope.lookup(name) is None and name not in self._lambda_macros:
-                inferred = state.input_shapes.get(name)
-                axes = (
-                    (inferred[1].name,)
-                    if inferred is not None and inferred[1] is not None
-                    else None
-                )
-                self._declare_parameter(
-                    name,
-                    self._input_type(name, state),
-                    "data",
-                    scope,
-                    state,
+            if name not in free or scope.lookup(name) is not None:
+                continue
+            inferred = state.input_shapes.get(name)
+            axis = inferred[1] if inferred is not None else None
+            type_ = self._input_type(name, state)
+            axes = (
+                (axis.name,) if axis is not None and name not in state.tables else None
+            )
+            if name not in state.tables and name in fixed:
+                dimensions = fixed[name]
+                if axis is not None and dimensions != (axis.size,):
+                    self._fail(
+                        node,
+                        f"host datum {name!r} is combined here with a value of "
+                        f"shape {self._render(tensor_type(REAL, dimensions))}, but "
+                        f"the plated step reading it ranges over "
+                        f"{axis.name!r}; the two uses disagree on its extent",
+                        code="qiec-program",
+                    )
+                element = inferred[0] if inferred is not None else REAL
+                type_ = tensor_type(element, dimensions)
+                axes = None
+            elif name not in state.tables and name in reduced and axis is None:
+                self._fail(
                     node,
-                    axes=axes,
+                    f"host datum {name!r} is reduced here, but nothing fixes its "
+                    "shape: no value of known shape is combined with it "
+                    "elementwise and no plated step reads it. State the extent "
+                    "it ranges over by combining it elementwise with a value over "
+                    f"that object, or by reading it entrywise in a factor, as in "
+                    f"`factor i : <Object> in {name}[i]`",
+                    code="qiec-program",
                 )
+            self._declare_parameter(name, type_, "data", scope, state, node, axes=axes)
+            split = tensor_shape(type_)
+            if split is not None and name not in state.tables:
+                state.batch_shapes[name] = tuple(split[1])
         return self._lower_value(
             expr,
             (),
@@ -2862,6 +3344,60 @@ class _ProgramElaboration:
             None,
             ("programs", state.declaration.name, "lets"),
         )
+
+    def _batch_of(self: _Elaborator, name: str, state: _ProgramState) -> _Shape:
+        """The plate extents a bound name ranges over.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        _Shape
+            A site's batch extents, a plated input's or let's recorded
+            extents, else none.
+        """
+        known = state.batch_shapes.get(name)
+        if known is not None:
+            return known
+        for site in state.sites:
+            if site.name == name:
+                return tuple(axis.size for axis in site.batch)
+        return ()
+
+    def _record_batch(
+        self: _Elaborator,
+        name: str,
+        expr: LetExprNode,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> None:
+        """Record the plate extents a let's value ranges over.
+
+        Parameters
+        ----------
+        name : str
+            The let's name.
+        expr : LetExprNode
+            Its expression, whose free names are already declared.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        """
+        _, _, extents = _unify_free_shapes(
+            expr,
+            frozenset(),
+            lambda read: (
+                local.type if (local := scope.lookup(read)) is not None else None
+            ),
+            lambda read: self._batch_of(read, state),
+        )
+        state.batch_shapes[name] = extents
 
     def _input_type(self: _Elaborator, name: str, state: _ProgramState) -> TypeExpr:
         """The type a free name read by a let expression is declared at.
@@ -2877,13 +3413,114 @@ class _ProgramElaboration:
         Returns
         -------
         TypeExpr
-            ``Int`` or ``Real`` when the name reaches no plated step, else
-            the tensor of that element over the plate's first batch axis.
+            For a name some let gathers from, a table: the tensor of its
+            element over one open extent per axis a gather indexes, and
+            per axis of a row when the gathered rows fill a vector-valued
+            family parameter, each a static binder of the program that a
+            run reads off the data. Otherwise ``Int`` or ``Real`` when the name reaches no
+            plated step, else the tensor of that element over the
+            plate's first batch axis.
         """
         element, axis = state.input_shapes.get(name, (REAL, None))
+        rank = state.tables.get(name)
+        if rank is not None:
+            rank += state.table_events.get(name, 0)
+            dimensions: list[IndexTerm] = []
+            for position in range(rank):
+                extent_name = (
+                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
+                )
+                binder = state.extents.get(extent_name)
+                if binder is None:
+                    binder = IndexBinder(extent_name, NAT)
+                    state.extents[extent_name] = binder
+                dimensions.append(IndexVariable(extent_name, NAT))
+            return tensor_type(element, tuple(dimensions))
         if axis is None:
             return element
         return tensor_type(element, (axis.size,))
+
+    def _table_event_ranks(
+        self: _Elaborator, declaration: ProgramDecl, tables: Mapping[str, int]
+    ) -> dict[str, int]:
+        """The axes each table's rows carry, read off the draws they fill.
+
+        A let that only gathers rows from a table, as in ``let row_cuts =
+        cuts[participant_idx]``, and fills a family parameter of rank r
+        with them, gathers vectors (or matrices) of that rank: the table
+        has r further axes after the ones a gather indexes.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+        tables : Mapping[str, int]
+            The gathered tables, with the axes a gather indexes.
+
+        Returns
+        -------
+        dict[str, int]
+            Each table whose rows fill a vector-valued parameter, with the
+            rank of one row.
+        """
+        gathers: dict[str, str] = {}
+        steps: list[ProgramStep] = []
+
+        def collect(body: Sequence[ProgramStep]) -> None:
+            """Gather a body's steps, marginalization scopes included.
+
+            Parameters
+            ----------
+            body : Sequence[ProgramStep]
+                The steps.
+            """
+            for step in body:
+                steps.append(step)
+                if isinstance(step, MarginalizeStep):
+                    collect(step.scope)
+
+        collect(declaration.draws)
+        for step in steps:
+            if isinstance(step, LetStep) and isinstance(step.value, LetExprIndex):
+                array = step.value.array
+                while isinstance(array, LetExprIndex):
+                    array = array.array
+                if isinstance(array, LetExprVar) and array.name in tables:
+                    gathers[step.name] = array.name
+        events: dict[str, int] = {}
+        for step in steps:
+            if not isinstance(step, SampleStep | ObserveStep) or not step.args:
+                continue
+            try:
+                resolved = resolve_step_dist(
+                    step.morphism,
+                    step.args,
+                    morphisms=self._program_morphisms,
+                    lets=self._program_lets,
+                    family_registry=frozenset(FAMILIES),
+                    target="qvr-qiec",
+                )
+            except StepResolutionError, TypeError:
+                continue
+            record = FAMILIES.get(resolved.family)
+            if record is None:
+                continue
+            for argument in step.args:
+                if not isinstance(argument, DrawArgNamed):
+                    continue
+                value = argument.value
+                if not isinstance(value, DrawArgName) or value.text not in gathers:
+                    continue
+                try:
+                    parameter = _semantic_family_parameter(
+                        record, argument.parameter, step.morphism
+                    )
+                except KeyError:
+                    continue
+                if parameter.rank > 0:
+                    table = gathers[value.text]
+                    events[table] = max(parameter.rank, events.get(table, 0))
+        return events
 
     def _infer_input_shapes(
         self: _Elaborator, declaration: ProgramDecl
@@ -2964,6 +3601,31 @@ class _ProgramElaboration:
                         *(free_of(argument) for argument in step.call.arguments)
                     )
                     bound.add(step.name)
+                elif (
+                    isinstance(step, SampleStep)
+                    and step.morphism in self._program_declarations
+                ):
+                    # A draw from a program runs the program's steps in
+                    # place, so the names they read are typed as they
+                    # are read there.
+                    template = self._program_declarations[step.morphism]
+                    try:
+                        instantiated = instantiate_program(
+                            template,
+                            step.vars,
+                            template_bindings(
+                                template,
+                                step.args or (),
+                                {name: LetExprVar(name=name) for name in bound},
+                            ),
+                        )
+                    except TemplateError:
+                        # The elaboration of the draw reports the misfit
+                        # with its location.
+                        bound.update(step.vars)
+                        continue
+                    visit(instantiated, group)
+                    bound.update(step.vars)
                 elif isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
                     names = (
                         [step.var]
@@ -3876,6 +4538,25 @@ class _ProgramElaboration:
                 # [over=Col]`` draws one simplex point per row. An
                 # annotation naming an event axis restates it.
                 batch_axes = (self._object_axis(step.index, step),)
+            rank = record.event_rank
+            if (
+                isinstance(step, SampleStep | ObserveStep)
+                and rank <= 1
+                and len(over) > rank
+                and not (rank == 0 and len(over) == 1)
+            ):
+                # The leading axes beyond the family's event rank index
+                # an independent array of variates, sampled or observed:
+                # ``Normal`` over
+                # ``[B, C]`` is a ``(B, C)`` array of independent
+                # normals, ``Dirichlet`` over ``[B, K]`` one ``K``-simplex
+                # point per element of ``B``. They are batch axes after
+                # the plate, in the order written.
+                split = len(over) - rank
+                return PlateShape(
+                    (*batch_axes, *(self._axis(name, step) for name in over[:split])),
+                    tuple(self._axis(name, step) for name in over[split:]),
+                )
             return PlateShape(
                 batch_axes, tuple(self._axis(name, step) for name in over)
             )
@@ -3971,18 +4652,16 @@ class _ProgramElaboration:
             or isinstance(step, MarginalizeStep)
             or step.axes is not None
             or record.event_rank == 0
-            or record.event_source is None
+            or not record.event_sources
             or _option_axes(step.options, "over")
             or _option_axes(step.options, "iid_over")
             or (morphism is not None and _option_axes(morphism.options, "over"))
         ):
             return plate
-        source = next(
-            (value for name, value in arguments if name == record.event_source), None
-        )
-        if source is None:
+        supplied = record.event_argument(arguments)
+        if supplied is None:
             return plate
-        shape = tensor_shape(self._value_type(source, scope.context(), step))
+        shape = tensor_shape(self._value_type(supplied[1], scope.context(), step))
         if shape is None or len(shape[1]) < record.event_rank:
             return plate
         natural = tuple(shape[1][len(shape[1]) - record.event_rank :])
@@ -4051,9 +4730,20 @@ class _ProgramElaboration:
             elif tuple(axis.size for axis in axes) != tuple(
                 axis.size for axis in found
             ):
+                draw = (
+                    step.var
+                    if isinstance(step, MarginalizeStep)
+                    else ", ".join(step.vars)
+                )
+                first, second = (
+                    " x ".join(render_static(axis.size) for axis in extent)
+                    for extent in (axes, found)
+                )
                 self._fail(
                     step,
-                    f"arguments of {record.name} broadcast over different shapes",
+                    f"{record.name} draw of {draw!r} reads parameters of "
+                    f"{first} and {second} entries, which do not broadcast to "
+                    f"one extent",
                     code="qiec-program",
                 )
         if axes is None:
@@ -4534,8 +5224,15 @@ class _ProgramElaboration:
 
         A bound name is read; a morphism with a distribution initializer
         is that distribution when a sampleable is expected; any other
-        name is a data input of the parameter's element type, which a
-        plate or a tensor parameter broadcasts.
+        name is a data input. Filling a parameter of a plated draw whose
+        plate names no event axes, it holds one value per row: its type is
+        the plate's first batch axis, then one open extent per axis of the
+        parameter, and a datum without the plate axis is a value every row
+        shares. Filling a parameter of a draw whose plate names event axes
+        (`[over=...]`), it is one value of the parameter's element type,
+        which the plate broadcasts. Filling a tensor parameter of a draw
+        with no plate, it is a tensor of open extents; filling a scalar
+        parameter of such a draw, one value of its element type.
 
         Parameters
         ----------
@@ -4593,6 +5290,37 @@ class _ProgramElaboration:
                     node,
                 )
             )
+        if plate.batch and not plate.event:
+            # A parameter of a plated draw takes one value per row, as a
+            # name a let feeds to the draw does: the host datum ranges over
+            # the plate's first batch axis, then over the parameter's own
+            # axes, each an open extent the data fix. A datum without the
+            # plate axis is one value every row shares.
+            axis = plate.batch[0]
+            dimensions_per_row: list[IndexTerm] = [axis.size]
+            axes_per_row: list[str] = [axis.name]
+            for position in range(rank):
+                extent_name = (
+                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
+                )
+                binder = state.extents.get(extent_name)
+                if binder is None:
+                    binder = IndexBinder(extent_name, NAT)
+                    state.extents[extent_name] = binder
+                dimensions_per_row.append(IndexVariable(extent_name, NAT))
+                axes_per_row.append(extent_name)
+            local = self._declare_parameter(
+                name,
+                tensor_type(element, tuple(dimensions_per_row)),
+                "data",
+                scope,
+                state,
+                node,
+                axes=tuple(axes_per_row),
+            )
+            state.per_row.add(name)
+            state.batch_shapes[name] = (axis.size,)
+            return Var(local)
         return Var(self._declare_parameter(name, element, "data", scope, state, node))
 
     def _indexed_argument(
@@ -6254,21 +6982,34 @@ def _semantic_family_parameter(
 ) -> FamilyParameter:
     """Resolve a QVR keyword to the semantic registry parameter it fills.
 
-    Most names coincide. A few historical surface families use different
-    terminology (for instance ``LogitNormal(mu=..., sigma=...)`` while the
-    semantic record uses ``loc`` and ``scale``); those retain the established
-    positional correspondence without exposing positions in source.
+    Most names coincide. A few surface families name a parameter
+    differently from the registry record (``LogitNormal(mu=..., sigma=...)``
+    fills ``loc`` and ``scale``); `PARAMETER_ALIASES` states each such
+    correspondence, so a keyword always fills the parameter meaning the
+    same quantity, never one at the same position.
+
+    Parameters
+    ----------
+    record : DistributionFamily
+        The family's registry record.
+    surface_name : str
+        The keyword the source wrote.
+    surface_family : str | None
+        The family name the source wrote, when it is an alias of
+        ``record``.
+
+    Returns
+    -------
+    FamilyParameter
+        The registry parameter the keyword fills.
+
+    Raises
+    ------
+    KeyError
+        If the keyword names no parameter of the family.
     """
-    try:
-        return record.parameter(surface_name)
-    except KeyError:
-        surface = family_parameter_names(surface_family or record.name) or ()
-        if surface_name not in surface:
-            raise
-        position = surface.index(surface_name)
-        if position >= len(record.parameters):
-            raise
-        return record.parameters[position]
+    aliases = PARAMETER_ALIASES.get(surface_family or record.name, {})
+    return record.parameter(aliases.get(surface_name, surface_name))
 
 
 def _structured(
@@ -6352,8 +7093,21 @@ class _ProgramState:
     input_shapes
         The element type and batch axis inferred for each free name a
         let expression reads.
+    tables
+        The names let expressions gather from, with how many axes a
+        gather indexes; a free one is a table of open extents.
+    table_events
+        The tables whose gathered rows fill a vector-valued family
+        parameter, with the rank of one row.
+    batch_shapes
+        The plate extents each bound name ranges over, outermost first:
+        a site's batch axes, a plated input's axes, and those a let
+        inherits from the plated values it combines.
     parameter_axes
         The axis names of each parameter's dimensions.
+    per_row
+        The inputs that fill a family parameter of a plated draw
+        directly, whose leading axis is that draw's plate.
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
@@ -6381,7 +7135,11 @@ class _ProgramState:
     input_shapes: dict[str, tuple[TypeApplication, PlateAxis | None]] = field(
         default_factory=dict
     )
+    tables: dict[str, int] = field(default_factory=dict)
+    table_events: dict[str, int] = field(default_factory=dict)
+    batch_shapes: dict[str, tuple[IndexTerm, ...]] = field(default_factory=dict)
     parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    per_row: set[str] = field(default_factory=set)
     random: NamedEffectInstance | None = None  # type: ignore[assignment]
     score: NamedEffectInstance | None = None  # type: ignore[assignment]
 

@@ -1,0 +1,19 @@
+# Exercises a two-axis data input read one row at a time inside a plated
+# `let`: a computation reduces each row of `X * w_row` over its last axis.
+object Coef : FinSet 3
+object Design : FinSet 1
+object Resp : FinSet 4
+object Val : Real 1
+
+define row_dot(design : Tensor[Real]([4, 3]), coefs : Tensor[Real]([4, 3])) : Tensor[Real]([4]) !{} =
+    return sum(design * coefs)
+
+program regression : Resp -> Val
+    sample sigma <- HalfNormal(scale=1.0)
+    sample w : Design <- Normal(loc=0.0, scale=1.0) [over=Coef, iid_over=Design]
+    let w_row = w[design_idx]
+    let mu <- row_dot(X, w_row)
+    observe y : Resp <- Normal(loc=mu, scale=sigma)
+    return sigma
+
+export regression

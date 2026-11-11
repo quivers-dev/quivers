@@ -121,6 +121,10 @@ var _qvr_bcast = function(op, a, b) {
       : op === "*" ? a * b
       : op === "/" ? a / b
       : op === "^" ? Math.pow(a, b)
+      : op === "max" ? Math.max(a, b)
+      : op === "min" ? Math.min(a, b)
+      : op === "quot" ? Math.trunc(a / b)
+      : op === "rem" ? a % b
       : NaN;
   }
   var n = a_arr ? a.length : b.length;
@@ -308,6 +312,215 @@ var sqrt = function(x) {
 
 var abs = function(x) {
   return Array.isArray(x) ? map(abs, x) : Math.abs(x);
+};
+
+// QVR `max` / `min` reduce the innermost axis of one argument and are
+// pointwise over two, broadcasting a scalar across an array; `pow` is
+// pointwise. WebPPL has no globals of these names.
+var max = function(a, b) {
+  return b === undefined ? _qvr_max_last(a) : _qvr_bcast("max", a, b);
+};
+
+var min = function(a, b) {
+  return b === undefined ? _qvr_min_last(a) : _qvr_bcast("min", a, b);
+};
+
+var pow = function(a, b) {
+  return _qvr_bcast("^", a, b);
+};
+
+// Integer division and remainder truncate toward zero, pointwise.
+var quot = function(a, b) {
+  return _qvr_bcast("quot", a, b);
+};
+
+var rem = function(a, b) {
+  return _qvr_bcast("rem", a, b);
+};
+
+// Math builtins `Math` provides, mapped over scalars and (possibly
+// nested) arrays.
+var _qvr_acos = function(x) {
+  return Array.isArray(x) ? map(_qvr_acos, x) : Math.acos(x);
+};
+
+var _qvr_acosh = function(x) {
+  return Array.isArray(x) ? map(_qvr_acosh, x) : Math.acosh(x);
+};
+
+var _qvr_asin = function(x) {
+  return Array.isArray(x) ? map(_qvr_asin, x) : Math.asin(x);
+};
+
+var _qvr_asinh = function(x) {
+  return Array.isArray(x) ? map(_qvr_asinh, x) : Math.asinh(x);
+};
+
+var _qvr_atan = function(x) {
+  return Array.isArray(x) ? map(_qvr_atan, x) : Math.atan(x);
+};
+
+var _qvr_atanh = function(x) {
+  return Array.isArray(x) ? map(_qvr_atanh, x) : Math.atanh(x);
+};
+
+var _qvr_ceil = function(x) {
+  return Array.isArray(x) ? map(_qvr_ceil, x) : Math.ceil(x);
+};
+
+var _qvr_cos = function(x) {
+  return Array.isArray(x) ? map(_qvr_cos, x) : Math.cos(x);
+};
+
+var _qvr_cosh = function(x) {
+  return Array.isArray(x) ? map(_qvr_cosh, x) : Math.cosh(x);
+};
+
+var _qvr_expm1 = function(x) {
+  return Array.isArray(x) ? map(_qvr_expm1, x) : Math.expm1(x);
+};
+
+var _qvr_floor = function(x) {
+  return Array.isArray(x) ? map(_qvr_floor, x) : Math.floor(x);
+};
+
+var _qvr_log10 = function(x) {
+  return Array.isArray(x) ? map(_qvr_log10, x) : Math.log10(x);
+};
+
+var _qvr_log1p = function(x) {
+  return Array.isArray(x) ? map(_qvr_log1p, x) : Math.log1p(x);
+};
+
+var _qvr_log2 = function(x) {
+  return Array.isArray(x) ? map(_qvr_log2, x) : Math.log2(x);
+};
+
+var _qvr_sign = function(x) {
+  return Array.isArray(x) ? map(_qvr_sign, x) : Math.sign(x);
+};
+
+var _qvr_sin = function(x) {
+  return Array.isArray(x) ? map(_qvr_sin, x) : Math.sin(x);
+};
+
+var _qvr_sinh = function(x) {
+  return Array.isArray(x) ? map(_qvr_sinh, x) : Math.sinh(x);
+};
+
+var _qvr_tan = function(x) {
+  return Array.isArray(x) ? map(_qvr_tan, x) : Math.tan(x);
+};
+
+var _qvr_tanh = function(x) {
+  return Array.isArray(x) ? map(_qvr_tanh, x) : Math.tanh(x);
+};
+
+var _qvr_trunc = function(x) {
+  return Array.isArray(x) ? map(_qvr_trunc, x) : Math.trunc(x);
+};
+
+// The math builtins `Math` lacks, mapped over scalars and (possibly
+// nested) arrays like the ones above. WebPPL's own `tanh` and kin act
+// on tensors, so every QVR builtin reaches the runtime under a
+// `_qvr_`-prefixed name.
+//
+// `round` rounds a tie to even, as the QVR reference does; JavaScript's
+// `Math.round` rounds it up.
+var _qvr_round_scalar = function(x) {
+  var r = Math.floor(x + 0.5);
+  return (x + 0.5 === r && r % 2 !== 0) ? r - 1 : r;
+};
+var _qvr_round = function(x) {
+  return Array.isArray(x) ? map(_qvr_round, x) : _qvr_round_scalar(x);
+};
+
+// erf by its Maclaurin series below |x| = 2.5, where the alternating
+// terms lose at most three digits, and by the continued fraction of
+// erfc above it (Abramowitz and Stegun 7.1.5 and 7.1.14).
+var _qvr_erf_series = function(x, n, term, total) {
+  var next = term * (-x * x) / n;
+  var added = total + next / (2 * n + 1);
+  return Math.abs(next) < 1e-17 * Math.abs(added) || n > 200
+    ? added
+    : _qvr_erf_series(x, n + 1, next, added);
+};
+var _qvr_erfc_fraction = function(x, k) {
+  // The tail x + (k / 2) / (x + ((k + 1) / 2) / (x + ...)), cut at k = 120.
+  return k > 120 ? x : x + (k / 2) / _qvr_erfc_fraction(x, k + 1);
+};
+var _qvr_erfc_large = function(x) {
+  return Math.exp(-x * x) / Math.sqrt(Math.PI) / _qvr_erfc_fraction(x, 1);
+};
+var _qvr_erf_scalar = function(x) {
+  return Math.abs(x) < 2.5
+    ? 2 / Math.sqrt(Math.PI) * _qvr_erf_series(x, 1, x, x)
+    : (x > 0 ? 1 - _qvr_erfc_large(x) : _qvr_erfc_large(-x) - 1);
+};
+var _qvr_erfc_scalar = function(x) {
+  return x < 2.5 ? 1 - _qvr_erf_scalar(x) : _qvr_erfc_large(x);
+};
+var _qvr_erf = function(x) {
+  return Array.isArray(x) ? map(_qvr_erf, x) : _qvr_erf_scalar(x);
+};
+var _qvr_erfc = function(x) {
+  return Array.isArray(x) ? map(_qvr_erfc, x) : _qvr_erfc_scalar(x);
+};
+
+// erfinv from Giles's single-precision approximation, refined by two
+// Newton steps on erf (Giles 2010, https://doi.org/10.1080/10556788.2010.508126).
+var _qvr_horner = function(p, u, i, acc) {
+  // The polynomial with coefficients p, highest order first, at u.
+  return i === p.length ? acc : _qvr_horner(p, u, i + 1, acc * u + p[i]);
+};
+var _qvr_erfinv_start = function(y) {
+  var w = -Math.log((1 - y) * (1 + y));
+  var u = w < 5 ? w - 2.5 : Math.sqrt(w) - 3;
+  var p = w < 5
+    ? [2.81022636e-08, 3.43273939e-07, -3.5233877e-06, -4.39150654e-06,
+       0.00021858087, -0.00125372503, -0.00417768164, 0.246640727, 1.50140941]
+    : [-0.000200214257, 0.000100950558, 0.00134934322, -0.00367342844,
+       0.00573950773, -0.0076224613, 0.00943887047, 1.00167406, 2.83297682];
+  return _qvr_horner(p, u, 0, 0) * y;
+};
+var _qvr_erfinv_newton = function(y, x, steps) {
+  var next = x - (_qvr_erf_scalar(x) - y) / (2 / Math.sqrt(Math.PI) * Math.exp(-x * x));
+  return steps <= 1 ? next : _qvr_erfinv_newton(y, next, steps - 1);
+};
+var _qvr_erfinv_scalar = function(y) {
+  return y >= 1 ? Infinity
+    : y <= -1 ? -Infinity
+    : _qvr_erfinv_newton(y, _qvr_erfinv_start(y), 2);
+};
+var _qvr_erfinv = function(x) {
+  return Array.isArray(x) ? map(_qvr_erfinv, x) : _qvr_erfinv_scalar(x);
+};
+
+// lgamma is the log of |Gamma(x)|, by reflection below 1/2.
+var _qvr_lgamma_scalar = function(x) {
+  return x < 0.5
+    ? Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - _lgamma(1 - x)
+    : _lgamma(x);
+};
+var _qvr_lgamma = function(x) {
+  return Array.isArray(x) ? map(_qvr_lgamma, x) : _qvr_lgamma_scalar(x);
+};
+
+// digamma by reflection below zero, the recurrence psi(x) = psi(x + 1)
+// - 1 / x up to 6, and the asymptotic series above it.
+var _qvr_digamma_scalar = function(x) {
+  if (x <= 0) {
+    return _qvr_digamma_scalar(1 - x) - Math.PI / Math.tan(Math.PI * x);
+  }
+  if (x < 6) {
+    return _qvr_digamma_scalar(x + 1) - 1 / x;
+  }
+  var r = 1 / (x * x);
+  return Math.log(x) - 0.5 / x
+    - r * (1 / 12 - r * (1 / 120 - r * (1 / 252 - r * (1 / 240 - r / 132))));
+};
+var _qvr_digamma = function(x) {
+  return Array.isArray(x) ? map(_qvr_digamma, x) : _qvr_digamma_scalar(x);
 };
 
 var Logistic = function(params) {

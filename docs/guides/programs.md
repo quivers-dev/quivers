@@ -70,13 +70,14 @@ samples = program.rsample(
     torch.zeros(4, dtype=torch.long), sample_shape=torch.Size([100])
 )  # shape (100, 4, 1)
 
-# Log joint: sum_i log p(z_i | pa(z_i)) given every bound variable
+# Log joint: sum_i log p(z_i | pa(z_i)) given every bound variable,
+# one joint per run: the four input rows are four independent runs.
 x_val = torch.randn(4, 1)
 y_val = torch.randn(4, 1)
 log_joint = program.log_joint(
     torch.zeros(4, dtype=torch.long),
     {"x": x_val, "y": y_val},
-)
+)  # shape (4,); log_joint.sum() is the joint of the four runs
 ```
 
 ## Bind steps
@@ -201,6 +202,13 @@ draws are available to subsequent steps. `observations` is an
 optional `dict[str, torch.Tensor]` clamping observed sites to
 runtime data.
 
+The input's rows are independent runs of the whole program: an input
+of `B` rows draws every site `B` times, once per run, and a plated
+site's rows sit after the run axis. The rows a program observes come
+from its data and its plates, not from the input's rows, so a program
+whose observations live in a plate is run on one row, such as
+`torch.zeros(1, 1)`.
+
 ### log_joint(x, intermediates)
 
 A joint score combines all the modeled choices in one execution. For
@@ -221,8 +229,12 @@ intermediates = {"z": z_value, "y": y_value}  # every bound variable
 log_pjoint = program.log_joint(x, intermediates)
 ```
 
-`log_joint` is the core kernel summed across the program's draw /
-plate-draw / observe steps, used inside
+`log_joint` returns one joint per run of the input, shape `(B,)` for
+`B` input rows: each entry is the sum of that run's draw / plate-draw /
+observe / score terms, and `log_joint(x, values).sum()` is the joint of
+all the runs. A value in `intermediates` is either one per run, along a
+leading axis of length `B`, or one that every run shares. It is used
+inside
 [`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO)
 after the guide samples latents.
 

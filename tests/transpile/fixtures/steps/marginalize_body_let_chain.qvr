@@ -1,0 +1,16 @@
+# Exercises a chain of `let`s inside a marginalize body, the second reading
+# the first.
+object Step : FinSet 3
+object K : FinSet 4
+object Val : Real 1
+
+program p : Step -> Val
+    sample r <- Gamma(concentration=2.0, rate=1.0)
+    sample prior <- Dirichlet(concentration=1.0) [over=K]
+    marginalize z : K <- Categorical(probs=prior) [reduction=logsumexp]
+        let doubled = 2.0 * r
+        let rate = doubled + 1.0
+        observe y : Step <- Poisson(rate=rate)
+    return r
+
+export p

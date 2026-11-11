@@ -167,6 +167,155 @@
 
 (define (log-factorial n) (log-gamma (+ n 1.0)))
 
+;; ---- QVR math builtins ----------------------------------------------
+;; Every math builtin a let applies reaches the runtime as `qvr-<name>`,
+;; mapped over scalars and (possibly nested) lists. Each scalar body is
+;; the builtin's definition in R6RS arithmetic; `round` rounds a tie to
+;; even, as R6RS `round` does and the QVR reference does.
+(define (qvr-abs x) (broadcast1 abs x))
+(define (qvr-exp x) (broadcast1 exp x))
+(define (qvr-log x) (broadcast1 log x))
+(define (qvr-sqrt x) (broadcast1 sqrt x))
+(define (qvr-sin x) (broadcast1 sin x))
+(define (qvr-cos x) (broadcast1 cos x))
+(define (qvr-tan x) (broadcast1 tan x))
+(define (qvr-asin x) (broadcast1 asin x))
+(define (qvr-acos x) (broadcast1 acos x))
+(define (qvr-atan x) (broadcast1 atan x))
+(define (qvr-floor x) (broadcast1 floor x))
+(define (qvr-ceil x) (broadcast1 ceiling x))
+(define (qvr-round x) (broadcast1 round x))
+(define (qvr-trunc x) (broadcast1 truncate x))
+(define (qvr-max a b) (broadcast2 max a b))
+(define (qvr-min a b) (broadcast2 min a b))
+(define (qvr-pow a b) (broadcast2 expt a b))
+
+(define (qvr-sign x)
+  (broadcast1 (lambda (v) (cond ((> v 0) 1.0) ((< v 0) -1.0) (else 0.0))) x))
+
+;; `exp(v) - 1` and `log(1 + v)` by Kahan's corrections, which keep the
+;; digits the plain forms lose near zero.
+(define (qvr-expm1 x)
+  (broadcast1
+   (lambda (v)
+     (let ((u (exp v)))
+       (cond ((= u 1.0) v)
+             ((= (- u 1.0) -1.0) -1.0)
+             (else (/ (* (- u 1.0) v) (log u))))))
+   x))
+
+(define (qvr-log1p x)
+  (broadcast1
+   (lambda (v)
+     (let ((u (+ 1.0 v)))
+       (if (= u 1.0) v (/ (* (log u) v) (- u 1.0)))))
+   x))
+
+(define (qvr-log2 x) (broadcast1 (lambda (v) (/ (log v) (log 2.0))) x))
+(define (qvr-log10 x) (broadcast1 (lambda (v) (/ (log v) (log 10.0))) x))
+
+(define (qvr-sinh x)
+  (broadcast1 (lambda (v) (/ (- (exp v) (exp (- v))) 2.0)) x))
+(define (qvr-cosh x)
+  (broadcast1 (lambda (v) (/ (+ (exp v) (exp (- v))) 2.0)) x))
+;; `1 - 2 / (exp(2v) + 1)` stays finite where `sinh / cosh` overflows.
+(define (qvr-tanh x)
+  (broadcast1 (lambda (v) (- 1.0 (/ 2.0 (+ (exp (* 2.0 v)) 1.0)))) x))
+(define (qvr-asinh-scalar v)
+  (if (< v 0)
+      (- (qvr-asinh-scalar (- v)))
+      (log (+ v (sqrt (+ (* v v) 1.0))))))
+(define (qvr-asinh x) (broadcast1 qvr-asinh-scalar x))
+(define (qvr-acosh x)
+  (broadcast1 (lambda (v) (log (+ v (sqrt (- (* v v) 1.0))))) x))
+(define (qvr-atanh x)
+  (broadcast1 (lambda (v) (* 0.5 (log (/ (+ 1.0 v) (- 1.0 v))))) x))
+
+;; erf by its Maclaurin series below |v| = 2.5, where the alternating
+;; terms lose at most three digits, and by the continued fraction of
+;; erfc above it (Abramowitz and Stegun 7.1.5 and 7.1.14).
+(define (qvr-erf-series v)
+  (let loop ((n 1) (term v) (total v))
+    (let* ((next (/ (* term (- (* v v))) n))
+           (added (+ total (/ next (+ (* 2 n) 1)))))
+      (if (or (< (abs next) (* 1e-17 (abs added))) (> n 200))
+          (* (/ 2.0 (sqrt *pi*)) added)
+          (loop (+ n 1) next added)))))
+
+(define (qvr-erfc-fraction v k)
+  (if (> k 120) v (+ v (/ (/ k 2.0) (qvr-erfc-fraction v (+ k 1))))))
+
+(define (qvr-erfc-large v)
+  (/ (exp (- (* v v))) (sqrt *pi*) (qvr-erfc-fraction v 1)))
+
+(define (qvr-erf-scalar v)
+  (cond ((< (abs v) 2.5) (qvr-erf-series v))
+        ((> v 0) (- 1.0 (qvr-erfc-large v)))
+        (else (- (qvr-erfc-large (- v)) 1.0))))
+
+(define (qvr-erfc-scalar v)
+  (if (< v 2.5) (- 1.0 (qvr-erf-scalar v)) (qvr-erfc-large v)))
+
+(define (qvr-erf x) (broadcast1 qvr-erf-scalar x))
+(define (qvr-erfc x) (broadcast1 qvr-erfc-scalar x))
+
+;; erfinv from Giles's single-precision approximation, refined by two
+;; Newton steps on erf (Giles 2010).
+(define (qvr-horner coefficients u)
+  (fold-left (lambda (acc c) (+ (* acc u) c)) 0.0 coefficients))
+
+(define (qvr-erfinv-start y)
+  (let ((w (- (log (* (- 1.0 y) (+ 1.0 y))))))
+    (* y
+       (if (< w 5.0)
+           (qvr-horner
+            (list 2.81022636e-08 3.43273939e-07 -3.5233877e-06 -4.39150654e-06
+                  0.00021858087 -0.00125372503 -0.00417768164 0.246640727
+                  1.50140941)
+            (- w 2.5))
+           (qvr-horner
+            (list -0.000200214257 0.000100950558 0.00134934322 -0.00367342844
+                  0.00573950773 -0.0076224613 0.00943887047 1.00167406
+                  2.83297682)
+            (- (sqrt w) 3.0))))))
+
+(define (qvr-erfinv-newton y v steps)
+  (let ((next (- v (/ (- (qvr-erf-scalar v) y)
+                      (* (/ 2.0 (sqrt *pi*)) (exp (- (* v v))))))))
+    (if (<= steps 1) next (qvr-erfinv-newton y next (- steps 1)))))
+
+(define (qvr-erfinv-scalar y)
+  (cond ((>= y 1.0) (/ 1.0 0.0))
+        ((<= y -1.0) (/ -1.0 0.0))
+        (else (qvr-erfinv-newton y (qvr-erfinv-start y) 2))))
+
+(define (qvr-erfinv x) (broadcast1 qvr-erfinv-scalar x))
+
+;; lgamma is the log of |Gamma(v)|, by reflection below 1/2.
+(define (qvr-lgamma-scalar v)
+  (if (< v 0.5)
+      (- (log (/ *pi* (abs (sin (* *pi* v))))) (log-gamma (- 1.0 v)))
+      (log-gamma v)))
+
+(define (qvr-lgamma x) (broadcast1 qvr-lgamma-scalar x))
+
+;; digamma by reflection below zero, the recurrence psi(v) = psi(v + 1)
+;; - 1 / v up to 6, and the asymptotic series above it.
+(define (qvr-digamma-scalar v)
+  (cond ((<= v 0)
+         (- (qvr-digamma-scalar (- 1.0 v)) (/ *pi* (tan (* *pi* v)))))
+        ((< v 6) (- (qvr-digamma-scalar (+ v 1.0)) (/ 1.0 v)))
+        (else
+         (let ((r (/ 1.0 (* v v))))
+           (- (log v)
+              (/ 0.5 v)
+              (* r (- (/ 1.0 12.0)
+                      (* r (- (/ 1.0 120.0)
+                              (* r (- (/ 1.0 252.0)
+                                      (* r (- (/ 1.0 240.0) (/ r 132.0))))))))))))))
+
+(define (qvr-digamma x) (broadcast1 qvr-digamma-scalar x))
+
 ;; ---- primitive draws --------------------------------------------------
 ;; Standard normal via the Box-Muller transform.
 (define (draw-standard-normal)

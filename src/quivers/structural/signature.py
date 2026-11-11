@@ -15,9 +15,11 @@ implicit context Γ tracked by the encoder / decoder runtime.
 
 All structured value types in this module are didactic
 `didactic.api.Model` records, matching the quivers
-convention for schema-bearing data; the only fields held opaque
-are runtime-only artefacts that don't round-trip (torch tensors,
-arbitrary Python data leaves).
+convention for schema-bearing data. The one opaque field is
+``Term.args``, whose element type mixes `Term` itself with raw data
+leaves, a recursive shape didactic cannot encode; `Term` is a
+`quivers._values.ValueModel`, so that field takes part in equality,
+hashing, copying, and pickling.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from typing import Literal
 
 import didactic.api as dx
 import torch
+
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 
 type DataLeaf = str | int | float | bytes | bool
 """A raw value at a data-sorted argument position of a `Term`.
@@ -355,7 +359,11 @@ class Signature(dx.Model):
 # ---------------------------------------------------------------------------
 
 
-class Term(dx.Model):
+_DATA_LEAF_TYPES: tuple[type, ...] = (str, int, float, bytes, bool)
+"""The Python types admitted as non-`Term` arguments of a `Term`."""
+
+
+class Term(ValueModel):
     """A closed term over a signature.
 
     ``op`` is the constructor name, the binder name, or the
@@ -366,15 +374,51 @@ class Term(dx.Model):
     `Term`; data positions carry a `DataLeaf` raw
     value; index positions carry a non-negative ``int``. ``args``
     is held opaque (its element type is the open union
-    `TermArg`); the encoder / decoder enforce sort
-    agreement structurally at use time.
+    `TermArg`, which didactic cannot encode because one of its arms
+    is `Term` itself); construction checks that ``args`` is a tuple
+    whose elements are `Term` or `DataLeaf` values, and the encoder /
+    decoder enforce sort agreement at use time.
+
+    ``args`` compares by value, so equality and hashing are
+    structural (see `quivers._values.ValueModel`): two terms are equal
+    exactly when their operators agree and their arguments agree
+    position by position, recursively, so terms that differ in a data
+    leaf, a nested subterm, a binder, or a de-Bruijn index are
+    distinct. Data leaves compare by type as well as value, so ``1``,
+    ``1.0``, and ``True`` at the same position are three different
+    terms. Both operations walk the term with an explicit stack, so
+    deep terms (long ``Cons`` lists) do not exhaust the interpreter's
+    recursion limit; a term's hash is computed once and cached, and
+    copies and pickles keep ``args``.
 
     No wrapping such as ``Term("Data", …)`` is used at any
     position; raw values appear directly at data positions.
     """
 
     op: str
-    args: tuple = dx.field(default=(), opaque=True)
+    args: tuple = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _check_args(self) -> None:
+        """Reject arguments outside the `TermArg` union.
+
+        Raises
+        ------
+        TypeError
+            If ``args`` is not a tuple, or if one of its elements is
+            neither a `Term` nor a `DataLeaf`.
+        """
+        if not isinstance(self.args, tuple):
+            raise TypeError(
+                f"Term {self.op!r}: args must be a tuple, got {type(self.args).__name__}"
+            )
+        for position, arg in enumerate(self.args):
+            if not isinstance(arg, Term) and not isinstance(arg, _DATA_LEAF_TYPES):
+                raise TypeError(
+                    f"Term {self.op!r}: argument {position} must be a Term or a "
+                    f"data leaf (str, int, float, bytes, bool), got "
+                    f"{type(arg).__name__}"
+                )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         if not self.args:
@@ -449,6 +493,8 @@ def make_term(op: str, *args) -> Term:
     ------
     TypeError
         If ``op`` is not a string.
+    didactic.api.ValidationError
+        If an argument is neither a `Term` nor a `DataLeaf`.
     """
     if not isinstance(op, str):
         raise TypeError(f"make_term requires a string op, got {type(op).__name__}")

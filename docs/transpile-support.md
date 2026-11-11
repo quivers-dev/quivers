@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 49 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 92 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 26 / 46          | 39 / 49    |
-| [church](semantics/transpile-correctness/church.md)   | 24 / 46          | 43 / 49    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 43 / 49    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 43 / 49    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 40 / 49    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 43 / 49    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 43 / 49    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 43 / 49    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 41 / 49    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 43 / 49    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 43 / 49    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 92    |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 92    |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 92    |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 92    |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 92    |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 92    |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 92    |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 92    |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 92    |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 92    |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 92    |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -80,7 +80,7 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`horseshoe_regression`](examples/horseshoe-regression.md)               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`irt_2pl`](examples/irt-2pl.md)                                         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`kumaraswamy_bounded_outcome`](examples/kumaraswamy-bounded-outcome.md) | no   | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`lda`](examples/lda.md)                                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`lda`](examples/lda.md)                                                 | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`linear_gaussian_ssm`](examples/linear-gaussian-ssm.md)                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`lkj_cholesky_correlation`](examples/lkj-cholesky-correlation.md)       | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`logistic_noise_regression`](examples/logistic-noise-regression.md)     | yes  | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -102,7 +102,7 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`tensor_contraction`](examples/tensor-contraction.md)                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`term_autoencoder`](examples/term-autoencoder.md)                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`transformer_lm`](examples/transformer-lm.md)                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| [`tree_categorical`](examples/tree-categorical.md)                       | yes  | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`tree_categorical`](examples/tree-categorical.md)                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`type_logical`](examples/type-logical.md)                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`vae`](examples/vae.md)                                                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | [`vanilla_rnn_lm`](examples/vanilla-rnn-lm.md)                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
@@ -138,31 +138,71 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 #### 1.2.2 Program steps
 
-| Program                  | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
-|--------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `steps/call_step`        | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/let_step`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/marginalize_step` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_step`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/return_step`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_step`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/score_step`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| Program                                        | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
+|------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_gather`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_value`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_probs`                  | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_vector_probs`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_step`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_class_code`                     | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
+| `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
 
-| Program                                | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
-|----------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `let_expressions/let_expr_binop`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_call`        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_factor`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_index`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_lambda`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_list`        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_literal`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_method_call` | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `let_expressions/let_expr_string`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_unary`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `let_expressions/let_expr_var`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| Program                                       | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
+|-----------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `let_expressions/let_binary_min_max`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_binop`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_call`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_factor`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_index`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_lambda`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_list`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_literal`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_method_call`        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `let_expressions/let_expr_string`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_unary`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_expr_var`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_factor_index_arithmetic` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_fold_shared_accumulator` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_plated_list_operand`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_pow`                     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_real_division`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_real_literals`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_reduce_event`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_reduce_matrix`           | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_reduce_nested`           | no   | no     | yes     | no  | no   | yes     | yes  | yes  | no   | no     | yes    |
+| `let_expressions/let_reduce_plate`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_row_gather`              | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_row_gather_sampled`      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_scalar_from_plate`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_score_host_weight`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_template_substitution`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.4 Option values
 
@@ -177,14 +217,17 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 #### 1.2.5 Axis specifications
 
-| Program                  | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
-|--------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `axes/gp_event_axis`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `axes/matrix_kronecker`  | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `axes/scalar_iid_plate`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `axes/scalar_implicit`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `axes/vector_event_axis` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `axes/vector_over_iid`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| Program                          | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
+|----------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `axes/gp_event_axis`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `axes/matrix_kronecker`          | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `axes/observe_independent_array` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | no     |
+| `axes/scalar_iid_plate`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `axes/scalar_implicit`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `axes/scalar_independent_array`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | no     |
+| `axes/vector_event_axis`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `axes/vector_independent_array`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | no     |
+| `axes/vector_over_iid`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 ## 2. What no backend supports
 
@@ -432,6 +475,126 @@ These are target gaps rather than language gaps: another backend renders the sam
 
 Every program below renders on at least one other backend and is refused here.
 
+**`arg:list-literal`**
+
+Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+```
+
+`bugs` on `steps/observe_gather_event_vector` reports:
+
+```text
+bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+```
+
+**`arg:list-literal`, `arg:matrix-literal`**
+
+Refused for: `steps/sample_mvn_factor`.
+
+Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+arg:matrix-literal
+```
+
+`bugs` on `steps/sample_mvn_factor` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+  - bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+```
+
+**`arg:list-literal`, `family:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+family:OneHotCategorical: no BUGS target name
+```
+
+`bugs` on `steps/sample_onehot_probs` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+  - bugs cannot score a draw from `OneHotCategorical`: no BUGS target name
+```
+
+**`arg:list-literal`, `family:OrderedLogistic`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+family:OrderedLogistic: no BUGS target name
+```
+
+`bugs` on `steps/observe_ordinal_code` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+  - bugs cannot score a draw from `OrderedLogistic`: no BUGS target name
+```
+
+**`arg:list-literal`, `family:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+family:RelaxedOneHotCategorical: no BUGS target name
+```
+
+`bugs` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+  - bugs cannot score a draw from `RelaxedOneHotCategorical`: no BUGS target name
+```
+
+**`arg:matrix-literal`**
+
+Refused for: `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+arg:matrix-literal
+```
+
+`bugs` on `steps/sample_mvn_sampled_loc` reports:
+
+```text
+bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+```
+
 **`call:graph:noisy`**
 
 Refused for: `steps/call_step`.
@@ -450,6 +613,42 @@ call:graph:noisy
 the program calls the computation `noisy` at run time, and BUGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation whose body is a chain of bindings is inlined before the plan reaches this target, so `noisy` is either effectful or recursive. Write its draws and scores as steps of the program, or transpile to a target with a host runtime.
 ```
 
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
+```
+
+`bugs` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. bugs cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
+```
+
+`bugs` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. bugs cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
+```
+
 **`family:BetaBinomial:no-bugs-distribution`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -466,6 +665,24 @@ family:BetaBinomial:no-bugs-distribution: the BUGS distribution catalogue has no
 
 ```text
 bugs cannot score a draw from `BetaBinomial`: the BUGS distribution catalogue has no beta-binomial, and the zeros trick that would write its closed-form marginal into the joint needs a data-bound carrier the BUGS language cannot declare (it has no `data { ... }` block)
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`bugs` on `steps/observe_logits_data` reports:
+
+```text
+bugs cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
 **`family:Kumaraswamy:no-free-density-term`**
@@ -540,6 +757,25 @@ family:MixtureNormal:no-free-density-term: a finite mixture is an explicit weigh
 bugs cannot score a draw from `MixtureNormal`: a finite mixture is an explicit weighted density in the BUGS function library, but adding one to the joint needs a free log-density term the language has no statement for
 ```
 
+**`let-expr:axis-reduction:bugs`**
+
+Refused for: `let_expressions/let_host_matrix_row`, `let_expressions/let_reduce_matrix`, `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:bugs: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+let-expr:axis-reduction:bugs: sum(...) over a rank-3 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+```
+
+`bugs` on `let_expressions/let_host_matrix_row` reports:
+
+```text
+bugs-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+```
+
 **`marginalize:grouped-fibration:cls`**
 
 Refused for: `steps/marginalize_step`.
@@ -594,6 +830,60 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`bugs` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`observe:class-code:w`**
+
+Refused for: [`lda`](examples/lda.md).
+
+Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+observe:class-code:w: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
+```
+
+`bugs` on `lda` reports:
+
+```text
+bugs cannot emit this `observe` step: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
+```
+
+**`observe:class-code:y`**
+
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
+
+Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+observe:class-code:y: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
+```
+
+`bugs` on `let_expressions/let_row_gather` reports:
+
+```text
+bugs cannot emit this `observe` step: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
+```
+
 **`qiec:capability:effectful-row:read`, `qiec:capability:perform:read`**
 
 Refused for: `statements/qiec_effectful_computation`.
@@ -619,6 +909,60 @@ bugs cannot transpile this program:
 
 Every program below renders on at least one other backend and is refused here.
 
+**`arg:matrix-literal`**
+
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+
+Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+arg:matrix-literal
+```
+
+`church` on `steps/sample_mvn_factor` reports:
+
+```text
+church cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+```
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
+```
+
+`church` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
+```
+
+`church` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
+```
+
 **`family:BetaBinomial:no-church-target`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -635,6 +979,24 @@ family:BetaBinomial:no-church-target
 
 ```text
 church has no `BetaBinomial` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`church` on `steps/observe_logits_data` reports:
+
+```text
+church cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
 **`family:HalfStudentT:no-church-target`**
@@ -727,22 +1089,94 @@ family:MixtureNormal:no-church-target
 church has no `MixtureNormal` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
-**`let-expr:LetExprFactor:multi-axis-body`**
+**`family:OneHotCategorical:no-church-target`**
 
-Refused for: [`tree_categorical`](examples/tree-categorical.md).
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
-Renders on: `bugs`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `edward2`, `numpyro`, `pyro`.
 
 Reported kinds:
 
 ```text
-let-expr:LetExprFactor:multi-axis-body
+family:OneHotCategorical:no-church-target
 ```
 
-`church` on `tree_categorical` reports:
+`church` on `steps/sample_onehot_probs` reports:
 
 ```text
-a `factor` whose body ranges over more than one axis has no scheme-helper expression form: the product would have to be built by nested loops over a named array, and a `let` lowered to one expression has nowhere to put it. Split the factor into one per axis, or move the product into a plated `score` step.
+church has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:OrderedLogistic:no-church-target`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedLogistic:no-church-target
+```
+
+`church` on `steps/observe_ordinal_code` reports:
+
+```text
+church has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:RelaxedOneHotCategorical:no-church-target`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedOneHotCategorical:no-church-target
+```
+
+`church` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+church has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:no-church-target`**
+
+Refused for: `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Wishart:no-church-target
+```
+
+`church` on `steps/sample_wishart_factor` reports:
+
+```text
+church has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:axis-reduction:church`**
+
+Refused for: `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:church: `sum(...)` in 's' reduces only the last axis of an argument with several axes, which the list fold has no form for
+```
+
+`church` on `let_expressions/let_reduce_nested` reports:
+
+```text
+church cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` in 's' reduces only the last axis of an argument with several axes, which the list fold has no form for
 ```
 
 **`marginalize:ungrouped-over-plate:state`**
@@ -763,9 +1197,63 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`church` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 ### edward2
 
 Every program below renders on at least one other backend and is refused here.
+
+**`family:OrderedLogistic:no-edward2-target`**
+
+Refused for: `steps/observe_ordinal_code`, `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:OrderedLogistic:no-edward2-target
+```
+
+`edward2` on `steps/observe_ordinal_code` reports:
+
+```text
+edward2 has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:no-edward2-target`**
+
+Refused for: `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Wishart:no-edward2-target
+```
+
+`edward2` on `steps/sample_wishart_factor` reports:
+
+```text
+edward2 has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
 
 **`marginalize:ungrouped-over-plate:state`**
 
@@ -785,9 +1273,171 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`edward2` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 ### gen
 
 Every program below renders on at least one other backend and is refused here.
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
+```
+
+`gen` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
+```
+
+`gen` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`gen` on `steps/observe_logits_data` reports:
+
+```text
+gen cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:OneHotCategorical:no-gen-target`**
+
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:OneHotCategorical:no-gen-target
+```
+
+`gen` on `steps/sample_onehot_probs` reports:
+
+```text
+gen has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:OrderedLogistic:no-gen-target`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedLogistic:no-gen-target
+```
+
+`gen` on `steps/observe_ordinal_code` reports:
+
+```text
+gen has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:RelaxedOneHotCategorical:no-gen-target`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedOneHotCategorical:no-gen-target
+```
+
+`gen` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+gen has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:no-gen-target`**
+
+Refused for: `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Wishart:no-gen-target
+```
+
+`gen` on `steps/sample_wishart_factor` reports:
+
+```text
+gen has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:axis-reduction:gen`**
+
+Refused for: `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:gen: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
+```
+
+`gen` on `let_expressions/let_reduce_nested` reports:
+
+```text
+gen-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
+```
 
 **`marginalize:ungrouped-over-plate:state`**
 
@@ -807,9 +1457,63 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`gen` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 ### jags
 
 Every program below renders on at least one other backend and is refused here.
+
+**`arg:list-literal`**
+
+Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+```
+
+`jags` on `steps/observe_gather_event_vector` reports:
+
+```text
+jags cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+```
+
+**`arg:matrix-literal`**
+
+Refused for: `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+arg:matrix-literal
+```
+
+`jags` on `steps/sample_wishart_factor` reports:
+
+```text
+jags cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+```
 
 **`call:graph:noisy`**
 
@@ -827,6 +1531,78 @@ call:graph:noisy
 
 ```text
 the program calls the computation `noisy` at run time, and JAGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation whose body is a chain of bindings is inlined before the plan reaches this target, so `noisy` is either effectful or recursive. Write its draws and scores as steps of the program, or transpile to a target with a host runtime.
+```
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
+```
+
+`jags` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
+```
+
+`jags` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`jags` on `steps/observe_logits_data` reports:
+
+```text
+jags cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:MultivariateNormal:non-ref-covariance`**
+
+Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_sampled_loc`.
+
+Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:non-ref-covariance: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
+```
+
+`jags` on `steps/sample_mvn_factor` reports:
+
+```text
+jags cannot score a draw from `MultivariateNormal`: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
 ```
 
 **`family:no-target-name:LKJCholesky`**
@@ -865,6 +1641,79 @@ family:no-target-name:MatrixNormal
 jags has no `MatrixNormal` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:no-target-name:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-target-name:OneHotCategorical
+```
+
+`jags` on `steps/sample_onehot_probs` reports:
+
+```text
+jags has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-target-name:OrderedLogistic`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:no-target-name:OrderedLogistic
+```
+
+`jags` on `steps/observe_ordinal_code` reports:
+
+```text
+jags has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-target-name:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-target-name:RelaxedOneHotCategorical
+```
+
+`jags` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+jags has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:axis-reduction:jags`**
+
+Refused for: `let_expressions/let_host_matrix_row`, `let_expressions/let_reduce_matrix`, `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:jags: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+```
+
+`jags` on `let_expressions/let_host_matrix_row` reports:
+
+```text
+jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+```
+
 **`marginalize:ungrouped-over-plate:state`**
 
 Refused for: [`hmm`](examples/hmm.md).
@@ -881,6 +1730,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`jags` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`qiec:capability:effectful-row:read`, `qiec:capability:perform:read`**
@@ -906,11 +1773,119 @@ jags cannot transpile this program:
 
 ### numpyro
 
-numpyro renders every program any other backend renders. Its remaining refusals are the language-level gaps of section 2.
+Every program below renders on at least one other backend and is refused here.
+
+**`family:no-target-name:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-target-name:RelaxedOneHotCategorical
+```
+
+`numpyro` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+numpyro has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
 
 ### pymc
 
 Every program below renders on at least one other backend and is refused here.
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+`pymc` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. pymc cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+**`data:per-row-vector-parameter:scores`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:scores: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+`pymc` on `steps/observe_logits_data` reports:
+
+```text
+The data input `scores` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. pymc cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+`pymc` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. pymc cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+**`family:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:OneHotCategorical
+```
+
+`pymc` on `steps/sample_onehot_probs` reports:
+
+```text
+pymc has no `OneHotCategorical` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedOneHotCategorical
+```
+
+`pymc` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+pymc has no `RelaxedOneHotCategorical` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
 
 **`marginalize:ungrouped-over-plate:state`**
 
@@ -930,6 +1905,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`pymc` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 ### pyro
 
 pyro renders every program any other backend renders. Its remaining refusals are the language-level gaps of section 2.
@@ -937,6 +1930,114 @@ pyro renders every program any other backend renders. Its remaining refusals are
 ### stan
 
 Every program below renders on at least one other backend and is refused here.
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+`stan` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. stan cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+**`data:per-row-vector-parameter:scores`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:scores: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+`stan` on `steps/observe_logits_data` reports:
+
+```text
+The data input `scores` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. stan cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+`stan` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. stan cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
+```
+
+**`declare:simplex:event-rank:0`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+declare:simplex:event-rank:0: Stan simplex requires exactly one event dim
+```
+
+`stan` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+the declared shape of a `simplex` parameter has no Stan declaration form: event-rank:0. The site's axes do not say which of them are event axes. Name them with `[over=...]`, or draw from a family that fixes its own event shape.: Stan simplex requires exactly one event dim
+```
+
+**`family:no-stan-target:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-stan-target:OneHotCategorical
+```
+
+`stan` on `steps/sample_onehot_probs` reports:
+
+```text
+stan has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:axis-reduction:stan`**
+
+Refused for: `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:stan: `sum(...)` in 's' reduces only the last axis of an argument with several axes, and Stan's `sum` reduces every axis of an array or matrix
+```
+
+`stan` on `let_expressions/let_reduce_nested` reports:
+
+```text
+stan cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` in 's' reduces only the last axis of an argument with several axes, and Stan's `sum` reduces every axis of an array or matrix
+```
 
 **`qiec:capability:distribution:noisy`, `qiec:capability:effectful-row:noisy`, `qiec:capability:non-scalar-parameter:noisy`, `qiec:capability:perform:noisy`, `qiec:capability:site:noisy`, `qiec:capability:weight:noisy`**
 
@@ -988,9 +2089,153 @@ stan cannot transpile this program:
   - QIEC computation `read` requires the `perform` QIEC capability, but Stan has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
+**`sample:discrete-latent:z`**
+
+Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_class_code`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`.
+
+Reported kinds:
+
+```text
+sample:discrete-latent:z: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
+```
+
+`stan` on `steps/observe_gather_event_vector` reports:
+
+```text
+stan cannot emit this `sample` step: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
+```
+
 ### turing
 
 Every program below renders on at least one other backend and is refused here.
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which turing has no rendering for
+```
+
+`turing` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. turing cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which turing has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which turing has no rendering for
+```
+
+`turing` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. turing cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which turing has no rendering for
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`turing` on `steps/observe_logits_data` reports:
+
+```text
+turing cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:OneHotCategorical: no Turing.jl mapping
+```
+
+`turing` on `steps/sample_onehot_probs` reports:
+
+```text
+turing cannot score a draw from `OneHotCategorical`: no Turing.jl mapping
+```
+
+**`family:OrderedLogistic`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedLogistic: no Turing.jl mapping
+```
+
+`turing` on `steps/observe_ordinal_code` reports:
+
+```text
+turing cannot score a draw from `OrderedLogistic`: no Turing.jl mapping
+```
+
+**`family:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedOneHotCategorical: no Turing.jl mapping
+```
+
+`turing` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+turing cannot score a draw from `RelaxedOneHotCategorical`: no Turing.jl mapping
+```
+
+**`let-expr:axis-reduction:turing`**
+
+Refused for: `let_expressions/let_reduce_nested`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:axis-reduction:turing: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
+```
+
+`turing` on `let_expressions/let_reduce_nested` reports:
+
+```text
+turing-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
+```
 
 **`marginalize:ungrouped-over-plate:state`**
 
@@ -1010,6 +2255,205 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:z`**
+
+Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:z
+```
+
+`turing` on `steps/marginalize_body_let_chain` reports:
+
+```text
+`marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`sample:event-axis-lift:x`**
+
+Refused for: `steps/observe_gather_matrix_row`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`.
+
+Reported kinds:
+
+```text
+sample:event-axis-lift:x: the site declares the residual event axis ['Dim'] and its arguments index the surrounding batch axis. The broadcast-dot and `arraydist` forms both fix the drawn value at the family's own rank, so the residual axis has no Turing.jl spelling on either path
+```
+
+`turing` on `steps/observe_gather_matrix_row` reports:
+
+```text
+turing cannot emit this `sample` step: the site declares the residual event axis ['Dim'] and its arguments index the surrounding batch axis. The broadcast-dot and `arraydist` forms both fix the drawn value at the family's own rank, so the residual axis has no Turing.jl spelling on either path
+```
+
 ### webppl
 
-webppl renders every program any other backend renders. Its remaining refusals are the language-level gaps of section 2.
+Every program below renders on at least one other backend and is refused here.
+
+**`batch-rank:2`**
+
+Refused for: `axes/vector_independent_array`, `steps/observe_gather_matrix_row`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`.
+
+Reported kinds:
+
+```text
+batch-rank:2: WebPPL emits one batch axis per sample; multi-axis plates not implemented
+```
+
+`webppl` on `axes/vector_independent_array` reports:
+
+```text
+the site is plated over 2 axes, and a WebPPL draw carries one: WebPPL emits one batch axis per sample; multi-axis plates not implemented
+```
+
+**`batch-rank:3`**
+
+Refused for: `axes/observe_independent_array`, `axes/scalar_independent_array`.
+
+Renders on: `bugs`, `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+batch-rank:3: WebPPL emits one batch axis per observation; multi-axis plates not implemented
+batch-rank:3: WebPPL emits one batch axis per sample; multi-axis plates not implemented
+```
+
+`webppl` on `axes/observe_independent_array` reports:
+
+```text
+the site is plated over 3 axes, and a WebPPL draw carries one: WebPPL emits one batch axis per observation; multi-axis plates not implemented
+```
+
+**`data:per-row-vector-parameter:cuts`**
+
+Refused for: `steps/observe_vector_parameter_data`.
+
+Renders on: `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:cuts: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
+```
+
+`webppl` on `steps/observe_vector_parameter_data` reports:
+
+```text
+The data input `cuts` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
+```
+
+**`data:per-row-vector-parameter:weights`**
+
+Refused for: `steps/observe_probs_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+data:per-row-vector-parameter:weights: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
+```
+
+`webppl` on `steps/observe_probs_data` reports:
+
+```text
+The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
+```
+
+**`family:Categorical:logits`**
+
+Refused for: `steps/observe_logits_data`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Categorical:logits: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+`webppl` on `steps/observe_logits_data` reports:
+
+```text
+webppl cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:no-webppl-target:OneHotCategorical`**
+
+Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:OneHotCategorical
+```
+
+`webppl` on `steps/sample_onehot_probs` reports:
+
+```text
+webppl has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-webppl-target:OrderedLogistic`**
+
+Refused for: `steps/observe_ordinal_code`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:OrderedLogistic
+```
+
+`webppl` on `steps/observe_ordinal_code` reports:
+
+```text
+webppl has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-webppl-target:RelaxedOneHotCategorical`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:RelaxedOneHotCategorical
+```
+
+`webppl` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+webppl has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-webppl-target:Wishart`**
+
+Refused for: `steps/sample_wishart_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:Wishart
+```
+
+`webppl` on `steps/sample_wishart_factor` reports:
+
+```text
+webppl has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```

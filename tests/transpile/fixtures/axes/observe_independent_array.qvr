@@ -1,0 +1,10 @@
+# A scalar family observed over two `over` axes beside an index
+# annotation: each row holds an independent (B, C) array of normals.
+object Obs : FinSet 2
+object B : FinSet 3
+object C : FinSet 2
+program prog : Obs -> Obs
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Obs <- Normal(loc=mu, scale=1.5) [over=[B, C]]
+    return mu
+export prog

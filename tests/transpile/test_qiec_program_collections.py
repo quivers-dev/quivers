@@ -85,7 +85,8 @@ def test_lexical_uncertainty_rsa_transpiles_to_python_targets(target: str) -> No
     source = (_ROOT / "docs/examples/qiec/lexical-uncertainty-rsa.qvr").read_text()
     output = transpile(parse(source), target=target).decode()
     ast.parse(output)
-    assert "states = [0,1,2,3,4,5]" in output
+    stacked = {"pyro": "torch.stack(", "numpyro": "jnp.stack("}[target]
+    assert f"states={stacked}" in output.replace(" ", "")
     if target == "pyro":
         import pyro
         import torch
@@ -180,3 +181,45 @@ def test_lexical_uncertainty_rsa_matches_the_paper_recursion(alpha: float) -> No
     # The specificity implicature of Figure 5: "some" favours
     # some-but-not-all at L1.
     assert exact_listener[1] > exact_listener[0]
+
+
+_LIST_LITERAL_PROGRAM = """\
+object Step : FinSet 3
+object Val : Real 1
+
+program p : Step -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    let ys = [1.0, 2.0, 3.0]
+    let doubled = map(ys, y -> 2.0 * y)
+    let shifted = ys * mu + [0.5, 0.0, -0.5]
+    score s = sum(doubled) + sum(shifted)
+    return mu
+
+export p
+"""
+
+
+@pytest.mark.parametrize("target", ("pyro", "numpyro"))
+def test_a_list_literal_is_one_tensor_for_arithmetic_and_for_map(target: str) -> None:
+    """A list literal's checked type is a tensor, so the Python targets
+    build one array from it, which elementwise arithmetic and a mapped
+    collection both read; Pyro scores the program's joint."""
+    output = transpile(parse(_LIST_LITERAL_PROGRAM), target=target).decode()
+    ast.parse(output)
+    stacked = {"pyro": "torch.stack(", "numpyro": "jnp.stack("}[target]
+    compact = output.replace(" ", "")
+    assert f"ys={stacked}" in compact
+    assert f"shifted=(ys*mu)+{stacked}" in compact
+    if target == "pyro":
+        import pyro
+        import torch
+
+        namespace = {"pyro": pyro, "torch": torch}
+        exec(output, namespace)
+        mu = 0.7
+        model = pyro.condition(namespace["model"], data={"mu": torch.tensor(mu)})
+        trace = pyro.poutine.trace(model).get_trace()
+        trace.compute_log_prob()
+        prior = float(torch.distributions.Normal(0.0, 1.0).log_prob(torch.tensor(mu)))
+        score = 2.0 * (1.0 + 2.0 + 3.0) + mu * (1.0 + 2.0 + 3.0) + (0.5 + 0.0 - 0.5)
+        assert float(trace.log_prob_sum()) == pytest.approx(prior + score, abs=1e-5)

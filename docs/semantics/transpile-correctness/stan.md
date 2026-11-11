@@ -76,16 +76,21 @@ canonical forms). The non-trivial cases:
 | `MultivariateNormal(μ, Σ)` | `multi_normal(μ, Σ)` | identity | 0 |
 | `LKJCorrCholesky(η)` | `lkj_corr_cholesky(η)` | identity | 0 |
 | `Dirichlet(α)` | `dirichlet(α)` | identity (scalar broadcast via `rep_vector`) | 0 |
-| `Categorical(probs=p)` | `categorical(p)` | identity (1-indexed) | 0 |
+| `Categorical(probs=p)` | `categorical(p)` scoring the code `y + 1` | $y \mapsto y + 1$ | 0 |
 | `Bernoulli(p)` | `bernoulli(p)` | identity | 0 |
-| `LogitNormal(μ, σ)` | not supported (no native `logit_normal_lpdf`) | — | raises `family:LogitNormal` |
+| `LogitNormal(mu=μ, sigma=σ)` | `logit_normal(μ, σ)`, a grafted `logit_normal_lpdf` (Stan ships none): `normal_lpdf(logit(y) \| μ, σ) - log(y) - log1m(y)`, on a parameter declared `<lower = 0, upper = 1>` | identity | 0 |
 | other families | consult the target registry | family-specific mapping or refusal | check the emitted density |
 
-Stan's 1-indexed `categorical` adds 1 to QVR's 0-indexed support;
-the `IntegerInterval(1, K)` declaration on Stan's data side
-reflects this. The renderer emits the index expression `k`
-inside the `for (k in 1:K)` loop directly; no offset is added at
-the call site.
+QVR codes a Categorical value from zero and Stan's `categorical`
+counts from one. The data keeps QVR's coding (an outcome is declared
+`int<lower=0, upper=K-1>`), and the emitted log-pmf reads the code one
+higher, `categorical_lpmf(y[n] + 1 | p)`; `ordered_logistic` and
+`ordered_probit` read their codes the same way. Inside a marginalize
+block the enumeration counter `k` runs over `1:K` and already is
+Stan's class, so `categorical_lpmf(k | p)` takes it directly, while
+the latent read as a number is the code `k - 1`. Stan has no discrete
+parameters, so a drawn class is refused with
+`sample:discrete-latent:<name>`.
 
 Omitting the half-distribution normalizer contributes target-minus-QVR
 $c_{F,\mathsf{Stan}}=-\log 2$ per call site. This is collected into

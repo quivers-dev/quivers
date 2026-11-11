@@ -13,6 +13,48 @@ from quivers.dsl.parser.statements import _walk_statement
 
 _SNIPPET_MAX = 60
 
+RESERVED_LET_WORDS: dict[str, str] = {
+    "unit": "the unit value",
+    "true": "the Boolean literal true",
+    "false": "the Boolean literal false",
+    "not": "Boolean negation",
+    "factor": "the factor comprehension",
+}
+"""The words a let expression reads as something other than a name.
+
+They are the unit value ``unit``, the Booleans ``true`` and ``false``,
+the negation ``not``, and the comprehension keyword ``factor``, each
+mapped to what it denotes. A binder spelled as one of them could never
+be referred to, since every later occurrence parses as the literal or
+the keyword, so a binder may not use them.
+"""
+
+#: A reserved word in a lambda parameter's place: after a binding's
+#: ``=``, an argument list's opening parenthesis or comma, or another
+#: parameter's arrow. Such a lambda does not parse as one, so the source
+#: text, not the tree, shows where it is bound.
+_RESERVED_LAMBDA = re.compile(
+    rb"(?:[(,=]|->)\s*\b(" + "|".join(RESERVED_LET_WORDS).encode() + rb")\s*->"
+)
+
+#: A line comment, blanked before the lambda scan reads the source.
+_LINE_COMMENT = re.compile(rb"#[^\n]*")
+
+#: Each binder position, as the CST node kind holding it and the field
+#: naming the bound identifier.
+_BINDER_FIELDS: dict[str, tuple[str, str]] = {
+    "sample_step": ("vars", "sample site"),
+    "observe_step": ("vars", "observed site"),
+    "marginalize_step": ("var", "marginalized variable"),
+    "let_step": ("name", "let binding"),
+    "call_step": ("name", "call binding"),
+    "score_step": ("name", "score"),
+    "let_factor_binder": ("var", "factor binder"),
+    "let_lambda": ("param", "lambda parameter"),
+    "program_decl": ("params", "program parameter"),
+    "typed_program_param": ("name", "program parameter"),
+}
+
 _PROGRAM_LINE = re.compile(rb"^[ \t]*program\b", re.MULTILINE)
 _RETURN_WORD = re.compile(rb"\breturn\b")
 
@@ -49,6 +91,9 @@ def parse(source: str | bytes, file_path: str = "<source>") -> Module:
         raise ParseError(f"{file_path}: panproto failed to parse: {exc}") from exc
     tree = _Tree(schema, source_bytes)
 
+    # A reserved binder name breaks every later reference to it, so it is
+    # reported where it is bound, ahead of the syntax damage it causes.
+    _reject_reserved_binders(tree, file_path)
     _reject_malformed(tree, file_path)
 
     root_id = next(
@@ -146,6 +191,65 @@ def _reject_malformed(tree: _Tree, file_path: str) -> None:
     raise ParseError(_syntax_error_message(tree, vid, is_missing, file_path))
 
 
+def _reject_reserved_binders(tree: _Tree, file_path: str) -> None:
+    """Raise `ParseError` at a binder spelled as a reserved let word.
+
+    The grammar admits any identifier in a binder position, while a let
+    expression reads ``unit``, ``true``, ``false``, ``not``, and
+    ``factor`` as a literal or a keyword. A binder with one of those
+    names would be bound but never readable, and the mismatch would
+    surface later as a type error about the literal far from its cause,
+    so the binder itself is refused, at its own line and column. Every
+    route through the compiler, checked lowering, and transpilation
+    parses first, so all of them refuse it alike.
+
+    Parameters
+    ----------
+    tree : _Tree
+        The parsed tree.
+    file_path : str
+        The path recorded on the diagnostic.
+
+    Raises
+    ------
+    ParseError
+        At the first such binder in source order.
+    """
+    found: list[tuple[int, str, str]] = []
+    for vid in tree.vertices:
+        binder = _BINDER_FIELDS.get(tree.kind(vid))
+        if binder is None:
+            continue
+        field_name, role = binder
+        for target in tree.fields(vid, field_name):
+            names = (
+                tree.positional(target)
+                if tree.kind(target) == "var_tuple"
+                else [target]
+            )
+            for name_vid in names:
+                if tree.kind(name_vid) != "identifier":
+                    continue
+                word = tree.text(name_vid)
+                if word in RESERVED_LET_WORDS:
+                    start = int(tree.consts(name_vid).get("start-byte", "0"))
+                    found.append((start, word, role))
+    # A lambda parameter spelled as a reserved word does not parse as a
+    # lambda, so it is found in the source text rather than in the tree.
+    code = _LINE_COMMENT.sub(lambda match: b" " * len(match.group()), tree.source)
+    for match in _RESERVED_LAMBDA.finditer(code):
+        found.append((match.start(1), match.group(1).decode(), "lambda parameter"))
+    if not found:
+        return
+    start, word, role = min(found)
+    line, col = tree.line_col_at(start)
+    raise ParseError(
+        f"{file_path}: reserved word at line {line}, col {col}: {word!r} names "
+        f"{RESERVED_LET_WORDS[word]} in expressions, so it cannot name a {role}; "
+        "choose another name"
+    )
+
+
 def _leaf_rank(tree: _Tree, vid: str) -> int:
     """0 for a leaf vertex, 1 otherwise (leaves report more precisely)."""
     return 0 if not tree.children.get(vid) else 1
@@ -188,4 +292,4 @@ def _source_line(source: bytes, pos: int) -> str:
     return source[start:end].decode("utf-8", errors="replace").strip()
 
 
-__all__ = ["parse", "parse_file"]
+__all__ = ["RESERVED_LET_WORDS", "parse", "parse_file"]

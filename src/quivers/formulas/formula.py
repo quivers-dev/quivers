@@ -38,6 +38,8 @@ import narwhals as nw
 import numpy as np
 from narwhals.typing import IntoDataFrame
 
+from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+
 
 #: R-style transforms wired into formulae's evaluation namespace.
 #: Matches base R's standard ``log`` / ``exp`` / ``sqrt`` / etc.
@@ -63,8 +65,50 @@ _R_TRANSFORMS = {
 }
 
 
-class FixedColumn(dx.Model):
+def _read_only(values: np.ndarray) -> np.ndarray:
+    """A C-contiguous read-only copy of an array.
+
+    A model compares its arrays by content and caches its hash, so it
+    keeps a copy no caller can write through.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        The array, or anything ``np.array`` reads as one.
+
+    Returns
+    -------
+    np.ndarray
+        The copy, with its writeable flag cleared.
+    """
+    frozen = np.array(values, copy=True, order="C")
+    frozen.setflags(write=False)
+    return frozen
+
+
+def _read_only_columns(columns: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Read-only copies of each column of a mapping.
+
+    Parameters
+    ----------
+    columns : Mapping[str, np.ndarray]
+        The columns, by name.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        A read-only copy of each column, by name.
+    """
+    return {name: _read_only(column) for name, column in columns.items()}
+
+
+class FixedColumn(ValueModel):
     """One column of the fixed-effects design matrix.
+
+    Columns compare by value: ``data`` is stored as a read-only copy
+    made at construction and compared exactly (dtype, shape, and
+    bytes), so two columns are equal only when their labels and data
+    agree.
 
     Attributes
     ----------
@@ -79,13 +123,15 @@ class FixedColumn(dx.Model):
         only); used as the variable name in the emitted program.
     is_intercept : bool
         ``True`` for the constant-1 column.
+    data : np.ndarray
+        The column's values, shape ``(N,)``; read-only.
     """
 
     term: str
     name: str
     qvr_name: str
     is_intercept: bool = False
-    data: np.ndarray = dx.field(opaque=True)
+    data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
 
 
 class RandomTerm(dx.Model):
@@ -104,9 +150,15 @@ class RandomTerm(dx.Model):
     group: str
 
 
-class Formula(dx.Model):
+class Formula(ValueModel):
     """A parsed regression formula plus the data it was parsed
     against.
+
+    Formulas compare by value over every field: two formulas are equal
+    only when their formula strings, response names, fixed columns
+    (labels and data), random terms, response values, group levels,
+    and group indices all agree. The arrays are stored as read-only
+    copies made at construction.
 
     Attributes
     ----------
@@ -120,36 +172,36 @@ class Formula(dx.Model):
     random_terms : tuple[RandomTerm, ...]
         Random-effect group specifications.
     response_values : np.ndarray
-        Response column values, shape ``(N,)``.
-    group_levels : Mapping[str, tuple[str, ...]]
+        Response column values, shape ``(N,)``; read-only.
+    group_levels : dict[str, tuple[str, ...]]
         Canonical level ordering per grouping factor, used to derive
         deterministic plate-index tensors.
-    group_indices : Mapping[str, tuple[int, ...]]
+    group_indices : dict[str, tuple[int, ...]]
         Per-group integer index array, shape ``(N,)``.
     """
 
     formula: str
     response_name: str
     fixed_columns: tuple[FixedColumn, ...] = dx.field(
-        default_factory=tuple, opaque=True
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     random_terms: tuple[RandomTerm, ...] = ()
-    response_values: np.ndarray = dx.field(opaque=True)
-    group_levels: Mapping[str, tuple[str, ...]] = dx.field(
-        default_factory=dict, opaque=True
+    response_values: np.ndarray = dx.field(
+        opaque=True, extras=opaque_by_value(_read_only)
     )
-    group_indices: Mapping[str, tuple[int, ...]] = dx.field(
-        default_factory=dict, opaque=True
-    )
+    group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
+    group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
 
 
-class FormulaData(dx.Model):
+class FormulaData(ValueModel):
     """Store the nonstructural complement of a `Formula` lens mapping.
 
     The emitted QVR module records formula structure under normalized
     identifiers. This complement retains the source formula, original names,
     presentation labels, per-row arrays, group levels, and group indices so
     ``backward(module, complement)`` can reconstruct the original `Formula`.
+    Complements compare by value over every field, the arrays (stored
+    as read-only copies made at construction) included.
 
     Attributes
     ----------
@@ -158,37 +210,37 @@ class FormulaData(dx.Model):
     response_name : str
         Original response column name.
     response_values : np.ndarray
-        Response values with shape ``(N,)``.
+        Response values with shape ``(N,)``; read-only.
     fixed_column_names : Mapping[str, tuple[str, str]]
-        ``(term, name)`` pairs keyed by normalized fixed-column name.
+        ``(term, name)`` pairs keyed by normalized fixed-column name; a
+        read-only mapping.
     fixed_column_data : Mapping[str, np.ndarray]
-        Predictor values keyed by normalized fixed-column name.
-    group_original_names : Mapping[str, str]
+        Predictor values keyed by normalized fixed-column name; a
+        read-only mapping of read-only arrays.
+    group_original_names : dict[str, str]
         Original group names keyed by normalized group name.
-    group_levels : Mapping[str, tuple[str, ...]]
+    group_levels : dict[str, tuple[str, ...]]
         Canonical level order for each group.
-    group_indices : Mapping[str, tuple[int, ...]]
+    group_indices : dict[str, tuple[int, ...]]
         Per-row integer codes for each group.
     """
 
     formula: str = ""
     response_name: str = ""
-    response_values: np.ndarray = dx.field(opaque=True)
+    response_values: np.ndarray = dx.field(
+        opaque=True, extras=opaque_by_value(_read_only)
+    )
     fixed_column_names: Mapping[str, tuple[str, str]] = dx.field(
-        default_factory=dict, opaque=True
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
     )
     fixed_column_data: Mapping[str, np.ndarray] = dx.field(
-        default_factory=dict, opaque=True
+        default_factory=dict,
+        opaque=True,
+        extras=opaque_by_value(_read_only_columns),
     )
-    group_original_names: Mapping[str, str] = dx.field(
-        default_factory=dict, opaque=True
-    )
-    group_levels: Mapping[str, tuple[str, ...]] = dx.field(
-        default_factory=dict, opaque=True
-    )
-    group_indices: Mapping[str, tuple[int, ...]] = dx.field(
-        default_factory=dict, opaque=True
-    )
+    group_original_names: dict[str, str] = dx.field(default_factory=dict)
+    group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
+    group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
 
 
 def _qvr_name(raw: str) -> str:

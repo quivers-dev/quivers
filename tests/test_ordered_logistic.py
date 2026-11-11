@@ -197,7 +197,7 @@ export ord
     participant_idx = torch.tensor([0, 1, 2, 0, 1, 2]).long()
     tr = trace(
         program.morphism,
-        torch.zeros(6, 1),
+        torch.zeros(1, 1),
         observations={
             "y": y,
             "cutpoints": cutpoints,
@@ -206,13 +206,9 @@ export ord
     )
     assert tr.log_joint is not None
     assert torch.isfinite(tr.log_joint).all()
-    # The joint reduces to the narrowest shape its density-carrying
-    # sites agree on, and `eta` is one draw shared by every row, so
-    # that shape is a single element rather than one per row. What it
-    # has to equal is the sum of the sites it is built from, which is
-    # the invariant a shape alone does not pin: a joint that repeated
-    # a shared site once per row would have the same shape and the
-    # wrong value.
+    # One run, so one joint, which has to equal the sum of the sites it
+    # is built from: a joint that repeated a shared site once per row
+    # would have the same shape and the wrong value.
     assert tr.log_joint.numel() == 1
     site_total = sum(float(site.log_prob.sum()) for site in tr.sites.values())
     torch.testing.assert_close(
@@ -240,15 +236,62 @@ export ordinal
     torch.manual_seed(0)
     y = torch.randint(0, 5, (N,)).long()
     base = torch.tensor([-1.5, -0.5, 0.5, 1.5])
+    # One run of the program: its rows come from the `Resp` plate.
     tr = trace(
         program.morphism,
-        torch.zeros(N, 1),
+        torch.zeros(1, 1),
         observations={"y": y, "base": base},
     )
     assert tr.log_joint is not None
-    # One `eta` shared across the plate, so the joint reduces to a
-    # single element and must equal the sum of its sites; see the
-    # participant-indexed case above.
+    # One run, so one joint, which must equal the sum of its sites; see
+    # the participant-indexed case above.
+    assert tr.log_joint.numel() == 1
+    torch.testing.assert_close(
+        float(tr.log_joint.sum()),
+        sum(float(site.log_prob.sum()) for site in tr.sites.values()),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    assert torch.isfinite(tr.log_joint).all()
+    # Numeric equivalence: the DSL log-prob at the sampled eta must
+    # match `OrderedLogistic(eta_row, base).log_prob(y).sum()`.
+    eta_val = tr.sites["eta"].value.reshape(-1)
+    eta_row = eta_val.expand(N) if eta_val.numel() == 1 else eta_val
+    ref_lp = OrderedLogistic(eta_row, base).log_prob(y).sum()
+    dsl_y_lp = tr.sites["y"].log_prob.sum()
+    torch.testing.assert_close(dsl_y_lp, ref_lp, atol=1e-5, rtol=1e-5)
+
+
+def test_dsl_inline_observe_with_sampled_cutpoints_vector() -> None:
+    """A sampled cutpoints vector reaches the inline observe as one
+    distribution parameter shared by every row, as a data-supplied one
+    does.
+    `OrderedLogistic(predictor, cutpoints)` with `predictor: (N,)`
+    and `cutpoints: (K-1,)` compiles and traces without stacking
+    the two into a single per-row tensor.
+    """
+    program = loads("""
+object Cut  : FinSet 4
+object Resp : FinSet 100
+program ordinal : Resp -> Resp
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    sample base <- Normal(loc=0.0, scale=2.0) [over=Cut]
+    observe y : Resp <- OrderedLogistic(predictor=eta, cutpoints=base)
+    return y
+export ordinal
+""")
+    N = 100
+    torch.manual_seed(0)
+    y = torch.randint(0, 5, (N,)).long()
+    base = torch.tensor([-1.5, -0.5, 0.5, 1.5])
+    # One run of the program: its rows come from the `Resp` plate.
+    tr = trace(
+        program.morphism,
+        torch.zeros(1, 1),
+        observations={"y": y, "base": base},
+    )
+    assert tr.log_joint is not None
+    # One run, so one joint, which must equal the sum of its sites.
     assert tr.log_joint.numel() == 1
     torch.testing.assert_close(
         float(tr.log_joint.sum()),

@@ -68,6 +68,7 @@ from quivers.qiec.terms import (
     Reduction,
     Rowwise,
     Comprehension,
+    LetValue,
     Value,
     Var,
 )
@@ -2231,6 +2232,11 @@ class Evaluator:
                 self._value(value.body, {**environment, value.binder: index})
                 for index in range(extent)
             )
+        if isinstance(value, LetValue):
+            scope = dict(environment)
+            for binding in value.bindings:
+                scope[binding.binder] = self._value(binding.value, scope)
+            return self._value(value.body, scope)
         raise TypeError(f"unsupported QIEC value {type(value).__name__}")
 
     def _validate_handler_manifest(self, manifest: HandlerManifest) -> None:

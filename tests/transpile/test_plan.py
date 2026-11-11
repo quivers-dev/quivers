@@ -164,7 +164,7 @@ def test_target_plan_optimization_can_be_disabled() -> None:
         ("numpyro", "Categorical(logits="),
         ("pymc", "logit_p="),
         ("edward2", "Categorical(logits="),
-        ("stan", "categorical_logit_lpmf(y |"),
+        ("stan", "categorical_logit_lpmf(y+1 |"),
     ],
 )
 def test_categorical_logits_keep_the_target_parameterization(
@@ -202,7 +202,8 @@ def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> 
     assert isinstance(marginal, IRMarginalize)
     assert marginal.latent == "z"
     assert marginal.plate.batch_dims == (DimStatic(size=8, name="Item"),)
-    assert marginal.constraint == CSIntegerInterval(lower=0, upper=1)
+    # The latent's atoms are the elements of its index object `Comp`.
+    assert marginal.constraint == CSIntegerInterval(lower=0, upper=3)
     (observe,) = marginal.scope
     assert isinstance(observe, IRObserve)
     assert observe.via == "idx"

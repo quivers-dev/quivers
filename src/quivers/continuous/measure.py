@@ -238,17 +238,137 @@ class Restrict(Measure):
         return out
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+        """Draw from the restricted, renormalised measure.
+
+        A base with a closed-form CDF and inverse CDF is drawn by
+        inversion: a uniform draw between the CDF at the two ends of
+        the interval, mapped back through the inverse CDF, which is
+        exactly the base conditioned on the interval. Any other base is
+        drawn by rejection one entry at a time: each entry outside the
+        interval is redrawn from the base until it falls inside, so
+        every entry is an independent draw of the conditioned base.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            The leading sample shape.
+
+        Returns
+        -------
+        Tensor
+            Draws of shape ``sample_shape + batch_shape + event_shape``,
+            each inside the interval.
+
+        Raises
+        ------
+        RuntimeError
+            If rejection leaves an entry outside the interval after
+            `_REJECTION_ROUNDS` redraws, which happens only when the
+            interval holds a vanishing share of the base's mass.
+        """
+        with torch.no_grad():
+            inverted = self._sample_by_inversion(sample_shape)
+            if inverted is not None:
+                return inverted
+            return self._sample_by_rejection(sample_shape)
+
+    def _inside(self, draws: Tensor) -> Tensor:
+        """Which entries of ``draws`` lie in the interval.
+
+        Parameters
+        ----------
+        draws : Tensor
+            Candidate draws.
+
+        Returns
+        -------
+        Tensor
+            A boolean mask of the draws' shape.
+        """
+        ok = torch.ones_like(draws, dtype=torch.bool)
+        if self.low is not None:
+            ok &= draws >= self.low
+        if self.high is not None:
+            ok &= draws <= self.high
+        return ok
+
+    def _sample_by_inversion(self, sample_shape: torch.Size) -> Tensor | None:
+        """Draw by inverting the base's CDF over the interval.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            The leading sample shape.
+
+        Returns
+        -------
+        Tensor | None
+            The draws, or ``None`` when the base has no closed-form CDF
+            or inverse CDF, or is discrete (its inverse CDF does not
+            give the conditioned mass function).
+        """
+        if getattr(self.base.support, "is_discrete", False):
+            return None
+        # The CDF values and the inversion run in double precision: an
+        # interval deep in a tail has CDF values within float32 rounding
+        # of one another, which single precision would collapse.
+        wide = torch.float64
+        try:
+            zero = torch.zeros(self.batch_shape, dtype=wide)
+            lower = zero if self.low is None else self.base.cdf(self.low.to(wide))
+            upper = (
+                zero + 1.0 if self.high is None else self.base.cdf(self.high.to(wide))
+            )
+            shape = self._extended_shape(sample_shape)
+            uniform = torch.rand(shape, dtype=wide)
+            draws = self.base.icdf(lower + (upper - lower) * uniform)
+        except NotImplementedError:
+            return None
+        if self.low is not None:
+            draws = torch.maximum(draws, self.low.to(draws.dtype))
+        if self.high is not None:
+            draws = torch.minimum(draws, self.high.to(draws.dtype))
+        return draws.to(torch.get_default_dtype())
+
+    def _sample_by_rejection(self, sample_shape: torch.Size) -> Tensor:
+        """Draw by redrawing each entry outside the interval.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            The leading sample shape.
+
+        Returns
+        -------
+        Tensor
+            The draws, each inside the interval.
+
+        Raises
+        ------
+        RuntimeError
+            If an entry stays outside after `_REJECTION_ROUNDS` redraws.
+        """
         draws = self.base.sample(sample_shape)
-        for _ in range(200):
-            ok = torch.ones_like(draws, dtype=torch.bool)
-            if self.low is not None:
-                ok &= draws >= self.low
-            if self.high is not None:
-                ok &= draws <= self.high
-            if ok.all():
+        ok = self._inside(draws)
+        for _ in range(_REJECTION_ROUNDS):
+            if bool(ok.all()):
                 return draws
-            draws = self.base.sample(sample_shape)
-        return draws
+            fresh = self.base.sample(sample_shape)
+            draws = torch.where(ok, draws, fresh)
+            ok = self._inside(draws)
+        if bool(ok.all()):
+            return draws
+        raise RuntimeError(
+            f"Restrict: {int((~ok).sum())} draw(s) of the base stayed outside "
+            f"[{self.low}, {self.high}] after {_REJECTION_ROUNDS} redraws; the "
+            f"interval holds too little of the base's mass to sample by "
+            f"rejection"
+        )
+
+
+#: How many times rejection sampling redraws an entry outside a
+#: restriction's interval before it reports the interval as too small.
+_REJECTION_ROUNDS = 10_000
 
 
 class Pushforward(Measure):
@@ -412,7 +532,11 @@ class Mixture(Measure):
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         cat = torch.distributions.Categorical(probs=self.weights)
         idx = cat.sample(sample_shape)
-        draws = [c.sample(sample_shape) for c in self.components]
+        # Components may carry smaller batch shapes than the mixture (a
+        # `PointMass` spike has none), so every draw is broadcast to the
+        # mixture's full sample shape before one is selected per entry.
+        shape = torch.Size(sample_shape) + self.batch_shape + self.event_shape
+        draws = [c.sample(sample_shape).expand(shape) for c in self.components]
         stacked = torch.stack(draws, dim=-1)
         return stacked.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 

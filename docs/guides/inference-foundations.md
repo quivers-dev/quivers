@@ -41,8 +41,11 @@ flowchart TB
     class L2,L1 qv-foundation
 ```
 
-Every guide and MCMC kernel consumes a single
-`LatentRegistry.from_model(model, observed_names)`,
+Every guide and MCMC kernel consumes a single `LatentRegistry`, built
+from a run of the model with
+`LatentRegistry.from_trace(model, trace(model, x, observations))` (MCMC
+always, a guide when constructed with `x=`) or from the program's own
+steps with `LatentRegistry.from_model(model, observed_names)`,
 which flattens / unflattens between site-keyed dicts and a single
 unconstrained vector and routes every per-site bijector through
 [`torch.distributions.constraint_registry.biject_to`](https://docs.pytorch.org/docs/stable/distributions.html#torch.distributions.constraint_registry.biject_to).
@@ -109,6 +112,73 @@ A `SampleSite` records:
 - `log_prob`: log-density of the value under the morphism, shape `(batch,)` (zero for `let` bindings)
 - `is_observed`: whether the site was clamped to an observed value
 - `is_deterministic`: whether the site is a deterministic `let` binding
+
+## Input rows are independent runs
+
+An input of `B` rows is `B` independent runs of the whole program: each
+run draws its own value of every site, and observes the program's data
+through its own plates. The rows a program observes come from its data
+and its plates, never from the input's rows, so a program whose
+observations live in a plate takes a one-row input such as
+`torch.zeros(1, 1)`.
+[`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
+returns one joint per run, shape `(B,)`, and the joint of all the runs
+is its sum; a trace records each site's density per run, shape `(B,)`,
+and its `log_joint` agrees. A value given to `log_joint`, to a trace, or
+to a handler is either one value per run, along a leading axis of
+length `B`, or one value every run shares. Each `let` and `score` step
+reads one run's values, so a `factor`, a collection, a reduction, or an
+index reads the binding's own axes and never the run axis.
+
+The posterior drivers that target one run's latents,
+[MCMC](inference-mcmc.md#mcmc-hmc-and-nuts), the Laplace approximation,
+annealed importance sampling, and the Bayesian lift of a program with a
+plate, refuse an input of more than one row and say to pass one. The
+variational objectives sum their per-run terms: each run draws its own
+latents from the guide, so the loss of `B` runs is a `B`-sample estimate
+of `B` copies of the one-run objective, and its optimum is the one-run
+posterior.
+
+The latents of a program are the sites a run reaches:
+[`LatentRegistry.from_trace`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.from_trace)
+reads them off a trace at the caller's input and data, every position of
+a scanned program cell included. MCMC builds its registry that way, and
+a guide does when it is constructed with `x=` (and `observations=`).
+`LatentRegistry.from_model` reads a program's own steps and refuses a
+program that scans or calls a program that draws.
+
+## Latent site shapes
+
+A *draw* is one value of a latent site on its constrained support. Its
+shape is the site's
+[`LatentSite.constrained_shape`](../api/inference/guide.md#quivers.inference.registry.LatentSite.constrained_shape):
+`()` for a scalar site, `(d,)` for a `d`-dimensional site, `(d, d)`
+for a correlation-Cholesky factor, and `(|A|, ...)` for a plate site
+over `A`. Within one run, a site that is not plated leads with a run
+axis of length one, `(1, *constrained_shape)`, and a plated site holds
+its plate's rows, `constrained_shape`. Across `B` runs a value given or
+recorded per run leads with the run axis: `(B, *constrained_shape)` for
+both kinds of site once `B > 1`.
+
+| Surface | Non-plate site | Plate site |
+|---|---|---|
+| One draw (`constrained_shape`) | `()`, `(d,)` | `(n,)`, `(n, d)` for a plate of size `n` |
+| [`MCMCResult.samples`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMCResult) | `(chains, draws, *constrained_shape)` | `(chains, draws, *constrained_shape)` |
+| `MCMCResult.r_hat`, `MCMCResult.ess` | `constrained_shape` | `constrained_shape` |
+| Trace value, `Guide.rsample`, one run | `(1, *constrained_shape)` | `constrained_shape` |
+| Trace value, `B > 1` runs | `(B, *constrained_shape)` | `(B, *constrained_shape)` |
+| `Guide.rsample`, `B > 1` runs | `(B, *constrained_shape)` | `constrained_shape`, shared by every run |
+| [`PotentialFn`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn) input to `log_joint` | `(1, *constrained_shape)` | `constrained_shape` |
+| [`Predictive`](../api/inference/predictive.md) output | `(num_samples, B, *constrained_shape)` | `(num_samples, *constrained_shape)` for one run, else `(num_samples, B, *constrained_shape)` |
+
+[`LatentRegistry.trace_values`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_values)
+lifts one draw to the values of `B` runs that share it, by expanding
+each non-plate site across the run axis; MCMC uses it with one run when
+it scores a position, so a custom density reached through `log_joint`
+sees a leading axis of size one on every non-plate site.
+[`LatentRegistry.trace_row`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_row)
+reads one run back as a draw per site, which is how a guide sample
+seeds an MCMC chain.
 
 ## Conditioning on observations
 
@@ -177,7 +247,7 @@ subj_idx = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3])
 r_obs    = torch.zeros(12)
 
 cond = condition(model, {"subj_idx": subj_idx, "r": r_obs})
-tr   = cond.trace(torch.zeros(12, 1))
+tr   = cond.trace(torch.zeros(1, 1))   # one run; its 12 rows come from Resp
 ```
 
 `r` matches the observed sample site `r : Resp <- Normal(mu, 1.0)`

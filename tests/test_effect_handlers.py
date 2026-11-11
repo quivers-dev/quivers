@@ -408,7 +408,7 @@ class TestKernelEncoding:
         assert set(tr.sites) == {"z", "twice", "bonus", "y"}
         assert tr.sites["twice"].is_deterministic
         torch.testing.assert_close(tr.sites["twice"].value, 2.0 * tr.sites["z"].value)
-        torch.testing.assert_close(tr.sites["twice"].log_prob, torch.zeros(()))
+        torch.testing.assert_close(tr.sites["twice"].log_prob, torch.zeros(3))
         torch.testing.assert_close(
             tr.sites["bonus"].log_prob, 2.0 * tr.sites["z"].value.sum(dim=-1)
         )

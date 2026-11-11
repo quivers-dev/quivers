@@ -156,13 +156,17 @@ def _random_leaf(
     force_literal: bool = False,
     force_var: bool = False,
 ) -> LetExprNode:
-    """Pick a leaf node uniformly between literals and variables."""
+    """Pick a leaf node uniformly between literals and variables.
+
+    A literal is a whole number spelled as an integer, as the source
+    spells one, so every target renders it as an integer literal.
+    """
     if force_literal:
-        return LetExprLiteral(value=float(rng.randint(1, 9)))
+        return LetExprLiteral(value=float(rng.randint(1, 9)), integral=True)
     if force_var:
         return LetExprVar(name=rng.choice(_VAR_NAMES))
     if rng.random() < 0.5:
-        return LetExprLiteral(value=float(rng.randint(1, 9)))
+        return LetExprLiteral(value=float(rng.randint(1, 9)), integral=True)
     return LetExprVar(name=rng.choice(_VAR_NAMES))
 
 
@@ -191,6 +195,12 @@ class _FuzzCtx:
         self._n = 0
         self.target = target
         self.cards: dict[str, int] = dict(cards or {})
+        # The Stan helper's shape tables: a fuzzed expression reads no
+        # bound name, so every name is a number, none is declared a
+        # vector, and none is an index covariate.
+        self.ranks: dict[str, int] = {}
+        self.vectors: frozenset[str] = frozenset()
+        self.host_indices: frozenset[str] = frozenset()
 
     def fresh(self, prefix: str) -> str:
         self._n += 1

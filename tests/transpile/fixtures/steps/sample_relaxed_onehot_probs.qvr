@@ -1,0 +1,6 @@
+# A relaxed one-hot draw whose event extent comes from its probabilities.
+object One : FinSet 1
+program relaxed_onehot : One -> One
+    sample z <- RelaxedOneHotCategorical(temperature=0.5, probs=[0.2, 0.3, 0.5])
+    return z
+export relaxed_onehot

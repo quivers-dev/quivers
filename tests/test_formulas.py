@@ -36,6 +36,8 @@ Surface coverage:
 from __future__ import annotations
 
 import ast
+import copy
+import pickle
 import textwrap
 
 import numpy as np
@@ -50,6 +52,9 @@ from quivers.dsl import Compiler, loads, parse
 from quivers.dsl.ast_nodes import Module
 from quivers.dsl.emit import module_to_source
 from quivers.formulas import (
+    FixedColumn,
+    Formula,
+    FormulaData,
     FormulaToQVRModule,
     fit,
     families,
@@ -406,6 +411,104 @@ class TestDataFrameLibraryParity:
 # ---------------------------------------------------------------------------
 
 
+def _swap_two_codes(codes: tuple[int, ...]) -> tuple[int, ...]:
+    """Swap the first two positions whose codes differ."""
+    j = next(k for k, code in enumerate(codes) if code != codes[0])
+    out = list(codes)
+    out[0], out[j] = out[j], out[0]
+    return tuple(out)
+
+
+def _formula_with(
+    parsed: Formula,
+    *,
+    fixed_columns: tuple[FixedColumn, ...] | None = None,
+    response_values: np.ndarray | None = None,
+    group_levels: dict[str, tuple[str, ...]] | None = None,
+    group_indices: dict[str, tuple[int, ...]] | None = None,
+) -> Formula:
+    """Rebuild a formula with some of its data fields replaced."""
+    return Formula(
+        formula=parsed.formula,
+        response_name=parsed.response_name,
+        fixed_columns=parsed.fixed_columns if fixed_columns is None else fixed_columns,
+        random_terms=parsed.random_terms,
+        response_values=(
+            parsed.response_values if response_values is None else response_values
+        ),
+        group_levels=parsed.group_levels if group_levels is None else group_levels,
+        group_indices=parsed.group_indices if group_indices is None else group_indices,
+    )
+
+
+def _mutate_formula(parsed: Formula, field: str) -> Formula:
+    """Change exactly one data field of a parsed ``y ~ x + (1 | g)``."""
+    if field == "response_values":
+        values = parsed.response_values.copy()
+        values[0] += 1.0
+        return _formula_with(parsed, response_values=values)
+    if field == "fixed_column_data":
+        column = parsed.fixed_columns[1]
+        data = column.data.copy()
+        data[0] += 1.0
+        changed = FixedColumn(
+            term=column.term,
+            name=column.name,
+            qvr_name=column.qvr_name,
+            is_intercept=column.is_intercept,
+            data=data,
+        )
+        return _formula_with(parsed, fixed_columns=(parsed.fixed_columns[0], changed))
+    if field == "fixed_columns":
+        return _formula_with(parsed, fixed_columns=parsed.fixed_columns[:1])
+    if field == "group_levels":
+        return _formula_with(
+            parsed, group_levels={"g": tuple(reversed(parsed.group_levels["g"]))}
+        )
+    if field == "group_indices":
+        return _formula_with(
+            parsed, group_indices={"g": _swap_two_codes(parsed.group_indices["g"])}
+        )
+    raise AssertionError(field)
+
+
+def _mutate_complement(complement: FormulaData, field: str) -> FormulaData:
+    """Change exactly one field of the complement of ``y ~ x + (1 | g)``."""
+    response_values = complement.response_values
+    fixed_column_names = dict(complement.fixed_column_names)
+    fixed_column_data = dict(complement.fixed_column_data)
+    group_original_names = complement.group_original_names
+    group_levels = complement.group_levels
+    group_indices = complement.group_indices
+    if field == "response_values":
+        response_values = response_values.copy()
+        response_values[0] += 1.0
+    elif field == "fixed_column_data":
+        data = fixed_column_data["x"].copy()
+        data[0] += 1.0
+        fixed_column_data["x"] = data
+    elif field == "fixed_column_names":
+        fixed_column_names["x"] = ("x", "renamed")
+    elif field == "group_original_names":
+        group_original_names = {"g": "renamed"}
+    elif field == "group_levels":
+        group_levels = {"g": tuple(reversed(group_levels["g"]))}
+    elif field == "group_indices":
+        group_indices = {"g": _swap_two_codes(group_indices["g"])}
+    else:
+        raise AssertionError(field)
+    return FormulaData(
+        formula=complement.formula,
+        response_name=complement.response_name,
+        response_values=response_values,
+        fixed_column_names=fixed_column_names,
+        fixed_column_data=fixed_column_data,
+        group_original_names=group_original_names,
+        group_levels=group_levels,
+        group_indices=group_indices,
+    )
+
+
 class TestLensLaws:
     @pytest.mark.parametrize(
         "spec",
@@ -430,14 +533,102 @@ class TestLensLaws:
         recovered = lens.backward(module, complement)
         assert recovered == parsed
 
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "response_values",
+            "fixed_column_data",
+            "fixed_columns",
+            "group_levels",
+            "group_indices",
+        ],
+    )
+    def test_get_put_law_constrains_every_data_field(self, mutation, base_df):
+        """Formula equality sees each data field, so the GetPut check
+        rejects a reconstruction that differs in any one of them, and
+        the law still holds for the mutated formula itself."""
+        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
+        mutated = _mutate_formula(parsed, mutation)
+        assert mutated != parsed
+        assert hash(mutated) != hash(parsed)
+        lens = FormulaToQVRModule(families["gaussian"])
+        recovered = lens.backward(*lens.forward(mutated))
+        assert recovered == mutated
+        assert recovered != parsed
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "response_values",
+            "fixed_column_data",
+            "fixed_column_names",
+            "group_original_names",
+            "group_levels",
+            "group_indices",
+        ],
+    )
+    def test_backward_reads_every_complement_field(self, mutation, base_df):
+        """Changing any one field of the complement changes the
+        recovered formula, so the lens laws constrain the complement's
+        data rather than passing for any complement."""
+        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
+        lens = FormulaToQVRModule(families["gaussian"])
+        module, complement = lens.forward(parsed)
+        mutated = _mutate_complement(complement, mutation)
+        assert mutated != complement
+        assert lens.backward(module, complement) == parsed
+        assert lens.backward(module, mutated) != parsed
+
+    def test_complements_compare_by_their_data(self, base_df):
+        lens = FormulaToQVRModule(families["gaussian"])
+        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
+        _, first = lens.forward(parsed)
+        _, second = lens.forward(formula_from_data("y ~ x + (1 | g)", base_df))
+        assert first == second
+        assert hash(first) == hash(second)
+        _, other = lens.forward(_mutate_formula(parsed, "response_values"))
+        assert first != other
+
+    def test_formula_arrays_are_read_only_copies(self, base_df):
+        frame = base_df.copy()
+        parsed = formula_from_data("y ~ x + (1 | g)", frame)
+        before = hash(parsed)
+        assert not parsed.response_values.flags.writeable
+        assert all(not col.data.flags.writeable for col in parsed.fixed_columns)
+        with pytest.raises(ValueError):
+            parsed.response_values[0] = 0.0
+        frame.loc[0, "y"] = 1e6
+        assert hash(parsed) == before
+        assert parsed == formula_from_data("y ~ x + (1 | g)", base_df)
+
+    def test_formula_and_complement_survive_copy_and_pickle(self, base_df):
+        parsed = formula_from_data("y ~ x + (1 | g)", base_df)
+        _, complement = FormulaToQVRModule(families["gaussian"]).forward(parsed)
+        for value, array_field in (
+            (parsed, "response_values"),
+            (complement, "response_values"),
+            (parsed.fixed_columns[1], "data"),
+        ):
+            for clone in (
+                copy.copy(value),
+                copy.deepcopy(value),
+                pickle.loads(pickle.dumps(value)),
+            ):
+                np.testing.assert_array_equal(
+                    getattr(clone, array_field), getattr(value, array_field)
+                )
+                assert clone == value
+                assert hash(clone) == hash(value)
+        clone = pickle.loads(pickle.dumps(parsed))
+        assert clone.fixed_columns == parsed.fixed_columns
+        assert clone.group_indices == parsed.group_indices
+
     def test_complement_is_formula_data_not_formula(self, base_df):
         """The lens' complement is :class:`FormulaData`, carrying only
         the fields not recoverable from the emitted :class:`Module`
         (per-row data arrays, original identifier names, the
         original formula string). It is not the entire
         :class:`Formula`."""
-        from quivers.formulas.formula import FormulaData
-
         parsed = formula_from_data("y ~ x + (1 | g)", base_df)
         lens = FormulaToQVRModule(families["gaussian"])
         _module, complement = lens.forward(parsed)
@@ -454,8 +645,6 @@ class TestLensLaws:
         :class:`Module`, not from the complement. Verify by
         producing a Module without forwarding through the lens and
         observing that backward recovers the correct structure."""
-        from quivers.formulas.formula import FormulaData
-
         parsed = formula_from_data("y ~ x + (1 | g)", base_df)
         lens = FormulaToQVRModule(families["gaussian"])
         module, complement = lens.forward(parsed)

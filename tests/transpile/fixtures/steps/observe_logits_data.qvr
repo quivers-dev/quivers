@@ -1,0 +1,9 @@
+# Exercises a host datum filling the logits of a plated categorical
+# observe: `scores` holds one logit vector per `Trial` row, and a datum
+# without the row axis is one logit vector every row shares.
+object Trial : FinSet 5
+program pick : Trial -> Trial
+    sample bias <- Normal(loc=0.0, scale=1.0)
+    observe choice : Trial <- Categorical(logits=scores)
+    return choice
+export pick

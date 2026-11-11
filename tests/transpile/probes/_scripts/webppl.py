@@ -204,7 +204,7 @@ _BOOLEAN_VALUED_DISTS: frozenset[str] = frozenset({"Bernoulli"})
 # it is the same marshalling step `_reshape` performs for the array
 # backends: the point's wire form is a list, the runtime's native
 # container is not.
-_VECTOR_VALUED_DISTS: frozenset[str] = frozenset({"Dirichlet"})
+_VECTOR_VALUED_DISTS: frozenset[str] = frozenset({"Dirichlet", "MultivariateGaussian"})
 
 # Top-level helper injected into every driver. See the module
 # docstring for why a grafted distribution's `score` cannot be reached
@@ -232,7 +232,9 @@ _QIEC_CLAMPED_DEFINITIONS = """\
 var _qvr_probe_coerce = function (distribution, value) {
   var family = distribution.meta ? distribution.meta.name : null;
   if (family === "Bernoulli") { return value === 1; }
-  if (family === "Dirichlet") { return Vector(value); }
+  if (family === "Dirichlet" || family === "MultivariateGaussian") {
+    return Vector(value);
+  }
   return value;
 };
 var _qvr_qiec_draw = function(label, distribution) {

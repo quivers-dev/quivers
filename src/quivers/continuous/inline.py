@@ -30,12 +30,15 @@ FamilySpec entry.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
+from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._ordered import OrderedLogistic
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
@@ -62,6 +65,7 @@ from quivers.core._util import EPS
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
 from quivers.dsl.ast_nodes import (
+    DrawArg,
     DrawArgDist,
     DrawArgIndex,
     DrawArgList,
@@ -71,6 +75,85 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.family_schemas import family_parameterizations
 from quivers.dsl.draw_args import bind_family_arguments
+
+
+def _floating_support(support: _constraints.Constraint) -> bool:
+    """Whether a discrete support takes floating-point values.
+
+    `torch.distributions` scores and samples Boolean (`Bernoulli`) and
+    one-hot supports as floating-point tensors; every other discrete
+    support (the integer intervals of `Poisson`, `Categorical`,
+    `Binomial`, and the rest) as integer tensors.
+
+    Parameters
+    ----------
+    support : torch.distributions.constraints.Constraint
+        The distribution's support.
+
+    Returns
+    -------
+    bool
+        ``True`` for a Boolean or one-hot support.
+    """
+    return isinstance(support, (_constraints._Boolean, _constraints._OneHot))
+
+
+def _discrete_sample(
+    dist: D.Distribution,
+    sample_shape: torch.Size,
+    support: _constraints.Constraint,
+) -> torch.Tensor:
+    """Draw from a discrete distribution at its support's dtype.
+
+    Parameters
+    ----------
+    dist : torch.distributions.Distribution
+        The distribution sampled.
+    sample_shape : torch.Size
+        Leading sample dimensions.
+    support : torch.distributions.constraints.Constraint
+        The distribution's support.
+
+    Returns
+    -------
+    torch.Tensor
+        A floating draw for a Boolean or one-hot support, and an
+        integer (``long``) draw otherwise.
+    """
+    draw = dist.sample(sample_shape)
+    return draw if _floating_support(support) else draw.long()
+
+
+def _discrete_value(
+    value: torch.Tensor,
+    support: _constraints.Constraint,
+    floating_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Cast a value scored by a discrete distribution to its support's dtype.
+
+    A Boolean or one-hot support scores floating values, so an integer
+    value (a draw, or integer-typed data) is cast to ``floating_dtype``;
+    an integer support scores integer values, so a floating value is
+    cast to ``long``. A value already at the right dtype is returned
+    unchanged.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        The value scored.
+    support : torch.distributions.constraints.Constraint
+        The distribution's support.
+    floating_dtype : torch.dtype
+        The floating dtype of the distribution's parameters.
+
+    Returns
+    -------
+    torch.Tensor
+        ``value`` at the dtype the support is scored in.
+    """
+    if _floating_support(support):
+        return value if value.dtype.is_floating_point else value.to(floating_dtype)
+    return value.long() if value.dtype.is_floating_point else value
 
 
 def _to_event_shape(value: torch.Tensor, dist: D.Distribution) -> torch.Tensor:
@@ -207,9 +290,9 @@ class FixedDistribution(ContinuousMorphism):
                 if self._discrete
                 else torch.Size((batch, int(getattr(self.codomain, "dim", 1))))
             )
-            shape = shape + rows
+            shape = torch.Size((*shape, *rows))
         if self._discrete:
-            return dist.sample(shape).long()
+            return _discrete_sample(dist, shape, self._support)
         if getattr(dist, "has_rsample", True):
             return dist.rsample(shape)
         # Continuous but non-reparameterizable (e.g. VonMises).
@@ -230,7 +313,13 @@ class FixedDistribution(ContinuousMorphism):
         torch.Tensor
             Log-probabilities. Shape ``(batch,)``.
         """
-        value = y.float() if self._discrete else y
+        if self._discrete:
+            floating = (
+                x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
+            )
+            value = _discrete_value(y, self._support, floating)
+        else:
+            value = y
         # The distribution's parameters are shared constants, so the
         # density is built once (batch of one) and its constant
         # parameters broadcast against whatever value is scored: a
@@ -288,7 +377,9 @@ class MixedInlineDistribution(ContinuousMorphism):
         - ``('var', dim)``: a variable read from the input, ``dim``
           columns wide, or ``None`` when its width is to be read off
           the stacked input (see ``_variable_widths``);
-        - ``('lit', value)``: a fixed literal float value.
+        - ``('lit', value)``: a fixed literal float value;
+        - ``('const', tensor)``: a fixed literal tensor, a list literal
+          such as a cutpoint vector, which every row shares.
     dist_builder : callable
         ``(list[torch.Tensor]) -> torch.distributions.Distribution``.
         Receives one 1-D tensor per parameter (all same batch size).
@@ -303,7 +394,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         self,
         domain: AnySpace,
         codomain: AnySpace,
-        param_spec: list[tuple[str, int | float | None]],
+        param_spec: list[tuple[str, int | float | torch.Tensor | None]],
         dist_builder: Callable,
         discrete: bool = False,
         support: _constraints.Constraint | None = None,
@@ -352,14 +443,19 @@ class MixedInlineDistribution(ContinuousMorphism):
             One tensor per parameter, each shape ``(batch,)`` or
             ``(batch, dim)``.
         """
+        if x.dim() == 0:
+            # One run's scalar parameter: a single row of one column.
+            x = x.reshape(1, 1)
         if x.dim() == 1:
             x = x.unsqueeze(0) if self._is_shared_vector(x) else x.unsqueeze(-1)
-        widths = self._variable_widths(x.shape[-1])
-        variables: list[torch.Tensor] = []
-        var_offset = 0
         positions = [
             pos for pos, (kind, _) in enumerate(self._param_spec) if kind == "var"
         ]
+        # With every parameter a literal the input carries no parameter
+        # columns; it only counts the rows.
+        widths = self._variable_widths(x.shape[-1]) if positions else []
+        variables: list[torch.Tensor] = []
+        var_offset = 0
         for pos, dim in zip(positions, widths, strict=True):
             is_vector = self._param_event_ranks[pos] >= 1
             if dim == 1 and not is_vector:
@@ -375,12 +471,16 @@ class MixedInlineDistribution(ContinuousMorphism):
         supplied = iter(variables)
         for kind, value in self._param_spec:
             if kind == "lit":
-                assert value is not None
+                assert isinstance(value, int | float)
                 params.append(
                     torch.full(
                         literal_shape, float(value), device=x.device, dtype=x.dtype
                     )
                 )
+            elif kind == "const":
+                assert isinstance(value, torch.Tensor)
+                constant = value.to(device=x.device, dtype=x.dtype)
+                params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
         return params
@@ -536,7 +636,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         if self._discrete:
             # Discrete samples are kept at the distribution's native
             # batch shape; downstream code unpacks as needed.
-            return dist.sample(sample_shape).long()
+            return _discrete_sample(dist, torch.Size(sample_shape), self._support)
         if getattr(dist, "has_rsample", True):
             result = dist.rsample(sample_shape)
         else:
@@ -565,20 +665,15 @@ class MixedInlineDistribution(ContinuousMorphism):
         """
         params = self._resolve_params(x)
         dist = self._dist_builder(params)
-        # For discrete distributions over an integer support,
-        # categorical-valued samples must remain integer-typed so
-        # PyTorch's ``IntegerInterval`` validator accepts them.
-        # Bernoulli / Boolean families accept float-valued samples,
-        # but the integer family suite (Categorical, Binomial,
-        # Geometric, NegativeBinomial, Poisson) refuses floats. Cast
-        # only when the validator's support is a continuous
-        # constraint.
-        if self._discrete and y.dtype.is_floating_point:
-            sup = self._support
-            if isinstance(sup, _constraints._Boolean):
-                y_in = y.float()
-            else:
-                y_in = y.long()
+        # A discrete value is scored at its support's dtype: floating
+        # for a Boolean or one-hot support, integer otherwise, whether
+        # it is observed data or a draw of the site.
+        if self._discrete:
+            floating = next(
+                (p.dtype for p in params if p.dtype.is_floating_point),
+                torch.get_default_dtype(),
+            )
+            y_in = _discrete_value(y, self._support, floating)
         else:
             y_in = y
         # Reconcile y's shape with the distribution's expected
@@ -1047,7 +1142,7 @@ def make_fixed_lkj_cholesky(
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         shape = torch.full((batch,), float(concentration), device=device)
-        return D.LKJCholesky(dim, shape)
+        return OnionLKJCholesky(dim, shape)
 
     return FixedDistribution(codomain, builder, support=_constraints.corr_cholesky)
 
@@ -1463,7 +1558,7 @@ def _dim_dependent_builder(
 
         def _builder(params: list[torch.Tensor]) -> D.Distribution:
             concentration = params[0].clamp(min=EPS)
-            return D.LKJCholesky(dim, concentration)
+            return OnionLKJCholesky(dim, concentration)
 
         return _builder
     raise ValueError(
@@ -1686,6 +1781,92 @@ def _unwrap_draw_arg(arg):
     if isinstance(arg, DrawArgIndex):
         return Indexed(name=arg.name, indices=arg.indices)
     return arg
+
+
+def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
+    """The numbers of a list literal, nested as the literal nests them.
+
+    Parameters
+    ----------
+    arg : DrawArgList
+        The literal.
+
+    Returns
+    -------
+    list[float] | list[list[float]]
+        Its entries.
+
+    Raises
+    ------
+    TypeError
+        If an entry is neither a number nor a list of numbers.
+    """
+    values: list = []
+    for item in arg.items:
+        if isinstance(item, DrawArgScalar):
+            values.append(float(item.value))
+        elif isinstance(item, DrawArgList):
+            values.append(_list_values(item))
+        else:
+            raise TypeError(
+                f"a list literal argument holds numbers or lists of numbers, "
+                f"not a {type(item).__name__}"
+            )
+    return values
+
+
+def _inline_argument(
+    arg: DrawArg | float | str | Indexed,
+) -> tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]:
+    """Classify one inline family argument for the compiled runtime.
+
+    Every draw argument kind the grammar has reaches this one function:
+    a number (`DrawArgScalar`) is a literal, a list literal
+    (`DrawArgList`) a literal tensor every row shares, a name
+    (`DrawArgName`) or a bracket-indexed name (`DrawArgIndex`) a value
+    read from the program's bindings, and a keyword argument
+    (`DrawArgNamed`) the argument it names. A nested distribution
+    (`DrawArgDist`) fills only a parameter that takes a distribution,
+    which an inline family with value parameters has none of.
+
+    Parameters
+    ----------
+    arg : DrawArg | float | str | Indexed
+        The argument: a tagged draw argument, or its plain form (a
+        number, a name, or an `Indexed` gather).
+
+    Returns
+    -------
+    tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]
+        The argument's kind and its literal value or step argument.
+
+    Raises
+    ------
+    TypeError
+        If the argument is a nested distribution, or a kind the
+        compiled runtime has no reading for, named in the message.
+    """
+    if isinstance(arg, DrawArgNamed):
+        return _inline_argument(arg.value)
+    if isinstance(arg, DrawArgScalar):
+        return "lit", float(arg.value)
+    if isinstance(arg, int | float) and not isinstance(arg, bool):
+        return "lit", float(arg)
+    if isinstance(arg, DrawArgList):
+        return "const", torch.tensor(_list_values(arg))
+    if isinstance(arg, DrawArgName):
+        return "var", arg.text
+    if isinstance(arg, DrawArgIndex):
+        return "var", Indexed(name=arg.name, indices=arg.indices)
+    if isinstance(arg, str | Indexed):
+        return "var", arg
+    if isinstance(arg, DrawArgDist):
+        raise TypeError(
+            "a nested distribution (DrawArgDist) fills a parameter that takes a value"
+        )
+    raise TypeError(
+        f"the compiled runtime has no reading for a {type(arg).__name__} draw argument"
+    )
 
 
 def _normalize_inline_args(args):
@@ -1943,11 +2124,44 @@ def _param_row_width(vtype: AnySpace, event_rank: int) -> int:
     return int(getattr(vtype, "dim", 1))
 
 
+def _gathered_width(arg: Indexed, extents: tuple[int, ...]) -> int:
+    """The width of one gathered element of a value of known extents.
+
+    Gathering ``mu`` at ``k`` index bindings consumes its ``k``
+    outermost axes, so each gathered element is the value left over the
+    rest: one entry of a vector, one row of a matrix.
+
+    Parameters
+    ----------
+    arg : Indexed
+        The gather.
+    extents : tuple[int, ...]
+        The checked extents of the value gathered from.
+
+    Returns
+    -------
+    int
+        The number of entries of one gathered element.
+
+    Raises
+    ------
+    ValueError
+        If the gather indexes more axes than the value has.
+    """
+    if len(arg.indices) > len(extents):
+        raise ValueError(
+            f"{arg.name}[{', '.join(arg.indices)}] indexes {len(arg.indices)} "
+            f"axes of a value with {len(extents)}"
+        )
+    return math.prod(extents[len(arg.indices) :])
+
+
 def make_inline_distribution(
     family: str,
     args: tuple,
     codomain: AnySpace,
     variable_types: dict[str, AnySpace] | None = None,
+    value_extents: Mapping[str, tuple[int, ...]] | None = None,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 
@@ -1970,12 +2184,22 @@ def make_inline_distribution(
     variable_types : dict or None
         Mapping of variable names to their space types (for domain
         construction of direct distributions).
+    value_extents : Mapping[str, tuple[int, ...]] or None
+        The checked extents of the values the program binds, by name. A
+        gather ``mu[z]`` reads, per index, the value left after its
+        gathered axes: one entry of a vector, or one row of a matrix.
 
     Returns
     -------
     tuple of (ContinuousMorphism, tuple[str, ...] | None)
         The inline distribution morphism, and the variable names
         to pass as step input (None = use program input).
+
+    Raises
+    ------
+    ValueError
+        If a gather indexes more axes than its value's checked extents
+        have.
     """
     args, selected_parameters = _bind_inline_arguments(family, args)
     if family in _OPERATOR_FAMILIES:
@@ -1991,14 +2215,34 @@ def make_inline_distribution(
     # purposes of picking the fixed vs mixed factory dispatch, alongside
     # bare identifier strings.
     var_names = [a for a in args if isinstance(a, str | Indexed)]
-    if not var_names:
+    # A list literal filling a parameter of a family whose fixed factory
+    # takes numbers alone reads as a literal tensor of the general path
+    # below, as it does beside a variable argument.
+    literal_tensor = any(isinstance(a, DrawArgList) for a in args) and (
+        family not in _VECTOR_PARAM_FAMILIES and family != "Categorical"
+    )
+    fixed = not var_names and not (literal_tensor and family in _FAMILY_BUILDERS)
+    if fixed:
         if family == "Categorical":
-            values = _eval_draw_arg_value(args[0], variable_types)
+            parameterization = (selected_parameters or ("probs",))[0]
+            if not isinstance(args[0], DrawArgList):
+                values = _eval_draw_arg_value(args[0], variable_types)
+                return (
+                    make_fixed_categorical(
+                        values, codomain, parameterization=parameterization
+                    ),
+                    None,
+                )
+            listed = _list_values(args[0])
+            weights = [entry for entry in listed if isinstance(entry, float)]
+            if len(weights) != len(listed):
+                raise ValueError(
+                    "inline Categorical takes one vector of class weights, "
+                    "not a nested list"
+                )
             return (
                 make_fixed_categorical(
-                    values,
-                    codomain,
-                    parameterization=(selected_parameters or ("probs",))[0],
+                    weights, codomain, parameterization=parameterization
                 ),
                 None,
             )
@@ -2025,13 +2269,18 @@ def make_inline_distribution(
             # we re-bundle here when the factory's documented contract
             # is a single vector argument.
             if family in _VECTOR_PARAM_FAMILIES:
-                value = _eval_draw_arg_value(args[0], variable_types)
+                value = (
+                    _list_values(args[0])
+                    if isinstance(args[0], DrawArgList)
+                    else _eval_draw_arg_value(args[0], variable_types)
+                )
                 morph = factory(value, codomain)
             else:
                 all_floats = [float(a) for a in args]
                 morph = factory(*all_floats, codomain)
             return (morph, None)
-        raise ValueError(f"no fixed factory for inline family {family!r}")
+        if family not in _FAMILY_BUILDERS:
+            raise ValueError(f"no fixed factory for inline family {family!r}")
     if family not in _FAMILY_BUILDERS:
         raise ValueError(
             f"no builder for inline family {family!r} with variable arguments"
@@ -2069,23 +2318,36 @@ def make_inline_distribution(
         family,
         tuple(0 for _ in param_names),
     )
-    param_spec: list[tuple[str, int | float | None]] = []
+    param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
     var_name_order: list[StepArgument] = []
     total_var_dim = 0
     for i, arg in enumerate(args):
-        if isinstance(arg, (int, float)):
-            param_spec.append(("lit", float(arg)))
+        kind, value = _inline_argument(arg)
+        if kind == "lit" or kind == "const":
+            assert isinstance(value, float | torch.Tensor)
+            param_spec.append((kind, value))
         else:
+            assert isinstance(value, str | Indexed)
+            arg = value
             # A parameter's width comes from its binding's type; without
             # one it is left unresolved, for the stacked width to settle.
             var_dim: int | None = None
             lookup_name = arg.name if isinstance(arg, Indexed) else arg
-            if variable_types and lookup_name in variable_types:
+            if (
+                isinstance(arg, Indexed)
+                and value_extents is not None
+                and lookup_name in value_extents
+            ):
+                var_dim = _gathered_width(arg, value_extents[lookup_name])
+            elif variable_types and lookup_name in variable_types:
                 vtype = variable_types[lookup_name]
                 if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
-                    # A gather selects whole rows of a plate, so the
-                    # argument is one row wide.
-                    var_dim = vtype.row_width
+                    # With no checked extents, a gather from a plate
+                    # selects one of its declared rows; from a value
+                    # with no plate rows its width is left for the
+                    # stacked width to settle.
+                    if vtype.plate_rows is not None:
+                        var_dim = vtype.row_width
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
             param_spec.append(("var", var_dim))
@@ -2160,7 +2422,7 @@ def make_inline_distribution(
         support=fam_support,
         param_event_ranks=fam_event_ranks,
     )
-    return (morph, tuple(var_name_order))
+    return (morph, tuple(var_name_order) if var_name_order else None)
 
 
 def _make_fixed_selected_parameters(
@@ -2265,7 +2527,12 @@ def _infer_domain(
     components = []
     for vn in var_names:
         vtype = _argument_type(vn, variable_types)
-        if vtype is not None:
+        if isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
+            # A plate-row parameter contributes one row of its plate to
+            # each row of the stacked input, not the whole plate.
+            label = vn.name if isinstance(vn, Indexed) else vn
+            components.append(Euclidean(name=f"_inline_{label}", dim=vtype.row_width))
+        elif vtype is not None:
             components.append(vtype)
         else:
             label = vn.name if isinstance(vn, Indexed) else vn

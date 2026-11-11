@@ -522,12 +522,38 @@ elaborates to a helper computation `<program>__<h>_scan(t, xs, h, ...)`
 that answers `h` once `t` reaches the sequence's length and otherwise
 calls the step at `xs[t]` and recurs at `t + 1`, carrying the step's
 inputs along; the initial state is zero, or, under `init=learned`, a
-`weight` input `<cell>_scan_init`. The step's sites are reached
-once per position, and `run_program` replays the `n`-th occurrence of
-a site from the value keyed `"<site>@<n>"`, so the reference machine
-scores the trajectory the torch runtime's `ScanMorphism.log_joint`
-scores. No transpile target has a lowering that keeps the measure, since
-the sequence axis is not an object the module declares, and the
+`weight` input `<cell>_scan_init`. A step input the step reads without
+binding resolves to the scanning program's binding of that name at the
+scan, else becomes an input of the scanning program under the step's
+name and role. An `observation` input is the exception: the cell
+observes one value per position, so the scanning program takes
+`Tensor[A]([<input>_extent, ...])` and the helper passes the step the
+entry `obs[t]`. The step's sites are reached once per position, and
+`run_program` replays the `n`-th occurrence of a site from the value
+keyed `"<site>@<n>"`, and refuses a value keyed by the bare label of a
+site reached more than once. The labels the expansion synthesizes
+derive from the scan's binding: a morphism cell is drawn at the binding
+itself, the chain's prefix at `"<binding>$x_in"`, the step's parameters
+are `"<binding>$x_t"` and `"<binding>$h_prev"`, and a scan inside a
+longer chain or a parallel branch takes `"<binding>$<intermediate>"`.
+A program cell's own labels are the source's, and a label two sites of
+one program would share is refused, since its occurrences would not
+number the positions.
+
+The torch runtime compiles the same expansion for every scan in a
+program, whatever its cell. The scanning program's
+`let h = scan(<step>, xs)` becomes a
+[`Scan`][quivers.continuous.Scan] step over the compiled step program,
+whose call of the cell becomes a [`Call`][quivers.continuous.Call] step.
+The program's kernel encoding runs a scan as a recursive helper
+computation and a call as the callee's steps in a nested frame of the
+caller, so a cell's free names read the caller's bindings and its sites
+are requests of the same run. A site inside a scan carries the address
+`"<site>@<n>"`, which a host step supplies from the run's occurrence
+count; handlers, traces, and conditioning see the same keys the
+reference machine replays, and the two paths score one trajectory
+identically. No transpile target has a lowering that keeps the measure,
+since the sequence axis is not an object the module declares, and the
 boundary refuses the scan with `scan:no-lowering:<cell>`.
 
 Logic programming uses the same handler and resumption rules:
@@ -572,21 +598,44 @@ semiring (`LogWeight` for `LogProb` and `Viterbi`, `Bool` for `Boolean`,
 `Int` for `Counting`), and a `params` instance of `Param` through which
 learned weights are read under the names the agenda engine keys its
 parameters by: `<name>.lex.<index>` for a lexicon entry and
-`<name>.rule.<rule>:<bindings>` for a rule, the bindings rendered in name
-order by the `<name>__show` computation. The recursive `<name>__derive`
+`<name>.rule.<rule>:<bindings>` for a rule, the bindings of its category
+variables (every variable that is not a chart position) rendered in name
+order by the `<name>__show` computation and joined by `|`. A slot holds a
+position exactly when it is typed `Int`, so positions never enter a weight's
+name and one weight serves a rule at every position. The recursive `<name>__derive`
 computation chooses an axiom or a group of rules with premises of one
 shape, derives each premise by recursion, matches it against the rule's
 pattern by `case` analysis (a shared pattern variable is checked by the
 family's `<name>__eq`), instantiates the conclusion, and adds the rule's
 weight; a failed match performs an empty choice. A system whose rules all
 relate `span` items derives by span, choosing split positions for the
-premises and deriving each over its own span; any other system takes its
-axioms and their weights as input. The entry `<name>__run` handles the
+premises and deriving each over its own span. A system with a lexicon whose
+items are not all spans, such as a multiple context-free grammar, derives an
+item from its head symbol and its frame, the values of its position slots
+read in pairs as the components of its yield: a rule binds its conclusion's
+positions to the frame, chooses in order the positions inside each component
+where its premises' components meet, and derives each premise from its own
+frame. The lowering accepts such a system when its rules are linear (each
+conclusion component the concatenation of premise components, every
+non-empty premise component used once, so premises are derived over fewer
+tokens than their conclusion) and its unary rules form no cycle, and refuses
+it otherwise; its goal spans cover the whole sentence, as the agenda engine's
+do. Any other system takes its axioms and their weights as input. The entry `<name>__run` handles the
 weight instance with a collecting handler and the search instance with a
 handler that resumes once per alternative and combines the shots by the
 semiring's addition, so its answer is the semiring sum over derivations of
 the goal of the product of the weights along each: the inside weight the
-agenda engine tabulates, to the depth the `depth` option bounds. A program
+agenda engine tabulates. In a span system, unary rules extend a derived item
+in chains through `<name>__close`; when the unary rules may cycle, a chain
+carries the items it visited (`<name>__Chain`, counted by `<name>__count`),
+`<name>__inside` bounds how often a chain revisits an item, and
+`<name>__converge` raises that bound until two successive inside weights
+agree within the declared `tolerance` (exactly, without one), the search's
+counterpart of the chart's Kleene-star convergence. The `depth` option bounds
+the constructor depth of each rule's conclusion category through
+`<name>__depth`, the agenda engine's measure, and never the length of a
+derivation; a system without a lexicon bounds derivation height by the number
+of its axioms and rules. A program
 calls the deduction with `let chart = parse(D, sentence)`, which types
 `sentence` as a tensor of tokens over one of the program's open extents,
 and reads `chart.goal_weight()` as a real to score.

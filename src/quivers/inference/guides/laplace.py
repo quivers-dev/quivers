@@ -48,6 +48,7 @@ import torch.nn as nn
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.guides.base import Guide
+from quivers.inference.registry import _require_one_run
 
 
 class AutoLaplaceApproximation(Guide):
@@ -59,6 +60,12 @@ class AutoLaplaceApproximation(Guide):
         Generative model.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     init_value : float
         Initial unconstrained-space MAP estimate. Default ``0.0``.
     """
@@ -68,9 +75,14 @@ class AutoLaplaceApproximation(Guide):
         model: MonadicProgram,
         observed_names: set[str],
         init_value: float = 0.0,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         D_total = self._registry.total_unconstrained_dim
         if D_total == 0:
             raise ValueError(
@@ -115,7 +127,25 @@ class AutoLaplaceApproximation(Guide):
         Call this after MAP optimization has converged. Subsequent
         `rsample` / `log_prob` calls sample from
         :math:`\\mathcal{N}(z^\\star, H^{-1})`.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model whose joint the Hessian is taken of.
+        x : torch.Tensor
+            Program input: one row, since the approximation is of one
+            run's posterior.
+        observations : dict[str, torch.Tensor]
+            Observed-site values and host data.
+        jitter : float
+            The floor every eigenvalue of the Hessian is projected to.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` has more than one row.
         """
+        _require_one_run(x, "AutoLaplaceApproximation.fit_hessian")
 
         def neg_log_joint(z_flat: torch.Tensor) -> torch.Tensor:
             per_site_unconstrained = self._registry.unflatten_unconstrained(z_flat)

@@ -25,6 +25,12 @@ class Predictive:
     MCMC case: iterates over the recorded posterior draws (one
     forward trace per draw, up to ``num_samples`` if specified).
 
+    An input of ``B`` rows is ``B`` independent runs of the model.
+    A guide's `Guide.rsample` gives each run its own draw of a site
+    that is not plated, ``(batch, *constrained_shape)``, and one draw
+    of a plated site that every run shares. An MCMC draw, at
+    `LatentSite.constrained_shape`, is one value every run shares.
+
     Parameters
     ----------
     model : MonadicProgram
@@ -37,6 +43,13 @@ class Predictive:
         recorded posterior draws). If supplied as an explicit
         integer for an MCMC result it is capped at the available
         draw count.
+
+    Raises
+    ------
+    TypeError
+        If ``posterior`` is neither a `Guide` nor an `MCMCResult`.
+    ValueError
+        If the resolved ``num_samples`` is less than one.
     """
 
     def __init__(
@@ -65,8 +78,16 @@ class Predictive:
             )
 
     def _iter_mcmc_latents(self) -> list[dict[str, torch.Tensor]]:
-        """Yield ``num_samples`` per-draw latent dicts from the
-        MCMC result, flattening the chain × sample axes."""
+        """Return ``num_samples`` recorded posterior draws, one dict each,
+        flattening the chain and sample axes.
+
+        Returns
+        -------
+        list[dict[str, torch.Tensor]]
+            One dict per selected draw, each site at its
+            `LatentSite.constrained_shape`: one value every run of the
+            predictive call shares.
+        """
         assert isinstance(self.posterior, MCMCResult)
         samples = self.posterior.samples
         chain_samples = self.posterior.num_chains * self.posterior.num_samples
@@ -98,9 +119,17 @@ class Predictive:
         Returns
         -------
         dict[str, torch.Tensor]
-            One key per site, value of shape
-            ``(num_samples, batch, ...)`` (or the trace-side shape
-            for plate sites).
+            One key per site, holding the stacked trace values:
+            ``(num_samples, batch, *shape)`` for a site that is not
+            plated, and for a plated site ``(num_samples, *shape)`` for
+            one run and ``(num_samples, batch, *shape)`` for ``batch >
+            1`` runs. Guide and MCMC posteriors produce the same shapes.
+
+        Raises
+        ------
+        ValueError
+            If an `MCMCResult` holds draws of a name that is not a
+            sample site of the model.
         """
         observations = observations if observations is not None else {}
         if isinstance(self.posterior, Guide):
@@ -114,6 +143,12 @@ class Predictive:
         for latents in latents_iter:
             all_obs = {**latents, **observations}
             tr = trace(self.model, x, observations=all_obs)
+            stray = sorted(set(latents) - set(tr.sites))
+            if stray:
+                raise ValueError(
+                    f"Predictive: the posterior holds draws of {stray}, which "
+                    f"are not sample sites of the model"
+                )
             for name, site in tr.sites.items():
                 if site.is_deterministic:
                     continue

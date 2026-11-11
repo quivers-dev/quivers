@@ -49,9 +49,14 @@ class _MVNCommon(Guide):
         self,
         model: MonadicProgram,
         observed_names: set[str],
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(model, observed_names)
+        self._registry = self.build_registry(
+            model, observed_names, x=x, observations=observations
+        )
         D_total = self._registry.total_unconstrained_dim
         if D_total == 0:
             raise ValueError(
@@ -179,6 +184,12 @@ class AutoMultivariateNormalGuide(_MVNCommon):
         Generative model to build a guide for.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     init_scale : float
         Initial diagonal of the Cholesky factor. Default ``0.1``;
         the off-diagonal entries start at ``0``.
@@ -189,8 +200,11 @@ class AutoMultivariateNormalGuide(_MVNCommon):
         model: MonadicProgram,
         observed_names: set[str],
         init_scale: float = 0.1,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
-        super().__init__(model, observed_names)
+        super().__init__(model, observed_names, x=x, observations=observations)
         init_diag = torch.full((self._D,), float(init_scale))
         init_diag_raw = torch.log(torch.expm1(init_diag.clamp(min=1e-6)))
         self.scale_diag_raw = nn.Parameter(init_diag_raw)
@@ -226,6 +240,12 @@ class AutoLowRankMultivariateNormalGuide(_MVNCommon):
         Generative model to build a guide for.
     observed_names : set[str]
         Variable names treated as observations.
+    x : torch.Tensor | None
+        Keyword-only. A program input at which to build the latent
+        registry from a run, required for a program that scans or calls
+        a program that draws, whose latent sites depend on its input.
+    observations : dict[str, torch.Tensor] | None
+        Keyword-only. The observed values and host data of that run.
     rank : int
         Number of correlated directions. Default ``5``.
     init_scale : float
@@ -238,8 +258,11 @@ class AutoLowRankMultivariateNormalGuide(_MVNCommon):
         observed_names: set[str],
         rank: int = 5,
         init_scale: float = 0.1,
+        *,
+        x: torch.Tensor | None = None,
+        observations: dict[str, torch.Tensor] | None = None,
     ) -> None:
-        super().__init__(model, observed_names)
+        super().__init__(model, observed_names, x=x, observations=observations)
         if rank < 1:
             raise ValueError(
                 f"AutoLowRankMultivariateNormalGuide: rank must be >= 1, got {rank}"

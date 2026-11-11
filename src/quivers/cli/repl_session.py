@@ -1725,9 +1725,14 @@ class ReplSession:
             ("bundles", compiler.bundles, _children_for_bundle),
             ("contractions", compiler.contractions, _children_for_contraction),
         )
+        programs = compiler.programs
         for ns, mapping, builder in sources:
             entries: list[tuple[str, object]] = []
             for name in sorted(mapping):
+                if ns == "morphisms" and name in programs:
+                    # A program without typed parameters also compiles
+                    # to a morphism; it is listed once, as the program.
+                    continue
                 head, children = builder(name, mapping[name])
                 entries.append((head, children))
             groups[ns] = entries
@@ -2166,18 +2171,7 @@ def _cmd_shape(s: ReplSession, arg: str) -> ReplResponse:
 
 def _declared_effects_for_program(compiler, name: str) -> set[str]:  # type: ignore[no-untyped-def]
     """Read the ``[effects=[...]]`` option block of a program."""
-    decl = None
-    programs = getattr(compiler, "programs", {}) or {}
-    decl = programs.get(name)
-    if decl is None:
-        module = getattr(compiler, "_module", None)
-        for stmt in getattr(module, "statements", ()) or ():
-            if (
-                type(stmt).__name__ == "ProgramDecl"
-                and getattr(stmt, "name", None) == name
-            ):
-                decl = stmt
-                break
+    decl = compiler.programs.get(name)
     if decl is None:
         return set()
     out: set[str] = set()

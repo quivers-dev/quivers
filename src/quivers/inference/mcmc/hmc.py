@@ -157,6 +157,45 @@ class _MassMatrix:
             self.inv_chol = torch.linalg.cholesky(sym)
 
 
+def _leapfrog_step(
+    z: torch.Tensor,
+    p: torch.Tensor,
+    grad: torch.Tensor,
+    step_size: float,
+    potential: PotentialFn,
+    mass: _MassMatrix,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Run one leapfrog step with a single target evaluation.
+
+    Parameters
+    ----------
+    z : torch.Tensor
+        Flat unconstrained position, shape ``(D,)``.
+    p : torch.Tensor
+        Momentum, shape ``(D,)``.
+    grad : torch.Tensor
+        Gradient of the log-density at ``z``, shape ``(D,)``.
+    step_size : float
+        Signed leapfrog step size.
+    potential : PotentialFn
+        Target whose log-density and gradient drive the dynamics.
+    mass : _MassMatrix
+        Mass matrix defining the kinetic energy.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        The new ``(z, p, log_density, grad_log_density)``, where the
+        log-density and its gradient come from one
+        `PotentialFn.value_and_grad` call at the new position.
+    """
+    p_half = p + 0.5 * step_size * grad
+    z_new = z + step_size * mass.inv_times(p_half)
+    ld_new, g_new = potential.value_and_grad(z_new)
+    p_new = p_half + 0.5 * step_size * g_new
+    return z_new, p_new, ld_new, g_new
+
+
 def _leapfrog(
     z: torch.Tensor,
     p: torch.Tensor,
@@ -168,19 +207,50 @@ def _leapfrog(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run ``n_steps`` symplectic leapfrog updates.
 
-    Returns the final ``(z, p, log_density, grad_log_density)`` so
-    the caller can compute the Metropolis acceptance from a single
-    additional log-density evaluation.
+    Each step evaluates the target exactly once, through
+    `PotentialFn.value_and_grad` at the new position. The gradient
+    drives the closing momentum half-step, and the value from the
+    last step is the endpoint log-density, so the caller can form
+    the Metropolis energy without a further evaluation.
+
+    Parameters
+    ----------
+    z : torch.Tensor
+        Starting flat unconstrained position, shape ``(D,)``.
+    p : torch.Tensor
+        Starting momentum, shape ``(D,)``.
+    grad : torch.Tensor
+        Gradient of the log-density at ``z``, shape ``(D,)``.
+    step_size : float
+        Signed leapfrog step size.
+    n_steps : int
+        Number of leapfrog steps; at least one.
+    potential : PotentialFn
+        Target whose log-density and gradient drive the dynamics.
+    mass : _MassMatrix
+        Mass matrix defining the kinetic energy.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        The endpoint ``(z, p, log_density, grad_log_density)``, all
+        detached from autograd.
+
+    Raises
+    ------
+    ValueError
+        If ``n_steps`` is less than one, since the endpoint
+        log-density is the value of the last step's evaluation.
     """
-    z_curr = z
-    p_curr = p
-    g_curr = grad
-    for _ in range(n_steps):
-        p_half = p_curr + 0.5 * step_size * g_curr
-        z_curr = z_curr + step_size * mass.inv_times(p_half)
-        _, g_curr = potential.value_and_grad(z_curr)
-        p_curr = p_half + 0.5 * step_size * g_curr
-    ld_curr = potential.log_density(z_curr.detach()).detach()
+    if n_steps < 1:
+        raise ValueError(f"_leapfrog: n_steps must be >= 1, got {n_steps}")
+    z_curr, p_curr, ld_curr, g_curr = _leapfrog_step(
+        z, p, grad, step_size, potential, mass
+    )
+    for _ in range(n_steps - 1):
+        z_curr, p_curr, ld_curr, g_curr = _leapfrog_step(
+            z_curr, p_curr, g_curr, step_size, potential, mass
+        )
     return z_curr, p_curr, ld_curr, g_curr
 
 
@@ -231,7 +301,7 @@ class HMCKernel(MCMCKernel):
             )
         self._step_size = step_size
         self._num_steps = num_steps
-        self._mass_kind = mass_matrix
+        self._mass_kind: MassMatrixKind = mass_matrix
         self._target_accept = target_accept
         self._divergence_threshold = divergence_threshold
         self._adapt_step_size = adapt_step_size
@@ -364,7 +434,13 @@ class HMCKernel(MCMCKernel):
 
 
 class _NUTSBuildTreeResult:
-    """Internal accumulator returned by the recursive tree builder."""
+    """Internal accumulator returned by the recursive tree builder.
+
+    The selected proposal carries its position, log-density, and
+    gradient, all computed by the leapfrog step that reached it, so
+    the kernel's next transition starts from that gradient without
+    evaluating the target again.
+    """
 
     __slots__ = (
         "z_minus",
@@ -375,6 +451,7 @@ class _NUTSBuildTreeResult:
         "grad_plus",
         "z_proposal",
         "log_density_proposal",
+        "grad_proposal",
         "log_weight",
         "n_proposals",
         "turning",
@@ -393,6 +470,7 @@ class _NUTSBuildTreeResult:
         grad_plus: torch.Tensor,
         z_proposal: torch.Tensor,
         log_density_proposal: torch.Tensor,
+        grad_proposal: torch.Tensor,
         log_weight: float,
         n_proposals: int,
         turning: bool,
@@ -408,6 +486,7 @@ class _NUTSBuildTreeResult:
         self.grad_plus = grad_plus
         self.z_proposal = z_proposal
         self.log_density_proposal = log_density_proposal
+        self.grad_proposal = grad_proposal
         self.log_weight = log_weight
         self.n_proposals = n_proposals
         self.turning = turning
@@ -477,7 +556,7 @@ class NUTSKernel(MCMCKernel):
             )
         self._step_size = step_size
         self._max_depth = max_tree_depth
-        self._mass_kind = mass_matrix
+        self._mass_kind: MassMatrixKind = mass_matrix
         self._target_accept = target_accept
         self._divergence_threshold = divergence_threshold
         self._adapt_step_size = adapt_step_size
@@ -584,6 +663,7 @@ class NUTSKernel(MCMCKernel):
                 grad_plus=g1,
                 z_proposal=z1,
                 log_density_proposal=ld1,
+                grad_proposal=g1,
                 log_weight=log_weight,
                 n_proposals=n_proposals,
                 turning=False,
@@ -647,9 +727,11 @@ class NUTSKernel(MCMCKernel):
         if torch.rand((), generator=self._generator).item() < prob_right:
             z_prop = right.z_proposal
             ld_prop = right.log_density_proposal
+            g_prop = right.grad_proposal
         else:
             z_prop = left.z_proposal
             ld_prop = left.log_density_proposal
+            g_prop = left.grad_proposal
         assert self._mass is not None
         turning = (
             left.turning
@@ -666,6 +748,7 @@ class NUTSKernel(MCMCKernel):
             grad_plus=grad_plus,
             z_proposal=z_prop,
             log_density_proposal=ld_prop,
+            grad_proposal=g_prop,
             log_weight=log_total,
             n_proposals=left.n_proposals + right.n_proposals,
             turning=turning,
@@ -698,6 +781,7 @@ class NUTSKernel(MCMCKernel):
         grad_plus = g
         z_proposal = z
         log_density_proposal = ld
+        grad_proposal = g
         log_weight = -h0
         depth = 0
         terminated = False
@@ -758,6 +842,7 @@ class NUTSKernel(MCMCKernel):
                 if torch.rand((), generator=self._generator).item() < prob_new:
                     z_proposal = subtree.z_proposal
                     log_density_proposal = subtree.log_density_proposal
+                    grad_proposal = subtree.grad_proposal
                 log_weight = log_total
             diverged = diverged or subtree.diverged
             terminated = (
@@ -769,12 +854,7 @@ class NUTSKernel(MCMCKernel):
         accept_prob = (
             sum_accept_prob / float(n_accept_steps) if n_accept_steps > 0 else 0.0
         )
-        # Evaluate gradient at the chosen proposal for the next step.
         accepted = not torch.equal(z_proposal, state.position)
-        if accepted:
-            _, new_grad = potential.value_and_grad(z_proposal)
-        else:
-            new_grad = g
         if self.is_adapting and self._dual_avg is not None:
             self._dual_avg.update(accept_prob)
         if self.is_adapting and self._welford is not None:
@@ -782,7 +862,7 @@ class NUTSKernel(MCMCKernel):
         return KernelState(
             position=z_proposal.detach(),
             log_density=log_density_proposal.detach(),
-            grad_log_density=new_grad.detach(),
+            grad_log_density=grad_proposal.detach(),
             step_count=state.step_count + 1,
             accept_count=state.accept_count + (1 if accepted else 0),
             diverged=diverged,

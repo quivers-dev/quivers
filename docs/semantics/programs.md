@@ -237,9 +237,17 @@ The arithmetic sublanguage is interpreted standardly: $\mathbb{R}$-valued and $\
 
 The let-expression call form `f(arg, ...)` resolves first against the closed
 QIEC primitive registry. Each application is selected by argument type; a
-name without a matching signature is a static error. Reductions consume the
-supplied tensor, while rowwise operations act on its final axis. Reductions
-over a *named* axis go through the typed
+name without a matching signature is a static error. A reduction collapses
+the last axis of its argument: a vector reduces to one number, and a tensor of
+shape $(n_1, \ldots, n_k)$ to the tensor of shape $(n_1, \ldots, n_{k-1})$
+whose entries reduce its rows. A rowwise operation acts along the same last
+axis and keeps the shape. Nested reductions therefore collapse one axis each,
+innermost first, and `sum(sum(t))` means the two lets `u = sum(t)` and
+`s = sum(u)`. The checked elaboration, the reference machine, the compiled
+runtime, and every transpile target read these builtins so; a target with no
+spelling for a last-axis reduction of a given argument refuses the program
+rather than reducing more axes. Reductions over a *named* axis go through the
+typed
 [`contraction`](../api/dsl/compiler.md) syntax.
 
 | Category | Primitives |
@@ -288,6 +296,12 @@ $$
 
 `map` lowers to a typed QIEC comprehension. `fold` is a left fold, written
 `fold(xs, init, acc -> item -> body)`, and is elaborated at its fixed extent.
+A body that reads the accumulator more than once, or inside a lambda or
+`factor`, has each intermediate accumulator bound once by a QIEC
+[`LetValue`][quivers.qiec.LetValue] and read through that binding, so the elaborated term is linear in
+$n$ however often the body reads the accumulator. A `map` or `fold`
+source that is not a variable, and the argument of a lambda-bound name
+whose body reads its parameter more than once, are bound the same way.
 `filter` remains available to the eager evaluator but has no checked
 denotation because its result length depends on values.
 

@@ -454,6 +454,42 @@ class ContinuousMorphism(nn.Module, ABC):
             )
         return value
 
+    def push_base_scored(
+        self, x: torch.Tensor, base: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Push coordinates through the reparameterization and score the draw.
+
+        Returns the value
+        [`push_base`][quivers.continuous.morphisms.ContinuousMorphism.push_base]
+        computes together with the log-density of the draw those
+        coordinates select. For most kernels the draw is the value, so
+        the density is ``log_prob(x, value)``; a kernel whose draw
+        carries more than its value, as a scan's trajectory carries
+        every state before the final one, overrides this to score the
+        whole draw.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Conditioning inputs. Shape ``(batch, *domain)``.
+        base : torch.Tensor
+            Standard-normal coordinates. Shape ``(batch, dimension)``
+            for the dimension `base_dimension` reports at ``x``.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The value, shape ``(batch, *event)``, and the draw's
+            log-density, shape ``(batch,)``.
+
+        Raises
+        ------
+        ValueError
+            If the morphism declares no reparameterization.
+        """
+        value = self.push_base(x, base)
+        return value, _reduce_to_batch(self.log_prob(x, value))
+
     def marginal_quadrature(
         self, x: torch.Tensor, count: int
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -866,8 +902,7 @@ class SampledComposition(ContinuousMorphism):
             base = torch.zeros(
                 current.shape[0], dimension, device=current.device, dtype=dtype
             )
-            following = factor.push_base(current, base)
-            term = _reduce_to_batch(factor.log_prob(current, following))
+            following, term = factor.push_base_scored(current, base)
             total = term if total is None else total + term
             current = following
         term = _reduce_to_batch(last.log_prob(_fold_features(current), z))
