@@ -396,7 +396,15 @@ def infer_array_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
             default=0,
         )
     if isinstance(expr, LetExprFactor):
-        return len(expr.binders)
+        # One axis per binder, then whatever axes each entry carries.
+        entries = (
+            (expr.body,)
+            if expr.body is not None
+            else tuple(c.value for c in expr.cases)
+        )
+        return len(expr.binders) + max(
+            (infer_array_rank(ctx, entry) for entry in entries), default=0
+        )
     if isinstance(expr, LetExprAffineMap):
         # One head's row block is a length-`rows` vector.
         return 1
@@ -1599,8 +1607,9 @@ def nested_tower_names(ir: IRProgram) -> frozenset[str]:
     than one binder unrolls into `vector_expression` literals nested
     one level per binder, because the Julia grammar's dense
     `matrix_expression` separates its columns with whitespace alone
-    and a synthesised schema carries no interstitial text to place it.
-    A subscript into such a name thus reads one axis at a time.
+    and a synthesised schema carries no interstitial text to place it;
+    a one-binder factor whose entry is a list literal nests the same
+    way. A subscript into such a name thus reads one axis at a time.
     """
     out: set[str] = set()
     _walk_for_towers(ir.body, out)
@@ -1608,10 +1617,17 @@ def nested_tower_names(ir: IRProgram) -> frozenset[str]:
 
 
 def _walk_for_towers(body: tuple[IRNode, ...], out: set[str]) -> None:
-    """Collect multi-binder factor bindings over an IR body."""
+    """Collect factor bindings an emit nests over an IR body.
+
+    A factor over several binders nests one level per binder, and a
+    factor whose entry is a list literal (a row per binder value, as
+    `concat` and `slice` of a table elaborate) nests the list inside.
+    """
     for node in body:
         if isinstance(node, IRDeterministic) and isinstance(node.expr, LetExprFactor):
-            if len(node.expr.binders) > 1 and node.expr.body is not None:
+            if node.expr.body is not None and (
+                len(node.expr.binders) > 1 or isinstance(node.expr.body, LetExprList)
+            ):
                 out.add(node.name)
         elif isinstance(node, IRMarginalize):
             _walk_for_towers(node.scope, out)

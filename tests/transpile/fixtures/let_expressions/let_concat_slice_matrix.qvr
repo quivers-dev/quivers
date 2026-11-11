@@ -1,0 +1,15 @@
+# Exercises `concat` and `slice` on a table a `factor` builds: each row
+# is joined to itself along the last axis and a window is cut from it.
+object H : FinSet 3
+object Step : FinSet 2
+
+program p : Step -> Step
+    sample h : H <- Normal(loc=0.0, scale=1.0)
+    let table = factor k : Step, j : H in real(k + 1) * h[j]
+    let wide = concat(table, table)
+    let window = slice(wide, 2, 2)
+    let rows = factor k : Step in sum(window[k])
+    observe y : Step <- Normal(loc=rows, scale=1.0)
+    return y
+
+export p

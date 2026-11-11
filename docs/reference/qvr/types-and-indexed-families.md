@@ -172,7 +172,10 @@ operations, and the fixed-shape collection forms `map`, `fold`, `length`, and
 `logsumexp`) collapses the last axis of its argument, so a tensor of shape
 `(n, k)` reduces to one of shape `(n,)` and a vector to a number; a rowwise
 operation (`softmax`, `log_softmax`, `cumsum`, `sort`, `normalize`) acts along
-the same axis and keeps the shape. `traverse` is effectful computation syntax
+the same axis and keeps the shape. `concat(a, b, ...)` joins tensors along the
+last axis (leading axes agree, last extents add) and `slice(v, start, length)`
+keeps `length` entries of it from `start`, both bounds integer literals.
+`traverse` is effectful computation syntax
 rather than a pure value. The complete inventory and type restrictions are in
 [Finite collection expressions](collection-expressions.md) and the
 [let-expression guide](../../guides/dsl-programs-and-lets.md#checked-primitive-reference).

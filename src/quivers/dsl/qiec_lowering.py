@@ -734,7 +734,9 @@ def _rebuild_last_axis(
     width = IndexLiteral(len(picks), NAT)
     body: Value = TensorValue(
         tuple(
-            Gather(rows[operand], LiteralValue(entry, INT), element)
+            rows[operand].items[entry]
+            if isinstance(rows[operand], TensorValue)
+            else Gather(rows[operand], LiteralValue(entry, INT), element)
             for operand, entry in picks
         ),
         tensor_type(element, (width,)),
@@ -4610,11 +4612,15 @@ class _Elaborator(
         ):
             split = tensor_shape(argument_type)
             if split is None:
+                hint = (
+                    "; a number x joins as the one-entry vector [x]"
+                    if name == "concat"
+                    else ""
+                )
                 self._fail(
                     source,
                     f"{name} acts on the last axis of a tensor, but argument "
-                    f"{position + 1} is a {self._render(argument_type)}; a number "
-                    "x joins as the one-entry vector [x]",
+                    f"{position + 1} is a {self._render(argument_type)}{hint}",
                     code="qiec-primitive",
                 )
             element, dimensions = split
@@ -4660,23 +4666,50 @@ class _Elaborator(
             start = self._static_slice_bound(authored, 1, "start")
             length = self._static_slice_bound(authored, 2, "length")
             extent = shapes[0][2]
-            if length < 1 or start < 0 or start + length > extent:
+            if length < 1:
+                self._fail(
+                    authored.args[2],
+                    f"a slice keeps at least one entry, not {length}",
+                    code="qiec-primitive",
+                )
+            if start + length > extent:
                 self._fail(
                     authored,
-                    f"slice({start}, {length}) reads entries {start} to "
-                    f"{start + length - 1}, outside a last axis of {extent} entries",
+                    f"slice(v, {start}, {length}) reads entries {start} to "
+                    f"{start + length - 1}, past the last entry of an axis of "
+                    f"{extent}",
                     code="qiec-primitive",
                 )
             picks = [(0, start + offset) for offset in range(length)]
-        return _rebuild_last_axis(
-            tensors,
+        # An operand that is no name is bound once, so each selection
+        # reads it by name rather than repeating its construction; a
+        # list literal of numbers is read entry by entry in place.
+        bindings: list[LetBinding] = []
+        shared: list[Value] = []
+        for tensor, tensor_type_ in zip(tensors, tensor_types, strict=True):
+            if isinstance(tensor, Var) or (
+                isinstance(tensor, TensorValue) and not leading
+            ):
+                shared.append(tensor)
+                continue
+            local = self._shared_local(f"{name}_operand", tensor_type_, context)
+            bindings.append(LetBinding(local, tensor))
+            shared.append(Var(local))
+        body = _rebuild_last_axis(
+            tuple(shared),
             tuple(extent for _, _, extent in shapes),
             element,
             leading,
             tuple(picks),
             path,
-            frozenset(local.name for local in context.locals),
+            frozenset(
+                {
+                    *(local.name for local in context.locals),
+                    *(binding.binder.name for binding in bindings),
+                }
+            ),
         )
+        return self._let(bindings, body, context, authored)
 
     def _static_slice_bound(
         self, authored: surface.LetExprCall, position: int, role: str
@@ -4707,9 +4740,9 @@ class _Elaborator(
             return int(argument.value)
         self._fail(
             argument,
-            f"the {role} of a slice is an integer literal, so the slice's "
-            "length is known where it is checked; a bound computed at run "
-            "time is a gather, v[i]",
+            f"the {role} of a slice is a non-negative integer literal, so the "
+            "slice's extent is known where it is checked; a position computed "
+            "at run time is read by a gather, v[i]",
             code="qiec-primitive",
         )
 
