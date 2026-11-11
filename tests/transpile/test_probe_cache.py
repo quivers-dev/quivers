@@ -36,6 +36,7 @@ def _key(**overrides: object) -> str:
         "shapes": {"y": [1]},
         "dtypes": {"y": "float"},
         "script": _SCRIPT_DIR / "numpyro.py",
+        "side_files": {},
     }
     base.update(overrides)
     return _docker._probe_cache_key(**base)  # type: ignore[arg-type]
@@ -57,6 +58,7 @@ def test_the_key_is_stable_for_identical_inputs() -> None:
         ("shapes", {"y": [2]}),
         ("dtypes", {"y": "int"}),
         ("script", _SCRIPT_DIR / "pyro.py"),
+        ("side_files", {"export_names.json": b'["theta"]'}),
     ],
     ids=lambda v: v if isinstance(v, str) else "",
 )
@@ -149,6 +151,7 @@ def test_a_hit_does_not_launch_a_container(
         shapes=None,
         dtypes=None,
         script=script,
+        side_files={},
     )
     _write_cache_entry(cache_dir, key, {"log_densities": [-1.5, -2.5]})
 
@@ -193,6 +196,7 @@ def test_a_changed_source_misses_the_entry_written_for_the_old_one(
         shapes=None,
         dtypes=None,
         script=script,
+        side_files={},
     )
     _write_cache_entry(cache_dir, key, {"log_densities": [-1.5]})
 
@@ -208,4 +212,57 @@ def test_a_changed_source_misses_the_entry_written_for_the_old_one(
             source_ext="py",
             points=points,
             scratch=tmp_path / "scratch",
+        )
+
+
+def test_a_file_added_to_the_mounted_directory_misses_the_entry_without_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A probe's instructions in the mounted directory are part of the key.
+
+    An entry recorded for a plain scoring call must not answer a call
+    that also ships a list of names to export: the cached result holds
+    no exports. The container is made to raise, so reaching it shows
+    the cache declined.
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setenv(_docker.PROBE_CACHE_ENV, str(cache_dir))
+    monkeypatch.setattr(_docker, "image_id", lambda tag: "sha256:pinned")
+
+    script = tmp_path / "probe.py"
+    script.write_bytes(b"print(1)\n")
+    source = b"model = 1"
+    points = [{"params": {}, "data": {}}]
+    key = _docker._probe_cache_key(
+        image="panproto-test-numpyro",
+        resolved_image_id="sha256:pinned",
+        source=source,
+        source_ext="py",
+        points=points,
+        shapes=None,
+        dtypes=None,
+        script=script,
+        side_files={},
+    )
+    _write_cache_entry(cache_dir, key, {"log_densities": [-1.5]})
+
+    class _Reached(Exception):
+        pass
+
+    def _reach(*args: object, **kwargs: object) -> object:
+        raise _Reached
+
+    monkeypatch.setattr(_docker.subprocess, "run", _reach)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / "export_names.json").write_text(json.dumps(["theta"]))
+    with pytest.raises(_Reached):
+        _docker.run_probe(
+            image="panproto-test-numpyro",
+            script=script,
+            source=source,
+            source_ext="py",
+            points=points,
+            scratch=scratch,
         )
