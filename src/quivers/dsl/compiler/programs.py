@@ -14,6 +14,7 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
+import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
 from quivers.continuous.family_spec import FAMILY_REGISTRY, FamilySpec
@@ -142,6 +143,8 @@ from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
+from quivers.qiec.terms import Var as QiecVar
+from quivers.transpile._pure_calls import inline_pure_call
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
@@ -473,6 +476,70 @@ def _first_call_step(steps: tuple[ProgramStep, ...]) -> CallStep | None:
             if found is not None:
                 return found
     return None
+
+
+def _names_in(steps: tuple[ProgramStep, ...]) -> set[str]:
+    """Every name a program's steps bind or read.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The steps.
+
+    Returns
+    -------
+    set[str]
+        The names: every bound variable and every variable an
+        expression reads, host data included.
+    """
+    found: set[str] = set()
+
+    def visit(node: dx.Model | tuple[dx.Model | str, ...]) -> None:
+        if isinstance(node, LetExprVar):
+            found.add(node.name)
+        if isinstance(node, tuple):
+            for item in node:
+                if not isinstance(item, str):
+                    visit(item)
+            return
+        specs = getattr(type(node), "__field_specs__", None)
+        if specs is None:
+            return
+        for field_name in specs:
+            value = getattr(node, field_name, None)
+            if field_name in ("name", "var") and isinstance(value, str):
+                found.add(value)
+            elif field_name == "vars" and isinstance(value, tuple):
+                found.update(item for item in value if isinstance(item, str))
+            elif isinstance(value, tuple) or hasattr(type(value), "__field_specs__"):
+                visit(value)
+
+    visit(steps)
+    return found
+
+
+def _fresh_name(base: str, occupied: set[str]) -> str:
+    """A name not in ``occupied``, which it joins.
+
+    Parameters
+    ----------
+    base : str
+        The preferred name.
+    occupied : set[str]
+        The names in use.
+
+    Returns
+    -------
+    str
+        ``base``, or ``base`` with a numeric suffix.
+    """
+    candidate = base.lstrip("_") or "arg"
+    suffix = 0
+    while candidate in occupied:
+        suffix += 1
+        candidate = f"{base.lstrip('_') or 'arg'}_{suffix}"
+    occupied.add(candidate)
+    return candidate
 
 
 def _calls_a_computation(steps: tuple[ProgramStep, ...]) -> bool:
@@ -1828,6 +1895,108 @@ class _ProgramsMixin:
             for step in expanded_body
         )
 
+    def _inline_pure_calls(
+        self, program: str, steps: tuple[ProgramStep, ...]
+    ) -> tuple[ProgramStep, ...]:
+        """Replace every call of a pure computation by its body.
+
+        A call ``let y <- f(a, b)`` of a computation that performs no
+        effect, takes no static arguments, and is a chain of pure
+        bindings ending in a return becomes let steps: an argument that
+        is not a name is bound to a fresh name first, each of the
+        callee's bindings is bound under a fresh name with its
+        parameters read as the arguments, and ``y`` is bound to the
+        result. The analysis is the transpile planner's
+        (`inline_pure_call`), so the compiled runtime and every target
+        inline the same calls. The program then compiles to a
+        `MonadicProgram`, differentiable like any other, and a call
+        that is not inlinable is left in place.
+
+        Parameters
+        ----------
+        program : str
+            The program's name, for diagnostics.
+        steps : tuple[ProgramStep, ...]
+            The program's steps, searched through marginalization
+            scopes.
+
+        Returns
+        -------
+        tuple[ProgramStep, ...]
+            The steps with every pure call inlined.
+        """
+        if not _calls_a_computation(steps):
+            return steps
+        module = self.qiec_module
+        if module is None or module.gap:
+            return steps
+        computations = {item.name: item for item in module.computations}
+        occupied = _names_in(steps)
+        cards = {
+            name: obj.cardinality
+            for name, obj in self._objects.items()
+            if isinstance(obj, FinSet)
+        }
+
+        def rewrite(body: tuple[ProgramStep, ...]) -> tuple[ProgramStep, ...]:
+            out: list[ProgramStep] = []
+            for step in body:
+                if isinstance(step, MarginalizeStep) and step.scope:
+                    out.append(step.with_(scope=rewrite(step.scope)))
+                    continue
+                if not isinstance(step, CallStep):
+                    out.append(step)
+                    continue
+                callee = computations.get(step.call.callee)
+                if (
+                    callee is None
+                    or step.call.static_arguments
+                    or len(step.call.arguments) != len(callee.parameters)
+                ):
+                    out.append(step)
+                    continue
+                bound: list[ProgramStep] = []
+                arguments: list[QiecVar] = []
+                for parameter, argument in zip(
+                    callee.parameters, step.call.arguments, strict=True
+                ):
+                    if isinstance(argument, LetExprVar):
+                        name = argument.name
+                    else:
+                        name = _fresh_name(f"{step.name}_{parameter.name}", occupied)
+                        bound.append(
+                            LetStep(
+                                name=name,
+                                value=argument,
+                                line=step.line,
+                                col=step.col,
+                            )
+                        )
+                    arguments.append(QiecVar(Local(name, parameter.type)))
+                inlined = inline_pure_call(
+                    callee,
+                    tuple(arguments),
+                    callee.type.result,
+                    occupied,
+                    cards,
+                    program,
+                )
+                if inlined is None:
+                    out.append(step)
+                    continue
+                hoisted, result = inlined
+                out.extend(bound)
+                out.extend(
+                    LetStep(name=name, value=value, line=step.line, col=step.col)
+                    for name, value in hoisted
+                )
+                out.append(
+                    LetStep(name=step.name, value=result, line=step.line, col=step.col)
+                )
+            return tuple(out)
+
+        return rewrite(steps)
+
     @staticmethod
     def _refuse_computation_calls(program: str, steps: tuple[ProgramStep, ...]) -> None:
         """Refuse to instantiate a program that calls a named computation.
@@ -2735,7 +2904,9 @@ class _ProgramsMixin:
                     decl.line,
                     decl.col,
                 )
-            self._program_templates[decl.name] = decl
+            self._program_templates[decl.name] = decl.with_(
+                draws=self._inline_pure_calls(decl.name, decl.draws)
+            )
             return None
         if decl.name in self._morphisms:
             raise CompileError(
@@ -2758,6 +2929,7 @@ class _ProgramsMixin:
                     decl.col,
                 )
         decl, scan_effects = self._expand_cell_scans(decl)
+        decl = decl.with_(draws=self._inline_pure_calls(decl.name, decl.draws))
         if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
             # computation: the callee's body is a term of the module,
