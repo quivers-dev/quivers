@@ -228,6 +228,91 @@ leaks mass to infinite derivations, and the sentence probabilities then
 sum to less than one [@booth1973applying]. The option does not check
 consistency.
 
+## Priors on production probabilities
+
+A program can place a prior on a normalized grammar's production
+probabilities and infer their posterior, the Bayesian PCFG of
+[@johnson2007bayesian]. The call binds each left-hand side with more
+than one production to a probability vector over its productions, in
+the order `production_groups` lists them, as a pair of the left-hand
+side's label and a program value; a production alone in its group has
+probability one and takes no binding. The corpus is one input of one
+run: with a plate object after the input, `parse` reads a table with one
+sentence per object, all of one length, and `chart.goal_weight()` is the
+sum of the sentences' log inside weights.
+
+<!-- compile: qiec -->
+```qvr
+object Term : FinSet 16
+object Weight : Real 1
+object Sentence : FinSet 3
+
+deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4, normalize=lhs]
+    atoms S, NP, VP, Det, N, V, span, the, a, cat, dog, sleeps, runs
+    rule s_np_vp : span(I, K, NP), span(K, J, VP) |- span(I, J, S)
+    rule np_det_n : span(I, K, Det), span(K, J, N) |- span(I, J, NP)
+    rule vp_v : span(I, J, V) |- span(I, J, VP)
+    lexicon
+        "the"    : Det = the
+        "a"      : Det = a
+        "cat"    : N   = cat
+        "dog"    : N   = dog
+        "sleeps" : V   = sleeps
+        "runs"   : V   = runs
+
+program bayesian_pcfg : Term -> Weight
+    sample p_det <- Dirichlet(concentration=[1.0, 1.0])
+    sample p_n <- Dirichlet(concentration=[1.0, 1.0])
+    sample p_v <- Dirichlet(concentration=[1.0, 1.0])
+    let chart = parse(PCFG, corpus, Sentence, ("Det", p_det), ("N", p_n), ("V", p_v))
+    score evidence = chart.goal_weight()
+    return evidence
+
+export bayesian_pcfg
+```
+
+The program's log-joint is the Dirichlet log densities plus the
+corpus's log-likelihood. Both execution paths score it alike: the
+compiled runtime passes the sites' values to the chart, and gradients
+reach them, so [`MCMC`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC) with
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the posterior; the
+checked path elaborates the call to a weighted variant of the
+deduction's computations that reads its weights from the bound values.
+
+<!-- python: skip -->
+```python
+import torch
+from quivers.dsl import load
+from quivers.inference import MCMC, NUTSKernel
+
+program = load("bayesian_pcfg.qvr")
+corpus = [["the", "cat", "runs"], ["a", "dog", "sleeps"], ["the", "dog", "runs"]]
+result = MCMC(NUTSKernel(step_size=0.3), num_warmup=200, num_samples=300).run(
+    program.morphism, torch.zeros(1, 1), {"corpus": corpus}
+)
+posterior_mean = result.samples["p_det"].mean(dim=(0, 1))
+```
+
+Each sentence of this grammar has one derivation, so the posterior of
+each left-hand side is the conjugate $\mathrm{Dirichlet}(\alpha + n)$,
+with $n$ the production counts of the corpus's derivations; the test
+suite checks the sampler against it. The binding is checked when the
+program is lowered: a bound label must be a left-hand side of several
+productions, every such left-hand side is bound once, each value is a
+vector of its group's size, a value drawn at a sample site comes from a
+family whose support is the simplex (a Dirichlet draw, or a
+`softmax` of an unconstrained draw for a logistic-normal prior), and the
+grammar must declare `normalize=lhs`. Without bindings, the call reads
+the learned weights. In Python,
+[`DeductionSystem.__call__`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem.__call__)
+and
+[`DeductionSystem.corpus`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem.corpus)
+take the same probabilities as a mapping from left-hand side to vector.
+
+Transpile targets have no form for the deduction's search, so each
+refuses such a program, naming the search capability of the weighted
+entry.
+
 ## The deduction as a kernel computation
 
 The [generated computation reference](../reference/qvr/generated-computations.md#deduction-declarations) traces this expansion into choices, weights, and collecting handlers. The [effect interface reference](../reference/qvr/effects-and-handlers.md#prelude-interfaces) defines the requests those computations make.

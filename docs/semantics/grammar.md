@@ -501,6 +501,42 @@ inside log-marginal of the input under the deduction's current
 parameters: SVI and NUTS over the program's parameter set then
 descend to the deduction's parameters automatically.
 
+A corpus of independent sentences of one length is one input of one
+run, a table with one sentence per object of a plate $P$:
+
+```
+let chart = parse(D, corpus, P)
+score log_L = chart.goal_weight()
+```
+
+and `chart.goal_weight()` denotes the semiring product of the
+sentences' inside weights, $\bigotimes_{n \in P}
+\bigoplus_{i \in \mathrm{goal}_n} \alpha_n[i]$, under `LogProb` the
+corpus log-likelihood $\sum_n \log Z(s_n)$.
+
+For a grammar normalized per left-hand side ([§2.4](#24-production-probabilities-normalizelhs)),
+the call may bind the production probabilities of every left-hand side
+$A$ with more than one production to a program value $p_A$, a vector
+over $A$'s productions in the order `production_groups` lists:
+
+```
+let chart = parse(D, corpus, P, ("A", p_A), ("B", p_B))
+```
+
+The chart then reads $\theta_q = \log p_{A,q} - \log \sum_{q'}
+p_{A,q'}$ for each production $q$ of $A$ (so $\theta_q = \log
+p_{A,q}$ on the simplex) in place of the learned weights, and a
+production alone in its group has $\theta_q = 0$. With
+$p_A \sim \mathrm{Dirichlet}(\alpha_A)$ drawn in the program, the
+program's log-joint is
+$\sum_A \log \mathrm{Dir}(p_A; \alpha_A) + \sum_n \log Z(s_n; p)$,
+the joint of a Bayesian PCFG, whose posterior the inference
+algorithms target. The binding is checked when the program is
+lowered: every bound label is a left-hand side of several
+productions, every such left-hand side is bound once, each value is a
+vector of its group's size, and a value drawn at a sample site comes
+from a family whose support is the simplex.
+
 ### 9.1 Composing deductions
 
 The let-expression builtin `compose(D_1, D_2)` builds a deduction
