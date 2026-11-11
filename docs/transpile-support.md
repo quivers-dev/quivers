@@ -2040,6 +2040,24 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. stan cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which stan has no rendering for
 ```
 
+**`declare:simplex:event-rank:0`**
+
+Refused for: `steps/sample_relaxed_onehot_probs`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+declare:simplex:event-rank:0: Stan simplex requires exactly one event dim
+```
+
+`stan` on `steps/sample_relaxed_onehot_probs` reports:
+
+```text
+the declared shape of a `simplex` parameter has no Stan declaration form: event-rank:0. The site's axes do not say which of them are event axes. Name them with `[over=...]`, or draw from a family that fixes its own event shape.: Stan simplex requires exactly one event dim
+```
+
 **`family:no-stan-target:OneHotCategorical`**
 
 Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
@@ -2056,24 +2074,6 @@ family:no-stan-target:OneHotCategorical
 
 ```text
 stan has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
-**`family:no-stan-target:RelaxedOneHotCategorical`**
-
-Refused for: `steps/sample_relaxed_onehot_probs`.
-
-Renders on: `edward2`, `pyro`.
-
-Reported kinds:
-
-```text
-family:no-stan-target:RelaxedOneHotCategorical
-```
-
-`stan` on `steps/sample_relaxed_onehot_probs` reports:
-
-```text
-stan has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`let-expr:axis-reduction:stan`**
