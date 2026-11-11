@@ -28,8 +28,8 @@ from tests.transpile.probes import _protocol
 from tests.transpile.probes.church import ChurchProbe
 from tests.transpile.test_numeric_equivalence import _BACKENDS_WITH_IMAGES
 
-type Host = float | int | list[float] | list[int]
-"""A number or a list of numbers."""
+type Host = float | int | list[float] | list[int] | list[list[float]]
+"""A number, a list of numbers, or a list of rows."""
 
 type Oracle = Callable[[Mapping[str, torch.Tensor]], torch.Tensor]
 """An independent computation of a fixture's joint."""
@@ -39,6 +39,7 @@ _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 _SCALE = "steps/observe_per_row_datum_scale"
 _RATE = "steps/observe_per_row_gamma_rate"
 _CHANGE = "steps/marginalize_factor_let_rows"
+_LDA = "steps/marginalize_gathered_prior_data"
 
 
 def _f(value: float) -> torch.Tensor:
@@ -84,6 +85,18 @@ def _change(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _lda(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    theta, phi = v["theta"], v["phi"]
+    w, doc = v["w"].long(), v["doc_idx"].long()
+    prior = D.Dirichlet(torch.ones(2, dtype=torch.float64)).log_prob(theta).sum()
+    prior = (
+        prior
+        + D.Dirichlet(torch.full((3,), 0.5, dtype=torch.float64)).log_prob(phi).sum()
+    )
+    # Each token's topic is drawn from its own document's weights.
+    return prior + torch.log((theta[doc] * phi[:, w].T).sum(-1)).sum()
+
+
 #: Each case: its fixture, its data, its clamped points, and its oracle.
 _CASES: dict[str, tuple[str, dict[str, Host], list[dict[str, Host]], Oracle]] = {
     "datum-scale": (
@@ -108,24 +121,66 @@ _CASES: dict[str, tuple[str, dict[str, Host], list[dict[str, Host]], Oracle]] = 
         ],
         _change,
     ),
+    "lda-per-token": (
+        _LDA,
+        {
+            "w": [0, 1, 2, 0, 1, 2],
+            "doc_idx": [0, 0, 0, 1, 1, 1],
+            "token_idx": [0, 1, 2, 3, 4, 5],
+        },
+        [
+            {
+                "theta": [[0.75, 0.25], [0.25, 0.75]],
+                "phi": [[0.5, 0.25, 0.25], [0.125, 0.125, 0.75]],
+            },
+            {
+                "theta": [[0.5, 0.5], [0.875, 0.125]],
+                "phi": [[0.25, 0.25, 0.5], [0.625, 0.25, 0.125]],
+            },
+            {
+                "theta": [[0.125, 0.875], [0.625, 0.375]],
+                "phi": [[0.75, 0.125, 0.125], [0.25, 0.5, 0.25]],
+            },
+        ],
+        _lda,
+    ),
 }
 
 #: The program each fixture exports.
-_PROGRAMS: dict[str, str] = {_SCALE: "pool", _RATE: "regress", _CHANGE: "change"}
+_PROGRAMS: dict[str, str] = {
+    _SCALE: "pool",
+    _RATE: "regress",
+    _CHANGE: "change",
+    _LDA: "lda",
+}
+
+#: The observed site each fixture scores, whose rows size the tolerance.
+_OBSERVED: dict[str, str] = {_SCALE: "y", _RATE: "y", _CHANGE: "y", _LDA: "w"}
 
 #: The data names each fixture reads as integers.
 _INTEGER_DATA: dict[str, frozenset[str]] = {
     _SCALE: frozenset(),
     _RATE: frozenset(),
     _CHANGE: frozenset({"y"}),
+    _LDA: frozenset({"w", "doc_idx", "token_idx"}),
 }
 
 #: The refusals each target states for a fixture it cannot render. A
 #: marginalize with no index over a plated observe shares one latent
 #: across the rows, which these targets score the other way round.
 _REFUSED: dict[tuple[str, str], str] = {
-    (_CHANGE, target): "marginalize:ungrouped-over-plate:tau"
-    for target in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing")
+    **{
+        (_CHANGE, target): "marginalize:ungrouped-over-plate:tau"
+        for target in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing")
+    },
+    # BUGS cannot shift an observed class code to its one-based `dcat`;
+    # JAGS cannot lift the gather's elementwise operator over an axis in
+    # an expression; Gen and Turing read a marginalize's weights only from
+    # a name with a declared plate.
+    (_LDA, "bugs"): "observe:class-code:w",
+    (_LDA, "jags"): "let-expr:elementwise-axis-operator",
+    (_LDA, "gen"): "marginalize:weight-plate:theta_tok",
+    (_LDA, "turing"): "marginalize:weight-plate:theta_tok",
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
@@ -204,22 +259,43 @@ def _reference(case: str) -> list[float]:
     return densities
 
 
-def _nested(value: torch.Tensor) -> float | int | tuple[float | int, ...]:
+type Nested = float | int | tuple["Nested", ...]
+"""A number, or nested tuples of numbers."""
+
+
+def _nested(value: torch.Tensor) -> Nested:
     """A tensor as the reference machine's nested tuples.
 
     Parameters
     ----------
     value : torch.Tensor
-        A scalar or a vector.
+        The tensor.
 
     Returns
     -------
-    float | int | tuple[float | int, ...]
-        A number, or a tuple of numbers.
+    Nested
+        A number, or nested tuples of numbers.
     """
     if value.dim() == 0:
         return value.item()
-    return tuple(item.item() for item in value)
+    return tuple(_nested(item) for item in value)
+
+
+def _flat(value: Host) -> Host:
+    """A value flattened in row-major order, as a probe point carries it.
+
+    Parameters
+    ----------
+    value : Host
+        The value.
+
+    Returns
+    -------
+    Host
+        A number, or the flat list of its entries.
+    """
+    tensor = torch.as_tensor(value, dtype=torch.float64)
+    return tensor.item() if tensor.dim() == 0 else tensor.reshape(-1).tolist()
 
 
 @pytest.mark.parametrize("case", sorted(_CASES))
@@ -263,15 +339,21 @@ def test_target_scores_the_reference_joint(
     source = transpile(parse(_source(fixture)), target=backend)
     script = pathlib.Path(__file__).parent / "probes" / "_scripts" / script_name
     shapes: dict[str, list[int]] = {
-        name: list(torch.as_tensor(value).shape) for name, value in data.items()
+        name: list(torch.as_tensor(value).shape)
+        for name, value in {**data, **points[0]}.items()
     }
-    shapes.update({name: [] for name in points[0]})
     raw = _docker.run_probe(
         image=image,
         script=script,
         source=source,
         source_ext=ext,
-        points=[{"params": dict(point), "data": dict(data)} for point in points],
+        points=[
+            {
+                "params": {name: _flat(value) for name, value in point.items()},
+                "data": dict(data),
+            }
+            for point in points
+        ],
         scratch=scratch / case / backend,
         shapes=shapes,
         dtypes={
@@ -282,7 +364,7 @@ def test_target_scores_the_reference_joint(
     _equivalence.assert_log_density_match(
         _reference(case),
         [float(value) for value in raw["log_densities"]],
-        atol=_equivalence.adaptive_atol(n_obs=math.prod(shapes["y"])),
+        atol=_equivalence.adaptive_atol(n_obs=math.prod(shapes[_OBSERVED[fixture]])),
         context=f"{backend}@{case}",
     )
 
@@ -304,7 +386,9 @@ def test_church_scores_the_reference_joint(case: str, scratch: pathlib.Path) -> 
     _equivalence.assert_log_density_match(
         _reference(case),
         result.log_densities,
-        atol=_equivalence.adaptive_atol(n_obs=torch.as_tensor(data["y"]).numel()),
+        atol=_equivalence.adaptive_atol(
+            n_obs=torch.as_tensor(data[_OBSERVED[fixture]]).numel()
+        ),
         context=f"church@{case}",
     )
 

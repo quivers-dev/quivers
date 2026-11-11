@@ -1,0 +1,16 @@
+# Exercises a host datum gathered in a let that feeds a grouped marginalize's
+# prior: `doc_idx` maps each token to its document, so it is one integer per
+# `Token` row, and each token's topic is drawn from its own document's
+# topic weights.
+object Doc : FinSet 2
+object Topic : FinSet 2
+object Vocab : FinSet 3
+object Token : FinSet 6
+program lda : Token -> Token
+    sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=0.5) [over=Vocab, iid_over=Topic]
+    let theta_tok = theta[doc_idx]
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
+    return w
+export lda
