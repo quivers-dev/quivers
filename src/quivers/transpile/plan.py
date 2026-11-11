@@ -107,7 +107,8 @@ from quivers.dsl.qiec_lowering import (
     has_qiec_surface,
     lower_qvr_to_qiec,
 )
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import (
     INT,
     IndexLiteral,
@@ -600,6 +601,11 @@ class _ProgramWalk:
         self.head_nodes: list[IRNode] = []
         self.axes: dict[str, tuple[str, ...]] = {
             parameter.name: parameter.axes for parameter in entry.parameters
+        }
+        self.data_parameters: dict[str, ProgramParameter] = {
+            parameter.name: parameter
+            for parameter in entry.parameters
+            if parameter.role == "data"
         }
         self.local_types: dict[str, TypeExpr] = {}
         self.via: str | None = None
@@ -1491,6 +1497,7 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
+            self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
@@ -1514,6 +1521,43 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _tensor_parameter_input(
+        self, family: str, parameter: str, value: Value
+    ) -> None:
+        """Declare a host tensor filling a family's whole tensor parameter.
+
+        A datum that is one value of a vector or matrix parameter, such as
+        a multivariate normal's host mean or Cholesky factor, is declared
+        over the parameter's own axes as event axes, so a target reads it
+        as one vector or matrix rather than an array of scalars.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        parameter : str
+            The family parameter the value fills.
+        value : Value
+            The value.
+        """
+        record = FAMILIES.get(family)
+        if not isinstance(value, Var) or record is None:
+            return
+        datum = self.data_parameters.get(value.local.name)
+        if (
+            datum is None
+            or datum.per_row
+            or parameter not in record.parameter_names
+            or record.parameter(parameter).rank == 0
+        ):
+            return
+        dims = _typed_dims(datum.type, datum.axes)
+        if len(dims) != record.parameter(parameter).rank:
+            return
+        self.structured_inputs.setdefault(
+            datum.name, (CSReal(), Plate(event_dims=dims, batch_dims=()))
+        )
 
     def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
         """Hand a Cholesky factor to the target as it reads it.
@@ -2258,8 +2302,16 @@ def _plate_of(
     Plate
         Batch and event dimensions named after the axes.
     """
-    del marginalized, distribution, walk
+    del marginalized, walk
     event = tuple(_axis_dim(axis) for axis in plate.event)
+    record = FAMILIES.get(distribution.name)
+    if not plate.event and record is not None and record.name in _SAMPLE_EVENT_FAMILIES:
+        # A multivariate normal's or a Wishart's own event axes are those
+        # of its sample, which an unplated construction's type states.
+        sampled = sampled_element(distribution.result_type)
+        dims = _typed_dims(sampled, ()) if sampled is not None else ()
+        if len(dims) >= record.event_rank:
+            event = dims[len(dims) - record.event_rank :]
     if meta.qvr_name == "LKJCholesky" and len(event) == 2 and event[0] == event[1]:
         # A correlation factor is square over one axis, which the
         # plan states once.
@@ -2315,6 +2367,12 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+#: The families an unplated construction of which is planned over its
+#: sample's own event axes, as an ``[over=...]`` clause would name them.
+_SAMPLE_EVENT_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN", "Wishart"}
+)
 
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:

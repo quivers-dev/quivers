@@ -4,6 +4,18 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.27.0] - 2026-11-11
+
+### Added
+
+- **`FamilyParameter.event_dims`** records, for each axis of a family parameter, the axis of the family's sample it has the extent of: a `MultivariateNormal`'s `scale_tril` is `(0, 0)`, a `Wishart`'s `(0, 1)`, a `MatrixNormal`'s `col_covariance` `(1, 1)`.
+
+### Fixed
+
+- **A host vector or matrix filling a parameter of an unplated draw is sized by the draw.** A free name filling a tensor parameter of a draw with no batch axes is one tensor over the parameter's own axes, which the family ties to its sample's: the extents come from the plate's event axes or the arguments already sized, and an axis nothing in the draw sizes is one open extent every datum tied to it shares. A later use fixes an open extent: an `[over=...]` event axis of a draw reading the value, another reading of the same datum, or the `Real N` codomain of a program returning it. A tied argument whose extent differs from the sample axis it spans, and a datum read at two sizes, are refused at the draw, naming both extents. A Cholesky factor or covariance filled by a free name beside `[over=...]` event axes is a matrix over them, not a broadcast scalar.
+- **The compiled runtime scores `MultivariateNormal`, `LowRankMVN`, and `Wishart` at host and program-valued vector and matrix parameters.** Each parameter is read at its checked shape, a matrix's flat columns restored to its rows, so `MultivariateNormal(loc=m0, scale_tril=L)` and `Wishart(df=4.0, scale_tril=L)` with host `m0` and `L` sample and score as `torch.distributions` does and as the reference machine does; an unplated multivariate draw takes its event size from `[over=...]` or its checked extents, and one whose size nothing in the program fixes is refused when the program is built, naming the draw. A host tensor over its own axes is one value, not plate rows.
+- **Every transpile target renders an unplated multivariate draw over the event axes its type states,** so Stan declares an unplated `MultivariateNormal` or `Wishart` site without an `[over=...]` clause.
+
 ## [0.26.2] - 2026-11-11
 
 ### Fixed

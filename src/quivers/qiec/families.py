@@ -59,11 +59,18 @@ class FamilyParameter:
     rank
         The tensor rank of one parameter value: 0 for a scalar, 1 for a
         vector, 2 for a matrix.
+    event_dims
+        For each of the value's own dimensions, the dimension of the
+        family's sample it has the extent of, or ``None`` when the
+        sample's shape does not fix it; empty when no dimension is tied
+        to the sample. A multivariate normal's ``scale_tril`` is
+        ``(0, 0)``: a square matrix over the sample's one axis.
     """
 
     name: str
     constraint: ParameterConstraint
     rank: int
+    event_dims: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,8 +137,9 @@ class DistributionFamily:
         Raises
         ------
         ValueError
-            If two parameters share a name, or an event source names no
-            parameter or has a rank below the event rank.
+            If two parameters share a name, an event source names no
+            parameter or has a rank below the event rank, or a
+            parameter ties a dimension to one the sample does not have.
         """
         object.__setattr__(self, "targets", MappingProxyType(dict(self.targets)))
         names = [parameter.name for parameter in self.parameters]
@@ -147,6 +155,19 @@ class DistributionFamily:
                 raise ValueError(
                     f"family {self.name!r} names event source {source!r}, of "
                     f"rank below the family's event rank {self.event_rank}"
+                )
+        for parameter in self.parameters:
+            dims = parameter.event_dims
+            if dims and (
+                len(dims) != parameter.rank
+                or any(
+                    dim is not None and not 0 <= dim < self.event_rank for dim in dims
+                )
+            ):
+                raise ValueError(
+                    f"family {self.name!r} ties parameter {parameter.name!r} "
+                    f"to sample dimensions {dims!r}, which do not fit its rank "
+                    f"{parameter.rank} and the event rank {self.event_rank}"
                 )
 
     @property
@@ -317,7 +338,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         "Dirichlet",
-        (FamilyParameter("concentration", "positive", 1),),
+        (FamilyParameter("concentration", "positive", 1, (0,)),),
         support="simplex",
         element=REAL,
         event_rank=1,
@@ -743,10 +764,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         "MultivariateNormal",
         (
-            FamilyParameter("loc", "real", 1),
-            FamilyParameter("covariance_matrix", "positive_definite", 2),
-            FamilyParameter("precision_matrix", "positive_definite", 2),
-            FamilyParameter("scale_tril", "lower_cholesky", 2),
+            FamilyParameter("loc", "real", 1, (0,)),
+            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 0)),
+            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 0)),
+            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
         ),
         support="real",
         element=REAL,
@@ -772,9 +793,9 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         "LowRankMVN",
         (
-            FamilyParameter("loc", "real", 1),
-            FamilyParameter("cov_factor", "real", 2),
-            FamilyParameter("cov_diag", "positive", 1),
+            FamilyParameter("loc", "real", 1, (0,)),
+            FamilyParameter("cov_factor", "real", 2, (0, None)),
+            FamilyParameter("cov_diag", "positive", 1, (0,)),
         ),
         support="real",
         element=REAL,
@@ -813,8 +834,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "RelaxedOneHotCategorical",
         (
             FamilyParameter("temperature", "positive", 0),
-            FamilyParameter("probs", "simplex", 1),
-            FamilyParameter("logits", "real", 1),
+            FamilyParameter("probs", "simplex", 1, (0,)),
+            FamilyParameter("logits", "real", 1, (0,)),
         ),
         support="simplex",
         element=REAL,
@@ -832,9 +853,9 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "Wishart",
         (
             FamilyParameter("df", "positive", 0),
-            FamilyParameter("covariance_matrix", "positive_definite", 2),
-            FamilyParameter("precision_matrix", "positive_definite", 2),
-            FamilyParameter("scale_tril", "lower_cholesky", 2),
+            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 1)),
+            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 1)),
+            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 1)),
         ),
         support="positive_definite",
         element=REAL,
@@ -857,7 +878,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "InverseWishart",
         (
             FamilyParameter("df", "positive", 0),
-            FamilyParameter("scale_tril", "lower_cholesky", 2),
+            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 1)),
         ),
         support="positive_definite",
         element=REAL,
@@ -876,9 +897,9 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         "MatrixNormal",
         (
-            FamilyParameter("loc", "real", 2),
-            FamilyParameter("row_covariance", "positive_definite", 2),
-            FamilyParameter("col_covariance", "positive_definite", 2),
+            FamilyParameter("loc", "real", 2, (0, 1)),
+            FamilyParameter("row_covariance", "positive_definite", 2, (0, 0)),
+            FamilyParameter("col_covariance", "positive_definite", 2, (1, 1)),
         ),
         support="real",
         element=REAL,
@@ -902,8 +923,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         "GP",
         (
-            FamilyParameter("mean", "real", 1),
-            FamilyParameter("kernel", "positive_definite", 2),
+            FamilyParameter("mean", "real", 1, (0,)),
+            FamilyParameter("kernel", "positive_definite", 2, (0, 0)),
         ),
         support="real",
         element=REAL,
@@ -1131,7 +1152,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         "OneHotCategorical",
-        (FamilyParameter("probs", "simplex", 1), FamilyParameter("logits", "real", 1)),
+        (
+            FamilyParameter("probs", "simplex", 1, (0,)),
+            FamilyParameter("logits", "real", 1, (0,)),
+        ),
         support="one_hot",
         element=INT,
         event_rank=1,

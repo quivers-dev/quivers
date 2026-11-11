@@ -208,9 +208,7 @@ def _let_expr_reads(node: LetExprNode) -> frozenset[str]:
     return frozenset(free_let_names(node))
 
 
-def _checked_real_space(
-    name: str, type_: TypeExpr, axes: tuple[str, ...]
-) -> Euclidean | None:
+def _checked_real_space(name: str, type_: TypeExpr, per_row: bool) -> Euclidean | None:
     """The Euclidean space a checked real-valued datum occupies.
 
     Parameters
@@ -219,8 +217,9 @@ def _checked_real_space(
         The datum's name.
     type_ : TypeExpr
         Its checked type.
-    axes : tuple[str, ...]
-        The plate axes its values range over, outermost first.
+    per_row : bool
+        Whether the datum holds one value per row of a plate, along its
+        leading extent.
 
     Returns
     -------
@@ -245,7 +244,7 @@ def _checked_real_space(
         return Euclidean(name=f"_{name}", dim=1)
     total = math.prod(extents)
     return Euclidean(
-        name=f"_{name}", dim=total, plate_rows=extents[0] if axes else None
+        name=f"_{name}", dim=total, plate_rows=extents[0] if per_row else None
     )
 
 
@@ -1052,6 +1051,11 @@ def _infer_wiring_from_signature(
 #   the posterior-block ``over`` model reference.
 # * ``contraction`` declarations read the composition ``rule``, the
 #   explicit einsum ``wiring`` escape hatch, and the ``share`` list.
+_MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN"}
+)
+"""Families whose sample is one real vector over the event axis."""
+
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
 _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
@@ -4636,6 +4640,12 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                     )
+            except ValueError:
+                # An inline family the checked program cannot size is
+                # refused here; when the checked program itself fails to
+                # lower, its located diagnostic says why first.
+                _ = self.qiec_module
+                raise
             except TypeError as exc:
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
@@ -4759,11 +4769,21 @@ class _ProgramsMixin:
         entry = next((e for e in module.entries if e.name == program), None)
         if entry is None:
             return {}
+        plates = {axis.name for site in entry.sites for axis in site.batch}
         spaces: dict[str, AnySpace] = {}
         for parameter in entry.parameters:
             if parameter.role != "data":
                 continue
-            space = _checked_real_space(parameter.name, parameter.type, parameter.axes)
+            # A datum ranges over a plate when it fills a plated draw's
+            # parameter one row at a time, or when it is a vector a let
+            # reads along a plate's rows; a tensor over its own axes,
+            # such as a Cholesky factor, is one value.
+            space = _checked_real_space(
+                parameter.name,
+                parameter.type,
+                parameter.per_row
+                or (len(parameter.axes) == 1 and parameter.axes[0] in plates),
+            )
             if space is not None:
                 spaces[parameter.name] = space
         return spaces
@@ -5154,17 +5174,23 @@ class _ProgramsMixin:
         event_size = (
             self._axis_event_size(event_axis) if event_axis is not None else None
         )
+        checked_event = self._checked_event_extents(
+            family, argument_by_name, var_names[0]
+        )
         matrix_spec = self._matrix_family_spec(family)
         if matrix_spec is not None:
             # A matrix-valued family takes its ``K x K`` shape from the
             # width in scope: the ``[over=...]`` axis when one is
-            # written, otherwise the object the draw is annotated with.
-            # Neither is optional, since the underlying distribution
-            # needs ``K`` at construction and a scalar codomain would
-            # build it at ``K = 1``.
+            # written, else the extents the checked program gives the
+            # draw, otherwise the object the draw is annotated with.
+            # None is optional, since the underlying distribution needs
+            # ``K`` at construction and a scalar codomain would build it
+            # at ``K = 1``.
             matrix_dim = (
                 event_size
                 if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
                 else self._axis_event_size(program_codomain)
             )
             if matrix_dim is None or matrix_dim < 2:
@@ -5180,6 +5206,36 @@ class _ProgramsMixin:
             return self._matrix_codomain(
                 matrix_spec, matrix_dim, var_names[0], line, col
             )
+        record = FAMILIES.get(family)
+        if (
+            record is not None
+            and record.event_rank == 1
+            and record.event_sources
+            and family in _MULTIVARIATE_REAL_FAMILIES
+        ):
+            # A multivariate real family samples a vector over its event
+            # axis: the ``[over=...]`` axis when one is written, else the
+            # extent the checked program gives its event source.
+            width = (
+                event_size
+                if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
+                else None
+            )
+            if width is None:
+                # A checked program that fails to lower says why first.
+                _ = self.qiec_module
+                raise CompileError(
+                    f"{family} draw of {var_names[0]!r} fixes no event size the "
+                    f"compiled runtime can build it at: name its axis with "
+                    f"``[over=K]``, annotate it (``{var_names[0]} : K <- "
+                    f"{family}(...)``), or give its "
+                    f"{' or '.join(map(repr, record.event_sources))} a fixed size",
+                    line,
+                    col,
+                )
+            return Euclidean(name=f"_{var_names[0]}", dim=width)
         if event_size is not None and event_size > 1:
             if family in ("Normal", "LogitNormal", "Uniform", "TruncatedNormal"):
                 return Euclidean(name=f"_{var_names[0]}", dim=event_size)
@@ -5296,6 +5352,49 @@ class _ProgramsMixin:
             return FinSet(name=f"_{var_names[0]}", cardinality=cardinality)
         else:
             return Euclidean(name=f"_{var_names[0]}", dim=1)
+
+    def _checked_event_extents(
+        self,
+        family: str,
+        arguments: Mapping[str, object],
+        site: str,
+    ) -> tuple[int, ...] | None:
+        """The event extents the checked program gives an inline draw.
+
+        Parameters
+        ----------
+        family : str
+            The family's source name.
+        arguments : Mapping[str, object]
+            The draw's arguments by parameter name.
+        site : str
+            The name the draw binds.
+
+        Returns
+        -------
+        tuple[int, ...] | None
+            The trailing event-rank extents of the argument the family's
+            event shape comes from, a list literal's length for a vector,
+            else of the draw's own checked value; ``None`` when none is
+            fixed or the family has no event axes.
+        """
+        record = FAMILIES.get(family)
+        if record is None or record.event_rank == 0:
+            return None
+        rank = record.event_rank
+        extents = self._value_extents_stack[-1] if self._value_extents_stack else {}
+        for name in record.event_sources:
+            argument = arguments.get(name)
+            if isinstance(argument, DrawArgName):
+                checked = extents.get(argument.text)
+                if checked is not None and len(checked) >= rank:
+                    return tuple(checked[len(checked) - rank :])
+            if isinstance(argument, DrawArgList) and argument.items and rank == 1:
+                return (len(argument.items),)
+        own = extents.get(site)
+        if own is not None and len(own) >= rank:
+            return tuple(own[len(own) - rank :])
+        return None
 
     @staticmethod
     def _locate_let_failure(
