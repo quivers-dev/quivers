@@ -2818,7 +2818,11 @@ class _ReferenceEvaluator:
         return log_joint(program, x, intermediates)
 
 
-install_evaluator(_ReferenceEvaluator())
+#: The reference machine as installed: the evaluator a prepared joint
+#: (`quivers.effects.joint_plan`) reproduces.
+REFERENCE_EVALUATOR = _ReferenceEvaluator()
+
+install_evaluator(REFERENCE_EVALUATOR)
 
 __all__ = [
     "run_program",

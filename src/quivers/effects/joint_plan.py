@@ -28,8 +28,10 @@ branch. `prepare_joint` declines, naming the reason, a program whose
 entry computation is not such a chain (one with a scan, whose
 recursion depends on the sequence it runs over), a site that is given
 no value, an input of more than one run, host data that is not a
-tensor, and a call made with handlers on the stack; those are evaluated
-on the reference machine.
+tensor; and, checked on every call, a call made with handlers on the
+stack, a program whose ``log_joint`` is overridden, and a run under
+another installed evaluator. Those are evaluated on the reference
+machine, or by the override.
 """
 
 from __future__ import annotations
@@ -42,9 +44,10 @@ import torch
 
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Draw, Let, Observe, Score
-from quivers.continuous.programs import MonadicProgram
+from quivers.continuous.programs import MonadicProgram, _evaluator
 from quivers.effects.base import RunContext, _handler_stack
 from quivers.effects.interpreter import (
+    REFERENCE_EVALUATOR,
     _canonical,
     _cached_kernel,
     _HostSteps,
@@ -683,8 +686,10 @@ class JointPlan:
         Raises
         ------
         ValueError
-            If the input or a value is not of the prepared layout, or
-            handlers are on the stack, which the plan does not install.
+            If the input or a value is not of the prepared layout, or the
+            program is not scored by the reference machine under no
+            handler now (handlers are on the stack, its ``log_joint`` is
+            overridden, or another evaluator is installed).
         Exception
             Any error a host step or a site's density raises.
         """
@@ -693,10 +698,11 @@ class JointPlan:
                 "JointPlan.evaluate: the input and values are not of the layout "
                 "the plan was prepared for"
             )
-        if _handler_stack():
+        reason = _machine_obstacle(self._program)
+        if reason is not None:
             raise ValueError(
-                "JointPlan.evaluate: handlers are on the stack; the plan scores "
-                "the program under none"
+                f"JointPlan.evaluate: {reason}; the plan reproduces the reference "
+                "machine under no handler"
             )
         kernel = self._kernel
         run_sites = {
@@ -836,6 +842,40 @@ def _parameter(store: Mapping[str, torch.Tensor], name: str) -> torch.Tensor:
     return value
 
 
+def _machine_obstacle(program: MonadicProgram) -> str | None:
+    """Why the program's log joint is not the reference machine's, now.
+
+    A prepared joint reproduces `MonadicProgram.log_joint` on the
+    reference machine with no handler installed. It does not describe a
+    call made while handlers are on the stack, a program whose
+    ``log_joint`` is overridden (by a subclass, or on the instance), or
+    a run under another installed evaluator. Each of these can change
+    between calls, so it is checked on every call.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+
+    Returns
+    -------
+    str | None
+        The reason, or ``None`` when the reference machine with no
+        handler scores the program.
+    """
+    if _handler_stack():
+        return "handlers are on the stack"
+    if not isinstance(program, MonadicProgram):
+        return f"the model is a {type(program).__name__}, not a MonadicProgram"
+    if "log_joint" in vars(program) or (
+        type(program).log_joint is not MonadicProgram.log_joint
+    ):
+        return "the program's log_joint is overridden"
+    if _evaluator() is not REFERENCE_EVALUATOR:
+        return "another evaluator is installed"
+    return None
+
+
 def prepare_joint(
     program: MonadicProgram,
     x: torch.Tensor,
@@ -876,8 +916,9 @@ def prepare_joint(
     for name, value in values.items():
         if not isinstance(value, torch.Tensor):
             return f"{name!r} is a {type(value).__name__}, not a tensor"
-    if _handler_stack():
-        return "handlers are on the stack"
+    reason = _machine_obstacle(program)
+    if reason is not None:
+        return reason
     sites, supplied, data = _split_observations(program, values)
     per_run_data = check_host_data(program, data, runs=1 if x.dim() else None)
     kernel = _cached_kernel(program, tuple(sorted(data)))
@@ -929,6 +970,34 @@ class JointPlans:
         self._x = x
         self._plans: dict[JointSignature, JointPlan | str] = {}
 
+    def __getstate__(self) -> dict[str, MonadicProgram | torch.Tensor]:
+        """The state a copy or a pickle keeps: the program and the input.
+
+        A plan holds the identities of the program it was prepared for,
+        so a copy prepares its own.
+
+        Returns
+        -------
+        dict[str, MonadicProgram | torch.Tensor]
+            The program and the input.
+        """
+        return {"program": self._program, "x": self._x}
+
+    def __setstate__(self, state: dict[str, MonadicProgram | torch.Tensor]) -> None:
+        """Restore `__getstate__`'s state, with no layout prepared.
+
+        Parameters
+        ----------
+        state : dict[str, MonadicProgram | torch.Tensor]
+            The program and the input.
+        """
+        program = state["program"]
+        x = state["x"]
+        assert isinstance(program, MonadicProgram) and isinstance(x, torch.Tensor)
+        self._program = program
+        self._x = x
+        self._plans = {}
+
     @property
     def prepared(self) -> int:
         """How many layouts have been prepared or declined so far."""
@@ -956,8 +1025,9 @@ class JointPlans:
         TypeError
             If host data has the wrong element type.
         """
-        if _handler_stack():
-            return "handlers are on the stack"
+        reason = _machine_obstacle(self._program)
+        if reason is not None:
+            return reason
         for name, value in values.items():
             if not isinstance(value, torch.Tensor):
                 return f"{name!r} is a {type(value).__name__}, not a tensor"
