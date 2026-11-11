@@ -733,12 +733,7 @@ def _rebuild_last_axis(
         rows.append(row)
     width = IndexLiteral(len(picks), NAT)
     body: Value = TensorValue(
-        tuple(
-            rows[operand].items[entry]
-            if isinstance(rows[operand], TensorValue)
-            else Gather(rows[operand], LiteralValue(entry, INT), element)
-            for operand, entry in picks
-        ),
+        tuple(_entry(rows[operand], entry, element) for operand, entry in picks),
         tensor_type(element, (width,)),
     )
     for axis in reversed(range(len(leading))):
@@ -749,6 +744,28 @@ def _rebuild_last_axis(
             tensor_type(element, (*leading[axis:], width)),
         )
     return body
+
+
+def _entry(row: Value, position: int, element: TypeExpr) -> Value:
+    """One entry of a vector at a literal position.
+
+    Parameters
+    ----------
+    row : Value
+        The vector.
+    position : int
+        The position.
+    element : TypeExpr
+        The vector's element type.
+
+    Returns
+    -------
+    Value
+        The literal's own entry for a tensor literal, else a gather.
+    """
+    if isinstance(row, TensorValue):
+        return row.items[position]
+    return Gather(row, LiteralValue(position, INT), element)
 
 
 class _PointwiseGatherError(ValueError):
