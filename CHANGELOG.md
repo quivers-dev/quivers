@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.26.1] - 2026-11-11
+
+### Fixed
+
+- **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
+
 ## [0.26.0] - 2026-11-11
 
 ### Added
