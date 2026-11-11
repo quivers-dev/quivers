@@ -10,6 +10,11 @@ The convergence estimators (`rhat`, `ess`, `mcse`, `summary`) take any
 derived quantities and draws from custom sampling loops are diagnosed
 with the estimators a run reports.
 
+The simulation-based calibration tools (`sbc`, `sbc_ranks`,
+`sbc_uniformity`, `sbc_coverage`) check an inference procedure against
+the program it targets; they also need only torch, and are bound on
+first access because they build on the inference layer.
+
 The remaining functions convert quivers fits into the
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 data model of [ArviZ](https://python.arviz.org/) and wrap the
@@ -24,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import importlib
-from types import FunctionType
+from types import FunctionType, GenericAlias, UnionType
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.convergence import (
@@ -43,6 +48,7 @@ if TYPE_CHECKING:
     from quivers.diagnostics.arviz_io import (
         to_datatree,
         to_datatree_any,
+        to_datatree_from_sbc,
         to_datatree_from_svi,
     )
     from quivers.diagnostics.comparison import compare, loo
@@ -51,9 +57,30 @@ if TYPE_CHECKING:
         loo_pit,
         posterior_predictive_check,
     )
+    from quivers.diagnostics.calibration import (
+        SBCCoverage,
+        SBCPosterior,
+        SBCResult,
+        SBCStatistic,
+        SBCThinning,
+        sbc,
+        sbc_coverage,
+        sbc_ranks,
+        sbc_uniformity,
+    )
 
-_ARVIZ_EXPORTS: dict[str, str] = {
+_LAZY_EXPORTS: dict[str, str] = {
+    "sbc": "quivers.diagnostics.calibration",
+    "sbc_ranks": "quivers.diagnostics.calibration",
+    "sbc_uniformity": "quivers.diagnostics.calibration",
+    "sbc_coverage": "quivers.diagnostics.calibration",
+    "SBCResult": "quivers.diagnostics.calibration",
+    "SBCCoverage": "quivers.diagnostics.calibration",
+    "SBCStatistic": "quivers.diagnostics.calibration",
+    "SBCPosterior": "quivers.diagnostics.calibration",
+    "SBCThinning": "quivers.diagnostics.calibration",
     "to_datatree": "quivers.diagnostics.arviz_io",
+    "to_datatree_from_sbc": "quivers.diagnostics.arviz_io",
     "to_datatree_any": "quivers.diagnostics.arviz_io",
     "to_datatree_from_svi": "quivers.diagnostics.arviz_io",
     "compare": "quivers.diagnostics.comparison",
@@ -63,11 +90,17 @@ _ARVIZ_EXPORTS: dict[str, str] = {
     "STATISTICS": "quivers.diagnostics.predictive_checks",
 }
 
-type _ArvizExport = FunctionType | dict[str, Callable[[np.ndarray], float]]
+type _LazyExport = (
+    FunctionType
+    | type
+    | UnionType
+    | GenericAlias
+    | dict[str, Callable[[np.ndarray], float]]
+)
 
 
-def __getattr__(name: str) -> _ArvizExport:
-    """Bind an ArviZ-backed export on first access.
+def __getattr__(name: str) -> _LazyExport:
+    """Bind an SBC or ArviZ-backed export on first access.
 
     Parameters
     ----------
@@ -76,21 +109,21 @@ def __getattr__(name: str) -> _ArvizExport:
 
     Returns
     -------
-    _ArvizExport
-        The function or statistic table the defining module binds
-        under that name.
+    _LazyExport
+        The function, class, type alias, or statistic table the
+        defining module binds under that name.
 
     Raises
     ------
     AttributeError
-        If ``name`` is not an ArviZ-backed export.
+        If ``name`` is not a lazily bound export.
     ModuleNotFoundError
         If the ``diagnostics`` extra (ArviZ, xarray) is not installed.
     """
-    module_name = _ARVIZ_EXPORTS.get(name)
+    module_name = _LAZY_EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value: _ArvizExport = getattr(importlib.import_module(module_name), name)
+    value: _LazyExport = getattr(importlib.import_module(module_name), name)
     globals()[name] = value
     return value
 
@@ -103,7 +136,17 @@ __all__ = [
     "ConvergenceSummary",
     "EssMethod",
     "McseMethod",
+    "sbc",
+    "sbc_ranks",
+    "sbc_uniformity",
+    "sbc_coverage",
+    "SBCResult",
+    "SBCCoverage",
+    "SBCStatistic",
+    "SBCPosterior",
+    "SBCThinning",
     "to_datatree",
+    "to_datatree_from_sbc",
     "to_datatree_any",
     "to_datatree_from_svi",
     "compare",
