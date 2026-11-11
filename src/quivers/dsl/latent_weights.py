@@ -100,7 +100,7 @@ def weights_mode(morphism: MorphismDecl) -> str:
         The ``weights`` option's name, ``point`` when absent.
     """
     value = _option(morphism, "weights")
-    return value.value if isinstance(value, OptionName) else "point"
+    return str(value.value) if isinstance(value, OptionName) else "point"
 
 
 def prior_scale(morphism: MorphismDecl) -> float:
@@ -139,7 +139,7 @@ def network_kind(morphism: MorphismDecl) -> str:
     if isinstance(value, OptionCall):
         return value.func
     if isinstance(value, OptionName):
-        return value.value
+        return str(value.value)
     return "linear"
 
 

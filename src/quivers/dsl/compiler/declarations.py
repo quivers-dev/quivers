@@ -39,6 +39,7 @@ from quivers.continuous.deterministic import (
 )
 from quivers.continuous.flows import ConditionalFlow
 from quivers.continuous.inline import make_inline_distribution
+from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.param_source import FunctionActivation, function_source
 from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.core.morphisms import (
@@ -351,6 +352,9 @@ class _DeclarationsMixin:
     _morphisms: dict
     _groups: dict[str, list[str]]
     _module: Module
+    # Supplied by `_ProgramsMixin`: splits a latent-weight kernel into
+    # the network a draw applies and the family it draws from.
+    _register_latent_kernel: Callable[[str, ContinuousMorphism], None]
 
     # ``_resolve_type``, ``_resolve_any_space``, ``_compile_expr``
     # come from `_ResolutionMixin` and

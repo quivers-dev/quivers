@@ -3950,10 +3950,12 @@ class _ProgramsMixin:
             if network is None:
                 rewritten.append(step)
                 continue
-            arguments = tuple(step.args or ())
-            if not arguments or not all(
-                isinstance(argument, DrawArgName) for argument in arguments
-            ):
+            names = [
+                argument.text
+                for argument in (step.args or ())
+                if isinstance(argument, DrawArgName)
+            ]
+            if not names or len(names) != len(step.args or ()):
                 raise CompileError(
                     f"the latent-weight kernel {step.morphism!r} is drawn from "
                     f"with its inputs named, as in `{step.morphism}(x)`; each "
@@ -3968,10 +3970,7 @@ class _ProgramsMixin:
                     name=raw,
                     value=LetExprCall(
                         func=f"{step.morphism}__network",
-                        args=tuple(
-                            LetExprVar(name=cast(DrawArgName, argument).text)
-                            for argument in arguments
-                        ),
+                        args=tuple(LetExprVar(name=text) for text in names),
                     ),
                     line=step.line,
                     col=step.col,
@@ -4009,7 +4008,8 @@ class _ProgramsMixin:
             )
         width = int(cast(ParamSource, source).param_dim)
         raw_space = Euclidean(name=f"{name}__raw", dim=width)
-        family = type(kernel)(
+        construct = cast(Callable[..., ContinuousMorphism], type(kernel))
+        family = construct(
             raw_space, kernel.codomain, param_source=IdentitySource(width)
         )
         network = LearnedFunction(
