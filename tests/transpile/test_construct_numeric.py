@@ -572,7 +572,9 @@ _ORACLES: dict[str, Oracle] = {
 #: by the rows; BUGS / JAGS `sum` contracts every axis of a two-axis
 #: operand where QVR reduces the last; and BUGS cannot score an observed
 #: class code, which the data holds from zero and `dcat` reads from one,
-#: having no data block to shift it in.
+#: having no data block to shift it in. Stan's samplers draw no discrete
+#: parameter, and a target whose library has no ordinal family refuses it
+#: by name.
 _REFUSED: dict[tuple[str, str], str] = {
     **{
         (fixture, backend): "marginalize:ungrouped-over-plate"
