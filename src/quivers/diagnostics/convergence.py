@@ -46,6 +46,7 @@ device as float64.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 import math
 from typing import Literal
 
@@ -436,8 +437,10 @@ def _ess_core(chains: torch.Tensor) -> float:
     if any(math.isnan(value) for value in rho):
         return math.nan
     total = num_chains * num_draws
-    tau = -1.0 + 2.0 * math.fsum(rho[: max_lag + 1]) + math.fsum(
-        rho[max_lag + 1 : max_lag + 2]
+    tau = (
+        -1.0
+        + 2.0 * math.fsum(rho[: max_lag + 1])
+        + math.fsum(rho[max_lag + 1 : max_lag + 2])
     )
     tau = max(tau, 1.0 / math.log10(total))
     return total / tau
@@ -712,9 +715,10 @@ def _beta_cdf(x: float, alpha: float, beta: float) -> float:
     )
     if x < (alpha + 1.0) / (alpha + beta + 2.0):
         return math.exp(log_front) * _beta_continued_fraction(x, alpha, beta) / alpha
-    return 1.0 - math.exp(log_front) * _beta_continued_fraction(
-        1.0 - x, beta, alpha
-    ) / beta
+    return (
+        1.0
+        - math.exp(log_front) * _beta_continued_fraction(1.0 - x, beta, alpha) / beta
+    )
 
 
 def _beta_ppf(level: float, alpha: float, beta: float) -> float:
@@ -861,18 +865,11 @@ def ess(
     statistic: Callable[[torch.Tensor], float]
     if method == "tail":
         tail_prob = _check_prob(_DEFAULT_TAIL_PROB if prob is None else prob, "prob")
-
-        def statistic(chains: torch.Tensor) -> float:
-            return _ess_tail(chains, tail_prob)
-
+        statistic = partial(_ess_tail, prob=tail_prob)
     elif method == "quantile":
         if prob is None:
             raise ValueError('ess(method="quantile") requires prob')
-        quantile_prob = _check_prob(prob, "prob")
-
-        def statistic(chains: torch.Tensor) -> float:
-            return _ess_quantile(chains, quantile_prob)
-
+        statistic = partial(_ess_quantile, prob=_check_prob(prob, "prob"))
     elif method in ("bulk", "mean", "sd"):
         if prob is not None:
             raise ValueError(f'ess(method="{method}") takes no prob')
@@ -932,11 +929,7 @@ def mcse(
     if method == "quantile":
         if prob is None:
             raise ValueError('mcse(method="quantile") requires prob')
-        quantile_prob = _check_prob(prob, "prob")
-
-        def statistic(chains: torch.Tensor) -> float:
-            return _mcse_quantile(chains, quantile_prob)
-
+        statistic = partial(_mcse_quantile, prob=_check_prob(prob, "prob"))
     elif method in ("mean", "sd"):
         if prob is not None:
             raise ValueError(f'mcse(method="{method}") takes no prob')
@@ -969,8 +962,7 @@ def _pooled_quantiles(draws: torch.Tensor, probs: Sequence[float]) -> torch.Tens
     finite = torch.isfinite(pooled).all(dim=0)
     sorted_values = torch.sort(pooled, dim=0).values
     rows = [
-        torch.where(finite, _linear_quantile(sorted_values, p), math.nan)
-        for p in probs
+        torch.where(finite, _linear_quantile(sorted_values, p), math.nan) for p in probs
     ]
     stacked = torch.stack(rows) if rows else pooled.new_empty((0, pooled.shape[1]))
     return stacked.reshape(len(probs), *draws.shape[2:]).to(device=draws.device)

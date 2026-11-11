@@ -40,6 +40,18 @@ from quivers.diagnostics.convergence import (
 if TYPE_CHECKING:
     import numpy as np
 
+    from quivers.diagnostics.arviz_io import (
+        to_datatree,
+        to_datatree_any,
+        to_datatree_from_svi,
+    )
+    from quivers.diagnostics.comparison import compare, loo
+    from quivers.diagnostics.predictive_checks import (
+        STATISTICS,
+        loo_pit,
+        posterior_predictive_check,
+    )
+
 _ARVIZ_EXPORTS: dict[str, str] = {
     "to_datatree": "quivers.diagnostics.arviz_io",
     "to_datatree_any": "quivers.diagnostics.arviz_io",

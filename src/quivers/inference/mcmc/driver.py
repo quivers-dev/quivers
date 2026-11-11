@@ -128,9 +128,7 @@ class MCMCResult:
         Computed by ``quivers.diagnostics.ess(draws, method="bulk")``;
         same shape convention as `r_hat`.
         """
-        return {
-            name: ess(draws, method="bulk") for name, draws in self.samples.items()
-        }
+        return {name: ess(draws, method="bulk") for name, draws in self.samples.items()}
 
     @cached_property
     def ess_tail(self) -> dict[str, torch.Tensor]:
@@ -140,9 +138,7 @@ class MCMCResult:
         computed by ``quivers.diagnostics.ess(draws, method="tail")``;
         same shape convention as `r_hat`.
         """
-        return {
-            name: ess(draws, method="tail") for name, draws in self.samples.items()
-        }
+        return {name: ess(draws, method="tail") for name, draws in self.samples.items()}
 
 
 class MCMC:
