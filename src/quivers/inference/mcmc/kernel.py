@@ -501,6 +501,12 @@ class PotentialFn:
             program or its data rather than a position outside the
             support.
         """
+        if z.numel() == 0:
+            # Every latent is held outside the flat vector (a model a
+            # GibbsKernel samples alone): there is nothing to
+            # differentiate with respect to.
+            with torch.no_grad():
+                return self.log_density(z).detach(), torch.zeros_like(z)
         z_leaf = z.detach().clone().requires_grad_(True)
         with torch.enable_grad():
             ld = self.log_density(z_leaf)

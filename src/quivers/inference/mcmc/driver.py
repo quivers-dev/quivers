@@ -32,7 +32,9 @@ from typing import Literal
 import torch
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.plate import PlateDraw
+from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.trace_types import Trace
 from quivers.inference.guides.base import Guide
@@ -518,7 +520,7 @@ class MCMC:
             )
             raise
         gibbs_sites = self.kernel.gibbs_sites
-        gibbs_plates = _check_gibbs_sites(recorded, gibbs_sites)
+        gibbs_morphisms = _check_gibbs_sites(recorded, gibbs_sites)
         registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = PotentialFn(model, registry, x, observations)
 
@@ -584,8 +586,9 @@ class MCMC:
                 for n, v in draws.items():
                     chain_samples[n].append(v)
                 for n in gibbs_sites:
-                    value = sampling_state.gibbs_values[n]
-                    chain_samples[n].append(value if gibbs_plates[n] else value[0])
+                    chain_samples[n].append(
+                        _gibbs_draw(sampling_state.gibbs_values[n], gibbs_morphisms[n])
+                    )
                 per_chain_log_density[chain, s] = sampling_state.log_density
                 for key, value in sampling_state.stats.items():
                     if key.endswith(".accepted"):
@@ -679,7 +682,44 @@ class MCMC:
         return {name: recorded.sites[name].value.detach() for name in gibbs_sites}
 
 
-def _check_gibbs_sites(recorded: Trace, gibbs_sites: frozenset[str]) -> dict[str, bool]:
+def _gibbs_draw(value: torch.Tensor, morphism: ContinuousMorphism) -> torch.Tensor:
+    """One draw of a Gibbs site at its constrained shape.
+
+    The trace-side value of a non-plate site loses its run axis, and a
+    length-one event axis is squeezed off, as the registry does for the
+    sites in the flat vector, so a Gibbs site's draws have the shape
+    `LatentSite.constrained_shape` would give it.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        The site's trace-side value.
+    morphism : ContinuousMorphism
+        The site's distribution.
+
+    Returns
+    -------
+    torch.Tensor
+        The draw.
+    """
+    plate = isinstance(morphism, PlateDraw)
+    family = morphism.family if isinstance(morphism, PlateDraw) else morphism
+    codomain = family.codomain
+    scalar = (
+        math.prod(codomain.event_shape) <= 1
+        if isinstance(codomain, ContinuousSpace)
+        else True
+    )
+    draw = value if plate else value[0]
+    leading = len(morphism.index_shape) if isinstance(morphism, PlateDraw) else 0
+    if scalar and draw.dim() > leading and draw.shape[-1] == 1:
+        draw = draw.squeeze(-1)
+    return draw
+
+
+def _check_gibbs_sites(
+    recorded: Trace, gibbs_sites: frozenset[str]
+) -> dict[str, ContinuousMorphism]:
     """Check the kernel's Gibbs sites against a run of the model.
 
     Parameters
@@ -691,8 +731,8 @@ def _check_gibbs_sites(recorded: Trace, gibbs_sites: frozenset[str]) -> dict[str
 
     Returns
     -------
-    dict[str, bool]
-        Whether each Gibbs site is a plate site.
+    dict[str, ContinuousMorphism]
+        Each Gibbs site's distribution.
 
     Raises
     ------
@@ -733,7 +773,12 @@ def _check_gibbs_sites(recorded: Trace, gibbs_sites: frozenset[str]) -> dict[str
             "kernel moves only a continuous vector; sample them with a GibbsKernel "
             "in a CycleKernel or MixtureKernel, or marginalize them in the model"
         )
-    return {name: isinstance(latent[name].morphism, PlateDraw) for name in gibbs_sites}
+    out: dict[str, ContinuousMorphism] = {}
+    for name in gibbs_sites:
+        morphism = latent[name].morphism
+        assert morphism is not None
+        out[name] = morphism
+    return out
 
 
 def _component_acceptance(
