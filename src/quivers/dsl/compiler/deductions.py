@@ -30,6 +30,11 @@ from quivers.stochastic.agenda import (
     depth_first_agenda,
     semi_naive_agenda,
 )
+from quivers.stochastic.productions import (
+    Production,
+    ProductionKey,
+    ProductionWeights,
+)
 from quivers.stochastic.semiring import (
     BOOLEAN as SEMIRING_BOOLEAN,
     COUNTING as SEMIRING_COUNTING,
@@ -59,6 +64,11 @@ from quivers.dsl.compiler._deduction_positions import (
     misplaced_positions,
     position_slots,
     rule_position_variables,
+)
+from quivers.dsl.compiler._deduction_productions import (
+    NORMALIZE_OPTION,
+    normalization_mode,
+    production_groups,
 )
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
@@ -97,7 +107,8 @@ type LexiconEntry = tuple[str, LexiconPattern, LexiconLF, bool]
 # * Deduction blocks read the ``semiring``, the ``axioms`` source,
 #   the ``start`` goal symbol, the ``depth`` bound, the Kleene-star
 #   ``tolerance``, the agenda ``max_iterations``, and the attached
-#   item ``signature`` / ``encoder``.
+#   item ``signature`` / ``encoder``, and whether the weights are
+#   normalized per left-hand side (``normalize``).
 # * Sequent-rule pragmas read the ``learnable`` / ``bounded`` flags
 #   and the ``parent`` composition reference.
 # * Lexicon-entry pragmas (inline and ``from "file"``) read only the
@@ -112,6 +123,7 @@ _DEDUCTION_OPTION_KEYS: frozenset[str] = frozenset(
         "max_iterations",
         "signature",
         "encoder",
+        NORMALIZE_OPTION,
     }
 )
 _SEQUENT_RULE_OPTION_KEYS: frozenset[str] = frozenset(
@@ -534,6 +546,39 @@ def _make_rule_weight_fn(
     return weight_fn
 
 
+def _make_production_weight_fn(
+    key: ProductionKey, productions: ProductionWeights
+) -> Callable:
+    """Build the `weight_fn` of a rule whose weight is a production weight.
+
+    The conclusion weight is the semiring product of the premise weights
+    and the rule's entry in the production table the run has made
+    active: under ``normalize=lhs``, the rule's log-probability among
+    the productions of its left-hand side.
+
+    Parameters
+    ----------
+    key : ProductionKey
+        The rule's production address.
+    productions : ProductionWeights
+        The deduction's production weights.
+
+    Returns
+    -------
+    Callable
+        The weight function the agenda calls with a firing's bindings,
+        its premise weights, and the semiring.
+    """
+
+    def weight_fn(bindings, premise_weights, semiring):
+        total = productions.weight(key)
+        for weight in premise_weights:
+            total = semiring.times(weight, total)
+        return total
+
+    return weight_fn
+
+
 class _DeductionsMixin:
     """Mixin: deduction-block compilation methods.
 
@@ -749,6 +794,41 @@ class _DeductionsMixin:
         rule_positions = {
             sr.name: rule_position_variables(decl, slots, sr) for sr in decl.rules
         }
+        # The productions sharing a left-hand side, when the grouping is
+        # fixed at compile time; ``normalize=lhs`` requires it.
+        normalize_mode, mode_refusal = normalization_mode(decl)
+        if mode_refusal is not None:
+            raise CompileError(mode_refusal.message, mode_refusal.line, mode_refusal.col)
+        file_rows: tuple[tuple[str, TypeName, LetExprNode], ...] = (
+            tuple(load_lexicon_tsv(decl.lexicon_from_file, decl))
+            if decl.lexicon_from_file is not None
+            else ()
+        )
+        analysis = production_groups(
+            decl, slots, tuple((word, category) for word, category, _ in file_rows)
+        )
+        if normalize_mode == "lhs" and analysis.refusals:
+            first = analysis.refusals[0]
+            raise CompileError(
+                f"{first.message} (required by normalize=lhs)", first.line, first.col
+            )
+        lexicon_weights: dict[int, nn.Parameter] = {}
+
+        def _free_weight(production: Production) -> torch.Tensor:
+            if not production.learnable:
+                return torch.zeros(())
+            if production.kind == "rule":
+                name = decl.rules[production.index].name
+                return rule_param_dicts[name][BASE_WEIGHT_KEY]
+            return lexicon_weights[production.index]
+
+        productions = (
+            None
+            if analysis.refusals
+            else ProductionWeights(
+                analysis.groups, _free_weight, normalize=normalize_mode == "lhs"
+            )
+        )
         rule_learnable = {
             sr.name: get_option_flag(sr.options, "learnable") for sr in decl.rules
         }
@@ -775,7 +855,7 @@ class _DeductionsMixin:
                 or find_option(sr.options, "parent") is not None
             )
         )
-        for sr in decl.rules:
+        for rule_index, sr in enumerate(decl.rules):
             check_option_keys(
                 sr.options,
                 _SEQUENT_RULE_OPTION_KEYS,
@@ -826,6 +906,10 @@ class _DeductionsMixin:
                     rule_learnable=rule_learnable,
                     rule_bounded=rule_bounded,
                     n_bounded=max(n_bounded_rules, 1),
+                )
+            if productions is not None and productions.normalize:
+                weight_fn = _make_production_weight_fn(
+                    ("rule", rule_index), productions
                 )
             inference_rules.append(
                 InferenceRule(
@@ -911,7 +995,6 @@ class _DeductionsMixin:
             # these per-atom weights at fit time.
             entries: list[LexiconEntry] = []
             binders_set = frozenset(decl.binders)
-            file_rows: tuple[tuple[str, TypeName, LetExprNode], ...] = ()
             if decl.lexicon_from_file is not None:
                 check_option_keys(
                     decl.lexicon_from_file_options,
@@ -920,7 +1003,6 @@ class _DeductionsMixin:
                     line=decl.line,
                     col=decl.col,
                 )
-                file_rows = tuple(load_lexicon_tsv(decl.lexicon_from_file, decl))
 
             # Pre-pass: walk every lexicon entry's LF AST and collect
             # the names of variables bound by any declared binder
@@ -1143,6 +1225,7 @@ class _DeductionsMixin:
                     p = nn.Parameter(torch.zeros(()))
                     axiom_module.register_parameter(f"lex_weight_{idx}", p)
                     param_list.append(p)
+                    lexicon_weights[idx] = p
                 else:
                     param_list.append(None)
             # Capture the axiom-injector as a closure over the
@@ -1159,6 +1242,7 @@ class _DeductionsMixin:
                 _params=params_local,
                 _lf_table=_lf_table,
                 _one=semiring.one,
+                _productions=productions,
             ):
                 # `input_value` may be a list/tuple of token strings,
                 # OR a list of `(token, position)` pairs. We accept
@@ -1172,7 +1256,12 @@ class _DeductionsMixin:
                         if word != tok:
                             continue
                         weight_param = _params[idx]
-                        if weight_param is not None:
+                        if _productions is not None and _productions.normalize:
+                            # A normalized grammar reads the entry's
+                            # log-probability among its category's
+                            # productions.
+                            weight_tensor = _productions.weight(("lexicon", idx))
+                        elif weight_param is not None:
                             weight_tensor = weight_param
                         else:
                             # An entry with no learned weight contributes
@@ -1319,6 +1408,10 @@ class _DeductionsMixin:
                 int(max_iters_opt) if max_iters_opt is not None else 100_000
             ),
             tolerance=tol,
+            productions=productions,
+            production_refusal=(
+                analysis.refusals[0].message if analysis.refusals else None
+            ),
         )
         # Stash the axiom-module on the system so Programs that
         # reach it (via `parse(NAME, …)`) can include its
