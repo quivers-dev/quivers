@@ -180,10 +180,20 @@ jobs:
   # carries the `slow` marker: most of the suite by count. The probe
   # and slow tiers each have a job of their own below, so every test
   # runs in exactly one job.
+  #
+  # Sharded across runners by recorded test durations, so the wall
+  # clock is the slowest shard rather than the sum. The durations are
+  # measured by the shards themselves and carried between runs in the
+  # Actions cache (`update-test-durations` below); a run with no
+  # recorded durations splits by test count instead.
   test:
-    name: Test
+    name: Test (shard ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -193,19 +203,118 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Snapshot restored test durations
+        run: |
+          if [ -f .test_durations ]; then
+            cp .test_durations "$RUNNER_TEMP/test_durations.before.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/test_durations.before.json"
+          fi
+
       # No probe container runs here, so the image build is skipped
       # outright rather than paid for and left unused.
+      # `tests/test_doc_blocks.py` runs in `test-doc-blocks`: the blocks
+      # of one page share state in order, so they cannot be split
+      # across shards.
       # `--dist loadfile` rather than the default per-test scheduling.
       # Most of this tier is thousands of sub-millisecond text checks,
       # and handing those out individually costs more than running
-      # them; whole files are the unit worth distributing, and the
-      # documentation blocks of one page share state in file order.
-      - name: Run unit tests
+      # them; whole files are the unit worth distributing.
+      - name: Run test shard
         run: >-
           python -m pytest tests/ -m "not probe and not slow"
-          -n auto --dist loadfile --durations 40
+          --ignore tests/test_doc_blocks.py
+          -n auto --dist loadfile
+          --splits 6 --group ${{ matrix.shard }}
+          --splitting-algorithm least_duration
+          --store-durations --durations-path .test_durations
+          --durations 25
         env:
           QUIVERS_SKIP_DOCKER: "1"
+
+      # Keep only what this shard measured: the entries whose value
+      # differs from the restored file.
+      - name: Extract this shard's measured durations
+        if: success()
+        run: |
+          jq --slurpfile before "$RUNNER_TEMP/test_durations.before.json" \
+            'with_entries(select($before[0][.key] != .value))' \
+            .test_durations > "test-durations-${{ matrix.shard }}.json"
+
+      - name: Upload this shard's measured durations
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-${{ matrix.shard }}
+          path: test-durations-${{ matrix.shard }}.json
+          retention-days: 1
+
+  # The blocks of one documentation page execute in order and share
+  # state, so this file runs whole, on one worker.
+  test-doc-blocks:
+    name: Test documentation blocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up transpile toolchain
+        uses: ./.github/actions/setup-transpile-toolchain
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run documentation block tests
+        run: >-
+          python -m pytest tests/test_doc_blocks.py
+          -m "not probe and not slow" --durations 25
+        env:
+          QUIVERS_SKIP_DOCKER: "1"
+
+  # Merge what each shard measured into the recorded durations and
+  # save them for the next run to split by.
+  update-test-durations:
+    name: Update recorded test durations
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Download measured durations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-durations-*
+          path: measured
+          merge-multiple: true
+
+      - name: Merge measured durations
+        run: |
+          [ -f .test_durations ] || echo '{}' > .test_durations
+          jq --slurp --sort-keys 'add' .test_durations measured/test-durations-*.json \
+            > merged.json
+          mv merged.json .test_durations
+          jq 'length' .test_durations
+
+      - name: Save recorded test durations
+        uses: actions/cache/save@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
 
   # Probe tier. The probe cells, which drive eleven real PPLs in
   # containers. Sharded across runners: the shards are independent, so
@@ -318,6 +427,8 @@ jobs:
       - build-docs
       - test-wheel
       - test
+      - test-doc-blocks
+      - update-test-durations
       - test-probes
       - test-slow
     runs-on: ubuntu-latest
