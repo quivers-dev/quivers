@@ -602,6 +602,11 @@ class _ProgramWalk:
         self.axes: dict[str, tuple[str, ...]] = {
             parameter.name: parameter.axes for parameter in entry.parameters
         }
+        self.data_parameters: dict[str, ProgramParameter] = {
+            parameter.name: parameter
+            for parameter in entry.parameters
+            if parameter.role == "data"
+        }
         self.local_types: dict[str, TypeExpr] = {}
         self.via: str | None = None
         # The components of every local bound to a tuple of bindings,
@@ -1492,6 +1497,7 @@ class _ProgramWalk:
         for name, value in distribution.arguments:
             pre.append(self._arg(value, site, name, plate, morphism))
             names.append(name)
+            self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
@@ -1515,6 +1521,41 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _tensor_parameter_input(self, family: str, parameter: str, value: Value) -> None:
+        """Declare a host tensor filling a family's whole tensor parameter.
+
+        A datum that is one value of a vector or matrix parameter, such as
+        a multivariate normal's host mean or Cholesky factor, is declared
+        over the parameter's own axes as event axes, so a target reads it
+        as one vector or matrix rather than an array of scalars.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        parameter : str
+            The family parameter the value fills.
+        value : Value
+            The value.
+        """
+        record = FAMILIES.get(family)
+        if not isinstance(value, Var) or record is None:
+            return
+        datum = self.data_parameters.get(value.local.name)
+        if (
+            datum is None
+            or datum.per_row
+            or parameter not in record.parameter_names
+            or record.parameter(parameter).rank == 0
+        ):
+            return
+        dims = _typed_dims(datum.type, datum.axes)
+        if len(dims) != record.parameter(parameter).rank:
+            return
+        self.structured_inputs.setdefault(
+            datum.name, (CSReal(), Plate(event_dims=dims, batch_dims=()))
+        )
 
     def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
         """Hand a Cholesky factor to the target as it reads it.
