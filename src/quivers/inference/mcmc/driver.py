@@ -353,7 +353,7 @@ def _diagnostics(
     for name, draws in samples.items():
         n_chains = draws.shape[0]
         n_samples = draws.shape[1]
-        flat = draws.reshape(n_chains, n_samples, -1)
+        flat = draws.reshape(n_chains, n_samples, math.prod(draws.shape[2:]))
         if not flat.dtype.is_floating_point:
             # The draws of a discrete Gibbs site are integer codes.
             flat = flat.to(torch.float64)
@@ -616,7 +616,7 @@ class _RunSetup:
         )
         probe = self.potential.condition(gibbs) if gibbs else self.potential
         with torch.no_grad():
-            values = [
+            values: list[StateValue] = [
                 float(probe.log_density(point))
                 for point in (torch.zeros(dim), torch.linspace(-0.5, 0.5, dim))
             ]
@@ -629,14 +629,16 @@ class _RunSetup:
             ]
             for site in self.registry.sites.values()
         ]
+        gibbs_names: list[StateValue] = list(sorted(self.gibbs_sites))
+        data: dict[str, StateValue] = {
+            name: tensor_digest(torch.as_tensor(value))
+            for name, value in sorted(self.observations.items())
+        }
         description: dict[str, StateValue] = {
             "layout": layout,
-            "gibbs": sorted(self.gibbs_sites),
+            "gibbs": gibbs_names,
             "x": tensor_digest(self.x),
-            "data": {
-                name: tensor_digest(torch.as_tensor(value))
-                for name, value in sorted(self.observations.items())
-            },
+            "data": data,
             "probes": values,
         }
         return _digest(description)
