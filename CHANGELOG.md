@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.30.0] - 2026-11-11
+
+### Added
+
+- **Windowed warmup for `HMCKernel` and `NUTSKernel`.** `adaptation="windowed"` follows Stan's schedule, given by an `AdaptationSchedule` (`init_buffer`, `base_window`, `term_buffer`, defaults 75 / 25 / 50): an initial fast interval tunes only the step size; doubling slow windows each estimate the metric afresh, install it regularised as `n/(n+5) * cov + 1e-3 * 5/(n+5)` at the window's end, and restart dual averaging from a step size re-initialized under the new metric; a terminal fast interval tunes the step size under the final metric. A warmup too short for the buffers rescales them to 15% / 75% / 10%, and one under 20 iterations estimates no metric. `adaptation_windows(num_warmup)` returns the windows as `AdaptationWindow` records, and `inverse_mass_matrix` reports the metric in use. `adaptation="single"`, the default, adapts as before and reproduces its fixed-seed draws.
+
+### Changed
+
+- **Breaking: `MCMCKernel.start_adaptation` takes the number of warmup transitions,** `start_adaptation(num_warmup)`, so that a kernel can lay out a warmup schedule. `MCMC.run` passes it; a custom kernel overrides the new signature.
+
 ## [0.29.0] - 2026-11-11
 
 ### Added
