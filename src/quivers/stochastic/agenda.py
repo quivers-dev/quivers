@@ -36,11 +36,13 @@ import heapq
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
+from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
 from quivers.structural.encoder import Encoder
 
@@ -1358,6 +1360,56 @@ class DeductionSystem:
     chart_factory: Callable[[], Chart] = HashChart
     max_iterations: int = 100_000
     tolerance: float = 0.0
+    productions: ProductionWeights | None = None
+    production_refusal: str | None = None
+
+    def production_groups(self) -> tuple[ProductionGroup, ...]:
+        """The system's productions, grouped by left-hand side.
+
+        Returns
+        -------
+        tuple[ProductionGroup, ...]
+            One group per left-hand side, in order of its first
+            production; rules first, then lexicon entries.
+
+        Raises
+        ------
+        ValueError
+            If the system has no fixed production groups: it was not
+            compiled from a grammar, or a rule stands for one production
+            per binding of a category variable.
+        """
+        if self.productions is None:
+            raise ValueError(
+                "the deduction has no fixed production groups: "
+                + (self.production_refusal or "it was not compiled from a grammar")
+            )
+        return self.productions.groups
+
+    def production_log_probs(self) -> dict[str, dict[str, torch.Tensor]]:
+        """Each production's log-probability, by left-hand side.
+
+        Returns
+        -------
+        dict[str, dict[str, torch.Tensor]]
+            For each left-hand side, the log-probability of each of its
+            productions (a rule by name, a lexicon entry by its word in
+            double quotes); the probabilities of a group sum to one.
+            The tensors carry gradients to the learned weights.
+
+        Raises
+        ------
+        ValueError
+            If the system does not normalize its weights per left-hand
+            side (``normalize=lhs``).
+        """
+        if self.productions is None or not self.productions.normalize:
+            raise ValueError(
+                "the deduction's weights are free log-weights, not production "
+                "probabilities; declare normalize=lhs to normalize them per "
+                "left-hand side"
+            )
+        return self.productions.log_probs()
 
     def run(self, input_value: Any) -> AgendaResult:
         """Run the deduction system on an input value.
@@ -1365,6 +1417,31 @@ class DeductionSystem:
         Injects the input's axioms, runs the agenda to fixed point,
         attaches the item encoder when one is set, and sums any
         rule-attached and chart-attached losses.
+
+        Parameters
+        ----------
+        input_value : Any
+            The input the axiom injector reads.
+
+        Returns
+        -------
+        AgendaResult
+            The completed chart, its goal items, and any attached
+            loss.
+        """
+        productions = self.productions
+        # A normalized grammar computes its production table once per run,
+        # so every axiom and firing reads one consistent table.
+        scope = (
+            productions.active(productions.table())
+            if productions is not None and productions.normalize
+            else nullcontext()
+        )
+        with scope:
+            return self._run(input_value)
+
+    def _run(self, input_value: Any) -> AgendaResult:
+        """Run the deduction under the weights already in scope.
 
         Parameters
         ----------

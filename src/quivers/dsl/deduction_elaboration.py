@@ -93,6 +93,10 @@ from quivers.dsl.compiler._deduction_positions import (
     misplaced_positions,
     position_slots,
 )
+from quivers.dsl.compiler._deduction_productions import (
+    normalization_mode,
+    production_groups,
+)
 from quivers.dsl.compiler.deductions import load_lexicon_tsv
 from quivers.stochastic.categories import (
     AtomicCategory,
@@ -103,6 +107,7 @@ from quivers.stochastic.categories import (
     SlashCategory,
     UnitCategory,
 )
+from quivers.stochastic.productions import ProductionGroup, ProductionKey
 from quivers.stochastic.schema import (
     SCHEMA_REGISTRY,
     PatternBinarySchema,
@@ -389,6 +394,11 @@ class _System:
         For a schema parser, its vocabulary.
     tolerance
         The declared convergence tolerance, zero without one.
+    normalized
+        Whether the weights of the productions sharing a left-hand side
+        are normalized (``normalize=lhs``).
+    groups
+        For a normalized system, its production groups.
     heads
         For a yield-directed system, the head symbols of its items, in
         the order its derivation numbers them.
@@ -433,6 +443,8 @@ class _System:
     schema_categories: tuple[Pattern, ...] = ()
     schema_words: tuple[str, ...] = ()
     tolerance: float = 0.0
+    normalized: bool = False
+    groups: tuple[ProductionGroup, ...] = ()
     heads: list[str] = field(default_factory=list)
     live: list[int] = field(default_factory=list)
     closure: list[int] = field(default_factory=list)
@@ -1486,6 +1498,32 @@ class _DeductionElaboration:
                     code="qiec-program",
                 )
         self._read_lexicon(declaration, atoms, system)
+        mode, mode_refusal = normalization_mode(declaration)
+        if mode_refusal is not None:
+            self._fail(mode_refusal, mode_refusal.message, code="qiec-program")
+        if mode == "lhs":
+            file_rows = (
+                tuple(
+                    (word, category)
+                    for word, category, _form in load_lexicon_tsv(
+                        declaration.lexicon_from_file, declaration
+                    )
+                )
+                if declaration.lexicon_from_file is not None
+                else ()
+            )
+            analysis = production_groups(
+                declaration, position_slots(declaration), file_rows
+            )
+            if analysis.refusals:
+                first = analysis.refusals[0]
+                self._fail(
+                    first,
+                    f"{first.message} (required by normalize=lhs)",
+                    code="qiec-program",
+                )
+            system.normalized = True
+            system.groups = analysis.groups
         self._infer_sorts(system)
         system.span_shaped = bool(system.entries) and all(
             _is_span(pattern)
@@ -2204,6 +2242,25 @@ class _DeductionElaboration:
         learned = lexical_learned or (
             logged and any(rule.learnable or rule.parent is not None for rule in firing)
         )
+        if system.normalized:
+            # A normalized production's weight reads the learnable free
+            # weights of its group when the group has several members.
+            reading = {
+                production.key
+                for group in system.groups
+                if len(group.productions) > 1
+                and any(member.learnable for member in group.productions)
+                for production in group.productions
+            }
+            lexical_learned = any(
+                ("lexicon", index) in reading for index in range(len(system.entries))
+            )
+            learned = lexical_learned or any(
+                ("rule", index) in reading
+                for index in (
+                    system.live if system.by_yield else range(len(system.rules))
+                )
+            )
         base = (system.choice.entry, system.weight.entry)
         axiom_row = EffectRow((*base, params.entry) if lexical_learned else base)
         row = EffectRow((*base, params.entry) if learned else base)
@@ -3068,6 +3125,8 @@ class _Context:
                     result,
                 )
 
+            if self.system.normalized:
+                return self.production_weight(("lexicon", index), weighted)
             if entry.learnable and self.system.semiring in ("LogProb", "Viterbi"):
                 return self.bind(
                     "weight",
@@ -3997,6 +4056,8 @@ class _Context:
                 then(conclusion),
             )
 
+        if system.normalized:
+            return self.production_weight(("rule", index), weighted)
         if system.semiring not in ("LogProb", "Viterbi") or not (
             rule.learnable or rule.parent is not None
         ):
@@ -5460,6 +5521,110 @@ class _Context:
                 lambda weight: chain(rule, suffix, weight, {rule.source.name}),
             ),
         )
+
+    def production_weight(
+        self,
+        key: ProductionKey,
+        continue_with: Callable[[Value], Computation],
+    ) -> Computation:
+        """Read a production's log-probability in its group, then continue.
+
+        The production's group holds every rule and lexicon entry that
+        rewrites its left-hand side. Each member's free log-weight is
+        its learned parameter, read under the name the agenda engine
+        keys it by, or zero for a member that is not learnable, and the
+        production's weight is its own free log-weight minus the
+        log-sum-exp of the group's, computed stably about the group's
+        largest free log-weight: the entry of the group's
+        ``log_softmax`` the agenda engine reads.
+
+        Parameters
+        ----------
+        key : ProductionKey
+            The production's address.
+        continue_with : Callable[[Value], Computation]
+            What to run with the weight, a carrier value.
+
+        Returns
+        -------
+        Computation
+            The parameter reads, innermost the continuation.
+        """
+        system = self.system
+        group = next(
+            group
+            for group in system.groups
+            if any(production.key == key for production in group.productions)
+        )
+        path = ("productions", group.label)
+        if len(group.productions) == 1:
+            # A production alone in its group has probability one.
+            return continue_with(self.weight_of(LiteralValue(0.0, REAL)))
+
+        def read(position: int, values: list[Value]) -> Computation:
+            """Read the group's free log-weights from a member on.
+
+            Parameters
+            ----------
+            position : int
+                The next member.
+            values : list[Value]
+                The free log-weights read so far.
+
+            Returns
+            -------
+            Computation
+                The reads, innermost the normalized weight.
+            """
+            if position == len(group.productions):
+                return continue_with(self.weight_of(normalized(values)))
+            production = group.productions[position]
+            if not production.learnable:
+                return read(position + 1, [*values, LiteralValue(0.0, REAL)])
+            name = (
+                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
+                if production.kind == "rule"
+                else f"{system.decl.name}.lex.{production.index}"
+            )
+            return self.bind(
+                "free",
+                REAL,
+                self.parameter(_string(name), *path, position, "parameter"),
+                lambda free: read(position + 1, [*values, Var(free)]),
+            )
+
+        def normalized(values: list[Value]) -> Value:
+            """The production's own entry of the group's ``log_softmax``.
+
+            Parameters
+            ----------
+            values : list[Value]
+                The group's free log-weights, in member order.
+
+            Returns
+            -------
+            Value
+                The weight, a ``Real``.
+            """
+            own = next(
+                values[position]
+                for position, production in enumerate(group.productions)
+                if production.key == key
+            )
+            peak = values[0]
+            for value in values[1:]:
+                peak = self.primitive("max_real", peak, value)
+            total: Value | None = None
+            for value in values:
+                term = self.primitive("exp", self.primitive("sub_real", value, peak))
+                total = (
+                    term if total is None else self.primitive("add_real", total, term)
+                )
+            assert total is not None
+            normalizer = self.primitive("add_real", peak, self.primitive("log", total))
+            return self.primitive("sub_real", own, normalizer)
+
+        return read(0, [])
 
     # -- entry ------------------------------------------------------------
 

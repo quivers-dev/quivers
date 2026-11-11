@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quivers"
-version = "0.37.0"
+version = "0.38.0"
 description = "A typed functional probabilistic programming language with a PyTorch runtime and eleven transpilation targets."
 readme = "README.md"
 license = {text = "MIT"}
