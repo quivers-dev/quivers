@@ -1511,13 +1511,36 @@ def _perturb_integer(
     noise: torch.Tensor,
     lower: float,
     upper: float,
+    *,
+    declared: bool,
 ) -> torch.Tensor:
     """Move an integer tensor within its inferred admissible window.
 
     A tensor with multiple values uses the intersection of its
     attested range and the declared bounds. A constant tensor uses
     finite declared bounds. If neither case provides a finite range,
-    the tensor remains fixed.
+    the tensor remains fixed. A lone count whose window is a site's
+    declared support, such as a category index, is redrawn across that
+    window rather than stepped by its own magnitude.
+
+    Parameters
+    ----------
+    work : torch.Tensor
+        The integer values, as floats.
+    noise : torch.Tensor
+        Standard-normal noise of the same shape.
+    lower : float
+        The support's least value.
+    upper : float
+        The support's greatest value, possibly infinite.
+    declared : bool
+        Whether the bounds are a site's declared support rather than a
+        window inferred from host data.
+
+    Returns
+    -------
+    torch.Tensor
+        The moved values.
     """
     if work.numel() == 0:
         return work
@@ -1528,7 +1551,7 @@ def _perturb_integer(
         high = min(upper, attested_high)
     elif math.isfinite(lower) and math.isfinite(upper):
         low, high = lower, upper
-        if work.numel() == 1 and high > low:
+        if declared and work.numel() == 1 and high > low:
             return _redraw_single_count(work, noise, low, high)
     else:
         return work
@@ -1635,9 +1658,14 @@ def _perturb_by_support(
     support: constraints.Constraint,
     generator: torch.Generator,
     scale: float,
+    *,
+    declared: bool,
 ) -> torch.Tensor | None:
     """Move `value` inside `support` by roughly `scale` in the
     support's natural unconstrained coordinate.
+
+    ``declared`` says whether `support` is a site's declared support,
+    rather than a window inferred from host data.
 
     Returns None for a constraint whose interior this helper cannot
     parameterise; the caller then leaves the value at ground truth
@@ -1673,6 +1701,7 @@ def _perturb_by_support(
             noise,
             float(support.lower_bound),
             float(support.upper_bound),
+            declared=declared,
         )
     elif isinstance(support, type(constraints.nonnegative_integer)):
         moved = _perturb_integer(
@@ -1680,6 +1709,7 @@ def _perturb_by_support(
             noise,
             float(support.lower_bound),
             math.inf,
+            declared=declared,
         )
     elif isinstance(
         support,
@@ -1829,6 +1859,7 @@ def _perturb_section(
             out[name] = value
             continue
         support = supports.get(name)
+        declared = support is not None
         if support is None and infer_from_value:
             support = _data_section_support(
                 name,
@@ -1839,7 +1870,7 @@ def _perturb_section(
         if support is None:
             out[name] = value
             continue
-        moved = _perturb_by_support(value, support, generator, scale)
+        moved = _perturb_by_support(value, support, generator, scale, declared=declared)
         out[name] = value if moved is None else moved
     return out
 

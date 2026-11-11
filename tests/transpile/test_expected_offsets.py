@@ -2306,7 +2306,7 @@ def test_backend_offset_matches_registry(cell: tuple[str, str]) -> None:
     qvr_lps = _qvr_log_densities(example, dataset, points, scratch)
     emitted = transpile(parse(example.read_text()), target=backend)
     script_path = _gallery_data.PROBE_SCRIPT_DIR / script_name
-    payload = [{"params": point.params, "data": point.data} for point in points]
+    payload = [_gallery_data.target_point(dataset, point) for point in points]
     raw_result = _docker.run_probe(
         image=image,
         script=script_path,
@@ -2314,7 +2314,7 @@ def test_backend_offset_matches_registry(cell: tuple[str, str]) -> None:
         source_ext=source_ext,
         points=payload,
         scratch=scratch,
-        shapes=_shapes_from_dataset(dataset),
+        shapes=_gallery_data.target_shapes(dataset, _shapes_from_dataset(dataset)),
         dtypes=_dtypes_from_dataset(dataset),
         timeout=600.0,
     )
