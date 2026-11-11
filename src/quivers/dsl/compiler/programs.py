@@ -10,7 +10,7 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Collection, Hashable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
@@ -134,6 +134,7 @@ from quivers.dsl.let_expr_traversal import (
     free_let_names,
     map_let_expr,
     substitute_let_expr,
+    walk_let_expr,
 )
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
@@ -758,6 +759,130 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 # operations in V-Cat morphisms); users wanting a different axis
 # write the contraction via the typed ``contraction`` declaration.
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
+
+#: The calls the let evaluator implements itself rather than through
+#: the builtin table: the collection combinators, which read a lambda,
+#: and the deduction and term operations.
+_LET_SPECIAL_CALLS: frozenset[str] = frozenset(
+    {
+        "length",
+        "map",
+        "filter",
+        "fold",
+        "logsumexp_over",
+        "parse",
+        "subst",
+        "compose",
+        "cholesky_quad_form",
+    }
+)
+
+
+def _checked_layout(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    reads: frozenset[str],
+    extents: Mapping[str, tuple[int, ...]],
+    result: str,
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a let body on its operands' checked shapes.
+
+    Within one run, the runtime holds a number drawn from a continuous
+    family, or read from a one-coordinate input, as a vector of one
+    entry. Elementwise arithmetic cannot tell the difference, but a
+    body that lays numbers out along a new axis (a list literal or a
+    ``factor``) or reduces one would read that stray axis as data:
+    ``[h, 1.0]`` would be ``(2, 1)`` rather than the checked ``(2,)``.
+    Each operand the checked program types as a number is thus handed
+    to the body as a number, and a result the checked program types as
+    a number is given back the one-entry layout its operands had.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, LetValue]], LetValue]
+        The compiled body.
+    reads : frozenset[str]
+        The names the body reads.
+    extents : Mapping[str, tuple[int, ...]]
+        The checked extents of the program's bindings, ``()`` for a
+        number.
+    result : str
+        The name the body's value is bound to.
+
+    Returns
+    -------
+    Callable[[dict[str, LetValue]], LetValue]
+        The body, reading and returning values at their checked layout.
+    """
+    numbers = frozenset(name for name in reads if extents.get(name) == ())
+    if not numbers:
+        return function
+    returns_number = extents.get(result) == ()
+
+    def _run(env: dict[str, LetValue]) -> LetValue:
+        view = dict(env)
+        unwrapped = False
+        for name in numbers:
+            value = env.get(name)
+            if isinstance(value, torch.Tensor) and tuple(value.shape) == (1,):
+                view[name] = value.reshape(())
+                unwrapped = True
+        value = function(view)
+        if (
+            unwrapped
+            and returns_number
+            and isinstance(value, torch.Tensor)
+            and value.dim() == 0
+        ):
+            return value.reshape(1)
+        return value
+
+    return _run
+
+
+def _unknown_let_call(
+    node: LetExprNode,
+    globals_: Mapping[str, LetValue | frozenset[str]],
+    bound: Collection[str],
+) -> LetExprCall | None:
+    """The first call in a let expression to a name the evaluator lacks.
+
+    The let evaluator resolves a call against its builtin table, its own
+    combinators, the static globals it is compiled with (compiled
+    deductions and injected callables), and the declared constructors.
+    A call naming none of them fails whenever it runs, so it is reported
+    when the program compiles instead.
+
+    Parameters
+    ----------
+    node : LetExprNode
+        The let's value.
+    globals_ : Mapping[str, LetValue | frozenset[str]]
+        The static globals the expression is compiled with.
+    bound : Collection[str]
+        The names the program binds before the let, which a call may
+        name when one of them holds a function.
+
+    Returns
+    -------
+    LetExprCall | None
+        The first such call in preorder, or ``None``.
+    """
+    constructors = globals_.get(LET_CONSTRUCTORS_KEY, frozenset())
+    assert isinstance(constructors, frozenset)
+    for candidate in walk_let_expr(node):
+        if not isinstance(candidate, LetExprCall):
+            continue
+        name = candidate.func
+        if (
+            name in _LET_EXPR_BUILTINS
+            or name in _LET_SPECIAL_CALLS
+            or (name in globals_ and name not in LET_INTERNAL_KEYS)
+            or name in constructors
+            or name in bound
+        ):
+            continue
+        return candidate
+    return None
 
 
 def _expected_call_arity(target: object) -> int | None:
@@ -3638,18 +3763,35 @@ class _ProgramsMixin:
                     self._validate_let_expr_vars(step.value, bound_vars, step)
                     deductions_globals = dict(getattr(self, "_deductions", {}))
                     deductions_globals["__index_size__"] = self._resolve_index_size
+                    self._reject_unknown_let_calls(
+                        step.value,
+                        deductions_globals,
+                        bound_vars,
+                        "let",
+                        step.name,
+                        step.line,
+                        step.col,
+                    )
+                    reads = _let_expr_reads(step.value)
                     compiled_fn = reading(
-                        self._locate_let_failure(
-                            self._compile_let_expr(
-                                step.value,
-                                globals_=deductions_globals,
+                        _checked_layout(
+                            self._locate_let_failure(
+                                self._compile_let_expr(
+                                    step.value,
+                                    globals_=deductions_globals,
+                                ),
+                                "let",
+                                step.name,
+                                step.line,
+                                step.col,
                             ),
-                            "let",
+                            reads,
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {},
                             step.name,
-                            step.line,
-                            step.col,
                         ),
-                        _let_expr_reads(step.value),
+                        reads,
                     )
                     bound_vars[step.name] = None
                     let_space = _let_space(step.value, bound_vars, parameter_spaces)
@@ -3675,18 +3817,35 @@ class _ProgramsMixin:
                 self._validate_let_expr_vars(step.value, bound_vars, step)
                 deductions_globals = dict(getattr(self, "_deductions", {}))
                 deductions_globals["__index_size__"] = self._resolve_index_size
+                self._reject_unknown_let_calls(
+                    step.value,
+                    deductions_globals,
+                    bound_vars,
+                    "score",
+                    step.name,
+                    step.line,
+                    step.col,
+                )
+                reads = _let_expr_reads(step.value)
                 compiled_fn = reading(
-                    self._locate_let_failure(
-                        self._compile_let_expr(
-                            step.value,
-                            globals_=deductions_globals,
+                    _checked_layout(
+                        self._locate_let_failure(
+                            self._compile_let_expr(
+                                step.value,
+                                globals_=deductions_globals,
+                            ),
+                            "score",
+                            step.name,
+                            step.line,
+                            step.col,
                         ),
-                        "score",
+                        reads,
+                        self._value_extents_stack[-1]
+                        if self._value_extents_stack
+                        else {},
                         step.name,
-                        step.line,
-                        step.col,
                     ),
-                    _let_expr_reads(step.value),
+                    reads,
                 )
                 bound_vars[step.name] = None
                 steps.append(Score(name=step.name, score=compiled_fn))
@@ -4069,9 +4228,30 @@ class _ProgramsMixin:
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
             if isinstance(bstep, LetStep):
+                self._reject_unknown_let_calls(
+                    bstep.value,
+                    deductions_globals,
+                    local_bv,
+                    "let",
+                    bstep.name,
+                    bstep.line,
+                    bstep.col,
+                )
+                body_reads = _let_expr_reads(bstep.value)
                 fn = reading(
-                    self._compile_let_expr(bstep.value, globals_=deductions_globals),
-                    _let_expr_reads(bstep.value),
+                    _checked_layout(
+                        self._compile_let_expr(
+                            bstep.value, globals_=deductions_globals
+                        ),
+                        body_reads,
+                        (
+                            self._value_extents_stack[-1]
+                            if self._value_extents_stack
+                            else {}
+                        ),
+                        bstep.name,
+                    ),
+                    body_reads,
                 )
                 body_lets.append((bstep.name, fn))
                 local_bv[bstep.name] = None
@@ -5146,6 +5326,51 @@ class _ProgramsMixin:
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
 
         return _run
+
+    @staticmethod
+    def _reject_unknown_let_calls(
+        node: LetExprNode,
+        globals_: Mapping[str, LetValue | frozenset[str]],
+        bound: Collection[str],
+        kind: str,
+        name: str,
+        line: int,
+        col: int,
+    ) -> None:
+        """Refuse a let or score body that calls a name nothing defines.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            The body.
+        globals_ : Mapping[str, LetValue | frozenset[str]]
+            The static globals the body is compiled with.
+        bound : Collection[str]
+            The names bound before the step.
+        kind : str
+            ``"let"`` or ``"score"``, for the message.
+        name : str
+            The binding's name.
+        line : int
+            The step's source line, used when the call has none.
+        col : int
+            The step's source column, used when the call has none.
+
+        Raises
+        ------
+        CompileError
+            If a call names no builtin, combinator, global, constructor,
+            or earlier binding, located at the call.
+        """
+        call = _unknown_let_call(node, globals_, bound)
+        if call is None:
+            return
+        raise CompileError(
+            f"{kind} {name!r}: unknown function {call.func!r} in let expression; "
+            f"it names no builtin, no constructor, and nothing bound earlier",
+            call.line or line,
+            call.col if call.line else col,
+        )
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep

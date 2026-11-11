@@ -915,15 +915,21 @@ def _index_names(expr: LetExprNode) -> list[str]:
     Returns
     -------
     list[str]
-        Names appearing directly as an index, in order.
+        Names whose elements serve as an index, in order: a name
+        written as an index (``E[tokens]``), and a name gathered from in
+        an index position (``E[tokens[q], k]``), whose gathered entries
+        are the index values.
     """
     found: list[str] = []
     for node in walk_let_expr(expr):
         if not isinstance(node, LetExprIndex):
             continue
         for index in node.indices:
-            if isinstance(index, LetExprVar) and index.name not in found:
-                found.append(index.name)
+            source = index
+            while isinstance(source, LetExprIndex):
+                source = source.array
+            if isinstance(source, LetExprVar) and source.name not in found:
+                found.append(source.name)
     return found
 
 

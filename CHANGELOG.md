@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.26.2] - 2026-11-11
+
+### Fixed
+
+- **Every transpile target scores a subscript of several index vectors one entry per position.** `M[r_idx, c_idx]` on a host table or on a matrix the program builds with `factor` renders as `M[r_idx[n], c_idx[n]]` at each row `n` on every target, matching the checked type, the reference machine, and the compiled runtime.
+- **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
+- **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
+- **Transpiled programs read host tables of open extents and factor tables inside arithmetic.** Stan declares each open extent of a host input (`M_extent0`) as an integer datum, PyMC sizes its coordinates from the input array, Pyro casts an index input read entrywise to integers, and the Python targets stack a `factor` that appears as an operand into an array, where it had been a Python list that `+` concatenated.
+- **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
+
 ## [0.26.1] - 2026-11-11
 
 ### Fixed
