@@ -4,6 +4,15 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, the compiled runtime, and every transpile target; an `Int` index stands for one value at every row, and index vectors of two shapes in one subscript are refused at the subscript.
+- **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
+- **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
+- **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
+
 ## [0.26.0] - 2026-11-11
 
 ### Added

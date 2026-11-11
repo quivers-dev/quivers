@@ -227,6 +227,27 @@ sample by_verb : Verb <- Normal(loc=0.0, scale=sigma)
 let intercept_for_item = by_verb[verb_of_item]
 ```
 
+A subscript of several indices reads them together. With `row_of` and
+`col_of` index vectors over the same rows, `table[row_of, col_of]` is one
+entry per row, `table[row_of[n], col_of[n]]` at row `n`, as advanced
+indexing reads it in NumPy and as a loop over the rows reads it in Stan. The
+result has the index vectors' shape followed by whatever axes of `table` the
+subscript leaves, and an `Int` index (a literal or a factor binder) stands for
+the same value at every row, so `table[row_of, 1]` is the second column read
+at each row. Index vectors of two different shapes in one subscript are
+refused at the subscript. A single index vector, `table[row_of]`, gathers whole
+rows. A matrix of observations or covariates indexed by (row, column) pairs,
+as in matrix factorization or an item-response table, is thus one let:
+
+<!-- compile: false -->
+```qvr
+sample user : User <- Normal(loc=0.0, scale=1.0)
+sample item : Item <- Normal(loc=0.0, scale=1.0)
+let affinity = factor u : User, i : Item in user[u] * item[i]
+let mu = affinity[user_of, item_of]
+observe rating : Rating <- Normal(loc=mu, scale=1.0)
+```
+
 ### Parametric programs
 
 A `program` declaration whose parameter list contains *typed*
