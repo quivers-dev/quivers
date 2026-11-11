@@ -5211,12 +5211,9 @@ class _ProgramElaboration:
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
             values[position] = value
             if parameter.event_dims:
-                shape = tensor_shape(self._value_type(value, scope.context(), step))
-                if shape is not None and len(shape[1]) >= parameter.rank:
-                    own = shape[1][len(shape[1]) - parameter.rank :]
-                    for size, dim in zip(own, parameter.event_dims, strict=True):
-                        if dim is not None and dim not in event:
-                            event[dim] = self._resolved_extent(size, state)
+                self._tie_event_extents(
+                    record, parameter, value, event, step, scope, state
+                )
         for position in tied:
             parameter, argument = pairs[position]
             name = self._tied_free_name(parameter, argument, plate, scope)
@@ -5257,6 +5254,74 @@ class _ProgramElaboration:
                 value = self._fibred(value, via, group, plate, scope, state, step)
             arguments.append((parameter.name, value))
         return arguments
+
+    def _tie_event_extents(
+        self: _Elaborator,
+        record: DistributionFamily,
+        parameter: FamilyParameter,
+        value: Value,
+        event: dict[int, IndexTerm],
+        step: SampleStep | ObserveStep | MarginalizeStep,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> None:
+        """Read a typed argument's tied axes against the draw's event extents.
+
+        Each axis the family ties to a sample axis either fixes that
+        axis's extent, when nothing has yet, or must equal it: an open
+        extent on either side is fixed to the other, and two different
+        fixed extents are refused.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        parameter : FamilyParameter
+            The parameter the argument fills.
+        value : Value
+            The lowered argument.
+        event : dict[int, IndexTerm]
+            The extents of the sample's axes fixed so far, extended in
+            place.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step, where a mismatch is reported.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If an axis of the argument has a fixed extent other than the
+            sample axis's.
+        """
+        shape = tensor_shape(self._value_type(value, scope.context(), step))
+        if shape is None or len(shape[1]) < parameter.rank:
+            return
+        own = shape[1][len(shape[1]) - parameter.rank :]
+        for size, dim in zip(own, parameter.event_dims, strict=True):
+            if dim is None:
+                continue
+            if dim not in event:
+                event[dim] = self._resolved_extent(size, state)
+                continue
+            if not self._unify_extents([(size, event[dim])], scope, state):
+                source = (
+                    f"{value.local.name!r}, "
+                    if isinstance(value, Var)
+                    else ""
+                )
+                self._fail(
+                    step,
+                    f"family {record.name!r} reads its {parameter.name!r} from "
+                    f"{source}an axis of extent "
+                    f"{render_static(self._resolved_extent(size, state))}, but "
+                    f"the sample's axis it spans has extent "
+                    f"{render_static(self._resolved_extent(event[dim], state))}",
+                    code="qiec-program",
+                )
+            event[dim] = self._resolved_extent(event[dim], state)
 
     def _tied_free_name(
         self: _Elaborator,

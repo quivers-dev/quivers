@@ -107,7 +107,8 @@ from quivers.dsl.qiec_lowering import (
     has_qiec_surface,
     lower_qvr_to_qiec,
 )
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import (
     INT,
     IndexLiteral,
@@ -2258,8 +2259,16 @@ def _plate_of(
     Plate
         Batch and event dimensions named after the axes.
     """
-    del marginalized, distribution, walk
+    del marginalized, walk
     event = tuple(_axis_dim(axis) for axis in plate.event)
+    record = FAMILIES.get(distribution.name)
+    if not plate.event and record is not None and record.event_rank:
+        # A multivariate family's own event axes are those of its sample,
+        # which an unplated construction's type states.
+        sampled = sampled_element(distribution.result_type)
+        dims = _typed_dims(sampled, ()) if sampled is not None else ()
+        if len(dims) >= record.event_rank:
+            event = dims[len(dims) - record.event_rank :]
     if meta.qvr_name == "LKJCholesky" and len(event) == 2 and event[0] == event[1]:
         # A correlation factor is square over one axis, which the
         # plan states once.

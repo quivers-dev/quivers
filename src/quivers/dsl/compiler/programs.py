@@ -4460,6 +4460,12 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                     )
+            except ValueError:
+                # An inline family the checked program cannot size is
+                # refused here; when the checked program itself fails to
+                # lower, its located diagnostic says why first.
+                _ = self.qiec_module
+                raise
             except TypeError as exc:
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
@@ -5038,6 +5044,8 @@ class _ProgramsMixin:
                 else None
             )
             if width is None:
+                # A checked program that fails to lower says why first.
+                _ = self.qiec_module
                 raise CompileError(
                     f"{family} draw of {var_names[0]!r} fixes no event size the "
                     f"compiled runtime can build it at: name its axis with "

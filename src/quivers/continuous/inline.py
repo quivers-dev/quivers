@@ -734,7 +734,12 @@ class MixedInlineDistribution(ContinuousMorphism):
         target_dim = event_dim + batch_dim
         if not self._discrete:
             while y_in.dim() < target_dim:
-                y_in = y_in.unsqueeze(-1)
+                # A value holding one whole event lacks the batch axes;
+                # any other lacks a trailing coordinate axis.
+                whole_event = event_dim > 0 and tuple(
+                    y_in.shape[y_in.dim() - event_dim :]
+                ) == tuple(dist.event_shape)
+                y_in = y_in.unsqueeze(0) if whole_event else y_in.unsqueeze(-1)
             while y_in.dim() > target_dim and y_in.shape[-1] == 1:
                 y_in = y_in.squeeze(-1)
         lp = dist.log_prob(y_in)
