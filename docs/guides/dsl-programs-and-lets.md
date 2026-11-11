@@ -521,6 +521,32 @@ scalar broadcasts against a tensor, and two `Int` operands give an `Int`,
 so `ys[max(t - 1, 0)]` clamps an index arithmetic expression into range
 on every target.
 
+**Conditional values and Booleans as numbers**: `select(c, a, b)` takes `a`
+where the `Bool` condition `c` holds and `b` elsewhere, entry by entry; a
+number among the three broadcasts against the tensors, and the tensors share
+one shape, so `select(v > 0.0, v, 0.1 * v)` is a leaky rectifier of a vector.
+Both branches are of one type, `Real` or `Int` (write `0.0`, not `0`, beside a
+real branch). `real(c)` and `int(c)` read a `Bool` as one where it holds and
+zero elsewhere, so a mask needs no integer clamp:
+
+<!-- compile: false -->
+```qvr
+let causal = factor i : Pos, j : Pos in real(j <= i)
+let hinge = select(margin < 1.0, 1.0 - margin, 0.0)
+```
+
+`select` evaluates both branches and then keeps one entry of either, as
+`torch.where` does, so it is not a guard: a branch that is `NaN` or infinite
+where it is not taken still is computed, and its gradient there is the
+product of zero and an infinite derivative, which is `NaN`. Where the untaken
+branch is finite its gradient is zero and the gradient is the taken branch's.
+Keep each branch finite on the whole domain (`log(max(v, 1e-12))` rather than
+`log(v)`) when the condition is what keeps it in range. Every transpile target
+spells it: `torch.where`, `jnp.where`, `pymc.math.switch`, `tf.where`, Stan's
+`c ? a : b`, Julia's `ifelse.(c, a, b)`, JAGS's `ifelse`, and a runtime
+function on WebPPL and Church; BUGS has no conditional function and computes
+`b + c * (a - b)`, which is the same wherever both branches are finite.
+
 **Pointwise transcendentals**: `exp`, `expm1`, `log`, `log1p`,
 `log2`, `log10`, `sqrt`, `rsqrt`, `square`, `abs`, `sign`,
 `reciprocal`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,

@@ -381,6 +381,18 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
     _signature("int_to_real", (INT,), REAL, "conversion", float),
     _signature("int_to_string", (INT,), STRING, "conversion", str),
     _signature("real_to_int", (REAL,), INT, "conversion", math.trunc),
+    _signature("bool_to_real", (BOOL,), REAL, "conversion", float),
+    _signature("bool_to_int", (BOOL,), INT, "conversion", int),
+    _signature(
+        "select_real",
+        (BOOL, REAL, REAL),
+        REAL,
+        "boolean",
+        lambda c, a, b: a if c else b,
+    ),
+    _signature(
+        "select_int", (BOOL, INT, INT), INT, "boolean", lambda c, a, b: a if c else b
+    ),
     _signature("expm1", (REAL,), REAL, "math", math.expm1),
     _signature("log1p", (REAL,), REAL, "math", math.log1p),
     _signature("log2", (REAL,), REAL, "math", math.log2),

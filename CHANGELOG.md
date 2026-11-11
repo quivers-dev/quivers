@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
 - **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
 
+## [0.46.0] - 2026-11-11
+
+### Added
+
+- **`select(c, a, b)` and `real` / `int` of a Boolean in let expressions.** `select` takes `a` where the `Bool` condition holds and `b` elsewhere, entry by entry, broadcasting a number among its operands; both branches are of one type and both are evaluated, so the gradient is the taken branch's wherever the untaken branch is finite. `real(c)` and `int(c)` read a `Bool` as one or zero, so a mask such as `factor i : Pos, j : Pos in real(j <= i)` needs no integer clamp. Every transpile target computes them (`torch.where`, `jnp.where`, `pymc.math.switch`, `tf.where`, Stan's `c ? a : b`, Julia's `ifelse.`, JAGS's `ifelse`, and BUGS's `b + c * (a - b)`).
+
+### Fixed
+
+- **Python targets render comparisons and Boolean connectives.** A comparison in a let is Python's comparison operator and `&&` / `||` are the elementwise `&` / `|`, where every comparison had been emitted as `**`.
+
 ## [0.45.0] - 2026-11-11
 
 ### Added

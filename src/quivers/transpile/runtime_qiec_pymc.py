@@ -127,6 +127,14 @@ _qvr_qiec_host_math.update(
         "round": _qvr_qiec_pt.round_half_to_even,
         "trunc": _qvr_qiec_pt.trunc,
         "real_to_int": lambda value: _qvr_qiec_pt.trunc(value).astype("int64"),
+        "select_real": _qvr_qiec_pt.switch,
+        "select_int": _qvr_qiec_pt.switch,
+        "bool_to_real": lambda value: _qvr_qiec_pt.as_tensor_variable(value).astype(
+            "float64"
+        ),
+        "bool_to_int": lambda value: _qvr_qiec_pt.as_tensor_variable(value).astype(
+            "int64"
+        ),
         "erf": _qvr_qiec_pt.erf,
         "erfc": _qvr_qiec_pt.erfc,
         "erfinv": _qvr_qiec_pt.erfinv,
