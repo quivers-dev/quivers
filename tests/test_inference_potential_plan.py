@@ -218,7 +218,9 @@ def _calling_program() -> MonadicProgram:
         steps=[
             Draw(names=("a",), morphism=make_fixed_normal(0.0, 1.0, _REAL)),
             Call(name="r", program=_callee(), args=("a",)),
-            Draw(names=("c",), morphism=make_fixed_normal(0.0, 2.0, _REAL), args=("r",)),
+            Draw(
+                names=("c",), morphism=make_fixed_normal(0.0, 2.0, _REAL), args=("r",)
+            ),
             Score(name="pen", score=reading(_quadratic, ("r",))),
         ],
         return_vars=("c",),
@@ -365,10 +367,12 @@ def test_the_oracle_tells_positions_apart() -> None:
 
 def test_positions_outside_the_support_and_program_errors_agree() -> None:
     def scale_likelihood(env: dict[str, torch.Tensor]) -> torch.Tensor:
-        return Normal(0.0, env["b"].reshape(()) + 1.0).log_prob(env["y"]).sum().reshape(1)
+        return (
+            Normal(0.0, env["b"].reshape(()) + 1.0).log_prob(env["y"]).sum().reshape(1)
+        )
 
     def broken(env: dict[str, torch.Tensor]) -> torch.Tensor:
-        if float(env["b"].reshape(())) > 50.0:
+        if float(env["b"].detach().reshape(())) > 50.0:
             raise RuntimeError("broken score")
         return env["b"].reshape(1)
 
@@ -432,9 +436,9 @@ def _same_result(run: Callable[[], object]) -> None:
 def test_gradient_chains_are_identical(kernel: Callable[[], object]) -> None:
     model, observations = _MODELS["hierarchical"]
     _same_result(
-        lambda: MCMC(
-            kernel(), num_warmup=15, num_samples=15, num_chains=2, seed=7
-        ).run(model, _X, observations)
+        lambda: MCMC(kernel(), num_warmup=15, num_samples=15, num_chains=2, seed=7).run(
+            model, _X, observations
+        )
     )
 
 
@@ -653,9 +657,7 @@ def test_handlers_and_overrides_decline_the_plan() -> None:
     model, observations = _MODELS["hierarchical"]
     plans = JointPlans(model, _X)
     potential = _setup(model, observations)
-    values = _values(
-        potential, torch.zeros(potential.registry.total_unconstrained_dim)
-    )
+    values = _values(potential, torch.zeros(potential.registry.total_unconstrained_dim))
     assert isinstance(plans.plan(values), JointPlan)
     with _Inert():
         assert plans.plan(values) == "handlers are on the stack"
@@ -679,9 +681,7 @@ def test_handlers_and_overrides_decline_the_plan() -> None:
 def test_a_plan_refuses_a_layout_it_was_not_prepared_for() -> None:
     model, observations = _MODELS["hierarchical"]
     potential = _setup(model, observations)
-    values = _values(
-        potential, torch.zeros(potential.registry.total_unconstrained_dim)
-    )
+    values = _values(potential, torch.zeros(potential.registry.total_unconstrained_dim))
     plan = prepare_joint(model, _X, values)
     assert isinstance(plan, JointPlan)
     for changed in (

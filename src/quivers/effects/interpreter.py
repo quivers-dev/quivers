@@ -1123,8 +1123,7 @@ class _HostSteps:
             return self._split_input
         if step.kind == "draw":
             raise ValueError(
-                "a draw step reads its parameters through effects; serve it "
-                "with `draw`"
+                "a draw step reads its parameters through effects; serve it with `draw`"
             )
         if step.kind == "apply":
             return lambda argument: self._apply(step, argument)

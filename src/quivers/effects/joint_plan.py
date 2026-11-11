@@ -39,6 +39,7 @@ from __future__ import annotations
 import operator
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from typing import cast
 
 import torch
 
@@ -74,6 +75,10 @@ from quivers.qiec.terms import (
     Value,
     Var,
 )
+
+#: Folds a contribution into the accumulator's total, as the run's score
+#: accumulator folds it.
+_ADD = cast(Callable[[object, object], object], operator.add)
 
 type TensorLayout = tuple[tuple[int, ...], torch.dtype, torch.device]
 """The shape, dtype, and device of one tensor."""
@@ -301,7 +306,7 @@ class _Sample(_Instruction):
                 "a scored observation/replay needs a runtime sampleable with log_prob"
             )
         weight = log_prob(value)
-        state.total = operator.add(state.total, weight)
+        state.total = _ADD(state.total, weight)
         state.slots[self.target] = value
         state.events.append(("site", None, (self.label, torch.as_tensor(weight))))
 
@@ -335,7 +340,7 @@ class _ScoreAdd(_Instruction):
             The evaluation.
         """
         weight = state.slots[self.weight]
-        state.total = operator.add(state.total, weight)
+        state.total = _ADD(state.total, weight)
         state.scores.setdefault(self.position, []).append(torch.as_tensor(weight))
         state.slots[self.target] = None
 
@@ -539,7 +544,9 @@ class _Compiler:
             if any(read is None for read in reads):
                 return f"host step {step.position} reads a value outside the chain"
             self.instructions.append(
-                _Compute(self.slot(binder), step, tuple(r for r in reads if r is not None))
+                _Compute(
+                    self.slot(binder), step, tuple(r for r in reads if r is not None)
+                )
             )
             return None
         if (
@@ -591,7 +598,9 @@ class _Compiler:
             source = self.read(value.value)
             if source is None:
                 return f"{binder.name!r} projects a value outside the chain"
-            self.instructions.append(_Project(self.slot(binder), source, value.position))
+            self.instructions.append(
+                _Project(self.slot(binder), source, value.position)
+            )
             return None
         if isinstance(value, TupleValue):
             sources = tuple(self.read(item) for item in value.items)
