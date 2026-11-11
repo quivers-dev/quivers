@@ -454,6 +454,30 @@ sites nor data a target is given. A `param_source=identity` function has no
 weights: it is its output nonlinearity applied to its argument, and every
 target renders it.
 
+## Latent network weights
+
+A network kernel or a learned function declared `[weights=latent,
+prior_scale=s]` draws its network's weights as sites. Before elaboration,
+each program without value parameters that reaches the morphism (through a
+draw, a let call, a `define` with a scan, a scan's cell, or a called program)
+gains, at the head of its body, one draw per layer:
+
+<!-- compile: false -->
+```qvr
+sample net_param_layer0_weight : net__w0_rows <- Normal(loc=0.0, scale=s) [over=net__w0_cols, iid_over=net__w0_rows]
+sample net_param_layer0_bias <- Normal(loc=0.0, scale=s) [over=net__w0_rows]
+```
+
+with `net__w<k>_rows` and `net__w<k>_cols` finite objects of the layer's
+height and width. The network's elaboration then reads these bindings where
+it would otherwise declare `weight` and `bias` program inputs, so the checked
+computation has no such inputs and the reference machine draws or replays the
+weights as sites. The compiled runtime applies the network at the run's drawn
+weights. A latent-weight kernel is drawn from with its inputs named, and a
+latent-weight morphism composed in a `define` without a scan, or in a
+morphism's `~ <expression>`, is refused. Every transpile target refuses the
+network as `param-source:linear:latent` or `param-source:mlp:latent`.
+
 ## Running and scoring
 
 Replay fixes named random choices so a particular execution can be

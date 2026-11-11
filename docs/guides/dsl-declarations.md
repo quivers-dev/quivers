@@ -282,6 +282,47 @@ the runtime branches on whether the codomain is a
 [`FinSet`](../api/core/objects.md) or a
 [`ContinuousSpace`](../api/continuous/spaces.md).
 
+### Latent weights
+
+By default a network's weights, whether a network kernel's
+(`[param_source=mlp(...)] ~ Normal`) or a [learned function's](#function),
+are point estimates. `[weights=latent]` makes every weight and bias a latent
+sample site with an independent `Normal(0, prior_scale)` prior
+(`prior_scale` defaults to 1), drawn once per run and shared by every row and
+position that applies the network. A Bayesian neural network regression is
+then one kernel:
+
+```qvr
+object Feature : Real 2
+object Target : Real 1
+object Row : FinSet 6
+
+morphism net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal
+
+program bnn : Row -> Target
+    observe y : Row <- net(x)
+    return y
+
+export bnn
+```
+
+- **Sites.** Each program without value parameters that uses the network
+  draws its weights at its head, named as the checked elaboration names a
+  network's inputs: `net_param_layer0_weight` (rows by columns),
+  `net_param_layer0_bias`, ..., `net_param_weight`, `net_param_bias`. A
+  scan's cell and a called program read the weights their caller draws.
+  Guides, MCMC, and `Predictive` treat them as they treat any latent site,
+  and the compiled program has no parameters of its own for them.
+- **Where it applies.** A kernel over a family a network parameterizes, or a
+  learned function, with a `linear` or `mlp` network. A draw through a
+  latent-weight kernel names its inputs (`net(x)`), and a latent-weight
+  morphism composes in program steps or a scan, not in a `define` chain
+  without one.
+- **Transpilation.** Every target refuses it as `param-source:<kind>:latent`:
+  the weights are sites, but no target has a form for the network's layers
+  applied to them. Writing the layers as `factor` comprehensions over
+  sampled weight matrices gives a model every target renders.
+
 ## Discretize
 
 Convert a continuous space to a finite set via binning:
