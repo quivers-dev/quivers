@@ -4534,8 +4534,10 @@ class _ProgramsMixin:
             or codomain.dim != 1
         ):
             return None
-        extents = sorted(
-            {int(w) for kind, w in spec if kind == "var" and w is not None and w > 1}
+        extents = list(
+            dict.fromkeys(
+                int(w) for kind, w in spec if kind == "var" and w is not None and w > 1
+            )
         )
         if not extents:
             return None
@@ -5528,9 +5530,15 @@ class _ProgramsMixin:
                     weights = []
                     for x in coll:
                         w = fn(x)
-                        if not isinstance(w, torch.Tensor):
-                            w = torch.tensor(float(w))
-                        weights.append(w)
+                        if isinstance(w, torch.Tensor):
+                            weights.append(w)
+                        elif isinstance(w, int | float):
+                            weights.append(torch.tensor(float(w)))
+                        else:
+                            raise CompileError(
+                                "logsumexp_over's weight must be a number, not "
+                                f"{type(w).__name__}"
+                            )
                     return torch.logsumexp(torch.stack(weights), dim=0)
                 if func_name == "logsumexp" and len(arg_fns) > 1:
                     # logsumexp(a, b, ...) over an explicit list of args
