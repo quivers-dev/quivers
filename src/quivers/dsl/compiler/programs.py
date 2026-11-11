@@ -709,7 +709,8 @@ def _project_nested_aggregates(
 # values: numeric literals lift to torch tensors; identifier
 # references resolve to whatever is bound (morphisms, programs,
 # chart views, structured tuples); composite expressions return
-# tensors of derived shape; lambdas wrap functions.  The union
+# tensors of derived shape; lambdas wrap functions; a learned
+# function is a tensor map applied to its evaluated arguments.  The union
 # below enumerates the kinds the program-theory check admits at a
 # let position.
 type LetValue = (
@@ -723,6 +724,7 @@ type LetValue = (
     | Morphism
     | ContinuousMorphism
     | Callable[[dict[str, "LetValue"]], "LetValue"]
+    | Callable[..., torch.Tensor]
 )
 
 
