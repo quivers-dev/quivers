@@ -99,6 +99,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A declaration reports its own diagnostics before the checked module's.**
 - **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
 - **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, and the compiled runtime.
 
 #### Reference machine
 
