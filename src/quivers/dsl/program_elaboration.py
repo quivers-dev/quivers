@@ -1136,6 +1136,90 @@ def _elaborate_nested_program(
         elaborator._pinned_types = saved_pins
 
 
+def _positions_value(
+    elaborator: _Elaborator,
+    names: tuple[str, ...],
+    scope: _Scope,
+    node: LetStep,
+) -> Comprehension:
+    """Pair sequences position by position: ``$positions(a, b, ...)``.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The elaborator, which reports a refusal.
+    names : tuple[str, ...]
+        The sequences, each bound to a tensor of reals whose leading
+        axis is the positions and whose entries have a literal width
+        (or are scalars).
+    scope : _Scope
+        The scope.
+    node : LetStep
+        The step.
+
+    Returns
+    -------
+    Comprehension
+        The sequence whose entry at each position lays the entries
+        of the sequences there end to end, ``Tensor[Real]([E, w])``
+        for the shared positions ``E`` and the summed width ``w``.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If a name is unbound, is not such a sequence, or the
+        sequences do not share their positions.
+    """
+    extent: IndexTerm | None = None
+    position = Local("__positions_t", INT)
+    entries: list[Value] = []
+    for name in names:
+        local = scope.lookup(name)
+        shape = None if local is None else tensor_shape(local.type)
+        if (
+            local is None
+            or shape is None
+            or shape[0] != REAL
+            or not 1 <= len(shape[1]) <= 2
+            or (len(shape[1]) == 2 and not isinstance(shape[1][1], IndexLiteral))
+        ):
+            elaborator._fail(
+                node,
+                f"the branches paired position by position must each be a "
+                f"sequence of real states; {name!r} is not",
+                code="qiec-program",
+            )
+        assert local is not None and shape is not None
+        if extent is None:
+            extent = shape[1][0]
+        elif shape[1][0] != extent:
+            elaborator._fail(
+                node,
+                f"the branches paired position by position run over "
+                f"{render_static(extent)} and {render_static(shape[1][0])} "
+                f"positions; pair sequences over one input",
+                code="qiec-program",
+            )
+        if len(shape[1]) == 1:
+            entries.append(Gather(Var(local), Var(position), REAL))
+            continue
+        width = shape[1][1]
+        assert isinstance(width, IndexLiteral)
+        row = Gather(Var(local), Var(position), tensor_type(REAL, (width,)))
+        entries.extend(
+            Gather(row, LiteralValue(index, INT), REAL)
+            for index in range(int(width.value))
+        )
+    assert extent is not None
+    entry_type = tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+    return Comprehension(
+        position,
+        extent,
+        TensorValue(tuple(entries), entry_type),
+        tensor_type(REAL, (extent, IndexLiteral(len(entries), NAT))),
+    )
+
+
 def _scan_initial_state(
     elaborator: _Elaborator,
     init: str,
@@ -2633,7 +2717,7 @@ class _ProgramElaboration:
             return
         paired = positions_let_call(step.value)
         if paired is not None:
-            value = self._positions_value(paired, scope, step)
+            value = _positions_value(self, paired, scope, step)
             self._bind_step(scope, step.name, value.result_type, Return(value), step)
             return
         value = self._let_value(step.value, scope, state, step)
@@ -2812,87 +2896,6 @@ class _ProgramElaboration:
                     f"of them",
                     code="qiec-program",
                 )
-
-    def _positions_value(
-        self: _Elaborator,
-        names: tuple[str, ...],
-        scope: _Scope,
-        node: LetStep,
-    ) -> Comprehension:
-        """Pair sequences position by position: ``$positions(a, b, ...)``.
-
-        Parameters
-        ----------
-        names : tuple[str, ...]
-            The sequences, each bound to a tensor of reals whose leading
-            axis is the positions and whose entries have a literal width
-            (or are scalars).
-        scope : _Scope
-            The scope.
-        node : LetStep
-            The step.
-
-        Returns
-        -------
-        Comprehension
-            The sequence whose entry at each position lays the entries
-            of the sequences there end to end, ``Tensor[Real]([E, w])``
-            for the shared positions ``E`` and the summed width ``w``.
-
-        Raises
-        ------
-        QiecDiagnosticError
-            If a name is unbound, is not such a sequence, or the
-            sequences do not share their positions.
-        """
-        extent: IndexTerm | None = None
-        position = Local("__positions_t", INT)
-        entries: list[Value] = []
-        for name in names:
-            local = scope.lookup(name)
-            shape = None if local is None else tensor_shape(local.type)
-            if (
-                local is None
-                or shape is None
-                or shape[0] != REAL
-                or not 1 <= len(shape[1]) <= 2
-                or (len(shape[1]) == 2 and not isinstance(shape[1][1], IndexLiteral))
-            ):
-                self._fail(
-                    node,
-                    f"the branches paired position by position must each be a "
-                    f"sequence of real states; {name!r} is not",
-                    code="qiec-program",
-                )
-            assert local is not None and shape is not None
-            if extent is None:
-                extent = shape[1][0]
-            elif shape[1][0] != extent:
-                self._fail(
-                    node,
-                    f"the branches paired position by position run over "
-                    f"{render_static(extent)} and {render_static(shape[1][0])} "
-                    f"positions; pair sequences over one input",
-                    code="qiec-program",
-                )
-            if len(shape[1]) == 1:
-                entries.append(Gather(Var(local), Var(position), REAL))
-                continue
-            width = shape[1][1]
-            assert isinstance(width, IndexLiteral)
-            row = Gather(Var(local), Var(position), tensor_type(REAL, (width,)))
-            entries.extend(
-                Gather(row, LiteralValue(index, INT), REAL)
-                for index in range(int(width.value))
-            )
-        assert extent is not None
-        entry_type = tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
-        return Comprehension(
-            position,
-            extent,
-            TensorValue(tuple(entries), entry_type),
-            tensor_type(REAL, (extent, IndexLiteral(len(entries), NAT))),
-        )
 
     def _scan_call(
         self: _Elaborator,
