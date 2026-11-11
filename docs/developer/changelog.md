@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Programs and templates that call pure computations are fitted on the compiled runtime.** A call of a computation that performs no effect, takes no static arguments, and binds pure values before returning one is inlined into `let` steps, with the callee's bindings under fresh names and an argument that is not a name bound first, by the analysis the transpile planner uses; the program compiles to a `MonadicProgram`, so `trace`, `log_joint` with gradients, SVI, and MCMC run on it with the reference machine's values, integer division included. A parametric template that calls such a computation instantiates rather than being refused; a template making any other call is still refused at the call, and a program making one still runs as its `CheckedProgram`.
+- The `standardize` example in the probabilistic-programs reference takes a column of covariates, declaring the computation's argument a tensor and mapping over it.
+
 ## [0.26.0] - 2026-11-11
 
 ### Added
