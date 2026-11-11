@@ -1,0 +1,13 @@
+# Exercises an observed Categorical outcome: the data codes each class
+# from zero, and a target whose categorical counts from one reads the
+# code one higher.
+object Class : FinSet 3
+object Row : FinSet 5
+object Val : Real 1
+
+program p : Row -> Val
+    sample probs <- Dirichlet(concentration=1.0) [over=Class]
+    observe y : Row <- Categorical(probs=probs)
+    return probs
+
+export p

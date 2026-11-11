@@ -78,6 +78,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.builtin_spellings import native_path
 from quivers.transpile.ir import (
     IRArg,
     LetAffineSource,
@@ -94,10 +95,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
-from quivers.transpile.renderers._one_based import (
-    one_based_subscript,
-    reads_index_covariate,
-)
+from quivers.transpile.renderers._one_based import one_based_subscript
 
 
 @runtime_checkable
@@ -141,8 +139,9 @@ class JuliaShapes:
 
     `nested_names` identifies bindings emitted as nested vector literals, whose
     indices are chained as ``t[i][j]`` rather than emitted as ``t[i, j]``.
-    `index_covariates` names the integer data inputs, whose entries the data
-    contract delivers as one-based subscripts.
+    `program_values` names every input, site, and binding of the program: a
+    plan argument's subscript that reads one holds a zero-based QVR value,
+    which Julia reads one higher.
     `row_arrays` maps each binding stored as an array of event vectors to
     the number of its outer array axes: a subscript into it reads those axes
     first and then the event, as ``p[i, j][k]``.
@@ -153,7 +152,7 @@ class JuliaShapes:
     name_array_rank: dict[str, int]
     nested_names: frozenset[str]
     batch_rank: int
-    index_covariates: frozenset[str]
+    program_values: frozenset[str]
     row_arrays: dict[str, int]
 
     def __init__(
@@ -163,14 +162,14 @@ class JuliaShapes:
         name_array_rank: dict[str, int] | None = None,
         nested_names: frozenset[str] = frozenset(),
         batch_rank: int = 0,
-        index_covariates: frozenset[str] = frozenset(),
+        program_values: frozenset[str] = frozenset(),
         row_arrays: dict[str, int] | None = None,
     ) -> None:
         self.name_event_rank = dict(name_event_rank or {})
         self.name_array_rank = dict(name_array_rank or {})
         self.nested_names = nested_names
         self.batch_rank = batch_rank
-        self.index_covariates = index_covariates
+        self.program_values = program_values
         self.row_arrays = dict(row_arrays or {})
 
     def scoped_to(self, batch_rank: int) -> JuliaShapes:
@@ -186,7 +185,7 @@ class JuliaShapes:
             name_array_rank=self.name_array_rank,
             nested_names=self.nested_names,
             batch_rank=batch_rank,
-            index_covariates=self.index_covariates,
+            program_values=self.program_values,
             row_arrays=self.row_arrays,
         )
 
@@ -238,7 +237,7 @@ class _JlState:
         self.name_array_rank = shapes.name_array_rank
         self.nested_names = shapes.nested_names
         self.batch_rank = shapes.batch_rank
-        self.index_covariates = shapes.index_covariates
+        self.program_values = shapes.program_values
         self.row_arrays = shapes.row_arrays
         self.dotted = dotted
 
@@ -706,36 +705,16 @@ def _emit_unary(ctx: _JlState, expr: LetExprUnaryOp) -> tuple[str, str]:
     return vid, "unary_expression"
 
 
-def _sigmoid_expansion(arg: LetExprNode) -> LetExprNode:
-    """Rewrite ``sigmoid(x)`` to the arithmetic body ``1 / (1 + exp(-x))``.
-
-    Julia's `Base` carries no `sigmoid`; `StatsFuns.logistic` needs a
-    package import the probe container does not bring into `Main`. The
-    logit-link identity `1 / (1 + exp(-x))` is a closed-form Julia
-    expression that broadcasts elementwise under `@.`, so the renderer
-    expands the call into that body and lets the normal binop / unary
-    path parenthesise it.
-    """
-    return LetExprBinOp(
-        op="/",
-        left=LetExprLiteral(value=1.0),
-        right=LetExprBinOp(
-            op="+",
-            left=LetExprLiteral(value=1.0),
-            right=LetExprCall(func="exp", args=(LetExprUnaryOp(operand=arg),)),
-        ),
-    )
-
-
 def _emit_call(
     ctx: _JlState, func: str, args: tuple[LetExprNode, ...]
 ) -> tuple[str, str]:
     """Emit ``<func>(<arg_0>, <arg_1>, ...)`` as a `call_expression`
     whose children are ``identifier argument_list``.
 
-    QVR math primitives without a `Base` Julia counterpart are rewritten
-    to a closed-form body before emission: `sigmoid(x)` becomes
-    `1 / (1 + exp(-x))`.
+    A pointwise math builtin is called by the Julia function
+    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    names; a dotted name (`Turing.Distributions.SpecialFunctions.erf`)
+    is a `field_expression` callee.
 
     A reduction primitive collapses the last axis of its argument. An
     argument with an event axis, or with two or more axes, routes to
@@ -747,8 +726,6 @@ def _emit_call(
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
-    if func == "sigmoid" and len(args) == 1:
-        return _render(ctx, _sigmoid_expansion(args[0]))
     if func == "pow" and len(args) == 2:
         return _emit_power(ctx, args[0], args[1])
     if _reduces_tower_rows(ctx, func, args):
@@ -767,7 +744,10 @@ def _emit_call(
         ctx.e(vid, al_vid, "child_of")
         return vid, "call_expression"
     rendered = tuple(_render(ctx, a) for a in args)
-    callee_vid, _callee_kind = _emit_identifier(ctx, _JULIA_CALL_NAMES.get(func, func))
+    path = native_path(ctx.target, func, len(args))
+    callee_vid, callee_kind = _emit_callee(
+        ctx, path if path is not None else tuple(_JULIA_CALL_NAMES.get(func, func).split("."))
+    )
     al_vid = _emit_argument_list(ctx, rendered)
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
     # `max(a, b)` of two arrays compares them as wholes and returns one,
@@ -775,9 +755,36 @@ def _emit_call(
     pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
     kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
-    ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
+    ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")
     ctx.e(vid, callee_vid, "child_of")
     ctx.e(vid, al_vid, "child_of")
+    return vid, kind
+
+
+def _emit_callee(ctx: _JlState, path: tuple[str, ...]) -> tuple[str, str]:
+    """Emit a function's dotted path as a callee.
+
+    Parameters
+    ----------
+    ctx : _JlState
+        The emit state.
+    path : tuple[str, ...]
+        The path, outermost name first.
+
+    Returns
+    -------
+    tuple[str, str]
+        The callee vertex and its kind: an `identifier` for one name, a
+        nested `field_expression` for several.
+    """
+    vid, kind = _emit_identifier(ctx, path[0])
+    for name in path[1:]:
+        field_vid = ctx.v(ctx.fresh("fe"), "field_expression")
+        ctx.constraint(field_vid, "chose-alt-fingerprint", ".")
+        ctx.constraint(field_vid, "chose-alt-child-kinds", f"{kind} identifier")
+        ctx.e(field_vid, vid, "child_of")
+        ctx.e(field_vid, _emit_identifier(ctx, name)[0], "child_of")
+        vid, kind = field_vid, "field_expression"
     return vid, kind
 
 
@@ -1047,15 +1054,7 @@ def _emit_index(ctx: _JlState, expr: LetExprIndex) -> tuple[str, str]:
     arr_vid, arr_kind = _render(ctx, expr.array)
     if arr_kind not in _JL_INDEX_CALLEE_KINDS:
         arr_vid, arr_kind = _force_paren(ctx, (arr_vid, arr_kind))
-    inner_rendered = tuple(
-        _render(
-            ctx,
-            i
-            if reads_index_covariate(i, ctx.index_covariates)
-            else one_based_subscript(i),
-        )
-        for i in expr.indices
-    )
+    inner_rendered = tuple(_render(ctx, one_based_subscript(i)) for i in expr.indices)
     if isinstance(expr.array, LetExprVar) and expr.array.name in ctx.nested_names:
         current = (arr_vid, arr_kind)
         for one in inner_rendered:

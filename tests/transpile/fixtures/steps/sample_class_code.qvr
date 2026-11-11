@@ -1,0 +1,16 @@
+# Exercises a drawn class used both as a subscript (`mu[z]`) and as a
+# number (`real(z)`), and returned: the draw is a zero-based class code
+# on every target.
+object Class : FinSet 3
+object Row : FinSet 4
+object Val : Real 1
+
+program p : Row -> Val
+    sample probs <- Dirichlet(concentration=1.0) [over=Class]
+    sample mu : Class <- Normal(loc=0.0, scale=1.0)
+    sample z <- Categorical(probs=probs)
+    let loc = mu[z] + real(z)
+    observe x : Row <- Normal(loc=loc, scale=1.0)
+    return z
+
+export p

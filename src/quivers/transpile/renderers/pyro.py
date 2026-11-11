@@ -1190,7 +1190,9 @@ class PyroRenderer(RendererBase):
         for ir_arg, arg_name in zip(args, arg_names, strict=False):
             target = None
             if plate is not None:
-                target = _scalar_broadcast_for_arg(meta, ir_arg, arg_name, plate)
+                target = _scalar_broadcast_for_arg(
+                    meta, ir_arg, arg_name, plate, pctx.name_rank
+                )
             if target is not None:
                 vid = self._broadcast(pctx, ir_arg, target)
             else:
@@ -1662,10 +1664,16 @@ def _scalar_broadcast_for_arg(
     arg: IRArg,
     arg_name: str,
     plate: Plate,
+    name_rank: dict[str, int],
 ) -> tuple[int, ...] | None:
     """If `arg` is a bare scalar reference / literal and `arg_name`'s
     slot is a rank-`n` array, return the target shape derived from
     `plate.event_dims`; otherwise `None`.
+
+    A reference is scalar only when the plan binds its name to a value
+    of no axes: a reference to a vector (a sampled `loc` or
+    `concentration`) already carries the slot's shape and is passed
+    through as it stands.
 
     When the family declares a
     [`StructuredSampleLowering`][quivers.transpile.ir.StructuredSampleLowering],
@@ -1678,10 +1686,29 @@ def _scalar_broadcast_for_arg(
     structured lowering, the target shape falls back to the leading
     `event_dim` axes implied by the torch arg constraint (the
     `Dirichlet` idiom of `torch.full((K,), alpha)`).
+
+    Parameters
+    ----------
+    meta : FamilyMeta
+        The family's metadata.
+    arg : IRArg
+        The argument.
+    arg_name : str
+        The family parameter the argument binds.
+    plate : Plate
+        The site's plate, whose event axes size the fill.
+    name_rank : dict[str, int]
+        The number of axes of each name the plan binds.
+
+    Returns
+    -------
+    tuple[int, ...] | None
+        The shape to fill the scalar to, or `None` when the argument is
+        passed as it stands.
     """
     if not isinstance(arg, (IRArgRef, IRArgNumber)):
         return None
-    if isinstance(arg, IRArgRef) and arg.indices:
+    if isinstance(arg, IRArgRef) and (arg.indices or name_rank.get(arg.name, 0)):
         return None
     axis_indices = _structured_axis_indices(meta, arg_name)
     if axis_indices is not None:

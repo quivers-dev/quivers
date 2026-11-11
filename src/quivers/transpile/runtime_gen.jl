@@ -302,3 +302,29 @@ Gen.has_argument_grads(::QvrFactorDist) = (true,)
 Gen.is_discrete(::QvrFactorDist) = true
 
 (::QvrFactorDist)(weight) = Gen.random(QvrFactorDist(), weight)
+
+# A QVR Categorical draws class codes counting from zero, and Gen's
+# built-in `categorical` counts from one. This family is the same
+# distribution over the support `0:K-1`, so an observed code and a
+# traced class are QVR codes, and a subscript reads them one higher.
+struct QvrCategoricalDist <: Gen.Distribution{Int} end
+
+const qvr_categorical = QvrCategoricalDist()
+
+function Gen.random(::QvrCategoricalDist, probs::AbstractVector)
+    return Gen.random(Gen.categorical, probs) - 1
+end
+
+function Gen.logpdf(::QvrCategoricalDist, x::Int, probs::AbstractVector)
+    return Gen.logpdf(Gen.categorical, x + 1, probs)
+end
+
+function Gen.logpdf_grad(::QvrCategoricalDist, x::Int, probs::AbstractVector)
+    return (nothing, nothing)
+end
+
+Gen.has_output_grad(::QvrCategoricalDist) = false
+Gen.has_argument_grads(::QvrCategoricalDist) = (false,)
+Gen.is_discrete(::QvrCategoricalDist) = true
+
+(::QvrCategoricalDist)(probs) = Gen.random(QvrCategoricalDist(), probs)

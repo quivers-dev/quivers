@@ -211,6 +211,9 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
         ("bugs", "steps", "sample_mvn_factor"): "arg:list-literal",
         ("church", "steps", "sample_mvn_factor"): "arg:matrix-literal",
         ("jags", "steps", "sample_mvn_factor"): "family:MultivariateNormal",
+        ("bugs", "steps", "sample_mvn_sampled_loc"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_sampled_loc"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_sampled_loc"): "family:MultivariateNormal",
         ("bugs", "steps", "sample_wishart_factor"): "arg:matrix-literal",
         ("jags", "steps", "sample_wishart_factor"): "arg:matrix-literal",
         ("church", "steps", "sample_wishart_factor"): "family:Wishart",
@@ -225,6 +228,14 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
         ("stan", "steps", "sample_onehot_probs"): "family:no-stan-target",
         ("turing", "steps", "sample_onehot_probs"): "family:OneHotCategorical",
         ("webppl", "steps", "sample_onehot_probs"): "family:no-webppl-target",
+        ("bugs", "steps", "sample_onehot_sampled_probs"): "arg:list-literal",
+        ("church", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("gen", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("jags", "steps", "sample_onehot_sampled_probs"): "arg:list-literal",
+        ("pymc", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("stan", "steps", "sample_onehot_sampled_probs"): "family:no-stan-target",
+        ("turing", "steps", "sample_onehot_sampled_probs"): "family:OneHotCategorical",
+        ("webppl", "steps", "sample_onehot_sampled_probs"): "family:no-webppl-target",
         ("bugs", "steps", "sample_relaxed_onehot_probs"): "arg:list-literal",
         ("church", "steps", "sample_relaxed_onehot_probs"): (
             "family:RelaxedOneHotCategorical"
@@ -244,6 +255,28 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
         ("webppl", "steps", "sample_relaxed_onehot_probs"): "family:no-webppl-target",
     }
 )
+
+# An observed class code counts from zero and `dcat` reads it from one;
+# BUGS has no data block to shift the codes in and no free log-density
+# statement to score them otherwise.
+for _category, _fixture in (
+    ("let_expressions", "let_row_gather"),
+    ("let_expressions", "let_row_gather_sampled"),
+    ("steps", "observe_class_code"),
+):
+    _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
+# Stan's samplers draw no discrete parameter, so a sampled class is one
+# it cannot carry.
+_EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
+    "sample:discrete-latent"
+)
+# An ordinal outcome is scored by a family only some targets' libraries
+# carry; BUGS also has no list-literal cutpoint vector.
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "observe_ordinal_code")] = (
+    "arg:list-literal"
+)
+for _backend in ("church", "edward2", "gen", "jags", "turing", "webppl"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_ordinal_code")] = "family:"
 
 # A site drawn or observed over more `over` axes than its family's event
 # rank is plated over several axes, and WebPPL carries one batch axis.

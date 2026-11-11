@@ -12,65 +12,47 @@ so it reads correctly where it is used as a number, and the subscript
 translation folds ``(counter - 1) + 1`` back to ``counter`` where it is
 used as an index.
 
-An integer data input is the one exception. The data contract of every
-one-based target delivers an index covariate (``group_idx``,
-``word_idx``) in the target's own origin, so a subscript that reads one
-is already a host subscript and is not translated;
-[`index_covariate_names`][quivers.transpile.renderers._one_based.index_covariate_names]
-names them, and
-[`reads_index_covariate`][quivers.transpile.renderers._one_based.reads_index_covariate]
-recognises such a subscript.
+Every value the program holds is in QVR's origin, data included: an
+index covariate (``group_idx``) and a class code (a Categorical
+outcome, or a drawn class) count from zero, and a subscript that reads
+one reads it one higher. A one-based target's categorical family, which
+counts classes from one, reads a class code one higher too
+([`is_class_code_family`][quivers.transpile.renderers._one_based.is_class_code_family]
+names the families whose values are codes), so a caller passes every
+target the same zero-based data.
 """
 
 from __future__ import annotations
 
 from quivers.dsl.ast_nodes import (
     LetExprBinOp,
-    LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     LetExprVar,
 )
-from quivers.transpile.ir import IRProgram
+from quivers.transpile.family_meta import FAMILY_META, class_index_outcome
 
 
-def index_covariate_names(ir: IRProgram) -> frozenset[str]:
-    """The program's integer data inputs.
+def is_class_code_family(family: str) -> bool:
+    """Whether a family's values are class codes of an alphabet.
 
-    Parameters
-    ----------
-    ir : IRProgram
-        The plan.
-
-    Returns
-    -------
-    frozenset[str]
-        Each input whose support is integer-valued, which a one-based
-        target receives in its own origin when it subscripts with it.
-    """
-    return frozenset(
-        inp.name for inp in ir.inputs if inp.constraint.to_constraint().is_discrete
-    )
-
-
-def reads_index_covariate(index: LetExprNode, covariates: frozenset[str]) -> bool:
-    """Whether a subscript reads an index covariate.
+    QVR codes a Categorical, OrderedLogistic, or OrderedProbit value
+    from zero, and a one-based target's categorical families count
+    classes from one, so such a value crosses the same boundary a
+    subscript does. Bernoulli is not one: its value is a bit.
 
     Parameters
     ----------
-    index : LetExprNode
-        The subscript.
-    covariates : frozenset[str]
-        The integer data inputs.
+    family : str
+        The QVR family name.
 
     Returns
     -------
     bool
-        True when the subscript is such an input, or an entry of one.
+        True for a class-index family.
     """
-    while isinstance(index, LetExprIndex):
-        index = index.array
-    return isinstance(index, LetExprVar) and index.name in covariates
+    meta = FAMILY_META.get(family)
+    return meta is not None and class_index_outcome(meta) is not None
 
 
 def counter_value(name: str) -> LetExprNode:
@@ -192,7 +174,6 @@ def one_based_subscript(index: LetExprNode) -> LetExprNode:
 __all__ = [
     "counter_value",
     "fold_integers",
-    "index_covariate_names",
+    "is_class_code_family",
     "one_based_subscript",
-    "reads_index_covariate",
 ]

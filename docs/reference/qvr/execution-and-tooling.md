@@ -222,15 +222,20 @@ JAGS accept their measured program subset and refuse unsupported call graphs.
 The generated [transpilation support matrix](../../transpile-support.md) is the
 authoritative per-feature and per-example report.
 
-QVR indices count from zero. Stan, BUGS, JAGS, Turing, and Gen count from one,
-and their programs keep every QVR value in QVR's origin, translating only where
-a value subscripts an array: a `factor` binder or a marginalized latent read as
-a number keeps its zero-based value, and a subscript such as `y[2 - t]` reads
-the same entry it reads in QVR. The exception is an integer data input used as
-a subscript (an index covariate such as `group_idx`), which these programs
-read as a subscript in their own origin, so a caller passes it counting from
-one. Stan likewise declares a Categorical outcome on `1..K` and reads it
-counting from one.
+QVR indices count from zero, and so does every value the program holds that a
+subscript reads: a `factor` binder, a marginalized latent, an index covariate
+such as `group_idx`, and a class code (a Categorical, OrderedLogistic, or
+OrderedProbit outcome, or a drawn class). Stan, BUGS, JAGS, Turing, and Gen
+count from one; their programs keep every value in QVR's origin and read it one
+higher only where it subscripts an array or where the target's categorical
+family scores it, so a subscript such as `y[2 - t]` reads the same entry it
+reads in QVR, and a caller passes every target the same zero-based data. A drawn
+class is returned zero-based as well. The one exception is BUGS, whose language
+has neither a data block to shift an observed class code nor a free log-density
+statement to score it otherwise: it refuses an observed class code with
+`observe:class-code:<name>` (JAGS binds the shifted code in its `data` block).
+Stan has no discrete parameters and refuses a drawn class with
+`sample:discrete-latent:<name>`; marginalize it instead.
 
 ## Stable diagnostic families
 

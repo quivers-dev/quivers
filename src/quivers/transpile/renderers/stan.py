@@ -83,6 +83,7 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import (
+    class_index_outcome,
     marginalize_support,
     FAMILY_META,
     FamilyMeta,
@@ -144,10 +145,7 @@ from quivers.transpile.renderers._qiec import (
     carried_computations,
     has_runtime_computations,
 )
-from quivers.transpile.renderers._one_based import (
-    counter_value,
-    index_covariate_names,
-)
+from quivers.transpile.renderers._one_based import counter_value, is_class_code_family
 from quivers.transpile.renderers._ranks import (
     let_expr_rank,
     name_rank_map,
@@ -170,20 +168,6 @@ from quivers.transpile.renderers._stan_helpers import (
 #: no log-density form, and
 #: [`StanRenderer._log_density_name`][quivers.transpile.renderers.stan.StanRenderer]
 #: raises rather than emit a `~` statement that would drop constants.
-#: QVR families whose Stan log-pmf reads its outcome as a subscript
-#: into the family's alphabet, so the outcome lives on `1:K` rather
-#: than on the sentinel `[0, 1]` interval every integer support in the
-#: IR starts from. Bernoulli is deliberately absent: `bernoulli_lpmf`
-#: reads a genuine bit.
-_CLASS_INDEX_OUTCOME_FAMILIES: frozenset[str] = frozenset(
-    {
-        "Categorical",
-        "OrderedLogistic",
-        "OrderedProbit",
-    }
-)
-
-
 _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "bernoulli": "lpmf",
     "beta": "lpdf",
@@ -251,7 +235,6 @@ class _StanLetCtx:
         cards: dict[str, int],
         ranks: Mapping[str, int],
         vectors: frozenset[str],
-        host_indices: frozenset[str],
     ) -> None:
         """Initialise the carrier.
 
@@ -268,16 +251,12 @@ class _StanLetCtx:
             over it is elementwise.
         vectors : frozenset[str]
             The bindings declared as Stan `vector`s.
-        host_indices : frozenset[str]
-            The integer data inputs, whose entries the data contract
-            delivers as one-based subscripts.
         """
         self._sb = sb
         self._fresh_fn = fresh
         self.cards = cards
         self.ranks = ranks
         self.vectors = vectors
-        self.host_indices = host_indices
 
     def fresh(self, prefix: str) -> str:
         return self._fresh_fn(prefix)
@@ -364,9 +343,6 @@ class StanRenderer(RendererBase):
         # the rank of every bound name; see `_compute_let_events`.
         self._let_events: dict[str, int] = {}
         self._name_ranks: dict[str, int] = {}
-        # Integer data inputs: the data contract delivers an index
-        # covariate as a one-based Stan subscript.
-        self._host_indices: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # abstract overrides
@@ -431,7 +407,6 @@ class StanRenderer(RendererBase):
         self._declared_shapes_state.clear()
         self._name_ranks = name_rank_map(ir)
         self._let_events = self._compute_let_events(ir)
-        self._host_indices = index_covariate_names(ir)
         self._vector_promotions_state.clear()
         self._vector_promotions_state.update(self._compute_vector_promotions(ir))
         self._class_index_widths_state.clear()
@@ -498,8 +473,8 @@ class StanRenderer(RendererBase):
         -------
         _StanLetCtx
             A carrier over the render's schema builder, carrying the
-            object cardinalities, every bound name's rank, the
-            bindings declared as vectors, and the integer data inputs.
+            object cardinalities, every bound name's rank, and the
+            bindings declared as vectors.
         """
         return _StanLetCtx(
             ctx.sb,
@@ -507,7 +482,6 @@ class StanRenderer(RendererBase):
             self._cards,
             self._name_ranks,
             frozenset(name for name, event in self._let_events.items() if event == 1),
-            self._host_indices,
         )
 
     def _compute_let_events(self, ir: IRProgram) -> dict[str, int]:
@@ -616,9 +590,9 @@ class StanRenderer(RendererBase):
         for node in _iter_ir_nodes(ir.body):
             if not isinstance(node, IRObserve):
                 continue
-            if node.family not in _CLASS_INDEX_OUTCOME_FAMILIES:
+            if not is_class_code_family(node.family):
                 continue
-            width = self._class_alphabet_width(node.args, plates)
+            width = self._class_alphabet_width(node, plates)
             if width is None:
                 raise UnsupportedConstruct(
                     "qvr-stan",
@@ -646,31 +620,60 @@ class StanRenderer(RendererBase):
         return out
 
     def _class_alphabet_width(
-        self, args: tuple[IRArg, ...], plates: dict[str, Plate]
+        self, node: IRObserve, plates: dict[str, Plate]
     ) -> int | None:
-        """Trailing event extent of a class-index family's probability
-        argument, or `None` when it is not statically resolvable."""
-        if not args:
+        """The number of classes a class-index observation codes.
+
+        The alphabet is the trailing axis of the family's alphabet
+        argument (Categorical's `probs` or `logits`, the ordinal
+        families' `cutpoints`, which bound one class fewer than there
+        are), read after the reference's own subscripts.
+
+        Parameters
+        ----------
+        node : IRObserve
+            The observation.
+        plates : dict[str, Plate]
+            Every bound name's Stan plate.
+
+        Returns
+        -------
+        int | None
+            The class count, or `None` when it is not static.
+        """
+        meta = FAMILY_META.get(node.family)
+        outcome = class_index_outcome(meta) if meta is not None else None
+        if outcome is None:
             return None
-        arg = args[0]
+        arg: IRArg | None = next(
+            (
+                value
+                for value, name in zip(node.args, node.arg_names, strict=True)
+                if name in outcome.alphabet_args
+            ),
+            None,
+        )
+        extent: int | None = None
         if isinstance(arg, IRArgList):
-            return len(arg.elements)
-        if isinstance(arg, IRArgBroadcast) and arg.target_shape:
-            return int(arg.target_shape[-1])
-        if isinstance(arg, IRArgRef):
+            extent = len(arg.elements)
+        elif isinstance(arg, IRArgBroadcast) and arg.target_shape:
+            extent = int(arg.target_shape[-1])
+        elif isinstance(arg, IRArgRef):
             plate = plates.get(arg.name)
-            if plate is not None and plate.event_dims:
-                last = plate.event_dims[-1]
-                if isinstance(last, DimStatic):
-                    return int(last.size)
-                return None
-            # A scalar-declared producer feeding a vector argument
-            # slot is promoted to `vector[K]` by
-            # `_compute_vector_promotions`; that K is the same
-            # alphabet width, and it is the only place a chain-tail
-            # hidden state's Categorical head records one.
-            return self._vector_promotions.get(arg.name)
-        return None
+            axes = (
+                (*plate.batch_dims, *plate.event_dims)[len(arg.indices) :]
+                if plate is not None
+                else ()
+            )
+            if axes and isinstance(axes[-1], DimStatic):
+                extent = int(axes[-1].size)
+            elif not axes:
+                # A number feeding the alphabet slot is broadcast to
+                # the promoted `vector[K]`, whose K is the alphabet.
+                extent = self._vector_promotions.get(arg.name)
+        if extent is None:
+            return None
+        return extent + outcome.extent_offset
 
     @property
     def _vector_promotions(self) -> dict[str, int]:
@@ -709,10 +712,10 @@ class StanRenderer(RendererBase):
         declaration shape stands.
         """
         producers: dict[str, ConstraintSpec] = {}
-        producer_event_dims: dict[str, tuple[Dim, ...]] = {}
+        producer_plates: dict[str, Plate] = {}
         for inp in ir.inputs:
             producers[inp.name] = inp.constraint
-            producer_event_dims[inp.name] = inp.plate.event_dims
+            producer_plates[inp.name] = inp.plate
         promotions: dict[str, int] = {}
         for node in ir.body:
             if isinstance(node, (IRSample, IRObserve)):
@@ -723,11 +726,11 @@ class StanRenderer(RendererBase):
                         node,
                         meta,
                         producers,
-                        producer_event_dims,
+                        producer_plates,
                     )
             if isinstance(node, (IRSample, IRDeterministic, IRObserve)):
                 producers[node.name] = node.constraint
-                producer_event_dims[node.name] = node.plate.event_dims
+                producer_plates[node.name] = node.plate
         return promotions
 
     def _record_vector_promotions(
@@ -736,11 +739,25 @@ class StanRenderer(RendererBase):
         node: IRSample | IRObserve,
         meta: FamilyMeta,
         producers: dict[str, ConstraintSpec],
-        producer_event_dims: dict[str, tuple[Dim, ...]],
+        producer_plates: dict[str, Plate],
     ) -> None:
         """For each arg-position whose family constraint has
         `event_dim >= 1` and whose arg is a ref to a scalar producer,
-        record the producer name with the required K."""
+        record the producer name with the required K.
+
+        Parameters
+        ----------
+        promotions : dict[str, int]
+            The promotions found so far, extended in place.
+        node : IRSample | IRObserve
+            The consumer.
+        meta : FamilyMeta
+            The consumer's family.
+        producers : dict[str, ConstraintSpec]
+            Each name bound so far and its support.
+        producer_plates : dict[str, Plate]
+            Each name bound so far and its plate.
+        """
         cls_attr = meta.distribution_class.arg_constraints
         if not isinstance(cls_attr, dict):
             return
@@ -763,9 +780,13 @@ class StanRenderer(RendererBase):
             producer_cs = producers.get(arg.name)
             if producer_cs is None:
                 continue
-            producer_event = producer_event_dims.get(arg.name, ())
-            if producer_event:
-                # Producer already carries event dims; no promotion.
+            producer_plate = producer_plates.get(arg.name)
+            if producer_plate is not None and (
+                producer_plate.event_dims or producer_plate.batch_dims
+            ):
+                # A producer with axes of its own carries the event
+                # (a sampled vector over the class axis is read with
+                # `to_vector`); only a number is promoted.
                 continue
             producer_sup = producer_cs.to_constraint()
             if not (
@@ -918,12 +939,10 @@ class StanRenderer(RendererBase):
         if promoted_k is not None:
             self._emit_vector_type_of_size(ctx, tvt, promoted_k)
         elif class_width is not None:
-            # A class-index outcome is a subscript into its family's
-            # alphabet, so Stan reads it on `1:K`. The IR carries the
-            # sentinel-derived `[0, 1]` interval every integer support
-            # starts from, which would declare a 200-word vocabulary
-            # as a bit.
-            self._emit_int_type(ctx, tvt, lower=1, upper=class_width)
+            # A class-index outcome holds the QVR code of a class of its
+            # family's alphabet, `0` to `K - 1`; the log-pmf reads it one
+            # higher.
+            self._emit_int_type(ctx, tvt, lower=0, upper=class_width - 1)
         else:
             self._emit_type(ctx, tvt, sup, plate.event_dims)
         ctx.sb.edge(decl, tvt, "child_of")
@@ -992,8 +1011,15 @@ class StanRenderer(RendererBase):
             self._emit_int_type(ctx, tvt_vid, lower=0, upper=1)
             return
         if is_int_category(sup):
-            upper = self._category_upper(sup)
-            self._emit_int_type(ctx, tvt_vid, lower=1, upper=upper)
+            # An integer range holds QVR's own values (an index
+            # covariate counts from zero); a subscript reads it one
+            # higher.
+            self._emit_int_type(
+                ctx,
+                tvt_vid,
+                lower=int(getattr(sup, "lower_bound", 0)),
+                upper=int(getattr(sup, "upper_bound", 0)),
+            )
             return
         if is_int_count(sup):
             self._emit_int_type(ctx, tvt_vid, lower=0, upper=None)
@@ -1230,15 +1256,6 @@ class StanRenderer(RendererBase):
         ctx.sb.edge(rng, hi, "child_of")
         return rng
 
-    def _category_upper(self, sup: Constraint) -> int:
-        """For an `is_int_category` support, return the upper category
-        index (Stan's `int<lower=1, upper=K>` requires K)."""
-        lower = int(getattr(sup, "lower_bound", 0))
-        upper = int(getattr(sup, "upper_bound", 1))
-        if lower == 0:
-            return upper + 1
-        return upper
-
     # ----- sample / observe dispatch -----
 
     def sample(
@@ -1315,7 +1332,7 @@ class StanRenderer(RendererBase):
         if family == "Categorical" and arg_names == ("logits",):
             stan_name = "categorical_logit"
         density_name = self._log_density_name(family, stan_name)
-        del arg_names  # Stan is positional; arg_names are unused.
+        vector_slots = _vector_argument_slots(meta, arg_names)
         parent = self._ensure_block(ctx, "model")
         # Build loop indices for the batch dims.
         loop_names = self.index_for(ctx, plate)
@@ -1351,14 +1368,21 @@ class StanRenderer(RendererBase):
         ctx.sb.edge(de, dn, "name")
         dal = self._fresh(ctx, "dal")
         ctx.sb.vertex(dal, "distr_argument_list")
-        # Variate: name indexed by loop vars.
-        ctx.sb.edge(dal, self._build_lhs(ctx, name, loop_names), "child_of")
+        # Variate: name indexed by loop vars, read one higher when it is
+        # a zero-based class code.
+        ctx.sb.edge(
+            dal,
+            self._class_code(ctx, family, self._build_lhs(ctx, name, loop_names)),
+            "child_of",
+        )
         if family == "NegativeBinomial":
             self._emit_neg_binomial_2_args(ctx, dal, rewritten, plate, loop_names)
         else:
-            for arg in rewritten:
+            for position, arg in enumerate(rewritten):
                 substituted = self._substitute_for_loops(arg, plate, loop_names)
                 arg_vid = self._render_arg(ctx, substituted)
+                if position in vector_slots and self._reads_real_array(substituted):
+                    arg_vid = self._as_event(ctx, arg_vid, 1)
                 ctx.sb.edge(dal, arg_vid, "child_of")
         ctx.sb.edge(de, dal, "child_of")
         if truncation_args is None:
@@ -2446,7 +2470,9 @@ class StanRenderer(RendererBase):
             # `<via>[<observe-loop-0>]` per group dim. For
             # single-group marginalize this is exactly the spec's
             # `lps[word_idx[n], k]` form.
-            return tuple(f"{observe.via}[{loop_names[0]}]" for _ in range(group_count))
+            return tuple(
+                f"{observe.via}[{loop_names[0]}]+1" for _ in range(group_count)
+            )
         # Fall through: use the marginalize group's loop names.
         return self._marginalize_group_idx
 
@@ -2498,10 +2524,18 @@ class StanRenderer(RendererBase):
     def _build_expr_from_text(self, ctx: RenderContext, expr_text: str) -> str:
         """Build an expression vertex for a small text form.
 
-        Supports bare identifiers, integer literals, and a single
-        level of `<name>[<inner>]` indexing.
+        Supports bare identifiers, integer literals, a single level of
+        `<name>[<inner>]` indexing, and a trailing `+1`, the shift of a
+        zero-based value read as a Stan subscript.
         """
         text = expr_text.strip()
+        if text.endswith("+1"):
+            return self._stan_binop(
+                ctx,
+                self._build_expr_from_text(ctx, text[:-2]),
+                "+",
+                self._int_literal(ctx, 1),
+            )
         if text.lstrip("-").isdigit():
             return self._int_literal(ctx, int(text))
         if "[" in text and text.endswith("]"):
@@ -2587,7 +2621,7 @@ class StanRenderer(RendererBase):
             obs_vid = self._indexed_expression_text(ctx, observed_var, loop_names[0])
         else:
             obs_vid = self._variable_expression(ctx, observed_var)
-        ctx.sb.edge(dal, obs_vid, "child_of")
+        ctx.sb.edge(dal, self._class_code(ctx, family, obs_vid), "child_of")
         meta = FAMILY_META.get(family)
         arg_constraints = (
             meta.distribution_class.arg_constraints if meta is not None else None
@@ -3323,8 +3357,13 @@ class StanRenderer(RendererBase):
     def _render_ref(self, ctx: RenderContext, arg: IRArgRef) -> SchemaFragment:
         """Render an IRArgRef. Bare-name refs become a
         `variable_expression`; indexed refs nest `indexed_expression`
-        nodes, whose subscripts are Stan subscripts already (loop
-        counters, the enumerated atom, index covariates)."""
+        nodes.
+
+        A subscript that reads a program value (an index covariate, a
+        drawn class) holds a zero-based QVR index and is read one
+        higher; a renderer's own loop counter or enumerated atom is a
+        Stan subscript already.
+        """
         base = self._variable_expression(ctx, arg.name)
         if not arg.indices:
             return base
@@ -3335,9 +3374,81 @@ class StanRenderer(RendererBase):
             idx_vid = self._fresh(ctx, "idx")
             ctx.sb.vertex(idx_vid, "index")
             inner_vid = self._render_arg(ctx, idx)
+            if isinstance(idx, IRArgRef) and self._is_program_value(idx.name):
+                inner_vid = self._stan_binop(
+                    ctx, inner_vid, "+", self._int_literal(ctx, 1)
+                )
             ctx.sb.edge(idx_vid, inner_vid, "child_of")
             ctx.sb.edge(ie, idx_vid, "child_of")
         return ie
+
+    def _class_code(self, ctx: RenderContext, family: str, variate: str) -> str:
+        """A variate as the Stan log-pmf of its family reads it.
+
+        A class-index family (Categorical, OrderedLogistic,
+        OrderedProbit) scores a class code, which QVR counts from zero
+        and Stan's `categorical_lpmf` and its kin count from one, so the
+        code is read one higher; any other variate is read as it is.
+
+        Parameters
+        ----------
+        ctx : RenderContext
+            The render call's mutable state.
+        family : str
+            The family scoring the variate.
+        variate : str
+            The rendered variate.
+
+        Returns
+        -------
+        str
+            The variate's vertex, shifted for a class code.
+        """
+        if not is_class_code_family(family):
+            return variate
+        return self._stan_binop(ctx, variate, "+", self._int_literal(ctx, 1))
+
+    def _reads_real_array(self, arg: IRArg) -> bool:
+        """Whether an argument reads a one-axis Stan array of reals.
+
+        Parameters
+        ----------
+        arg : IRArg
+            The argument, after its row subscripts.
+
+        Returns
+        -------
+        bool
+            True for a reference whose declared Stan type, after its
+            subscripts, is `array[N] real`: a site drawn over an axis
+            with no event of its own, which a vector argument reads
+            through `to_vector`.
+        """
+        if not isinstance(arg, IRArgRef):
+            return False
+        declared = self._declared_shapes.get(arg.name)
+        if declared is None:
+            return False
+        sup, plate = declared
+        if plate.event_dims or not _is_continuous_support(sup):
+            return False
+        return len(plate.batch_dims) - len(arg.indices) == 1
+
+    def _is_program_value(self, name: str) -> bool:
+        """Whether a name is a value of the program rather than a
+        renderer's loop counter or enumerated atom.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        bool
+            True for an input, a site, or a binding of the program.
+        """
+        return name in self._name_ranks
 
     def _render_family_ref(
         self,
@@ -3410,8 +3521,25 @@ class StanRenderer(RendererBase):
             The rendered number or name.
         """
         raw = atom_value(arg)
-        if not isinstance(raw, str):
-            return self._render_number(ctx, float(raw))
+        if isinstance(raw, str):
+            return self._render_named_or_number(ctx, raw)
+        return self._render_number(ctx, float(raw))
+
+    def _render_named_or_number(self, ctx: RenderContext, raw: str) -> SchemaFragment:
+        """Render a wire-form atom spelled as text.
+
+        Parameters
+        ----------
+        ctx : RenderContext
+            The render call's mutable state.
+        raw : str
+            A number's spelling or a name.
+
+        Returns
+        -------
+        SchemaFragment
+            The number, or the name as a variable.
+        """
         stripped = raw.strip()
         try:
             value = float(stripped)
@@ -3473,8 +3601,24 @@ class StanRenderer(RendererBase):
     # ----- IR-walk overrides -----
 
     def _dispatch_node(self, ctx: RenderContext, node: IRNode) -> None:
-        """Stan-specific dispatch of one plan node."""
+        """Stan-specific dispatch of one plan node.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If a sample draws a class code, which Stan has no parameter
+            type for, or the node has no Stan form.
+        """
         if isinstance(node, IRSample):
+            if is_class_code_family(node.family):
+                raise UnsupportedConstruct(
+                    "qvr-stan",
+                    [
+                        f"sample:discrete-latent:{node.name}: Stan has no "
+                        f"discrete parameters, so a {node.family} draw must be "
+                        f"marginalized rather than sampled"
+                    ],
+                )
             self.declare(
                 ctx,
                 node.name,
@@ -3904,9 +4048,9 @@ class StanRenderer(RendererBase):
         ctx.sb.vertex(tvt, "top_var_type")
         class_width = self._class_index_widths.get(var)
         if class_width is not None:
-            # The alias holds the outcome as its declaration does, on
-            # the family's one-based alphabet.
-            self._emit_int_type(ctx, tvt, lower=1, upper=class_width)
+            # The alias holds the outcome as its declaration does, as a
+            # zero-based class code.
+            self._emit_int_type(ctx, tvt, lower=0, upper=class_width - 1)
         else:
             self._emit_type(ctx, tvt, sup, plate.event_dims)
         ctx.sb.edge(decl, tvt, "child_of")
@@ -3967,6 +4111,34 @@ class StanRenderer(RendererBase):
             elif isinstance(stmt, DefineDecl):
                 lets[stmt.name] = stmt.expr
         return morphisms, lets
+
+
+def _vector_argument_slots(
+    meta: FamilyMeta, arg_names: tuple[str, ...]
+) -> frozenset[int]:
+    """The positions of a family call's arguments that read a vector.
+
+    Parameters
+    ----------
+    meta : FamilyMeta
+        The family.
+    arg_names : tuple[str, ...]
+        The call's argument names, in order.
+
+    Returns
+    -------
+    frozenset[int]
+        Each position whose constraint has one event axis (Categorical's
+        `probs` or `logits`, a multivariate normal's `loc`).
+    """
+    constraints = meta.distribution_class.arg_constraints
+    if not isinstance(constraints, dict):
+        return frozenset()
+    return frozenset(
+        position
+        for position, name in enumerate(arg_names)
+        if int(getattr(constraints.get(name), "event_dim", 0)) == 1
+    )
 
 
 def _is_continuous_support(sup: Constraint) -> bool:

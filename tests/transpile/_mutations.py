@@ -1018,8 +1018,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] = beta_0[out_idx[m_Resp]];",
-                    new="b0[m_Resp] = beta_0[(out_idx[m_Resp] % 3)+1];",
+                    old="b0[m_Resp] = beta_0[out_idx[m_Resp]+1];",
+                    new="b0[m_Resp] = beta_0[((out_idx[m_Resp]+1) % 3)+1];",
                 ),
             ),
         ),
@@ -1045,8 +1045,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="b0 = @. beta_0[out_idx]",
-                    new="b0 = @. beta_0[mod1(out_idx + 1, 3)]",
+                    old="b0 = @. beta_0[out_idx + 1]",
+                    new="b0 = @. beta_0[mod(out_idx + 1, 3) + 1]",
                 ),
             ),
         ),
@@ -1054,8 +1054,8 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="gen",
             rewrites=(
                 SourceRewrite(
-                    old="b0 = @. beta_0[out_idx]",
-                    new="b0 = @. beta_0[mod1(out_idx + 1, 3)]",
+                    old="b0 = @. beta_0[out_idx + 1]",
+                    new="b0 = @. beta_0[mod(out_idx + 1, 3) + 1]",
                 ),
             ),
         ),
@@ -1063,10 +1063,10 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="jags",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]]",
+                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]+1]",
                     new=(
-                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+1-3*"
-                        "equals(out_idx[m_Resp],3)]"
+                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+2-3*"
+                        "equals(out_idx[m_Resp],2)]"
                     ),
                 ),
             ),
@@ -1075,10 +1075,10 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
             backend="bugs",
             rewrites=(
                 SourceRewrite(
-                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]]",
+                    old="b0[m_Resp] <- beta_0[out_idx[m_Resp]+1]",
                     new=(
-                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+1-3*"
-                        "equals(out_idx[m_Resp],3)]"
+                        "b0[m_Resp] <- beta_0[out_idx[m_Resp]+2-3*"
+                        "equals(out_idx[m_Resp],2)]"
                     ),
                 ),
             ),

@@ -176,6 +176,7 @@ from quivers.transpile.lower import (
     pick_program,
 )
 from quivers.transpile.qiec_ir import IRQiecStatic, IRQiecValue, _convert, lower_qiec_ir
+from quivers.transpile.builtin_spellings import spell_builtin
 
 #: The registry's name for a structured family's constructor argument
 #: where the two differ.
@@ -2526,9 +2527,10 @@ def _expression(
             )
         builtin = PRIMITIVE_BUILTINS.get(value.name)
         if builtin is not None:
-            return LetExprCall(
-                func=builtin,
-                args=tuple(
+            return spell_builtin(
+                target,
+                builtin,
+                tuple(
                     _expression(argument, cards, target, program)
                     for argument in value.arguments
                 ),

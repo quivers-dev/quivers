@@ -120,17 +120,17 @@ def test_a_let_read_as_a_vector_argument_is_declared_a_vector() -> None:
 def test_a_gathered_table_row_is_one_vector_per_observation() -> None:
     program = _stan("let_expressions/let_row_gather")
     assert "array [4] vector [2] row_table" in program
-    assert "row_table[m_Row] = to_vector(table[group_idx[m_Row]]);" in program
-    assert "categorical_lpmf(y[m_Row] | row_table[m_Row])" in program
-    assert "array [4] int <lower = 1 , upper = 2> y;" in program
+    assert "row_table[m_Row] = to_vector(table[group_idx[m_Row]+1]);" in program
+    assert "categorical_lpmf(y[m_Row]+1 | row_table[m_Row])" in program
+    assert "array [4] int <lower = 0 , upper = 1> y;" in program
 
 
 def test_a_returned_outcome_keeps_its_class_count_in_generated_quantities() -> None:
     source = (_FIXTURES / "let_expressions/let_row_gather.qvr").read_text()
     source = source.replace("    return a\n", "    return y\n")
     program = transpile(parse(source), target="stan").decode()
-    assert "array [4] int <lower = 1 , upper = 2> y;" in program
-    assert "array [4] int <lower = 1 , upper = 2> y_value = y;" in program
+    assert "array [4] int <lower = 0 , upper = 1> y;" in program
+    assert "array [4] int <lower = 0 , upper = 1> y_value = y;" in program
 
 
 def test_real_literals_keep_real_division() -> None:

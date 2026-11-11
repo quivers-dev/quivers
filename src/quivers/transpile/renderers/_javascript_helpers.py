@@ -56,6 +56,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.builtin_spellings import native_path
 from quivers.transpile.ir import LetExprAffineMap
 from quivers.transpile.renderers._stan_helpers import _substitute_let_expr
 
@@ -112,7 +113,14 @@ def _render(ctx: _JsLetCtx, expr: LetExprNode) -> tuple[str, str]:
     if isinstance(expr, LetExprUnaryOp):
         return _emit_unary(ctx, expr)
     if isinstance(expr, LetExprCall):
-        return _emit_call(ctx, expr.func, tuple(_render(ctx, a) for a in expr.args))
+        # A pointwise math builtin is called by the runtime global
+        # `native_path` names.
+        path = native_path(ctx.target, expr.func, len(expr.args))
+        return _emit_call(
+            ctx,
+            expr.func if path is None else ".".join(path),
+            tuple(_render(ctx, a) for a in expr.args),
+        )
     if isinstance(expr, LetExprIndex):
         return _emit_index(ctx, expr)
     if isinstance(expr, LetExprList):

@@ -357,8 +357,73 @@ def _plated_list_operand(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _observe_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A Dirichlet simplex scoring zero-based class codes.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    probs, y = v["probs"], v["y"]
+    return (
+        D.Dirichlet(torch.ones(3)).log_prob(probs)
+        + D.Categorical(probs=probs).log_prob(y).sum()
+    )
+
+
+def _sample_class_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A drawn class read as a subscript and as a number.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    probs, mu, z, x = v["probs"], v["mu"], v["z"], v["x"]
+    return (
+        D.Dirichlet(torch.ones(3)).log_prob(probs)
+        + D.Normal(0.0, 1.0).log_prob(mu).sum()
+        + D.Categorical(probs=probs).log_prob(z)
+        + D.Normal(mu[z] + z, 1.0).log_prob(x).sum()
+    )
+
+
+def _observe_ordinal_code(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """An ordered-logistic outcome over three zero-based classes.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    eta, y = v["eta"], v["y"]
+    cut = torch.tensor([-1.0, 0.5])
+    above = torch.sigmoid(eta - cut)
+    probs = torch.stack([1.0 - above[0], above[0] - above[1], above[1]])
+    return D.Normal(0.0, 1.0).log_prob(eta) + probs[y].log().sum()
+
+
 #: Each fixture's data inputs, as flat lists.
 _DATA: dict[str, dict[str, Host]] = {
+    "steps/observe_class_code": {"y": [0, 2, 1, 1, 0]},
+    "steps/sample_class_code": {"x": [-0.5, 4.0, 1.2, 3.3]},
+    "steps/observe_ordinal_code": {"y": [0, 2, 1, 1]},
     "let_expressions/let_plated_list_operand": {"y": [0.5, 1.0, 2.5, 2.0]},
     "steps/marginalize_let_probs": {"y": [4, 6, 5]},
     "steps/marginalize_let_vector_probs": {"y": [0.4, -1.2, 2.1]},
@@ -382,6 +447,17 @@ _DATA: dict[str, dict[str, Host]] = {
 
 #: Each fixture's clamped points; every site varies across them.
 _POINTS: dict[str, list[dict[str, Host]]] = {
+    "steps/observe_class_code": [
+        {"probs": [0.2, 0.3, 0.5]},
+        {"probs": [0.6, 0.3, 0.1]},
+        {"probs": [0.25, 0.5, 0.25]},
+    ],
+    "steps/sample_class_code": [
+        {"probs": [0.2, 0.3, 0.5], "mu": [-1.0, 0.5, 2.0], "z": 0},
+        {"probs": [0.6, 0.3, 0.1], "mu": [0.3, -0.7, 1.1], "z": 2},
+        {"probs": [0.25, 0.5, 0.25], "mu": [1.5, 1.0, -0.5], "z": 1},
+    ],
+    "steps/observe_ordinal_code": [{"eta": -0.8}, {"eta": 0.3}, {"eta": 1.6}],
     "let_expressions/let_plated_list_operand": [{"mu": -0.6}, {"mu": 0.7}, {"mu": 1.3}],
     "steps/marginalize_let_probs": [{"r": 0.7}, {"r": 1.5}, {"r": 2.6}],
     "steps/marginalize_let_vector_probs": [{"s": 0.6}, {"s": 1.0}, {"s": 2.2}],
@@ -430,6 +506,9 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
 
 #: The shape of every name a point carries; a scalar's is empty.
 _SHAPES: dict[str, dict[str, list[int]]] = {
+    "steps/observe_class_code": {"probs": [3], "y": [5]},
+    "steps/sample_class_code": {"probs": [3], "mu": [3], "z": [], "x": [4]},
+    "steps/observe_ordinal_code": {"eta": [], "y": [4]},
     "let_expressions/let_plated_list_operand": {"mu": [], "y": [4]},
     "steps/marginalize_let_probs": {"r": [], "y": [3]},
     "steps/marginalize_let_vector_probs": {"s": [], "y": [3]},
@@ -456,6 +535,9 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
 
 #: The integer-valued names of each fixture; every other name is real.
 _INTEGERS: dict[str, frozenset[str]] = {
+    "steps/observe_class_code": frozenset({"y"}),
+    "steps/sample_class_code": frozenset({"z"}),
+    "steps/observe_ordinal_code": frozenset({"y"}),
     "steps/marginalize_let_probs": frozenset({"y"}),
     "steps/marginalize_body_let_chain": frozenset({"y"}),
     "steps/marginalize_body_plated_let": frozenset({"y"}),
@@ -467,6 +549,9 @@ _INTEGERS: dict[str, frozenset[str]] = {
 
 #: Each fixture's independent joint.
 _ORACLES: dict[str, Oracle] = {
+    "steps/observe_class_code": _observe_class_code,
+    "steps/sample_class_code": _sample_class_code,
+    "steps/observe_ordinal_code": _observe_ordinal_code,
     "steps/marginalize_let_probs": _let_probs,
     "steps/marginalize_let_vector_probs": _let_vector_probs,
     "steps/marginalize_body_let_chain": _body_let_chain,
@@ -484,8 +569,10 @@ _ORACLES: dict[str, Oracle] = {
 #: The refusals each target states for a fixture it cannot render, by
 #: the kind prefix the refusal names. A target that samples each row's
 #: latent on its own scores a different measure from one latent shared
-#: by the rows, and BUGS / JAGS `sum` contracts every axis of a
-#: two-axis operand where QVR reduces the last.
+#: by the rows; BUGS / JAGS `sum` contracts every axis of a two-axis
+#: operand where QVR reduces the last; and BUGS cannot score an observed
+#: class code, which the data holds from zero and `dcat` reads from one,
+#: having no data block to shift it in.
 _REFUSED: dict[tuple[str, str], str] = {
     **{
         (fixture, backend): "marginalize:ungrouped-over-plate"
@@ -494,25 +581,17 @@ _REFUSED: dict[tuple[str, str], str] = {
     },
     ("let_expressions/let_host_matrix_row", "bugs"): "let-expr:axis-reduction",
     ("let_expressions/let_host_matrix_row", "jags"): "let-expr:axis-reduction",
-}
-
-
-#: Cells a target renders but this module does not score, with the
-#: reason. BUGS, JAGS, Turing, and Gen score an observed Categorical
-#: code as one-based (`dcat`, `Categorical`) while the point payload
-#: codes it from zero, and their probe scripts lift only subscripts, so
-#: the comparison would measure the payload rather than the program.
-#: BUGS and JAGS also emit a gather from a `factor`-built table with a
-#: subscript per table axis, which neither engine compiles.
-_UNPROBED: dict[tuple[str, str], str] = {
-    **{
-        (fixture, backend): "observed Categorical code is one-based on the target"
-        for fixture in (
-            "let_expressions/let_row_gather",
-            "let_expressions/let_row_gather_sampled",
-        )
-        for backend in ("bugs", "gen", "jags", "turing")
-    },
+    ("let_expressions/let_row_gather", "bugs"): "observe:class-code",
+    ("let_expressions/let_row_gather_sampled", "bugs"): "observe:class-code",
+    ("steps/observe_class_code", "bugs"): "observe:class-code",
+    ("steps/sample_class_code", "stan"): "sample:discrete-latent",
+    ("steps/observe_ordinal_code", "bugs"): "arg:list-literal",
+    ("steps/observe_ordinal_code", "church"): "family:OrderedLogistic",
+    ("steps/observe_ordinal_code", "edward2"): "family:OrderedLogistic",
+    ("steps/observe_ordinal_code", "gen"): "family:OrderedLogistic",
+    ("steps/observe_ordinal_code", "jags"): "family:no-target-name:OrderedLogistic",
+    ("steps/observe_ordinal_code", "turing"): "family:OrderedLogistic",
+    ("steps/observe_ordinal_code", "webppl"): "family:no-webppl-target:OrderedLogistic",
 }
 
 
@@ -528,6 +607,20 @@ _KNOWN_DEFECTS: dict[tuple[str, str], str] = {
         )
         for backend in ("numpyro", "pyro")
     },
+    ("let_expressions/let_row_gather", "jags"): (
+        "a row gathered from a table a factor builds over two axes reads the "
+        "table with one subscript, and the observation reads the gathered "
+        "rows at a loop variable it never binds, so the model does not compile"
+    ),
+    ("steps/sample_class_code", "edward2"): (
+        "a drawn class read as a number (`real(z)`) is emitted without its "
+        "conversion, and TensorFlow refuses to add the int32 class to a "
+        "float32 value"
+    ),
+    ("steps/sample_class_code", "pyro"): (
+        "the drawn class reaches the model as a float tensor, which torch "
+        "refuses as a subscript (`mu[z]`)"
+    ),
 }
 
 
@@ -666,9 +759,9 @@ def _n_obs(fixture: str) -> int:
     Returns
     -------
     int
-        The size of the observation `y`.
+        The number of entries the fixture's data inputs hold.
     """
-    return math.prod(_SHAPES[fixture]["y"])
+    return sum(math.prod(_SHAPES[fixture][name]) for name in _DATA[fixture])
 
 
 @pytest.mark.parametrize("fixture", sorted(_ORACLES))
@@ -682,7 +775,7 @@ def test_reference_matches_the_independent_joint(fixture: str) -> None:
         _target_cell(fixture, backend)
         for fixture in sorted(_ORACLES)
         for backend in _TARGETS
-        if (fixture, backend) not in _REFUSED and (fixture, backend) not in _UNPROBED
+        if (fixture, backend) not in _REFUSED
     ],
 )
 def test_target_scores_the_reference_joint(

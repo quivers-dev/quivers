@@ -164,7 +164,7 @@ def test_target_plan_optimization_can_be_disabled() -> None:
         ("numpyro", "Categorical(logits="),
         ("pymc", "logit_p="),
         ("edward2", "Categorical(logits="),
-        ("stan", "categorical_logit_lpmf(y |"),
+        ("stan", "categorical_logit_lpmf(y+1 |"),
     ],
 )
 def test_categorical_logits_keep_the_target_parameterization(

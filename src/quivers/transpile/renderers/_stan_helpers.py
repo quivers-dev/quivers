@@ -52,10 +52,8 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder, LetFactorCase
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.renderers._one_based import (
-    one_based_subscript,
-    reads_index_covariate,
-)
+from quivers.transpile.builtin_spellings import native_path
+from quivers.transpile.renderers._one_based import one_based_subscript
 from quivers.transpile.renderers._ranks import let_expr_rank
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
@@ -448,28 +446,20 @@ def _emit_prefix(ctx, expr: LetExprUnaryOp) -> tuple[str, str]:
     return vid, "prefix_op_expression"
 
 
-# QVR function names that map to a different identifier in Stan's
-# stdlib. Most pure-math names (`log`, `exp`, `sqrt`, `abs`,
-# `softmax`, ...) coincide across targets and need no rewrite.
-_STAN_FUNCTION_RENAMES: dict[str, str] = {
-    "sigmoid": "inv_logit",
-}
-
-
 def _emit_function_expression(
     ctx, func: str, args: tuple[LetExprNode, ...]
 ) -> tuple[str, str]:
     """Emit a `function_expression` with `name` edge to the callee
     identifier and `child_of` edge to the `argument_list`.
 
-    Applies the
-    `_STAN_FUNCTION_RENAMES`
-    table so QVR-named math primitives (`sigmoid`, ...) reach Stan
-    under their stdlib identifiers (`inv_logit`, ...).
+    A pointwise math builtin is called by the Stan function
+    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    names (`sigmoid` is `inv_logit`, ...); any other name is Stan's own.
     """
+    path = native_path("stan", func, len(args))
     return _emit_call_rendered(
         ctx,
-        _STAN_FUNCTION_RENAMES.get(func, func),
+        func if path is None else ".".join(path),
         tuple(_render(ctx, a) for a in args),
     )
 
@@ -480,9 +470,8 @@ def _emit_call_rendered(
     """Emit a `function_expression` calling `func` on operands that
     are already rendered.
 
-    `func` is the Stan stdlib identifier; the
-    `_STAN_FUNCTION_RENAMES`
-    table is applied by the caller that starts from a QVR name.
+    `func` is the Stan stdlib identifier; a caller that starts from a
+    QVR name spells it through `_emit_function_expression`.
     """
     vid = ctx.vertex(ctx.fresh("call"), "function_expression")
     ctx.constraint(vid, "chose-alt-child-kinds", "identifier argument_list")
@@ -552,11 +541,8 @@ def _emit_indexed(ctx, expr: LetExprIndex) -> tuple[str, str]:
     the one place it is translated to Stan's one-based one, through
     [`one_based_subscript`][quivers.transpile.renderers._one_based.one_based_subscript].
     A Stan loop counter reaches an expression as its QVR value
-    `counter - 1` and so subscripts as the counter itself. The one
-    exception is a subscript that reads an integer data input: the
-    data contract of every one-based target delivers an index
-    covariate in the target's own origin, so such a read is already a
-    Stan subscript.
+    `counter - 1` and so subscripts as the counter itself; an index
+    covariate or a drawn class is a QVR value and is read one higher.
     """
     arr_vid, arr_kind = _render(ctx, expr.array)
     if arr_kind not in _STAN_INDEXED_CALLEE_KINDS:
@@ -569,12 +555,7 @@ def _emit_indexed(ctx, expr: LetExprIndex) -> tuple[str, str]:
     index_vids: list[str] = []
     child_kinds: list[str] = [arr_kind]
     for idx in expr.indices:
-        subscript = (
-            idx
-            if reads_index_covariate(idx, ctx.host_indices)
-            else one_based_subscript(idx)
-        )
-        inner_vid, inner_kind = _render(ctx, subscript)
+        inner_vid, inner_kind = _render(ctx, one_based_subscript(idx))
         wrap = ctx.vertex(ctx.fresh("idx"), "index")
         ctx.constraint(wrap, "chose-alt-child-kinds", inner_kind)
         ctx.edge(wrap, inner_vid, "child_of")

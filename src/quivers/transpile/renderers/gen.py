@@ -49,7 +49,7 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
-from quivers.transpile.renderers._one_based import index_covariate_names
+from quivers.transpile.renderers._ranks import name_rank_map
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -671,7 +671,10 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
     decl_axes = gx.decl_axes.get(ref.name, ())
 
     if ref.indices:
-        rendered = tuple(_render_arg(gx, idx, arg_ctx=arg_ctx) for idx in ref.indices)
+        rendered = tuple(
+            _one_higher(gx, _render_arg(gx, idx, arg_ctx=arg_ctx), idx)
+            for idx in ref.indices
+        )
         return _index_into(gx, base, rendered)
 
     if not decl_axes:
@@ -691,12 +694,39 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
                 _ident(gx, arg_ctx.via_indexer),
                 (_ident(gx, arg_ctx.via_loop_var),),
             )
-            leading.append(via_idx)
+            # The fibration holds zero-based QVR group codes.
+            leading.append(_gen_binary_expr(gx, via_idx, ".+", _integer(gx, 1)))
             continue
 
     if not leading:
         return base
     return _index_into(gx, base, tuple(leading))
+
+
+def _one_higher(gx: _GenCtx, index: str, arg: IRArg) -> str:
+    """Read a plan argument's subscript one higher when it holds a QVR value.
+
+    A program's index covariate or drawn class holds a zero-based QVR
+    value, which Julia reads one higher; a renderer's own loop variable
+    already counts from one.
+
+    Parameters
+    ----------
+    gx : _GenCtx
+        The render context.
+    index : str
+        The rendered subscript.
+    arg : IRArg
+        The subscript's plan argument.
+
+    Returns
+    -------
+    str
+        The subscript, broadcast-shifted with `.+ 1` for a program value.
+    """
+    if not isinstance(arg, IRArgRef) or arg.name not in gx.shapes.program_values:
+        return index
+    return _gen_binary_expr(gx, index, ".+", _integer(gx, 1))
 
 
 def _broadcast_to_shape(
@@ -858,6 +888,10 @@ def _gen_target_name(family: str) -> str:
     back to the wrapper-family table when the family is a
     composite-distribution wrapper that has no flat Gen.jl name.
     """
+    if family == "Categorical":
+        # QVR class codes count from zero, Gen's `categorical` from one;
+        # the grafted zero-based form draws and scores QVR codes.
+        return "qvr_categorical"
     meta = FAMILY_META.get(family)
     if meta is not None and "gen" in meta.target_names:
         return meta.target_names["gen"]
@@ -1086,7 +1120,7 @@ class GenRenderer(RendererBase):
             name_event_rank=name_event_rank_map(ir),
             name_array_rank=name_array_rank_map(ir),
             nested_names=nested_tower_names(ir),
-            index_covariates=index_covariate_names(ir),
+            program_values=frozenset(name_rank_map(ir)),
             row_arrays=_row_array_names(ir.body),
         )
 
@@ -1904,6 +1938,7 @@ _RUNTIME_GEN_PATH = pathlib.Path(__file__).resolve().parent.parent / "runtime_ge
 #: when the IR samples or observes from any of them.
 _GEN_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
     {
+        "Categorical",
         "TruncatedNormal",
         "Logistic",
         "BetaBinomial",

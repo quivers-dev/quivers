@@ -665,12 +665,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("webppl", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     # hmm: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
-    #
-    # `bugs` keeps its zero on the strength of a corrected emit, for
-    # the same reason `bugs` on `lda` does: the `marginalize state`
-    # scope lowers to `state ~ dcat(initial_row)`, a latent no point
-    # payload clamps, and the engine rejects it ("Cannot normalize
-    # density" at `state`) rather than integrating it out.
     ("webppl", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "hmm"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
@@ -722,21 +716,12 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs` keeps its zero on the strength of a corrected emit rather
-    # than of the current one. The renderer lowers the example's
-    # `marginalize z` scope to a stochastic node, `z[d] ~ dcat(...)`,
-    # instead of writing the logsumexp marginal the reduction denotes,
-    # so the emitted program declares a latent the point payload never
-    # clamps and the engine rejects it ("Cannot normalize density" at
-    # `z[6]`) before scoring. The entry states what the marginal emit
-    # would be entitled to, which is nothing;
-    # `test_backend_offset_matches_registry` stays red for this cell
-    # until the renderer emits it.
+    # `bugs` refuses the example: its word codes are observed class
+    # codes, which BUGS cannot shift to `dcat`'s one-based classes.
     ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("gen", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
-    ("bugs", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "lda"): _derived(half_sites=0, dropped_sites=0),

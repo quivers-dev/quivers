@@ -55,6 +55,7 @@ from quivers.transpile.ir import (
     IRScore,
     Plate,
 )
+from quivers.transpile.builtin_spellings import native_import, native_path
 from quivers.transpile.renderers._ranks import reduces_last_of_several_axes
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
@@ -398,108 +399,13 @@ def with_statement(
     return ws
 
 
-#: ``(dotted-import chain, alias)`` -> ``import <chain> as <alias>``.
-#: Used only by the NumPyro renderer, whose ``jnp`` namespace lacks the
-#: special functions and activations; ``torch`` / ``pymc`` / ``tensorflow``
-#: expose theirs on the framework namespace the fragment already assumes.
-_JAX_SPECIAL: tuple[tuple[str, ...], str] = (("jax", "scipy", "special"), "jsp")
-_JAX_NN: tuple[tuple[str, ...], str] = (("jax", "nn"), "jnn")
-
-#: A builtin's per-target lowering: the symbol path to emit as a dotted
-#: attribute, plus the import it needs (``None`` when the symbol lives on
-#: a namespace the target already has in scope).
+#: A non-pointwise builtin's per-target lowering: the symbol path to
+#: emit as a dotted attribute, plus the import it needs (``None`` when the
+#: symbol lives on a namespace the target already has in scope). The
+#: pointwise math builtins are spelled by
+#: [`BUILTIN_SPELLINGS`][quivers.transpile.builtin_spellings.BUILTIN_SPELLINGS].
 _CallEntry = tuple[tuple[str, ...], "tuple[tuple[str, ...], str] | None"]
 
-
-def _torch(name: str) -> _CallEntry:
-    return (("torch", name), None)
-
-
-def _torch_fn(name: str) -> _CallEntry:
-    return (("torch", "nn", "functional", name), None)
-
-
-def _jnp(name: str) -> _CallEntry:
-    return (("jnp", name), None)
-
-
-def _jsp(name: str) -> _CallEntry:
-    return (("jsp", name), _JAX_SPECIAL)
-
-
-def _jnn(name: str) -> _CallEntry:
-    return (("jnn", name), _JAX_NN)
-
-
-def _pmath(name: str) -> _CallEntry:
-    return (("pymc", "math", name), None)
-
-
-def _tfmath(name: str) -> _CallEntry:
-    return (("tf", "math", name), None)
-
-
-def _tfnn(name: str) -> _CallEntry:
-    return (("tf", "nn", name), None)
-
-
-#: Element-wise ``torch`` primitives that live at the top level with the
-#: same name a user writes; verified against the installed ``torch``.
-_TORCH_TOPLEVEL: tuple[str, ...] = (
-    "exp",
-    "expm1",
-    "log",
-    "log1p",
-    "log2",
-    "log10",
-    "sqrt",
-    "rsqrt",
-    "square",
-    "abs",
-    "sign",
-    "reciprocal",
-    "sin",
-    "cos",
-    "tan",
-    "asin",
-    "acos",
-    "atan",
-    "sinh",
-    "cosh",
-    "asinh",
-    "acosh",
-    "atanh",
-    "floor",
-    "ceil",
-    "round",
-    "trunc",
-    "erf",
-    "erfc",
-    "erfinv",
-    "lgamma",
-    "digamma",
-    "tanh",
-    "sigmoid",
-    "neg",
-)
-#: Activations that live under ``torch.nn.functional``.
-_TORCH_FUNCTIONAL: tuple[str, ...] = (
-    "relu",
-    "relu6",
-    "elu",
-    "selu",
-    "gelu",
-    "silu",
-    "mish",
-    "softplus",
-    "logsigmoid",
-    "softsign",
-)
-
-#: ``target -> {builtin name -> lowering}``. A builtin absent from a
-#: target's table has no faithful single-call rendering there (e.g. it
-#: needs a ``dim`` argument, or the library exposes no matching symbol),
-#: so lowering it raises rather than emit an undefined name.
 #: QVR primitives whose semantics is per-axis reduction over the event
 #: axis. When one of these calls sees a single argument of positive
 #: inferred event rank, the emit routes to the target's array-aware
@@ -519,183 +425,42 @@ _AXIS_KEYWORD_BY_TARGET: dict[str, str] = {
     "edward2": "axis",
 }
 
-
-def _torch_reduce(name: str) -> _CallEntry:
-    return (("torch", name), None)
-
-
+#: ``target -> {reduction name -> lowering}`` for the one-argument
+#: reductions and ``softmax``. A one-argument ``max`` / ``min`` routes to
+#: the reduction that returns a bare array (torch's ``amax`` / ``amin``
+#: rather than the ``(values, indices)`` pair).
 _LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
     "pyro": {
-        **{n: _torch(n) for n in _TORCH_TOPLEVEL},
-        **{n: _torch_fn(n) for n in _TORCH_FUNCTIONAL},
-        # Axis-reducing primitives map to torch's array-aware
-        # aggregators; the let-expr renderer appends ``dim=-1`` for a
-        # positive-event-rank argument. ``max`` / ``min`` route to
-        # ``amax`` / ``amin`` (the reductions that return a bare tensor
-        # rather than a ``(values, indices)`` namedtuple).
-        "sum": _torch_reduce("sum"),
-        "mean": _torch_reduce("mean"),
-        "prod": _torch_reduce("prod"),
-        "max": _torch_reduce("amax"),
-        "min": _torch_reduce("amin"),
-        "softmax": _torch("softmax"),
+        "sum": (("torch", "sum"), None),
+        "mean": (("torch", "mean"), None),
+        "prod": (("torch", "prod"), None),
+        "max": (("torch", "amax"), None),
+        "min": (("torch", "amin"), None),
+        "softmax": (("torch", "softmax"), None),
     },
     "numpyro": {
-        "exp": _jnp("exp"),
-        "expm1": _jnp("expm1"),
-        "log": _jnp("log"),
-        "log1p": _jnp("log1p"),
-        "log2": _jnp("log2"),
-        "log10": _jnp("log10"),
-        "sqrt": _jnp("sqrt"),
-        "square": _jnp("square"),
-        "abs": _jnp("abs"),
-        "sign": _jnp("sign"),
-        "reciprocal": _jnp("reciprocal"),
-        "sin": _jnp("sin"),
-        "cos": _jnp("cos"),
-        "tan": _jnp("tan"),
-        "asin": _jnp("arcsin"),
-        "acos": _jnp("arccos"),
-        "atan": _jnp("arctan"),
-        "sinh": _jnp("sinh"),
-        "cosh": _jnp("cosh"),
-        "asinh": _jnp("arcsinh"),
-        "acosh": _jnp("arccosh"),
-        "atanh": _jnp("arctanh"),
-        "floor": _jnp("floor"),
-        "ceil": _jnp("ceil"),
-        "round": _jnp("round"),
-        "trunc": _jnp("trunc"),
-        "tanh": _jnp("tanh"),
-        "neg": _jnp("negative"),
-        "erf": _jsp("erf"),
-        "erfc": _jsp("erfc"),
-        "erfinv": _jsp("erfinv"),
-        "lgamma": _jsp("gammaln"),
-        "digamma": _jsp("digamma"),
-        "sigmoid": _jnn("sigmoid"),
-        "relu": _jnn("relu"),
-        "elu": _jnn("elu"),
-        "selu": _jnn("selu"),
-        "gelu": _jnn("gelu"),
-        "silu": _jnn("silu"),
-        "softplus": _jnn("softplus"),
-        "logsigmoid": _jnn("log_sigmoid"),
-        "softsign": _jnn("soft_sign"),
-        "sum": _jnp("sum"),
-        "mean": _jnp("mean"),
-        "prod": _jnp("prod"),
-        "max": _jnp("max"),
-        "min": _jnp("min"),
-        "softmax": _jnn("softmax"),
+        "sum": (("jnp", "sum"), None),
+        "mean": (("jnp", "mean"), None),
+        "prod": (("jnp", "prod"), None),
+        "max": (("jnp", "max"), None),
+        "min": (("jnp", "min"), None),
+        "softmax": (("jnn", "softmax"), (("jax", "nn"), "jnn")),
     },
     "pymc": {
-        "exp": _pmath("exp"),
-        "expm1": _pmath("expm1"),
-        "log": _pmath("log"),
-        "log1p": _pmath("log1p"),
-        "log2": _pmath("log2"),
-        "sqrt": _pmath("sqrt"),
-        "abs": _pmath("abs"),
-        "sin": _pmath("sin"),
-        "cos": _pmath("cos"),
-        "tan": _pmath("tan"),
-        "sinh": _pmath("sinh"),
-        "cosh": _pmath("cosh"),
-        "tanh": _pmath("tanh"),
-        "floor": _pmath("floor"),
-        "ceil": _pmath("ceil"),
-        "erf": _pmath("erf"),
-        "erfc": _pmath("erfc"),
-        "erfinv": _pmath("erfinv"),
-        "sigmoid": _pmath("sigmoid"),
-        "sum": _pmath("sum"),
-        "mean": _pmath("mean"),
-        "prod": _pmath("prod"),
-        "max": _pmath("max"),
-        "min": _pmath("min"),
-        "softmax": _pmath("softmax"),
+        "sum": (("pymc", "math", "sum"), None),
+        "mean": (("pymc", "math", "mean"), None),
+        "prod": (("pymc", "math", "prod"), None),
+        "max": (("pymc", "math", "max"), None),
+        "min": (("pymc", "math", "min"), None),
+        "softmax": (("pymc", "math", "softmax"), None),
     },
     "edward2": {
-        "exp": _tfmath("exp"),
-        "expm1": _tfmath("expm1"),
-        "log": _tfmath("log"),
-        "log1p": _tfmath("log1p"),
-        "sqrt": _tfmath("sqrt"),
-        "rsqrt": _tfmath("rsqrt"),
-        "square": _tfmath("square"),
-        "abs": _tfmath("abs"),
-        "sign": _tfmath("sign"),
-        "reciprocal": _tfmath("reciprocal"),
-        "sin": _tfmath("sin"),
-        "cos": _tfmath("cos"),
-        "tan": _tfmath("tan"),
-        "asin": _tfmath("asin"),
-        "acos": _tfmath("acos"),
-        "atan": _tfmath("atan"),
-        "sinh": _tfmath("sinh"),
-        "cosh": _tfmath("cosh"),
-        "asinh": _tfmath("asinh"),
-        "acosh": _tfmath("acosh"),
-        "atanh": _tfmath("atanh"),
-        "floor": _tfmath("floor"),
-        "ceil": _tfmath("ceil"),
-        "round": _tfmath("round"),
-        "tanh": _tfmath("tanh"),
-        "sigmoid": _tfmath("sigmoid"),
-        "erf": _tfmath("erf"),
-        "erfc": _tfmath("erfc"),
-        "erfinv": _tfmath("erfinv"),
-        "lgamma": _tfmath("lgamma"),
-        "digamma": _tfmath("digamma"),
-        "neg": _tfmath("negative"),
-        "logsigmoid": _tfmath("log_sigmoid"),
-        "relu": _tfnn("relu"),
-        "elu": _tfnn("elu"),
-        "selu": _tfnn("selu"),
-        "gelu": _tfnn("gelu"),
-        "silu": _tfnn("silu"),
-        "softplus": _tfnn("softplus"),
-        "softsign": _tfnn("softsign"),
         "sum": (("tf", "reduce_sum"), None),
         "mean": (("tf", "reduce_mean"), None),
         "prod": (("tf", "reduce_prod"), None),
         "max": (("tf", "reduce_max"), None),
         "min": (("tf", "reduce_min"), None),
-        "softmax": _tfnn("softmax"),
-    },
-}
-
-
-#: ``target -> {builtin name -> lowering}`` for the pointwise two-argument
-#: builtins. QVR's ``max(a, b)`` and ``min(a, b)`` are pointwise, while
-#: their one-argument forms reduce an axis, and every target's reduction
-#: (``jnp.max``, ``torch.amax``, ``pymc.math.max``, ``tf.reduce_max``)
-#: reads a second positional argument as an axis, so the binary form
-#: takes the target's elementwise function instead. ``pow`` has only the
-#: binary form.
-_BINARY_POINTWISE_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
-    "pyro": {
-        "max": _torch("maximum"),
-        "min": _torch("minimum"),
-        "pow": _torch("pow"),
-    },
-    "numpyro": {
-        "max": _jnp("maximum"),
-        "min": _jnp("minimum"),
-        "pow": _jnp("power"),
-    },
-    "pymc": {
-        "max": _pmath("maximum"),
-        "min": _pmath("minimum"),
-        # `pymc.math` has no power function; PyTensor's is `pt.pow`.
-        "pow": (("pymc", "pytensorf", "pt", "pow"), None),
-    },
-    "edward2": {
-        "max": _tfmath("maximum"),
-        "min": _tfmath("minimum"),
-        "pow": _tfmath("pow"),
+        "softmax": (("tf", "nn", "softmax"), None),
     },
 }
 
@@ -748,19 +513,17 @@ _MATH_BUILTIN_NAMES = EAGER_BUILTIN_NAMES
 def _resolve_python_call(ctx: PyCtx, func: str, arity: int = 1) -> str:
     """Emit the callee vertex for a ``LetExprCall`` to ``func``.
 
-    When ``func`` is one of the target's mapped math builtins, emit its
-    symbol as a dotted attribute (e.g. ``torch.erf``) and record any
-    import the symbol needs on ``ctx.required_imports``. When ``func`` is
-    a math builtin with no symbol for this target (e.g. a reduction that
-    needs a ``dim`` argument), raise
+    A pointwise math builtin emits the function
+    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    names as a dotted attribute (e.g. ``torch.erf``), recording any
+    import it needs on ``ctx.required_imports``; a two-argument ``max``,
+    ``min``, or ``pow`` is pointwise and never reaches a reduction. A
+    reduction emits the target's array-aware aggregator. Any other
+    builtin raises
     `UnsupportedConstruct`
     rather than emit an undefined name. Any other callee (a domain
     function such as a chart-parser ``parse``, or a user helper) is
     emitted verbatim.
-
-    A two-argument ``max``, ``min``, or ``pow`` is pointwise and
-    resolves through the target's elementwise function, never a
-    reduction.
 
     Parameters
     ----------
@@ -782,10 +545,15 @@ def _resolve_python_call(ctx: PyCtx, func: str, arity: int = 1) -> str:
     UnsupportedConstruct
         If ``func`` is a math builtin with no symbol on the target.
     """
-    table = _LET_CALL_SYMBOLS.get(ctx.target, {})
-    entry = table.get(func)
-    if arity == 2:
-        entry = _BINARY_POINTWISE_SYMBOLS.get(ctx.target, {}).get(func, entry)
+    path = native_path(ctx.target, func, arity)
+    if path is not None:
+        import_spec = native_import(ctx.target, func, arity)
+        if import_spec is not None:
+            ctx.required_imports.add(import_spec)
+        if len(path) == 1:
+            return identifier(ctx, path[0])
+        return attribute(ctx, path)
+    entry = _LET_CALL_SYMBOLS.get(ctx.target, {}).get(func)
     if entry is not None:
         segments, import_spec = entry
         if import_spec is not None:
@@ -1070,13 +838,14 @@ def render_let_expr_python(
         # Python number an unrolled factor binder becomes, is a tensor of
         # its own type (`float` to the default dtype, `int` to `int64`).
         # `jnp.maximum` and its kind reject a Python list operand.
+        pointwise = native_path(ctx.target, expr.func, len(expr.args)) is not None
         operand = (
             _POINTWISE_OPERAND_SYMBOLS.get(ctx.target)
-            if (ctx.target == "pyro" and expr.func in _LET_CALL_SYMBOLS["pyro"])
-            or (
-                len(expr.args) == 2
-                and expr.func in _BINARY_POINTWISE_SYMBOLS[ctx.target]
+            if (
+                ctx.target == "pyro"
+                and (pointwise or expr.func in _LET_CALL_SYMBOLS["pyro"])
             )
+            or (pointwise and len(expr.args) == 2)
             else None
         )
         for a in expr.args:

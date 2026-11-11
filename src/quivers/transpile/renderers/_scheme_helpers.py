@@ -29,15 +29,16 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.builtin_spellings import native_path
 from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
 
 _TARGET = "qvr-scheme-helper"
 
-#: QVR builtins Scheme spells under another name: the power function is
-#: `expt`, and Scheme has no `pow`; integer division and remainder
-#: truncate toward zero, as `quotient` and `remainder` do.
+#: Let calls Scheme spells under another name: integer division and
+#: remainder truncate toward zero, as `quotient` and `remainder` do. The
+#: math builtins are spelled by
+#: [`BUILTIN_SPELLINGS`][quivers.transpile.builtin_spellings.BUILTIN_SPELLINGS].
 _SCHEME_CALL_NAMES: dict[str, str] = {
-    "pow": "expt",
     "quot": "quotient",
     "rem": "remainder",
 }
@@ -83,7 +84,13 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     if isinstance(expr, LetExprCall):
         lst = ctx.v(ctx.fresh("list"), "list")
         fn = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(fn, _SCHEME_CALL_NAMES.get(expr.func, expr.func))
+        path = native_path("church", expr.func, len(expr.args))
+        ctx.lit(
+            fn,
+            _SCHEME_CALL_NAMES.get(expr.func, expr.func)
+            if path is None
+            else ".".join(path),
+        )
         ctx.e(lst, fn)
         for a in expr.args:
             ctx.e(lst, render_let_expr_scheme(ctx, a))

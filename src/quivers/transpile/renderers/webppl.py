@@ -32,6 +32,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.builtin_spellings import WEBPPL_RUNTIME_BUILTINS
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 from quivers.transpile.ir import (
@@ -2858,10 +2859,13 @@ def _ir_emits_qvr_bcast(ir: IRProgram, ranks: Mapping[str, int]) -> bool:
 
 #: QVR math primitives the WebPPL runtime supplies as elementwise
 #: globals (`Math` has no bare `sigmoid` / `exp` / `log` / `sqrt` /
-#: `abs`, and WebPPL no `max` / `min` / `pow`, whose two-argument forms
-#: are pointwise, nor the truncating `quot` / `rem`).
+#: `abs`, WebPPL no `max` / `min` / `pow`, whose two-argument forms
+#: are pointwise, nor the truncating `quot` / `rem`), together with the
+#: `_qvr_`-prefixed builtins of
+#: [`WEBPPL_RUNTIME_BUILTINS`][quivers.transpile.builtin_spellings.WEBPPL_RUNTIME_BUILTINS].
 _WEBPPL_MATH_HELPERS: frozenset[str] = frozenset(
     {"sigmoid", "exp", "log", "sqrt", "abs", "max", "min", "pow", "quot", "rem"}
+    | WEBPPL_RUNTIME_BUILTINS
 )
 
 

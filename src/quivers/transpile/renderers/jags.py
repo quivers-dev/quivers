@@ -57,6 +57,7 @@ from quivers.transpile.ir import (
     Plate,
     event_dim_of,
 )
+from quivers.transpile.renderers._one_based import is_class_code_family
 from quivers.transpile.renderers._bugs_helpers import (
     SQRT_TWO_PI,
     TRUNCATION_FINGERPRINT,
@@ -330,6 +331,27 @@ def _ir_has_score(body: tuple[IRNode, ...]) -> bool:
     return False
 
 
+def _ir_observes_class_code(body: tuple[IRNode, ...]) -> bool:
+    """Whether a program body observes a class code outside a
+    marginalize block.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The plan body.
+
+    Returns
+    -------
+    bool
+        True when an observation scores a Categorical-like code, whose
+        one-based form the `data { ... }` block binds.
+    """
+    return any(
+        isinstance(node, IRObserve) and is_class_code_family(node.family)
+        for node in body
+    )
+
+
 def _ir_has_marginalize(body: tuple[IRNode, ...]) -> bool:
     """True iff `body` carries an
     [`IRMarginalize`][quivers.transpile.ir.IRMarginalize].
@@ -417,6 +439,7 @@ class JAGSRenderer(RendererBase):
             _ir_has_marginalize(ir.body)
             or _ir_has_score(ir.body)
             or any(ir_uses_family(ir.body, family) for family in _ZEROS_TRICK_FAMILIES)
+            or _ir_observes_class_code(ir.body)
         ):
             jctx.sb.constraint("src", "ptrace-0", "Cdata_block")
             jctx.sb.constraint("src", "ptrace-1", "Cmodel_block")
@@ -1105,6 +1128,9 @@ class JAGSRenderer(RendererBase):
             if node.family in _ZEROS_TRICK_FAMILIES:
                 self._emit_zeros_trick_latent(ctx, node)
                 return
+            if is_class_code_family(node.family):
+                self._emit_class_code_latent(ctx, node)
+                return
             self._emit_sample(
                 ctx,
                 name=node.name,
@@ -1124,6 +1150,9 @@ class JAGSRenderer(RendererBase):
                     arg_names=node.arg_names,
                     plate=node.plate,
                 )
+                return
+            if is_class_code_family(node.family):
+                self._emit_class_code_observation(ctx, node)
                 return
             self._emit_sample(
                 ctx,
@@ -2102,6 +2131,21 @@ class JAGSRenderer(RendererBase):
         idx_list = _fresh(ctx, "il", "index_list")
         child_pairs: list[tuple[str, str]] = []
         for idx in arg.indices:
+            if isinstance(idx, IRArgRef) and idx.name in ctx.decl_plates:
+                # A program value (an index covariate, a drawn class)
+                # holds a zero-based QVR code, read one higher.
+                shifted = LetExprBinOp(
+                    op="+",
+                    left=_ir_arg_to_let_expr(idx),
+                    right=LetExprLiteral(value=1.0, integral=True),
+                )
+                vid = render_let_expr_bugs(
+                    _jags_let_ctx(ctx, self._cards),
+                    shifted,
+                    decl_plates=ctx.decl_plates,
+                )
+                child_pairs.append((vid, "binary_expression"))
+                continue
             vid, kind = self._render_arg_with_kind(ctx, idx)
             child_pairs.append((vid, kind))
 
@@ -3025,6 +3069,91 @@ class JAGSRenderer(RendererBase):
                 ],
             )
         return LetExprIndex(array=LetExprVar(name=arg.name), indices=(index,))
+
+    def _emit_class_code_observation(self, ctx: _JAGSCtx, node: IRObserve) -> None:
+        """Score an observed class code with `dcat` on its one-based form.
+
+        The observed data holds QVR's zero-based class codes, and `dcat`
+        counts classes from one. The `data { ... }` block binds the
+        one-based code `<name>_code <- <name> + 1` from the data before
+        the model compiles, and the model observes that node, so the
+        engine scores the code the data holds.
+
+        Parameters
+        ----------
+        ctx : _JAGSCtx
+            The render context.
+        node : IRObserve
+            The class-code observation.
+        """
+        code = self._fresh_helper_name(ctx, f"{node.name}_code")
+        ctx.decl_plates[code] = node.plate
+        previous = ctx.current_block
+        ctx.current_block = ctx.data_block
+        try:
+            self._emit_deterministic(
+                ctx,
+                IRDeterministic(
+                    name=code,
+                    expr=LetExprBinOp(
+                        op="+",
+                        left=LetExprVar(name=node.name),
+                        right=LetExprLiteral(value=1.0, integral=True),
+                    ),
+                    constraint=node.constraint,
+                    plate=node.plate,
+                ),
+            )
+        finally:
+            ctx.current_block = previous
+        self._emit_sample(
+            ctx,
+            name=code,
+            family=node.family,
+            args=node.args,
+            arg_names=node.arg_names,
+            plate=node.plate,
+            via=node.via,
+            observed=True,
+        )
+
+    def _emit_class_code_latent(self, ctx: _JAGSCtx, node: IRSample) -> None:
+        """Draw a class with `dcat` and bind its zero-based QVR code.
+
+        `dcat` draws a class counting from one; the program reads the
+        drawn class as QVR's code, `<name> <- <name>_code - 1`, so a
+        subscript reads it one higher and a value reads it as QVR does.
+
+        Parameters
+        ----------
+        ctx : _JAGSCtx
+            The render context.
+        node : IRSample
+            The class-code draw.
+        """
+        code = self._fresh_helper_name(ctx, f"{node.name}_code")
+        ctx.decl_plates[code] = node.plate
+        self._emit_sample(
+            ctx,
+            name=code,
+            family=node.family,
+            args=node.args,
+            arg_names=node.arg_names,
+            plate=node.plate,
+        )
+        self._emit_deterministic(
+            ctx,
+            IRDeterministic(
+                name=node.name,
+                expr=LetExprBinOp(
+                    op="-",
+                    left=LetExprVar(name=code),
+                    right=LetExprLiteral(value=1.0, integral=True),
+                ),
+                constraint=node.constraint,
+                plate=node.plate,
+            ),
+        )
 
     def _emit_zeros_carrier(
         self,

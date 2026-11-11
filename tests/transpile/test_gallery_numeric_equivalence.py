@@ -140,6 +140,13 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # engine: the `panproto-test-bugs` image runs JAGS, which is why
     # the sibling `jags` cell is live and scores the same model.
     ("bugs", "beta_binomial_ab_test"): ("family:BetaBinomial:no-bugs-distribution"),
+    # lda observes its word codes, which the data holds counting from
+    # zero, and `dcat` counts from one. JAGS binds the shifted codes in
+    # its `data { ... }` block; the BUGS language has no such block, no
+    # logical node computed from data can also carry a distribution,
+    # and the zeros trick that would score the shifted code needs a
+    # data-bound carrier, so BUGS refuses the observed code.
+    ("bugs", "lda"): "observe:class-code",
     # gru_lm and lstm_lm build their gate arguments with `+` between
     # two `Hidden`-wide operands. The BUGS model language has no
     # elementwise vector arithmetic: only the contracted product

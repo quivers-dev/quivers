@@ -57,6 +57,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.builtin_spellings import native_path
 from quivers.transpile.ir import (
     affine_column_offsets,
     Dim,
@@ -789,16 +790,6 @@ def _emit_unary(ctx: _LetEnv, expr: LetExprUnaryOp) -> str:
     return u
 
 
-#: QVR function names that map to a different identifier in the
-#: BUGS / JAGS math library. Most pure-math names (``exp``, ``log``,
-#: ``sqrt``, ``abs``, ``pow``, ...) coincide across targets and need
-#: no rewrite; the logistic sigmoid is the inverse-logit link, which
-#: BUGS / JAGS expose as ``ilogit``.
-_BUGS_FUNCTION_RENAMES: dict[str, str] = {
-    "sigmoid": "ilogit",
-}
-
-
 def _emit_call(
     ctx: _BugsLetCtx,
     func: str,
@@ -810,13 +801,14 @@ def _emit_call(
     The `name` field is an `identifier` vertex; the `arguments` field
     is an `argument_list` whose children carry their grammar kind as
     the edge label (so the panproto walker can pick the right child
-    alternative). QVR-named math primitives (``sigmoid``, ...) are
-    rewritten to their BUGS / JAGS library identifiers (``ilogit``,
-    ...) via
-    `_BUGS_FUNCTION_RENAMES`.
+    alternative). A pointwise math builtin is called by the BUGS / JAGS
+    function
+    [`native_path`][quivers.transpile.builtin_spellings.native_path]
+    names (``sigmoid`` is ``ilogit``, ...).
     """
     c = ctx.v(ctx.fresh("call"), "function_call")
-    name_id = _emit_identifier(ctx, _BUGS_FUNCTION_RENAMES.get(func, func))
+    path = native_path(_target(ctx), func, len(arg_ids))
+    name_id = _emit_identifier(ctx, func if path is None else ".".join(path))
     ctx.e(c, name_id, "name")
     if not arg_ids:
         return c
@@ -1121,8 +1113,8 @@ def _emit_index(ctx: _LetEnv, expr: LetExprIndex) -> str:
     il = ctx.v(ctx.fresh("il"), "index_list")
     ctx.e(iv, il, "indices")
     for idx in expr.indices:
-        cid = _emit_index_slot(ctx, idx)
-        ctx.e(il, cid, _arg_edge_kind(idx))
+        subscript = _index_slot(ctx, idx)
+        ctx.e(il, _render(ctx, subscript), _arg_edge_kind(subscript))
     for dim in residual_event_dims(ctx.decl_plates, expr.array.name, len(expr.indices)):
         ctx.e(il, ctx.range_1_to(dim_upper_text(dim)), "range")
     return iv
@@ -1158,16 +1150,38 @@ def _truncating(expr: LetExprCall) -> LetExprNode:
     )
 
 
-def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
-    """Emit one index-list child, rebased to the target's origin.
+def _reads_program_value(ctx: _LetEnv, idx: LetExprNode) -> bool:
+    """Whether a subscript reads a value the program binds.
+
+    Parameters
+    ----------
+    ctx : _LetEnv
+        The environment, whose declared-plate table names every input,
+        site, and binding of the program.
+    idx : LetExprNode
+        The subscript.
+
+    Returns
+    -------
+    bool
+        True for a bound name or an entry of one, as opposed to a
+        renderer's loop variable.
+    """
+    while isinstance(idx, LetExprIndex):
+        idx = idx.array
+    return isinstance(idx, LetExprVar) and idx.name in ctx.decl_plates
+
+
+def _index_slot(ctx: _LetEnv, idx: LetExprNode) -> LetExprNode:
+    """One index-list child, rebased to the target's origin.
 
     QVR subscripts count from zero; BUGS and JAGS count from one. A
     subscript the source spells as an integer literal (a factor
     binder already substituted to its integer coordinate, or a
-    literal the model wrote itself) is thus emitted one higher.
-    A subscript that names a variable is left alone: a loop variable
-    already runs `1:N`, and an index-valued covariate arrives from
-    the host already lifted to one-based.
+    literal the model wrote itself) is thus emitted one higher, and so
+    is a subscript that reads a program value (an index covariate, or
+    an entry of one, or a drawn class): it holds a QVR code. A
+    renderer's own loop variable already runs `1:N` and is left alone.
 
     Integer-literal arithmetic (`2 - t` once the binder `t` is
     substituted) is evaluated first, so it is a literal subscript too,
@@ -1192,9 +1206,13 @@ def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
         ]
         if len(values) == 2:
             chosen = max(values) if idx.func == "max" else min(values)
-            return _emit_number(ctx, float(chosen + 1))
+            return LetExprLiteral(value=float(chosen + 1), integral=True)
     if isinstance(idx, LetExprLiteral):
-        return _emit_number(ctx, float(int(idx.value) + 1))
+        return LetExprLiteral(value=float(int(idx.value) + 1), integral=True)
+    if _reads_program_value(ctx, idx):
+        return LetExprBinOp(
+            op="+", left=idx, right=LetExprLiteral(value=1.0, integral=True)
+        )
     if isinstance(idx, (LetExprBinOp, LetExprUnaryOp, LetExprCall)):
         raise UnsupportedConstruct(
             f"qvr-{_target(ctx)}-helper",
@@ -1205,7 +1223,7 @@ def _emit_index_slot(ctx: _LetEnv, idx: LetExprNode) -> str:
                 f"{_target(ctx).upper()} origin"
             ],
         )
-    return _render(ctx, idx)
+    return idx
 
 
 def split_event_dims(
