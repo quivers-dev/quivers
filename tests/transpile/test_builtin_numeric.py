@@ -352,3 +352,109 @@ def test_church_scores_every_builtin_it_spells(scratch: pathlib.Path) -> None:
         atol=_equivalence.adaptive_atol(n_obs=_STEPS),
         context="church@builtins",
     )
+
+
+def _computation_source(names: list[str]) -> str:
+    """A program calling one named computation per builtin.
+
+    Each computation branches, so the planner keeps it a function of
+    its own rather than inlining its body: Stan renders it in the
+    `functions` block, whose builtins are spelled by the same table.
+
+    Parameters
+    ----------
+    names : list[str]
+        The builtins.
+
+    Returns
+    -------
+    str
+        QVR source scoring ``mu`` times each computation's value at the
+        builtin's constant.
+    """
+    lines = [f"object Step : FinSet {_STEPS}", "object Val : Real 1", ""]
+    for index, name in enumerate(names):
+        body = f"{name}(x, {_EXPONENT})" if name in _BINARY else f"{name}(x)"
+        lines += [
+            f"define f{index}(x : Real) : Real !{{}} =",
+            "    if x < -100.0 then",
+            "        return 0.0",
+            "    else",
+            f"        return {body}",
+            "",
+        ]
+    lines += [
+        "program p : Step -> Val",
+        "    sample mu <- Normal(loc=0.0, scale=1.0)",
+        "    observe y : Step <- Normal(loc=mu, scale=1.0)",
+    ]
+    for index, name in enumerate(names):
+        lines += [
+            f"    let c{index} <- f{index}({_argument(name)})",
+            f"    score s{index} = mu * c{index}",
+        ]
+    return "\n".join([*lines, "    return mu", "", "export p", ""])
+
+
+def _computation_oracle(names: list[str], mu: float) -> float:
+    """The joint of `_computation_source` at ``mu``, computed in ``torch``.
+
+    Parameters
+    ----------
+    names : list[str]
+        The builtins.
+    mu : float
+        The clamped latent.
+
+    Returns
+    -------
+    float
+        The log joint.
+    """
+    total = sum(
+        float(_apply(name, torch.tensor(_argument(name), dtype=torch.float64)))
+        for name in names
+    )
+    latent = torch.tensor(mu, dtype=torch.float64)
+    data = torch.tensor(_DATA, dtype=torch.float64)
+    return float(
+        D.Normal(0.0, 1.0).log_prob(latent)
+        + D.Normal(latent, 1.0).log_prob(data).sum()
+        + latent * total
+    )
+
+
+def test_stan_scores_every_builtin_a_named_computation_applies(
+    scratch: pathlib.Path,
+) -> None:
+    names = _spelled("stan")
+    source = _computation_source(names)
+    rendered = transpile(parse(source), target="stan")
+    assert b"functions {" in rendered and b"round(" not in rendered
+    model = loads(source).morphism
+    reference: list[float] = []
+    for mu in _POINTS:
+        sites = {"mu": torch.tensor([mu]), "y": torch.tensor(_DATA)}
+        joint = float(model.log_joint(torch.zeros(1, 1), sites).sum())
+        assert joint == pytest.approx(_computation_oracle(names, mu), rel=1e-5)
+        reference.append(joint)
+    image, ext, script_name = _BACKENDS_WITH_IMAGES["stan"]
+    if not _docker.image_available(image):
+        raise RuntimeError(f"docker image {image!r} not available")
+    raw = _docker.run_probe(
+        image=image,
+        script=pathlib.Path(__file__).parent / "probes" / "_scripts" / script_name,
+        source=rendered,
+        source_ext=ext,
+        points=[{"params": {"mu": mu}, "data": {"y": _DATA}} for mu in _POINTS],
+        scratch=scratch / "stan-computations",
+        timeout=600.0,
+        shapes={"mu": [], "y": [_STEPS]},
+        dtypes={"mu": "float", "y": "float"},
+    )
+    _equivalence.assert_log_density_match(
+        reference,
+        [float(value) for value in raw["log_densities"]],
+        atol=_equivalence.adaptive_atol(n_obs=_STEPS),
+        context="stan@computation-builtins",
+    )

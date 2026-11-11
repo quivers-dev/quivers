@@ -26,7 +26,21 @@ from quivers.transpile.family_spelling import (
     helper_roots,
     spell_distribution,
 )
-from quivers.dsl.ast_nodes.let_expressions import LetExprNode, LetExprVar
+from quivers.dsl.ast_nodes.let_expressions import (
+    LetExprBinOp,
+    LetExprCall,
+    LetExprLiteral,
+    LetExprNode,
+    LetExprUnaryOp,
+    LetExprVar,
+)
+from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS
+from quivers.transpile._builtin_spellings import (
+    Dedicated,
+    builtin_spelling,
+    native_path,
+    spell_builtin,
+)
 from quivers.transpile.ir import (
     IRCall,
     IRMarginalize,
@@ -3035,10 +3049,11 @@ def _stan_type(type_: object) -> str:
     )
 
 
-#: Stan spellings of the primitives a Stan function may apply, as
-#: templates over the rendered arguments. Booleans are Stan integers,
-#: so the logical operators are Stan's, and an activation is written
-#: out in the functions Stan has.
+#: Stan spellings of the operators, comparisons, conversions, and
+#: operand-typed `min` / `max` a Stan function may apply, as templates
+#: over the rendered arguments. Booleans are Stan integers, so the
+#: logical operators are Stan's. Every other math builtin is spelled by
+#: the shared per-target table, through `_stan_builtin`.
 _STAN_PRIMITIVES: dict[str, str] = {
     "add_int": "({0} + {1})",
     "sub_int": "({0} - {1})",
@@ -3046,7 +3061,6 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "div_int": "({0} %/% {1})",
     "mod_int": "({0} - {1} * ({0} %/% {1}))",
     "neg_int": "(-{0})",
-    "abs_int": "abs({0})",
     "min_int": "min({0}, {1})",
     "max_int": "max({0}, {1})",
     "add_real": "({0} + {1})",
@@ -3054,13 +3068,8 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "mul_real": "({0} * {1})",
     "div_real": "({0} / {1})",
     "neg_real": "(-{0})",
-    "abs_real": "abs({0})",
     "min_real": "fmin({0}, {1})",
     "max_real": "fmax({0}, {1})",
-    "pow_real": "pow({0}, {1})",
-    "exp": "exp({0})",
-    "log": "log({0})",
-    "sqrt": "sqrt({0})",
     "eq_int": "({0} == {1})",
     "ne_int": "({0} != {1})",
     "lt_int": "({0} < {1})",
@@ -3079,46 +3088,6 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "or": "({0} || {1})",
     "not": "(!{0})",
     "int_to_real": "(1.0 * {0})",
-    "expm1": "expm1({0})",
-    "log1p": "log1p({0})",
-    "log2": "log2({0})",
-    "log10": "log10({0})",
-    "rsqrt": "inv_sqrt({0})",
-    "square": "square({0})",
-    "sign": "(({0} > 0) - ({0} < 0))",
-    "reciprocal": "inv({0})",
-    "sin": "sin({0})",
-    "cos": "cos({0})",
-    "tan": "tan({0})",
-    "asin": "asin({0})",
-    "acos": "acos({0})",
-    "atan": "atan({0})",
-    "sinh": "sinh({0})",
-    "cosh": "cosh({0})",
-    "tanh": "tanh({0})",
-    "asinh": "asinh({0})",
-    "acosh": "acosh({0})",
-    "atanh": "atanh({0})",
-    "floor": "floor({0})",
-    "ceil": "ceil({0})",
-    "round": "round({0})",
-    "trunc": "trunc({0})",
-    "erf": "erf({0})",
-    "erfc": "erfc({0})",
-    "erfinv": "inv_erfc(1 - {0})",
-    "lgamma": "lgamma({0})",
-    "digamma": "digamma({0})",
-    "sigmoid": "inv_logit({0})",
-    "relu": "fmax({0}, 0)",
-    "relu6": "fmin(fmax({0}, 0), 6)",
-    "elu": "({0} > 0 ? {0} : expm1({0}))",
-    "selu": "(1.0507009873554805 * ({0} > 0 ? {0} : 1.6732632423543772 * expm1({0})))",
-    "gelu": "(0.5 * {0} * (1 + erf({0} / sqrt(2))))",
-    "silu": "({0} * inv_logit({0}))",
-    "mish": "({0} * tanh(log1p_exp({0})))",
-    "softplus": "log1p_exp({0})",
-    "logsigmoid": "log_inv_logit({0})",
-    "softsign": "({0} / (1 + abs({0})))",
 }
 
 
@@ -3143,15 +3112,114 @@ def _stan_value(node: IRQiecValue, computation: str) -> str:
         If a primitive has no Stan spelling.
     """
     if isinstance(node, IRQiecPrimitiveApplication):
+        arguments = tuple(
+            _stan_value(argument, computation) for argument in node.arguments
+        )
+        builtin = PRIMITIVE_BUILTINS.get(node.name)
+        spelling = (
+            None
+            if builtin is None
+            else builtin_spelling("stan", builtin, len(arguments))
+        )
+        if (
+            builtin is not None
+            and spelling is not None
+            and not isinstance(spelling, Dedicated)
+        ):
+            return _stan_builtin(builtin, arguments)
         template = _STAN_PRIMITIVES.get(node.name)
         if template is None:
             raise UnsupportedConstruct(
                 "qvr-stan", [f"qiec:stan:primitive:{node.name}:{computation}"]
             )
-        return template.format(
-            *(_stan_value(argument, computation) for argument in node.arguments)
-        )
+        return template.format(*arguments)
     return _static_value(node)
+
+
+def _stan_builtin(builtin: str, arguments: tuple[str, ...]) -> str:
+    """A math builtin applied to rendered Stan arguments.
+
+    The builtin is spelled by the shared per-target table: a Stan
+    function of its own, or a closed form whose own builtins are
+    spelled the same way.
+
+    Parameters
+    ----------
+    builtin : str
+        The QVR builtin.
+    arguments : tuple[str, ...]
+        The rendered arguments.
+
+    Returns
+    -------
+    str
+        The Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If Stan cannot express the builtin.
+    """
+    placeholders = tuple(
+        LetExprVar(name=f"__qiec_argument{index}") for index in range(len(arguments))
+    )
+    return _stan_text(
+        spell_builtin("stan", builtin, placeholders),
+        {
+            placeholder.name: text
+            for placeholder, text in zip(placeholders, arguments, strict=True)
+        },
+    )
+
+
+#: Stan's real-valued pointwise `max` and `min`, which a closed form
+#: applies to reals.
+_STAN_REAL_POINTWISE: dict[str, str] = {"max": "fmax", "min": "fmin"}
+
+
+def _stan_text(expr: LetExprNode, arguments: dict[str, str]) -> str:
+    """A spelled builtin's expression as Stan text.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The call or its closed form, over placeholder variables.
+    arguments : dict[str, str]
+        The rendered argument each placeholder stands for.
+
+    Returns
+    -------
+    str
+        The Stan expression.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the expression holds a node a closed form does not use.
+    """
+    if isinstance(expr, LetExprVar):
+        return arguments[expr.name]
+    if isinstance(expr, LetExprLiteral):
+        return repr(float(expr.value))
+    if isinstance(expr, LetExprBinOp):
+        return (
+            f"({_stan_text(expr.left, arguments)} {expr.op} "
+            f"{_stan_text(expr.right, arguments)})"
+        )
+    if isinstance(expr, LetExprUnaryOp):
+        return f"(-{_stan_text(expr.operand, arguments)})"
+    if isinstance(expr, LetExprCall):
+        path = native_path("stan", expr.func, len(expr.args))
+        name = (
+            ".".join(path)
+            if path is not None
+            else _STAN_REAL_POINTWISE.get(expr.func, expr.func)
+        )
+        rendered = ", ".join(_stan_text(argument, arguments) for argument in expr.args)
+        return f"{name}({rendered})"
+    raise UnsupportedConstruct(
+        "qvr-stan", [f"qiec:stan:builtin-form:{type(expr).__name__}"]
+    )
 
 
 def _stan_signature(item: IRQiecNamedComputation) -> str:

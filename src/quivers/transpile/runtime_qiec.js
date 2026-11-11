@@ -258,7 +258,12 @@ var _qvr_qiec_primitives = {
   atanh: function(a) { return Math.atanh(a); },
   floor: function(a) { return Math.floor(a); },
   ceil: function(a) { return Math.ceil(a); },
-  round: function(a) { return Math.round(a); },
+  // A tie rounds to even, as the QVR reference does; `Math.round`
+  // rounds it up.
+  round: function(a) {
+    var r = Math.floor(a + 0.5);
+    return (a + 0.5 === r && r % 2 !== 0) ? r - 1 : r;
+  },
   trunc: function(a) { return Math.trunc(a); },
   erf: function(a) { return _qvr_qiec_erf(a); },
   erfc: function(a) { return 1 - _qvr_qiec_erf(a); },
