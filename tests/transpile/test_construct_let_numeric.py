@@ -90,6 +90,14 @@ def _observed_read(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _function_identity(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    mu, y = v["mu"], v["y"]
+    return (
+        D.Normal(0.0, 1.0).log_prob(mu)
+        + D.Normal(2.0 * torch.tanh(mu), 1.0).log_prob(y).sum()
+    )
+
+
 def _pow(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     mu, y = v["mu"], v["y"]
     return (
@@ -149,6 +157,7 @@ _DATA: dict[str, dict[str, Host]] = {
     "let_expressions/let_observed_read": {"y": [0.5, -1.0, 2.0, 0.3]},
     "let_expressions/let_template_substitution": {"y": [0.4, -0.3, 0.8]},
     "let_expressions/let_pow": {"y": [0.4, -0.3, 0.8]},
+    "let_expressions/let_function_identity": {"y": [0.9, -1.2, 1.5]},
     "let_expressions/let_real_literals": {"y": [0.2, -0.1, 0.6]},
     "let_expressions/let_scalar_from_plate": {"y": [1.0, 2.0, 3.0]},
     "let_expressions/let_int_division": {"y": [0.3, -0.4, 0.9, 0.1]},
@@ -169,6 +178,11 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"a$effect": [1.4, 0.7]},
     ],
     "let_expressions/let_pow": [{"mu": -0.7}, {"mu": 0.3}, {"mu": 1.4}],
+    "let_expressions/let_function_identity": [
+        {"mu": -0.8},
+        {"mu": 0.25},
+        {"mu": 1.6},
+    ],
     "let_expressions/let_real_literals": [{"mu": -0.4}, {"mu": 0.1}, {"mu": 0.9}],
     "let_expressions/let_scalar_from_plate": [{"mu": -0.5}, {"mu": 0.5}, {"mu": 1.2}],
     "let_expressions/let_int_division": [{"mu": -0.6}, {"mu": 0.3}, {"mu": 1.3}],
@@ -181,6 +195,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_observed_read": {"mu": [], "y": [4]},
     "let_expressions/let_template_substitution": {"a$effect": [2], "y": [3]},
     "let_expressions/let_pow": {"mu": [], "y": [3]},
+    "let_expressions/let_function_identity": {"mu": [], "y": [3]},
     "let_expressions/let_real_literals": {"mu": [], "y": [3]},
     "let_expressions/let_scalar_from_plate": {"mu": [], "y": [3]},
     "let_expressions/let_int_division": {"mu": [], "y": [4]},
@@ -196,6 +211,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_observed_read": _observed_read,
     "let_expressions/let_template_substitution": _template_substitution,
     "let_expressions/let_pow": _pow,
+    "let_expressions/let_function_identity": _function_identity,
     "let_expressions/let_real_literals": _real_literals,
     "let_expressions/let_scalar_from_plate": _scalar_from_plate,
     "let_expressions/let_int_division": _int_division,

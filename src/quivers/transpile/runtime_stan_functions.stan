@@ -57,6 +57,29 @@ functions {
   real logit_normal_rng(real mu, real sigma) {
     return inv_logit(normal_rng(mu, sigma));
   }
+  // Log-Gamma density on the real line: Y = log(G) with
+  // G ~ Gamma(a, r), so log p(y) = a (log r + y) - r exp(y) - lgamma(a),
+  // exact for every finite y. The sampler stays in log space through
+  // the shape augmentation G = G' U^(1 / a) with G' ~ Gamma(a + 1, 1)
+  // and U ~ Uniform(0, 1) (Marsaglia and Tsang 2000), so a small shape
+  // never forms a Gamma draw that underflows.
+  real log_gamma_lpdf(real y, real a, real r) {
+    return a * (log(r) + y) - exp(y + log(r)) - lgamma(a);
+  }
+  real log_gamma_rng(real a, real r) {
+    return log(gamma_rng(a + 1, 1)) + log(uniform_rng(0, 1)) / a - log(r);
+  }
+  // Logit-Beta density on the real line: X = logit(P) with
+  // P ~ Beta(a, b), so log p(x) = a log_inv_logit(x)
+  // + b log1m_inv_logit(x) - lbeta(a, b), exact for every finite x
+  // where scoring inv_logit(x) under a Beta saturates. A draw is the
+  // difference of two unit-rate log-Gamma draws.
+  real logit_beta_lpdf(real x, real a, real b) {
+    return a * log_inv_logit(x) + b * log1m_inv_logit(x) - lbeta(a, b);
+  }
+  real logit_beta_rng(real a, real b) {
+    return log_gamma_rng(a, 1) - log_gamma_rng(b, 1);
+  }
   // Matrix-normal density for X in R^{p x n} with mean M, row
   // covariance U (p x p, SPD), and column covariance V (n x n, SPD):
   //

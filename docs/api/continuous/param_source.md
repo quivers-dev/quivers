@@ -42,4 +42,9 @@ error rather than a silent no-op, and so is `param_source` on a family
 whose parameters do not come from a source at all (`Horseshoe`,
 `GaussianProcess`, `Independent`, `Transformed`).
 
+A [learned function](deterministic.md) builds its network through
+[`function_source`][quivers.continuous.param_source.function_source], which
+admits the `linear`, `mlp`, and `identity` kinds and threads the declared
+hidden-layer activation into an `MLPSource`.
+
 ::: quivers.continuous.param_source

@@ -170,6 +170,47 @@ define folded = scan(cell) >> scan(cell2, init=h0)
         (identifier)))))
 
 ==================
+scan options
+==================
+
+define states = embed >> scan(cell, outputs=all)
+define backward = scan(cell, reverse=true, outputs=all) >> scan(cell2, outputs=last)
+define started = scan(cell, outputs=all, init=h0, reverse=false)
+
+---
+
+(source_file
+  (define_decl
+    name: (identifier)
+    value: (compose_expr
+      left: (expr_ident
+        (identifier))
+      right: (scan_expr
+        inner: (expr_ident
+          (identifier))
+        outputs: (identifier))))
+  (define_decl
+    name: (identifier)
+    value: (compose_expr
+      left: (scan_expr
+        inner: (expr_ident
+          (identifier))
+        reverse: (let_bool)
+        outputs: (identifier))
+      right: (scan_expr
+        inner: (expr_ident
+          (identifier))
+        outputs: (identifier))))
+  (define_decl
+    name: (identifier)
+    value: (scan_expr
+      inner: (expr_ident
+        (identifier))
+      outputs: (identifier)
+      init: (identifier)
+      reverse: (let_bool))))
+
+==================
 parser expressions
 ==================
 

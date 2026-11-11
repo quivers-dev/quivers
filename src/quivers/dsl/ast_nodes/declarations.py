@@ -249,7 +249,7 @@ class ObjectDecl(Statement):
 # ---------------------------------------------------------------------------
 
 type MorphismRole = Literal[
-    "latent", "observed", "kernel", "embed", "discretize", "let"
+    "latent", "observed", "kernel", "embed", "discretize", "let", "function"
 ]
 """Role attribute on a morphism declaration.
 
@@ -257,7 +257,8 @@ type MorphismRole = Literal[
 structural input), ``kernel`` (parametric Markov kernel with a family
 prior), ``embed`` (FinSet -> ContinuousSpace boundary),
 ``discretize`` (ContinuousSpace -> FinSet boundary), ``let``
-(deterministic let-bound morphism). Optional; when the option block
+(deterministic let-bound morphism), ``function`` (learned deterministic
+map between continuous spaces). Optional; when the option block
 carries no ``role``, the morphism is a kernel. Every other role is
 explicit.
 """
