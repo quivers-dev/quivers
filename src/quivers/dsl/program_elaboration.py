@@ -996,6 +996,140 @@ type _Shape = tuple[IndexTerm, ...]
 """The dimensions of a value, outermost first; empty for a scalar."""
 
 
+def _tie_extents(
+    parameter: TypeExpr, bound: TypeExpr, extents: dict[str, IndexTerm]
+) -> None:
+    """Tie a callee's open extents to the extents of a value passed to it.
+
+    Parameters
+    ----------
+    parameter : TypeExpr
+        The callee's parameter type, which may mention its index
+        variables.
+    bound : TypeExpr
+        The type of the value the caller passes.
+    extents : dict[str, IndexTerm]
+        The callee's index variables tied so far, extended in place with
+        each variable the parameter's dimensions name, taken from the
+        passed value's dimension at the same position.
+    """
+    expected = tensor_shape(parameter)
+    actual = tensor_shape(bound)
+    if expected is None or actual is None or len(expected[1]) != len(actual[1]):
+        return
+    for wanted, given in zip(expected[1], actual[1], strict=True):
+        if isinstance(wanted, IndexVariable) and wanted.name not in extents:
+            extents[wanted.name] = given
+
+
+def _specialized_scan_step(
+    elaborator: _Elaborator,
+    step_name: str,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> str:
+    """The scan step specialized to the bindings its cell reads.
+
+    A program cell is elaborated on its own, so a name it reads
+    without binding it is typed from its uses there, as host data: a
+    scalar for a bare use, a table of open extents for a subscripted
+    one. When the scanning program binds that name before the scan,
+    the cell reads the binding, so it is elaborated again with each
+    such name at its binding's type, under a name of its own, and the
+    step program calls that specialization.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    step_name : str
+        The step program the scan runs.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's state, whose helpers gain the
+        specialized step and cell.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    str
+        The specialized step program's name, or ``step_name`` when no
+        binding of the scanning program differs from the type the
+        cell reads its name at.
+    """
+    step_decl = elaborator._program_declarations.get(step_name)
+    if step_decl is None:
+        return step_name
+    suffix = f"__in_{state.declaration.name}_{node.name}"
+    draws = list(step_decl.draws)
+    changed = False
+    for index, draw in enumerate(step_decl.draws):
+        if not isinstance(draw, CallStep):
+            continue
+        cell_decl = elaborator._program_declarations.get(draw.call.callee)
+        cell_entry = next(
+            (item for item in elaborator.entries if item.name == draw.call.callee), None
+        )
+        if cell_decl is None or cell_entry is None:
+            continue
+        pins: dict[str, TypeExpr] = {}
+        for parameter in cell_entry.parameters:
+            if parameter.role in ("domain", "observation"):
+                continue
+            binding = scope.lookup(parameter.name)
+            if binding is not None and binding.type != parameter.type:
+                pins[parameter.name] = binding.type
+        if not pins:
+            continue
+        cell_name = f"{cell_decl.name}{suffix}"
+        state.helpers.extend(
+            _elaborate_nested_program(elaborator, cell_decl.with_(name=cell_name), pins)
+        )
+        draws[index] = draw.with_(call=draw.call.with_(callee=cell_name))
+        changed = True
+    if not changed:
+        return step_name
+    specialized = step_decl.with_(name=f"{step_name}{suffix}", draws=tuple(draws))
+    state.helpers.extend(_elaborate_nested_program(elaborator, specialized, {}))
+    return specialized.name
+
+
+def _elaborate_nested_program(
+    elaborator: _Elaborator, declaration: ProgramDecl, pins: Mapping[str, TypeExpr]
+) -> tuple[NamedComputation, ...]:
+    """Elaborate a program while another program is being elaborated.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    declaration : ProgramDecl
+        The program.
+    pins : Mapping[str, TypeExpr]
+        Types fixed for free names the program reads.
+
+    Returns
+    -------
+    tuple[NamedComputation, ...]
+        The program's computation and its helpers.
+    """
+    saved_state = elaborator._program_state
+    saved_macros = elaborator._lambda_macros
+    saved_pins = elaborator._pinned_types
+    elaborator._lambda_macros = {}
+    elaborator._pinned_types = dict(pins)
+    elaborator._program_declarations[declaration.name] = declaration
+    try:
+        return elaborator._elaborate_program(declaration)
+    finally:
+        elaborator._program_state = saved_state
+        elaborator._lambda_macros = saved_macros
+        elaborator._pinned_types = saved_pins
+
+
 def _unify_free_shapes(
     expr: LetExprNode,
     free: frozenset[str],
@@ -2535,7 +2669,11 @@ class _ProgramElaboration:
         )
 
     def _check_scan_site_labels(
-        self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
+        self: _Elaborator,
+        step_name: str,
+        state: _ProgramState,
+        node: LetStep,
+        written: str,
     ) -> None:
         """Refuse a scan whose step shares a site label with another site.
 
@@ -2556,6 +2694,10 @@ class _ProgramElaboration:
             The scanning program's accumulating state.
         node : LetStep
             The scan's step.
+        written : str
+            The step program the source's scan names, which ``step_name``
+            specializes when the cell reads bindings of the scanning
+            program; it is the same scan, not another one.
 
         Raises
         ------
@@ -2575,7 +2717,7 @@ class _ProgramElaboration:
                 reached_site_labels(callee, self._program_declarations),
             )
             for callee in _callees(state.declaration.draws)
-            if callee != step_name
+            if callee not in (step_name, written)
         )
         for owner, labels in others:
             shared = sorted(reached & labels)
@@ -2634,7 +2776,8 @@ class _ProgramElaboration:
             input nor a tensor with a leading axis of entries the step
             reads.
         """
-        step_name, source, init = scan
+        written, source, init = scan
+        step_name = _specialized_scan_step(self, written, scope, state, node)
         signature = self.computation_signatures.get(step_name)
         step_entry = next(
             (item for item in self.entries if item.name == step_name), None
@@ -2643,7 +2786,6 @@ class _ProgramElaboration:
             signature is None
             or step_entry is None
             or len(signature.parameters) < 2
-            or signature.telescope
             or signature.parameters[1] != signature.result
             or [parameter.role for parameter in step_entry.parameters[:2]]
             != ["domain", "domain"]
@@ -2655,6 +2797,13 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         entry_type, state_type = signature.parameters[:2]
+        if _index_variables_in((entry_type, state_type)):
+            self._fail(
+                node,
+                f"scan steps with {step_name!r}, whose input or state has an "
+                "open extent",
+                code="qiec-program",
+            )
         local = scope.lookup(source)
         if local is None:
             self._fail(
@@ -2681,7 +2830,7 @@ class _ProgramElaboration:
                 f"not the {render_static(entry_type)} it reads",
                 code="qiec-program",
             )
-        self._check_scan_site_labels(step_name, state, node)
+        self._check_scan_site_labels(step_name, state, node, written)
         # The step's remaining inputs pass through the recurrence from
         # the scanning program. A name the step reads without binding
         # it is the scanning program's binding of that name before the
@@ -2689,9 +2838,16 @@ class _ProgramElaboration:
         # the step scores is one observation per position: the scanning
         # program takes the sequence of them, and position ``t`` reads
         # its ``t``-th entry.
+        # The step's own open extents (a table it reads as host data) are
+        # tied to extents of the scanning program, from the binding the
+        # scanning program passes or from a fresh input of its own.
+        extents: dict[str, IndexTerm] = {}
         passed: list[Local] = []
         positional: list[bool] = []
         for parameter in step_entry.parameters[2:]:
+            existing = scope.lookup(parameter.name)
+            if existing is not None:
+                _tie_extents(parameter.type, existing.type, extents)
             if parameter.role == "observation":
                 if scope.lookup(parameter.name) is not None:
                     self._fail(
@@ -2701,9 +2857,12 @@ class _ProgramElaboration:
                         f"scanning program cannot also bind {parameter.name!r}",
                         code="qiec-program",
                     )
-                observed_shape = tensor_shape(parameter.type)
+                observed = self._passed_input_type(
+                    parameter.name, parameter.type, state, extents
+                )
+                observed_shape = tensor_shape(observed)
                 sequence_type: TypeExpr = (
-                    tensor_type(parameter.type, (extent,))
+                    tensor_type(observed, (extent,))
                     if observed_shape is None
                     else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
                 )
@@ -2719,13 +2878,37 @@ class _ProgramElaboration:
                 )
                 positional.append(True)
                 continue
-            existing = scope.lookup(parameter.name)
             if existing is None:
                 existing = self._declare_parameter(
-                    parameter.name, parameter.type, parameter.role, scope, state, node
+                    parameter.name,
+                    self._passed_input_type(
+                        parameter.name, parameter.type, state, extents
+                    ),
+                    parameter.role,
+                    scope,
+                    state,
+                    node,
                 )
             passed.append(existing)
             positional.append(False)
+        unresolved = [
+            binder.name for binder in signature.telescope if binder.name not in extents
+        ]
+        if unresolved:
+            self._fail(
+                node,
+                f"scan steps with {step_name!r}, whose open extents "
+                f"{', '.join(unresolved)} no input of the scanning program fixes",
+                code="qiec-program",
+            )
+        step_statics: tuple[StaticArgument, ...] = tuple(
+            extents[binder.name] for binder in signature.telescope
+        )
+        substitution = StaticSubstitution(
+            indices=tuple(
+                (binder.name, extents[binder.name]) for binder in signature.telescope
+            )
+        )
         name = f"{state.declaration.name}__{node.name}_scan"
         if name in self.computation_signatures:
             self._fail(
@@ -2733,7 +2916,7 @@ class _ProgramElaboration:
                 f"scan helper {name!r} is declared twice",
                 code="qiec-program",
             )
-        mentioned = _index_variables_in((local.type,))
+        mentioned = _index_variables_in((local.type, *(item.type for item in passed)))
         telescope = tuple(
             binder for name_, binder in state.extents.items() if name_ in mentioned
         )
@@ -2802,12 +2985,16 @@ class _ProgramElaboration:
                     Call(
                         signature.id,
                         signature.name,
-                        (),
+                        step_statics,
                         (
                             Var(entry),
                             Var(current),
                             *(
-                                Gather(Var(item), Var(position), parameter.type)
+                                Gather(
+                                    Var(item),
+                                    Var(position),
+                                    substitute_type(parameter.type, substitution),
+                                )
                                 if per_step
                                 else Var(item)
                                 for item, per_step, parameter in zip(
@@ -3419,8 +3606,12 @@ class _ProgramElaboration:
             family parameter, each a static binder of the program that a
             run reads off the data. Otherwise ``Int`` or ``Real`` when the name reaches no
             plated step, else the tensor of that element over the
-            plate's first batch axis.
+            plate's first batch axis. A name pinned for a scan cell
+            specialized to its scanning program has the pinned type.
         """
+        pinned = self._pinned_types.get(name)
+        if pinned is not None:
+            return pinned
         element, axis = state.input_shapes.get(name, (REAL, None))
         rank = state.tables.get(name)
         if rank is not None:
