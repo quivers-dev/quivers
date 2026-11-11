@@ -1431,9 +1431,13 @@ def _build_stacked_python(
 
 
 def _render_factor_python(ctx: PyCtx, expr: LetExprFactor) -> str:
-    """Unroll a `LetExprFactor` into a Python list literal.
+    """Unroll a `LetExprFactor` into the target's array.
 
-    Cases form (single binder, body=None): emit `[case_0, case_1,
+    A factor denotes a tensor wherever it appears, an operand of
+    arithmetic included, so it is stacked into the target's array rather
+    than left a Python list, which ``+`` would concatenate.
+
+    Cases form (single binder, body=None): stack `[case_0, case_1,
     ...]` in label order. Uniform-body form (one or more binders):
     substitute each binder for its 0-indexed integer value (Python
     arrays are 0-based, matching QVR's surface convention) and
@@ -1453,11 +1457,20 @@ def _render_factor_python(ctx: PyCtx, expr: LetExprFactor) -> str:
                 ],
             )
         ordered = sorted(expr.cases, key=lambda c: c.label)
-        items = tuple(render_let_expr_python(ctx, c.value) for c in ordered)
-        return _emit_python_list(ctx, items)
+        element = _PY_STACK_ELEMENT_SYMBOLS.get(ctx.target)
+        items: list[str] = []
+        for case in ordered:
+            vid = render_let_expr_python(ctx, case.value)
+            if element is not None:
+                vid = call(ctx, attribute(ctx, element), positional=(vid,))
+            items.append(vid)
+        stack = _target_stack_symbol(ctx, expr.binders[0].var)
+        return call(
+            ctx, attribute(ctx, stack), positional=(python_list(ctx, tuple(items)),)
+        )
     if expr.body is not None and not expr.cases:
         sizes = tuple(_card_for(ctx, b) for b in expr.binders)
-        return _build_nested_python(ctx, expr.binders, sizes, expr.body, ())
+        return _build_stacked_python(ctx, expr.binders, sizes, expr.body, ())
     raise UnsupportedConstruct(
         "qvr-python-helper",
         [
@@ -1498,34 +1511,6 @@ def _card_for(ctx: PyCtx, binder: LetFactorBinder) -> int:
             f"{type(idx).__name__}; only TypeName binders unroll"
         ],
     )
-
-
-def _build_nested_python(
-    ctx: PyCtx,
-    binders: tuple[LetFactorBinder, ...],
-    sizes: tuple[int, ...],
-    body: LetExprNode,
-    fixed: tuple[int, ...],
-) -> str:
-    """Recursively materialise the nested Python list tower for the
-    uniform-body factor form."""
-    if len(fixed) == len(binders):
-        subst = body
-        for binder, value in zip(binders, fixed, strict=True):
-            literal = LetExprLiteral(value=value, integral=True)
-            subst = _substitute_let_expr(
-                subst,
-                binder.var,
-                index_value=literal,
-                scalar_value=literal,
-            )
-        return render_let_expr_python(ctx, subst)
-    level = len(fixed)
-    items = tuple(
-        _build_nested_python(ctx, binders, sizes, body, fixed + (i,))
-        for i in range(sizes[level])
-    )
-    return _emit_python_list(ctx, items)
 
 
 # ---------------------------------------------------------------------------

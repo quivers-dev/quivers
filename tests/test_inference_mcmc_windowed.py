@@ -42,7 +42,7 @@ from quivers.inference.mcmc import (
     NUTSKernel,
     PotentialFn,
 )
-from quivers.inference.mcmc.driver import _ess
+from quivers.diagnostics import ess as effective_sample_size
 from quivers.inference.registry import LatentRegistry
 
 
@@ -275,7 +275,9 @@ def _ess_per_coordinate(draws: torch.Tensor) -> torch.Tensor:
     """Effective sample size of each column of a ``(n, D)`` draw matrix."""
     return torch.stack(
         [
-            _ess(draws[:, d].to(torch.float64).unsqueeze(0))
+            effective_sample_size(
+                draws[:, d].to(torch.float64).unsqueeze(0), method="mean"
+            )
             for d in range(draws.shape[1])
         ]
     )
@@ -502,7 +504,7 @@ def test_windowed_kernels_recover_a_conjugate_posterior(kind: str) -> None:
         _normal_normal_model(), torch.zeros(1, 1), {"y": y}
     )
     draws = result.samples["mu"]
-    ess = float(_ess(draws.to(torch.float64)))
+    ess = float(effective_sample_size(draws.to(torch.float64), method="mean"))
     # Five standard errors of the posterior mean and of the variance.
     assert abs(float(draws.mean()) - post_mean) < 5.0 * post_sd / math.sqrt(ess)
     assert abs(float(draws.var()) / post_sd**2 - 1.0) < 5.0 * math.sqrt(2.0 / ess)
