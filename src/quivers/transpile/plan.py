@@ -2157,9 +2157,7 @@ def _collect_factor_axes(
         if isinstance(step, LetStep) and isinstance(step.value, LetExprFactor):
             indices = tuple(binder.index for binder in step.value.binders)
             if all(isinstance(index, TypeName) for index in indices):
-                out[step.name] = tuple(
-                    cast(TypeName, index).name for index in indices
-                )
+                out[step.name] = tuple(cast(TypeName, index).name for index in indices)
         elif isinstance(step, MarginalizeStep):
             _collect_factor_axes(step.scope, out)
 

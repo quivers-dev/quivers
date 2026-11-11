@@ -155,6 +155,7 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
     for _fixture in (
         "marginalize_body_let_chain",
         "marginalize_body_plated_let",
+        "marginalize_factor_let_rows",
         "marginalize_latent_gather",
         "marginalize_latent_value",
         "marginalize_let_probs",

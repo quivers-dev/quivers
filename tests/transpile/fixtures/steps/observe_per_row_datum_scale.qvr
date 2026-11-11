@@ -1,0 +1,9 @@
+# Exercises a host datum filling a family parameter of a plated observe
+# directly: `se` holds one known standard error per `School` row, so every
+# target reads it at the row it scores.
+object School : FinSet 4
+program pool : School -> School
+    sample mu <- Normal(loc=0.0, scale=10.0)
+    observe y : School <- Normal(loc=mu, scale=se)
+    return y
+export pool
