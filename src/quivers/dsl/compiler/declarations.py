@@ -1458,8 +1458,7 @@ class _DeclarationsMixin:
                 ) from error
             latent = (
                 member
-                if get_option_name(decl.options, "weights", default="point")
-                == "latent"
+                if get_option_name(decl.options, "weights", default="point") == "latent"
                 else None
             )
             self._morphisms[member] = LearnedFunction(

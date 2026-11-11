@@ -7241,7 +7241,7 @@ class _ProgramElaboration:
             return None
         if f"embed:{step.morphism}" in kinds:
             return ResolvedDist("Normal", (), step.morphism)
-        if "param-source:mlp" not in kinds:
+        if "param-source:mlp" not in kinds and "param-source:linear" not in kinds:
             return None
         family = _bare_init_family(morphism)
         if family is None or family not in _CONDITIONAL_HEADS:

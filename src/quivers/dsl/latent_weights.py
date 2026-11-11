@@ -30,6 +30,7 @@ from quivers.continuous.deterministic import weight_site_names
 from quivers.dsl.ast_nodes import (
     CallStep,
     DefineDecl,
+    Expr,
     LetStep,
     MarginalizeStep,
     Module,
@@ -73,7 +74,9 @@ class LatentWeightsError(ValueError):
         self.col = col
 
 
-def _option(morphism: MorphismDecl, key: str) -> OptionName | OptionNumber | OptionCall | OptionList | None:
+def _option(
+    morphism: MorphismDecl, key: str
+) -> OptionName | OptionNumber | OptionCall | OptionList | None:
     """The value of one option of a declaration, or ``None``."""
     for entry in morphism.options:
         if entry.key == key:
@@ -114,7 +117,9 @@ def prior_scale(morphism: MorphismDecl) -> float:
         The ``prior_scale`` option, `DEFAULT_PRIOR_SCALE` when absent.
     """
     value = _option(morphism, "prior_scale")
-    return float(value.value) if isinstance(value, OptionNumber) else DEFAULT_PRIOR_SCALE
+    return (
+        float(value.value) if isinstance(value, OptionNumber) else DEFAULT_PRIOR_SCALE
+    )
 
 
 def network_kind(morphism: MorphismDecl) -> str:
@@ -225,6 +230,82 @@ def _step_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _has_scan(expr: Expr) -> bool:
+    """Whether a composition expression contains a ``scan``.
+
+    Parameters
+    ----------
+    expr : Expr
+        The expression.
+
+    Returns
+    -------
+    bool
+        ``True`` if a scan occurs anywhere in it.
+    """
+    pending: list[object] = [expr.model_dump()]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if node.get("kind") == "expr_scan":
+                return True
+            pending.extend(node.values())
+        elif isinstance(node, list | tuple):
+            pending.extend(node)
+    return False
+
+
+def _refuse_composite_uses(module: Module, latent: Mapping[str, MorphismDecl]) -> None:
+    """Refuse a latent-weight morphism composed outside a scan.
+
+    A program composes a ``define`` that runs a scan step by step, so a
+    latent-weight morphism in it is drawn from or called in a program
+    step that reads the drawn weights. A ``define`` without a scan, or a
+    morphism's ``~ <expression>`` initializer, composes its morphisms as
+    one kernel that has no run to read drawn weights from.
+
+    Parameters
+    ----------
+    module : Module
+        The module.
+    latent : Mapping[str, MorphismDecl]
+        The latent-weight morphisms by name.
+
+    Raises
+    ------
+    LatentWeightsError
+        At the first composition that reads a latent-weight morphism
+        outside a scan.
+    """
+    for statement in module.statements:
+        if isinstance(statement, DefineDecl):
+            expr, line, col, owner = (
+                statement.expr,
+                statement.line,
+                statement.col,
+                f"define {statement.name!r}",
+            )
+        elif isinstance(statement, MorphismDecl) and statement.init_expr is not None:
+            expr, line, col, owner = (
+                statement.init_expr,
+                statement.line,
+                statement.col,
+                f"morphism {statement.names[0]!r}",
+            )
+        else:
+            continue
+        used = sorted(_expr_ident_names(expr) & set(latent))
+        if used and not _has_scan(expr):
+            raise LatentWeightsError(
+                f"{owner} composes {used[0]!r}, whose weights are latent, outside "
+                f"a scan; a composition without a scan is one kernel with no run "
+                f"to draw the weights in. Draw from or call {used[0]!r} in a "
+                f"program step instead",
+                line,
+                col,
+            )
+
+
 def _references(module: Module) -> dict[str, frozenset[str]]:
     """The names each program, define, and morphism refers to."""
     graph: dict[str, frozenset[str]] = {}
@@ -239,7 +320,9 @@ def _references(module: Module) -> dict[str, frozenset[str]]:
     return graph
 
 
-def _reaches(start: str, targets: Mapping[str, MorphismDecl], graph: Mapping[str, frozenset[str]]) -> list[str]:
+def _reaches(
+    start: str, targets: Mapping[str, MorphismDecl], graph: Mapping[str, frozenset[str]]
+) -> list[str]:
     """The latent morphisms ``start`` reaches, in name order."""
     seen: set[str] = {start}
     frontier = [start]
@@ -446,11 +529,13 @@ def expand_latent_weights(module: Module, heads: Mapping[str, int]) -> Module:
     Raises
     ------
     LatentWeightsError
-        If a network's shape cannot be read off its declaration.
+        If a network's shape cannot be read off its declaration, or a
+        latent-weight morphism is composed outside a scan.
     """
     layout = latent_weight_layout(module, heads)
     if not layout:
         return module
+    _refuse_composite_uses(module, latent_morphisms(module))
     declared = {
         name
         for statement in module.statements
