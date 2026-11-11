@@ -177,10 +177,15 @@ for _backend in _BACKENDS:
             "scan:no-lowering:cell"
         )
 # A learned function's network weights are model-internal, neither sites
-# nor data, so every target refuses a weighted function by its network.
+# nor data, so every target refuses a weighted function by its network;
+# latent weights are sites, but no target has a form for the network's
+# layers applied to them.
 for _backend in _BACKENDS:
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "function_linear")] = (
         "param-source:linear"
+    )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "kernel_latent_weights")] = (
+        "param-source:linear:latent"
     )
 # BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
 # QVR reduction collapses only the last.
