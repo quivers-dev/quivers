@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 92 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 93 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 92    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 92    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 92    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 92    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 92    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 92    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 92    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 92    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 92    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 92    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 92    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 93    |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 93    |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 78 / 93    |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 72 / 93    |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 93    |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 86 / 93    |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 75 / 93    |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 87 / 93    |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 75 / 93    |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 72 / 93    |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 75 / 93    |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -190,6 +190,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_pairwise_gather`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_plated_list_operand`     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_pow`                     | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_real_division`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
