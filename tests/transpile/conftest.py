@@ -95,6 +95,7 @@ PROBE_MODULES = frozenset(
         "test_qiec_fixture_equivalence",
         "test_reduction_numeric",
         "test_tensor_parameter_numeric",
+        "test_vector_location_numeric",
         "test_vector_parameter_numeric",
         "test_via_fibration_numeric",
     }
