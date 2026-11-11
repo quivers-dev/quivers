@@ -607,11 +607,6 @@ _KNOWN_DEFECTS: dict[tuple[str, str], str] = {
         )
         for backend in ("numpyro", "pyro")
     },
-    ("let_expressions/let_row_gather", "jags"): (
-        "a row gathered from a table a factor builds over two axes reads the "
-        "table with one subscript, and the observation reads the gathered "
-        "rows at a loop variable it never binds, so the model does not compile"
-    ),
     ("steps/sample_class_code", "edward2"): (
         "a drawn class read as a number (`real(z)`) is emitted without its "
         "conversion, and TensorFlow refuses to add the int32 class to a "

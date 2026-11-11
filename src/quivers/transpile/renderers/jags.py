@@ -3373,6 +3373,27 @@ def _rewrite_arg(
                 return arg
             return IRArgRef(name=arg.name, indices=new_indices)
         fallback_lv, event_dims, axes = info
+        declared = ctx.decl_plates.get(arg.name)
+        if not arg.indices and declared is not None and len(axes) > 1:
+            # A table over several axes: the axes the surrounding loop
+            # iterates are read at its row, and the trailing ones it
+            # does not are read whole, as the event the consumer reads
+            # (a gathered table's class axis under a Categorical).
+            led = tuple(
+                IRArgRef(name=axis_to_lv[str(dim.name)])
+                for dim in declared.batch_dims
+                if str(dim.name) in axis_to_lv
+            )
+            rest = declared.batch_dims[len(led) :]
+            if led and all(str(dim.name) not in axis_to_lv for dim in rest):
+                return IRArgRef(
+                    name=arg.name,
+                    indices=(
+                        *led,
+                        *(_event_range_ir(dim) for dim in rest),
+                        *(_event_range_ir(ed) for ed in event_dims),
+                    ),
+                )
         # Choose the loop-var index expression.
         if axes and axes[-1] in axis_to_lv:
             # Surrounding plate iterates the latent's axis directly:

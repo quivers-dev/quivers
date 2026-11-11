@@ -2054,13 +2054,24 @@ def _index_letexpr_refs_inner(
             ),
         )
     if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=expr.array,
-            indices=tuple(
-                _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop)
-                for ix in expr.indices
-            ),
+        subscripts = tuple(
+            _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop)
+            for ix in expr.indices
         )
+        # The subscripts select the array's leading axes; an axis left
+        # after them that the surrounding loop iterates is read at the
+        # loop's row too, as a gathered table's class axis is in
+        # `row_table[n, k] <- table[group_idx[n], k]`.
+        trailing: tuple[LetExprNode, ...] = ()
+        if isinstance(expr.array, LetExprVar):
+            plate = decl_plates.get(expr.array.name)
+            if plate is not None:
+                trailing = tuple(
+                    LetExprVar(name=axis_to_loop[str(dim.name)])
+                    for dim in plate.batch_dims[len(subscripts) :]
+                    if str(dim.name) in axis_to_loop
+                )
+        return LetExprIndex(array=expr.array, indices=(*subscripts, *trailing))
     if isinstance(expr, LetExprAffineMap):
         return LetExprAffineMap(
             weight=_index_letexpr_refs_inner(expr.weight, decl_plates, axis_to_loop),
