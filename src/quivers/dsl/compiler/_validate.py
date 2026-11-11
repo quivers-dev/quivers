@@ -135,6 +135,7 @@ def _walk_morphism(
     if init.family not in family_set:
         return
     meta = FAMILY_META[FAMILY_ALIASES.get(init.family, init.family)]
+    display = ", ".join(decl.names)
     if not init.args:
         if init.family == "Categorical":
             out.append(
@@ -155,7 +156,7 @@ def _walk_morphism(
                 code="implicit-family-defaults",
                 severity="warning",
                 message=(
-                    f"morphism {decl.name!r}: `~ {init.family}` carries no "
+                    f"morphism {display!r}: `~ {init.family}` carries no "
                     f"explicit arguments; the resolver substitutes the "
                     f"family's canonical default parameters. Declare "
                     f"`~ {init.family}(args)` explicitly to silence this "
@@ -172,7 +173,7 @@ def _walk_morphism(
             meta=meta,
             line=init.line or decl.line,
             col=init.col or decl.col,
-            origin=f"morphism {decl.name!r} init clause",
+            origin=f"morphism {display!r} init clause",
             out=out,
         )
 

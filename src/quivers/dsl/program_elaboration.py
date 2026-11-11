@@ -194,6 +194,7 @@ from quivers.dsl.let_expr_traversal import (
     walk_let_expr,
 )
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
+from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
     instantiate_program,
@@ -1645,6 +1646,7 @@ class _ProgramElaboration:
                 "; ".join(error.kinds),
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
+        self._refuse_kernel_arguments()
         self._program_lets = build_let_table(expanded)
         self._program_declarations = {
             declaration.name: declaration
@@ -1660,6 +1662,35 @@ class _ProgramElaboration:
                     error.program = declaration.name
                     raise
         return tuple(computations)
+
+    def _refuse_kernel_arguments(self: _Elaborator) -> None:
+        """Refuse a kernel declaration whose family arguments read values.
+
+        A kernel's ``~ Family(...)`` arguments are literals or absent; a
+        name or reference among them has nothing to read, since a
+        declaration binds no value. The declaration compiler refuses the
+        same declarations with the same message.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            At the first such argument, in source order.
+        """
+        for name, morphism in self._program_morphisms.items():
+            init = morphism.init_family
+            if init is None or not init.args:
+                continue
+            role = _option_entry(morphism.options, "role")
+            if role is not None and not (
+                isinstance(role, OptionName) and role.value == "kernel"
+            ):
+                continue
+            refusal = kernel_argument_refusal(name, init.family, init.args)
+            if refusal is None:
+                continue
+            offending, message = refusal
+            node = offending if getattr(offending, "line", 0) else init
+            self._fail(node, message, code="qiec-program")
 
     # ------------------------------------------------------------------
     # module-level scaffolding

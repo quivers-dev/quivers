@@ -51,8 +51,8 @@ from quivers.dsl.ast_nodes import (
     CategoryDecl,
     CompositionDecl,
     CompositionRuleEntry,
+    DrawArg,
     DrawArgNamed,
-    DrawArgScalar,
     ExprIdent,
     MorphismDecl,
     RuleDecl,
@@ -90,6 +90,7 @@ from quivers.dsl.compiler._prelude import (
     _wrap_join_dim,
 )
 from quivers.dsl.compiler.programs import _ProgramsMixin
+from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.stochastic import StochasticMorphism
 from quivers.stochastic.categories import (
     BUILTIN_CONSTRUCTOR_NAMES,
@@ -218,6 +219,30 @@ _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
     "discretize": frozenset({"bins"}),
     "let": frozenset({"over", "iid"}),
 }
+
+
+def _draw_arg_location(arg: DrawArg, decl: MorphismDecl) -> tuple[int, int]:
+    """The source position to blame for one of a declaration's arguments.
+
+    Parameters
+    ----------
+    arg : DrawArg
+        An argument of the declaration's ``~ Family(...)`` initializer.
+    decl : MorphismDecl
+        The declaration.
+
+    Returns
+    -------
+    tuple[int, int]
+        The argument's line and column when the parser recorded them,
+        else the initializer's, else the declaration's.
+    """
+    if isinstance(arg, DrawArgNamed) and arg.line:
+        return arg.line, arg.col
+    init = decl.init_family
+    if init is not None and init.line:
+        return init.line, init.col
+    return decl.line, decl.col
 
 
 def _signature_params(cls) -> frozenset[str]:
@@ -1094,10 +1119,12 @@ class _DeclarationsMixin:
         domain = self._resolve_any_space(decl.domain)
         codomain = self._resolve_any_space(decl.codomain)
         explicit_args = decl.init_family.args if decl.init_family is not None else ()
-        if explicit_args and all(
-            isinstance(arg, DrawArgNamed) and isinstance(arg.value, DrawArgScalar)
-            for arg in explicit_args
-        ):
+        refusal = kernel_argument_refusal(name, family, explicit_args)
+        if refusal is not None:
+            offending, message = refusal
+            ln, cl = _draw_arg_location(offending, decl)
+            raise CompileError(message, ln, cl)
+        if explicit_args:
             network_options = {
                 entry.key
                 for entry in decl.options
@@ -1124,8 +1151,7 @@ class _DeclarationsMixin:
                 raise CompileError(
                     f"kernel morphism {name!r}: cannot construct fixed "
                     f"{family} family from its literal arguments: {exc}",
-                    decl.line,
-                    decl.col,
+                    *_draw_arg_location(explicit_args[0], decl),
                 ) from exc
             if inputs is not None:
                 raise CompileError(
