@@ -144,7 +144,7 @@ class _ArrayKey:
             return False
         if self._elements is not None:
             return self._elements == other._elements
-        return memoryview(left).cast("B") == memoryview(right).cast("B")
+        return left.data.cast("B") == right.data.cast("B")
 
     def __hash__(self) -> int:
         """Hash the array's dtype, shape, and a digest of its data.
@@ -156,7 +156,7 @@ class _ArrayKey:
         """
         if self._elements is not None:
             return hash((self._array.dtype.str, self._array.shape, self._elements))
-        digest = hashlib.blake2b(memoryview(self._array).cast("B"), digest_size=16)
+        digest = hashlib.blake2b(self._array.data.cast("B"), digest_size=16)
         return hash((self._array.dtype.str, self._array.shape, digest.digest()))
 
 

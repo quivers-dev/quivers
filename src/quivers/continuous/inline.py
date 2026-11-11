@@ -289,7 +289,7 @@ class FixedDistribution(ContinuousMorphism):
                 if self._discrete
                 else torch.Size((batch, int(getattr(self.codomain, "dim", 1))))
             )
-            shape = shape + rows
+            shape = torch.Size((*shape, *rows))
         if self._discrete:
             return _discrete_sample(dist, shape, self._support)
         if getattr(dist, "has_rsample", True):
@@ -2223,16 +2223,25 @@ def make_inline_distribution(
     fixed = not var_names and not (literal_tensor and family in _FAMILY_BUILDERS)
     if fixed:
         if family == "Categorical":
-            values = (
-                _list_values(args[0])
-                if isinstance(args[0], DrawArgList)
-                else _eval_draw_arg_value(args[0], variable_types)
-            )
+            parameterization = (selected_parameters or ("probs",))[0]
+            if not isinstance(args[0], DrawArgList):
+                values = _eval_draw_arg_value(args[0], variable_types)
+                return (
+                    make_fixed_categorical(
+                        values, codomain, parameterization=parameterization
+                    ),
+                    None,
+                )
+            listed = _list_values(args[0])
+            weights = [entry for entry in listed if isinstance(entry, float)]
+            if len(weights) != len(listed):
+                raise ValueError(
+                    "inline Categorical takes one vector of class weights, "
+                    "not a nested list"
+                )
             return (
                 make_fixed_categorical(
-                    values,
-                    codomain,
-                    parameterization=(selected_parameters or ("probs",))[0],
+                    weights, codomain, parameterization=parameterization
                 ),
                 None,
             )
