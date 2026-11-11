@@ -138,6 +138,9 @@ class Compiler(
         # The parameter spaces of the program being compiled, innermost
         # last: its host data and its lets, by name.
         self._parameter_space_stack: list[dict[str, AnySpace]] = []
+        # The checked extents of the values the program being compiled
+        # binds, innermost last, by name.
+        self._value_extents_stack: list[dict[str, tuple[int, ...]]] = []
         # Operadic contraction declarations. Each entry is callable
         # from the DSL at define-binding sites; the value records the
         # compiled `EinsumWiring` plus the declared domain /

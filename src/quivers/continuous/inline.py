@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Literal
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
@@ -2120,11 +2120,44 @@ def _param_row_width(vtype: AnySpace, event_rank: int) -> int:
     return int(getattr(vtype, "dim", 1))
 
 
+def _gathered_width(arg: Indexed, extents: tuple[int, ...]) -> int:
+    """The width of one gathered element of a value of known extents.
+
+    Gathering ``mu`` at ``k`` index bindings consumes its ``k``
+    outermost axes, so each gathered element is the value left over the
+    rest: one entry of a vector, one row of a matrix.
+
+    Parameters
+    ----------
+    arg : Indexed
+        The gather.
+    extents : tuple[int, ...]
+        The checked extents of the value gathered from.
+
+    Returns
+    -------
+    int
+        The number of entries of one gathered element.
+
+    Raises
+    ------
+    ValueError
+        If the gather indexes more axes than the value has.
+    """
+    if len(arg.indices) > len(extents):
+        raise ValueError(
+            f"{arg.name}[{', '.join(arg.indices)}] indexes {len(arg.indices)} "
+            f"axes of a value with {len(extents)}"
+        )
+    return math.prod(extents[len(arg.indices) :])
+
+
 def make_inline_distribution(
     family: str,
     args: tuple,
     codomain: AnySpace,
     variable_types: dict[str, AnySpace] | None = None,
+    value_extents: Mapping[str, tuple[int, ...]] | None = None,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 
@@ -2147,12 +2180,22 @@ def make_inline_distribution(
     variable_types : dict or None
         Mapping of variable names to their space types (for domain
         construction of direct distributions).
+    value_extents : Mapping[str, tuple[int, ...]] or None
+        The checked extents of the values the program binds, by name. A
+        gather ``mu[z]`` reads, per index, the value left after its
+        gathered axes: one entry of a vector, or one row of a matrix.
 
     Returns
     -------
     tuple of (ContinuousMorphism, tuple[str, ...] | None)
         The inline distribution morphism, and the variable names
         to pass as step input (None = use program input).
+
+    Raises
+    ------
+    ValueError
+        If a gather indexes more axes than its value's checked extents
+        have.
     """
     args, selected_parameters = _bind_inline_arguments(family, args)
     if family in _OPERATOR_FAMILIES:
@@ -2277,13 +2320,21 @@ def make_inline_distribution(
             # one it is left unresolved, for the stacked width to settle.
             var_dim: int | None = None
             lookup_name = arg.name if isinstance(arg, Indexed) else arg
-            if variable_types and lookup_name in variable_types:
+            if (
+                isinstance(arg, Indexed)
+                and value_extents is not None
+                and lookup_name in value_extents
+            ):
+                var_dim = _gathered_width(arg, value_extents[lookup_name])
+            elif variable_types and lookup_name in variable_types:
                 vtype = variable_types[lookup_name]
                 if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
-                    # A gather selects whole rows of a plate, so the
-                    # argument is one row wide; a gather from a vector
-                    # with no plate rows selects one of its coordinates.
-                    var_dim = vtype.row_width if vtype.plate_rows is not None else 1
+                    # With no checked extents, a gather from a plate
+                    # selects one of its declared rows; from a value
+                    # with no plate rows its width is left for the
+                    # stacked width to settle.
+                    if vtype.plate_rows is not None:
+                        var_dim = vtype.row_width
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
             param_spec.append(("var", var_dim))
@@ -2467,9 +2518,7 @@ def _infer_domain(
             # A plate-row parameter contributes one row of its plate to
             # each row of the stacked input, not the whole plate.
             label = vn.name if isinstance(vn, Indexed) else vn
-            components.append(
-                Euclidean(name=f"_inline_{label}", dim=vtype.row_width)
-            )
+            components.append(Euclidean(name=f"_inline_{label}", dim=vtype.row_width))
         elif vtype is not None:
             components.append(vtype)
         else:

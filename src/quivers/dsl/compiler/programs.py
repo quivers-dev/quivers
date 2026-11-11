@@ -6,9 +6,10 @@ compilation.
 """
 
 from __future__ import annotations
+import dataclasses
 import inspect
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
@@ -139,6 +140,7 @@ from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.terms import Computation, Local
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
@@ -243,6 +245,81 @@ def _checked_real_space(
     return Euclidean(
         name=f"_{name}", dim=total, plate_rows=extents[0] if axes else None
     )
+
+
+def _static_extents(type_: TypeExpr) -> tuple[int, ...] | None:
+    """The extents of a checked value whose every extent a literal fixes.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The value's checked type.
+
+    Returns
+    -------
+    tuple[int, ...] | None
+        ``()`` for a value that is not a tensor, a tensor's extents
+        outermost first, or ``None`` when an extent is not a literal.
+    """
+    split = tensor_shape(type_)
+    if split is None:
+        return ()
+    extents: list[int] = []
+    for dimension in split[1]:
+        if not isinstance(dimension, IndexLiteral) or not isinstance(
+            dimension.value, int
+        ):
+            return None
+        extents.append(dimension.value)
+    return tuple(extents)
+
+
+def _checked_local_extents(
+    parameters: tuple[Local, ...], body: Computation
+) -> dict[str, tuple[int, ...]]:
+    """The extents of every value a checked computation binds by name.
+
+    The computation's parameters and every local its body binds (each
+    site's draw and each let) are read off their checked types. A name
+    bound at two different types, or at an extent no literal fixes, is
+    left out, so no width is read for it.
+
+    Parameters
+    ----------
+    parameters : tuple[Local, ...]
+        The computation's parameters.
+    body : Computation
+        The computation's body, a tree of checked terms.
+
+    Returns
+    -------
+    dict[str, tuple[int, ...]]
+        Each name's extents, outermost first.
+    """
+    types: dict[str, set[TypeExpr]] = {}
+    seen: set[int] = set()
+    pending: list[Hashable] = [*parameters, body]
+    while pending:
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Local):
+            types.setdefault(node.name, set()).add(node.type)
+        elif isinstance(node, tuple | list):
+            pending.extend(node)
+        elif dataclasses.is_dataclass(node) and not isinstance(node, type):
+            pending.extend(
+                getattr(node, field.name) for field in dataclasses.fields(node)
+            )
+    extents: dict[str, tuple[int, ...]] = {}
+    for name, bound in types.items():
+        if len(bound) != 1:
+            continue
+        static = _static_extents(next(iter(bound)))
+        if static is not None:
+            extents[name] = static
+    return extents
 
 
 def _space_rows(space: AnySpace | None) -> tuple[int | None, int] | None:
@@ -857,6 +934,7 @@ class _ProgramsMixin:
     _groups: dict[str, list[str]]
     _program_templates: dict[str, ProgramDecl]
     _parameter_space_stack: list[dict[str, AnySpace]]
+    _value_extents_stack: list[dict[str, tuple[int, ...]]]
     qiec_module: QiecModule | None
     _contractions: dict
     _transformations: dict
@@ -2677,6 +2755,7 @@ class _ProgramsMixin:
         # each let as its operands type it.
         parameter_spaces = self._host_data_spaces(decl.name)
         self._parameter_space_stack.append(parameter_spaces)
+        self._value_extents_stack.append(self._checked_value_extents(decl.name))
         steps: list[Step] = []
         for step in expanded_draws:
             if isinstance(step, PlateDrawStep):
@@ -3647,6 +3726,7 @@ class _ProgramsMixin:
                     f"return variable {rv!r} not bound in program", decl.line, decl.col
                 )
         self._parameter_space_stack.pop()
+        self._value_extents_stack.pop()
         prog = MonadicProgram(
             domain,
             codomain,
@@ -4297,6 +4377,11 @@ class _ProgramsMixin:
                     draw.morphism,
                     draw.args,
                     inline_codomain,
+                    value_extents=(
+                        self._value_extents_stack[-1]
+                        if self._value_extents_stack
+                        else {}
+                    ),
                     variable_types={
                         **{
                             name: space
@@ -4374,6 +4459,43 @@ class _ProgramsMixin:
             if space is not None:
                 spaces[parameter.name] = space
         return spaces
+
+    def _checked_value_extents(self, program: str) -> dict[str, tuple[int, ...]]:
+        """The extents of the values a program binds, as its checked body types them.
+
+        A gather ``mu[z]`` passed to a family reads, per index, the
+        value left after the gathered axes; the extents say whether that
+        is one entry of a vector or one row of a matrix, which a flat
+        parameter space does not.
+
+        Parameters
+        ----------
+        program : str
+            The program's name.
+
+        Returns
+        -------
+        dict[str, tuple[int, ...]]
+            Each host datum's, site's, and let's extents by name. Empty
+            when the module has no checked computation for the program,
+            or when the module does not lower: its diagnostic is then
+            raised where `compile` reads the module.
+        """
+        try:
+            module = self.qiec_module
+        except QiecDiagnosticError:
+            return {}
+        if module is None:
+            return {}
+        entry = next((e for e in module.entries if e.name == program), None)
+        if entry is None:
+            return {}
+        computation = next(
+            (c for c in module.computations if c.id == entry.computation), None
+        )
+        if computation is None:
+            return {}
+        return _checked_local_extents(computation.parameters, computation.body)
 
     def _annotation_is_event_axis(
         self,
