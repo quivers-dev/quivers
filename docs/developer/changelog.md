@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.46.0] - 2026-11-11
+
+### Added
+
+- **`select(c, a, b)` and `real` / `int` of a Boolean in let expressions.** `select` takes `a` where the `Bool` condition holds and `b` elsewhere, entry by entry, broadcasting a number among its operands; both branches are of one type and both are evaluated, so the gradient is the taken branch's wherever the untaken branch is finite. `real(c)` and `int(c)` read a `Bool` as one or zero, so a mask such as `factor i : Pos, j : Pos in real(j <= i)` needs no integer clamp. Every transpile target computes them (`torch.where`, `jnp.where`, `pymc.math.switch`, `tf.where`, Stan's `c ? a : b`, Julia's `ifelse.`, JAGS's `ifelse`, and BUGS's `b + c * (a - b)`).
+
+### Fixed
+
+- **Python targets render comparisons and Boolean connectives.** A comparison in a let is Python's comparison operator and `&&` / `||` are the elementwise `&` / `|`, where every comparison had been emitted as `**`.
+
 ## [0.45.0] - 2026-11-11
 
 ### Added

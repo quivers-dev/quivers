@@ -304,6 +304,34 @@ def _row_gather_sampled(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _select(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A clipped vector, a hinge, an indicator, and a binder mask, by `where`.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    vec, s = v["v"], v["s"]
+    clipped = torch.where(vec > 0.0, vec, 0.1 * vec)
+    hinge = torch.where(s < 0.5, s, 1.0 - s)
+    positive = (vec > 0.2).to(vec.dtype)
+    lower = torch.stack([(1.0 if j <= 1 else 0.0) * vec[j] for j in range(3)])
+    return (
+        D.Normal(0.0, 1.0).log_prob(vec).sum()
+        + D.Normal(0.0, 1.0).log_prob(s)
+        + D.Normal(hinge, 1.0).log_prob(v["y"]).sum()
+        + clipped.sum()
+        + positive.sum() * s
+        + lower.sum() * s * s
+    )
+
+
 def _concat_slice(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """A packed state of two vectors and a number, split by windows.
 
@@ -551,6 +579,7 @@ _DATA: dict[str, dict[str, Host]] = {
         "y": [0, 2, 1, 1],
     },
     "let_expressions/let_concat_slice": {"y": [0.3, -1.1]},
+    "let_expressions/let_select": {"y": [0.2, -0.6]},
     "let_expressions/let_concat_slice_matrix": {"y": [0.6, -0.4]},
     "let_expressions/let_pairwise_gather": {
         "M": [1.0, -2.0, 0.5, 4.0, -3.0, 6.0],
@@ -633,6 +662,11 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"h": [1.1, 0.3, -0.5], "c": [0.6, -0.9, 0.1], "s": -0.3},
         {"h": [-0.2, 0.8, 1.3], "c": [0.0, 1.4, -0.6], "s": 0.5},
     ],
+    "let_expressions/let_select": [
+        {"v": [0.4, -1.2, 0.1], "s": 0.3},
+        {"v": [-0.5, 0.9, 0.25], "s": 0.8},
+        {"v": [1.3, 0.15, -0.7], "s": -0.4},
+    ],
     "let_expressions/let_concat_slice_matrix": [
         {"h": [0.4, -1.2, 0.7]},
         {"h": [1.1, 0.3, -0.5]},
@@ -674,6 +708,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     },
     "let_expressions/let_concat_slice": {"h": [3], "c": [3], "s": [], "y": [2]},
     "let_expressions/let_concat_slice_matrix": {"h": [3], "y": [2]},
+    "let_expressions/let_select": {"v": [3], "s": [], "y": [2]},
     "let_expressions/let_pairwise_gather": {
         "a": [3],
         "b": [2],
@@ -735,6 +770,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_host_matrix_row": _host_matrix_row,
     "let_expressions/let_pairwise_gather": _pairwise_gather,
     "let_expressions/let_concat_slice": _concat_slice,
+    "let_expressions/let_select": _select,
     "let_expressions/let_concat_slice_matrix": _concat_slice_matrix,
     "let_expressions/let_plated_list_operand": _plated_list_operand,
 }

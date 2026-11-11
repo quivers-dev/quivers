@@ -420,6 +420,21 @@ var _qvr_trunc = function(x) {
   return Array.isArray(x) ? map(_qvr_trunc, x) : Math.trunc(x);
 };
 
+// select(c, a, b): a where c holds, else b, entry by entry; a scalar
+// among the three broadcasts. Both branches are already evaluated.
+var _qvr_select = function(c, a, b) {
+  var c_arr = Array.isArray(c);
+  var a_arr = Array.isArray(a);
+  var b_arr = Array.isArray(b);
+  if (!c_arr && !a_arr && !b_arr) {
+    return c ? a : b;
+  }
+  var n = c_arr ? c.length : (a_arr ? a.length : b.length);
+  return mapN(function(i) {
+    return _qvr_select(c_arr ? c[i] : c, a_arr ? a[i] : a, b_arr ? b[i] : b);
+  }, n);
+};
+
 // The math builtins `Math` lacks, mapped over scalars and (possibly
 // nested) arrays like the ones above. WebPPL's own `tanh` and kin act
 // on tensors, so every QVR builtin reaches the runtime under a
