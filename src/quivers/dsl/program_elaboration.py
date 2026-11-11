@@ -4730,9 +4730,20 @@ class _ProgramElaboration:
             elif tuple(axis.size for axis in axes) != tuple(
                 axis.size for axis in found
             ):
+                draw = (
+                    step.var
+                    if isinstance(step, MarginalizeStep)
+                    else ", ".join(step.vars)
+                )
+                first, second = (
+                    " x ".join(render_static(axis.size) for axis in extent)
+                    for extent in (axes, found)
+                )
                 self._fail(
                     step,
-                    f"arguments of {record.name} broadcast over different shapes",
+                    f"{record.name} draw of {draw!r} reads parameters of "
+                    f"{first} and {second} entries, which do not broadcast to "
+                    f"one extent",
                     code="qiec-program",
                 )
         if axes is None:

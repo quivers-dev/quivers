@@ -14,8 +14,10 @@ import pytest
 import torch
 import torch.distributions as D
 
-from quivers.dsl import loads
+from quivers.dsl import loads, parse
 from quivers.dsl.compiler._prelude import CompileError
+from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.inference import trace
 
 HEAD = """
@@ -95,7 +97,14 @@ def test_parameters_of_different_extents_are_refused_at_the_draw() -> None:
         "    sample w <- Normal(loc=centre, scale=v)\n"
         "    return centre"
     )
-    with pytest.raises(CompileError, match="3 and 4 entries, which do not broadcast"):
+    message = "Normal draw of 'w' reads parameters of 4 and 3 entries, which do not"
+    with pytest.raises(QiecDiagnosticError, match=message) as checked:
+        lower_qvr_to_qiec(parse(source), module_name="mismatch")
+    assert (
+        checked.value.line
+        == source.splitlines().index("    sample w <- Normal(loc=centre, scale=v)") + 1
+    )
+    with pytest.raises(CompileError, match=message):
         loads(source)
 
 
