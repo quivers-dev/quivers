@@ -1429,24 +1429,46 @@ class _HostSteps:
         step : HostStep
             The step.
         argument : HostValue
-            The environment tuple, holding the sequence.
+            The environment tuple, holding the sequence and, for a scan
+            that starts from a binding, that binding.
 
         Returns
         -------
         torch.Tensor
-            The initial state, ``(batch, dim H)``: the scan's own when it
-            has one, else zero.
+            The initial state, ``(batch, dim H)``: the binding the scan
+            starts from, else the scan's own state when it has one, else
+            zero.
+
+        Raises
+        ------
+        ValueError
+            If the binding the scan starts from does not hold one state
+            per row.
         """
         spec = step.spec
         assert isinstance(spec, Scan)
-        (value,) = _environment(step, argument).values()
+        environment = _environment(step, argument)
+        value = environment[step.environment[0]]
         batch = int(value.shape[0])
+        body = spec.step
+        width = int(getattr(body.codomain, "dim"))
+        if spec.initial_from is not None:
+            start = environment[spec.initial_from]
+            if start.dim() == 2 and tuple(start.shape) == (batch, width):
+                return start
+            if start.dim() == 1 and int(start.shape[0]) == width:
+                return start.unsqueeze(0).expand(batch, -1)
+            if start.numel() == batch * width:
+                return start.reshape(batch, width)
+            raise ValueError(
+                f"scan {spec.name!r} starts from {spec.initial_from!r}, of shape "
+                f"{tuple(start.shape)}, which is not one state of width {width} "
+                f"per row of the batch of {batch}"
+            )
         if spec.initial is not None:
             return spec.initial.unsqueeze(0).expand(batch, -1)
-        body = spec.step
-        width = getattr(body.codomain, "dim")
         dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
-        return torch.zeros(batch, int(width), device=value.device, dtype=dtype)
+        return torch.zeros(batch, width, device=value.device, dtype=dtype)
 
     def _scan_state(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """The state a scan's step returned, carried to the next position.

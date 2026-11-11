@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.40.0] - 2026-11-11
+
+### Added
+
+- **`scan(cell, init=h0)` starts a scan from a binding of its scanning program.** Any site or `let` the program binds before the scan can be the initial state, with gradients reaching it; a binding of the state's type is read as it is, and a scalar binding is the one entry of a one-wide state. A name the program does not bind before the scan, or a binding of another type, is refused where the scan is written, and `qvr check` reports it as a diagnostic. `Scan` gains `initial_from`, and `ScanMorphism(cell, init=<name>)` names the binding it needs when run on its own.
+
 ## [0.39.0] - 2026-11-11
 
 ### Added

@@ -284,8 +284,13 @@ sample hidden <- token_embedding >> scan(cell)
 The step program takes one position's entry and the previous state, draws the
 chain's elements before the scan at the entry, and applies the cell. The
 binding, here `hidden`, is the final state, a value the run computes rather
-than a site. `init=learned` adds a learned initial-state input; the default
-initial state is zero. The scan returns only the final state. Every scan,
+than a site. The default initial state is zero; `init=learned` adds a learned
+initial-state input; and `init=h0`, with `h0` any binding the scanning program
+makes before the scan, starts the scan from that value. A binding of the state's
+type is read as it is, and a scalar binding is the one entry of a one-wide
+state; a name the program does not bind before the scan, or a binding of
+another type, is refused where the scan is written. Gradients reach the binding
+through the first position. The scan returns only the final state. Every scan,
 whatever its cell, runs its step as steps of the scanning program, once per
 position, and the compiled runtime and the reference machine apply the same
 rules to it.
@@ -378,6 +383,34 @@ A program composes with another through `sample y <- p(x)`, or runs at every
 position as the cell of `scan(p)`. A program used in `>>`, `repeat`, `stack`,
 `fan`, or `@` is refused on both paths, since the chain would treat it as a
 host function of its input.
+
+A stationary AR(1) log-volatility starts its trajectory from the chain's
+stationary distribution rather than from zero:
+
+<!-- compile: qiec -->
+```qvr
+object Val : Real 1
+
+program sv_step(u_t, h_prev) : Val * Val -> Val
+    let m = mu + phi * (h_prev - mu)
+    sample h <- Normal(loc=m, scale=sigma_h)
+    let vol = exp(0.5 * h)
+    observe r <- Normal(loc=0.0, scale=vol)
+    return h
+
+define run_all = scan(sv_step, init=h0)
+
+program volatility : Val -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    sample phi <- Uniform(low=-1.0, high=1.0)
+    sample sigma_h <- HalfNormal(scale=0.5)
+    let s0 = sigma_h / sqrt(1.0 - phi * phi)
+    sample h0 <- Normal(loc=mu, scale=s0)
+    sample last <- run_all
+    return last
+
+export volatility
+```
 
 Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
 the open sequence extent is not a declared categorical object.

@@ -1288,6 +1288,11 @@ class _Builder:
             INT,
             reads=(source_name,),
         )
+        if spec.initial_from is not None and frame.lookup(spec.initial_from) is None:
+            raise ValueError(
+                f"scan {spec.name!r} starts from {spec.initial_from!r}, which "
+                f"nothing binds before the scan"
+            )
         initial = self._host(
             frame,
             f"__scan_initial_{spec.name}",
@@ -1295,7 +1300,11 @@ class _Builder:
             spec,
             program,
             state_type,
-            reads=(source_name,),
+            reads=(
+                (source_name,)
+                if spec.initial_from is None
+                else (source_name, spec.initial_from)
+            ),
         )
         carried_names = [
             name

@@ -1051,7 +1051,14 @@ def _emit_chain(
                 LetExprVar(name=source),
             )
             if scan.init == "learned":
-                arguments = (*arguments, LetExprVar(name=f"{scan.name}_scan_init"))
+                arguments = (
+                    *arguments,
+                    LetExprVar(name=f"{scan.name}{LEARNED_SCAN_INIT_SUFFIX}"),
+                )
+            elif scan.init is not None and scan.init != "zeros":
+                # Any other name is a binding of the scanning program the
+                # scan starts from.
+                arguments = (*arguments, LetExprVar(name=scan.init))
             out.append(
                 LetStep(
                     name=var,
@@ -1635,6 +1642,27 @@ def _derive_chain_args(
     return (atom_to_draw_arg(prev_var),)
 
 
+LEARNED_SCAN_INIT_SUFFIX = "_scan_init"
+"""The suffix of the input a scan with ``init=learned`` starts from."""
+
+
+def is_learned_scan_init(name: str) -> bool:
+    """Whether a scan's initial-state name is a learned initial state.
+
+    Parameters
+    ----------
+    name : str
+        The third argument of ``scan(step, xs, init)``.
+
+    Returns
+    -------
+    bool
+        True for the ``<cell>_scan_init`` input ``init=learned``
+        introduces; false for a binding of the scanning program.
+    """
+    return name.endswith(LEARNED_SCAN_INIT_SUFFIX)
+
+
 def scan_let_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
     """Read ``scan(step, xs)`` or ``scan(step, xs, init)`` off a let expression.
 
@@ -1646,9 +1674,10 @@ def scan_let_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
     Returns
     -------
     tuple[str, str, str | None] | None
-        The step program's name, the sequence's name, and the learned
-        initial state's name when there is one; ``None`` when the
-        expression is not a scan of names.
+        The step program's name, the sequence's name, and the initial
+        state's name when there is one (a binding of the scanning
+        program, or the ``<cell>_scan_init`` input of a learned initial
+        state); ``None`` when the expression is not a scan of names.
     """
     if not isinstance(expr, LetExprCall) or expr.func != "scan":
         return None

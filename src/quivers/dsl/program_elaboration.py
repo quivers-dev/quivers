@@ -176,7 +176,11 @@ from quivers.qiec.types import (
     product_type,
     render_static,
 )
-from quivers.dsl.composite_lets import expand_composite_lets, scan_let_call
+from quivers.dsl.composite_lets import (
+    expand_composite_lets,
+    is_learned_scan_init,
+    scan_let_call,
+)
 from quivers.dsl.family_schemas import (
     PARAMETER_ALIASES,
     family_parameterizations,
@@ -1149,6 +1153,76 @@ def _elaborate_nested_program(
         elaborator._program_state = saved_state
         elaborator._lambda_macros = saved_macros
         elaborator._pinned_types = saved_pins
+
+
+def _scan_initial_state(
+    elaborator: _Elaborator,
+    init: str,
+    state_type: TypeExpr,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> Value:
+    """The state a scan starts from, named by its ``init``.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    init : str
+        The name ``scan(cell, init=...)`` gives: a binding of the
+        scanning program made before the scan, or the input a learned
+        initial state is read from.
+    state_type : TypeExpr
+        The scan's state type.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's state.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    Value
+        The binding, a scalar binding wrapped as the one entry of a
+        one-wide state, or the learned initial state's input.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If the name is neither bound before the scan nor a learned
+        initial state, or the binding's type is not the state's.
+    """
+    bound = scope.lookup(init)
+    if bound is None:
+        if not is_learned_scan_init(init):
+            elaborator._fail(
+                node,
+                f"the scan starts from {init!r} (init={init}), which the "
+                "program does not bind before the scan",
+                code="qiec-program",
+            )
+        learned = elaborator._declare_parameter(
+            init, state_type, "weight", scope, state, node
+        )
+        return Var(learned)
+    if bound.type == state_type:
+        return Var(bound)
+    shape = tensor_shape(state_type)
+    if (
+        shape is not None
+        and shape[1] == (IndexLiteral(1, NAT),)
+        and bound.type == shape[0]
+    ):
+        counter = Local("__scan_init_k", INT)
+        return Comprehension(counter, IndexLiteral(1, NAT), Var(bound), state_type)
+    elaborator._fail(
+        node,
+        f"the scan starts from {init!r}, of type {render_static(bound.type)}, "
+        f"but its state has type {render_static(state_type)}",
+        code="qiec-program",
+    )
 
 
 def _unify_free_shapes(
@@ -3514,12 +3588,7 @@ class _ProgramElaboration:
                 state.uses_params = True
         initial: Value = _zero_of(state_type)
         if init is not None:
-            learned = scope.lookup(init)
-            if learned is None:
-                learned = self._declare_parameter(
-                    init, state_type, "weight", scope, state, node
-                )
-            initial = Var(learned)
+            initial = _scan_initial_state(self, init, state_type, scope, state, node)
         return Call(
             identity,
             name,

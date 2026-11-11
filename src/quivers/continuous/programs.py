@@ -285,6 +285,11 @@ def _check_scan(step: Scan) -> MonadicProgram:
             f"parameters, the entry and the previous state, returning the "
             f"next state"
         )
+    if step.initial is not None and step.initial_from is not None:
+        raise ValueError(
+            f"scan {step.name!r}: the initial state is both a tensor and the "
+            f"binding {step.initial_from!r}; give one"
+        )
     if step.initial is not None:
         width = getattr(body.codomain, "dim", None)
         if step.initial.dim() != 1 or (

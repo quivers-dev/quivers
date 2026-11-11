@@ -573,7 +573,9 @@ hidden state `H` across a sequence:
 - **Execution.** Given a sequence of inputs `[x_0, x_1, ..., x_T]`
   (implicit in batch-first tensor shape `[batch, seq_len,
   input_dim]`), scan computes:
-  - `h_0 = zeros(H)` or a learned initial state (if `init=learned`)
+  - `h_0 = zeros(H)`, a learned initial state (if `init=learned`), or,
+    for a scan inside a program, a binding the program makes before the
+    scan (`init=h0`)
   - `h_t = cell(x_t, h_{t-1})` for `t = 1..T`
   - Returns the final hidden state `h_T`
 - **Type.** If `cell : A * H -> H`, then `scan(cell) : A -> H`.
