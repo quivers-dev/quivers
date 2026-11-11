@@ -22,6 +22,7 @@ Cover:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import math
 
 import pytest
@@ -42,6 +43,7 @@ from quivers.inference.mcmc import (
     MCMC,
     CycleKernel,
     GibbsKernel,
+    GibbsUpdate,
     IndependenceProposal,
     KernelState,
     MCMCKernel,
@@ -182,9 +184,8 @@ def _metropolis_draws(proposal: Proposal) -> torch.Tensor:
     ids=["drifting-walk", "defensive-independence"],
 )
 def test_metropolis_hastings_targets_the_posterior_and_needs_its_correction(
-    make: object, wrong: object
+    make: Callable[[], Proposal], wrong: Callable[[], Proposal]
 ) -> None:
-    assert callable(make) and callable(wrong)
     draws = _metropolis_draws(make())
     values, _ = draws.reshape(-1).sort()
     ks, critical = _ks_exceeds(draws, _normal_cdf(values, 0.0, 1.0))
@@ -299,8 +300,8 @@ def _prior_switch(
 
 @pytest.mark.parametrize("composite", ["cycle", "mixture"])
 def test_gibbs_with_nuts_targets_the_mixed_posterior(composite: str) -> None:
-    def build(update: object) -> MCMCKernel:
-        gibbs = GibbsKernel(["z"]) if update is None else GibbsKernel(["z"], update)  # type: ignore[arg-type]
+    def build(update: GibbsUpdate | None) -> MCMCKernel:
+        gibbs = GibbsKernel(["z"], update)
         nuts = NUTSKernel(max_tree_depth=4)
         if composite == "cycle":
             return CycleKernel({"gibbs": gibbs, "nuts": nuts})
@@ -430,10 +431,10 @@ def _prior_mean(
     ("update", "correct"), [(_conjugate_mean, True), (_prior_mean, False)]
 )
 def test_gibbs_update_function_samples_a_continuous_site(
-    update: object, correct: bool
+    update: GibbsUpdate, correct: bool
 ) -> None:
     kernel = CycleKernel(
-        [GibbsKernel(["mu"], update), MetropolisKernel(RandomWalkProposal(1.0))]  # type: ignore[arg-type]
+        [GibbsKernel(["mu"], update), MetropolisKernel(RandomWalkProposal(1.0))]
     )
     result = MCMC(kernel, num_warmup=20, num_samples=1500, num_chains=2, seed=4).run(
         _mean_program(), torch.zeros(1, 1), {}
