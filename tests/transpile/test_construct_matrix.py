@@ -308,6 +308,38 @@ for _fixture, _family, _backends in (
             f"family:{_family}:logits"
         )
 
+# The ordered probit, inverse Wishart, and matrix normal are refused by
+# name where a target has no class or literal form for them.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "observe_ordered_probit"): "arg:list-literal",
+        ("church", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("edward2", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("gen", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("jags", "steps", "observe_ordered_probit"): (
+            "family:no-target-name:OrderedProbit"
+        ),
+        ("turing", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("webppl", "steps", "observe_ordered_probit"): (
+            "family:no-webppl-target:OrderedProbit"
+        ),
+        ("bugs", "steps", "sample_inverse_wishart_factor"): "arg:matrix-literal",
+        ("church", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("edward2", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("gen", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("jags", "steps", "sample_inverse_wishart_factor"): (
+            "family:no-target-name:InverseWishart"
+        ),
+        ("pymc", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("webppl", "steps", "sample_inverse_wishart_factor"): (
+            "family:no-webppl-target:InverseWishart"
+        ),
+        ("bugs", "steps", "sample_matrix_normal"): "arg:matrix-literal",
+        ("church", "steps", "sample_matrix_normal"): "arg:matrix-literal",
+        ("jags", "steps", "sample_matrix_normal"): "family:no-target-name:MatrixNormal",
+    }
+)
+
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.
 _EXPECTED_ORTHOGONAL_RAISES.update(

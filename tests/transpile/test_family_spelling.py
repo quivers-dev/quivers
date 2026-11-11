@@ -150,6 +150,7 @@ def test_helper_families_are_the_ones_each_runtime_file_defines() -> None:
             "HalfStudentT",
             "MatrixNormal",
             "InverseWishart",
+            "OrderedProbit",
         }
     )
     assert "Categorical" in helper_families("webppl")

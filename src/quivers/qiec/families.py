@@ -885,7 +885,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         event_rank=2,
         event_sources=("scale_tril",),
         discrete=False,
-        reparameterizable=False,
+        reparameterizable=True,
         compositional=False,
         targets={
             "numpyro": "InverseWishart",
