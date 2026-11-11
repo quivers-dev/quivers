@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 96 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 98 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 58 / 96    |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 69 / 96    |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 77 / 96    |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 71 / 96    |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 62 / 96    |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 85 / 96    |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 74 / 96    |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 86 / 96    |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 74 / 96    |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 71 / 96    |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 74 / 96    |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 98    |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 98    |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 78 / 98    |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 72 / 98    |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 98    |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 86 / 98    |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 75 / 98    |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 87 / 98    |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 75 / 98    |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 72 / 98    |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 75 / 98    |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -141,6 +141,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                                        | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -191,6 +192,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_expr_var`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_factor_index_arithmetic` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_fold_shared_accumulator` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_function_identity`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -286,6 +288,24 @@ Each backend words it differently; this is bugs's. `bugs` on `options/option_cal
 
 ```text
 the module's `loss_decl` declaration declares a training objective attached to a program, a deduction, an encoder or a decoder. A loss is something an optimiser minimises, not a term of the model's density. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for an optimisation objective separate from the joint it scores. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. If the term belongs in the density, write it as a `score` step inside the program; if it is an optimiser objective, keep it in quivers, which is where training happens.
+```
+
+### `param-source:linear`
+
+Refused for: `steps/function_linear`.
+
+Reported kinds:
+
+```text
+param-source:linear
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_linear` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'shift' (line 10, through shift) applies a 'linear' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `param-source:mlp`
