@@ -196,7 +196,9 @@ def test_a_kernel_initializer_reading_a_name_is_refused() -> None:
     source = CATEGORICAL_LOGITS_MORPHISM.replace(
         "logits=[-2.0, 0.5, 1.25]", "logits=scores"
     )
-    with pytest.raises(UnsupportedConstruct, match="`logits=scores` .* is not a literal"):
+    with pytest.raises(
+        UnsupportedConstruct, match="`logits=scores` .* is not a literal"
+    ):
         Lower().forward(parse(source))
 
 

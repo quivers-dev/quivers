@@ -125,13 +125,9 @@ def test_qvr_check_names_a_plural_kernel_in_a_family_diagnostic(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "plural.qvr"
-    path.write_text(
-        "object X : Real 1\nmorphism a, b : X -> X ~ Normal(loc=0.0)\n"
-    )
+    path.write_text("object X : Real 1\nmorphism a, b : X -> X ~ Normal(loc=0.0)\n")
     messages = [
-        d.message
-        for d in check_file(path)
-        if d.code == "family-arg-parameterization"
+        d.message for d in check_file(path) if d.code == "family-arg-parameterization"
     ]
     assert messages == [
         "family 'Normal' requires exactly one complete parameter schema "
