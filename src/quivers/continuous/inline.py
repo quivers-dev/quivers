@@ -436,7 +436,9 @@ class MixedInlineDistribution(ContinuousMorphism):
                 f"param_spec length {len(param_spec)}"
             )
         self._param_shapes: tuple[tuple[int, ...] | None, ...] = (
-            param_shapes if param_shapes is not None else tuple(None for _ in param_spec)
+            param_shapes
+            if param_shapes is not None
+            else tuple(None for _ in param_spec)
         )
         if len(self._param_shapes) != len(param_spec):
             raise ValueError(

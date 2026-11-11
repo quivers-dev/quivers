@@ -161,8 +161,7 @@ class DistributionFamily:
             if dims and (
                 len(dims) != parameter.rank
                 or any(
-                    dim is not None and not 0 <= dim < self.event_rank
-                    for dim in dims
+                    dim is not None and not 0 <= dim < self.event_rank for dim in dims
                 )
             ):
                 raise ValueError(

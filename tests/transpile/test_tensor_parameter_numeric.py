@@ -129,7 +129,9 @@ _REFUSED: dict[tuple[str, str], str] = {
         (_HOST_FACTOR, target): "family:MultivariateNormal:scale_tril"
         for target in _EVERY_TARGET
     },
-    **{(_WISHART_HOST, target): "family:Wishart:scale_tril" for target in _EVERY_TARGET},
+    **{
+        (_WISHART_HOST, target): "family:Wishart:scale_tril" for target in _EVERY_TARGET
+    },
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))

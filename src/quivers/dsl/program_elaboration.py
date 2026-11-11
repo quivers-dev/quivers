@@ -4536,7 +4536,10 @@ class _ProgramElaboration:
             return arguments, plate
         substitution = self._extent_substitution(state)
         return (
-            [(name, substitute_value(value, substitution)) for name, value in arguments],
+            [
+                (name, substitute_value(value, substitution))
+                for name, value in arguments
+            ],
             substitute_plate(plate, substitution),
         )
 
@@ -5307,11 +5310,7 @@ class _ProgramElaboration:
                 event[dim] = self._resolved_extent(size, state)
                 continue
             if not self._unify_extents([(size, event[dim])], scope, state):
-                source = (
-                    f"{value.local.name!r}, "
-                    if isinstance(value, Var)
-                    else ""
-                )
+                source = f"{value.local.name!r}, " if isinstance(value, Var) else ""
                 self._fail(
                     step,
                     f"family {record.name!r} reads its {parameter.name!r} from "
@@ -5860,7 +5859,9 @@ class _ProgramElaboration:
             list(zip(left_shape[1], right_shape[1], strict=True)), scope, state
         )
 
-    def _extent_substitution(self: _Elaborator, state: _ProgramState) -> StaticSubstitution:
+    def _extent_substitution(
+        self: _Elaborator, state: _ProgramState
+    ) -> StaticSubstitution:
         """The substitution fixing every open extent a use has fixed.
 
         Parameters

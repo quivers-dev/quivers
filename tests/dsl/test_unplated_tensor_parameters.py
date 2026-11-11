@@ -160,8 +160,9 @@ def test_a_host_mean_and_factor_score_the_plated_torch_joint(m0: torch.Tensor) -
 def test_a_host_wishart_factor_scores_the_torch_density() -> None:
     w = torch.tensor([[2.0, 0.3], [0.3, 1.1]])
     expected = float(
-        D.Wishart(df=torch.tensor(4.0, dtype=torch.float64), scale_tril=_d(_L_HOST))
-        .log_prob(_d(w))
+        D.Wishart(
+            df=torch.tensor(4.0, dtype=torch.float64), scale_tril=_d(_L_HOST)
+        ).log_prob(_d(w))
     )
     compiled, reference = _both_paths(
         "sample_wishart_host_factor", {"L": _L_HOST}, {"W": w}

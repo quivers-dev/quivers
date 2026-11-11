@@ -1522,7 +1522,9 @@ class _ProgramWalk:
         )
         return out, tuple(names)
 
-    def _tensor_parameter_input(self, family: str, parameter: str, value: Value) -> None:
+    def _tensor_parameter_input(
+        self, family: str, parameter: str, value: Value
+    ) -> None:
         """Declare a host tensor filling a family's whole tensor parameter.
 
         A datum that is one value of a vector or matrix parameter, such as
