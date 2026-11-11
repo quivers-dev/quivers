@@ -8,6 +8,10 @@ obtaining the final state’s marginal density requires integrating over earlier
 `ScanMorphism(cell)` realizes the iterated Kleisli composition of a
 per-step cell over a sequence. `ScanMorphism.rsample(x)` applies the
 kernel at each step while threading the hidden state.
+`ScanMorphism(cell, outputs="all")` returns every state, `(batch,
+seq_len, hidden_dim)`, rather than the last, and
+`ScanMorphism(cell, reverse=True)` visits the positions from the last
+to the first; its trajectory, returned or scored, stays in input order.
 `ScanMorphism.rsample_trajectory(x)` draws every state, and
 `ScanMorphism.log_prob(x, trajectory)` scores a trajectory as the sum of
 its per-step log densities; a final state alone is refused, since its

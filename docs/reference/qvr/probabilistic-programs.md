@@ -63,10 +63,10 @@ type is inferred from the name's uses:
 | Use of the free name `x` | Checked type of `x` |
 | --- | --- |
 | filling a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
-| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter; several index vectors in one subscript select one entry per position, `x[i[n], j[n]]` |
 | combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
 | read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
-| used as an index | its elements are `Int` |
+| used as an index, or gathered from in an index position as in `E[tokens[q], k]` | its elements are `Int` |
 | none of the above | a scalar `Real`, or `Int` for an index |
 
 The rule applies to `let` and `score` expressions alike. A free name that a
@@ -172,8 +172,9 @@ A program binds a `define` computation with effectful binding:
 
 <!-- compile: qiec -->
 ```qvr
-define standardize(x : Real, location : Real, scale : Real) : Real !{} =
-    return (x - location) / scale
+define standardize(x : Tensor[Real]([8]), location : Real, scale : Real) : Tensor[Real]([8]) !{} =
+    let z_score = v -> (v - location) / scale
+    return map(x, z_score)
 
 object Row : FinSet 8
 
@@ -187,7 +188,24 @@ program standardized : Row -> Row
 export standardized
 ```
 
-The callee's residual effects join the program's. Dynamic transpile targets
+The host datum `x` takes the type of the parameter it is passed to, so it
+is a column of eight covariates, one per `Row`, and `map` standardizes each.
+The callee's residual effects join the program's.
+
+A call of a pure computation, one that performs no effect, takes no static
+arguments, and binds pure values before returning one, is inlined: its body
+runs at the call's arguments as `let` steps, with the callee's bindings under
+fresh names. The program then compiles to a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], so `trace`, `log_joint`
+and its gradients, SVI, and MCMC run on it, with the values the reference
+machine computes; the transpile planner inlines the same calls. A parametric
+template that calls a pure computation instantiates the same way. A call that
+cannot be inlined (an effectful callee, a conditional body, or a body that
+calls another computation) leaves the program a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] that runs on
+the reference machine, and a template making one is refused at the call.
+
+Dynamic transpile targets
 emit reachable calls through the common runtime ABI. Stan accepts a closed,
 monomorphic, effect-free scalar callee as a user-defined function. BUGS and
 JAGS refuse program-to-computation calls. Use `qvr check --target TARGET` to
@@ -276,10 +294,38 @@ makes before the scan, starts the scan from that value. A binding of the state's
 type is read as it is, and a scalar binding is the one entry of a one-wide
 state; a name the program does not bind before the scan, or a binding of
 another type, is refused where the scan is written. Gradients reach the binding
-through the first position. The scan returns only the final state. Every scan,
-whatever its cell, runs its step as steps of the scanning program, once per
-position, and the compiled runtime and the reference machine apply the same
-rules to it.
+through the first position. Every scan, whatever its cell, runs its step as
+steps of the scanning program, once per position, and the compiled runtime and
+the reference machine apply the same rules to it.
+
+A scan takes its options in any order, each at most once:
+`scan(cell, init=h0, outputs=all, reverse=true)`.
+
+- `outputs=last`, the default, makes the binding the final state.
+  `outputs=all` makes it every state, one per position of the sequence: the
+  checked elaboration types it `Tensor[H]([<input>_extent])` for a state of
+  type `H` (a state `Tensor[Real]([d])` gives `Tensor[Real]([<input>_extent,
+  d])`), and the compiled runtime lays it out `(batch, seq_len, d)`. Like the
+  final state, it is a value the run computes, not a site.
+- `reverse=true` visits the positions from the last to the first: the state
+  after position `t` is drawn given the entry at `t` and the state after
+  position `t + 1`, the initial state stands before the last position, and
+  the final state is the one after position 0. Its every-state sequence is
+  still laid out in input order, entry `t` being the state after reading
+  position `t`, so a forward and a reversed sequence over one input pair
+  position by position without reindexing.
+
+A sequence of states is what a later scan in the same chain runs over, so
+`scan(lower, outputs=all) >> scan(upper)` stacks two recurrences, and an element
+between them, `scan(lower, outputs=all) >> proj >> scan(upper)`, runs at every
+position inside the second scan's step. `fan` and `@` of branches that each end
+in a scan with `outputs=all` pair the sequences position by position: the entry
+at a position lays the branches' entries there end to end, as `fan` lays two
+vectors, and both sequences must run over the same positions. Three chains are
+refused where the draw is written: a scan over another scan's final state
+(`scan(a) >> scan(b)`), a morphism applied to a whole sequence of states outside
+a scan (`scan(a, outputs=all) >> head`), and a `fan` pairing a sequence with
+one value.
 
 A cell that is a stochastic morphism, `morphism cell : A * H -> H ~ Normal`,
 draws the next state at every position, at a site named by the scan's
@@ -300,7 +346,9 @@ whose own steps run once per position under the three rules below.
    the cell reads.
 2. **Sites.** Every site the step reaches is reached once per position. The
    `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
-   from zero over the run, so for a single scan `n` is the position. A trace
+   from zero over the run, so for a single scan `n` is the `n`-th position the
+   scan visits: position `n` left to right, and position `T - 1 - n` for a
+   reversed scan over `T` positions. A trace
    records `s@0`, `s@1`, and so on; a replay, a clamp, or a joint density
    addresses them by these keys. A `let` or `score` in a program cell appears in
    a trace as `name@n`, and each position's `score` joins the log joint. The
@@ -319,8 +367,10 @@ whose own steps run once per position under the three rules below.
    `Tensor[A]([<input>_extent, ...])` when one position's value is `A[...]`.
    The compiled runtime takes a batch of sequences with the position axis
    after the batch axis, `(batch, seq_len, ...)`; entry `[:, t]` is the
-   observation at position `t`, scored at site `y@t`. A single position may be
-   given instead as `y@t`, shaped `(batch, ...)`. Giving a position twice, a
+   observation at position `t`, scored at site `y@t`, or at `y@(T - 1 - t)`
+   in a reversed scan, which reaches position `t` that many visits after its
+   first. A single occurrence may be given instead as `y@n`, shaped
+   `(batch, ...)`. Giving a position twice, a
    value past the sequence's end, or a value for the scan's final state is
    refused. The scanning program cannot also bind `y`.
 
@@ -398,8 +448,52 @@ program volatility : Val -> Val
 export volatility
 ```
 
+A bidirectional tagger reads, at every position, the state of a forward scan
+and the state of a reversed scan over the same input, then scores one tag per
+position with a third scan:
+
+<!-- compile: qiec -->
+```qvr
+object In : Real 1
+object State : Real 1
+object Pair : Real 2
+
+program forward_cell(x_t, h_prev) : In * State -> State
+    let m_f = 0.8 * h_prev + x_t
+    sample f <- Normal(loc=m_f, scale=0.5)
+    return f
+
+program backward_cell(x_t, h_prev) : In * State -> State
+    let m_g = 0.6 * h_prev - x_t
+    sample g <- Normal(loc=m_g, scale=0.7)
+    return g
+
+program tag_cell(p_t, s_prev) : Pair * State -> State
+    let m_s = p_t[0] - p_t[1] + 0.3 * s_prev
+    sample s <- Normal(loc=m_s, scale=0.6)
+    observe y <- Normal(loc=s, scale=0.3)
+    return s
+
+define both = fan(scan(forward_cell, outputs=all), scan(backward_cell, outputs=all, reverse=true))
+define tagger = both >> scan(tag_cell, outputs=all)
+
+program bidirectional : In -> State
+    sample tags <- tagger
+    return tags
+
+export bidirectional
+```
+
+Its log joint over `T` positions is
+`sum_t log p(f_t | x_t, f_{t-1}) + sum_t log p(g_t | x_t, g_{t+1})
++ sum_t [log p(s_t | f_t - g_t + 0.3 s_{t-1}) + log p(y_t | s_t)]`, with `f@t`
+the forward state at position `t`, `g@n` the backward state at position
+`T - 1 - n`, and `s@t` the tag state at position `t`; the program returns the
+tag states in input order.
+
 Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
-the open sequence extent is not a declared categorical object.
+the open sequence extent is not a declared categorical object. A scan with
+`outputs=all` or `reverse=true` is refused under the same kind.
 
 ## Network kernels
 

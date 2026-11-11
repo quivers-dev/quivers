@@ -19,6 +19,7 @@ the canonical quivers names.
 
 from __future__ import annotations
 
+from quivers.inference.guides.amortized import AmortizedGuide
 from quivers.inference.guides.auto_guide_list import AutoGuideList
 from quivers.inference.guides.auto_structured import (
     AutoStructured,
@@ -62,6 +63,7 @@ AutoIAFNormal = AutoIAFGuide
 __all__ = [
     "Guide",
     "GuideDraw",
+    "AmortizedGuide",
     "AutoNormalGuide",
     "AutoMultivariateNormalGuide",
     "AutoLowRankMultivariateNormalGuide",

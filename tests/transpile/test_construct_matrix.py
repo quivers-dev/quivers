@@ -165,13 +165,16 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
         )
 # A scan's sequence extent is runtime data, not a declared object a target
 # can use as a loop bound, so every target refuses a scan by its cell's
-# name, whatever bindings the cell reads.
+# name, whatever bindings the cell reads and whatever its options.
 for _backend in _BACKENDS:
     for _fixture in (
         "scan_cell_reads_vector",
         "scan_cell_reads_matrix",
         "scan_cell_reads_matrix_data",
         "scan_initial_binding",
+        "scan_outputs_all",
+        "scan_reverse",
+        "scan_bidirectional",
     ):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"
@@ -222,6 +225,37 @@ for _backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
 _EXPECTED_ORTHOGONAL_RAISES[("edward2", "steps", "observe_vector_parameter_data")] = (
     "family:OrderedLogistic"
 )
+
+# A host Cholesky factor is known only at run time, and a host mean beside
+# a literal factor meets each target's literal-matrix limits.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_mvn_host_loc"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_host_loc"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_host_loc"): (
+            "family:MultivariateNormal:non-ref-covariance"
+        ),
+    }
+)
+for _backend in (
+    "bugs",
+    "church",
+    "edward2",
+    "gen",
+    "jags",
+    "numpyro",
+    "pymc",
+    "pyro",
+    "stan",
+    "turing",
+    "webppl",
+):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_mvn_host_factor")] = (
+        "family:MultivariateNormal:scale_tril"
+    )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "sample_wishart_host_factor")] = (
+        "family:Wishart:scale_tril"
+    )
 
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.

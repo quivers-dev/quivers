@@ -288,15 +288,17 @@ class Call(Step):
 
 
 class Scan(Step):
-    """Bind a name to the final state of a step program run along a sequence.
+    """Bind a name to the state of a step program run along a sequence.
 
     In source, ``sample h <- f >> scan(cell)`` with ``cell`` a program.
     The step program takes one position's entry and the previous state,
     ``(x_t, h_prev)``, and returns the next state; the scan runs it at
-    every position of the sequence, left to right, from the initial
-    state, and binds the last state. The step program's steps are steps
-    of the enclosing program, reached once per position: the ``n``-th
-    time a run reaches a site labelled ``s`` it is the site ``"s@n"``,
+    every position of the sequence, left to right (or right to left,
+    for a reversed scan), from the initial state, and binds the last
+    state, or every state for ``outputs="all"``. The step program's
+    steps are steps of the enclosing program, reached once per position
+    visited: the ``n``-th time a run reaches a site labelled ``s`` it is
+    the site ``"s@n"``,
     which a trace records and an observation, a clamp, or a joint
     density addresses. A name the step program reads without binding
     it is the enclosing program's binding of that name before the scan,
@@ -325,6 +327,15 @@ class Scan(Step):
         value is the initial state (``scan(cell, init=h0)``), or
         ``None``. A scalar binding is the one entry of a one-wide state.
         At most one of ``initial`` and ``initial_from`` is set.
+    outputs : Literal["last", "all"]
+        ``"last"`` binds the state after the last position visited;
+        ``"all"`` binds the state after every position, ``(batch,
+        seq_len, dim H)`` in input order.
+    reverse : bool
+        Whether the scan visits the positions from the last to the
+        first. Its sites are numbered in the order it visits them, so
+        ``"s@0"`` is the site at the last position; a sequence of
+        values given under ``"s"`` is still read in input order.
     kind : Literal["scan"]
         The variant tag.
     """
@@ -336,6 +347,8 @@ class Scan(Step):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     initial_from: str | None = None
+    outputs: Literal["last", "all"] = "last"
+    reverse: bool = False
     kind: Literal["scan"] = "scan"
 
 

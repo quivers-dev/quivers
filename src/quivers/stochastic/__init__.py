@@ -30,6 +30,7 @@ span : Span-based CKY components (LexicalAxiom, BinarySpanDeduction, etc.)
 parsers, ccg, lambek : Chart parsers
 inside : The inside algorithm over a rule system
 agenda : The agenda-driven weighted-deduction engine
+productions : A grammar's productions grouped by left-hand side
 effect_lifts : Effect-lifted rule schemas for deduction systems
 deduction : Abstract weighted deductive system framework and its operations
 stdlib : Pre-registered deduction systems
@@ -174,6 +175,7 @@ from quivers.stochastic.agenda import (
     Chart,
     HashChart,
     ChartView,
+    CorpusChart,
     Agenda,
     FIFOAgenda,
     LIFOAgenda,
@@ -188,6 +190,12 @@ from quivers.stochastic.agenda import (
     knuth_agenda,
     depth_first_agenda,
     semi_naive_agenda,
+)
+from quivers.stochastic.productions import (
+    Production,
+    ProductionGroup,
+    ProductionKey,
+    ProductionWeights,
 )
 from quivers.stochastic.effect_lifts import (
     class_directed_lifts,
@@ -322,6 +330,7 @@ __all__ = [
     "Chart",
     "HashChart",
     "ChartView",
+    "CorpusChart",
     "Agenda",
     "FIFOAgenda",
     "LIFOAgenda",
@@ -336,6 +345,11 @@ __all__ = [
     "knuth_agenda",
     "depth_first_agenda",
     "semi_naive_agenda",
+    # productions
+    "Production",
+    "ProductionGroup",
+    "ProductionKey",
+    "ProductionWeights",
     # effect_lifts
     "class_directed_lifts",
     "make_swap_schema",

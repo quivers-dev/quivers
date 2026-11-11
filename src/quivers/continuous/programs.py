@@ -506,6 +506,15 @@ class MonadicProgram(ContinuousMorphism):
         The host data whose checked type leads with the plate of the
         draw they fill; each may also be supplied without that axis, as
         one value every row shares.
+    site_plates : dict[str, tuple[tuple[str, int | None], ...]]
+        The plates each draw or observe site ranges over, keyed by the
+        site's name: one ``(plate, extent)`` pair per batch axis of the
+        site, outermost first, the extent ``None`` where the program
+        leaves it to its data. The DSL compiler fills it from the
+        program's checked elaboration; a program built directly fills it
+        by hand to subsample a plate with
+        [`subsample`][quivers.effects.subsample]. A site absent from it
+        is in no plate.
 
     Raises
     ------
@@ -536,6 +545,7 @@ class MonadicProgram(ContinuousMorphism):
         self.effect_set: frozenset[str] | None = effect_set
         self.host_data_types: dict[str, TypeExpr] = {}
         self.host_data_shared: frozenset[str] = frozenset()
+        self.site_plates: dict[str, tuple[tuple[str, int | None], ...]] = {}
         # compute input component dimensions for param splitting
         if params is not None and len(params) > 1:
             self._param_dims = self._compute_component_dims(domain)
