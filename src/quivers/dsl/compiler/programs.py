@@ -5001,7 +5001,14 @@ class _ProgramsMixin:
                 matrix_spec, matrix_dim, var_names[0], line, col
             )
         if event_size is not None and event_size > 1:
-            if family in ("Normal", "LogitNormal", "Uniform", "TruncatedNormal"):
+            if family in (
+                "Normal",
+                "LogitNormal",
+                "Uniform",
+                "TruncatedNormal",
+                "LogGamma",
+                "LogitBeta",
+            ):
                 return Euclidean(name=f"_{var_names[0]}", dim=event_size)
             if family in (
                 "Exponential",
