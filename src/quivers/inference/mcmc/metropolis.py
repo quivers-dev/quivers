@@ -43,6 +43,7 @@ from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    StateValue,
     _with_generator,
 )
 from quivers.inference.registry import LatentRegistry
@@ -68,6 +69,44 @@ class Proposal(ABC):
             The registry whose flat vector the chain walks.
         """
         del registry
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The proposal's configuration, for telling kernels apart.
+
+        The base implementation records the class; a proposal with
+        parameters adds them, so that `MCMC.resume` refuses a checkpoint
+        written with different ones.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {"proposal": f"{type(self).__module__}.{type(self).__qualname__}"}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The proposal's mutable state for one chain.
+
+        The base implementation, for a proposal without state, is empty;
+        a proposal that adapts or otherwise changes during a run returns
+        what `load_state_dict` needs to continue it exactly.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {}
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned, after `bind`.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+        """
+        del state
 
     @abstractmethod
     def propose(
@@ -115,6 +154,16 @@ class RandomWalkProposal(Proposal):
                 f"RandomWalkProposal: scale must be positive and finite, got {scale}"
             )
         self._scale = scale_t
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The class and the step scale.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {**super().configuration(), "scale": self._scale.tolist()}
 
     def bind(self, registry: LatentRegistry) -> None:
         """Check a per-coordinate scale against the flat vector's length.
@@ -218,6 +267,28 @@ class IndependenceProposal(Proposal):
         self._defensive = defensive
         self._weight = defensive_weight
 
+    def configuration(self) -> dict[str, StateValue]:
+        """The distributions' classes, the weight, and the proposal's
+        log-density at two fixed points, which tells distributions with
+        different parameters apart.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        dim = int(self._distribution.event_shape[0])
+        probes = (torch.zeros(dim), torch.linspace(-1.0, 1.0, dim))
+        return {
+            **super().configuration(),
+            "distribution": type(self._distribution).__qualname__,
+            "defensive": None
+            if self._defensive is None
+            else type(self._defensive).__qualname__,
+            "defensive_weight": self._weight if self._defensive is not None else None,
+            "log_prob_probes": [float(self.log_prob(point)) for point in probes],
+        }
+
     def bind(self, registry: LatentRegistry) -> None:
         """Check the proposal's event shape against the flat vector.
 
@@ -316,6 +387,45 @@ class MetropolisKernel(MCMCKernel):
     def proposal(self) -> Proposal:
         """The proposal the kernel draws candidates from."""
         return self._proposal
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The class and the proposal's configuration.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {**super().configuration(), "proposal": self._proposal.configuration()}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """Whether the kernel is adapting, and the proposal's state.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {**super().state_dict(), "proposal": self._proposal.state_dict()}
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or has the wrong type.
+        """
+        super().load_state_dict(state)
+        proposal = state.get("proposal")
+        if not isinstance(proposal, dict):
+            raise ValueError("MetropolisKernel.load_state_dict: bad proposal state")
+        self._proposal.load_state_dict(proposal)
 
     def init(
         self,

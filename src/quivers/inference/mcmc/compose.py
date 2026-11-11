@@ -25,7 +25,12 @@ from collections.abc import Mapping, Sequence
 import torch
 
 from quivers.continuous.programs import MonadicProgram
-from quivers.inference.mcmc.kernel import KernelState, MCMCKernel, PotentialFn
+from quivers.inference.mcmc.kernel import (
+    KernelState,
+    MCMCKernel,
+    PotentialFn,
+    StateValue,
+)
 from quivers.inference.registry import LatentRegistry
 
 
@@ -129,6 +134,63 @@ class _CompositeKernel(MCMCKernel):
         for _, kernel in self._components:
             out = out | kernel.gibbs_sites
         return out
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The class and every component's name and configuration.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {
+            **super().configuration(),
+            "components": [
+                [name, kernel.configuration()] for name, kernel in self._components
+            ],
+        }
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """Whether the composite is adapting, and every component's state.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {
+            **super().state_dict(),
+            "components": {
+                name: kernel.state_dict() for name, kernel in self._components
+            },
+        }
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If a component's state is missing.
+        """
+        super().load_state_dict(state)
+        components = state.get("components")
+        if not isinstance(components, dict):
+            raise ValueError(
+                f"{type(self).__name__}.load_state_dict: bad component states"
+            )
+        for name, kernel in self._components:
+            component = components.get(name)
+            if not isinstance(component, dict):
+                raise ValueError(
+                    f"{type(self).__name__}.load_state_dict: no state for {name!r}"
+                )
+            kernel.load_state_dict(component)
 
     def _set_generator(self, generator: torch.Generator) -> None:
         """Install the chain-local generator on the composite and every
@@ -379,6 +441,54 @@ class MixtureKernel(_CompositeKernel):
     def probs(self) -> torch.Tensor:
         """The selection probabilities, shape ``(num_components,)``."""
         return self._probs.clone()
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The components' configurations and the selection probabilities.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {**super().configuration(), "probs": self._probs.tolist()}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The components' states and the warmup's drawn choices.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {
+            **super().state_dict(),
+            "warmup_choices": list(self._warmup_choices),
+            "warmup_index": self._warmup_index,
+        }
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If the warmup choices are missing or malformed.
+        """
+        super().load_state_dict(state)
+        choices, index = state.get("warmup_choices"), state.get("warmup_index")
+        if (
+            not isinstance(choices, list)
+            or not all(isinstance(c, int) for c in choices)
+            or not isinstance(index, int)
+        ):
+            raise ValueError("MixtureKernel.load_state_dict: bad warmup choices")
+        self._warmup_choices = [c for c in choices if isinstance(c, int)]
+        self._warmup_index = index
 
     def init(
         self,

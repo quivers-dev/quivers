@@ -37,7 +37,12 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.programs import MonadicProgram
-from quivers.inference.mcmc.kernel import KernelState, MCMCKernel, PotentialFn
+from quivers.inference.mcmc.kernel import (
+    KernelState,
+    MCMCKernel,
+    PotentialFn,
+    StateValue,
+)
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
@@ -116,6 +121,22 @@ class GibbsKernel(MCMCKernel):
     def gibbs_sites(self) -> frozenset[str]:
         """The block's sites."""
         return frozenset(self._sites)
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The class, the sites, and the update function's qualified name.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        update = (
+            None
+            if self._update is None
+            else f"{getattr(self._update, '__module__', '')}."
+            f"{getattr(self._update, '__qualname__', type(self._update).__qualname__)}"
+        )
+        return {**super().configuration(), "sites": list(self._sites), "update": update}
 
     def init(
         self,

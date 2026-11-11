@@ -52,6 +52,7 @@ from quivers.inference.mcmc.kernel import (
     KernelState,
     MCMCKernel,
     PotentialFn,
+    StateValue,
 )
 from quivers.inference.registry import LatentRegistry
 
@@ -257,6 +258,31 @@ def _leapfrog(
     return z_curr, p_curr, ld_curr, g_curr
 
 
+def _mapping(value: StateValue) -> dict[str, StateValue]:
+    """Read a nested dictionary out of a state dictionary.
+
+    Parameters
+    ----------
+    value : StateValue
+        The entry.
+
+    Returns
+    -------
+    dict[str, StateValue]
+        The entry, as a dictionary.
+
+    Raises
+    ------
+    ValueError
+        If the entry is not a dictionary.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"expected a nested state dictionary, got {type(value).__name__}"
+        )
+    return value
+
+
 _STEP_SIZE_INIT_LOG_ACCEPT = math.log(0.8)
 """The log energy-change threshold the step-size initialization
 heuristic brackets, as in Stan's ``init_stepsize``."""
@@ -441,6 +467,124 @@ class _HamiltonianKernel(MCMCKernel):
                 adapts_metric=self._adapt_mass_matrix,
             ),
         )
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The kernel's hyperparameters.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The class, step size, metric kind, target acceptance,
+            divergence threshold, adaptation switches and mode, and the
+            schedule.
+        """
+        return {
+            **super().configuration(),
+            "step_size": self._step_size,
+            "mass_matrix": self._mass_kind,
+            "target_accept": self._target_accept,
+            "divergence_threshold": self._divergence_threshold,
+            "adapt_step_size": self._adapt_step_size,
+            "adapt_mass_matrix": self._adapt_mass_matrix,
+            "adaptation": self._adaptation,
+            "schedule": [
+                self._schedule.init_buffer,
+                self._schedule.term_buffer,
+                self._schedule.base_window,
+            ],
+        }
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The chain's adaptation state.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            Whether the kernel is adapting, the metric, the dual-averaging
+            and covariance-estimate states, the warmup windows, the
+            position in them, and a pending step-size initialization.
+        """
+        assert self._mass is not None, f"{self._name}.init was not called"
+        return {
+            **super().state_dict(),
+            "inv_diag": self._mass.inv_diag,
+            "inv_chol": self._mass.inv_chol,
+            "dual_avg": None
+            if self._dual_avg is None
+            else dict(self._dual_avg.state_dict()),
+            "welford": None
+            if self._welford is None
+            else dict(self._welford.state_dict()),
+            "windows": [[w.start, w.stop, w.adapts_metric] for w in self._windows],
+            "warmup_iteration": self._warmup_iteration,
+            "pending_step_size_init": self._pending_step_size_init,
+        }
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore the adaptation state `state_dict` returned.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced, for a kernel of the same
+            configuration, after `init`.
+
+        Raises
+        ------
+        ValueError
+            If an entry is missing or has the wrong type or shape.
+        """
+        super().load_state_dict(state)
+        assert self._mass is not None, f"{self._name}.init was not called"
+        inv_diag, inv_chol = state.get("inv_diag"), state.get("inv_chol")
+        if self._mass.kind == "diagonal":
+            if not isinstance(inv_diag, torch.Tensor) or inv_diag.shape != (
+                self._mass.dim,
+            ):
+                raise ValueError(f"{self._name}.load_state_dict: bad inv_diag")
+            self._mass.inv_diag = inv_diag.clone()
+        if self._mass.kind == "dense":
+            if not isinstance(inv_chol, torch.Tensor) or inv_chol.shape != (
+                self._mass.dim,
+                self._mass.dim,
+            ):
+                raise ValueError(f"{self._name}.load_state_dict: bad inv_chol")
+            self._mass.inv_chol = inv_chol.clone()
+        dual, welford = state.get("dual_avg"), state.get("welford")
+        self._dual_avg = (
+            None if dual is None else DualAveraging.from_state_dict(_mapping(dual))
+        )
+        self._welford = (
+            None
+            if welford is None
+            else WelfordCovariance.from_state_dict(_mapping(welford))
+        )
+        windows = state.get("windows")
+        iteration = state.get("warmup_iteration")
+        pending = state.get("pending_step_size_init")
+        if (
+            not isinstance(windows, list)
+            or not isinstance(iteration, int)
+            or not isinstance(pending, bool)
+        ):
+            raise ValueError(f"{self._name}.load_state_dict: bad warmup schedule")
+        parsed: list[AdaptationWindow] = []
+        for entry in windows:
+            if not isinstance(entry, list) or len(entry) != 3:
+                raise ValueError(f"{self._name}.load_state_dict: bad window {entry}")
+            start, stop, metric = entry
+            if not (
+                isinstance(start, int)
+                and isinstance(stop, int)
+                and isinstance(metric, bool)
+            ):
+                raise ValueError(f"{self._name}.load_state_dict: bad window {entry}")
+            parsed.append(
+                AdaptationWindow(start=start, stop=stop, adapts_metric=metric)
+            )
+        self._windows = tuple(parsed)
+        self._warmup_iteration = iteration
+        self._pending_step_size_init = pending
 
     def _initial_state(
         self, registry: LatentRegistry, initial_position: torch.Tensor
@@ -789,6 +933,16 @@ class HMCKernel(_HamiltonianKernel):
         )
         self._num_steps = num_steps
 
+    def configuration(self) -> dict[str, StateValue]:
+        """The kernel's hyperparameters, the trajectory length included.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {**super().configuration(), "num_steps": self._num_steps}
+
     def init(
         self,
         registry: LatentRegistry,
@@ -894,6 +1048,8 @@ class HMCKernel(_HamiltonianKernel):
                 "accept_prob": accept_prob,
                 "diverged": float(diverged),
                 "step_size": eps,
+                "num_steps": float(self._num_steps),
+                "energy": float(h1 if accept_count_delta else h0),
             },
             gibbs_values=state.gibbs_values,
         )
@@ -923,6 +1079,7 @@ class _NUTSBuildTreeResult:
         "p_plus",
         "grad_plus",
         "z_proposal",
+        "p_proposal",
         "log_density_proposal",
         "grad_proposal",
         "log_weight",
@@ -942,6 +1099,7 @@ class _NUTSBuildTreeResult:
         p_plus: torch.Tensor,
         grad_plus: torch.Tensor,
         z_proposal: torch.Tensor,
+        p_proposal: torch.Tensor,
         log_density_proposal: torch.Tensor,
         grad_proposal: torch.Tensor,
         log_weight: float,
@@ -958,6 +1116,7 @@ class _NUTSBuildTreeResult:
         self.p_plus = p_plus
         self.grad_plus = grad_plus
         self.z_proposal = z_proposal
+        self.p_proposal = p_proposal
         self.log_density_proposal = log_density_proposal
         self.grad_proposal = grad_proposal
         self.log_weight = log_weight
@@ -1057,6 +1216,16 @@ class NUTSKernel(_HamiltonianKernel):
         )
         self._max_depth = max_tree_depth
 
+    def configuration(self) -> dict[str, StateValue]:
+        """The kernel's hyperparameters, the maximum tree depth included.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {**super().configuration(), "max_tree_depth": self._max_depth}
+
     def init(
         self,
         registry: LatentRegistry,
@@ -1136,6 +1305,7 @@ class NUTSKernel(_HamiltonianKernel):
                 p_plus=p1,
                 grad_plus=g1,
                 z_proposal=z1,
+                p_proposal=p1,
                 log_density_proposal=ld1,
                 grad_proposal=g1,
                 log_weight=log_weight,
@@ -1200,10 +1370,12 @@ class NUTSKernel(_HamiltonianKernel):
             prob_right = 0.0
         if torch.rand((), generator=self._generator).item() < prob_right:
             z_prop = right.z_proposal
+            p_prop = right.p_proposal
             ld_prop = right.log_density_proposal
             g_prop = right.grad_proposal
         else:
             z_prop = left.z_proposal
+            p_prop = left.p_proposal
             ld_prop = left.log_density_proposal
             g_prop = left.grad_proposal
         assert self._mass is not None
@@ -1221,6 +1393,7 @@ class NUTSKernel(_HamiltonianKernel):
             p_plus=p_plus,
             grad_plus=grad_plus,
             z_proposal=z_prop,
+            p_proposal=p_prop,
             log_density_proposal=ld_prop,
             grad_proposal=g_prop,
             log_weight=log_total,
@@ -1267,6 +1440,7 @@ class NUTSKernel(_HamiltonianKernel):
         p_plus = p
         grad_plus = g
         z_proposal = z
+        p_proposal = p
         log_density_proposal = ld
         grad_proposal = g
         log_weight = -h0
@@ -1328,6 +1502,7 @@ class NUTSKernel(_HamiltonianKernel):
                     prob_new = 0.0
                 if torch.rand((), generator=self._generator).item() < prob_new:
                     z_proposal = subtree.z_proposal
+                    p_proposal = subtree.p_proposal
                     log_density_proposal = subtree.log_density_proposal
                     grad_proposal = subtree.grad_proposal
                 log_weight = log_total
@@ -1356,6 +1531,8 @@ class NUTSKernel(_HamiltonianKernel):
                 "diverged": float(diverged),
                 "step_size": eps,
                 "tree_depth": float(depth),
+                "num_steps": float(n_accept_steps),
+                "energy": float(-log_density_proposal + self._mass.kinetic(p_proposal)),
             },
             gibbs_values=state.gibbs_values,
         )
