@@ -997,7 +997,7 @@ def _compile_parse_call(
                 argument.col,
             )
         labels.append(label)
-    value_fns = arg_fns[len(node.args) - len(rest) :]
+    pair_fns = arg_fns[len(node.args) - len(rest) :]
     target_fn, input_fn = arg_fns[0], arg_fns[1]
 
     def _parse(env: dict) -> object:
@@ -1010,8 +1010,10 @@ def _compile_parse_call(
         probabilities: dict[str, torch.Tensor] | None = None
         if labels:
             probabilities = {}
-            for label, value_fn in zip(labels, value_fns, strict=True):
-                value = value_fn(env)
+            for label, pair_fn in zip(labels, pair_fns, strict=True):
+                pair = pair_fn(env)
+                assert isinstance(pair, tuple) and len(pair) == 2
+                value = pair[1]
                 tensor = (
                     value if isinstance(value, torch.Tensor) else torch.tensor(value)
                 )

@@ -21,6 +21,8 @@ back to the groups.
 
 from __future__ import annotations
 
+import didactic.api as dx
+
 import math
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
@@ -47,6 +49,7 @@ from quivers.dsl.ast_nodes import (
     LetExprMethodCall,
     LetExprNode,
     LetExprString,
+    LetExprTuple,
     LetExprUnaryOp,
     LetExprVar,
     LetStep,
@@ -2411,7 +2414,7 @@ class _ProgramElaboration:
                 )
             self._lambda_macros[step.name] = step.value
             return
-        deduction = self._parse_call(step.value)
+        deduction = self._parse_call(step.value, step)
         if deduction is not None:
             call = self._deduction_call(deduction, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
@@ -2426,57 +2429,113 @@ class _ProgramElaboration:
         self._bind_step(scope, step.name, type_, Return(value), step)
         self._record_batch(step.name, step.value, scope, state)
 
-    def _parse_call(self: _Elaborator, expr: LetExprNode) -> tuple[str, str] | None:
-        """Read ``parse(D, x)``, a deduction applied to a program input.
+    def _parse_call(
+        self: _Elaborator, expr: LetExprNode, node: object
+    ) -> _ParseCall | None:
+        """Read ``parse(D, x[, Plate][, ("A", p)...])``.
 
         Parameters
         ----------
         expr : LetExprNode
             The expression.
+        node : object
+            The step, blamed for a malformed call.
 
         Returns
         -------
-        tuple[str, str] | None
-            The deduction's name and the input's name when the
-            expression is such a call, else ``None``.
+        _ParseCall | None
+            The call's parts when the expression applies ``parse`` to a
+            declared deduction, else ``None``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a call of ``parse`` on a deduction does not name its input
+            by a variable, or an argument after the input and the
+            optional plate is not a pair of a string label and a value.
         """
         if not isinstance(expr, LetExprCall) or expr.func != "parse":
             return None
-        if len(expr.args) != 2 or not all(
-            isinstance(argument, LetExprVar) for argument in expr.args
-        ):
+        if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
             return None
-        target, source = expr.args
-        assert isinstance(target, LetExprVar) and isinstance(source, LetExprVar)
+        target = expr.args[0]
         if target.name not in getattr(self, "_deductions", {}):
             return None
-        return target.name, source.name
+        source = expr.args[1]
+        if not isinstance(source, LetExprVar):
+            self._fail(
+                node,
+                f"parse reads the input of {target.name!r} from a program input "
+                "named by a variable",
+                code="qiec-program",
+            )
+        rest = list(expr.args[2:])
+        plate: str | None = None
+        if rest and isinstance(rest[0], LetExprVar):
+            plate = rest[0].name
+            rest = rest[1:]
+        bindings: list[_ParseBinding] = []
+        for argument in rest:
+            if not (
+                isinstance(argument, LetExprTuple)
+                and len(argument.items) == 2
+                and isinstance(argument.items[0], LetExprString)
+            ):
+                self._fail(
+                    argument,
+                    "parse binds production probabilities as "
+                    '("<left-hand side>", <probabilities>) pairs after its input '
+                    "and optional plate",
+                    code="qiec-program",
+                )
+            label = argument.items[0]
+            assert isinstance(label, LetExprString)
+            bindings.append(
+                _ParseBinding(
+                    label=label.value,
+                    value=argument.items[1],
+                    line=argument.line,
+                    col=argument.col,
+                )
+            )
+        return _ParseCall(
+            deduction=target.name,
+            source=source.name,
+            plate=plate,
+            bindings=tuple(bindings),
+        )
 
     def _deduction_call(
         self: _Elaborator,
-        parse: tuple[str, str],
+        parse: _ParseCall,
         scope: _Scope,
         state: _ProgramState,
-        node: object,
+        node: LetStep,
     ) -> Call:
-        """Call a deduction's entry on a sentence the program takes as input.
+        """Call a deduction's entry on a sentence or a corpus the program takes.
 
-        The sentence is a program input of tokens whose length is one of
-        the program's open extents; the call returns the inside weight
-        of the deduction's goal in its semiring, and the program's row
-        gains the module's ``params`` instance, through which the
-        deduction reads its learned weights.
+        The input is a program input of tokens: a sentence, whose length
+        is one of the program's open extents, or with a plate, a corpus of
+        one sentence per object of the plate, all of one open length,
+        whose answer is the semiring product of the sentences' inside
+        weights (their joint weight, the sentences being independent).
+        Without bindings the deduction reads its learned weights through
+        the module's ``params`` instance, which the program's row gains.
+        With bindings, the deduction must be normalized per left-hand
+        side and each binding gives one left-hand side's production
+        probabilities: the call goes to the deduction's weighted variant
+        with the table of the probabilities' logarithms.
 
         Parameters
         ----------
-        parse : tuple[str, str]
-            The deduction's name and the input's name.
+        parse : _ParseCall
+            The call's parts.
         scope : _Scope
             The scope.
         state : _ProgramState
             The program's accumulating state.
-        node : object
-            The source node.
+        node : LetStep
+            The step.
 
         Returns
         -------
@@ -2486,10 +2545,12 @@ class _ProgramElaboration:
         Raises
         ------
         QiecDiagnosticError
-            If the deduction takes its axioms rather than a sentence, or
-            the input is bound by a step.
+            If the deduction takes its axioms rather than a sentence, the
+            input is bound by a step, the plate names no object with a
+            static extent, or the bindings do not fit the deduction (see
+            `_production_table`).
         """
-        name, source = parse
+        name, source = parse.deduction, parse.source
         signature = self.computation_signatures[f"{name}__run"]
         if len(signature.parameters) != 1:
             self._fail(
@@ -2505,13 +2566,24 @@ class _ProgramElaboration:
                 "deduction parses is a program input",
                 code="qiec-program",
             )
+        table: TensorValue | None = None
+        if parse.bindings:
+            table = self._production_table(parse, scope, state, node)
+            signature = self.computation_signatures[f"{name}__weighted_run"]
         binder = state.extents.get(f"{source}_extent")
         if binder is None:
             binder = IndexBinder(f"{source}_extent", NAT)
             state.extents[binder.name] = binder
         extent = IndexVariable(binder.name, binder.sort)
+        sentence_type = tensor_type(STRING, (extent,))
+        rows = None if parse.plate is None else self._axis(parse.plate, node).size
         tokens = self._declare_parameter(
-            source, tensor_type(STRING, (extent,)), "data", scope, state, node
+            source,
+            sentence_type if rows is None else tensor_type(STRING, (rows, extent)),
+            "data",
+            scope,
+            state,
+            node,
         )
         params = self.instances.get(PARAMS_INSTANCE)
         if params is not None and any(
@@ -2519,20 +2591,368 @@ class _ProgramElaboration:
             for entry in signature.effects.entries
         ):
             state.uses_params = True
-        return Call(
-            signature.id,
-            signature.name,
-            (extent,),
-            (Var(tokens),),
-            signature.result,
-            signature.effects,
-            _origin_at(
-                self,
-                ("programs", state.declaration.name, "parses", name),
-                "call",
+        origin = _origin_at(
+            self,
+            ("programs", state.declaration.name, "parses", name),
+            "call",
+            node,
+        )
+        extra = () if table is None else (table,)
+        if rows is None:
+            return Call(
+                signature.id,
+                signature.name,
+                (extent,),
+                (Var(tokens), *extra),
+                signature.result,
+                signature.effects,
+                origin,
+            )
+        return self._corpus_call(
+            signature, tokens, rows, extent, extra, state, node, origin
+        )
+
+    def _production_table(
+        self: _Elaborator,
+        parse: _ParseCall,
+        scope: _Scope,
+        state: _ProgramState,
+        node: LetStep,
+    ) -> TensorValue:
+        """The table of production log-weights a call's bindings give.
+
+        Each binding names a left-hand side of several productions and a
+        probability vector over them, in the order
+        `DeductionSystem.production_groups` lists; the table holds the
+        logarithm of every entry, groups in order. A value drawn at a
+        sample site must come from a family whose support is the simplex.
+
+        Parameters
+        ----------
+        parse : _ParseCall
+            The call's parts.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : LetStep
+            The step.
+
+        Returns
+        -------
+        Value
+            The table, a vector of reals.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the deduction is not normalized per left-hand side, a
+            label names no left-hand side of several productions or is
+            bound twice, a left-hand side of several productions is not
+            bound, a value is not a vector of reals of its group's size,
+            or a sample site's family's support is not the simplex.
+        """
+        system = self._deductions[parse.deduction]
+        if not system.normalized:
+            self._fail(
                 node,
+                f"parse binds production probabilities to {parse.deduction!r}, "
+                "whose weights are free log-weights; probabilities replace the "
+                "weights of a grammar normalized per left-hand side, so "
+                "declare normalize=lhs",
+                code="qiec-program",
+            )
+        bound = {
+            group.label: group for group in system.groups if len(group.productions) > 1
+        }
+        values: dict[str, Value] = {}
+        for binding in parse.bindings:
+            group = bound.get(binding.label)
+            if group is None:
+                single = any(item.label == binding.label for item in system.groups)
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r}, "
+                    + (
+                        f"which has one production in {parse.deduction!r}, whose "
+                        "probability is one"
+                        if single
+                        else f"which is no left-hand side of {parse.deduction!r}"
+                    )
+                    + f"; the left-hand sides of several productions are "
+                    f"{', '.join(bound)}",
+                    code="qiec-program",
+                )
+            if binding.label in values:
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} twice",
+                    code="qiec-program",
+                )
+            size = len(group.productions)
+            value = self._let_value(binding.value, scope, state, node)
+            type_ = self._value_type(value, scope.context(), binding)
+            if type_ != tensor_type(REAL, (IndexLiteral(size, NAT),)):
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} to a value of type "
+                    f"{render_static(type_)}, but {binding.label!r} has {size} "
+                    f"productions ({', '.join(item.label for item in group.productions)}) "
+                    f"and takes a probability vector of type "
+                    f"{render_static(tensor_type(REAL, (IndexLiteral(size, NAT),)))}",
+                    code="qiec-program",
+                )
+            support = _sampled_support(binding.value, state.declaration)
+            if support is not None and support[1] != "simplex":
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} to {support[0]!r}, drawn from a "
+                    f"family whose support is {support[1]}; production "
+                    "probabilities lie on the simplex, as a Dirichlet draw does",
+                    code="qiec-program",
+                )
+            values[binding.label] = value
+        missing = [label for label in bound if label not in values]
+        if missing:
+            self._fail(
+                node,
+                f"parse binds no probabilities for {', '.join(missing)} of "
+                f"{parse.deduction!r}; every left-hand side of several "
+                "productions takes one",
+                code="qiec-program",
+            )
+        entries: list[Value] = []
+        path = ("programs", state.declaration.name, "parses", parse.deduction)
+        for label, group in bound.items():
+            for position in range(len(group.productions)):
+                entries.append(
+                    self._primitive(
+                        "log",
+                        (Gather(values[label], LiteralValue(position, INT), REAL),),
+                        node,
+                        (*path, "table", label, position),
+                    )
+                )
+        return TensorValue(
+            tuple(entries), tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+        )
+
+    def _corpus_call(
+        self: _Elaborator,
+        signature: ComputationSignature,
+        tokens: Local,
+        rows: IndexTerm,
+        extent: IndexVariable,
+        extra: tuple[TensorValue, ...],
+        state: _ProgramState,
+        node: LetStep,
+        origin: object,
+    ) -> Call:
+        """Call a deduction's entry on every sentence of a corpus.
+
+        A helper computation recurs over the corpus's rows, calls the
+        entry on each sentence, and multiplies the answers in the
+        semiring, starting from its one.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The entry's signature.
+        tokens : Local
+            The corpus, a table of tokens with one sentence per row.
+        rows : IndexTerm
+            The number of sentences.
+        extent : IndexVariable
+            The sentences' length.
+        extra : tuple[Value, ...]
+            The production table the entry takes after the sentence, if
+            any.
+        state : _ProgramState
+            The program's accumulating state, which gains the helper.
+        node : LetStep
+            The step.
+        origin : object
+            The call's origin.
+
+        Returns
+        -------
+        Call
+            The call of the helper at the first row.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the helper is declared twice.
+        """
+        carrier = signature.result
+        name = f"{state.declaration.name}__{node.name}_corpus"
+        if name in self.computation_signatures:
+            self._fail(
+                node,
+                f"corpus helper {name!r} is declared twice",
+                code="qiec-program",
+            )
+        path = ("programs", state.declaration.name, "corpora", node.name)
+        position = Local("__corpus_r", INT)
+        corpus = Local("__corpus_tokens", tokens.type)
+        total = Local("__corpus_total", carrier)
+        carried = tuple(
+            Local(f"__corpus_table_{index}", value.result_type)
+            for index, value in enumerate(extra)
+        )
+        telescope = (IndexBinder(extent.name, extent.sort),)
+        identity = ComputationId.derive(self.source.module_name, "computation", name)
+        helper = ComputationSignature(
+            identity,
+            name,
+            telescope,
+            (INT, tokens.type, carrier, *(item.type for item in carried)),
+            carrier,
+            signature.effects,
+        )
+        try:
+            self.registry.register_computation(helper)
+        except (KernelError, TypeError, ValueError) as error:
+            self._fail_kernel(node, error, fallback="qiec-program")
+        self.computation_signatures[name] = helper
+        statics: tuple[StaticArgument, ...] = (extent,)
+        counter = Local("__corpus_k", INT)
+        count: Value = Reduction(
+            "sum",
+            Comprehension(
+                counter, rows, LiteralValue(1, INT), tensor_type(INT, (rows,))
+            ),
+            INT,
+        )
+        sentence = Local("__corpus_sentence", tensor_type(STRING, (extent,)))
+        weight = Local("__corpus_weight", carrier)
+        product = self._semiring_times(Var(total), Var(weight), carrier, node, path)
+        recur = Call(
+            identity,
+            name,
+            statics,
+            (
+                self._primitive(
+                    "add_int",
+                    (Var(position), LiteralValue(1, INT)),
+                    node,
+                    (*path, "next"),
+                ),
+                Var(corpus),
+                product,
+                *(Var(item) for item in carried),
+            ),
+            carrier,
+            signature.effects,
+            origin,
+        )
+        body: Computation = If(
+            self._primitive(
+                "eq_int", (Var(position), count), node, (*path, "finished")
+            ),
+            Return(Var(total)),
+            Bind(
+                sentence,
+                Return(Gather(Var(corpus), Var(position), sentence.type)),
+                Bind(
+                    weight,
+                    Call(
+                        signature.id,
+                        signature.name,
+                        (extent,),
+                        (Var(sentence), *(Var(item) for item in carried)),
+                        carrier,
+                        signature.effects,
+                        _origin_at(self, (*path, "sentence"), "call", node),
+                    ),
+                    recur,
+                ),
             ),
         )
+        state.helpers.append(
+            self._checked_computation(
+                helper, (position, corpus, total, *carried), body, node, path
+            )
+        )
+        return Call(
+            identity,
+            name,
+            statics,
+            (
+                LiteralValue(0, INT),
+                Var(tokens),
+                self._semiring_one(carrier, node, path),
+                *extra,
+            ),
+            carrier,
+            signature.effects,
+            origin,
+        )
+
+    def _semiring_one(
+        self: _Elaborator, carrier: TypeExpr, node: object, path: tuple[str | int, ...]
+    ) -> Value:
+        """The multiplicative identity of a deduction's carrier.
+
+        Parameters
+        ----------
+        carrier : TypeExpr
+            ``LogWeight``, ``Bool``, or ``Int``.
+        node : object
+            The source node.
+        path : tuple[str | int, ...]
+            The origin path.
+
+        Returns
+        -------
+        Value
+            Log-weight zero, ``true``, or one.
+        """
+        if carrier == LOG_WEIGHT:
+            return self._primitive(
+                "as_weight", (LiteralValue(0.0, REAL),), node, (*path, "one")
+            )
+        if carrier == BOOL:
+            return LiteralValue(True, BOOL)
+        return LiteralValue(1, INT)
+
+    def _semiring_times(
+        self: _Elaborator,
+        left: Value,
+        right: Value,
+        carrier: TypeExpr,
+        node: object,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """The semiring product of two carrier values.
+
+        Parameters
+        ----------
+        left : Value
+            A value of the carrier.
+        right : Value
+            A value of the carrier.
+        carrier : TypeExpr
+            ``LogWeight``, ``Bool``, or ``Int``.
+        node : object
+            The source node.
+        path : tuple[str | int, ...]
+            The origin path.
+
+        Returns
+        -------
+        Value
+            Their product: the sum of log-weights, the conjunction, or
+            the integer product.
+        """
+        operation = (
+            "add_weight"
+            if carrier == LOG_WEIGHT
+            else "and"
+            if carrier == BOOL
+            else "mul_int"
+        )
+        return self._primitive(operation, (left, right), node, (*path, "times"))
 
     def _check_scan_site_labels(
         self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
@@ -7061,6 +7481,77 @@ class _ScalarParameter:
             if element == INT
             else "real"
         )
+
+
+class _ParseBinding(dx.Model):
+    """One ``("A", p)`` binding of a ``parse`` call.
+
+    Parameters
+    ----------
+    label : str
+        The left-hand side.
+    value : LetExprNode
+        The probability vector's expression.
+    line : int
+        The binding's source line.
+    col : int
+        The binding's source column.
+    """
+
+    label: str
+    value: LetExprNode
+    line: int
+    col: int
+
+
+class _ParseCall(dx.Model):
+    """The parts of ``parse(D, x[, Plate][, ("A", p)...])``.
+
+    Parameters
+    ----------
+    deduction : str
+        The deduction.
+    source : str
+        The program input the deduction parses.
+    plate : str | None
+        The object whose elements index the corpus's sentences, when the
+        input is a corpus.
+    bindings : tuple[_ParseBinding, ...]
+        The production probabilities, by left-hand side.
+    """
+
+    deduction: str
+    source: str
+    plate: str | None
+    bindings: tuple[_ParseBinding, ...]
+
+
+def _sampled_support(
+    expr: LetExprNode, declaration: ProgramDecl
+) -> tuple[str, str] | None:
+    """The support of the family a variable is drawn from, if it is a draw.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        A binding's value.
+    declaration : ProgramDecl
+        The program.
+
+    Returns
+    -------
+    tuple[str, str] | None
+        The variable and its family's support when the value is a
+        variable a ``sample`` step of a known family draws, else
+        ``None``.
+    """
+    if not isinstance(expr, LetExprVar):
+        return None
+    for step in declaration.draws:
+        if isinstance(step, SampleStep) and expr.name in step.vars:
+            record = FAMILIES.get(step.morphism)
+            return None if record is None else (expr.name, record.support)
+    return None
 
 
 @dataclass(slots=True)
