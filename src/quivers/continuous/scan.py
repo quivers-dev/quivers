@@ -253,6 +253,62 @@ class ScanMorphism(ContinuousMorphism):
         the input, and the same coordinates always produce the same
         final state.
         """
+        return self.trajectory_from_base(x, base)[:, -1, :]
+
+    def push_base_scored(
+        self, x: torch.Tensor, base: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the recurrence on supplied coordinates and score its trajectory.
+
+        The coordinates select every state of the trajectory, not only
+        the final one, so the draw's density is the trajectory's joint
+        density, as a scan inside a program scores each position's
+        site.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input sequence, in either layout `_as_sequence` reads.
+        base : torch.Tensor
+            Standard-normal coordinates, one cell's block per position.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            The final state, shape ``(batch, hidden_dim)``, and the
+            trajectory's log-density, shape ``(batch,)``.
+
+        Raises
+        ------
+        ValueError
+            If the cell declares no reparameterization.
+        """
+        trajectory = self.trajectory_from_base(x, base)
+        return trajectory[:, -1, :], self.log_prob(x, trajectory)
+
+    def trajectory_from_base(self, x: torch.Tensor, base: torch.Tensor) -> torch.Tensor:
+        """Every state the recurrence reaches on supplied coordinates.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input sequence, in either layout `_as_sequence` reads.
+        base : torch.Tensor
+            Standard-normal coordinates, shape ``(batch, dimension)``
+            for the dimension `base_dimension` reports at ``x``; time
+            step ``t`` reads the ``t``-th block.
+
+        Returns
+        -------
+        torch.Tensor
+            The states :math:`h_1, \\ldots, h_T`, shape
+            ``(batch, seq_len, hidden_dim)``.
+
+        Raises
+        ------
+        ValueError
+            If the cell declares no reparameterization.
+        """
         seq = self._as_sequence(x)
         step = self._step_dimension(seq)
         if step is None:
@@ -263,11 +319,43 @@ class ScanMorphism(ContinuousMorphism):
             )
         batch, seq_len, _ = seq.shape
         h = self._initial_state(batch, seq)
+        states: list[torch.Tensor] = []
         for t in range(seq_len):
             cell_input = torch.cat([seq[:, t, :], h], dim=-1)
             block = base[:, t * step : (t + 1) * step]
             h = self._flatten_cell_output(self._cell.push_base(cell_input, block))
-        return h
+            states.append(h)
+        return torch.stack(states, dim=1)
+
+    def rsample_trajectory(self, x: torch.Tensor) -> torch.Tensor:
+        """Draw the recurrence's whole trajectory.
+
+        The trajectory is the value
+        [`log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
+        scores; its last state is what
+        [`rsample`][quivers.continuous.scan.ScanMorphism.rsample]
+        returns.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input sequence, in either layout `_as_sequence` reads.
+
+        Returns
+        -------
+        torch.Tensor
+            The states :math:`h_1, \\ldots, h_T`, shape
+            ``(batch, seq_len, hidden_dim)``.
+        """
+        seq = self._as_sequence(x)
+        batch, seq_len, _ = seq.shape
+        h = self._initial_state(batch, seq)
+        states: list[torch.Tensor] = []
+        for t in range(seq_len):
+            cell_input = torch.cat([seq[:, t, :], h], dim=-1)
+            h = self._flatten_cell_output(self._cell.rsample(cell_input))
+            states.append(h)
+        return torch.stack(states, dim=1)
 
     @staticmethod
     def _flatten_cell_output(
@@ -333,88 +421,29 @@ class ScanMorphism(ContinuousMorphism):
             )
         return x.reshape(x.shape[0], width // self._input_dim, self._input_dim)
 
-    def reference_trajectory(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """The states :math:`h_1, \\ldots, h_T` this kernel scores at ``y``.
-
-        The recurrence's own deterministic skeleton, re-anchored at the
-        observed final state: for :math:`t < T` the state is the cell's
-        image of the base measure's origin, and :math:`h_T` is ``y``.
-
-        Prefix states use ``push_base`` at zero coordinates; the final
-        state is ``y``. The resulting trajectory is deterministic.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input sequence, in either layout
-            `_as_sequence`
-            reads.
-        y : torch.Tensor
-            Observed final state. Shape ``(batch, hidden_dim)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(batch, seq_len, hidden_dim)``.
-
-        Raises
-        ------
-        ValueError
-            If the cell declares no reparameterization, so the prefix
-            has no canonical states to take.
-        """
-        seq = self._as_sequence(x)
-        batch, seq_len, _ = seq.shape
-        h = self._initial_state(batch, seq)
-        states: list[torch.Tensor] = []
-        for t in range(seq_len - 1):
-            cell_input = torch.cat([seq[:, t, :], h], dim=-1)
-            dimension = self._cell.base_dimension(cell_input)
-            if dimension is None:
-                raise ValueError(
-                    f"ScanMorphism.reference_trajectory: the cell "
-                    f"{type(self._cell).__name__} declares no "
-                    f"reparameterization, so its base measure has no "
-                    f"origin and the recurrence has no canonical "
-                    f"prefix to score along."
-                )
-            base = torch.zeros(batch, dimension, device=seq.device, dtype=h.dtype)
-            h = self._flatten_cell_output(self._cell.push_base(cell_input, base))
-            states.append(h)
-        states.append(y.reshape(batch, self._hidden_dim))
-        return torch.stack(states, dim=1)
-
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Log-density of the scan's trajectory ending at ``y``.
+        """Log-density of a supplied trajectory.
 
-        ``scan(cell)`` denotes a Kleisli morphism
-        :math:`\\mathbf{x}_{1:T} \\to \\mathcal{G}(h_T)` whose density at
-        :math:`h_T` marginalizes every intermediate state:
-
-        .. math::
-
-            p(h_T \\mid x_{1:T}) = \\int
-            p(h_T \\mid x_T, h_{T-1})
-            \\prod_{t<T} p(h_t \\mid x_t, h_{t-1})
-            \\, dh_{1:T-1}.
-
-        The implementation scores the fixed trajectory returned by
-        ``reference_trajectory`` with ``log_joint``:
+        ``scan(cell)`` draws one state per position, and every one of
+        them is a random variable, as a scan inside a program reaches
+        one site per position. The value this method scores is thus the
+        whole trajectory :math:`h_{1:T}`:
 
         .. math::
 
-            \\sum_{t=1}^{T} \\log p(h_t \\mid x_t, h_{t-1}),
-            \\qquad h_T = y .
+            \\sum_{t=1}^{T} \\log p(h_t \\mid x_t, h_{t-1}).
 
-        Floating-point reassociation in the recurrent prefix may be
-        amplified by later transitions. Numerical comparisons should
-        use the same cell implementation.
+        The final state alone has a density only as a marginal over the
+        states before it, which the scan does not compute, so a final
+        state is refused rather than scored along a trajectory it does
+        not determine. A one-position sequence's trajectory is its
+        final state.
 
-        This is the joint density of the fixed trajectory, not the
-        marginal density of its endpoint.
+        Floating-point reassociation in the recurrence may be amplified
+        by later transitions, roughly an order of magnitude per step, so
+        numerical comparisons should use the same cell implementation.
 
-        If the cell has no conditional density, this method returns a
-        zero contribution.
+        A cell with no conditional density contributes zero.
 
         Parameters
         ----------
@@ -423,18 +452,36 @@ class ScanMorphism(ContinuousMorphism):
             `_as_sequence`
             reads.
         y : torch.Tensor
-            Final hidden state. Shape ``(batch, hidden_dim)``.
+            The trajectory, shape ``(batch, seq_len, hidden_dim)`` or
+            folded to ``(batch, seq_len * hidden_dim)``, as
+            [`rsample_trajectory`][quivers.continuous.scan.ScanMorphism.rsample_trajectory]
+            draws it.
 
         Returns
         -------
         torch.Tensor
             Shape ``(batch,)``.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` does not hold one state per position of ``x``.
         """
         seq = self._as_sequence(x)
+        batch, seq_len, _ = seq.shape
+        if y.numel() != batch * seq_len * self._hidden_dim:
+            raise ValueError(
+                f"ScanMorphism.log_prob: scores the trajectory of "
+                f"{seq_len} states of width {self._hidden_dim} per row, "
+                f"shape ({batch}, {seq_len}, {self._hidden_dim}), but got "
+                f"shape {tuple(y.shape)}; a final state alone has no "
+                f"density the scan computes. Pass the trajectory, as "
+                f"rsample_trajectory draws it."
+            )
         if not self._cell.has_conditional_density():
             dtype = seq.dtype if seq.is_floating_point() else torch.get_default_dtype()
-            return torch.zeros(seq.shape[0], device=seq.device, dtype=dtype)
-        return self.log_joint(seq, self.reference_trajectory(seq, y))
+            return torch.zeros(batch, device=seq.device, dtype=dtype)
+        return self.log_joint(seq, y)
 
     def log_joint(
         self,

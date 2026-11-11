@@ -149,8 +149,9 @@ thus emits from that final state; it does not return the full latent
 trajectory. The export named `filter` similarly folds a separately learned
 Gaussian kernel. It is not the closed-form Kalman filter
 [@kalman1960filtering], and `ScanMorphism.log_prob`
-does not supply the marginal density of the final state. Use
-`log_joint(x, hidden_states)` when scoring a supplied full trajectory.
+does not supply the marginal density of the final state: it scores a supplied
+full trajectory, as `rsample_trajectory` draws it, and refuses a final state
+alone.
 
 A state-space model that scores the whole observation sequence writes the
 emission inside a program cell:
