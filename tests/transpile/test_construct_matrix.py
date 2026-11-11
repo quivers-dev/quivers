@@ -171,6 +171,7 @@ for _backend in _BACKENDS:
         "scan_cell_reads_vector",
         "scan_cell_reads_matrix",
         "scan_cell_reads_matrix_data",
+        "scan_initial_binding",
     ):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"

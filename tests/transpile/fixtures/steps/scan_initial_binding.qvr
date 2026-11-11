@@ -1,0 +1,17 @@
+# Exercises a scan that starts from a binding of its scanning program,
+# `scan(cell, init=h0)`, with the initial state drawn before the scan.
+object Val : Real 1
+
+program cell(u_t, h_prev) : Val * Val -> Val
+    let m = 0.8 * h_prev
+    sample h <- Normal(loc=m, scale=0.5)
+    observe r <- Normal(loc=h, scale=0.5)
+    return h
+
+define run_all = scan(cell, init=h0)
+
+program prog : Val -> Val
+    sample h0 <- Normal(loc=0.0, scale=1.0)
+    sample last <- run_all
+    return last
+export prog
