@@ -265,15 +265,10 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         ),
         (
             "lda",
-            "doc_idx",
-            "Maps each token position to its document, gathering the "
-            "theta row the token's topic is drawn from",
-        ),
-        (
-            "lda",
-            "token_idx",
-            "Names the identity fibration of the Token plate onto itself, "
-            "so that the marginalized topic is grouped one token per group",
+            "word_idx",
+            "Names the fibration from each word position into its "
+            "document, selecting the theta row the per-word mixture "
+            "marginal is scored under",
         ),
         (
             "negbin_regression",

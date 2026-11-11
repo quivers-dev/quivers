@@ -1,45 +1,32 @@
-# Latent Dirichlet Allocation
+# Document-level topic mixture
 #
-# Each document draws topic weights, each topic draws a vocabulary
-# distribution, and every token draws its own topic from its
-# document's weights before drawing a word from that topic:
+# Each document draws topic weights, and each topic draws a vocabulary
+# distribution. The grouped marginalize block sums over one topic shared
+# by every observed token in that document:
 #
-#   theta_d ~ Dirichlet(1.0)                 per-document topic weights
-#   phi_k   ~ Dirichlet(0.5)                 per-topic word distribution
-#   z_n     ~ Categorical(theta_{d[n]})      per-token topic
-#   w_n     ~ Categorical(phi_{z_n})         observed word
+#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
 #
-# The marginalize block sums each token's topic out on its own, so the
-# likelihood is a product of per-token mixtures:
-#
-#   p(w | theta, phi) = product_n sum_k theta[d[n], k] * phi[k, w[n]].
-#
-# Token indexes observed word positions; Vocab indexes possible word
-# types. The host datum doc_idx maps each token to its document, and
-# the let gathers that document's topic weights for every token. The
-# marginalize block groups over Token itself: token_idx is the
-# identity map on token positions, so every group holds one token and
-# the topic sum is taken separately for each.
+# This differs from canonical LDA, whose independent per-token assignments
+# give product_n sum_k theta_d[k] * phi[k, w_d[n]].
+# Token indexes observed positions; Vocab indexes possible token values.
 # Mix is the real vector space containing the returned topic weights.
 #
-# Reference: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation,
-# https://www.jmlr.org/papers/v3/blei03a.html
+# Background: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation.
 
 composition log_prob [level=algebra]
 
-object Doc : FinSet 100
+object Doc : FinSet 20
 object Topic : FinSet 3
-object Vocab : FinSet 30
-object Token : FinSet 10000
+object Vocab : FinSet 50
+object Token : FinSet 200
 object Mix : Real 3
 
-program lda : Token -> Mix
-    sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
-    sample phi : Topic <- Dirichlet(concentration=0.5) [over=Vocab, iid_over=Topic]
-    let theta_tok = theta[doc_idx]
+program lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
 
-    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
+    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
 
     return theta
 

@@ -193,15 +193,6 @@ for _scan_model in (
     for _scan_backend in _BACKENDS_WITH_IMAGES:
         _EXPECTED_TRANSPILE_RAISES[(_scan_backend, _scan_model)] = "scan:no-lowering"
 
-# lda draws each token's topic from a document row gathered by a
-# `let` (`theta_tok = theta[doc_idx]`). The Gen and Turing emissions
-# size a Categorical marginalization from its `probs` argument, where a
-# gathered `let` carries no static support size, so both refuse.
-for _gather_backend in ("gen", "turing"):
-    _EXPECTED_TRANSPILE_RAISES[(_gather_backend, "lda")] = (
-        "marginalize:unknown-cardinality:Categorical"
-    )
-
 # tree_categorical builds its leaf table with a `factor` over the
 # `Class` axis, which no plate of the program carries; the Gen helper
 # reads factor extents from plate cardinalities and refuses.
@@ -419,12 +410,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         41.459083557128906,
     ),
     "lda": (
-        -32370.158203125,
-        -32505.0,
-        -35812.62109375,
-        -36593.2109375,
-        -32460.607421875,
-        -36056.83203125,
+        -18.173583984375,
+        -18.84844970703125,
+        -444.3291015625,
+        -437.18743896484375,
+        -20.41473388671875,
+        -442.911376953125,
     ),
     "linear_gaussian_ssm": (
         -6.176448822021484,

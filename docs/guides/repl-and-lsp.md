@@ -304,7 +304,7 @@ Use `:kind` for objects, spaces, and other type-level names.
 
 ```
 > :type lda
-lda :: Token -> Mix
+lda :: (Real, Real) => Token -> Mix
 
 > :type lda::theta
 theta :: Doc -> Topic
@@ -321,7 +321,7 @@ print as declarations; standalone type expressions print as
 FinSet 20 :: FinSet 20
 
 > :kind Doc
-object Doc : FinSet 100
+object Doc : FinSet 20
 
 > :kind Vec
 family Vec[A : Type](n : Nat) : Type
@@ -441,21 +441,20 @@ prints the didactic AST `repr()` instead.
 
 ```
 > :info lda
-program lda : Token -> Mix
-    sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
-    sample phi : Topic <- Dirichlet(concentration=0.5) [over=Vocab, iid_over=Topic]
-    let theta_tok = theta[doc_idx]
+program lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
 
-    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
+    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
 
     return theta
 
--- declared at docs/examples/source/lda.qvr:36:0
+-- declared at docs/examples/source/lda.qvr:24:0
 
 > :info lda::theta
-sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
--- sample-site inside lda at docs/examples/source/lda.qvr:37:4
+sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+-- sample-site inside lda at docs/examples/source/lda.qvr:25:4
 ```
 
 #### `:doc NAME`
@@ -481,26 +480,27 @@ inner scope.
 ```
 > :browse
 objects:
-  Doc : FinSet 100
-  Token : FinSet 10000
+  Doc : FinSet 20
+  Token : FinSet 200
   Topic : FinSet 3
-  Vocab : FinSet 30
+  Vocab : FinSet 50
 spaces:
   Mix : Real 3
 programs:
-  lda : Token -> Mix
+  lda(alpha : Real, beta : Real) : Token -> Mix
 
 > :browse lda
-program lda : Token -> Mix
-  sample theta : Doc <- Dirichlet(concentration=1.0) [over=Topic, iid_over=Doc]
-  sample phi : Topic <- Dirichlet(concentration=0.5) [over=Vocab, iid_over=Topic]
-  let theta_tok = …
-  marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+program lda(alpha : Real, beta : Real) : Token -> Mix
+  param alpha : Real
+  param beta : Real
+  sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+  sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+  marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
   return theta
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
-  observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
+marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+  observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
 ```
 
 #### `:plate PROGRAM [--mermaid|--dot|--tikz|--daft|--open]` / `:p PROGRAM`
@@ -514,18 +514,17 @@ rendered image.
 > :plate lda
 plate graph of lda  (Token -> Mix)
 
-#  kind             variable   family       plates  parents
--  ---------------  ---------  -----------  ------  ---------
-1  ○ latent         theta      Dirichlet    Doc     -
-2  ○ latent         phi        Dirichlet    Topic   -
-3  · deterministic  theta_tok  -            -       theta
-4  ⊘ marginalized   z          Categorical  Topic   theta_tok
-5  ● observed       w          Categorical  Token   phi, z
+#  kind            variable  family       plates       parents
+-  --------------  --------  -----------  -----------  -------
+1  ○ latent        theta     Dirichlet    Doc          alpha
+2  ○ latent        phi       Dirichlet    Topic        beta
+3  ⊘ marginalized  z         Categorical  Topic        theta
+4  ● observed      w         Categorical  Doc x Token  phi, z
 
 plates:
-  Doc [100]
+  Doc [20]
   Topic [3]
-  Token [10000]
+  Token [200] parent=Doc
 ```
 
 | Flag | Output |
@@ -558,13 +557,12 @@ the rows are *steps* (program-source order) rather than
 > :graph lda
 program lda: Token -> Mix
 
-#  kind           step                                                   parents
--  -------------  -----------------------------------------------------  ---------
-1  latent         sample theta : Doc <- Dirichlet(concentration=1.0)     -
-2  latent         sample phi : Topic <- Dirichlet(concentration=0.5)     -
-3  deterministic  let theta_tok = theta[doc_idx]                         theta
-4  marginalized   marginalize z : Topic <- Categorical(probs=theta_tok)  theta_tok
-5  observed       observe w : Token <- Categorical(probs=phi[z])         phi, z
+#  kind          step                                            parents
+-  ------------  ----------------------------------------------  -------
+1  latent        sample theta : Doc <- Dirichlet(alpha)          alpha
+2  latent        sample phi : Topic <- Dirichlet(beta)           beta
+3  marginalized  marginalize z : Topic <- Categorical(theta)     theta
+4  observed      observe w : Doc x Token <- Categorical(phi, z)  phi, z
 ```
 
 Same `--mermaid` / `--dot` / `--open` flags as `:plate`.
@@ -779,8 +777,8 @@ that declaration's scope. Examples on the LDA gallery example:
 theta :: Doc -> Topic
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
-  observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
+marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+  observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
 
 > :where theta
 references to 'theta':

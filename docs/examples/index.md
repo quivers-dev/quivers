@@ -39,7 +39,7 @@ particular statistical family.
 | schema and bundle elaboration, generated search and weight effects | [Schema-Bundled Chart Parser](schema-chart-parser.md) | classic chart against `run_deduction` |
 | direct deduction, learned rule weights, program-to-deduction call | [PCFG](pcfg.md) and [CCG](ccg.md) | inside weights, parameter store, scored parser call |
 | structural signature, encoder, decoder, loss, typed PyTorch attachments | [Term Autoencoder](term-autoencoder.md) | `Program.run("reconstruct", term)` and autograd |
-| grouped and fibred exact marginalization | [Latent Dirichlet Allocation](lda.md) | `over`, `via`, and the per-group reduction |
+| grouped and fibred exact marginalization | [Document-level topic mixture](lda.md) | `over`, `via`, and the per-group reduction |
 | program templates and subprogram calls | [Parametric Partial Pooling](parametric-pooling.md) | static object arguments, prefixed sites, labeled tuple return |
 | open sequence extent and recursive scan lowering | [Vanilla RNN LM](vanilla-rnn-lm.md) | generated scan step and trajectory site addresses |
 | network kernel computation | [Bayesian Neural Network](bnn.md) | MLP parameter source and reference-machine boundary |
@@ -84,7 +84,7 @@ examples state both where they differ.
 
 - [Bayesian Factor Analysis](factor-analysis.md): latent factors and loadings with a free uniqueness per observed coordinate.
 - [Probabilistic Principal Component Analysis](ppca.md): the factor model with one isotropic noise scale, checked against its principal-subspace solution.
-- [Latent Dirichlet Allocation](lda.md): per-document topic weights, per-topic word distributions, and a topic per token summed out exactly.
+- [Document-level topic mixture](lda.md): Dirichlet priors with one topic shared by every word of a document, summed out exactly; contrasted with token-level LDA.
 - [Bayesian Gaussian Mixture Model](mixture-model.md): mixing weights, locations, and scales inferred under a closed-form mixture likelihood.
 - [Variational Autoencoder](vae.md): a neural decoder fitted with an amortized encoder guide.
 - [Bayesian Neural Network](bnn.md): a one-hidden-layer tanh regression network whose weights are sample sites.
