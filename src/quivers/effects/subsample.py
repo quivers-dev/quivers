@@ -74,8 +74,10 @@ class SubsampleHandler(EffectHandler):
                 f"subsample({plate!r}): the index must be a nonempty "
                 f"one-dimensional tensor of rows, got shape {tuple(rows.shape)}"
             )
-        if rows.dtype.is_floating_point or rows.dtype.is_complex or (
-            rows.dtype == torch.bool
+        if (
+            rows.dtype.is_floating_point
+            or rows.dtype.is_complex
+            or (rows.dtype == torch.bool)
         ):
             raise ValueError(
                 f"subsample({plate!r}): the index must hold integer rows, "
@@ -302,9 +304,7 @@ def active_subsamples() -> tuple[SubsampleHandler, ...]:
         The active handlers.
     """
     return tuple(
-        handler
-        for handler in _handler_stack()
-        if isinstance(handler, SubsampleHandler)
+        handler for handler in _handler_stack() if isinstance(handler, SubsampleHandler)
     )
 
 
