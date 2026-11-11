@@ -170,7 +170,9 @@ from quivers.qiec.types import (
 )
 from quivers.dsl.composite_lets import (
     expand_composite_lets,
+    ScanCall,
     is_learned_scan_init,
+    positions_let_call,
     scan_let_call,
 )
 from quivers.dsl.family_schemas import (
@@ -450,7 +452,7 @@ def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.add(scan[1])
+                found.add(scan.sequence)
     return frozenset(found)
 
 
@@ -540,7 +542,7 @@ def _callees(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.append(scan[0])
+                found.append(scan.step)
     return tuple(found)
 
 
@@ -2629,6 +2631,11 @@ class _ProgramElaboration:
             call = self._scan_call(scan, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
+        paired = positions_let_call(step.value)
+        if paired is not None:
+            value = self._positions_value(paired, scope, step)
+            self._bind_step(scope, step.name, value.result_type, Return(value), step)
+            return
         value = self._let_value(step.value, scope, state, step)
         type_ = self._value_type(value, scope.context(), step.value)
         self._bind_step(scope, step.name, type_, Return(value), step)
@@ -2806,9 +2813,90 @@ class _ProgramElaboration:
                     code="qiec-program",
                 )
 
+    def _positions_value(
+        self: _Elaborator,
+        names: tuple[str, ...],
+        scope: _Scope,
+        node: LetStep,
+    ) -> Comprehension:
+        """Pair sequences position by position: ``$positions(a, b, ...)``.
+
+        Parameters
+        ----------
+        names : tuple[str, ...]
+            The sequences, each bound to a tensor of reals whose leading
+            axis is the positions and whose entries have a literal width
+            (or are scalars).
+        scope : _Scope
+            The scope.
+        node : LetStep
+            The step.
+
+        Returns
+        -------
+        Comprehension
+            The sequence whose entry at each position lays the entries
+            of the sequences there end to end, ``Tensor[Real]([E, w])``
+            for the shared positions ``E`` and the summed width ``w``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a name is unbound, is not such a sequence, or the
+            sequences do not share their positions.
+        """
+        extent: IndexTerm | None = None
+        position = Local("__positions_t", INT)
+        entries: list[Value] = []
+        for name in names:
+            local = scope.lookup(name)
+            shape = None if local is None else tensor_shape(local.type)
+            if (
+                local is None
+                or shape is None
+                or shape[0] != REAL
+                or not 1 <= len(shape[1]) <= 2
+                or (len(shape[1]) == 2 and not isinstance(shape[1][1], IndexLiteral))
+            ):
+                self._fail(
+                    node,
+                    f"the branches paired position by position must each be a "
+                    f"sequence of real states; {name!r} is not",
+                    code="qiec-program",
+                )
+            assert local is not None and shape is not None
+            if extent is None:
+                extent = shape[1][0]
+            elif shape[1][0] != extent:
+                self._fail(
+                    node,
+                    f"the branches paired position by position run over "
+                    f"{render_static(extent)} and {render_static(shape[1][0])} "
+                    f"positions; pair sequences over one input",
+                    code="qiec-program",
+                )
+            if len(shape[1]) == 1:
+                entries.append(Gather(Var(local), Var(position), REAL))
+                continue
+            width = shape[1][1]
+            assert isinstance(width, IndexLiteral)
+            row = Gather(Var(local), Var(position), tensor_type(REAL, (width,)))
+            entries.extend(
+                Gather(row, LiteralValue(index, INT), REAL)
+                for index in range(int(width.value))
+            )
+        assert extent is not None
+        entry_type = tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+        return Comprehension(
+            position,
+            extent,
+            TensorValue(tuple(entries), entry_type),
+            tensor_type(REAL, (extent, IndexLiteral(len(entries), NAT))),
+        )
+
     def _scan_call(
         self: _Elaborator,
-        scan: tuple[str, str, str | None],
+        scan: ScanCall,
         scope: _Scope,
         state: _ProgramState,
         node: LetStep,
@@ -2816,20 +2904,24 @@ class _ProgramElaboration:
         """Elaborate ``let h = scan(step, xs)`` to a call of a recurrence.
 
         The recurrence is a helper computation over the sequence's
-        positions: at position ``t`` it reads the sequence's entry,
-        calls the step program with the entry and the state, and
-        recurs at ``t + 1`` with the step's result, answering the state
-        once ``t`` reaches the sequence's length. The initial state is
-        zero, or a learned state read as a ``weight`` input when the
+        positions: after visiting ``k`` positions it reads the entry at
+        position ``p`` (``k`` itself, or ``length - 1 - k`` for a
+        reversed scan), calls the step program with the entry and the
+        state, and recurs at ``k + 1`` with the step's result, answering
+        the state once ``k`` reaches the sequence's length. A scan with
+        ``outputs=all`` also carries the states so far, a tensor over
+        the positions whose entry at ``p`` the step's result replaces,
+        and answers it: every state, in input order. The initial state
+        is zero, or a learned state read as a ``weight`` input when the
         scan names one. A sequence that is a program input was typed
         over an open extent when the program's parameters were
         declared, an entry per position of the domain factor it reads.
 
         Parameters
         ----------
-        scan : tuple[str, str, str | None]
-            The step program's name, the sequence's name, and the
-            learned initial state's name when there is one.
+        scan : ScanCall
+            The step program's name, the sequence's name, the initial
+            state's name when there is one, and the scan's options.
         scope : _Scope
             The scope.
         state : _ProgramState
@@ -2850,7 +2942,7 @@ class _ProgramElaboration:
             input nor a tensor with a leading axis of entries the step
             reads.
         """
-        written, source, init = scan
+        written, source, init = scan.step, scan.sequence, scan.init
         step_name = _specialized_scan_step(self, written, scope, state, node)
         signature = self.computation_signatures.get(step_name)
         step_entry = next(
@@ -2997,17 +3089,33 @@ class _ProgramElaboration:
         statics: tuple[StaticArgument, ...] = tuple(
             IndexVariable(binder.name, binder.sort) for binder in telescope
         )
-        position = Local("__scan_t", INT)
+        visited = Local("__scan_t", INT)
         sequence = Local("__scan_xs", local.type)
         current = Local("__scan_h", state_type)
+        gathers = scan.outputs == "all"
+        state_shape = tensor_shape(state_type)
+        states_type: TypeExpr = (
+            tensor_type(state_type, (extent,))
+            if state_shape is None
+            else tensor_type(state_shape[0], (extent, *state_shape[1]))
+        )
+        result_type = states_type if gathers else state_type
+        states = Local("__scan_states", states_type)
+        gathered = (states,) if gathers else ()
         carried = tuple(Local(f"__scan_{item.name}", item.type) for item in passed)
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
             identity,
             name,
             telescope,
-            (INT, local.type, state_type, *(item.type for item in carried)),
-            state_type,
+            (
+                INT,
+                local.type,
+                state_type,
+                *(item.type for item in gathered),
+                *(item.type for item in carried),
+            ),
+            result_type,
             signature.effects,
         )
         try:
@@ -3024,8 +3132,30 @@ class _ProgramElaboration:
             ),
             INT,
         )
+        # The position the scan visits after ``visited`` others: the same
+        # number left to right, that many from the end right to left.
+        position = Local("__scan_p", INT)
+        position_value: Value = (
+            self._primitive(
+                "sub_int",
+                (
+                    self._primitive(
+                        "sub_int",
+                        (length, LiteralValue(1, INT)),
+                        node,
+                        (*path, "last"),
+                    ),
+                    Var(visited),
+                ),
+                node,
+                (*path, "position"),
+            )
+            if scan.reverse
+            else Var(visited)
+        )
         entry = Local("__scan_x", entry_type)
         following = Local("__scan_next", state_type)
+        following_states = Local("__scan_states_next", states_type)
         origin = _origin_at(self, path, "call", node)
         recur = Call(
             identity,
@@ -3034,62 +3164,136 @@ class _ProgramElaboration:
             (
                 self._primitive(
                     "add_int",
-                    (Var(position), LiteralValue(1, INT)),
+                    (Var(visited), LiteralValue(1, INT)),
                     node,
                     (*path, "successor"),
                 ),
                 Var(sequence),
                 Var(following),
+                *((Var(following_states),) if gathers else ()),
                 *(Var(item) for item in carried),
             ),
-            state_type,
+            result_type,
             signature.effects,
             origin,
         )
-        body: Computation = If(
-            self._primitive(
-                "eq_int", (Var(position), length), node, (*path, "finished")
-            ),
-            Return(Var(current)),
-            Bind(
-                entry,
-                Return(Gather(Var(sequence), Var(position), entry_type)),
-                Bind(
-                    following,
-                    Call(
-                        signature.id,
-                        signature.name,
-                        step_statics,
+        continuation: Computation = recur
+        if gathers:
+            # The states after this position replace the states' entry at
+            # it: at each index ``j`` the entry is chosen from the pair
+            # (old entry, new state) by ``max(0, 1 - |j - p|)``, which is
+            # one at ``p`` and zero elsewhere.
+            index = Local("__scan_j", INT)
+            pair_type = (
+                tensor_type(state_type, (IndexLiteral(2, NAT),))
+                if state_shape is None
+                else tensor_type(
+                    state_shape[0], (IndexLiteral(2, NAT), *state_shape[1])
+                )
+            )
+            here = self._primitive(
+                "max_int",
+                (
+                    LiteralValue(0, INT),
+                    self._primitive(
+                        "sub_int",
                         (
-                            Var(entry),
-                            Var(current),
-                            *(
-                                Gather(
-                                    Var(item),
-                                    Var(position),
-                                    substitute_type(parameter.type, substitution),
-                                )
-                                if per_step
-                                else Var(item)
-                                for item, per_step, parameter in zip(
-                                    carried,
-                                    positional,
-                                    step_entry.parameters[2:],
-                                    strict=True,
-                                )
+                            LiteralValue(1, INT),
+                            self._primitive(
+                                "abs_int",
+                                (
+                                    self._primitive(
+                                        "sub_int",
+                                        (Var(index), Var(position)),
+                                        node,
+                                        (*path, "offset"),
+                                    ),
+                                ),
+                                node,
+                                (*path, "distance"),
                             ),
                         ),
-                        state_type,
-                        signature.effects,
-                        _origin_at(self, (*path, "step"), "call", node),
+                        node,
+                        (*path, "nearness"),
                     ),
-                    recur,
+                ),
+                node,
+                (*path, "here"),
+            )
+            continuation = Bind(
+                following_states,
+                Return(
+                    Comprehension(
+                        index,
+                        extent,
+                        Gather(
+                            TensorValue(
+                                (
+                                    Gather(Var(states), Var(index), state_type),
+                                    Var(following),
+                                ),
+                                pair_type,
+                            ),
+                            here,
+                            state_type,
+                        ),
+                        states_type,
+                    )
+                ),
+                recur,
+            )
+        body: Computation = If(
+            self._primitive(
+                "eq_int", (Var(visited), length), node, (*path, "finished")
+            ),
+            Return(Var(states if gathers else current)),
+            Bind(
+                position,
+                Return(position_value),
+                Bind(
+                    entry,
+                    Return(Gather(Var(sequence), Var(position), entry_type)),
+                    Bind(
+                        following,
+                        Call(
+                            signature.id,
+                            signature.name,
+                            step_statics,
+                            (
+                                Var(entry),
+                                Var(current),
+                                *(
+                                    Gather(
+                                        Var(item),
+                                        Var(position),
+                                        substitute_type(parameter.type, substitution),
+                                    )
+                                    if per_step
+                                    else Var(item)
+                                    for item, per_step, parameter in zip(
+                                        carried,
+                                        positional,
+                                        step_entry.parameters[2:],
+                                        strict=True,
+                                    )
+                                ),
+                            ),
+                            state_type,
+                            signature.effects,
+                            _origin_at(self, (*path, "step"), "call", node),
+                        ),
+                        continuation,
+                    ),
                 ),
             ),
         )
         state.helpers.append(
             self._checked_computation(
-                helper, (position, sequence, current, *carried), body, node, path
+                helper,
+                (visited, sequence, current, *gathered, *carried),
+                body,
+                node,
+                path,
             )
         )
         params = self.instances.get(PARAMS_INSTANCE)
@@ -3104,6 +3308,18 @@ class _ProgramElaboration:
         initial: Value = _zero_of(state_type)
         if init is not None:
             initial = _scan_initial_state(self, init, state_type, scope, state, node)
+        zero_states: tuple[Value, ...] = (
+            (
+                Comprehension(
+                    Local("__scan_zero_j", INT),
+                    extent,
+                    _zero_of(state_type),
+                    states_type,
+                ),
+            )
+            if gathers
+            else ()
+        )
         return Call(
             identity,
             name,
@@ -3112,9 +3328,10 @@ class _ProgramElaboration:
                 LiteralValue(0, INT),
                 Var(local),
                 initial,
+                *zero_states,
                 *(Var(item) for item in passed),
             ),
-            state_type,
+            result_type,
             signature.effects,
             origin,
         )
