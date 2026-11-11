@@ -175,9 +175,10 @@ for _ungrouped_backend in (
     "pymc",
     "turing",
 ):
-    _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, "hmm")] = (
-        "marginalize:ungrouped-over-plate"
-    )
+    for _ungrouped_example in ("changepoint", "hmm"):
+        _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, _ungrouped_example)] = (
+            "marginalize:ungrouped-over-plate"
+        )
 
 # `scan(cell)` denotes one draw per sequence position over
 # intermediate states the program never names, over a sequence axis

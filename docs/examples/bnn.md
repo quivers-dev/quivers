@@ -108,8 +108,8 @@ with torch.no_grad():
 true_w_in = forward.sites["w_in"].value
 true_b_in = forward.sites["b_in"].value
 true_w_out = forward.sites["w_out"].value
-true_b_out = forward.sites["b_out"].value
-y = forward.sites["y"].value
+true_b_out = forward.sites["b_out"].value.reshape(())
+y = forward.sites["y"].value.reshape(N)
 truth = {"w_in": true_w_in, "b_in": true_b_in, "w_out": true_w_out, "b_out": true_b_out}
 
 observations = {"x": x, "y": y}
