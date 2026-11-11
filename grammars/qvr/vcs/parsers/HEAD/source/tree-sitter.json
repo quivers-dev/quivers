@@ -19,8 +19,8 @@
       }
     ],
     "links": {
-      "repository": "https://github.com/FACTSlab/quivers",
-      "homepage": "https://github.com/FACTSlab/quivers/tree/main/grammars/qvr"
+      "repository": "https://github.com/quivers-dev/quivers",
+      "homepage": "https://github.com/quivers-dev/quivers/tree/main/grammars/qvr"
     }
   },
   "bindings": {

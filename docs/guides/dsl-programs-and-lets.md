@@ -733,6 +733,66 @@ literals, a fixed distribution is created; when any argument is a
 variable, the family is resolved at runtime against the current
 trace's values.
 
+### Host vectors and matrices as family parameters
+
+A name nothing in the program binds is host data, supplied when the
+program runs. Filling a vector or matrix parameter of a draw with no
+batch axes, it is one tensor over the parameter's own axes, and the
+family ties those axes to its sample's: a `MultivariateNormal`'s `loc` is
+a vector over the event axis and its `scale_tril` a square matrix over
+it, and a `Wishart`'s `scale_tril` a matrix over the sample's two axes.
+The draw sizes each tied axis from what it already knows: the event axes
+an `[over=...]` clause names, or another argument of known size, such
+as a sampled mean. An axis nothing in the draw sizes is one extent,
+shared by every datum tied to it, that a later use fixes: an `[over=...]`
+event axis of a draw reading the value, or the `Real N` codomain of a
+program returning it.
+
+```qvr
+object Dk : FinSet 3
+object Row : FinSet 4
+object D : Real 3
+
+program shrinkage : Row -> D
+    # m0 is a 3-vector and L a 3 x 3 factor: the plated observe's
+    # event axis Dk fixes the extent the two data share.
+    sample mu <- MultivariateNormal(loc=m0, scale_tril=L)
+    observe y : Row <- MultivariateNormal(loc=mu, scale_tril=L) [over=Dk]
+    return mu
+
+export shrinkage
+```
+
+The program then runs with the data at those sizes, on the compiled
+runtime and on the checked reference machine alike:
+
+<!-- python: skip -->
+```python
+import torch
+from quivers.dsl import loads
+
+program = loads(source)
+data = {"m0": torch.zeros(3), "L": torch.eye(3), "y": torch.randn(4, 3)}
+mu = torch.zeros(3)
+compiled = program.morphism.log_joint(torch.zeros(1, 1), {**data, "mu": mu})
+checked = program.run(
+    "shrinkage",
+    data={name: value.tolist() for name, value in data.items()},
+    sites={"mu": mu.tolist()},
+).log_joint
+```
+
+A datum of another size is refused on both paths, naming the datum and
+the size the checked program reads it at; one datum read at two sizes,
+or a tied argument whose size differs from the event axis it spans, is
+refused at the draw. A free name filling a vector parameter of a draw
+whose plate names event axes is instead one value the plate broadcasts,
+as in `Dirichlet(concentration=alpha) [over=K]`; a Cholesky factor or a
+covariance is never a broadcast scalar, so it stays a matrix there. The
+compiled runtime sizes every parameter when it builds the program, so it
+refuses a multivariate draw whose event size nothing in the program
+fixes, and the message lists the ways to fix it.
+
 For conditional distributions (input-conditional, learned-parameter
 form), use a [`morphism f : A -> B ~ Family`](dsl-declarations.md#kernel)
 declaration instead.

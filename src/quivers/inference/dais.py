@@ -54,6 +54,8 @@ Annealing](https://doi.org/10.48550/arXiv.2107.04150).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -354,6 +356,16 @@ class AutoDAIS(Guide):
     # ------------------------------------------------------------------
     # Guide contract
     # ------------------------------------------------------------------
+
+    def observe(self, observations: Mapping[str, torch.Tensor]) -> None:
+        """Forward the step's data to the base guide.
+
+        Parameters
+        ----------
+        observations : Mapping[str, torch.Tensor]
+            Observed values and host data.
+        """
+        self.base.observe(observations)
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Endpoint of one annealed trajectory, as trace-side values.
