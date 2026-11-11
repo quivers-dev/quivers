@@ -1,7 +1,7 @@
 # Deep Markov Model
 #
 # A state-space model with nonlinear, neural-network-parameterized
-# transition and emission kernels. The combinator surface mirrors the
+# transition and emission kernels. The combinator structure mirrors the
 # linear-Gaussian SSM and replaces its linear maps with kernels whose
 # parameters come from an MLP.
 #
@@ -39,7 +39,7 @@ define emission = emit_mlp_1 >> emit_mlp_2
 define generate = scan(transition_cell) >> emission
 define recognize = scan(infer_cell)
 
-# Probabilistic surface: the exported one-step kernel pushes the
+# Probabilistic model: the exported one-step kernel pushes the
 # previous (driver, state) pair through the two-layer transition
 # MLP, then scores one observation under the emission MLP. The
 # separate `generate` composition scans transition_cell and

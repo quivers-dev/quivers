@@ -32,7 +32,7 @@ morphism emission : State -> Obs [role=latent]
 define n_step = repeat(transition) >> emission
 define hmm = initial >> n_step
 
-# Probabilistic surface for transpile: the initial, transition,
+# Probabilistic model for transpilation: the initial, transition,
 # and emission parameter blocks are row-stochastic Dirichlet
 # draws. The initial-state vector is one draw on the State
 # simplex; transition_rows allocates one State-simplex row per

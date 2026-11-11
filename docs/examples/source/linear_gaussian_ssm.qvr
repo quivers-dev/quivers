@@ -30,7 +30,7 @@ morphism filter_cell : Obs * State -> State ~ Normal
 define generate = scan(transition_cell) >> emission
 define filter = scan(filter_cell)
 
-# Probabilistic surface: the exported one-step kernel takes the
+# Probabilistic model: the exported one-step kernel takes the
 # previous (driver, state) pair, draws a new state, and scores one
 # observation under the emission kernel. The separate `generate`
 # composition scans transition_cell and emits once from the
