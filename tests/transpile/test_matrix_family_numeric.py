@@ -163,7 +163,7 @@ _REFUSED: dict[tuple[str, str], str] = {
     (_RELAXED, "jags"): "family:no-target-name:RelaxedOneHotCategorical",
     (_RELAXED, "numpyro"): "family:no-target-name:RelaxedOneHotCategorical",
     (_RELAXED, "pymc"): "family:RelaxedOneHotCategorical",
-    (_RELAXED, "stan"): "family:no-stan-target:RelaxedOneHotCategorical",
+    (_RELAXED, "stan"): "declare:simplex:event-rank:0",
     (_RELAXED, "turing"): "family:RelaxedOneHotCategorical",
     (_RELAXED, "webppl"): "family:no-webppl-target:RelaxedOneHotCategorical",
 }

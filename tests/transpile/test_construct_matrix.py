@@ -291,9 +291,7 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
         ("pymc", "steps", "sample_relaxed_onehot_probs"): (
             "family:RelaxedOneHotCategorical"
         ),
-        ("stan", "steps", "sample_relaxed_onehot_probs"): (
-            "family:no-stan-target:RelaxedOneHotCategorical"
-        ),
+        ("stan", "steps", "sample_relaxed_onehot_probs"): "declare:simplex",
         ("turing", "steps", "sample_relaxed_onehot_probs"): (
             "family:RelaxedOneHotCategorical"
         ),

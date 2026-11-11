@@ -2305,9 +2305,9 @@ def _plate_of(
     del marginalized, walk
     event = tuple(_axis_dim(axis) for axis in plate.event)
     record = FAMILIES.get(distribution.name)
-    if not plate.event and record is not None and record.event_rank:
-        # A multivariate family's own event axes are those of its sample,
-        # which an unplated construction's type states.
+    if not plate.event and record is not None and record.name in _SAMPLE_EVENT_FAMILIES:
+        # A multivariate normal's or a Wishart's own event axes are those
+        # of its sample, which an unplated construction's type states.
         sampled = sampled_element(distribution.result_type)
         dims = _typed_dims(sampled, ()) if sampled is not None else ()
         if len(dims) >= record.event_rank:
@@ -2367,6 +2367,12 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+#: The families an unplated construction of which is planned over its
+#: sample's own event axes, as an ``[over=...]`` clause would name them.
+_SAMPLE_EVENT_FAMILIES: frozenset[str] = frozenset(
+    {"MultivariateNormal", "LowRankMVN", "Wishart"}
+)
 
 
 def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
