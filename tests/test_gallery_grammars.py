@@ -10,18 +10,23 @@ against the compiled deduction rather than against its weights:
   genuinely discontinuous, it generates the cross-serial order that the
   nested context-free approximation rejects and rejects the nested order
   that approximation accepts, and the page's direct description of its
-  language agrees with brute-force enumeration.
+  language agrees with brute-force enumeration;
+* the multimodal type-logical and quantifier-scope grammars score the
+  same goal weight on the agenda and on the checked search, at learnable
+  rule and lexicon weights read under the same keys.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import itertools
+import re
 
 import pytest
 import torch
 
 from quivers.dsl import load, loads
+from quivers.qiec.program_runtime import run_deduction
 from quivers.stochastic.agenda import DeductionSystem, Wildcard
 
 _SOURCE = "docs/examples/source/{stem}.qvr"
@@ -173,9 +178,7 @@ def test_mcfg_rank2_items_are_discontinuous() -> None:
     sentence = "mer d'chind em Hans es huus lönd hälfe aastriiche".split()
     items = [item for item, _ in system(sentence).chart.items() if item[0] == "vc"]
     assert ("vc", 2, 4, 7, 8) in items
-    gapped = [
-        (i1, j1, i2, j2) for _, i1, j1, i2, j2 in items if i1 < j1 < i2 < j2
-    ]
+    gapped = [(i1, j1, i2, j2) for _, i1, j1, i2, j2 in items if i1 < j1 < i2 < j2]
     assert gapped
 
 
@@ -238,8 +241,17 @@ _OBJECTS = {
 _FINITE = {"acc": ["lönd"], "dat": ["hälfed"]}
 _INFINITIVE = {"acc": ["laa", "aastriiche"], "dat": ["hälfe"]}
 _VOCABULARY = [
-    "mer", "d'chind", "em", "es", "Hans", "huus",
-    "lönd", "laa", "hälfed", "hälfe", "aastriiche",
+    "mer",
+    "d'chind",
+    "em",
+    "es",
+    "Hans",
+    "huus",
+    "lönd",
+    "laa",
+    "hälfed",
+    "hälfe",
+    "aastriiche",
 ]
 
 
@@ -289,3 +301,116 @@ def test_cross_serial_description_parses_at_page_length() -> None:
     sentences = _cross_serial(7)
     assert len(sentences) == 28
     assert all(bool(torch.isfinite(system(list(s)).goal_weight())) for s in sentences)
+
+
+def _show(encoded: str) -> str:
+    """Render an agenda parameter's encoded category as the checked search shows it.
+
+    The agenda names a rule weight after its bindings, each category
+    spelled ``TS<head>_<argument>..._E`` with a string atom spelled
+    ``S<text>E`` (``_`` doubled inside it); the checked search keys the
+    same weight by ``show`` of each category, ``Head(argument, ...)``,
+    with an atom shown as its text.
+
+    Parameters
+    ----------
+    encoded : str
+        One binding's encoded category.
+
+    Returns
+    -------
+    str
+        The category as ``show`` renders it.
+    """
+
+    def parse(index: int) -> tuple[str, int]:
+        assert encoded.startswith("TS", index)
+        index += 2
+        head = re.match(r"[A-Za-z]+", encoded[index:])
+        assert head is not None
+        index += len(head.group(0))
+        arguments: list[str] = []
+        while encoded[index] == "_":
+            index += 1
+            if encoded.startswith("TS", index):
+                argument, index = parse(index)
+            else:
+                assert encoded[index] == "S"
+                end = encoded.index("E", index)
+                argument, index = encoded[index + 1 : end].replace("__", "_"), end
+            arguments.append(argument)
+        assert encoded[index] == "E"
+        if head.group(0) == "atom":
+            return arguments[0], index + 1
+        return f"{head.group(0)}({','.join(arguments)})", index + 1
+
+    shown, end = parse(0)
+    assert end == len(encoded)
+    return shown
+
+
+def _checked_key(deduction: str, parameter: str) -> str:
+    """The checked search's key for one agenda parameter.
+
+    Parameters
+    ----------
+    deduction : str
+        The deduction's name.
+    parameter : str
+        The agenda's parameter name.
+
+    Returns
+    -------
+    str
+        ``<deduction>.lex.<i>`` for a lexicon weight, and
+        ``<deduction>.rule.<rule>:<bindings>`` for a rule weight, the
+        non-position bindings sorted by variable and joined by ``|``.
+    """
+    if parameter.startswith("_axiom_module."):
+        index = parameter.removeprefix("_axiom_module.lex_weight_")
+        return f"{deduction}.lex.{index}"
+    _, rule, bindings = parameter.split(".")
+    name = rule.removeprefix("rule_")
+    if bindings == "BASE":
+        return f"{deduction}.rule.{name}:"
+    pairs = re.findall(r"([A-Z])_(TS.*?E)(?=_[A-Z]_TS|$)", bindings)
+    return f"{deduction}.rule.{name}:" + "|".join(
+        _show(encoded) for _, encoded in sorted(pairs)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stem", "name", "sentence"),
+    [
+        ("multimodal_tlg", "MMTLG", "every linguist that admires Kim sleeps"),
+        ("multimodal_tlg", "MMTLG", "Kim admires every linguist"),
+        ("quantifier_scope", "QScope", "every linguist admires some model"),
+        ("quantifier_scope", "QScope", "every linguist sleeps"),
+    ],
+)
+def test_the_agenda_and_the_checked_search_agree(
+    stem: str, name: str, sentence: str
+) -> None:
+    """Every learnable weight the sentence's chart reads is set to a
+    distinct value on the agenda and passed under its checked key; the
+    two evaluators' goal weights agree. A key that did not match its
+    agenda weight would read as zero and break the agreement, which the
+    perturbed control checks."""
+    program = load(_SOURCE.format(stem=stem))
+    system = program.deductions[name]
+    tokens = sentence.split()
+    system(tokens)
+    generator = torch.Generator().manual_seed(7)
+    values: dict[str, float] = {}
+    with torch.no_grad():
+        for parameter_name, parameter in system.named_parameters():
+            value = float(torch.randn((), generator=generator)) * 0.7
+            parameter.fill_(value)
+            values[_checked_key(name, parameter_name)] = value
+    assert any(".rule." in key for key in values)
+    agenda = float(system(tokens).goal_weight().detach())
+    checked = run_deduction(program.qiec, name, tokens=tokens, parameters=values).weight
+    assert checked == pytest.approx(agenda, rel=1e-6, abs=1e-9)
+    shifted = {key: value + 0.5 for key, value in values.items()}
+    moved = run_deduction(program.qiec, name, tokens=tokens, parameters=shifted).weight
+    assert moved != pytest.approx(agenda, rel=1e-6, abs=1e-9)
