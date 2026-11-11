@@ -1,7 +1,9 @@
 # `quivers.diagnostics`
 
 [Convergence estimators](convergence.md) assess mixing and sampling precision for any
-`(num_chains, num_draws, *event_shape)` tensor and need only torch. The ArviZ adapters organize
+`(num_chains, num_draws, *event_shape)` tensor and need only torch.
+[Simulation-based calibration](calibration.md) checks an inference procedure against the program it
+targets, and also needs only torch. The ArviZ adapters organize
 posterior draws and pointwise likelihoods for ArviZ. Predictive checks compare simulated
 and observed data [@gelman2013bayesian], while [model comparison](../../tutorials/python/08-analysis-pipelines.md#model-comparison-with-psis-loo) estimates prediction on held-out observations.
 Choose the analysis that addresses the discrepancy you are investigating.
