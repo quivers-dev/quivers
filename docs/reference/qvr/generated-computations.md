@@ -52,7 +52,10 @@ Shared pattern variables are checked by structural equality after recursive
 premises return. Failed matches perform an empty choice. A learned lexical or
 rule weight is fetched from `Param` under the same stable name used by the
 agenda engine, so the classic chart and reference computation can share a
-parameter store.
+parameter store. Under `normalize=lhs`, every rule and lexicon entry reads the
+free weights of all the productions sharing its left-hand side and adds its own
+entry of their `log_softmax`, computed about the group's largest weight; see
+[production probabilities](../../guides/deduction.md#production-probabilities-per-left-hand-side).
 
 For `LogProb`, the result is a `LogWeight`; for `Boolean`, it is a `Bool`; for
 `Counting`, it is an `Int`. `run_deduction` returns the goal's inside value and

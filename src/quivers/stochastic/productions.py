@@ -227,4 +227,3 @@ class ProductionWeights:
             }
             for group in self.groups
         }
-

@@ -452,8 +452,7 @@ def production_groups(
                 )
             elif isinstance(category, LexiconCategoryRestricted):
                 lexical.extend(
-                    (word, atom, True, entry.line, entry.col)
-                    for atom in category.atoms
+                    (word, atom, True, entry.line, entry.col) for atom in category.atoms
                 )
     if decl.lexicon_from_file is not None:
         learnable = get_option_flag(decl.lexicon_from_file_options, "learnable")

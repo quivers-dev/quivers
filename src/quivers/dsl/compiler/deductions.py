@@ -798,7 +798,9 @@ class _DeductionsMixin:
         # fixed at compile time; ``normalize=lhs`` requires it.
         normalize_mode, mode_refusal = normalization_mode(decl)
         if mode_refusal is not None:
-            raise CompileError(mode_refusal.message, mode_refusal.line, mode_refusal.col)
+            raise CompileError(
+                mode_refusal.message, mode_refusal.line, mode_refusal.col
+            )
         file_rows: tuple[tuple[str, TypeName, LetExprNode], ...] = (
             tuple(load_lexicon_tsv(decl.lexicon_from_file, decl))
             if decl.lexicon_from_file is not None

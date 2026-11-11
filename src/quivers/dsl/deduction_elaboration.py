@@ -2243,12 +2243,23 @@ class _DeductionElaboration:
             logged and any(rule.learnable or rule.parent is not None for rule in firing)
         )
         if system.normalized:
-            # A normalized production's weight reads every learnable
-            # production of its group, rules and entries alike.
-            lexical_learned = learned = any(
-                production.learnable
+            # A normalized production's weight reads the learnable free
+            # weights of its group when the group has several members.
+            reading = {
+                production.key
                 for group in system.groups
+                if len(group.productions) > 1
+                and any(member.learnable for member in group.productions)
                 for production in group.productions
+            }
+            lexical_learned = any(
+                ("lexicon", index) in reading for index in range(len(system.entries))
+            )
+            learned = lexical_learned or any(
+                ("rule", index) in reading
+                for index in (
+                    system.live if system.by_yield else range(len(system.rules))
+                )
             )
         base = (system.choice.entry, system.weight.entry)
         axiom_row = EffectRow((*base, params.entry) if lexical_learned else base)
@@ -5546,6 +5557,9 @@ class _Context:
             if any(production.key == key for production in group.productions)
         )
         path = ("productions", group.label)
+        if len(group.productions) == 1:
+            # A production alone in its group has probability one.
+            return continue_with(self.weight_of(LiteralValue(0.0, REAL)))
 
         def read(position: int, values: list[Value]) -> Computation:
             """Read the group's free log-weights from a member on.
@@ -5597,15 +5611,15 @@ class _Context:
                 for position, production in enumerate(group.productions)
                 if production.key == key
             )
-            if len(values) == 1:
-                return LiteralValue(0.0, REAL)
             peak = values[0]
             for value in values[1:]:
                 peak = self.primitive("max_real", peak, value)
             total: Value | None = None
             for value in values:
                 term = self.primitive("exp", self.primitive("sub_real", value, peak))
-                total = term if total is None else self.primitive("add_real", total, term)
+                total = (
+                    term if total is None else self.primitive("add_real", total, term)
+                )
             assert total is not None
             normalizer = self.primitive("add_real", peak, self.primitive("log", total))
             return self.primitive("sub_real", own, normalizer)
