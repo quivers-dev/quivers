@@ -1,0 +1,80 @@
+name: Set up transpile toolchain
+description: >-
+  Install the external language tools the transpile test modules require at
+  import, and the package with every optional dependency the suite exercises.
+
+# The transpile test modules require their target tools at import
+# (`tests/transpile/_tools.py`), whichever tier collects them, so every
+# test tier installs the same set: Chez Scheme for the Church runtime,
+# JAGS for the JAGS and BUGS model files, `stanc` for Stan, Julia for
+# Turing and Gen, and Node with WebPPL for the WebPPL runtime. A check
+# that finds no binary reports a gap rather than a pass.
+
+inputs:
+  python-version:
+    description: Python version to install.
+    required: false
+    default: "3.14"
+  stanc-version:
+    description: stanc3 release to install.
+    required: false
+    default: "v2.39.0"
+  julia-version:
+    description: Julia version to install.
+    required: false
+    default: "1.11"
+  node-version:
+    description: Node.js version to install.
+    required: false
+    default: "22"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        cache-dependency-path: pyproject.toml
+
+    - name: Install Chez Scheme and JAGS
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends chezscheme jags
+
+    - name: Install stanc
+      shell: bash
+      env:
+        STANC_VERSION: ${{ inputs.stanc-version }}
+      run: |
+        curl -fsSL -o "$RUNNER_TEMP/stanc" \
+          "https://github.com/stan-dev/stanc3/releases/download/${STANC_VERSION}/linux-stanc"
+        sudo install -m 0755 "$RUNNER_TEMP/stanc" /usr/local/bin/stanc
+        stanc --version
+
+    - name: Set up Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: ${{ inputs.julia-version }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # The WebPPL target's runtime is written in WebPPL's own subset, and
+    # the renderer tests run each generated program through the compiler
+    # that defines that subset.
+    - name: Install WebPPL
+      shell: bash
+      run: npm install --global webppl
+
+    # `test_audit_fix_pymc` imports pymc to check the emission against
+    # the library's own API rather than against a transcript of it, so
+    # the `targets` extra has to be here: without it the module fails to
+    # import and the whole job errors.
+    - name: Install package with test dependencies
+      shell: bash
+      run: python -m pip install -e ".[dev,data,diagnostics,formulas,repl,lsp,targets]"
