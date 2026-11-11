@@ -57,6 +57,7 @@ result = mcmc.run(model, x, observations)
 
 print(result.r_hat)             # rank-normalized folded split R-hat
 print(result.ess)               # rank-normalized bulk ESS
+print(result.ess_tail)          # 5% / 95% quantile tail ESS
 print(result.divergence_counts) # per-chain divergence count
 print(result.total_divergences) # sum across chains
 samples = result.samples        # dict[str, Tensor]: (chains, draws, *constrained_shape)
@@ -105,12 +106,17 @@ The [`MCMCResult`](../api/inference/mcmc.md) holds each site's draws at
 `constrained_shape` is the shape of one draw: `()` for a scalar site,
 `(d,)` for a vector site, and `(n, ...)` for a plate of size `n`. It exposes per-site convergence and effective sample size diagnostics
 [@vehtari2021rhat] via
-`r_hat` and `ess`, each of shape `constrained_shape` (zero-dimensional
-for a scalar site). [Latent site shapes](inference-foundations.md#latent-site-shapes)
+`r_hat`, `ess`, and `ess_tail`, each of shape `constrained_shape` (zero-dimensional
+for a scalar site), computed from the draws on first access by
+[`rhat`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.rhat) and
+[`ess`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.ess). [Latent site shapes](inference-foundations.md#latent-site-shapes)
 relates these shapes to the `(batch, ...)` values that `log_joint`
 and the guides exchange. Each `r_hat` coordinate is the conservative
 maximum of the rank-normalized and folded split statistics, while
-`ess` is the rank-normalized cross-chain bulk ESS. The result also
+`ess` is the rank-normalized cross-chain bulk ESS and `ess_tail` the
+smaller of the 5% and 95% quantile ESS values. The same functions
+diagnose derived quantities and draws from custom sampling loops; see
+[convergence diagnostics for any draws](analysis-fitting-and-diagnostics.md#convergence-diagnostics-for-any-draws). The result also
 exposes per-chain divergence counts via `divergence_counts` (with
 `total_divergences` summing across chains), and posterior log
 densities per draw via `log_densities`.
