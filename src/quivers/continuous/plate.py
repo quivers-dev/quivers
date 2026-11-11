@@ -104,6 +104,7 @@ from typing import cast
 import torch
 
 
+from quivers.core.objects import EnumSet, FinSet
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
 from quivers.continuous.param_source import LookupSource
 from quivers.continuous.spaces import (
@@ -131,6 +132,13 @@ _MATRIX_SPACES = (
     Stiefel,
 )
 """Spaces whose ``dim`` is a matrix size and whose ``shape`` is flat."""
+
+_CLASS_SPACES = (FinSet, EnumSet)
+"""Finite sets a discrete family draws one class index of per row.
+
+Their ``shape`` is the one-hot width of an element, not the extent of a
+draw: a row of a plated draw over such a set holds a single index.
+"""
 
 
 class PlateDraw(ContinuousMorphism):
@@ -192,7 +200,10 @@ class PlateDraw(ContinuousMorphism):
         # `dim` as its matrix size and states its flat element count as
         # `shape`; other continuous spaces state only `dim`.
         per_row_shape: tuple[int, ...]
-        if isinstance(family.codomain, _MATRIX_SPACES):
+        if isinstance(family.codomain, _CLASS_SPACES):
+            per_row_shape = ()
+            per_row_dim = 1
+        elif isinstance(family.codomain, _MATRIX_SPACES):
             per_row_shape = family.codomain.shape
             per_row_dim = math.prod(per_row_shape)
         elif hasattr(family.codomain, "dim"):
