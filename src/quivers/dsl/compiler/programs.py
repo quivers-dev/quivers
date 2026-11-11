@@ -8,6 +8,7 @@ compilation.
 from __future__ import annotations
 import dataclasses
 import inspect
+from abc import abstractmethod
 import math
 from collections.abc import Callable, Hashable, Mapping
 from dataclasses import replace as _dc_replace
@@ -937,7 +938,6 @@ class _ProgramsMixin:
     _program_templates: dict[str, ProgramDecl]
     _parameter_space_stack: list[dict[str, AnySpace]]
     _value_extents_stack: list[dict[str, tuple[int, ...]]]
-    qiec_module: QiecModule | None
     _contractions: dict
     _transformations: dict
     _trans_singletons: dict
@@ -949,6 +949,17 @@ class _ProgramsMixin:
 
     # ``_resolve_type``, ``_resolve_any_space``, ``_resolve_index_size``
     # come from `_ResolutionMixin` via the ``Compiler`` MRO.
+
+    @property
+    @abstractmethod
+    def qiec_module(self) -> QiecModule | None:
+        """The checked QIEC module, which the compiler lowers on first access.
+
+        Returns
+        -------
+        QiecModule | None
+            The module, or ``None`` when the source has no QIEC surface.
+        """
 
     @property
     def _ungrouped_marg_bodies(
@@ -3874,8 +3885,13 @@ class _ProgramsMixin:
             initial = self._scan_initial_states.get(init)
             if initial is None:
                 width = getattr(body.codomain, "dim")
-                initial = torch.nn.Parameter(torch.zeros(int(width)))
-                self._scan_initial_states[init] = initial
+                # torch's stubs type the constructor's result as the
+                # tensor it wraps; it is the parameter itself.
+                created = cast(
+                    torch.nn.Parameter, torch.nn.Parameter(torch.zeros(int(width)))
+                )
+                self._scan_initial_states[init] = created
+                initial = created
         bound_vars[step.name] = body.codomain
         return Scan(name=step.name, step=body, source=source, initial=initial)
 
@@ -5405,7 +5421,14 @@ class _ProgramsMixin:
                     # logsumexp_over(list, lambda x -> log_weight_x)
                     coll = arg_fns[0](env)
                     fn = arg_fns[1](env)
-                    if isinstance(coll, list | tuple | torch.Tensor) and len(coll) == 0:
+                    if not isinstance(coll, list | tuple | torch.Tensor):
+                        raise CompileError(
+                            "logsumexp_over runs over a list, not "
+                            f"{type(coll).__name__}"
+                        )
+                    if not callable(fn):
+                        raise CompileError("logsumexp_over's weight must be a lambda")
+                    if len(coll) == 0:
                         return torch.tensor(-float("inf"))
                     weights = []
                     for x in coll:
