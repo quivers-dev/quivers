@@ -87,6 +87,7 @@ PROBE_MODULES = frozenset(
         "test_marginalize_numeric",
         "test_matrix_family_numeric",
         "test_numeric_equivalence",
+        "test_ordinal_matrix_numeric",
         "test_over_array_numeric",
         "test_parameterization_numeric",
         "test_builtin_numeric",

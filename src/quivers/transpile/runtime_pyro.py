@@ -365,7 +365,65 @@ class InverseWishart(pyro.distributions.torch_distribution.TorchDistribution):
         return torch.cholesky_inverse(torch.linalg.cholesky(draw))
 
 
+class OrderedProbit(pyro.distributions.Categorical):
+    """Ordered-probit categorical: a probit link over sorted cutpoints.
+
+    Parameters
+    ----------
+    eta
+        The real predictor, broadcast over the batch shape.
+    cutpoints
+        The sorted cutpoints, ``(..., K - 1)``.
+
+    Pyro ships no `OrderedProbit`. The category probabilities are the
+    successive differences of the standard normal distribution function
+    at ``cutpoints - eta``, ``len(cutpoints) + 1`` ordered outcomes
+    indexed from zero.
+    """
+
+    def __init__(
+        self,
+        eta: torch.Tensor,
+        cutpoints: torch.Tensor,
+        validate_args: bool | None = None,
+    ) -> None:
+        dtype = torch.get_default_dtype()
+        eta = torch.as_tensor(eta, dtype=dtype)
+        cutpoints = torch.as_tensor(cutpoints, dtype=dtype)
+        cdf = torch.special.ndtr(cutpoints - eta.unsqueeze(-1))
+        lead = cdf.shape[:-1]
+        cumulative = torch.cat(
+            [cdf.new_zeros(*lead, 1), cdf, cdf.new_ones(*lead, 1)], dim=-1
+        )
+        super().__init__(
+            probs=torch.diff(cumulative, dim=-1), validate_args=validate_args
+        )
+
+    def expand(
+        self,
+        batch_shape: torch.Size,
+        _instance: pyro.distributions.Categorical | None = None,
+    ) -> pyro.distributions.Categorical:
+        """The categorical over the same probabilities at a batch shape.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            The batch shape to expand to.
+        _instance : pyro.distributions.Categorical | None
+            Unused; the expansion is a fresh categorical.
+
+        Returns
+        -------
+        pyro.distributions.Categorical
+            The expanded distribution.
+        """
+        del _instance
+        return pyro.distributions.Categorical(probs=self.probs).expand(batch_shape)
+
+
 __all__ = [
+    "OrderedProbit",
     "TruncatedNormal",
     "LogitNormal",
     "HalfStudentT",

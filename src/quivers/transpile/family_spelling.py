@@ -54,6 +54,7 @@ _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
         "HalfStudentT": ("HalfStudentT",),
         "MatrixNormal": ("MatrixNormal",),
         "InverseWishart": ("InverseWishart",),
+        "OrderedProbit": ("OrderedProbit",),
     },
     "numpyro": {
         "LogitNormal": ("LogitNormal",),

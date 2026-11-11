@@ -25,7 +25,11 @@ from quivers.continuous.morphisms import (
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
 
-from quivers.continuous.inline import get_inline_param_names, make_inline_distribution
+from quivers.continuous.inline import (
+    UnsizedParameterError,
+    get_inline_param_names,
+    make_inline_distribution,
+)
 from quivers.continuous.plate import PlateDraw, VectorisedObserve, marginalize_grouped
 from quivers.continuous.program_steps import (
     Call,
@@ -3039,7 +3043,9 @@ class _ProgramsMixin:
                 # scope) and the step compiles to a single draw rather
                 # than a plate.
                 matrix_spec = self._matrix_family_spec(step.morphism)
-                is_matrix_draw = matrix_spec is not None
+                is_matrix_draw = (
+                    matrix_spec is not None or step.morphism == "InverseWishart"
+                )
                 if is_matrix_draw:
                     if axes_cod is not None:
                         raise CompileError(
@@ -4640,10 +4646,15 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                     )
-            except ValueError:
+            except UnsizedParameterError as exc:
                 # An inline family the checked program cannot size is
-                # refused here; when the checked program itself fails to
-                # lower, its located diagnostic says why first.
+                # refused at the draw; when the checked program itself
+                # fails to lower, its located diagnostic says why first.
+                _ = self.qiec_module
+                raise CompileError(str(exc), draw.line, draw.col) from exc
+            except ValueError:
+                # When the checked program fails to lower, its located
+                # diagnostic says why first.
                 _ = self.qiec_module
                 raise
             except TypeError as exc:
@@ -5206,6 +5217,46 @@ class _ProgramsMixin:
             return self._matrix_codomain(
                 matrix_spec, matrix_dim, var_names[0], line, col
             )
+        if family == "InverseWishart":
+            # An inverse Wishart draws a K x K positive-definite matrix:
+            # K is the ``[over=...]`` axis's size, else the extent the
+            # checked program gives the draw, else the codomain's width.
+            matrix_dim = (
+                event_size
+                if event_size is not None
+                else checked_event[-1]
+                if checked_event is not None
+                else self._axis_event_size(program_codomain)
+            )
+            if matrix_dim is None or matrix_dim < 2:
+                raise CompileError(
+                    f"InverseWishart draw of {var_names[0]!r} needs a matrix "
+                    f"dimension of at least 2: annotate the draw with the "
+                    f"dimension object (``{var_names[0]} : Dim <- "
+                    f"InverseWishart(...)``) or name it with ``[over=Dim]``",
+                    line,
+                    col,
+                )
+            return Covariance(name=f"_{var_names[0]}", dim=matrix_dim)
+        if family == "MatrixNormal":
+            # A matrix normal draws one R x C matrix, its R C entries the
+            # ``[over=[R, C]]`` axes or the checked extents of its mean.
+            entries = (
+                event_size
+                if event_size is not None
+                else math.prod(checked_event)
+                if checked_event is not None
+                else None
+            )
+            if entries is None:
+                raise CompileError(
+                    f"MatrixNormal draw of {var_names[0]!r} fixes no matrix "
+                    f"shape the compiled runtime can build it at: name its axes "
+                    f"with ``[over=[Rows, Cols]]`` or give its 'loc' a fixed shape",
+                    line,
+                    col,
+                )
+            return Euclidean(name=f"_{var_names[0]}", dim=entries)
         record = FAMILIES.get(family)
         if (
             record is not None

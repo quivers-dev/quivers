@@ -1,0 +1,9 @@
+# An ordinal response under a probit link: a sampled predictor and a
+# literal vector of sorted cutpoints.
+object Row : FinSet 6
+object One : FinSet 1
+program ordered_probit : One -> One
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    observe y : Row <- OrderedProbit(eta=eta, cutpoints=[-1.0, 0.0, 1.5])
+    return eta
+export ordered_probit

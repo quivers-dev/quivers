@@ -50,6 +50,7 @@ from torch.distributions import constraints as _constraints
 from torch.distributions.constraint_registry import biject_to
 from torch.distributions.transforms import Transform
 
+from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Call, Draw, Observe, Scan
@@ -84,7 +85,32 @@ def _unconstrained_event_dim(
         return max(1, constrained_dim - 1)
     if support is _constraints.corr_cholesky:
         return max(1, constrained_dim * (constrained_dim - 1) // 2)
+    if support is _constraints.positive_definite:
+        return constrained_dim * (constrained_dim + 1) // 2
     return constrained_dim
+
+
+def _site_bijector(support: _constraints.Constraint, constrained_dim: int) -> Transform:
+    """The bijector from a site's unconstrained space onto its support.
+
+    Parameters
+    ----------
+    support : torch.distributions.constraints.Constraint
+        The site's support.
+    constrained_dim : int
+        The site's event dimension on the constrained side: the matrix
+        size of a positive-definite site.
+
+    Returns
+    -------
+    torch.distributions.transforms.Transform
+        `PositiveDefiniteTransform` for a positive-definite site, which
+        `torch.distributions.biject_to` has no bijector for, and
+        ``biject_to(support)`` otherwise.
+    """
+    if support is _constraints.positive_definite:
+        return PositiveDefiniteTransform(constrained_dim)
+    return biject_to(support)
 
 
 def _apply_transform(transform: Transform, value: torch.Tensor) -> torch.Tensor:
@@ -229,11 +255,12 @@ class LatentSite:
         one draw to the values runs share.
 
         A correlation-Cholesky site's draw is a lower-triangular
-        ``(d, d)`` factor, so its event shape is ``(d, d)`` rather
+        ``(d, d)`` factor and a positive-definite site's a ``(d, d)``
+        matrix, so its event shape is ``(d, d)`` rather
         than ``(d,)``.
         """
         event: tuple[int, ...]
-        if self.support is _constraints.corr_cholesky:
+        if self.support in (_constraints.corr_cholesky, _constraints.positive_definite):
             event = (self.constrained_dim, self.constrained_dim)
         elif self.constrained_dim == 1:
             event = ()
@@ -311,7 +338,7 @@ def _latent_site(
         name=name,
         morphism=morphism,
         support=support,
-        bijector=biject_to(support),
+        bijector=_site_bijector(support, constrained_dim),
         constrained_dim=constrained_dim,
         unconstrained_dim=unconstrained_dim,
         is_plate=is_plate,

@@ -39,7 +39,8 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
 from quivers.continuous._lkj import OnionLKJCholesky
-from quivers.continuous._ordered import OrderedLogistic
+from quivers.continuous._matrix import InverseWishart, MatrixNormal
+from quivers.continuous._ordered import OrderedLogistic, OrderedProbit
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
     MixtureNormal,
@@ -80,6 +81,15 @@ from quivers.dsl.family_schemas import (
     family_parameterizations,
 )
 from quivers.dsl.draw_args import bind_family_arguments
+
+
+class UnsizedParameterError(ValueError):
+    """An inline family parameter whose shape only the data would fix.
+
+    The compiled runtime sizes every parameter when it builds a program,
+    so a matrix parameter whose extents the checked program leaves open
+    cannot be built; the compiler reports it at the draw.
+    """
 
 
 def _floating_support(support: _constraints.Constraint) -> bool:
@@ -1249,6 +1259,9 @@ _FAMILY_SUPPORTS: dict[str, _constraints.Constraint] = {
     "HalfStudentT": _constraints.positive,
     "BetaBinomial": _constraints.nonnegative_integer,
     "OrderedLogistic": _constraints.nonnegative_integer,
+    "OrderedProbit": _constraints.nonnegative_integer,
+    "InverseWishart": _constraints.positive_definite,
+    "MatrixNormal": _constraints.independent(_constraints.real, 2),
     "ZeroInflatedPoisson": _constraints.nonnegative_integer,
     "HurdlePoisson": _constraints.nonnegative_integer,
     "ZeroOneInflatedBeta": _constraints.unit_interval,
@@ -1722,6 +1735,56 @@ def _ordered_logistic_builder(params: list[torch.Tensor]) -> D.Distribution:
     return OrderedLogistic(params[0], params[1])
 
 
+def _ordered_probit_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build OrderedProbit from ``[eta, cutpoints]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The predictor, one value per row, and the sorted cutpoints, shared
+        ``(K - 1,)`` or per row ``(batch, K - 1)``.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The ordered-probit distribution.
+    """
+    return OrderedProbit(params[0], params[1])
+
+
+def _inverse_wishart_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build InverseWishart from ``[df, scale_tril]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The degrees of freedom and the lower Cholesky factor of the scale
+        of the Wishart whose inverse is drawn.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The inverse-Wishart distribution.
+    """
+    return InverseWishart(params[0], params[1])
+
+
+def _matrix_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build MatrixNormal from ``[loc, row_covariance, col_covariance]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The mean matrix and the row and column covariances.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The matrix-normal distribution.
+    """
+    return MatrixNormal(params[0], params[1], params[2])
+
+
 def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a categorical distribution from one tensor of logits."""
     if len(params) != 1:
@@ -1760,6 +1823,13 @@ _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
         _ordered_logistic_builder,
         True,
     ),
+    "OrderedProbit": (("eta", "cutpoints"), _ordered_probit_builder, True),
+    "InverseWishart": (("df", "scale_tril"), _inverse_wishart_builder, False),
+    "MatrixNormal": (
+        ("loc", "row_covariance", "col_covariance"),
+        _matrix_normal_builder,
+        False,
+    ),
     "ZeroInflatedPoisson": (
         ("zero_prob", "rate"),
         _zero_inflated_poisson_builder,
@@ -1793,6 +1863,7 @@ _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
 # shape ``(batch, D)``. Families not listed default to all-rank-0.
 _PARAM_EVENT_RANKS: dict[str, tuple[int, ...]] = {
     "OrderedLogistic": (0, 1),  # predictor scalar, cutpoints vector
+    "OrderedProbit": (0, 1),
     "Categorical": (1,),  # probabilities or logits over the categories
     "Dirichlet": (1,),  # concentration over the simplex
     "MixtureNormal": (1, 1, 1),  # per-component vectors
@@ -2421,7 +2492,7 @@ def make_inline_distribution(
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
             if event_rank >= 2 and param_shapes[-1] is None:
-                raise ValueError(
+                raise UnsizedParameterError(
                     f"inline {family} reads its {param_names[i]!r} from "
                     f"{lookup_name!r}, a matrix whose shape the checked program "
                     "leaves to the data; the compiled runtime sizes every "

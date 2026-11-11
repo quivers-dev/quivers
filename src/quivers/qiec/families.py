@@ -853,9 +853,9 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "Wishart",
         (
             FamilyParameter("df", "positive", 0),
-            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 1)),
-            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 1)),
-            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 1)),
+            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 0)),
+            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 0)),
+            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
         ),
         support="positive_definite",
         element=REAL,
@@ -878,7 +878,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "InverseWishart",
         (
             FamilyParameter("df", "positive", 0),
-            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 1)),
+            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
         ),
         support="positive_definite",
         element=REAL,
