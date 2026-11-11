@@ -656,7 +656,7 @@ full set is documented in
 | `Normal` | `loc`, `scale` | `Real N` |
 | `LogitNormal` | `mu`, `sigma` | `Real N [low=0, high=1]` |
 | `Uniform` | `low`, `high` | `Real N [low=..., high=...]` |
-| `Bernoulli` | `probs` | `FinSet 2` |
+| `Bernoulli` | `probs` or `logits` | `FinSet 2` |
 | `Beta` | `concentration1`, `concentration0` | `Real N [low=0, high=1]` |
 | `Exponential` | `rate` | `Real N [low=0]` |
 | `HalfCauchy` | `scale` | `Real N [low=0]` |
