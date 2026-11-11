@@ -4,6 +4,14 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The example gallery implements the models it names.** The regression pages (Bayesian linear, Beta, Gamma with a log link, horseshoe over a dense design, logistic-noise, HalfStudentT hierarchical, NB2 negative binomial, zero-inflated Poisson with a structural-zero regression, Kumaraswamy, Beta-Binomial, LKJ, 2PL IRT, and right-censored Weibull survival) simulate from their own program, check the compiled joint against a hand-written `torch.distributions` density, and assert recovery of the generating parameters by SVI and NUTS within tolerances stated on the page. Factor analysis has free uniquenesses and PPCA is checked against its principal-subspace solution; the mixture infers its weights, locations, and scales; the VAE is fitted with an amortized encoder guide and compared with PPCA and with an exact linear-Gaussian likelihood; the BNN declares its weights as sample sites; PMF is written in source and evaluated on held-out ratings; tensor contraction checks score recovery and its einsum wiring; tree-categorical is a tree-structured Categorical likelihood with per-verb effects; parametric pooling is Rubin's parallel-experiments model; AR(1) scores the exact stationary likelihood; and the change-point model marginalizes a discrete change point exactly.
+- **The weighted-deduction pages are sound fragments of their logics and fit real models.** The CCG and custom-rules grammars need each of their combinators; the Lambek, multimodal, and quantifier-scope grammars derive only theorems of their calculi, and the multimodal and scope grammars score the same goal weight on the agenda and the checked search; the weighted multiple context-free grammar derives Swiss German cross-serial clusters with genuinely discontinuous rank-2 items; the pages describe a learnable rule weight as keyed by its category bindings. The Montague NLI page describes its scores as computed, and the lexical-uncertainty RSA example is attributed to and tested against Bergen, Levy, and Goodman's recursion.
+- **Renamed gallery pages.** The case study is `examples/bayesian-semantics-case-study.md` (titled Bayesian Semantics Case Study) and the multiple context-free grammar example is `examples/wmcfg.md` with source `docs/examples/source/wmcfg.qvr` and deduction `WMCFG`.
+
 ## [0.26.0] - 2026-11-11
 
 ### Added
