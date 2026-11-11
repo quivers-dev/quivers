@@ -50,11 +50,13 @@ from quivers.effects.program_module import (
     INPUT_NAME,
     SCAN_POSITION,
     SCAN_SEQUENCE,
+    SCAN_STATES,
     HostStep,
     ProgramKernel,
     derived_bindings,
     once_sites,
     program_kernel,
+    reversed_scan_sites,
     scanned_sites,
     site_label,
 )
@@ -428,8 +430,9 @@ def _split_observations(
     ``n``-th occurrence under ``"<label>@<n>"``, of shape ``(batch,
     ...)``; or, for every position at once, under ``"<label>"``, with
     the positions on the axis after the batch, ``(batch, seq_len,
-    ...)``, entry ``[:, n]`` being the value at the ``n``-th
-    occurrence.
+    ...)``, entry ``[:, t]`` being the value at input position ``t``:
+    the ``t``-th occurrence, or for a site a reversed scan reaches,
+    which visits the last position first, the ``(seq_len - 1 - t)``-th.
 
     Parameters
     ----------
@@ -463,6 +466,7 @@ def _split_observations(
         for name in label.split(","):
             declared[name] = label
     scanned = scanned_sites(program)
+    backward = reversed_scan_sites(program)
     derived, per_position = derived_bindings(program)
     sites: dict[str, torch.Tensor] = {}
     supplied: dict[str, torch.Tensor] = {}
@@ -479,8 +483,13 @@ def _split_observations(
                     f"position, so its values are laid out (batch, seq_len, "
                     f"...); got shape {tuple(value.shape)}"
                 )
+            # A reversed scan reaches its last position first, so the
+            # value at input position ``t`` is the occurrence that many
+            # from the end.
+            length = int(value.shape[1])
             for index, entry in enumerate(value.unbind(1)):
-                stacked[site_label(name, index)] = entry
+                occurrence = length - 1 - index if name in backward else index
+                stacked[site_label(name, occurrence)] = entry
         elif at and occurrence.isdigit() and base in scanned:
             sites[name] = value
         elif name in derived or (at and occurrence.isdigit() and base in per_position):
@@ -1084,6 +1093,10 @@ class _HostSteps:
             return lambda argument, _context: self._scan_entry(step, _host(argument))
         if step.kind == "scan_state":
             return lambda argument, _context: self._scan_state(step, _host(argument))
+        if step.kind == "scan_states":
+            return lambda argument, _context: self._scan_states(step, _host(argument))
+        if step.kind == "scan_collect":
+            return lambda argument, _context: self._scan_collect(step, _host(argument))
         raise ValueError(f"unknown host step kind {step.kind!r}")
 
     def _split_input(self, argument: object, _context: ClauseContext) -> object:
@@ -1504,26 +1517,81 @@ class _HostSteps:
         return value
 
     def _scan_entry(self, step: HostStep, argument: HostValue) -> torch.Tensor:
-        """The entry a scan reads at a position.
+        """The entry a scan reads at the next position it visits.
 
         Parameters
         ----------
         step : HostStep
             The step.
         argument : HostValue
-            The environment tuple, holding the sequence and the position.
+            The environment tuple, holding the sequence and the count of
+            positions visited.
 
         Returns
         -------
         torch.Tensor
-            ``(batch,)`` for a discrete entry, else ``(batch, dim)``.
+            ``(batch,)`` for a discrete entry, else ``(batch, dim)``: the
+            entry at the count's position, or, for a reversed scan, at
+            the position that many from the end.
         """
         spec = step.spec
         assert isinstance(spec, Scan)
         env = _environment(step, argument)
-        position = env[SCAN_POSITION]
-        assert isinstance(position, int)
-        return _sequence(spec, env[SCAN_SEQUENCE])[:, position]
+        visited = env[SCAN_POSITION]
+        assert isinstance(visited, int)
+        sequence = _sequence(spec, env[SCAN_SEQUENCE])
+        position = int(sequence.shape[1]) - 1 - visited if spec.reverse else visited
+        return sequence[:, position]
+
+    def _scan_states(self, step: HostStep, argument: HostValue) -> torch.Tensor:
+        """The states a scan returning every state has gathered at its start.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : HostValue
+            The environment tuple, holding the sequence.
+
+        Returns
+        -------
+        torch.Tensor
+            No states, ``(batch, 0, dim H)``, on the sequence's device.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        (value,) = _environment(step, argument).values()
+        width = int(getattr(spec.step.codomain, "dim"))
+        dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
+        return torch.zeros(
+            int(value.shape[0]), 0, width, device=value.device, dtype=dtype
+        )
+
+    def _scan_collect(self, step: HostStep, argument: HostValue) -> torch.Tensor:
+        """Gather the state a scan's step returned among the scan's states.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : HostValue
+            The environment tuple, holding the states gathered so far and
+            the state the step returned.
+
+        Returns
+        -------
+        torch.Tensor
+            The states, ``(batch, visited, dim H)``, in input order: the
+            new state after the others, or, for a reversed scan, which
+            visits the positions from the last, before them.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        env = _environment(step, argument)
+        gathered = env[SCAN_STATES]
+        state = env["__scan_next"].unsqueeze(1).to(gathered.dtype)
+        parts = (state, gathered) if spec.reverse else (gathered, state)
+        return torch.cat(parts, dim=1)
 
 
 def _handle_chain(installations: list[Installation], inner: Computation) -> Computation:

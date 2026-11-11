@@ -131,7 +131,9 @@ from quivers.dsl.compiler._deduction_terms import (
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
     expand_program_scans,
+    ScanCall,
     is_learned_scan_init,
+    positions_let_call,
     scan_let_call,
 )
 from quivers.dsl.let_expr_traversal import (
@@ -587,7 +589,7 @@ def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.append(scan[0])
+                found.append(scan.step)
     return tuple(found)
 
 
@@ -4001,10 +4003,25 @@ class _ProgramsMixin:
                         step.col,
                     )
                 scan = scan_let_call(step.value)
-                if scan is not None and scan[0] in self._scan_step_declarations:
+                if scan is not None and scan.step in self._scan_step_declarations:
                     steps.append(self._compile_scan(step, scan, decl, bound_vars))
                     continue
-                bundle = _draw_bundle(step.value, bound_vars)
+                # Sequences paired position by position are laid end to
+                # end along the feature axis, after the position axis,
+                # as per-row vectors bundled by a fan are.
+                bundle = positions_let_call(step.value)
+                if bundle is not None and not all(
+                    isinstance(bound_vars.get(name), ContinuousSpace) for name in bundle
+                ):
+                    raise CompileError(
+                        f"let {step.name!r} pairs {', '.join(bundle)} position by "
+                        f"position, which are not all sequences of continuous "
+                        f"states bound before it",
+                        step.line,
+                        step.col,
+                    )
+                if bundle is None:
+                    bundle = _draw_bundle(step.value, bound_vars)
                 if bundle is not None:
                     steps.append(Let(name=step.name, value=_concatenation(bundle)))
                     bound_vars[step.name] = ProductSpace(
@@ -4295,20 +4312,25 @@ class _ProgramsMixin:
     def _compile_scan(
         self,
         step: LetStep,
-        scan: tuple[str, str, str | None],
+        scan: ScanCall,
         decl: ProgramDecl,
         bound_vars: dict[str, AnySpace | None],
     ) -> Scan:
         """Compile ``let h = scan(step, xs)`` over a scan's step program.
 
+        A scan with ``outputs=all`` binds its every state, which carries
+        a position axis after the batch; the name is bound to the
+        state's space, the space of each entry, as the sequence a later
+        scan reads is.
+
         Parameters
         ----------
         step : LetStep
             The let.
-        scan : tuple[str, str, str | None]
-            The step program's name, the sequence's name, and the
-            initial state's name when there is one: a binding of the
-            program, or a learned initial state's input.
+        scan : ScanCall
+            The scan: its step program, its sequence, its initial
+            state's name when there is one (a binding of the program,
+            or a learned initial state's input), and its options.
         decl : ProgramDecl
             The program the let belongs to.
         bound_vars : dict[str, AnySpace | None]
@@ -4324,7 +4346,7 @@ class _ProgramsMixin:
         CompileError
             If the sequence is neither bound nor the program's input.
         """
-        step_name, source_name, init = scan
+        step_name, source_name, init = scan.step, scan.sequence, scan.init
         body = self._scan_step(step_name)
         source: str | None
         if source_name in bound_vars:
@@ -4367,6 +4389,8 @@ class _ProgramsMixin:
             source=source,
             initial=initial,
             initial_from=initial_from,
+            outputs=scan.outputs,
+            reverse=scan.reverse,
         )
 
     def _compile_call(

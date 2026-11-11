@@ -134,7 +134,7 @@
     },
     "keyword-structural": {
       "name": "keyword.declaration.structural.qvr",
-      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
+      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|outputs|reverse|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
     },
     "keyword-deduction": {
       "name": "keyword.declaration.deduction.qvr",
