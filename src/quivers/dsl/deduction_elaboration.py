@@ -62,6 +62,7 @@ from quivers.dsl.ast_nodes import (
     LetExprCall,
     LetExprLiteral,
     LetExprNode,
+    LetExprTuple,
     LetExprVar,
     LexiconEntry,
     LexiconCategoryFixed,
@@ -76,6 +77,7 @@ from quivers.dsl.ast_nodes import (
     OptionFlag,
     OptionName,
     OptionNumber,
+    ProgramDecl,
     SchemaDecl,
     SequentRule,
     TypeEnumSet,
@@ -107,7 +109,7 @@ from quivers.stochastic.categories import (
     SlashCategory,
     UnitCategory,
 )
-from quivers.stochastic.productions import ProductionGroup, ProductionKey
+from quivers.stochastic.productions import Production, ProductionGroup, ProductionKey
 from quivers.stochastic.schema import (
     SCHEMA_REGISTRY,
     PatternBinarySchema,
@@ -199,6 +201,9 @@ SEMIRING_CARRIERS: dict[str, TypeExpr] = {
 }
 #: The constructor name of the ``span`` items a lexicon injects.
 SPAN = "span"
+#: The computations of a deduction that read production weights, which
+#: its weighted variant elaborates again over a table argument.
+THREADED: tuple[str, ...] = ("axiom", "derive", "close", "inside", "converge", "run")
 #: The constructor holding a canonically numbered bound variable of a
 #: lexicon's logical forms.
 BOUND = "bound"
@@ -399,6 +404,11 @@ class _System:
         are normalized (``normalize=lhs``).
     groups
         For a normalized system, its production groups.
+    table
+        For a normalized system, the position of each production of a
+        group of several in the table a program supplies.
+    handlers
+        The search and collection handlers, once declared.
     heads
         For a yield-directed system, the head symbols of its items, in
         the order its derivation numbers them.
@@ -445,6 +455,8 @@ class _System:
     tolerance: float = 0.0
     normalized: bool = False
     groups: tuple[ProductionGroup, ...] = ()
+    table: dict[ProductionKey, int] = field(default_factory=dict)
+    handlers: tuple[HandlerDef, HandlerDef] | None = None
     heads: list[str] = field(default_factory=list)
     live: list[int] = field(default_factory=list)
     closure: list[int] = field(default_factory=list)
@@ -976,6 +988,37 @@ def _may_cycle(system: _System) -> bool:
         return found
 
     return any(reaches_cycle(node) for node in follows)
+
+
+def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
+    """The deductions a program parses with production probabilities.
+
+    Parameters
+    ----------
+    statements : tuple[object, ...]
+        The module's statements.
+
+    Returns
+    -------
+    frozenset[str]
+        The name of every deduction some program's
+        ``let x = parse(D, input, ..., ("A", p), ...)`` names.
+    """
+    names: set[str] = set()
+    for statement in statements:
+        if not isinstance(statement, ProgramDecl):
+            continue
+        for step in statement.draws:
+            value = getattr(step, "value", None)
+            if (
+                isinstance(value, LetExprCall)
+                and value.func == "parse"
+                and value.args
+                and isinstance(value.args[0], LetExprVar)
+                and any(isinstance(argument, LetExprTuple) for argument in value.args)
+            ):
+                names.add(value.args[0].name)
+    return frozenset(names)
 
 
 class _DeductionElaboration:
@@ -1524,6 +1567,15 @@ class _DeductionElaboration:
                 )
             system.normalized = True
             system.groups = analysis.groups
+            system.table = {
+                production.key: position
+                for position, production in enumerate(
+                    production
+                    for group in analysis.groups
+                    if len(group.productions) > 1
+                    for production in group.productions
+                )
+            }
         self._infer_sorts(system)
         system.span_shaped = bool(system.entries) and all(
             _is_span(pattern)
@@ -2208,19 +2260,34 @@ class _DeductionElaboration:
             If a body fails to check.
         """
         computations: list[NamedComputation] = []
-        for system in getattr(self, "_deductions", {}).values():
+        weighted = _weighted_deductions(self.source.syntax.statements)
+        for name, system in getattr(self, "_deductions", {}).items():
             computations.extend(self._elaborate_deduction(system))
+            if name in weighted and system.normalized:
+                computations.extend(self._elaborate_deduction(system, weighted=True))
         return tuple(computations)
 
     def _elaborate_deduction(
-        self: _Elaborator, system: _System
+        self: _Elaborator, system: _System, weighted: bool = False
     ) -> list[NamedComputation]:
         """Elaborate one deduction.
+
+        A normalized grammar whose production probabilities a program
+        supplies is elaborated a second time, ``weighted``: the
+        computations that read weights (the axiom, the derivation and its
+        closure, and the entry with its convergence) take one more
+        argument, the table of the log-probabilities of every production
+        in a group of several, and read their weights from it instead of
+        the ``Param`` store. They are named ``<D>__weighted_<suffix>``
+        and share the item family, the instances, the handlers, and the
+        pure computations of the deduction.
 
         Parameters
         ----------
         system : _System
             The system.
+        weighted : bool
+            Whether to elaborate the weighted variant.
 
         Returns
         -------
@@ -2261,6 +2328,8 @@ class _DeductionElaboration:
                     system.live if system.by_yield else range(len(system.rules))
                 )
             )
+        if weighted:
+            lexical_learned = learned = False
         base = (system.choice.entry, system.weight.entry)
         axiom_row = EffectRow((*base, params.entry) if lexical_learned else base)
         row = EffectRow((*base, params.entry) if learned else base)
@@ -2271,6 +2340,22 @@ class _DeductionElaboration:
         item = system.item
         carrier = system.carrier
         signatures: dict[str, ComputationSignature] = {}
+        table = (
+            Local(
+                "productions",
+                tensor_type(REAL, (IndexLiteral(len(system.table), NAT),)),
+            )
+            if weighted
+            else None
+        )
+        threaded = (
+            {
+                system.name(suffix): system.name(f"weighted_{suffix}")
+                for suffix in THREADED
+            }
+            if weighted
+            else {}
+        )
 
         def declare(
             name: str,
@@ -2280,6 +2365,48 @@ class _DeductionElaboration:
             effects: EffectRow,
         ) -> ComputationSignature:
             """Register one computation's signature before any body is built.
+
+            Parameters
+            ----------
+            name : str
+                The computation's name.
+            telescope : tuple[IndexBinder, ...]
+                Its static binders.
+            parameters : tuple[TypeExpr, ...]
+                Its parameter types.
+            result : TypeExpr
+                Its result type.
+            effects : EffectRow
+                Its row.
+
+            Returns
+            -------
+            ComputationSignature
+                The registered signature: in the weighted variant, the
+                one declared by the deduction for a computation that
+                reads no weight, and the weighted one, taking the table
+                last, for one that does.
+            """
+            if weighted and name not in threaded:
+                signature = self.computation_signatures[name]
+                signatures[name] = signature
+                return signature
+            if table is not None:
+                parameters = (*parameters, table.type)
+                signatures[name] = signatures[threaded[name]] = declare_named(
+                    threaded[name], telescope, parameters, result, effects
+                )
+                return signatures[name]
+            return declare_named(name, telescope, parameters, result, effects)
+
+        def declare_named(
+            name: str,
+            telescope: tuple[IndexBinder, ...],
+            parameters: tuple[TypeExpr, ...],
+            result: TypeExpr,
+            effects: EffectRow,
+        ) -> ComputationSignature:
+            """Register a signature under its own name.
 
             Parameters
             ----------
@@ -2386,23 +2513,53 @@ class _DeductionElaboration:
             )
         if system.depth is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
-        context = _Context(self, system, signatures, params, n)
-        computations = [
-            context.equality(eq),
-            context.rendering(show),
-            context.goal(goal),
-            context.failure(failing),
+        normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
+        if system.normalized and not weighted:
+            for index, group in enumerate(system.groups):
+                if len(group.productions) > 1 and any(
+                    member.learnable for member in group.productions
+                ):
+                    normalizers.append(
+                        (
+                            declare(
+                                system.name(f"lhs{index}"),
+                                (),
+                                (),
+                                REAL,
+                                EffectRow((params.entry,)),
+                            ),
+                            group,
+                        )
+                    )
+        context = _Context(self, system, signatures, params, n, table, threaded)
+        computations: list[NamedComputation] = [
+            context.normalizer(signature, group) for signature, group in normalizers
         ]
-        if system.depth is not None:
-            computations.append(context.depth_measure(signatures[system.name("depth")]))
-        if system.chained:
-            computations.append(context.chain_count(signatures[system.name("count")]))
+        if not weighted:
+            computations.extend(
+                (
+                    context.equality(eq),
+                    context.rendering(show),
+                    context.goal(goal),
+                    context.failure(failing),
+                )
+            )
+            if system.depth is not None:
+                computations.append(
+                    context.depth_measure(signatures[system.name("depth")])
+                )
+            if system.chained:
+                computations.append(
+                    context.chain_count(signatures[system.name("count")])
+                )
         if axiom is not None:
             computations.append(context.axiom(axiom))
         computations.append(context.derivation(derive))
         if system.closes:
             computations.append(context.closure(signatures[system.name("close")]))
-        handlers = self._deduction_handlers(system)
+        if system.handlers is None:
+            system.handlers = self._deduction_handlers(system)
+        handlers = system.handlers
         if system.chained:
             computations.append(
                 context.inside(signatures[system.name("inside")], handlers)
@@ -2485,6 +2642,12 @@ class _Context:
         The module's ``Param`` instance.
     extent : IndexVariable
         The static extent of the entry's tensor argument.
+    table : Local | None
+        In the weighted variant, the table of production log-weights
+        every weight-reading computation takes last.
+    threaded : dict[str, str]
+        In the weighted variant, the weighted name of each computation
+        that takes the table.
     """
 
     def __init__(
@@ -2494,14 +2657,22 @@ class _Context:
         signatures: dict[str, ComputationSignature],
         params: NamedEffectInstance,
         extent: IndexVariable,
+        table: Local | None = None,
+        threaded: dict[str, str] | None = None,
     ) -> None:
         self.elaborator = elaborator
         self.system = system
         self.signatures = signatures
         self.params = params
         self.extent = extent
+        self.table = table
+        self.threaded = dict(threaded or {})
         self.module = elaborator.source.module_name
-        self.path: tuple[str | int, ...] = ("deductions", system.decl.name)
+        self.path: tuple[str | int, ...] = (
+            ("deductions", system.decl.name)
+            if table is None
+            else ("deductions", system.decl.name, "weighted")
+        )
 
     # -- term helpers ---------------------------------------------------
 
@@ -2558,6 +2729,10 @@ class _Context:
             binds one.
         """
         signature = self.signatures[name]
+        if name in self.threaded or name in self.threaded.values():
+            assert self.table is not None
+            name = self.threaded.get(name, name)
+            arguments = (*arguments, Var(self.table))
         statics = tuple(
             IndexVariable(binder.name, binder.sort)
             for binder in signature.telescope
@@ -3505,7 +3680,7 @@ class _Context:
         fuel = Local("fuel", INT)
         if system.span_shaped:
             repeats = Local("repeats", INT) if system.chained else None
-            tokens = Local("tokens", signature.parameters[-1])
+            tokens = Local("tokens", self.inputs(signature)[-1])
             parameters: tuple[Local, ...] = (
                 *((repeats,) if repeats is not None else ()),
                 start,
@@ -4703,7 +4878,7 @@ class _Context:
         width = self.frame_width()
         head = Local("head", INT)
         frame = tuple(Local(f"p{index}", INT) for index in range(width))
-        tokens = Local("tokens", signature.parameters[-1])
+        tokens = Local("tokens", self.inputs(signature)[-1])
         parameters = (head, *frame, tokens)
 
         def recursion(symbol: str, values: list[Value]) -> Call:
@@ -5530,13 +5705,14 @@ class _Context:
         """Read a production's log-probability in its group, then continue.
 
         The production's group holds every rule and lexicon entry that
-        rewrites its left-hand side. Each member's free log-weight is
-        its learned parameter, read under the name the agenda engine
-        keys it by, or zero for a member that is not learnable, and the
-        production's weight is its own free log-weight minus the
-        log-sum-exp of the group's, computed stably about the group's
-        largest free log-weight: the entry of the group's
-        ``log_softmax`` the agenda engine reads.
+        rewrites its left-hand side. In the weighted variant the
+        production's log-probability is its entry of the table the
+        program supplies. Otherwise each member's free log-weight is its
+        learned parameter, read under the name the agenda engine keys it
+        by, or zero for a member that is not learnable, and the
+        production's weight is its own free log-weight minus the group's
+        log-sum-exp, which the group's normalizer computation answers:
+        the entry of the group's ``log_softmax`` the agenda engine reads.
 
         Parameters
         ----------
@@ -5548,21 +5724,106 @@ class _Context:
         Returns
         -------
         Computation
-            The parameter reads, innermost the continuation.
+            The reads, innermost the continuation.
         """
         system = self.system
-        group = next(
-            group
-            for group in system.groups
+        index, group = next(
+            (index, group)
+            for index, group in enumerate(system.groups)
             if any(production.key == key for production in group.productions)
         )
-        path = ("productions", group.label)
         if len(group.productions) == 1:
             # A production alone in its group has probability one.
             return continue_with(self.weight_of(LiteralValue(0.0, REAL)))
+        if self.table is not None:
+            entry = Gather(Var(self.table), _int(system.table[key]), REAL)
+            return continue_with(self.weight_of(entry))
+        production = next(item for item in group.productions if item.key == key)
+        if not any(member.learnable for member in group.productions):
+            # Every member has free log-weight zero: a uniform group.
+            return continue_with(
+                self.weight_of(LiteralValue(-math.log(len(group.productions)), REAL))
+            )
+
+        def normalized(own: Value) -> Computation:
+            """Subtract the group's log-sum-exp from the own free weight.
+
+            Parameters
+            ----------
+            own : Value
+                The production's free log-weight.
+
+            Returns
+            -------
+            Computation
+                The normalizer's call, then the continuation.
+            """
+            return self.bind(
+                "normalizer",
+                REAL,
+                self.call(system.name(f"lhs{index}"), ()),
+                lambda normalizer: continue_with(
+                    self.weight_of(self.primitive("sub_real", own, Var(normalizer)))
+                ),
+            )
+
+        if not production.learnable:
+            return normalized(LiteralValue(0.0, REAL))
+        return self.bind(
+            "free",
+            REAL,
+            self.parameter(
+                _string(self.parameter_name(production)),
+                "productions",
+                group.label,
+                "parameter",
+            ),
+            lambda free: normalized(Var(free)),
+        )
+
+    def parameter_name(self, production: Production) -> str:
+        """The ``Param`` name of a learnable production's free weight.
+
+        Parameters
+        ----------
+        production : Production
+            The production.
+
+        Returns
+        -------
+        str
+            ``<D>.rule.<r>:`` for a rule, ``<D>.lex.<i>`` for an entry.
+        """
+        system = self.system
+        if production.kind == "rule":
+            return (
+                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
+            )
+        return f"{system.decl.name}.lex.{production.index}"
+
+    def normalizer(
+        self, signature: ComputationSignature, group: ProductionGroup
+    ) -> NamedComputation:
+        """The log-sum-exp of one group's free log-weights.
+
+        The free weights are read from ``Param`` (zero for a member that
+        is not learnable) and summed stably about their maximum.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's registered signature.
+        group : ProductionGroup
+            The group, of several productions.
+
+        Returns
+        -------
+        NamedComputation
+            The computation.
+        """
 
         def read(position: int, values: list[Value]) -> Computation:
-            """Read the group's free log-weights from a member on.
+            """Read the free log-weights from a member on.
 
             Parameters
             ----------
@@ -5574,57 +5835,49 @@ class _Context:
             Returns
             -------
             Computation
-                The reads, innermost the normalized weight.
+                The reads, innermost the log-sum-exp.
             """
             if position == len(group.productions):
-                return continue_with(self.weight_of(normalized(values)))
+                return Return(self.log_sum_exp(values))
             production = group.productions[position]
             if not production.learnable:
                 return read(position + 1, [*values, LiteralValue(0.0, REAL)])
-            name = (
-                f"{system.decl.name}.rule.{system.rules[production.index].source.name}:"
-                if production.kind == "rule"
-                else f"{system.decl.name}.lex.{production.index}"
-            )
             return self.bind(
                 "free",
                 REAL,
-                self.parameter(_string(name), *path, position, "parameter"),
+                self.parameter(
+                    _string(self.parameter_name(production)),
+                    "normalizers",
+                    group.label,
+                    position,
+                ),
                 lambda free: read(position + 1, [*values, Var(free)]),
             )
 
-        def normalized(values: list[Value]) -> Value:
-            """The production's own entry of the group's ``log_softmax``.
+        return self.computation(signature, (), read(0, []))
 
-            Parameters
-            ----------
-            values : list[Value]
-                The group's free log-weights, in member order.
+    def log_sum_exp(self, values: list[Value]) -> Value:
+        """``log(sum(exp(v)))`` computed about the largest value.
 
-            Returns
-            -------
-            Value
-                The weight, a ``Real``.
-            """
-            own = next(
-                values[position]
-                for position, production in enumerate(group.productions)
-                if production.key == key
-            )
-            peak = values[0]
-            for value in values[1:]:
-                peak = self.primitive("max_real", peak, value)
-            total: Value | None = None
-            for value in values:
-                term = self.primitive("exp", self.primitive("sub_real", value, peak))
-                total = (
-                    term if total is None else self.primitive("add_real", total, term)
-                )
-            assert total is not None
-            normalizer = self.primitive("add_real", peak, self.primitive("log", total))
-            return self.primitive("sub_real", own, normalizer)
+        Parameters
+        ----------
+        values : list[Value]
+            Reals, at least one.
 
-        return read(0, [])
+        Returns
+        -------
+        Value
+            The log-sum-exp, a ``Real``.
+        """
+        peak = values[0]
+        for value in values[1:]:
+            peak = self.primitive("max_real", peak, value)
+        total: Value | None = None
+        for value in values:
+            term = self.primitive("exp", self.primitive("sub_real", value, peak))
+            total = term if total is None else self.primitive("add_real", total, term)
+        assert total is not None
+        return self.primitive("add_real", peak, self.primitive("log", total))
 
     # -- entry ------------------------------------------------------------
 
@@ -5657,7 +5910,7 @@ class _Context:
             Local(name, type_)
             for name, type_ in zip(
                 ("tokens",) if system.entries else ("axioms", "weights"),
-                signature.parameters,
+                self.inputs(signature),
                 strict=True,
             )
         )
@@ -5898,6 +6151,23 @@ class _Context:
             (),
         )
 
+    def inputs(self, signature: ComputationSignature) -> tuple[TypeExpr, ...]:
+        """A computation's parameter types before any production table.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The computation's signature.
+
+        Returns
+        -------
+        tuple[TypeExpr, ...]
+            Its parameters, less the table the weighted variant appends.
+        """
+        if self.table is not None and signature.name in self.threaded.values():
+            return signature.parameters[:-1]
+        return signature.parameters
+
     def computation(
         self,
         signature: ComputationSignature,
@@ -5926,6 +6196,8 @@ class _Context:
             If the body fails to check or its type differs from the
             signature's.
         """
+        if self.table is not None and signature.name in self.threaded.values():
+            parameters = (*parameters, self.table)
         return self.elaborator._checked_computation(
             signature, parameters, body, self.system.decl, self.path
         )

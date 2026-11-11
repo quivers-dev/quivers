@@ -10,7 +10,7 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Collection, Hashable, Mapping
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
@@ -1128,6 +1128,99 @@ _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
 _PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "over"})
 _CONTRACTION_OPTION_KEYS: frozenset[str] = frozenset({"rule", "wiring", "share"})
+
+
+def _compile_parse_call(
+    node: LetExprCall, arg_fns: list[Callable[[dict], object]]
+) -> Callable[[dict], object]:
+    """Compile ``parse(D, input[, Plate][, (lhs, probabilities)...])``.
+
+    The first argument names a compiled deduction and the second is its
+    input: a sentence, or with a plate object as the third argument, a
+    corpus of sentences, one per row, whose goal weight is the semiring
+    product of the sentences'. The remaining arguments bind production
+    probabilities to a grammar normalized per left-hand side, each a pair
+    of a left-hand side's label and a probability vector over its
+    productions; the deduction checks that they cover its groups.
+
+    Parameters
+    ----------
+    node : LetExprCall
+        The call.
+    arg_fns : list[Callable[[dict], object]]
+        Its compiled arguments.
+
+    Returns
+    -------
+    Callable[[dict], object]
+        The evaluator, answering a `ChartView` for a sentence and a
+        `CorpusChart` for a corpus.
+
+    Raises
+    ------
+    CompileError
+        If the call has fewer than two arguments, a binding is not a
+        pair of a string label and a value, a label is bound twice, or
+        (when evaluated) the first argument is no deduction.
+    """
+    if len(node.args) < 2:
+        raise CompileError(
+            "parse() takes a deduction and its input, then optionally a plate "
+            "object and (left-hand side, probabilities) pairs"
+        )
+    rest = list(node.args[2:])
+    corpus = bool(rest) and isinstance(rest[0], LetExprVar)
+    if corpus:
+        rest = rest[1:]
+    labels: list[str] = []
+    for argument in rest:
+        if not (
+            isinstance(argument, LetExprTuple)
+            and len(argument.items) == 2
+            and isinstance(argument.items[0], LetExprString)
+        ):
+            raise CompileError(
+                'parse() binds production probabilities as ("<left-hand side>", '
+                "<probabilities>) pairs after its input and optional plate",
+                argument.line,
+                argument.col,
+            )
+        label = argument.items[0].value
+        if label in labels:
+            raise CompileError(
+                f"parse() binds the left-hand side {label!r} twice",
+                argument.line,
+                argument.col,
+            )
+        labels.append(label)
+    pair_fns = arg_fns[len(node.args) - len(rest) :]
+    target_fn, input_fn = arg_fns[0], arg_fns[1]
+
+    def _parse(env: dict) -> object:
+        system = target_fn(env)
+        if not isinstance(system, DeductionSystem):
+            raise CompileError(
+                f"parse() first arg must be a DeductionSystem, "
+                f"got {type(system).__name__}"
+            )
+        probabilities: dict[str, torch.Tensor] | None = None
+        if labels:
+            probabilities = {}
+            for label, pair_fn in zip(labels, pair_fns, strict=True):
+                pair = pair_fn(env)
+                assert isinstance(pair, tuple) and len(pair) == 2
+                value = pair[1]
+                tensor = (
+                    value if isinstance(value, torch.Tensor) else torch.tensor(value)
+                )
+                probabilities[label] = tensor.reshape(tensor.shape[-1:])
+        source = input_fn(env)
+        if corpus:
+            assert isinstance(source, Sequence)
+            return system.corpus(list(source), probabilities)
+        return system(source, probabilities)
+
+    return _parse
 
 
 class _ProgramsMixin:
@@ -5916,6 +6009,14 @@ class _ProgramsMixin:
             def _method(env: dict):
                 receiver = recv_fn(env)
                 args = [fn(env) for fn in arg_fns]
+                if (
+                    method == "goal_weight"
+                    and not args
+                    and isinstance(receiver, torch.Tensor)
+                ):
+                    # In a checked program a deduction's answer is its
+                    # goal's inside weight, which ``goal_weight()`` reads.
+                    return receiver
                 fn = getattr(receiver, method, None)
                 if fn is None:
                     raise CompileError(
@@ -6052,26 +6153,7 @@ class _ProgramsMixin:
                     ]
                     return torch.logsumexp(torch.stack(coll), dim=0)
                 if func_name == "parse":
-                    # parse(D, input) — invoke a registered deduction
-                    # on an axiom list / input. The first arg is a
-                    # let_var naming a compiled DeductionSystem; the
-                    # remaining arg is the input to feed it.
-                    # The runtime env carries a `__compiler__` key
-                    # set by the program runner with the compiled
-                    # deductions dict.
-                    if len(arg_fns) != 2:
-                        raise CompileError(
-                            "parse() takes exactly two arguments: "
-                            "deduction-name and input"
-                        )
-                    ded = arg_fns[0](env)
-                    inp = arg_fns[1](env)
-                    if hasattr(ded, "__call__"):
-                        return ded(inp)
-                    raise CompileError(
-                        f"parse() first arg must be a DeductionSystem, "
-                        f"got {type(ded).__name__}"
-                    )
+                    return _compile_parse_call(node, arg_fns)(env)
                 if func_name == "subst":
                     # subst(term, var, value) — capture-avoiding
                     # substitution on a structural LF term. Walks the
