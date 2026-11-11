@@ -33,6 +33,7 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.joint_plan import JointPlans
 from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
@@ -407,6 +408,10 @@ class PotentialFn:
         # conditioned copy so that a chain's evaluations are counted in
         # one place.
         self._counts = [0, 0]
+        # The program's log joint prepared per layout of the values,
+        # shared with every conditioned copy: conditioning changes the
+        # values, not their layout.
+        self._plans = JointPlans(model, x)
 
     @property
     def num_evaluations(self) -> int:
@@ -532,7 +537,7 @@ class PotentialFn:
         self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
         try:
-            log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
+            log_p = self._plans.log_joint({**trace_side, **self._observations})
         except (ValueError, torch.linalg.LinAlgError) as error:
             if not _rejects_position(error):
                 raise
