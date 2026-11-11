@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 106 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 108 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 60 / 106   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 71 / 106   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 80 / 106   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 74 / 106   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 64 / 106   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 88 / 106   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 77 / 106   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 89 / 106   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 77 / 106   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 74 / 106   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 77 / 106   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 61 / 108   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 73 / 108   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 82 / 108   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 76 / 108   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 65 / 108   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 90 / 108   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 79 / 108   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 91 / 108   |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 79 / 108   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 76 / 108   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 79 / 108   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -186,6 +186,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                                       | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |-----------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `let_expressions/let_binary_min_max`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_concat_slice`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_concat_slice_matrix`     | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_binop`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_call`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_factor`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -853,6 +855,24 @@ family:MixtureNormal:no-free-density-term: a finite mixture is an explicit weigh
 
 ```text
 bugs cannot score a draw from `MixtureNormal`: a finite mixture is an explicit weighted density in the BUGS function library, but adding one to the joint needs a free log-density term the language has no statement for
+```
+
+**`let-expr:LetExprFactor:wide`**
+
+Refused for: `let_expressions/let_concat_slice_matrix`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:LetExprFactor:wide: binder axes (2,) do not match the binding's declared plate (2, 6)
+```
+
+`bugs` on `let_expressions/let_concat_slice_matrix` reports:
+
+```text
+bugs cannot emit a `factor` over an axis as a `let` body: binder axes (2,) do not match the binding's declared plate (2, 6)
 ```
 
 **`let-expr:axis-reduction:bugs`**
@@ -1791,6 +1811,24 @@ family:no-target-name:RelaxedOneHotCategorical
 
 ```text
 jags has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:LetExprFactor:wide`**
+
+Refused for: `let_expressions/let_concat_slice_matrix`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:LetExprFactor:wide: binder axes (2,) do not match the binding's declared plate (2, 6)
+```
+
+`jags` on `let_expressions/let_concat_slice_matrix` reports:
+
+```text
+jags cannot emit a `factor` over an axis as a `let` body: binder axes (2,) do not match the binding's declared plate (2, 6)
 ```
 
 **`let-expr:axis-reduction:jags`**

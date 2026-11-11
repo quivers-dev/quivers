@@ -20,6 +20,11 @@ target, that settles each builtin for each target in one of four ways:
   target cannot express the builtin, and rendering it raises
   [`UnsupportedConstruct`][quivers.transpile._api.UnsupportedConstruct]
   naming the builtin and the target.
+* [`Elaborated`][quivers.transpile._builtin_spellings.Elaborated]: the
+  checked elaboration writes the builtin in terms of selections, tensor
+  literals, comprehensions, and other builtins before any plan is
+  drawn (``concat``, ``slice``), so no renderer meets the call and the
+  target spells what it was written in.
 
 Every target's table has an entry for every surface builtin, so adding
 a builtin to the registry forces a decision for every target. The
@@ -57,6 +62,14 @@ MATH_BUILTINS: Mapping[str, int] = {
     if spec.qiec_form == "primitive"
     and name not in {"int", "real", "weight", "weight_value"}
 }
+
+
+#: The builtins the checked elaboration writes out before planning:
+#: every builtin of the registry that rebuilds the last axis of its
+#: arguments.
+ELABORATED_BUILTINS: frozenset[str] = frozenset(
+    name for name, spec in BUILTIN_REGISTRY.items() if spec.qiec_form == "shape"
+)
 
 
 #: The planner's target-neutral lowering, which no renderer reads: it
@@ -125,6 +138,21 @@ class Dedicated(BuiltinSpelling):
 
     reason: str
     kind: Literal["dedicated"] = "dedicated"
+
+
+class Elaborated(BuiltinSpelling):
+    """The checked elaboration writes the builtin out before planning.
+
+    Parameters
+    ----------
+    reason
+        What the builtin is written in, which the target spells.
+    kind
+        The discriminator; always ``"elaborated"``.
+    """
+
+    reason: str
+    kind: Literal["elaborated"] = "elaborated"
 
 
 class Refusal(BuiltinSpelling):
@@ -784,19 +812,35 @@ _BUGS: dict[str, BuiltinSpelling] = {
 }
 
 
-#: Every target's spelling of every math builtin.
+#: How every target meets each builtin the elaboration writes out.
+_ELABORATED: dict[str, BuiltinSpelling] = {
+    "concat": Elaborated(
+        reason="a tensor literal of entries selected at literal positions of "
+        "each operand's last axis, under a comprehension per leading axis"
+    ),
+    "slice": Elaborated(
+        reason="a tensor literal of the window's entries selected at literal "
+        "positions of the last axis, under a comprehension per leading axis"
+    ),
+}
+
+#: Every target's spelling of every math builtin and every builtin the
+#: elaboration writes out.
 BUILTIN_SPELLINGS: Mapping[str, Mapping[str, BuiltinSpelling]] = {
-    "pyro": _PYRO,
-    "numpyro": _NUMPYRO,
-    "pymc": _PYMC,
-    "edward2": _EDWARD2,
-    "stan": _STAN,
-    "turing": _julia("Turing"),
-    "gen": _julia("Gen"),
-    "webppl": _WEBPPL,
-    "church": _CHURCH,
-    "bugs": _BUGS,
-    "jags": _BUGS,
+    target: {**table, **_ELABORATED}
+    for target, table in {
+        "pyro": _PYRO,
+        "numpyro": _NUMPYRO,
+        "pymc": _PYMC,
+        "edward2": _EDWARD2,
+        "stan": _STAN,
+        "turing": _julia("Turing"),
+        "gen": _julia("Gen"),
+        "webppl": _WEBPPL,
+        "church": _CHURCH,
+        "bugs": _BUGS,
+        "jags": _BUGS,
+    }.items()
 }
 
 
@@ -983,6 +1027,7 @@ def native_import(
 __all__ = [
     "BUILTIN_SPELLINGS",
     "CHURCH_RUNTIME_BUILTINS",
+    "ELABORATED_BUILTINS",
     "MATH_BUILTINS",
     "NEUTRAL_TARGET",
     "RUNTIME_TARGET",
@@ -990,6 +1035,7 @@ __all__ = [
     "BuiltinSpelling",
     "ClosedForm",
     "Dedicated",
+    "Elaborated",
     "NativeCall",
     "Refusal",
     "builtin_spelling",

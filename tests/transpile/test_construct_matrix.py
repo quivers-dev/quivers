@@ -325,6 +325,12 @@ for _category, _fixture in (
     _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
 # Stan's samplers draw no discrete parameter, so a sampled class is one
 # it cannot carry.
+# A `concat` or `slice` of a table elaborates to a factor whose entry is
+# a list, which BUGS and JAGS have no loop form for.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "let_expressions", "let_concat_slice_matrix")
+    ] = "let-expr:LetExprFactor:"
 _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
     "sample:discrete-latent"
 )

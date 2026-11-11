@@ -92,6 +92,7 @@ class TestBuiltinPrimitives:
                 "alpha_dropout",
                 "norm",
                 "pow",
+                "slice",
             }
         ),
     )
@@ -104,8 +105,8 @@ class TestBuiltinPrimitives:
         # the call doesn't crash and returns a tensor.
         assert isinstance(out, torch.Tensor)
 
-    def test_all_91_primitives_present(self):
-        assert len(_LET_EXPR_BUILTINS) == 91
+    def test_all_93_primitives_present(self):
+        assert len(_LET_EXPR_BUILTINS) == 93
 
     def test_binary_pow_uses_both_arguments(self):
         fn = _compile(_call("pow", _var("x"), _lit(2.0)))
