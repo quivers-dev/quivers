@@ -1485,6 +1485,10 @@ class _Elaborator(
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
         self._program_lets: dict[str, surface.Expr] = {}
         self._program_declarations: dict[str, surface.ProgramDecl] = {}
+        # Types fixed for free names of the program being elaborated: a
+        # scan cell specialized to its scanning program reads each name
+        # that program binds before the scan at that binding's type.
+        self._pinned_types: dict[str, TypeExpr] = {}
         self.registry = KernelRegistry()
         # The type a `return` in the body being lowered should produce. It
         # is a hint for positions that cannot state their type, such as a

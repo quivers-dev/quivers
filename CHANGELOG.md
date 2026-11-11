@@ -12,12 +12,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
-- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, the compiled runtime, and every transpile target; an `Int` index stands for one value at every row, and index vectors of two shapes in one subscript are refused at the subscript.
+- **Transpiled list literals and factor tables keep their array shape.** PyMC and Edward2 stack a list-literal let into an array, as Pyro and NumPyro do, so arithmetic between two of them is elementwise; Julia targets count a factor's entry axes when deciding whether a binding spans its plate, and nest a factor whose entry is a list; Church gives each nested map its own variable when two axes of a binding share a name.
+
+## [0.26.2] - 2026-11-11
+
+### Fixed
+
+- **Every transpile target scores a subscript of several index vectors one entry per position.** `M[r_idx, c_idx]` on a host table or on a matrix the program builds with `factor` renders as `M[r_idx[n], c_idx[n]]` at each row `n` on every target, matching the checked type, the reference machine, and the compiled runtime.
 - **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
 - **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
 - **Transpiled programs read host tables of open extents and factor tables inside arithmetic.** Stan declares each open extent of a host input (`M_extent0`) as an integer datum, PyMC sizes its coordinates from the input array, Pyro casts an index input read entrywise to integers, and the Python targets stack a `factor` that appears as an operand into an array, where it had been a Python list that `+` concatenated.
-- **Transpiled list literals and factor tables keep their array shape.** PyMC and Edward2 stack a list-literal let into an array, as Pyro and NumPyro do, so arithmetic between two of them is elementwise; Julia targets count a factor's entry axes when deciding whether a binding spans its plate, and nest a factor whose entry is a list; Church gives each nested map its own variable when two axes of a binding share a name.
 - **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
+
+## [0.26.1] - 2026-11-11
+
+### Fixed
+
+- **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
 
 ## [0.26.0] - 2026-11-11
 
@@ -114,6 +125,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A declaration reports its own diagnostics before the checked module's.**
 - **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
 - **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, and the compiled runtime.
 
 #### Reference machine
 

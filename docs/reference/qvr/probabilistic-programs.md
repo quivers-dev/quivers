@@ -281,11 +281,14 @@ whose own steps run once per position under the three rules below.
 
 1. **Scope.** A name a program cell reads without binding it is the scanning
    program's binding of that name *before* the scan: a sampled site, a `let`,
-   or a program input. A name the scanning program does not bind before the
-   scan is host data of the scanning program, supplied under that name, and the
-   scanning program cannot bind it afterwards. A name the cell binds itself
-   shadows the scanning program's binding inside the cell and is not visible
-   after the scan. Gradients flow through the bindings the cell reads.
+   or a program input, read at that binding's type: a scalar, a plated vector,
+   or a matrix-valued draw. A name the scanning program does not bind before
+   the scan is host data of the scanning program, supplied under that name and
+   typed by the cell's uses, as for any free name (a table read as `M[i, j]`
+   keeps its open extents); the scanning program cannot bind it afterwards. A
+   name the cell binds itself shadows the scanning program's binding inside the
+   cell and is not visible after the scan. Gradients flow through the bindings
+   the cell reads.
 2. **Sites.** Every site the step reaches is reached once per position. The
    `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
    from zero over the run, so for a single scan `n` is the position. A trace
