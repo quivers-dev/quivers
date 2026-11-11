@@ -129,6 +129,27 @@ def _lookup_arg(
     raise KeyError(arg)
 
 
+def _arg_carries(arg: StepArgument, carries: Callable[[str], bool]) -> bool:
+    """Whether an argument's value leads with the run axis of one run.
+
+    Parameters
+    ----------
+    arg : StepArgument
+        A binding's name, or a gather of one.
+    carries : Callable[[str], bool]
+        Whether a binding leads with the run axis.
+
+    Returns
+    -------
+    bool
+        For a name, its flag; for a gather, whether the table or any
+        index carries the run axis, which the gathered value then keeps.
+    """
+    if isinstance(arg, Indexed):
+        return carries(arg.name) or any(carries(ix) for ix in arg.indices)
+    return carries(arg)
+
+
 def _bound_names(step: Step) -> tuple[str, ...]:
     """The names a step binds.
 
@@ -670,6 +691,15 @@ class MonadicProgram(ContinuousMorphism):
                 None if v is None else int(v) for k, v in param_spec if k == "var"
             )
             if len(var_ranks) == len(parts):
+                if carries is not None:
+                    # A vector parameter is read at one run's layout:
+                    # the run axis a value carries is not a row of it.
+                    parts = [
+                        part[0] if rank >= 1 and _arg_carries(arg, carries) else part
+                        for part, rank, arg in zip(
+                            parts, var_ranks, spec.args, strict=True
+                        )
+                    ]
                 return self._stack_params(parts, var_ranks, var_dims)
         if len(parts) == 1:
             return self._promote_rank(parts[0])

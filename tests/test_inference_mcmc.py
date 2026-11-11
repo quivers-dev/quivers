@@ -1142,7 +1142,7 @@ def test_mcmc_run_raises_on_a_program_or_data_defect(case: str) -> None:
     )
     with pytest.raises(error_type) as raised:
         driver.run(make(), torch.zeros(1, 1), data)
-    assert any("chain 0's initial position" in note for note in raised.value.__notes__)
+    assert any("before any sampling" in note for note in raised.value.__notes__)
 
 
 @pytest.mark.parametrize(

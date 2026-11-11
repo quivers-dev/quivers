@@ -488,8 +488,15 @@ class MCMC:
         # The latents are the sites one run at (x, observations) reaches,
         # every position of a scan included. The run draws its latents
         # from a forked stream, so Torch's global RNG is left as it was.
-        with torch.random.fork_rng(devices=[]):
-            recorded = trace(model, x, observations=observations)
+        try:
+            with torch.random.fork_rng(devices=[]):
+                recorded = trace(model, x, observations=observations)
+        except Exception as error:
+            error.add_note(
+                "MCMC.run: raised while recording the run its latents are read "
+                "from, before any sampling"
+            )
+            raise
         registry = LatentRegistry.from_trace(model, recorded)
         potential = PotentialFn(model, registry, x, observations)
 

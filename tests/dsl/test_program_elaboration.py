@@ -17,7 +17,6 @@ import torch.distributions as td
 
 from quivers.continuous.morphisms import SampledComposition
 from quivers.continuous.programs import MonadicProgram
-from quivers.continuous.scan import ScanMorphism
 from quivers.dsl import Compiler, parse
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec

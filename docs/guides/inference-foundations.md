@@ -41,8 +41,11 @@ flowchart TB
     class L2,L1 qv-foundation
 ```
 
-Every guide and MCMC kernel consumes a single
-`LatentRegistry.from_model(model, observed_names)`,
+Every guide and MCMC kernel consumes a single `LatentRegistry`, built
+from a run of the model with
+`LatentRegistry.from_trace(model, trace(model, x, observations))` (MCMC
+always, a guide when constructed with `x=`) or from the program's own
+steps with `LatentRegistry.from_model(model, observed_names)`,
 which flattens / unflattens between site-keyed dicts and a single
 unconstrained vector and routes every per-site bijector through
 [`torch.distributions.constraint_registry.biject_to`](https://docs.pytorch.org/docs/stable/distributions.html#torch.distributions.constraint_registry.biject_to).
