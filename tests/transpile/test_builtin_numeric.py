@@ -94,6 +94,16 @@ _BINARY: dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "pow": torch.pow,
 }
 
+#: Each three-argument pointwise builtin's independent ``torch`` meaning,
+#: applied as ``f(x > _THRESHOLD, x, 1.0 - x)``.
+_TERNARY: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
+    "select": lambda x: torch.where(x > _THRESHOLD, x, 1.0 - x),
+}
+
+#: The condition ``select`` reads: the constant falls below it, and the
+#: binder's and the plated operand's entries fall on both sides.
+_THRESHOLD = 0.43
+
 #: The constant each builtin is applied to, inside its domain. The
 #: binder adds a tenth of the step index (at most 0.2), and the plated
 #: operand a tenth of an observation (within 0.07), so every argument
@@ -161,6 +171,8 @@ def _application(name: str, shift: str) -> str:
         The call.
     """
     argument = f"{shift}{_argument(name)}"
+    if name in _TERNARY:
+        return f"{name}({argument} > {_THRESHOLD}, {argument}, 1.0 - ({argument}))"
     return (
         f"{name}({argument}, {_EXPONENT})" if name in _BINARY else f"{name}({argument})"
     )
@@ -225,6 +237,8 @@ def _apply(name: str, argument: torch.Tensor) -> torch.Tensor:
     """
     if name in _BINARY:
         return _BINARY[name](argument, torch.tensor(_EXPONENT, dtype=torch.float64))
+    if name in _TERNARY:
+        return _TERNARY[name](argument)
     return _UNARY[name](argument)
 
 
@@ -294,7 +308,7 @@ def test_every_target_settles_every_surface_builtin() -> None:
         if builtin not in {"int", "real", "weight", "weight_value"}
     }
     assert set(MATH_BUILTINS) == surface
-    assert set(_UNARY) | set(_BINARY) == surface
+    assert set(_UNARY) | set(_BINARY) | set(_TERNARY) == surface
     assert set(BUILTIN_SPELLINGS) == set(_TARGETS)
     elaborated = {
         name for name, spec in BUILTIN_REGISTRY.items() if spec.qiec_form == "shape"
@@ -382,7 +396,13 @@ def _computation_source(names: list[str]) -> str:
     """
     lines = [f"object Step : FinSet {_STEPS}", "object Val : Real 1", ""]
     for index, name in enumerate(names):
-        body = f"{name}(x, {_EXPONENT})" if name in _BINARY else f"{name}(x)"
+        body = (
+            f"{name}(x, {_EXPONENT})"
+            if name in _BINARY
+            else f"{name}(x > {_THRESHOLD}, x, 1.0 - x)"
+            if name in _TERNARY
+            else f"{name}(x)"
+        )
         lines += [
             f"define f{index}(x : Real) : Real !{{}} =",
             "    if x < -100.0 then",

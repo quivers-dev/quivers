@@ -189,6 +189,18 @@
 (define (qvr-max a b) (broadcast2 max a b))
 (define (qvr-min a b) (broadcast2 min a b))
 (define (qvr-pow a b) (broadcast2 expt a b))
+;; select(c, a, b): a where c holds, else b, entry by entry; a number
+;; among the three broadcasts. Both branches are already evaluated.
+(define (qvr-select c a b)
+  (cond ((or (pair? c) (pair? a) (pair? b))
+         (let ((n (length (car (filter pair? (list c a b))))))
+           (map (lambda (i)
+                  (qvr-select (if (pair? c) (list-ref c i) c)
+                              (if (pair? a) (list-ref a i) a)
+                              (if (pair? b) (list-ref b i) b)))
+                (iota n))))
+        (c a)
+        (else b)))
 
 (define (qvr-sign x)
   (broadcast1 (lambda (v) (cond ((> v 0) 1.0) ((< v 0) -1.0) (else 0.0))) x))
