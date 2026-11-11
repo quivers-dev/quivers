@@ -746,6 +746,31 @@ def _emit_draw_args(args: tuple[DrawArg, ...] | None) -> str:
     return "(" + ", ".join(_emit_draw_arg(a) for a in args) + ")"
 
 
+def draw_call_to_source(head: str, args: tuple[DrawArg, ...] | None) -> str:
+    """A draw's right-hand side as QVR source.
+
+    Parameters
+    ----------
+    head : str
+        The family or morphism drawn from.
+    args : tuple[DrawArg, ...] or None
+        The draw's arguments, keyword or positional.
+
+    Returns
+    -------
+    str
+        ``head`` followed by its parenthesized arguments as written,
+        as in ``Dirichlet(concentration=1.0)``, or ``head`` alone when
+        the draw passes none.
+
+    Raises
+    ------
+    EmitError
+        If an argument has no source spelling.
+    """
+    return f"{head}{_emit_draw_args(args)}"
+
+
 # ---------------------------------------------------------------------------
 # program steps
 # ---------------------------------------------------------------------------
