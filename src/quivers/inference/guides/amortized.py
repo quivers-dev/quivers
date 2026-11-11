@@ -481,8 +481,8 @@ class AmortizedGuide(Guide):
         """The guide's log-density of site values, per run.
 
         For a site reached through the bijector :math:`T`,
-        :math:`\log q(v) = \log e(T^{-1}(v) \mid y) + \log
-        |\det J_{T^{-1}}(v)|`; otherwise :math:`\log e(v \mid y)`.
+        :math:`\\log q(v) = \\log e(T^{-1}(v) \\mid y) + \\log
+        |\\det J_{T^{-1}}(v)|`; otherwise :math:`\\log e(v \\mid y)`.
         A plate site's rows add up within a run.
 
         Parameters
