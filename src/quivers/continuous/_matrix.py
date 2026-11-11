@@ -44,11 +44,11 @@ class InverseWishart(D.Distribution):
          Whether to validate the arguments and values.
     """
 
-    arg_constraints = {
+    arg_constraints: dict[str, constraints.Constraint] = {
         "df": constraints.positive,
         "scale_tril": constraints.lower_cholesky,
     }
-    support = constraints.positive_definite
+    support: constraints.Constraint = constraints.positive_definite
     has_rsample = True
 
     def __init__(
@@ -129,12 +129,12 @@ class MatrixNormal(D.Distribution):
         Whether to validate the arguments and values.
     """
 
-    arg_constraints = {
+    arg_constraints: dict[str, constraints.Constraint] = {
         "loc": constraints.independent(constraints.real, 2),
         "row_covariance": constraints.positive_definite,
         "col_covariance": constraints.positive_definite,
     }
-    support = constraints.independent(constraints.real, 2)
+    support: constraints.Constraint = constraints.independent(constraints.real, 2)
     has_rsample = True
 
     def __init__(
