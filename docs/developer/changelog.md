@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A logistic likelihood keeps its precision: `Bernoulli` takes its log-odds as `logits`.** `Bernoulli(logits=eta)` is scored from the log-odds on the compiled runtime and the reference machine, where `Bernoulli(probs=sigmoid(eta))` loses a tenth of a nat once `eta` passes 15 in single precision. Stan renders it as `bernoulli_logit`, Turing as `BernoulliLogit`, PyMC as `logit_p`, and Pyro, NumPyro, and Edward2 with their `logits` keyword; BUGS, JAGS, Church, Gen, and WebPPL refuse it as `family:Bernoulli:logits`. Naming `probs` and `logits` together is refused at the draw.
+- **A `factor` let is planned over the object its binder names.** A let such as `factor t : Step in ...` beside another object of the same cardinality reaches every transpile target over `Step`, so WebPPL scores a plated observation inside a `marginalize` atom at its row (`rate[n]`), where it had read the whole vector and returned no density.
+- **Turing reciprocates a per-row rate elementwise.** A `Gamma` or `Exponential` rate that holds one value per row renders as `inv.(rate)` inside the broadcast family call, where `inv(rate)` raised a `MethodError` on the vector.
+- **JAGS reads a per-row host datum at the loop's row.** A datum that fills a family parameter of a plated site, such as a known standard error `Normal(loc=mu, scale=se)`, renders as `se[m_School]`, as BUGS renders it, where JAGS rejected the unindexed vector.
+- **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
+- **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
+
 ## [0.26.2] - 2026-11-11
 
 ### Fixed
