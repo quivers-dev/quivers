@@ -226,10 +226,8 @@ def _beta_bernoulli_mix_points() -> list[Point]:
     # Identity fibration: each observation is its own group. This
     # exercises the per-row mixture form of `marginalize_grouped`
     # (`|G| = N`, scatter-add is a no-op, one logsumexp per row).
-    # Stan uses 1-based indexing in the emitted code; the renderer
-    # declares `int <lower = 1, upper = N> idx;`, so the JSON values
-    # are 1-indexed at the Stan boundary even though the QVR probe
-    # operates in 0-indexed space.
+    # Every target reads the indices in QVR's zero-based origin; a
+    # one-based host such as Stan rebases each subscript itself.
     idx_qvr = list(range(n_obs))
     # `theta` is a 2-simplex (sums to 1) so each `(theta[0],
     # theta[1])` pair is `(theta[0], 1 - theta[0])`; the two
@@ -316,27 +314,6 @@ _FIXTURES = tuple(_FIXTURE_SOURCES)
 _BACKENDS: dict[str, tuple[str, str, str]] = {
     "stan": ("panproto-test-stan", "stan", "stan.py"),
 }
-
-
-def _stan_points(qvr_points: list[Point]) -> list[Point]:
-    """Translate a QVR-side point set into Stan's 1-indexed convention.
-
-    The QVR-emitted Stan source declares `array [N] int <lower = 1,
-    upper = N> idx;`, so host-supplied indices live in `[1, N]` at
-    the Stan boundary. The QVR probe consumes 0-indexed `idx`
-    natively; this helper shifts each `idx` entry by one while
-    leaving every other field of every point unchanged.
-    """
-    shifted: list[Point] = []
-    for pt in qvr_points:
-        data: dict[str, float | int | list[float] | list[int]] = {
-            k: v for k, v in pt.data.items()
-        }
-        raw_idx = data.get("idx")
-        if isinstance(raw_idx, list):
-            data["idx"] = [int(v) + 1 for v in raw_idx]
-        shifted.append(Point(params=pt.params, data=data))
-    return shifted
 
 
 def _coerce(
@@ -476,10 +453,7 @@ def test_marginalize_three_way_agreement(
             target_source = transpile(module, target=backend)
         except UnsupportedConstruct:
             continue
-        target_points = _stan_points(qvr_points) if backend == "stan" else qvr_points
-        lp_target = _target_log_densities(
-            backend, target_source, target_points, scratch
-        )
+        lp_target = _target_log_densities(backend, target_source, qvr_points, scratch)
         if lp_target is None:
             continue
         any_target_ran = True
