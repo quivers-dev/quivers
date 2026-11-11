@@ -35,6 +35,7 @@ from quivers.dsl._grammar_introspection import (  # noqa: E402
     OPERATORS,
     SORT_KINDS,
 )
+from quivers.dsl.family_schemas import DISTRIBUTION_FAMILIES  # noqa: E402
 
 
 HEADER = """; QVR syntax highlighting queries.
@@ -57,6 +58,8 @@ NODE_PATTERNS = """\
 ; declarations and identifiers
 ; ---------------------------------------------------------------------------
 
+(object_decl "object" @keyword)
+(index_decl "index" @keyword)
 (category_decl    names: (identifier) @type)
 (object_decl      names: (identifier) @type)
 (rule_decl        name: (identifier) @function)
@@ -203,6 +206,15 @@ def _quote_list(items: list[str]) -> str:
     return f"[\n{rendered}\n]"
 
 
+def _identifier_predicate(capture: str, items: set[str]) -> str:
+    """Match named identifiers against a generated finite vocabulary."""
+    rendered = "\n".join(
+        '    "{}"'.format(item.replace("\\", "\\\\").replace('"', '\\"'))
+        for item in sorted(items)
+    )
+    return f"((identifier) @{capture}\n  (#any-of? @{capture}\n{rendered}))"
+
+
 def _queryable_literals(items: set[str]) -> list[str]:
     """Keep literals Tree-sitter exposes as anonymous queryable nodes.
 
@@ -239,6 +251,9 @@ def render() -> str:
         "; ---------------------------------------------------------------------------",
         "",
         _quote_list(_queryable_literals(BUILTIN_TYPES)) + " @type.builtin",
+        "",
+        "; Registered distribution-family identifiers.",
+        _identifier_predicate("type.builtin", set(DISTRIBUTION_FAMILIES)),
         "",
         "; ---------------------------------------------------------------------------",
         "; builtin functions (combinators, intrinsics)",

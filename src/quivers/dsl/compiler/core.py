@@ -52,8 +52,38 @@ from quivers.dsl.qiec_lowering import (
     non_qiec_projection,
 )
 from quivers.qiec import QiecModule
+from quivers.qiec.terms import PlateAxis
+from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
+
+
+def _plate_axes(
+    batch: tuple[PlateAxis, ...],
+) -> tuple[tuple[str, int | None], ...]:
+    """A checked site's batch axes as ``(plate, extent)`` pairs.
+
+    Parameters
+    ----------
+    batch : tuple[PlateAxis, ...]
+        The site's batch axes, outermost first.
+
+    Returns
+    -------
+    tuple[tuple[str, int | None], ...]
+        One pair per axis: its extent when the program fixes it as a
+        number, ``None`` when the program leaves it to its data or its
+        static arguments.
+    """
+    return tuple(
+        (
+            axis.name,
+            axis.size.value
+            if isinstance(axis.size, IndexLiteral) and isinstance(axis.size.value, int)
+            else None,
+        )
+        for axis in batch
+    )
 
 
 class Compiler(
@@ -465,6 +495,9 @@ class Compiler(
             target.host_data_shared = frozenset(
                 parameter.name for parameter in entry.parameters if parameter.per_row
             )
+            target.site_plates = {
+                site.name: _plate_axes(site.batch) for site in entry.sites
+            }
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.

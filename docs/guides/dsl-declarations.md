@@ -568,6 +568,10 @@ define rnn = tok_embed >> scan(cell) >> output_proj
 
 # With learned initial state (default is zeros)
 define rnn_learned = tok_embed >> scan(cell, init=learned) >> output_proj
+
+# Every state rather than the last, and a scan from the last position to the first
+define states = tok_embed >> scan(cell, outputs=all)
+define backward = tok_embed >> scan(cell, reverse=true)
 ```
 
 The `scan` combinator implements temporal recurrence by threading
@@ -584,7 +588,16 @@ hidden state `H` across a sequence:
     for a scan inside a program, a binding the program makes before the
     scan (`init=h0`)
   - `h_t = cell(x_t, h_{t-1})` for `t = 1..T`
-  - Returns the final hidden state `h_T`
+  - Returns the final hidden state `h_T`, or, with `outputs=all`, every
+    state `h_1, ..., h_T`
+- **Options.** `scan(cell, ...)` takes `init`, `outputs`, and `reverse`
+  in any order, each at most once. `outputs=last` (the default) returns
+  the final state and `outputs=all` the sequence of states, one per
+  position. `reverse=true` visits the positions from the last to the
+  first, so `h_t = cell(x_t, h_{t+1})` and the final state is the one
+  after position 0; a reversed scan's sequence of states is still laid
+  out in input order, its entry `t` being the state after reading
+  `x_t`.
 - **Type.** If `cell : A * H -> H`, then `scan(cell) : A -> H`.
   The sequence dimension is implicit in the tensor's second
   dimension.
@@ -617,14 +630,58 @@ define rnn = tok_embed >> scan(cell) >> output_proj
 export rnn
 ```
 
-For deeper temporal models, stack multiple scans:
+For deeper temporal models, stack scans. A scan runs over a sequence,
+so every scan but the last returns its every state with `outputs=all`,
+and the next scan reads that sequence one state per position:
 
 <!-- compile: false -->
 ```qvr
-define deep_rnn = tok_embed >> scan(cell_1) >> scan(cell_2) >> output_proj
+define deep_rnn = tok_embed >> scan(cell_1, outputs=all) >> scan(cell_2) >> output_proj
 ```
 
-Each `scan` threads its own hidden state independently.
+Each `scan` threads its own hidden state independently. A morphism
+between two scans, `scan(cell_1, outputs=all) >> proj >> scan(cell_2)`,
+runs at every position inside the second scan's step. A scan over the
+final state of another, `scan(cell_1) >> scan(cell_2)`, is refused,
+since one state is not a sequence, and so is a morphism applied to a
+whole sequence of states outside a scan.
+
+`fan` and `@` pair two sequences of states position by position: the
+entry at a position lays the branches' states there end to end, as a
+`fan` of two vectors does. A bidirectional recurrence runs a forward
+and a reversed scan over the same tokens and reads both at every
+position with a third scan:
+
+```qvr
+object Token : FinSet 16
+object Embedded : Real 4
+object Forward, Backward : Real 3
+object Both : Real 6
+object Tag : Real 2
+
+morphism tok_embed : Token -> Embedded [role=embed]
+morphism forward_cell : Embedded * Forward -> Forward ~ Normal
+morphism backward_cell : Embedded * Backward -> Backward ~ Normal
+morphism tag_cell : Both * Tag -> Tag ~ Normal
+
+define forward_states = tok_embed >> scan(forward_cell, outputs=all)
+define backward_states = tok_embed >> scan(backward_cell, outputs=all, reverse=true)
+define tagger = fan(forward_states, backward_states) >> scan(tag_cell, outputs=all)
+
+program tag_sequence : Token -> Tag
+    sample tags <- tagger
+    return tags
+
+export tag_sequence
+```
+
+At position `t` the tag cell reads the forward state after `x_0, ...,
+x_t` and the backward state after `x_{T-1}, ..., x_t`. The two
+sequences pair by input position, so a reversed scan's states need no
+reindexing. Sites are numbered in the order the run reaches them, so
+the reversed scan's occurrence `@0` is its draw at the last position.
+The [scans reference](../reference/qvr/probabilistic-programs.md#scans)
+states how each site is addressed.
 
 ### Backward composition
 

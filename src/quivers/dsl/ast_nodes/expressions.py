@@ -213,10 +213,18 @@ class ExprStack(Expr):
 
 
 class ExprScan(Expr):
-    """Temporal scan: ``scan(cell)`` or ``scan(cell, init=learned)``."""
+    """Temporal scan: ``scan(cell)`` with its options.
+
+    The options are ``init`` (``zeros``, ``learned``, or a binding of
+    the scanning program), ``outputs`` (``last`` for the final state,
+    ``all`` for the state after every position, in input order), and
+    ``reverse`` (visit the positions from the last to the first).
+    """
 
     expr: Expr
     init: str = "zeros"
+    outputs: Literal["last", "all"] = "last"
+    reverse: bool = False
     line: int = 0
     col: int = 0
     kind: Literal["expr_scan"] = "expr_scan"

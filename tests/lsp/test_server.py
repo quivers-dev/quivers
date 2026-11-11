@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from lsprotocol import types as lsp
 
+from quivers.cli.repl_highlight import tokenize
 from quivers.lsp import build_server
 from quivers.lsp.document import DocumentState
 from quivers.lsp.server import (
@@ -442,3 +443,63 @@ def test_references_and_definition_respect_clause_scopes() -> None:
     call_line, call_col = _find(SCOPED_BINDERS, "count(n - 1)")
     declaration = doc.find_decl("count", line=call_line, col=call_col + 1)
     assert getattr(declaration, "line", 0) == define_line + 1
+
+
+SCAN_OPTIONS = """\
+object Val : Real 1
+object Pair : Real 2
+
+program cell(u_t, h_prev) : Val * Val -> Val
+    let m = 0.8 * h_prev + u_t
+    sample f <- Normal(loc=m, scale=0.5)
+    return f
+
+program back(u_t, h_prev) : Val * Val -> Val
+    let n = 0.6 * h_prev - u_t
+    sample b <- Normal(loc=n, scale=0.5)
+    return b
+
+program tag(p_t, s_prev) : Pair * Val -> Val
+    let k = p_t[0] - p_t[1] + 0.3 * s_prev
+    sample s <- Normal(loc=k, scale=0.5)
+    observe r <- Normal(loc=s, scale=0.5)
+    return s
+
+define both = fan(scan(cell, outputs=all), scan(back, outputs=all, reverse=true))
+define tagger = both >> scan(tag, outputs=all)
+
+program prog : Val -> Val
+    sample tags <- tagger
+    return tags
+
+export prog
+"""
+
+
+def test_scan_options_check_highlight_and_format() -> None:
+    doc = _doc(source=SCAN_OPTIONS)
+    assert doc.diagnostics == []
+    pairs = {
+        (span.token, span.text)
+        for span in tokenize("define s = scan(c, outputs=all, reverse=true, init=h0)")
+    }
+    assert {
+        ("keyword", "outputs"),
+        ("keyword", "reverse"),
+        ("keyword", "init"),
+    } <= pairs
+    # The values `all` and `last` are names, not reserved words.
+    assert ("variable", "all") in pairs
+    edits = _format_document(doc)
+    assert edits is not None
+    formatted = edits[0].new_text
+    assert "scan(back, outputs=all, reverse=true)" in formatted
+    assert "scan(tag, outputs=all)" in formatted
+
+
+def test_a_malformed_scan_option_is_a_located_diagnostic() -> None:
+    doc = _doc(source="define s = scan(c, outputs=every)\n")
+    (diagnostic,) = doc.diagnostics
+    assert diagnostic.severity == "error"
+    assert "outputs are 'last'" in diagnostic.message
+    assert (diagnostic.line, diagnostic.col) == (1, 27)

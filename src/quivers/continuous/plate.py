@@ -446,6 +446,67 @@ class PlateDraw(ContinuousMorphism):
         per_row_lp = self._family.log_prob(row_input, flat)
         return per_row_lp.reshape(batch, index_size).sum(dim=-1)
 
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Prior log-density of the plate's elements at a subset of its rows.
+
+        The elements kept are the product of the rows kept along each
+        axis; each is scored under its row's family, as `log_prob` scores
+        it, and the scores are summed.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The conditioning input, as `log_prob` reads it.
+        y : torch.Tensor
+            The plate's value at every element, with the plate's axes
+            leading or flat in their order.
+        *rows : torch.Tensor
+            One index per plate axis, outermost first: the rows kept
+            along that axis.
+
+        Returns
+        -------
+        torch.Tensor
+            The summed log-density of the kept elements, shape ``(1,)``.
+
+        Raises
+        ------
+        ValueError
+            If ``rows`` does not give one index per axis, an index leaves
+            its axis, or ``y`` does not hold every element of the plate.
+        """
+        shape = self._index_shape
+        if len(rows) != len(shape):
+            raise ValueError(
+                f"PlateDraw.log_prob_rows: {len(rows)} row indices for a plate "
+                f"of {len(shape)} axes"
+            )
+        positions = torch.arange(self._index_size, device=y.device).reshape(shape)
+        for axis, (index, extent) in enumerate(zip(rows, shape, strict=True)):
+            if index.numel() == 0 or int(index.min()) < 0 or int(index.max()) >= extent:
+                raise ValueError(
+                    f"PlateDraw.log_prob_rows: the rows kept along axis {axis} "
+                    f"must be a nonempty index into its {extent} rows"
+                )
+            positions = positions.index_select(axis, index.to(y.device))
+        total = y.numel()
+        if total % self._index_size != 0:
+            raise ValueError(
+                f"PlateDraw.log_prob_rows: the plate value has {total} elements, "
+                f"not a whole number of rows for the plate's {self._index_size} "
+                "elements; a subsampled plate latent is given at every row"
+            )
+        row_numel = total // self._index_size
+        event_shape = (
+            self._per_row_shape if row_numel == self._per_row_dim else (row_numel,)
+        )
+        kept = positions.reshape(-1)
+        sample = y.reshape(self._index_size, *event_shape)[kept]
+        row_input = self._row_conditioning(x, self._index_size, y.device)[kept]
+        return self._family.log_prob(row_input, sample).reshape(-1).sum().unsqueeze(0)
+
     def gather(self, indices: torch.Tensor) -> torch.Tensor:
         """Pullback ``v[indices]`` along a finite fibration.
 
@@ -646,6 +707,80 @@ class VectorisedObserve(ContinuousMorphism):
                 self._array_rows(rows), self._align_response(flat)
             ).sum()
         return self._family.log_prob(x, self._align_response(target)).sum()
+
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Sum of the per-observation log-densities at a subset of the rows.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The parameters, one row per observation row or one row every
+            observation shares, as `log_prob` reads them.
+        y : torch.Tensor
+            The observed rows: every row of the plate, or only the kept
+            rows in the order of the index.
+        *rows : torch.Tensor
+            One index per plate axis of the observation, outermost first:
+            the rows kept along the observation's rows, then every entry
+            of each axis of its array.
+
+        Returns
+        -------
+        torch.Tensor
+            The summed log-density of the kept rows.
+
+        Raises
+        ------
+        ValueError
+            If ``rows`` does not give one index per axis, keeps a subset of
+            an array axis, or leaves its axis, or if ``x`` or ``y`` has
+            neither the plate's rows nor the kept rows.
+        """
+        if len(rows) != 1 + len(self._array_shape):
+            raise ValueError(
+                f"VectorisedObserve.log_prob_rows: {len(rows)} row indices for "
+                f"an observation over {1 + len(self._array_shape)} axes"
+            )
+        for axis, (index, extent) in enumerate(
+            zip(rows[1:], self._array_shape, strict=True), start=1
+        ):
+            if index.numel() != extent or not bool(
+                (index.cpu() == torch.arange(extent)).all()
+            ):
+                raise ValueError(
+                    f"VectorisedObserve.log_prob_rows: axis {axis} indexes each "
+                    "row's array, whose entries are scored together; subsample "
+                    "the plate of the observation's rows instead"
+                )
+        kept = rows[0]
+        plate_rows = int(self.response.shape[0])
+        if kept.numel() == 0 or int(kept.min()) < 0 or int(kept.max()) >= plate_rows:
+            raise ValueError(
+                "VectorisedObserve.log_prob_rows: the rows kept must be a "
+                f"nonempty index into the observation's {plate_rows} rows"
+            )
+        count = int(kept.numel())
+        target = y if y is not None else self.response
+        if int(target.shape[0]) == plate_rows:
+            target = target.index_select(0, kept.to(target.device))
+        elif int(target.shape[0]) != count:
+            raise ValueError(
+                f"VectorisedObserve.log_prob_rows: the observation has "
+                f"{int(target.shape[0])} rows, neither the plate's {plate_rows} "
+                f"nor the {count} kept"
+            )
+        theta = x
+        if x.dim() >= 1 and int(x.shape[0]) == plate_rows and plate_rows != 1:
+            theta = x.index_select(0, kept.to(x.device))
+        elif x.dim() >= 1 and int(x.shape[0]) not in (1, count):
+            raise ValueError(
+                f"VectorisedObserve.log_prob_rows: the parameters have "
+                f"{int(x.shape[0])} rows, neither the plate's {plate_rows}, "
+                f"the {count} kept, nor one shared row"
+            )
+        return self.log_prob(theta, target)
 
     def log_likelihood(self, theta: torch.Tensor) -> torch.Tensor:
         """Alias for ``log_prob(theta)``; preserved for the Python

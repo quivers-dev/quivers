@@ -33,7 +33,7 @@ Third, the expression combinators have distinct operational contracts:
 | `fan(f, g, ...)` | feeds one input to each component and concatenates outputs |
 | `repeat(f, n)` | sequentially composes the same instance, sharing parameters |
 | `stack(f, n)` | sequentially composes deep copies, giving each layer independent parameters |
-| `scan(cell)` | iterates a continuous cell `A * H -> H` over an implicit time axis and returns the final state |
+| `scan(cell)` | iterates a continuous cell `A * H -> H` over an implicit time axis and returns the final state, or every state with `outputs=all`, from the last position with `reverse=true` |
 
 With `stack(f, 3)`, the output of the first copy enters the second, then the third. With `scan(cell)`, the hidden state passes between successive time steps.
 

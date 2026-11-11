@@ -178,6 +178,87 @@ z = guide.rsample(x)
 weights = guide.mixture_weights()
 ```
 
+### AmortizedGuide
+
+In amortized inference the variational posterior of a latent is a
+kernel applied to the data, $q_\phi(z \mid y) = e_\phi(y)$, as in the
+encoder of a variational autoencoder [@kingma2014autoencoding]. One set
+of encoder weights then serves every datum, new ones included.
+[`AmortizedGuide`](../api/inference/guide.md#quivers.inference.guides.AmortizedGuide)
+runs such kernels: each binding names a latent site, an encoder (any
+[`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism) with an exact
+density, such as a declared morphism or deterministic layers followed by
+one stochastic kernel), and the datum it reads.
+
+The encoder is applied to every row of its datum. A site drawn once per
+run reads a datum with a leading run axis, so an input of `B` rows (`B`
+[independent runs](inference-foundations.md#input-rows-are-independent-runs))
+gives each run its own posterior; a plated local latent reads one datum
+row per plate row. When the encoder's support is the site's support its
+draw is the site's value. When the encoder is real-valued and the site
+is not, the draw passes through the site's bijector $T$ and the density
+carries the Jacobian,
+$\log q(v) = \log e(T^{-1}(v) \mid y) + \log |\det J_{T^{-1}}(v)|$.
+The guide checks each binding against the registry and refuses an
+unknown site, an encoder whose support or event size does not fit, a
+datum that is missing or whose rows do not line up with the site, and a
+composition with a stochastic hidden layer, whose `log_prob` scores a
+reference path rather than a density.
+
+The data reach the guide through
+[`Guide.observe`](../api/inference/guide.md#quivers.inference.guides.Guide.observe),
+which every objective calls with the step's observations; call it
+directly to sample the posterior of held-out data. Sites without an
+encoder go to another guide in an `AutoGuideList`, and
+`uncovered_sites` lists them. Every objective and estimator applies,
+since the guide has a reparameterized sampler and a density at any
+point.
+
+<!-- python: skip -->
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference import ELBO, SVI, AmortizedGuide
+
+source = """
+object UnitSpace : Real 1
+object Latent : Real 2
+object ObsSpace : Real 4
+
+morphism prior : UnitSpace -> Latent ~ Normal
+morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal
+
+program vae : UnitSpace -> ObsSpace
+    sample z <- prior
+    observe y <- decoder(z)
+    return y
+
+export vae
+"""
+encoder_source = """
+object ObsSpace : Real 4
+object Latent : Real 2
+morphism encoder : ObsSpace -> Latent [param_source=mlp(32)] ~ Normal
+export encoder
+"""
+model = loads(source).morphism
+encoder = loads(encoder_source).morphism
+
+y = torch.randn(256, 4)                 # one datum per run
+x = torch.zeros(256, 1)                 # 256 independent runs
+guide = AmortizedGuide(model, {"y"}, {"z": (encoder, "y")}, x=x, observations={"y": y})
+params = list(model.parameters()) + list(guide.parameters())
+svi = SVI(model, guide, torch.optim.Adam(params, lr=1e-2), ELBO(num_particles=4))
+losses = [svi.step(x, {"y": y}) for _ in range(200)]
+
+y_new = torch.randn(10, 4)
+guide.observe({"y": y_new})             # the posterior of new data
+z_new = guide.rsample(torch.zeros(10, 1))["z"]
+print(losses[0], losses[-1])   # the negative ELBO falls
+print(z_new.shape)             # (10, 2)
+```
+
 ## Objectives and gradient estimators
 
 The **objective** says what numerical quantity the fit optimizes. The
@@ -372,11 +453,7 @@ svi = SVI(model, guide, optimizer, elbo)
 
 # Training loop
 for epoch in range(100):
-    x = next(data_loader)  # minibatch
-    observations = {"y": x[:, -1]}
-    x_input = x[:, :-1]
-
-    loss = svi.step(x_input, observations)
+    loss = svi.step(x, observations)
     print(f"Epoch {epoch}: loss={loss:.4f}")
 ```
 
@@ -390,6 +467,84 @@ observations live in a plate, with its rows given in `observations`,
 takes a one-row input instead: its rows come from its data and its
 plates, and repeating the input row would only add copies of the same
 run.
+
+## Minibatches: subsampled plates
+
+A program whose records live in a plate scores every record on every
+step. Stochastic variational inference [@hoffman2013svi] scores a random
+subset of the records instead and multiplies their contribution by the
+number of records over the subset's size. The minibatch estimate of the
+ELBO is then unbiased for the full-data ELBO, and so is its gradient, so
+SVI converges to the same posterior while each step reads only the
+subset's observations.
+
+[`subsample`][quivers.effects.subsample.subsample] does this for one plate.
+Inside its block, every site whose plate axes include the plate, a plate
+latent or an observation, is scored at the index's rows, times the plate's
+size `N` over the index's size `B`. The global sites, the latents outside
+the plate, are scored in full and unscaled, so the prior and the guide's
+global entropy count once per step rather than once per record. Several
+blocks compose: a site in two subsampled plates takes the product of the
+two factors, and a site in one of two sibling plates takes its own
+plate's factor alone. A trace records each scaled site's factor as
+`metadata["subsample_scale"]`.
+
+<!-- compile: standalone -->
+```qvr
+object Item : FinSet 40
+
+program mean_model : Item -> Item
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=mu, scale=1.0)
+    return mu
+
+export mean_model
+```
+
+<!-- python: skip -->
+```python
+import torch
+from quivers.effects import subsample
+from quivers.inference import ELBO, SVI, AutoNormalGuide
+
+guide = AutoNormalGuide(model, {"y"})
+svi = SVI(model, guide, torch.optim.Adam(guide.parameters(), lr=0.02), ELBO())
+x = torch.zeros(1, 1)
+for step in range(1500):
+    index = torch.randperm(40)[:8].sort().values
+    with subsample("Item", index):
+        svi.step(x, {"y": y[index]})
+```
+
+The index lists distinct rows in increasing order. An observation may be
+given at the subset's size, as above, its rows read in the order of the
+index, or at the plate's full extent. Within a run the plate keeps its
+declared extent: its latents are drawn at every row and the program's
+lets compute every row, so a row outside the subset keeps a well-defined
+value and only its score is left out. The saving is thus in the scored
+terms and in the data a step reads, not in the lets of the program.
+
+A local latent inside the subsampled plate, one variable per record, is
+handled by [`AutoNormalGuide`][quivers.inference.guides.AutoNormalGuide],
+whose density factors over the plate's rows: it scores the latent at the
+subset's rows with the same factor, and a row outside the subset receives
+no gradient from the step. [`AutoDeltaGuide`][quivers.inference.guides.AutoDeltaGuide],
+whose density is constant, also admits it. A guide whose density couples
+the rows, such as
+[`AutoMultivariateNormalGuide`][quivers.inference.guides.AutoMultivariateNormalGuide],
+refuses a local latent in a subsampled plate rather than score a biased
+objective; it remains usable when the plate holds only observations.
+
+Only an objective linear in the log joint stays unbiased under
+subsampling: the ELBO, with any number of particles and any gradient
+estimator. The importance-weighted and Rényi bounds, `ChiVI`, and `RWS`
+exponentiate or self-normalise the log weights and refuse a subsampled
+plate, and so do the consumers of the exact posterior, MCMC and
+`PotentialFn`, the Laplace approximation, `AutoDAIS`, and the Bayesian
+lift. A site in the plate that is neither a plate draw nor a plated
+observation (a grouped marginalization, for instance) has no per-row
+density and is refused, as is a plate whose extent the program leaves to
+its data.
 
 ## Predictive sampling
 
