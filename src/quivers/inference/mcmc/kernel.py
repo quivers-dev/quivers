@@ -33,6 +33,7 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
@@ -521,11 +522,13 @@ class PotentialFn:
         Raises
         ------
         ValueError
-            If ``z`` does not have the registry's flat length.
+            If ``z`` does not have the registry's flat length, or a plate
+            is subsampled, since the potential is the exact log density.
         Exception
             Any error ``log_joint`` raises that does not mark the
             position as outside the support.
         """
+        refuse_subsampling("PotentialFn")
         self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
         try:

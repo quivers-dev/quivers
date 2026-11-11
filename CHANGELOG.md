@@ -4,6 +4,14 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.35.0] - 2026-11-11
+
+### Added
+
+- **Subsampled plates for minibatch SVI.** `subsample(plate, index)` in `quivers.effects` (a `SubsampleHandler`) scores every site whose plate axes include `plate`, a plate draw or a plated observation, at the rows of `index` and multiplies its contribution by the plate's size over the index's size; sites outside the plate, the global latents among them, are scored in full and unscaled. Handlers for several plates compose per site: a site in two subsampled plates takes the product of their factors, and a site in a sibling plate its own factor alone. An observation may be given at the subset's size, read in the order of the index, or at the plate's extent. A trace records each scaled site's factor as `metadata["subsample_scale"]`. `MonadicProgram.site_plates` records each site's plate axes and extents, filled by the compiler from the checked elaboration.
+- **`Guide.scores_subsampled_rows` and `Guide.check_subsampling`.** `AutoNormalGuide` scores a local latent in a subsampled plate at the subset's rows with the same factor, so the minibatch ELBO and its gradient are unbiased for the full-data ones; `AutoDeltaGuide` admits such a latent as well, and every other guide refuses it. `PlateDraw.log_prob_rows` and `VectorisedObserve.log_prob_rows` score a subset of a plate's rows.
+- **The ELBO is the one objective that admits a subsampled plate.** `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `DReGsBound`, `ChiVI`, and `RWS` raise inside a `subsample` block, since they are not linear in the log joint; MCMC, `PotentialFn` (at construction and at every `log_density`), `AutoLaplaceApproximation.fit_hessian`, `AutoDAIS`, and `bayesian_lift_parameters` raise as consumers of the exact posterior.
+
 ## [0.34.0] - 2026-11-11
 
 ### Added

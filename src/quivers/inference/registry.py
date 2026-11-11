@@ -50,6 +50,7 @@ from torch.distributions import constraints as _constraints
 from torch.distributions.constraint_registry import biject_to
 from torch.distributions.transforms import Transform
 
+from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Call, Draw, Observe, Scan
@@ -123,7 +124,10 @@ def _require_one_run(x: torch.Tensor, consumer: str) -> None:
     program, each with its own latents. MCMC, the Laplace approximation,
     and annealed importance sampling target the posterior of one run's
     latents, so they take a one-row input; the rows a program observes
-    come from its data and its plates, not from the input's rows.
+    come from its data and its plates, not from the input's rows. They
+    target the exact posterior, so they also refuse to run inside a
+    [`subsample`][quivers.effects.subsample] block, whose log joint is
+    only an unbiased estimate.
 
     Parameters
     ----------
@@ -135,8 +139,9 @@ def _require_one_run(x: torch.Tensor, consumer: str) -> None:
     Raises
     ------
     ValueError
-        If ``x`` has more than one row.
+        If ``x`` has more than one row, or a plate is subsampled.
     """
+    refuse_subsampling(consumer)
     rows = int(x.shape[0]) if x.dim() else 1
     if rows != 1:
         raise ValueError(
