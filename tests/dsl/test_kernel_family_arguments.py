@@ -78,7 +78,7 @@ def test_a_kernel_argument_that_reads_a_name_is_refused_at_the_argument(
     assert (error.line, error.col) == (3, _argument_column(source, argument))
 
 
-def test_the_compiled_runtime_no_longer_drops_a_partial_argument_list() -> None:
+def test_the_compiled_runtime_refuses_a_partial_argument_list_it_cannot_read() -> None:
     """The partial list is refused rather than compiled to a learned kernel."""
     source = _source("Normal(scale=q)", "[param_source=linear]")
     with pytest.raises(CompileError, match="`scale=q`"):
