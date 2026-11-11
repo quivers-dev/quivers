@@ -4467,6 +4467,8 @@ class _ProgramsMixin:
                 _ = self.qiec_module
                 raise
             except TypeError as exc:
+                # A checked program that fails to lower says why first.
+                _ = self.qiec_module
                 # A family constructor rejecting the call site's
                 # argument list (too few / too many parameters) is a
                 # user error in the QVR source, so it is reported

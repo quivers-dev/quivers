@@ -24,6 +24,7 @@ from quivers.qiec.reference_support import (
     Sampler,
     finite_value,
     log_choose,
+    log_probabilities,
     normal_log_prob,
     probability,
     real_parameter,
@@ -1856,15 +1857,15 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
     """
     count = int(finite_value(value, "NegativeBinomial"))
     total = real_parameter(a, "total_count", "NegativeBinomial")
-    success = probability(a, "NegativeBinomial")
+    log_success, log_failure = log_probabilities(a, "NegativeBinomial")
     if count < 0:
         return -math.inf
     return (
         math.lgamma(total + count)
         - math.lgamma(count + 1)
         - math.lgamma(total)
-        + total * math.log1p(-success)
-        + count * math.log(success)
+        + total * log_failure
+        + (0.0 if count == 0 else count * log_success)
     )
 
 

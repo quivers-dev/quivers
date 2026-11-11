@@ -74,6 +74,20 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
 
 _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
     "Categorical": (("probs",), ("logits",)),
+    "MultivariateNormal": (
+        ("loc", "scale_tril"),
+        ("loc", "covariance_matrix"),
+        ("loc", "precision_matrix"),
+    ),
+    "Wishart": (
+        ("df", "scale_tril"),
+        ("df", "covariance_matrix"),
+        ("df", "precision_matrix"),
+    ),
+    "Bernoulli": (("probs",), ("logits",)),
+    "Binomial": (("total_count", "probs"), ("total_count", "logits")),
+    "Geometric": (("probs",), ("logits",)),
+    "NegativeBinomial": (("total_count", "probs"), ("total_count", "logits")),
     "Restrict": (
         ("base", "low", "high"),
         ("base", "low"),
