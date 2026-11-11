@@ -51,7 +51,7 @@ from quivers.inference.mcmc import (
     StateValue,
 )
 import quivers.inference.mcmc.driver as driver_module
-from quivers.inference.mcmc.driver import _ess
+from quivers.diagnostics import ess as effective_sample_size
 from tests.test_inference_mcmc_compose import _label_program, _switch_program
 
 
@@ -476,7 +476,9 @@ def test_energy_implies_a_stationary_kinetic_energy(kind: str) -> None:
     kinetic = stats["energy"] + result.log_densities.to(torch.float64)
     assert bool((kinetic >= -1e-4).all())
     dim = 2
-    ess = min(float(_ess(kinetic)), float(kinetic.numel()))
+    ess = min(
+        float(effective_sample_size(kinetic, method="mean")), float(kinetic.numel())
+    )
     error = abs(float(kinetic.mean()) - dim / 2)
     assert error < 5.0 * math.sqrt(dim / 2 / ess), (error, ess)
     if kind == "nuts":

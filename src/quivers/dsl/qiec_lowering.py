@@ -676,6 +676,120 @@ def _last_axis_reduction(
     return Comprehension(binder, dimensions[0], inner, result)
 
 
+class _PointwiseGatherError(ValueError):
+    """A subscript with index tensors that does not fit the tensor it reads."""
+
+
+def _pointwise_selection(
+    source: Value,
+    source_type: TypeExpr,
+    indices: tuple[Value, ...],
+    index_types: tuple[TypeExpr, ...],
+    path: tuple[str | int, ...],
+    occupied: frozenset[str],
+) -> Value:
+    """Select one entry per position of a subscript's index tensors.
+
+    ``t[e_1, ..., e_k]`` with two or more indices, at least one of them
+    a ``Tensor[Int]``, reads the indices together, as advanced indexing
+    does in NumPy and ``t[r[n], c[n]]`` does in a Stan loop: every index
+    tensor has one shape ``S``, an ``Int`` index stands for the same
+    value at every position, and the result has shape ``S`` followed by
+    the axes of ``t`` after the ``k`` indexed ones, its entry at a
+    position ``n`` being ``t[e_1[n], ..., e_k[n]]``. The selection is a
+    comprehension over each axis of ``S`` whose body gathers ``t`` one
+    axis at a time.
+
+    Parameters
+    ----------
+    source : Value
+        The tensor selected from.
+    source_type : TypeExpr
+        Its type.
+    indices : tuple[Value, ...]
+        The indices, outermost axis first.
+    index_types : tuple[TypeExpr, ...]
+        Their types: ``Int`` or ``Tensor[Int]``.
+    path : tuple[str | int, ...]
+        Structural path of the subscript, which names the binders.
+    occupied : frozenset[str]
+        The names of the locals in scope, which no binder repeats.
+
+    Returns
+    -------
+    Value
+        The selection.
+
+    Raises
+    ------
+    _PointwiseGatherError
+        If the tensor has fewer axes than indices, an index is neither
+        an ``Int`` nor a ``Tensor[Int]``, or the index tensors differ in
+        shape.
+    """
+    split = tensor_shape(source_type)
+    if split is None or len(split[1]) < len(indices):
+        raise _PointwiseGatherError(
+            f"a subscript of {len(indices)} indices selects from a value with "
+            f"fewer axes"
+        )
+    element, dimensions = split
+    shape: tuple[IndexTerm, ...] | None = None
+    for position, index_type in enumerate(index_types):
+        if index_type == INT:
+            continue
+        index_shape = tensor_shape(index_type)
+        if index_shape is None or index_shape[0] != INT:
+            raise _PointwiseGatherError(
+                f"index {position} of the subscript is neither an Int nor a Tensor[Int]"
+            )
+        if shape is None:
+            shape = index_shape[1]
+        elif index_shape[1] != shape:
+            raise _PointwiseGatherError(
+                "the index tensors of one subscript select one entry per "
+                "position, so they share one shape; index "
+                f"{position} has another shape than the first index tensor"
+            )
+    assert shape is not None
+    stem = "_".join(str(item) for item in path)
+    binders: list[Local] = []
+    taken = set(occupied)
+    for axis in range(len(shape)):
+        name = f"__{stem}_pick{axis}"
+        suffix = 0
+        while name in taken:
+            suffix += 1
+            name = f"__{stem}_pick{axis}_{suffix}"
+        taken.add(name)
+        binders.append(Local(name, INT))
+    entries: list[Value] = []
+    for index, index_type in zip(indices, index_types, strict=True):
+        if index_type == INT:
+            entries.append(index)
+            continue
+        entry = index
+        for axis, binder in enumerate(binders):
+            remaining = shape[axis + 1 :]
+            entry = Gather(
+                entry,
+                Var(binder),
+                INT if not remaining else tensor_type(INT, remaining),
+            )
+        entries.append(entry)
+    body: Value = source
+    for axis, entry in enumerate(entries):
+        rest = dimensions[axis + 1 :]
+        body = Gather(body, entry, element if not rest else tensor_type(element, rest))
+    rest = dimensions[len(indices) :]
+    for axis in reversed(range(len(shape))):
+        outer = (*shape[axis:], *rest)
+        body = Comprehension(
+            binders[axis], shape[axis], body, tensor_type(element, outer)
+        )
+    return body
+
+
 def _reduced_type(element: TypeExpr, dimensions: tuple[IndexTerm, ...]) -> TypeExpr:
     """The type a last-axis reduction of a tensor has.
 
@@ -1279,6 +1393,10 @@ class _Elaborator(
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
         self._program_lets: dict[str, surface.Expr] = {}
         self._program_declarations: dict[str, surface.ProgramDecl] = {}
+        # Types fixed for free names of the program being elaborated: a
+        # scan cell specialized to its scanning program reads each name
+        # that program binds before the scan at that binding's type.
+        self._pinned_types: dict[str, TypeExpr] = {}
         self.registry = KernelRegistry()
         # The type a `return` in the body being lowered should produce. It
         # is a hint for positions that cannot state their type, such as a
@@ -4299,6 +4417,26 @@ class _Elaborator(
             If an index is not an ``Int`` or a tensor of them, or more
             indices are given than the tensor has axes.
         """
+        indices = tuple(
+            self._lower_value(
+                index, scope, context, static_bindings, (*path, "index", position), INT
+            )
+            for position, index in enumerate(authored.indices)
+        )
+        index_types = tuple(
+            self._value_type(index_value, context, index)
+            for index_value, index in zip(indices, authored.indices, strict=True)
+        )
+        if len(indices) > 1 and any(item != INT for item in index_types):
+            return self._pointwise_gather(
+                source,
+                source_type,
+                indices,
+                index_types,
+                authored,
+                path,
+                frozenset(local.name for local in context.locals),
+            )
         value = source
         value_type = source_type
         for position, index in enumerate(authored.indices):
@@ -4310,10 +4448,8 @@ class _Elaborator(
                     code="qiec-primitive",
                 )
             element, dimensions = split
-            index_value = self._lower_value(
-                index, scope, context, static_bindings, (*path, "index", position), INT
-            )
-            index_type = self._value_type(index_value, context, index)
+            index_value = indices[position]
+            index_type = index_types[position]
             rest = dimensions[1:]
             if index_type == INT:
                 result: TypeExpr = element if not rest else tensor_type(element, rest)
@@ -4330,6 +4466,58 @@ class _Elaborator(
             value = Gather(value, index_value, result)
             value_type = result
         return value
+
+    def _pointwise_gather(
+        self,
+        source: Value,
+        source_type: TypeExpr,
+        indices: tuple[Value, ...],
+        index_types: tuple[TypeExpr, ...],
+        authored: surface.LetExprIndex,
+        path: tuple[str | int, ...],
+        occupied: frozenset[str],
+    ) -> Value:
+        """Lower ``t[e_1, ..., e_k]`` with index tensors to one entry per position.
+
+        The subscript reads its indices together, one entry per position
+        of the index tensors, as `_pointwise_selection` describes; this
+        method reports a misfit at the subscript.
+
+        Parameters
+        ----------
+        source : Value
+            The tensor selected from.
+        source_type : TypeExpr
+            Its type.
+        indices : tuple[Value, ...]
+            The lowered indices, outermost axis first.
+        index_types : tuple[TypeExpr, ...]
+            Their types.
+        authored : surface.LetExprIndex
+            The subscript, for diagnostics.
+        path : tuple[str | int, ...]
+            Structural path of the subscript, which names the binders.
+        occupied : frozenset[str]
+            The names of the locals in scope.
+
+        Returns
+        -------
+        Value
+            The selection.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the tensor has fewer axes than indices, an index is
+            neither an ``Int`` nor a ``Tensor[Int]``, or the index
+            tensors differ in shape.
+        """
+        try:
+            return _pointwise_selection(
+                source, source_type, indices, index_types, path, occupied
+            )
+        except _PointwiseGatherError as error:
+            self._fail(authored, str(error), code="qiec-primitive")
 
     def _lower_factor(
         self,

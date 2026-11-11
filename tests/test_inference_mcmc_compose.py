@@ -54,7 +54,7 @@ from quivers.inference.mcmc import (
     Proposal,
     RandomWalkProposal,
 )
-from quivers.inference.mcmc.driver import _ess
+from quivers.diagnostics import ess as effective_sample_size
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
@@ -68,7 +68,10 @@ _LEVEL = 1e-3
 
 def _effective_size(draws: torch.Tensor) -> float:
     """ESS of ``(chains, n)`` draws, capped at the number of draws."""
-    return min(float(_ess(draws.to(torch.float64))), float(draws.numel()))
+    return min(
+        float(effective_sample_size(draws.to(torch.float64), method="mean")),
+        float(draws.numel()),
+    )
 
 
 def _ks_exceeds(draws: torch.Tensor, cdf: torch.Tensor) -> tuple[float, float]:

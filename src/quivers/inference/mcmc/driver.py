@@ -17,16 +17,18 @@ chains across a real multi-core / multi-GPU workload, wrap an
 
 The result is an `MCMCResult` carrying per-site posterior
 draws (already pushed through the constraint bijectors so they
-sit in the model's natural support) plus rank-normalized folded
-split-:math:`\\hat R` (Vehtari et al. 2021,
-`doi:10.1214/20-BA1221 <https://doi.org/10.1214/20-BA1221>`_) and
-bulk effective sample size diagnostics computed across chains.
+sit in the model's natural support). Its rank-normalized split
+:math:`\\hat R` (Vehtari et al. 2021,
+`doi:10.1214/20-BA1221 <https://doi.org/10.1214/20-BA1221>`_), bulk
+and tail effective sample sizes are computed from those draws by
+`quivers.diagnostics.rhat` and `quivers.diagnostics.ess`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 import math
 from pathlib import Path
 import time
@@ -39,6 +41,7 @@ from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.programs import MonadicProgram
+from quivers.diagnostics.convergence import ess, rhat
 from quivers.effects.trace_types import Trace
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.checkpoint import (
@@ -89,7 +92,12 @@ chain's generator or modify the state."""
 
 @dataclass
 class MCMCResult:
-    """Posterior samples and per-chain diagnostics.
+    """Posterior samples, per-chain sampler statistics, and diagnostics.
+
+    The convergence diagnostics are derived from ``samples`` on first
+    access by the public estimators of `quivers.diagnostics`, so they
+    agree exactly with `quivers.diagnostics.rhat` and
+    `quivers.diagnostics.ess` applied to the same draws.
 
     Attributes
     ----------
@@ -114,17 +122,10 @@ class MCMCResult:
     divergence_counts : torch.Tensor
         Per-chain post-warmup divergence count. Shape
         ``(num_chains,)``.
-    r_hat : dict[str, torch.Tensor]
-        Per-site rank-normalized folded split-:math:`\\hat R`.
-        Each coordinate reports the conservative maximum of the
-        rank-normalized and folded statistics. Each site's tensor
-        has shape ``site_shape`` (one value per coordinate, so a
-        scalar site's tensor is zero-dimensional).
-    ess : dict[str, torch.Tensor]
-        Per-site rank-normalized bulk effective sample size pooled
-        across chains. Same shape convention as `r_hat`.
     num_warmup : int
+        Warmup iterations per chain.
     num_samples : int
+        Retained draws per chain.
     component_acceptance : dict[str, torch.Tensor]
         For a composite kernel, each component's post-warmup acceptance
         rate per chain, shape ``(num_chains,)``, keyed by component name
@@ -163,8 +164,6 @@ class MCMCResult:
     log_densities: torch.Tensor
     acceptance_rates: torch.Tensor
     divergence_counts: torch.Tensor
-    r_hat: dict[str, torch.Tensor]
-    ess: dict[str, torch.Tensor]
     num_warmup: int
     num_samples: int
     component_acceptance: dict[str, torch.Tensor] = field(default_factory=dict)
@@ -187,186 +186,48 @@ class MCMCResult:
 
     @property
     def num_chains(self) -> int:
+        """Number of chains."""
         return int(self.log_densities.shape[0])
 
     @property
     def mean_acceptance(self) -> float:
+        """Post-warmup acceptance rate averaged over chains."""
         return float(self.acceptance_rates.mean().item())
 
     @property
     def total_divergences(self) -> int:
+        """Post-warmup divergences summed over chains."""
         return int(self.divergence_counts.sum().item())
 
+    @cached_property
+    def r_hat(self) -> dict[str, torch.Tensor]:
+        """Per-site rank-normalized split :math:`\\hat R`.
 
-def _nan_scalar(chains: torch.Tensor) -> torch.Tensor:
-    """Return a floating NaN on the input tensor's device."""
-    return torch.tensor(float("nan"), dtype=torch.float64, device=chains.device)
+        Each coordinate reports the maximum of the rank-normalized
+        and folded statistics (`quivers.diagnostics.rhat`). Each
+        site's float64 tensor has shape ``site_shape``, so a scalar
+        site's tensor is zero-dimensional.
+        """
+        return {name: rhat(draws) for name, draws in self.samples.items()}
 
+    @cached_property
+    def ess(self) -> dict[str, torch.Tensor]:
+        """Per-site bulk effective sample size pooled across chains.
 
-def _split_chains(chains: torch.Tensor) -> torch.Tensor:
-    """Split each chain in half, dropping the middle draw when odd."""
-    half = chains.shape[1] // 2
-    return torch.cat([chains[:, :half], chains[:, -half:]], dim=0)
+        Computed by ``quivers.diagnostics.ess(draws, method="bulk")``;
+        same shape convention as `r_hat`.
+        """
+        return {name: ess(draws, method="bulk") for name, draws in self.samples.items()}
 
+    @cached_property
+    def ess_tail(self) -> dict[str, torch.Tensor]:
+        """Per-site tail effective sample size pooled across chains.
 
-def _rank_normalize(chains: torch.Tensor) -> torch.Tensor:
-    """Apply average ranks and Blom's normal-score transform."""
-    flat = chains.reshape(-1).to(dtype=torch.float64)
-    order = torch.argsort(flat, stable=True)
-    sorted_values = flat[order]
-    ranks = torch.empty_like(flat)
-
-    starts = (
-        torch.cat(
-            [
-                torch.ones(1, dtype=torch.bool, device=flat.device),
-                sorted_values[1:] != sorted_values[:-1],
-            ]
-        )
-        .nonzero(as_tuple=False)
-        .flatten()
-    )
-    ends = torch.cat([starts[1:], torch.tensor([flat.numel()], device=flat.device)])
-    for start, end in zip(starts.tolist(), ends.tolist(), strict=True):
-        # Average of the one-indexed ranks from start + 1 through end.
-        ranks[order[start:end]] = (start + 1 + end) / 2
-
-    probabilities = (ranks - 3.0 / 8.0) / (flat.numel() + 1.0 / 4.0)
-    normal_scores = math.sqrt(2.0) * torch.erfinv(2.0 * probabilities - 1.0)
-    return normal_scores.reshape(chains.shape)
-
-
-def _rhat(chains: torch.Tensor) -> torch.Tensor:
-    """Potential scale reduction factor for already transformed chains."""
-    n_samples = chains.shape[1]
-    chain_means = chains.mean(dim=1)
-    between = n_samples * chain_means.var(unbiased=True)
-    within = chains.var(dim=1, unbiased=True).mean()
-    return torch.sqrt((between / within + n_samples - 1) / n_samples)
-
-
-def _autocov(chains: torch.Tensor) -> torch.Tensor:
-    """Biased per-chain autocovariance estimates for every lag."""
-    n_samples = chains.shape[1]
-    centered = chains - chains.mean(dim=1, keepdim=True)
-    pad = 1
-    while pad < 2 * n_samples:
-        pad *= 2
-    spectrum = torch.fft.rfft(centered, n=pad, dim=1)
-    covariance = torch.fft.irfft(spectrum * torch.conj(spectrum), n=pad, dim=1)[
-        :, :n_samples
-    ]
-    return covariance / n_samples
-
-
-def _ess(chains: torch.Tensor) -> torch.Tensor:
-    """Cross-chain ESS with Geyer's initial monotone sequence."""
-    if (chains.max() - chains.min()).item() < torch.finfo(torch.float64).resolution:
-        return torch.tensor(
-            float(chains.numel()), dtype=torch.float64, device=chains.device
-        )
-
-    n_chains, n_samples = chains.shape
-    autocovariance = _autocov(chains)
-    chain_means = chains.mean(dim=1)
-    mean_variance = autocovariance[:, 0].mean() * n_samples / (n_samples - 1.0)
-    pooled_variance = mean_variance * (n_samples - 1.0) / n_samples
-    if n_chains > 1:
-        pooled_variance += chain_means.var(unbiased=True)
-
-    rho = torch.zeros(n_samples, dtype=torch.float64, device=chains.device)
-    rho_even = torch.tensor(1.0, dtype=torch.float64, device=chains.device)
-    rho[0] = rho_even
-    rho_odd = 1.0 - (mean_variance - autocovariance[:, 1].mean()) / pooled_variance
-    rho[1] = rho_odd
-
-    lag = 1
-    while lag < n_samples - 3 and (rho_even + rho_odd).item() > 0.0:
-        rho_even = (
-            1.0 - (mean_variance - autocovariance[:, lag + 1].mean()) / pooled_variance
-        )
-        rho_odd = (
-            1.0 - (mean_variance - autocovariance[:, lag + 2].mean()) / pooled_variance
-        )
-        if (rho_even + rho_odd).item() >= 0.0:
-            rho[lag + 1] = rho_even
-            rho[lag + 2] = rho_odd
-        lag += 2
-
-    max_lag = lag - 2
-    if rho_even.item() > 0.0:
-        rho[max_lag + 1] = rho_even
-
-    lag = 1
-    while lag <= max_lag - 2:
-        previous_pair = rho[lag - 1] + rho[lag]
-        next_pair = rho[lag + 1] + rho[lag + 2]
-        if next_pair.item() > previous_pair.item():
-            rho[lag + 1] = previous_pair / 2.0
-            rho[lag + 2] = previous_pair / 2.0
-        lag += 2
-
-    total = n_chains * n_samples
-    tau = -1.0 + 2.0 * rho[: max_lag + 1].sum() + rho[max_lag + 1 : max_lag + 2].sum()
-    tau = torch.maximum(
-        tau,
-        torch.tensor(
-            1.0 / math.log10(total), dtype=torch.float64, device=chains.device
-        ),
-    )
-    if torch.isnan(rho).any().item():
-        return _nan_scalar(chains)
-    return total / tau
-
-
-def _split_rhat_1d(chains: torch.Tensor) -> torch.Tensor:
-    """Rank-normalized folded split R-hat for one coordinate.
-
-    The reported value is the conservative maximum of bulk
-    rank-normalized split R-hat and the folded statistic, which is
-    sensitive to scale and tail disagreement.
-    """
-    if chains.shape[0] < 2 or chains.shape[1] < 4 or torch.isnan(chains).any().item():
-        return _nan_scalar(chains)
-
-    split = _split_chains(chains)
-    bulk = _rhat(_rank_normalize(split))
-    folded = torch.abs(split - torch.quantile(split, 0.5))
-    tail = _rhat(_rank_normalize(folded))
-    return torch.maximum(bulk, tail)
-
-
-def _ess_1d(chains: torch.Tensor) -> torch.Tensor:
-    """Rank-normalized bulk ESS for one coordinate across chains."""
-    if chains.shape[1] < 4 or torch.isnan(chains).any().item():
-        return _nan_scalar(chains)
-    return _ess(_rank_normalize(_split_chains(chains)))
-
-
-def _diagnostics(
-    samples: dict[str, torch.Tensor],
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    """Compute per-site :math:`\\hat R` and ESS over the
-    ``(num_chains, num_samples, *site_shape)`` posterior tensors."""
-    r_hat: dict[str, torch.Tensor] = {}
-    ess: dict[str, torch.Tensor] = {}
-    for name, draws in samples.items():
-        n_chains = draws.shape[0]
-        n_samples = draws.shape[1]
-        flat = draws.reshape(n_chains, n_samples, math.prod(draws.shape[2:]))
-        if not flat.dtype.is_floating_point:
-            # The draws of a discrete Gibbs site are integer codes.
-            flat = flat.to(torch.float64)
-        n_coords = flat.shape[-1]
-        rh = torch.empty(n_coords)
-        es = torch.empty(n_coords)
-        for c in range(n_coords):
-            rh[c] = _split_rhat_1d(flat[:, :, c])
-            es[c] = _ess_1d(flat[:, :, c])
-        site_shape = tuple(draws.shape[2:])
-        r_hat[name] = rh.reshape(site_shape)
-        ess[name] = es.reshape(site_shape)
-    return r_hat, ess
+        The smaller of the 5% and 95% quantile effective sample sizes,
+        computed by ``quivers.diagnostics.ess(draws, method="tail")``;
+        same shape convention as `r_hat`.
+        """
+        return {name: ess(draws, method="tail") for name, draws in self.samples.items()}
 
 
 class _ChainRecord:
@@ -1366,7 +1227,6 @@ class MCMC:
                 for record, count in zip(records, num_draws, strict=True)
             ]
         )
-        r_hat, ess = _diagnostics(samples)
         return MCMCResult(
             samples=samples,
             log_densities=log_densities,
@@ -1374,8 +1234,6 @@ class MCMC:
             divergence_counts=torch.tensor(
                 [record.divergences for record in records], dtype=torch.int64
             ),
-            r_hat=r_hat,
-            ess=ess,
             num_warmup=self.num_warmup,
             num_samples=kept,
             component_acceptance=_component_acceptance(
