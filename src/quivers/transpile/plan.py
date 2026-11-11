@@ -38,6 +38,7 @@ from torch.distributions import Distribution
 
 from quivers.dsl.ast_nodes import (
     Expr,
+    LetStep,
     MarginalizeStep,
     Module,
     ObserveStep,
@@ -593,6 +594,8 @@ class _ProgramWalk:
         self.ctx = ctx
         self.site_steps: dict[str, SampleStep | ObserveStep | MarginalizeStep] = {}
         _collect_site_steps(program.draws, self.site_steps)
+        self.factor_axes: dict[str, tuple[str, ...]] = {}
+        _collect_factor_axes(program.draws, self.factor_axes)
         self.observed: dict[str, IRObserve] = {}
         self.structured_inputs: dict[str, tuple[ConstraintSpec, Plate]] = {}
         self.param_map_inputs: dict[str, Plate] = {}
@@ -848,7 +851,9 @@ class _ProgramWalk:
             # components are read back where the pair is projected.
             self.tuples[binder.name] = value.items
             return
-        axes = self._inferred_axes(binder.type, value)
+        axes = self._factor_axes(binder.name, binder.type) or self._inferred_axes(
+            binder.type, value
+        )
         self.axes[binder.name] = axes
         plate = self._inferred_plate(binder.type, axes, value)
         self.bound_plates[binder.name] = plate
@@ -898,6 +903,45 @@ class _ProgramWalk:
                 if any(a is not b for a, b in zip(items, current, strict=True)):
                     changes[field.name] = items
         return replace(value, **changes) if changes else value
+
+    def _factor_axes(self, name: str, type_: TypeExpr) -> tuple[str, ...]:
+        """The axis names a source ``factor`` binding states.
+
+        ``let after = factor t : Step in ...`` names its axis ``Step``,
+        which the checked comprehension keeps only as an extent. Two
+        objects of one cardinality leave that extent ambiguous, so the
+        source binder's object names the axis instead, and a value read
+        off the binding inherits it.
+
+        Parameters
+        ----------
+        name : str
+            The bound name.
+        type_ : TypeExpr
+            The checked type of the bound value.
+
+        Returns
+        -------
+        tuple[str, ...]
+            One name per tensor axis when the binding is a source
+            factor whose binder objects have the axes' extents, the
+            trailing axes named as `_inferred_axes` names them; empty
+            otherwise.
+        """
+        stated = self.factor_axes.get(name)
+        shape = tensor_shape(type_)
+        if stated is None or shape is None:
+            return ()
+        dimensions = tuple(shape[1])
+        if len(stated) > len(dimensions):
+            return ()
+        for axis, size in zip(stated, dimensions, strict=False):
+            if not isinstance(size, IndexLiteral) or self.ctx.cards.get(axis) != (
+                size.value
+            ):
+                return ()
+        rest = _typed_dims(type_, ())[len(stated) :]
+        return (*stated, *(str(dim.name) for dim in rest))
 
     def _inferred_axes(self, type_: TypeExpr, value: Value) -> tuple[str, ...]:
         """The axis names of a bound value.
@@ -2093,6 +2137,31 @@ def _collect_site_steps(
         elif isinstance(step, MarginalizeStep):
             out[step.var] = step
             _collect_site_steps(step.scope, out)
+
+
+def _collect_factor_axes(
+    steps: Sequence[ProgramStep], out: dict[str, tuple[str, ...]]
+) -> None:
+    """Index a program's ``factor`` lets by the objects their binders range over.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        The steps, searched through marginalization scopes.
+    out : dict[str, tuple[str, ...]]
+        The index, extended in place: each let whose value is a
+        ``factor`` over named objects, mapped to those objects in
+        binder order.
+    """
+    for step in steps:
+        if isinstance(step, LetStep) and isinstance(step.value, LetExprFactor):
+            indices = tuple(binder.index for binder in step.value.binders)
+            if all(isinstance(index, TypeName) for index in indices):
+                out[step.name] = tuple(
+                    cast(TypeName, index).name for index in indices
+                )
+        elif isinstance(step, MarginalizeStep):
+            _collect_factor_axes(step.scope, out)
 
 
 def _site_and_distribution(
