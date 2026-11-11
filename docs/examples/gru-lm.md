@@ -27,15 +27,14 @@ This stochastic recurrent cell is shaped after a [GRU](https://doi.org/10.3115/v
 # terminal state; a Categorical lm_head projects that summary
 # onto the Token vocabulary.
 #
-# Resp is the plate: it indexes the 32 scored rows of the corpus,
-# one next-token target per context. Token is the vocabulary, so it
-# is the value space of what lm_head draws and of what the program
-# returns.
+# Each input row is one context, and one run of the program scores
+# it: the contexts of a corpus are independent runs that share the
+# model's parameters. Token is the vocabulary, so it is the value
+# space of what lm_head draws and of what the program returns.
 #
 # Reference: [Cho et al. 2014](https://doi.org/10.3115/v1/D14-1179).
 
 object Token : FinSet 256
-object Resp : FinSet 32
 object Embedded : Real 64
 object Hidden : Real 128
 
@@ -60,7 +59,7 @@ define backbone = tok_embed >> scan(gru_cell)
 program gru_lm : Token -> Token
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export gru_lm
@@ -100,7 +99,7 @@ The candidate is drawn from a Normal centered on the reset-gated previous state;
 
 `scan(gru_cell)` threads the hidden state $h_t$ across the sequence; the `Categorical` `lm_head` scores the next-token target from the terminal state $h_T$.
 
-The two `FinSet` objects play different roles. `Resp : FinSet 32` sits in the observe step's index slot, so it is the plate: 32 scored rows, one next-token target per context. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
+The program scores one context per run. Each input row is a prompt, and a corpus of prompts is a batch of independent runs that share the model's parameters, so every prompt draws its own trajectory and scores its own next-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
 
 ```mermaid
 flowchart LR
@@ -127,7 +126,7 @@ flowchart LR
 
 ### Generating synthetic data
 
-Trace the fixed GRU-shaped recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
+Trace the fixed GRU-shaped recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 prompt of length `seq_len`, scored against one next-token label.
 
 ```python
 import torch

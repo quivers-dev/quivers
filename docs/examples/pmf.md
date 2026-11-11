@@ -127,10 +127,11 @@ class FactorPrior(ContinuousMorphism):
         self._shape = (rows, cols)
 
     def rsample(self, x, sample_shape=torch.Size()):
-        return D.Normal(torch.zeros(self._shape), 1.0).rsample()
+        # One flattened draw of the entries per input row.
+        return D.Normal(torch.zeros(x.shape[0], self.codomain.dim), 1.0).rsample()
 
     def log_prob(self, x, y):
-        return D.Normal(0.0, 1.0).log_prob(y.reshape(self._shape)).sum()
+        return D.Normal(0.0, 1.0).log_prob(y.reshape(x.shape[0], -1)).sum(-1)
 
 
 class RatingLikelihood(ContinuousMorphism):

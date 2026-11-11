@@ -28,17 +28,16 @@ This recurrent language model uses a [`rnn_cell`](../guides/dsl-programs-and-let
 # is what makes this the one-matrix recurrence a vanilla RNN is
 # defined to be.
 #
-# Resp is the plate: it indexes the 32 scored rows of the corpus,
-# one next-token target per context. Token is the vocabulary, so it
-# is the value space of what lm_head draws and of what the program
-# returns.
+# Each input row is one context, and one run of the program scores
+# it: the contexts of a corpus are independent runs that share the
+# model's parameters. Token is the vocabulary, so it is the value
+# space of what lm_head draws and of what the program returns.
 #
 # This is the simplest sequence model in the gallery and the
 # baseline against which gru_lm.qvr and lstm_lm.qvr add gating
 # structure.
 
 object Token : FinSet 256
-object Resp : FinSet 32
 object Embedded : Real 64
 object Hidden : Real 128
 
@@ -57,7 +56,7 @@ define backbone = tok_embed >> scan(rnn_cell)
 program vanilla_rnn_lm : Token -> Token
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export vanilla_rnn_lm
@@ -81,7 +80,7 @@ below keep repeated sites distinguishable when replaying and checking a run.
 
 Tokens are embedded into the 64-dimensional `Embedded` space, after which `scan(rnn_cell)` threads a 128-dimensional hidden state across the sequence. At each step, `rnn_cell` consumes `(x_t, h_{t-1})`, draws `s_t` from the `LogitNormal` cell, and returns $h_t = 2s_t - 1$ on $(-1, 1)$. The program form exposes this draw as a declared site. Since $2\sigma(u)-1=\tanh(u/2)$, the affine `let` is a scaled tanh transform of a Gaussian pre-activation; unlike a deterministic vanilla-RNN update, it retains the `LogitNormal` family's learned scale. The terminal state $h_T$ summarizes the prefix, and the `Categorical` [`lm_head`](../api/continuous/families.md) maps it to a distribution over the 256-symbol vocabulary for `observe next_token`.
 
-The two `FinSet` objects play different roles, and the positions they appear in are what fix them. `Resp : FinSet 32` sits in the observe step's index slot, so it is the plate: 32 scored rows, one next-token target per context. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space: the 256 outcomes a draw ranges over, and the space the returned `next_token` lives in.
+The program scores one context per run. Each input row is a prompt, and a corpus of prompts is a batch of independent runs that share the model's parameters, so every prompt draws its own trajectory and scores its own next-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space: the 256 outcomes a draw ranges over, and the space the returned `next_token` lives in.
 
 `scan(rnn_cell)` elaborates to a one-position step computation
 and a recursive helper over the input's open sequence extent. Repeated sites
@@ -110,7 +109,7 @@ flowchart LR
 
 ### Generating synthetic data
 
-Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 prompt of length `seq_len` and one next-token label.
+Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 prompt of length `seq_len`, scored against one next-token label.
 
 ```python
 import torch

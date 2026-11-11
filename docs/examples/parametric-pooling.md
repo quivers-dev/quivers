@@ -122,7 +122,7 @@ true_theta_z = theta_true / true_spread
 y = torch.distributions.Normal(theta_true, true_sigma).sample()
 
 observations = {"y": y}
-x_in = torch.zeros(n_school, 1)
+x_in = torch.zeros(1, 1)
 
 draws = model.rsample(x_in)
 print(sorted(draws.keys()))

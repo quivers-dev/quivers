@@ -126,7 +126,7 @@ obs = torch.distributions.Categorical(true_emission_rows[state]).sample(
 )
 
 observations = {"obs": obs}
-x_in = torch.zeros(n_step, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit

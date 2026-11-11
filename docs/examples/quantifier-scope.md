@@ -128,7 +128,7 @@ true_rule_weights = torch.randn(N_RULES)
 rule_counts = torch.poisson(torch.exp(true_rule_weights))
 
 observations = {"rule_counts": rule_counts}
-x_in = torch.zeros(N_RULES, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ## Categorical perspective

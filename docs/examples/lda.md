@@ -140,7 +140,7 @@ w        = torch.tensor(tokens,   dtype=torch.long)
 
 N = w.shape[0]
 observations = {"w": w, "word_idx": word_idx}
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 The per-document topic weights `theta` and per-topic vocabulary distributions `phi` remain continuous simplex sites. The shared document topic `z` is integrated out by the grouped block.

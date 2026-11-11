@@ -115,7 +115,7 @@ u = torch.rand(n_resp).clamp(1e-6, 1.0 - 1e-6)
 y = (1.0 - (1.0 - u) ** (1.0 / true_b)) ** (1.0 / a_true)
 
 observations = {"y": y, "x": x}
-x_in = torch.zeros(n_resp, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 The response is generated through the Kumaraswamy quantile function $Q(u) = (1 - (1 - u)^{1/b})^{1/a}$, the closed form that motivates the family in the first place.

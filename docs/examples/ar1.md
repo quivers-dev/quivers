@@ -91,7 +91,7 @@ y[0] = alpha_true / (1.0 - phi_true)
 for t in range(1, T):
     y[t] = alpha_true + phi_true * y[t - 1] + sigma_true * torch.randn(())
 y_prev = torch.cat([torch.zeros(1), y[:-1]])
-x_in = torch.zeros(T, 1)
+x_in = torch.zeros(1, 1)
 observations = {"y": y, "y_prev": y_prev}
 ```
 

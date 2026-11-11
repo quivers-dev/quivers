@@ -104,7 +104,7 @@ true_beta_1 = 2.0
 x = torch.randn(N)
 y = torch.distributions.Normal(true_beta_0 + true_beta_1 * x, true_sigma).sample()
 observations = {"x": x, "y": y}
-x_in = torch.zeros(N, 1)
+x_in = torch.zeros(1, 1)
 ```
 
 ### SVI fit
@@ -139,11 +139,10 @@ print(f"oracle NLL:   {oracle_nll:.2f}")
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-N_mcmc = 32
-x_mcmc = x[:N_mcmc]
-y_mcmc = y[:N_mcmc]
-obs_mcmc = {"x": x_mcmc, "y": y_mcmc}
-x_in_mcmc = torch.zeros(N_mcmc, 1)
+# The plate's size is declared in the source, so NUTS conditions on
+# the whole data set, as one run of the program.
+obs_mcmc = observations
+x_in_mcmc = torch.zeros(1, 1)
 
 torch.manual_seed(2)
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)

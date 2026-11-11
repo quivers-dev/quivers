@@ -23,10 +23,11 @@ Two independently parameterized recurrent cells scan the same token sequence, an
 #   h        ~ combine(h_fwd, h_bwd)           merged representation
 #   masked_t ~ Categorical(logits=lm_head(h))  observed masked token
 #
-# Resp is the plate: it indexes the 32 scored rows of the corpus,
-# one masked-token target per context window. Token is the
-# vocabulary, so it is the value space of what lm_head draws and of
-# what the program returns.
+# Each input row is one context window, and one run of the program
+# scores its masked token: the windows of a corpus are independent
+# runs that share the model's parameters. Token is the vocabulary, so
+# it is the value space of what lm_head draws and of what the program
+# returns.
 #
 # The fan-out fan(forward_path, backward_path) runs the two
 # paths in parallel over the same token sequence in the
@@ -34,7 +35,6 @@ Two independently parameterized recurrent cells scan the same token sequence, an
 # fan(forward_path, backward_path) >> combine.
 
 object Token : FinSet 256
-object Resp : FinSet 32
 object Embedded, FwdHidden, BwdHidden : Real 64
 object Combined : Real 128
 
@@ -51,7 +51,7 @@ define backbone = fan(forward_path, backward_path) >> combine
 program bidirectional_rnn_lm : Token -> Token
     sample h <- backbone
 
-    observe masked_token : Resp <- lm_head(h)
+    observe masked_token <- lm_head(h)
     return masked_token
 
 export bidirectional_rnn_lm
@@ -89,7 +89,7 @@ independent parameters and thus learn separate sequence summaries.
 
 The Categorical `lm_head : Combined -> Token` scores a masked-token target from the two learned summaries. In the current source, both summaries use the same input order; the name `backward_path` does not itself reverse data.
 
-The two `FinSet` objects play different roles. `Resp : FinSet 32` sits in the observe step's index slot, so it is the plate: 32 scored rows, one masked-token target per context window. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
+The program scores one context window per run. Each input row is a window, and a corpus of windows is a batch of independent runs that share the model's parameters, so every window draws its own branch trajectories and scores its own masked-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
 
 ```mermaid
 flowchart LR
@@ -112,7 +112,7 @@ flowchart LR
 
 ### Generating synthetic data
 
-Trace the two fixed branches once to obtain their latent trajectories, the merged `h`, and the target. Each branch is a scan, whose embedding and cell draws are sites at every position: the scans sit in the branches of a `fan`, so their sites are named under the binding `h`, as `h$<branch>@t` for the cell's draw and `h$<branch>$x_in@t` for the embedding. Reuse every latent in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each `Resp` row contains an int64 context of length `seq_len` and one masked-token label.
+Trace the two fixed branches once to obtain their latent trajectories, the merged `h`, and the target. Each branch is a scan, whose embedding and cell draws are sites at every position: the scans sit in the branches of a `fan`, so their sites are named under the binding `h`, as `h$<branch>@t` for the cell's draw and `h$<branch>$x_in@t` for the embedding. Reuse every latent in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 context of length `seq_len`, scored against one masked-token label.
 
 ```python
 import torch

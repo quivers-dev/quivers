@@ -29,15 +29,14 @@ This model borrows the parallel-head and stacked-block shape of a [Transformer](
 # ordinary learned parameters unless an inference lift supplies
 # priors over them.
 #
-# Resp is the plate: it indexes the 32 scored rows, one
-# next-token target per context. Token is the vocabulary, so it
-# is the value space of what lm_head draws and of what the
-# program returns.
+# Each input row is one context, and one run of the program scores
+# it: the contexts of a corpus are independent runs that share the
+# model's parameters. Token is the vocabulary, so it is the value
+# space of what lm_head draws and of what the program returns.
 #
 # Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
 object Token : FinSet 32
-object Resp : FinSet 32
 object Latent : Real 16
 object HeadOut : Real 4
 object FFHidden : Real 32
@@ -56,7 +55,7 @@ define backbone = tok_embed >> stack(layer, 2)
 program transformer_lm : Token -> Token
     sample h <- backbone
 
-    observe next_token : Resp <- lm_head(h)
+    observe next_token <- lm_head(h)
     return next_token
 
 export transformer_lm
@@ -100,7 +99,7 @@ define layer = fan(head) >> attn_proj >> residual_attn >> ff_up >> ff_down >> re
 
 The closing `morphism lm_head : Latent -> Token ~ Categorical` is a Kleisli morphism `Latent -> Token`; per position it produces a Categorical distribution over the thirty-two-symbol vocabulary, and the program's `observe next_token` step accumulates the per-position categorical log-likelihood against the supplied target tensor.
 
-The two `FinSet` objects sit in different positions and mean different things. `Resp : FinSet 32` fills the observe step's index slot, so it is the plate: 32 scored rows. `Token : FinSet 32` fills `lm_head`'s codomain and the program's own codomain, so it is the value space: the 32 outcomes a draw ranges over, and the space the returned `next_token` lives in. That the two happen to have the same cardinality here is a coincidence of this example's sizing, not a shared role.
+The program scores one context per run. Each input row is a context token, and a corpus of contexts is a batch of independent runs that share the model's parameters, so every context draws its own `h` and scores its own next-token target. `Token : FinSet 32` fills `lm_head`'s codomain and the program's own codomain, so it is the value space: the 32 outcomes a draw ranges over, and the space the returned `next_token` lives in.
 
 ## Try it
 
@@ -108,7 +107,7 @@ The two `FinSet` objects sit in different positions and mean different things. `
 
 ### Generating synthetic data
 
-Fix the model's parameters to a chosen draw, then run one forward [`trace`](../api/inference/trace.md) so the latent representation `h` and the next-token targets generated from it are jointly consistent. `true_h` names the ground truth for the latent `h` site, and shipping it in the observations dict is what clamps it: an unclamped `h` is redrawn on every call, which leaves any reference joint non-deterministic. The corpus is 32 single-token contexts, one per element of the `Resp` plate, paired with 32 next-token targets. A one-position context does not test cross-position attention or causal masking: `fan(head)` inside `stack` folds a multi-position axis into the feature axis, so the composite as written scores one position per row.
+Fix the model's parameters to a chosen draw, then run one forward [`trace`](../api/inference/trace.md) so the latent representation `h` and the next-token targets generated from it are jointly consistent. `true_h` names the ground truth for the latent `h` site, and shipping it in the observations dict is what clamps it: an unclamped `h` is redrawn on every call, which leaves any reference joint non-deterministic. The corpus is 32 single-token contexts, 32 independent runs, paired with 32 next-token targets. A one-position context does not test cross-position attention or causal masking: `fan(head)` inside `stack` folds a multi-position axis into the feature axis, so the composite as written scores one position per row.
 
 ```python
 import torch
