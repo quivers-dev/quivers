@@ -555,8 +555,6 @@ def function_source(
 
 __all__ = [
     "AttentionSource",
-    "FUNCTION_ACTIVATIONS",
-    "FUNCTION_SOURCE_KINDS",
     "FunctionActivation",
     "function_source",
     "ComposeSource",

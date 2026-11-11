@@ -312,6 +312,75 @@ morphism e : X -> R3 [role=embed]
 The runtime realization is
 [`Embed`](../api/continuous/boundaries.md#quivers.continuous.boundaries.Embed).
 
+## Function
+
+A neural network layer is a learned function with no noise: a projection
+`z = W x + b`, a recurrent update `h_t = tanh(W [x_t; h_{t-1}] + b)`, a
+feature map. `role=function` declares one between continuous spaces:
+
+```qvr
+object Feature : Real 3
+object Hidden : Real 4
+object Score : Real 2
+
+# Affine by default: W x + b.
+morphism proj : Feature -> Score [role=function]
+# Two hidden layers of 16 under ReLU, then a tanh on the output.
+morphism cell : Feature * Hidden -> Hidden [role=function, param_source=mlp(16, 16), activation=relu, output=tanh]
+```
+
+- **Network.** `param_source` selects it: `linear` (the default), `mlp`
+  with optional hidden widths (`mlp(16, 16)`; bare `mlp` is two layers of
+  64), or `identity`, which has no weights and needs a one-factor domain as
+  wide as the codomain. `activation` names the nonlinearity between an
+  `mlp`'s hidden layers (`tanh` by default, or `relu`, `sigmoid`,
+  `softplus`), and `output` the one applied to the network's output
+  (`identity` by default, or `tanh`, `sigmoid`, `softplus`, `relu`).
+- **No site.** The function is the Dirac kernel at its output. A program
+  calls it as a value, `let z = proj(x)`, with one argument per factor of
+  its domain, and never draws from it: `sample z <- proj(x)` is refused.
+  In a chain it composes like any morphism, and as the cell of a scan it
+  is a deterministic recurrence.
+- **Point-estimated weights.** Its weights are parameters of the compiled
+  program, fit by whatever objective trains the model around it, as a
+  network kernel's are. The checked elaboration reads them as typed program
+  inputs (`proj_param_weight`, `proj_param_bias`, and
+  `cell_param_layer<k>_weight` and `_bias` for hidden layers), as the
+  [learned functions reference](../reference/qvr/probabilistic-programs.md#learned-functions)
+  states.
+
+The runtime realization is
+[`LearnedFunction`](../api/continuous/deterministic.md#quivers.continuous.deterministic.LearnedFunction).
+A constant-noise transition around a learned mean, the form a linear
+Gaussian state-space model takes, draws from a family around the
+function's value, with the noise scale a site of the scanning program:
+
+```qvr
+object Driver : Real 2
+object State : Real 3
+object Obs : Real 2
+
+morphism transition : Driver * State -> State [role=function]
+morphism emission : State -> Obs [role=function]
+
+program step(u_t, s_prev) : Driver * State -> State
+    let mean = transition(u_t, s_prev)
+    sample s <- Normal(loc=mean, scale=q)
+    let center = emission(s)
+    observe o <- Normal(loc=center, scale=r)
+    return s
+
+define run_all = scan(step)
+
+program ssm : Driver -> State
+    sample q <- HalfNormal(scale=1.0)
+    sample r <- HalfNormal(scale=1.0)
+    sample last <- run_all
+    return last
+
+export ssm
+```
+
 ## Deduction
 
 A `deduction NAME : Domain -> Codomain [options]` declaration with
@@ -588,8 +657,10 @@ hidden state `H` across a sequence:
 - **Type.** If `cell : A * H -> H`, then `scan(cell) : A -> H`.
   The sequence dimension is implicit in the tensor's second
   dimension.
-- **Works with both forms.** Parametric kernels (`morphism cell : A *
-  H -> H ~ Normal`) and programs (`program cell(x, h) : A * H -> H`).
+- **Works with every form.** Parametric kernels (`morphism cell : A *
+  H -> H ~ Normal`), [learned functions](#function) (`morphism cell : A
+  * H -> H [role=function]`, a deterministic recurrence with no site), and
+  programs (`program cell(x, h) : A * H -> H`).
   Inside a program, a scan's step runs once per position: a morphism
   cell is drawn at the scan's binding, `h@0`, `h@1`, ..., for
   `sample h <- scan(cell)`, and a program cell's steps read the

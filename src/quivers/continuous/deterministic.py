@@ -428,11 +428,8 @@ class LearnedFunction(DeterministicMorphism):
 
 __all__ = [
     "DeterministicMorphism",
-    "FUNCTION_OUTPUTS",
     "FunctionOutput",
     "LearnedFunction",
-    "function_factor_widths",
-    "learned_function_draw_message",
     "cholesky_quad_form_morphism",
     "cumsum_morphism",
     "softmax_morphism",
