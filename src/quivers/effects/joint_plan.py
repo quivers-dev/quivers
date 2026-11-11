@@ -1073,10 +1073,4 @@ class JointPlans:
         return self._program.log_joint(self._x, dict(values))
 
 
-__all__ = [
-    "JointPlan",
-    "JointPlans",
-    "JointSignature",
-    "joint_signature",
-    "prepare_joint",
-]
+__all__: list[str] = []

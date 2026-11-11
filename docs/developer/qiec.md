@@ -221,6 +221,26 @@ score closing over another program's joint, a sub-program drawn as a step) is
 a separate invocation, whose sites the enclosing run's handlers neither
 observe nor condition.
 
+A consumer that scores one program at many positions, the MCMC
+[`PotentialFn`][quivers.inference.mcmc.PotentialFn], the tempered potential
+SMC moves under, and [`AutoDAIS`][quivers.inference.dais.AutoDAIS], scores it
+through a prepared joint (`quivers.effects.joint_plan`) rather than a run
+of the machine per position. Building the run's handlers, validating their
+module, and driving the machine through each request depend on the program,
+on the names and layouts of the values given, and on the handlers in scope,
+never on the values themselves. The prepared joint does that work once per
+layout: it compiles the kernel's entry computation, a chain of binds, to a
+straight-line list of instructions that call the same host-step functions
+the run's `Compute` handlers call, score each site's given value as the
+run's observation handler does, and sum the densities in the order and with
+the operations `TraceHandler` uses, so the joint and its gradient are the
+machine's bit for bit. An entry computation that is not a straight chain (a
+scan's recursive helper), a site given no value, an input of more than one
+run, host data that is not a tensor, and, checked at every call, a handler
+in scope, an overridden `log_joint`, or another installed evaluator leave
+the program to the machine. A prepared joint refuses values of any layout
+but its own, so a stale preparation raises rather than scores.
+
 A draw from another program, `sample theta <- school_effects(0.6, School)`
 or `sample (u, v) <- sub`, runs that program's steps in place under names of
 the caller's own: the objects and scalars the draw names substitute for the

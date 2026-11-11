@@ -363,6 +363,23 @@ class PotentialFn:
     axis being the program's batch axis, and plate sites at
     ``constrained_shape``.
 
+    The joint is the one `MonadicProgram.log_joint` computes, but the
+    program is not run on the reference machine at every position. The
+    first evaluation at a layout of the values (the shape, dtype, and
+    device of each latent, datum, and conditioned value) prepares the
+    program's scoring run once: its bind chain is compiled to a
+    straight-line sequence of the program's host steps and its sites'
+    densities, which every later evaluation at that layout replays,
+    with the same tensor operations in the same order, so values and
+    gradients are the machine's bit for bit. The preparation is shared
+    with every potential `condition` derives, since conditioning
+    changes values and not their layout. A layout the preparation does
+    not describe is evaluated by ``log_joint`` itself, every call: a
+    program with a scan (whose recursion runs over its sequence), a
+    datum that is not a tensor, and any evaluation made while effect
+    handlers are on the stack, under another installed evaluator, or of
+    a program whose ``log_joint`` is overridden.
+
     Observed data are checked once, at construction, against the
     support of each observed site's distribution, so data that are
     not finite or lie outside a likelihood's support raise here rather

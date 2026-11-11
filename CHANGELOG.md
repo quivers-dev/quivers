@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **An MCMC potential scores its program without running the reference machine at every position.** `PotentialFn`, the tempered potential `SMC` moves under, and `AutoDAIS` prepare the program's scoring run once per layout of the values (the shape, dtype, and device of each latent, datum, and conditioned value): the kernel's bind chain is compiled to a straight-line sequence of the program's host steps and site densities, which every later evaluation at that layout replays with the same tensor operations in the same order. Values, gradients, draws, and evaluation counts are those of `MonadicProgram.log_joint` bit for bit, and a potential `condition` derives shares the preparation, so a Gibbs component's new values reuse it. On a small hierarchical model with plates a NUTS gradient evaluation takes about a fifth of the time it did. A program with a scan, and any evaluation made while an effect handler is in scope, under another installed evaluator, or of a program whose `log_joint` is overridden, is scored by `log_joint` at every evaluation, as before.
+- **A plated step reads its morphism's argument widths once** rather than decoding the morphism's domain at every run.
+
 ## [0.45.0] - 2026-11-11
 
 ### Added
