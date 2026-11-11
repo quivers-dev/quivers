@@ -49,7 +49,7 @@ Examples
 >>> from quivers.continuous.families import ConditionalNormal
 >>> A = Euclidean(name="input", dim=32)
 >>> H = Euclidean(name="hidden", dim=64)
->>> cell = ConditionalNormal(ProductSpace(A, H), H, scale=0.1)
+>>> cell = ConditionalNormal(ProductSpace(components=(A, H)), H)
 >>> scanned = ScanMorphism(cell, init="zeros")
 >>> scanned.domain   # Euclidean(name="input", dim=32)
 >>> scanned.codomain # Euclidean(name="hidden", dim=64)

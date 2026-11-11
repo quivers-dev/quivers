@@ -1926,14 +1926,18 @@ def scan_let_call(expr: LetExprNode) -> ScanCall | None:
     """
     if not isinstance(expr, LetExprCall) or expr.func != "scan":
         return None
-    names = [argument.name for argument in expr.args if isinstance(argument, LetExprVar)]
+    names = [
+        argument.name for argument in expr.args if isinstance(argument, LetExprVar)
+    ]
     flags = [
         argument.value for argument in expr.args if isinstance(argument, LetExprString)
     ]
     if (
         len(names) not in (2, 3)
         or len(names) + len(flags) != len(expr.args)
-        or not all(isinstance(argument, LetExprVar) for argument in expr.args[: len(names)])
+        or not all(
+            isinstance(argument, LetExprVar) for argument in expr.args[: len(names)]
+        )
         or any(flag not in (_SCAN_ALL_FLAG, _SCAN_REVERSE_FLAG) for flag in flags)
         or len(set(flags)) != len(flags)
     ):
