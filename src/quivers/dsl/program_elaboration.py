@@ -109,6 +109,7 @@ from quivers.qiec.identifiers import (
     ComputationId,
     HandlerId,
     SiteProvenance,
+    SourceOrigin,
 )
 from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder
 from quivers.qiec.module import NamedComputation, NamedEffectInstance
@@ -2591,11 +2592,14 @@ class _ProgramElaboration:
             for entry in signature.effects.entries
         ):
             state.uses_params = True
-        origin = _origin_at(
-            self,
-            ("programs", state.declaration.name, "parses", name),
-            "call",
-            node,
+        origin = cast(
+            SourceOrigin,
+            _origin_at(
+                self,
+                ("programs", state.declaration.name, "parses", name),
+                "call",
+                node,
+            ),
         )
         extra = () if table is None else (table,)
         if rows is None:
@@ -2765,7 +2769,7 @@ class _ProgramElaboration:
         extra: tuple[TensorValue, ...],
         state: _ProgramState,
         node: LetStep,
-        origin: object,
+        origin: SourceOrigin,
     ) -> Call:
         """Call a deduction's entry on every sentence of a corpus.
 
@@ -2790,7 +2794,7 @@ class _ProgramElaboration:
             The program's accumulating state, which gains the helper.
         node : LetStep
             The step.
-        origin : object
+        origin : SourceOrigin
             The call's origin.
 
         Returns
@@ -2882,7 +2886,10 @@ class _ProgramElaboration:
                         (Var(sentence), *(Var(item) for item in carried)),
                         carrier,
                         signature.effects,
-                        _origin_at(self, (*path, "sentence"), "call", node),
+                        cast(
+                            SourceOrigin,
+                            _origin_at(self, (*path, "sentence"), "call", node),
+                        ),
                     ),
                     recur,
                 ),
