@@ -685,9 +685,7 @@ class SMC:
             draw = _registry_draw(registry, run)
             unconstrained, _ = registry.to_unconstrained(draw)
             positions.append(registry.flatten_unconstrained(unconstrained))
-            gibbs.append(
-                {name: run.sites[name].value.detach() for name in gibbs_sites}
-            )
+            gibbs.append({name: run.sites[name].value.detach() for name in gibbs_sites})
         return torch.stack(positions), gibbs
 
     @staticmethod
