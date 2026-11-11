@@ -4,17 +4,145 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.40.0] - 2026-11-11
 
 ### Added
 
 - **`scan(cell, init=h0)` starts a scan from a binding of its scanning program.** Any site or `let` the program binds before the scan can be the initial state, with gradients reaching it; a binding of the state's type is read as it is, and a scalar binding is the one entry of a one-wide state. A name the program does not bind before the scan, or a binding of another type, is refused where the scan is written, and `qvr check` reports it as a diagnostic. `Scan` gains `initial_from`, and `ScanMorphism(cell, init=<name>)` names the binding it needs when run on its own.
-- **`scan(cell, outputs=all)` returns every state, one per position, and `scan(cell, reverse=true)` runs from the last position to the first.** The QVR grammar's `scan_expr` takes `init`, `outputs`, and `reverse` in any order, each at most once, and refuses an `outputs` other than `all` or `last`; every existing source parses unchanged. A scan with `outputs=all` binds the sequence of its states (`Tensor[H]([<input>_extent])` when checked, `(batch, seq_len, dim H)` on the compiled runtime), which a later scan in the chain runs over, so `scan(lower, outputs=all) >> scan(upper)` stacks two recurrences; `fan` and `@` of such branches pair their sequences position by position. A reversed scan conditions each state on the one after it, numbers its sites in the order it visits them (`h@0` is the last position), reads a whole observation sequence in input order, and lays its every-state sequence out in input order, so a forward and a reversed sequence pair without reindexing. A scan over another scan's final state, a morphism applied to a whole sequence outside a scan, and a `fan` pairing a sequence with one value are refused where the draw is written. `ScanMorphism(cell, outputs=..., reverse=...)`, with `ScanMorphism.outputs` and `ScanMorphism.reverse`, and `Scan(..., outputs=..., reverse=...)` carry the options in Python. Every transpile target refuses these scans with `scan:no-lowering:<cell>`.
+
+## [0.39.0] - 2026-11-11
+
+### Added
+
+- **Priors on a grammar's production probabilities.** A program binds a normalized grammar's production probabilities to its own values, `parse(D, sentence, ("Det", p_det), ("N", p_n))`, one probability vector per left-hand side of several productions, so a Dirichlet prior per left-hand side has a posterior that MCMC samples. The binding is checked when the program is lowered (every label a left-hand side of several productions, each bound once, each value a vector of its group's size, a value drawn at a sample site from a family on the simplex, and the grammar declaring `normalize=lhs`); the compiled runtime sends gradients to the bound values and the checked path elaborates the call to a weighted variant of the deduction's computations, `<D>__weighted_run`. Every transpile target refuses such a program by name.
+- **Corpora in one run.** `parse(D, corpus, Plate, ...)` parses a table with one sentence per object of `Plate`, all of one length, and `chart.goal_weight()` is the semiring product of the sentences' goal weights (the corpus log-likelihood under `LogProb`). `DeductionSystem.corpus` and `CorpusChart` in `quivers.stochastic` are the Python form, and `DeductionSystem.__call__`, `DeductionSystem.run`, and `DeductionSystem.production_log_probs` take the same production probabilities as a mapping from left-hand side to vector.
+
+### Fixed
+
+- **A program that parses a sentence runs on the compiled runtime.** Host data of strings (a sentence of tokens, or a corpus table) is checked against its checked type without a tensor conversion, and the program binds the deduction's answer as the inside weight of its goal, as the checked path does.
+
+## [0.38.0] - 2026-11-11
+
+### Added
+
+- **Deduction weights normalized per left-hand side (`normalize=lhs`).** Under the deduction option `normalize=lhs`, the rules and lexicon entries that rewrite one left-hand side form a probability distribution: each group's free log-weights (a learned parameter, or zero for a production that is not `#[learnable]`) pass through a `log_softmax`, so the deduction is a probabilistic context-free grammar and maximum likelihood is bounded. The agenda chart, the checked search (`run_deduction` and programs that call `parse`), `adam_fit_deduction`, and `sample_corpus` read the normalized weights. A deduction whose groups are not fixed at compile time (a rule binding a category variable, spans carrying logical forms, a `bounded` or `parent` rule, a non-ground lexicon category, a repeated entry, axioms given as input, or a semiring other than `LogProb` or `Viterbi`) is refused with a located diagnostic on both paths. `normalize=none` is the default.
+- **`DeductionSystem.production_groups` and `DeductionSystem.production_log_probs`,** with `Production`, `ProductionGroup`, `ProductionKey`, and `ProductionWeights` in `quivers.stochastic`, report a grammar's productions by left-hand side and their log-probabilities.
+
+## [0.37.0] - 2026-11-11
+
+### Changed
+
+- **Programs and templates that call pure computations are fitted on the compiled runtime.** A call of a computation that performs no effect, takes no static arguments, and binds pure values before returning one is inlined into `let` steps, with the callee's bindings under fresh names and an argument that is not a name bound first, by the analysis the transpile planner uses; the program compiles to a `MonadicProgram`, so `trace`, `log_joint` with gradients, SVI, and MCMC run on it with the reference machine's values, integer division included. A parametric template that calls such a computation instantiates rather than being refused; a template making any other call is still refused at the call, and a program making one still runs as its `CheckedProgram`.
+- The `standardize` example in the probabilistic-programs reference takes a column of covariates, declaring the computation's argument a tensor and mapping over it.
+
+## [0.36.0] - 2026-11-11
+
+### Added
+
+- **`AmortizedGuide`** runs declared morphisms as the variational posterior: `AmortizedGuide(model, observed_names, encoders={"z": (encoder, "y")})` applies each encoder to every row of the datum it reads (once per run for a site drawn per run, once per plate row for a plated local latent), passes a real-valued encoder's draw through the site's bijector with the Jacobian in the density, and checks every binding (site, support, event size, datum, rows, and an exact encoder density). It composes with `AutoGuideList`, and every objective and estimator takes it.
+- **`Guide.observe`** hands a guide the data of the step about to sample it; every objective calls it, `AutoGuideList`, `AutoMixtureGuide`, and `AutoDAIS` forward it, and guides whose parameters do not depend on the data ignore it.
+
+## [0.35.0] - 2026-11-11
+
+### Added
+
+- **Subsampled plates for minibatch SVI.** `subsample(plate, index)` in `quivers.effects` (a `SubsampleHandler`) scores every site whose plate axes include `plate`, a plate draw or a plated observation, at the rows of `index` and multiplies its contribution by the plate's size over the index's size; sites outside the plate, the global latents among them, are scored in full and unscaled. Handlers for several plates compose per site: a site in two subsampled plates takes the product of their factors, and a site in a sibling plate its own factor alone. An observation may be given at the subset's size, read in the order of the index, or at the plate's extent. A trace records each scaled site's factor as `metadata["subsample_scale"]`. `MonadicProgram.site_plates` records each site's plate axes and extents, filled by the compiler from the checked elaboration.
+- **`Guide.scores_subsampled_rows` and `Guide.check_subsampling`.** `AutoNormalGuide` scores a local latent in a subsampled plate at the subset's rows with the same factor, so the minibatch ELBO and its gradient are unbiased for the full-data ones; `AutoDeltaGuide` admits such a latent as well, and every other guide refuses it. `PlateDraw.log_prob_rows` and `VectorisedObserve.log_prob_rows` score a subset of a plate's rows.
+- **The ELBO is the one objective that admits a subsampled plate.** `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `DReGsBound`, `ChiVI`, and `RWS` raise inside a `subsample` block, since they are not linear in the log joint; MCMC, `PotentialFn` (at construction and at every `log_density`), `AutoLaplaceApproximation.fit_hessian`, `AutoDAIS`, and `bayesian_lift_parameters` raise as consumers of the exact posterior.
+
+## [0.34.0] - 2026-11-11
+
+### Added
+
+- **`LogitBeta` and `LogGamma` families on the real line.** `LogitBeta(concentration1=a, concentration0=b)` is the law of `logit(p)` for `p ~ Beta(a, b)` and `LogGamma(concentration=a, rate=r)` the law of `log(g)` for `g ~ Gamma(a, r)`, scored by their exact densities `a logsigmoid(x) + b logsigmoid(-x) - log B(a, b)` and `a (log r + y) - r exp(y) - lgamma(a)` at every finite argument, and sampled in log space by the shape augmentation `log G' + log(U) / a` with `G' ~ Gamma(a + 1)`, so draws stay finite and reparameterized for shapes far below where a Beta or Gamma sampler clamps at the smallest normal number. The `torch.distributions` classes `LogitBeta` and `LogGamma` and the sampler `log_standard_gamma` are in `quivers.continuous`; `ConditionalLogitBeta` and `ConditionalLogGamma` learn their shapes through a softplus head; `make_fixed_logit_beta` and `make_fixed_log_gamma` build the fixed steps, and the inline paths pass small literal shapes through unclamped and refuse a shape that is not positive. Both families are in the QVR surface, the semantic registry, and the reference machine, and render for Stan, NumPyro, and Pyro through runtime helpers with the same densities and samplers; every other target refuses them by name.
+
+## [0.33.0] - 2026-11-11
+
+### Added
+
+- **Tempered sequential Monte Carlo.** `SMC(kernel, num_particles=1024, num_mcmc_steps=5, target_ess=0.5, resampling="systematic", num_pilot_steps=50, seed=...)` moves particles drawn exactly from the prior to the posterior through `p(z) L(z)^beta`, choosing each temperature by bisection on the conditional ESS, reweighting, resampling (`resample`, with the `"multinomial"`, `"systematic"`, `"stratified"`, and `"residual"` `ResamplingScheme`s), and rejuvenating with any `MCMCKernel`, tuned to the population (`MCMCKernel.tune`) and on a discarded pilot run, then frozen for the temperature. `SMCResult` holds the equally weighted particles, `log_evidence` (the log of an unbiased evidence estimate), the temperature ladder, and the ESS and acceptance per temperature. `TemperedPotential` evaluates `log p(z) + beta log L(z)`, `L` being the observations and score steps, and returns the two parts separately. `SMC.run` takes a one-row input.
+
+## [0.32.0] - 2026-11-11
+
+### Added
+
+- **MCMC checkpoints and resumption.** `MCMC(..., checkpoint=MCMCCheckpoint(directory, every=100, every_seconds=None))` writes every chain's phase, `KernelState`, kernel adaptation state, generator state, and draws to `mcmc_checkpoint.pt`, atomically (a temporary file replaces the previous checkpoint), as tensors and plain containers read back with `torch.load(..., weights_only=True)`. `MCMC.resume(directory, model, x, observations)` continues the run bit for bit as if uninterrupted, and refuses a checkpoint written for a different model or data, kernel configuration, run settings, seed, or format version (`CHECKPOINT_FORMAT_VERSION`). `MCMCKernel.configuration`, `MCMCKernel.state_dict`, `MCMCKernel.load_state_dict`, `KernelState.state_dict`, `KernelState.from_state_dict`, the `Proposal` counterparts, and `state_dict` / `from_state_dict` on `DualAveraging` and `WelfordCovariance` carry the state, typed by `StateValue`.
+- **Run budgets and a progress hook.** `max_seconds` and `max_evaluations` stop a chain at a transition boundary; `MCMCResult.stopped_by` (`StopReason`), `num_draws`, and `truncated` record it, and a budget-stopped run resumes. `callback(chain, iteration, state, phase)` (`MCMCCallback`, `MCMCPhase`) sees every transition. `PotentialFn.num_evaluations` and `num_gradient_evaluations` count evaluations, reported per chain as `MCMCResult.num_evaluations` and `num_gradient_evaluations`.
+- **Per-draw sampler statistics.** `MCMCResult.sample_stats` holds each transition's statistics at `(num_chains, num_samples)`; NUTS records `accept_prob`, `accepted`, `diverged`, `step_size`, `tree_depth`, `num_steps`, and `energy` (the Hamiltonian at the draw), and HMC the same without `tree_depth`. `to_datatree` writes them under ArviZ's names (`diverging`, `tree_depth`, `n_steps`, `energy`, `step_size`, `acceptance_rate`).
+
+### Changed
+
+- **Breaking: `to_datatree` writes per-draw sampler statistics** in place of the per-chain `mean_acceptance_per_chain` and `total_divergences_per_chain` arrays broadcast over draws.
+
+## [0.31.0] - 2026-11-11
+
+### Added
+
+- **Composable MCMC kernels.** `CycleKernel` applies its components in turn on every transition and `MixtureKernel` applies one chosen with fixed probabilities (drawing its warmup choices up front, so each component adapts over exactly the transitions that select it); both forward the chain-local generator and warmup to every component, and accept a sequence or a name-to-kernel mapping. `MetropolisKernel` moves the flat vector by a `Proposal` (`propose(position, generator) -> (candidate, log_correction)`, optional `bind(registry)`), scoring candidates by log-density alone and evaluating the gradient only on acceptance; `RandomWalkProposal` and `IndependenceProposal` (with an optional defensive mixture) are provided. `GibbsKernel` updates named latent sites held outside the flat vector, by enumerating a boolean or bounded integer support element by element or by a user `GibbsUpdate`, so discrete latents are sampled alongside HMC and NUTS.
+- **`KernelState.stats` and `KernelState.gibbs_values`.** Every transition records its statistics (`"accepted"`, `"accept_prob"`, and kernel-specific entries such as `"tree_depth"` and `"step_size"`; a composite prefixes each component's with its name), and the state holds the Gibbs sites' current trace-side values.
+- **`PotentialFn.condition`, `PotentialFn.conditioned_values`, and `PotentialFn.registry`.** A potential conditioned on the values of sites outside its registry scores the flat vector given them.
+- **`MCMCResult.component_acceptance`** reports each component's post-warmup acceptance rate per chain, and `MCMCResult.samples` includes the Gibbs sites at their constrained shapes.
+- **`LatentRegistry.from_trace(..., exclude=...)`** leaves named latent sites out of the flat vector.
+
+### Changed
+
+- **`MCMC.run` names the discrete latent sites a kernel cannot move** and refuses the run, pointing to `GibbsKernel` or marginalization. For a composite kernel, `MCMCResult.acceptance_rates` counts a transition as accepted when it moved the chain.
+
+## [0.30.0] - 2026-11-11
+
+### Added
+
+- **Windowed warmup for `HMCKernel` and `NUTSKernel`.** `adaptation="windowed"` follows Stan's schedule, given by an `AdaptationSchedule` (`init_buffer`, `base_window`, `term_buffer`, defaults 75 / 25 / 50): an initial fast interval tunes only the step size; doubling slow windows each estimate the metric afresh, install it regularised as `n/(n+5) * cov + 1e-3 * 5/(n+5)` at the window's end, and restart dual averaging from a step size re-initialized under the new metric; a terminal fast interval tunes the step size under the final metric. A warmup too short for the buffers rescales them to 15% / 75% / 10%, and one under 20 iterations estimates no metric. `adaptation_windows(num_warmup)` returns the windows as `AdaptationWindow` records, and `inverse_mass_matrix` reports the metric in use. `adaptation="single"`, the default, adapts as before and reproduces its fixed-seed draws.
+
+### Changed
+
+- **Breaking: `MCMCKernel.start_adaptation` takes the number of warmup transitions,** `start_adaptation(num_warmup)`, so that a kernel can lay out a warmup schedule. `MCMC.run` passes it; a custom kernel overrides the new signature.
+
+## [0.29.0] - 2026-11-11
+
+### Added
+
+- **Simulation-based calibration: `sbc`, `sbc_ranks`, `sbc_uniformity`, `sbc_coverage`, and `to_datatree_from_sbc` in `quivers.diagnostics`.** `sbc` draws parameters from a program's prior and data from the program at a one-row input, runs a caller-supplied fit (returning an `MCMCResult`, a fitted `Guide`, or chain-by-draw tensors), thins the posterior draws by effective sample size or a fixed interval, and ranks every latent coordinate or named test quantity among its posterior draws, reproducibly from one seed and without touching the global random state; it returns an `SBCResult`. `sbc_ranks` breaks ties between a true value and its draws uniformly at random. `sbc_uniformity` gives Monte Carlo p-values for the simultaneous ECDF statistic under the exact discrete uniform null. `sbc_coverage` returns an `SBCCoverage` comparing the central rank band's coverage with its exact null mass through Bonferroni-adjusted Clopper-Pearson intervals. `to_datatree_from_sbc` writes the ranks into the `prior_sbc` group ArviZ's `plot_ecdf_pit` reads.
+
+## [0.28.0] - 2026-11-11
+
+### Added
+
+- **Convergence diagnostics for any chain-by-draw tensor: `rhat`, `ess`, `mcse`, and `summary` in `quivers.diagnostics`.** Each takes draws laid out `(num_chains, num_draws, *event_shape)` and returns one float64 value per event coordinate: rank-normalized split R-hat (the larger of the bulk and folded statistics), bulk, tail, mean, sd, and quantile effective sample sizes, and Monte Carlo standard errors of the mean, the standard deviation, and a quantile, following Vehtari et al. (2021). `summary` returns a `ConvergenceSummary` per site with the posterior mean, standard deviation, and quantiles beside every diagnostic. The estimators need only torch and agree with ArviZ's to floating-point rounding; a coordinate with a non-finite draw, fewer than four draws per chain, or a constant value (and, for R-hat, fewer than two chains) gives NaN.
+- **`MCMCResult.ess_tail`,** the per-site tail effective sample size.
+
+### Changed
+
+- **Breaking: `MCMCResult` derives its diagnostics from its draws.** `r_hat`, `ess`, and `ess_tail` are computed on first access by `quivers.diagnostics.rhat` and `quivers.diagnostics.ess` and are float64; the constructor no longer takes `r_hat` or `ess`. A constant coordinate's ESS is NaN.
+- **`quivers.diagnostics` imports without the `diagnostics` extra.** The convergence estimators load with the package; the ArviZ-backed functions (`to_datatree`, `compare`, `loo`, `posterior_predictive_check`, `loo_pit`, and their siblings) load on first access and need ArviZ installed.
+
+## [0.27.0] - 2026-11-11
+
+### Added
+
+- **`FamilyParameter.event_dims`** records, for each axis of a family parameter, the axis of the family's sample it has the extent of: a `MultivariateNormal`'s `scale_tril` is `(0, 0)`, a `Wishart`'s `(0, 1)`, a `MatrixNormal`'s `col_covariance` `(1, 1)`.
+
+### Fixed
+
+- **A host vector or matrix filling a parameter of an unplated draw is sized by the draw.** A free name filling a tensor parameter of a draw with no batch axes is one tensor over the parameter's own axes, which the family ties to its sample's: the extents come from the plate's event axes or the arguments already sized, and an axis nothing in the draw sizes is one open extent every datum tied to it shares. A later use fixes an open extent: an `[over=...]` event axis of a draw reading the value, another reading of the same datum, or the `Real N` codomain of a program returning it. A tied argument whose extent differs from the sample axis it spans, and a datum read at two sizes, are refused at the draw, naming both extents. A Cholesky factor or covariance filled by a free name beside `[over=...]` event axes is a matrix over them, not a broadcast scalar.
+- **The compiled runtime scores `MultivariateNormal`, `LowRankMVN`, and `Wishart` at host and program-valued vector and matrix parameters.** Each parameter is read at its checked shape, a matrix's flat columns restored to its rows, so `MultivariateNormal(loc=m0, scale_tril=L)` and `Wishart(df=4.0, scale_tril=L)` with host `m0` and `L` sample and score as `torch.distributions` does and as the reference machine does; an unplated multivariate draw takes its event size from `[over=...]` or its checked extents, and one whose size nothing in the program fixes is refused when the program is built, naming the draw. A host tensor over its own axes is one value, not plate rows.
+- **Every transpile target renders an unplated multivariate draw over the event axes its type states,** so Stan declares an unplated `MultivariateNormal` or `Wishart` site without an `[over=...]` clause.
+
+## [0.26.2] - 2026-11-11
+
+### Fixed
+
+- **Every transpile target scores a subscript of several index vectors one entry per position.** `M[r_idx, c_idx]` on a host table or on a matrix the program builds with `factor` renders as `M[r_idx[n], c_idx[n]]` at each row `n` on every target, matching the checked type, the reference machine, and the compiled runtime.
+- **A host name gathered from in an index position holds integers.** `E[tokens[q], k]` inside a `factor` types `tokens` as `Int`, so integer ids are read on both execution paths.
+- **`loads` refuses a let or score that calls an unknown name**, located at the call, where it had returned a program that failed at its first trace.
+- **Transpiled programs read host tables of open extents and factor tables inside arithmetic.** Stan declares each open extent of a host input (`M_extent0`) as an integer datum, PyMC sizes its coordinates from the input array, Pyro casts an index input read entrywise to integers, and the Python targets stack a `factor` that appears as an operand into an array, where it had been a Python list that `+` concatenated.
+- **A list literal or `factor` of per-run numbers has its checked shape on the compiled runtime.** `[h, 1.0]` with `h` a scalar draw is one vector of two entries per run, `(batch, 2)` rather than `(batch, 2, 1)`, and a scan step may return it as its state.
+
+## [0.26.1] - 2026-11-11
 
 ### Fixed
 
 - **A scan cell reads vectors and matrices the scanning program binds, and matrix host data.** A program cell that reads a plated (vector) or matrix-valued draw or `let` the scanning program binds before the scan reads it at that binding's type, on the compiled runtime and the reference machine alike, with gradients reaching the binding through every position; a cell that reads a matrix as host data (`M[i, j]`) passes it through the scan with its open extents. Every transpile target still refuses scans with `scan:no-lowering:<cell>`.
-- **The stacked-scan example in the declarations guide checks and runs.** It writes `scan(cell_1, outputs=all) >> scan(cell_2)`, since a scan runs over a sequence and the first scan's final state is not one.
 
 ## [0.26.0] - 2026-11-11
 
@@ -111,6 +239,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A declaration reports its own diagnostics before the checked module's.**
 - **`logsumexp_over` refuses by name an operand that is not a list, a weight that is not a lambda, and a weight value that is not a number.**
 - **`qvr migrate` builds each historical parser for the architecture of the interpreter that loads it,** caching each build by grammar fingerprint and architecture, so a migration run under one architecture does not leave a parser another cannot load.
+- **A subscript of several index vectors selects one entry per position.** `M[r_idx, c_idx]` with `r_idx` and `c_idx` index vectors over the same rows is `M[r_idx[n], c_idx[n]]` at each row `n`, on a host table and on a matrix the program builds with `factor`, in the checked type, the reference machine, and the compiled runtime.
 
 #### Reference machine
 
