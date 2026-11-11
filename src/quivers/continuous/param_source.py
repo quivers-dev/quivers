@@ -55,6 +55,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
@@ -470,8 +471,94 @@ def param_source_from_option(
     return make_param_source(domain, param_dim, kind=kind, **kwargs)
 
 
+type FunctionActivation = Literal["tanh", "relu", "sigmoid", "softplus"]
+"""The nonlinearity between the hidden layers of a learned function's network."""
+
+#: The module each hidden-layer activation name builds.
+FUNCTION_ACTIVATIONS: dict[str, type[nn.Module]] = {
+    "tanh": nn.Tanh,
+    "relu": nn.ReLU,
+    "sigmoid": nn.Sigmoid,
+    "softplus": nn.Softplus,
+}
+
+#: The source kinds a learned function may use.
+FUNCTION_SOURCE_KINDS: frozenset[str] = frozenset({"linear", "mlp", "identity"})
+
+
+def function_source(
+    domain: AnySpace,
+    param_dim: int,
+    option_value: str | None,
+    *,
+    activation: FunctionActivation | None = None,
+) -> ParamSource:
+    """Build the network of a learned function from its options.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The function's input space.
+    param_dim : int
+        The width of its output.
+    option_value : str | None
+        The ``[param_source=...]`` text: ``"linear"`` (the default when
+        ``None``), ``"mlp"``, ``"mlp(64, 32)"``, or ``"identity"``.
+    activation : FunctionActivation | None
+        The nonlinearity between hidden layers, read only by ``mlp``;
+        ``tanh`` when ``None``.
+
+    Returns
+    -------
+    ParamSource
+        A `LinearSource`, `MLPSource`, or `IdentitySource`.
+
+    Raises
+    ------
+    ValueError
+        If the kind is not a learned-function source, an activation is
+        given to a source without hidden layers, the activation is
+        unknown, or an identity source changes the width.
+    """
+    kind, kwargs = _split_source_option(option_value)
+    if kind not in FUNCTION_SOURCE_KINDS:
+        raise ValueError(
+            f"a learned function's param_source is one of "
+            f"{sorted(FUNCTION_SOURCE_KINDS)}, not {kind!r}"
+        )
+    if activation is not None and kind not in _HIDDEN_LAYER_KINDS:
+        raise ValueError(
+            f"activation is read by the hidden layers of an mlp source; the "
+            f"{kind!r} source has none, so select param_source=mlp or drop "
+            f"the activation"
+        )
+    if activation is not None and activation not in FUNCTION_ACTIVATIONS:
+        raise ValueError(
+            f"unknown activation {activation!r}; expected one of "
+            f"{sorted(FUNCTION_ACTIVATIONS)}"
+        )
+    if not isinstance(domain, ContinuousSpace):
+        raise ValueError(
+            f"a learned function maps real coordinates, but its domain "
+            f"{domain!s} is not a continuous space"
+        )
+    if kind == "identity" and int(domain.dim) != int(param_dim):
+        raise ValueError(
+            f"an identity source passes its {domain.dim} input coordinates "
+            f"through unchanged, so it cannot write {param_dim}; select a "
+            f"learned source (linear or mlp)"
+        )
+    if kind == "mlp":
+        kwargs["activation"] = FUNCTION_ACTIVATIONS[activation or "tanh"]
+    return make_param_source(domain, param_dim, kind=kind, **kwargs)
+
+
 __all__ = [
     "AttentionSource",
+    "FUNCTION_ACTIVATIONS",
+    "FUNCTION_SOURCE_KINDS",
+    "FunctionActivation",
+    "function_source",
     "ComposeSource",
     "EmbeddingSource",
     "FunctionSource",

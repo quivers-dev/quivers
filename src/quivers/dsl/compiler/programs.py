@@ -10,12 +10,13 @@ import dataclasses
 import inspect
 from abc import abstractmethod
 import math
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
 import torch
 from torch.distributions import constraints as _constraints
+from quivers.continuous.deterministic import LearnedFunction
 from quivers.continuous.family_spec import FAMILY_REGISTRY, FamilySpec
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -762,6 +763,30 @@ def _collection_value(items: list[LetValue]) -> torch.Tensor | list[LetValue]:
 # operations in V-Cat morphisms); users wanting a different axis
 # write the contraction via the typed ``contraction`` declaration.
 _LET_EXPR_BUILTINS: Mapping[str, Callable] = EAGER_BUILTINS
+
+
+def _let_callees(steps: Sequence[ProgramStep]) -> tuple[str, ...]:
+    """The callees a body's lets and scores call, in first-use order.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        The body, a marginalization's scope included.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Each called name once.
+    """
+    found: dict[str, None] = {}
+    for step in steps:
+        if isinstance(step, LetStep | ScoreStep):
+            for callee in free_let_callees(step.value):
+                found.setdefault(callee, None)
+        elif isinstance(step, MarginalizeStep):
+            for callee in _let_callees(step.scope):
+                found.setdefault(callee, None)
+    return tuple(found)
 
 
 def _expected_call_arity(target: object) -> int | None:
@@ -3640,8 +3665,7 @@ class _ProgramsMixin:
                     # `globals_` environment for variable
                     # resolution.
                     self._validate_let_expr_vars(step.value, bound_vars, step)
-                    deductions_globals = dict(getattr(self, "_deductions", {}))
-                    deductions_globals["__index_size__"] = self._resolve_index_size
+                    deductions_globals = self._let_globals()
                     compiled_fn = reading(
                         self._locate_let_failure(
                             self._compile_let_expr(
@@ -3677,8 +3701,7 @@ class _ProgramsMixin:
                         step.col,
                     )
                 self._validate_let_expr_vars(step.value, bound_vars, step)
-                deductions_globals = dict(getattr(self, "_deductions", {}))
-                deductions_globals["__index_size__"] = self._resolve_index_size
+                deductions_globals = self._let_globals()
                 compiled_fn = reading(
                     self._locate_let_failure(
                         self._compile_let_expr(
@@ -3785,6 +3808,13 @@ class _ProgramsMixin:
                 or frozenset(self._infer_effects(expanded_draws) | scan_effects)
             ),
         )
+        # A learned function a let or score calls is evaluated through
+        # the let globals, not drawn as a step, so the program holds it
+        # as a submodule for its weights to reach the optimizer.
+        for callee in _let_callees(expanded_draws):
+            function = self._morphisms.get(callee)
+            if isinstance(function, LearnedFunction):
+                prog.add_module(f"_function_{callee}", function)
         if step_program:
             return prog
         # Posterior-block routing: `[over=M]` programs go to the
@@ -4084,8 +4114,7 @@ class _ProgramsMixin:
             self._parameter_space_stack[-1] if self._parameter_space_stack else {}
         )
         parameter_spaces[latent_name] = Euclidean(name=f"_{latent_name}", dim=1)
-        deductions_globals = dict(getattr(self, "_deductions", {}))
-        deductions_globals["__index_size__"] = self._resolve_index_size
+        deductions_globals = self._let_globals()
         body_lets: list[tuple[str, Callable]] = []
         observe_step: VectorisedObserveStep | DrawStep | None = None
         for bstep in body_steps:
@@ -5167,6 +5196,24 @@ class _ProgramsMixin:
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
 
         return _run
+
+    def _let_globals(self) -> "dict[str, LetValue]":
+        """The names a program's let expressions resolve statically.
+
+        Returns
+        -------
+        dict[str, LetValue]
+            The compiled deductions, which ``parse(D, ...)`` reads; every
+            learned function (``[role=function]``) by name, called as
+            ``f(a, b)`` on one value per domain factor; and the
+            index-size resolver ``factor`` binders read.
+        """
+        found: dict[str, LetValue] = dict(getattr(self, "_deductions", {}))
+        for name, morphism in self._morphisms.items():
+            if isinstance(morphism, LearnedFunction):
+                found[name] = morphism.apply_values
+        found["__index_size__"] = self._resolve_index_size
+        return found
 
     def _validate_let_expr_vars(
         self, node: LetExprNode, bound_vars: dict[str, AnySpace | None], step: LetStep

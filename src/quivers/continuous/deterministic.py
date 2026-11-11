@@ -20,17 +20,35 @@ Dirac indicator).
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 import torch
+from torch import nn
 
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
+from quivers.continuous.param_source import ParamSource
 from quivers.continuous.spaces import (
     CholeskyFactor,
+    ContinuousSpace,
     Euclidean,
     PositiveReals,
     ProductSpace,
     Simplex,
 )
+
+type FunctionOutput = Literal["identity", "tanh", "sigmoid", "softplus", "relu"]
+"""The nonlinearity a `LearnedFunction` applies to its network's output."""
+
+_OUTPUTS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
+    "identity": lambda value: value,
+    "tanh": torch.tanh,
+    "sigmoid": torch.sigmoid,
+    "softplus": nn.functional.softplus,
+    "relu": torch.relu,
+}
+
+#: The output nonlinearities a `LearnedFunction` accepts, by name.
+FUNCTION_OUTPUTS: frozenset[str] = frozenset(_OUTPUTS)
 
 
 class DeterministicMorphism(ContinuousMorphism):
@@ -159,8 +177,241 @@ def cholesky_quad_form_morphism(dim: int) -> ContinuousMorphism:
     return DeterministicMorphism(source, target, _apply, name="cholesky_quad_form")
 
 
+def _event_width(space: AnySpace) -> int:
+    """The number of real coordinates one value of a space carries.
+
+    Parameters
+    ----------
+    space : AnySpace
+        The space.
+
+    Returns
+    -------
+    int
+        Its width.
+
+    Raises
+    ------
+    TypeError
+        If the space is not continuous.
+    """
+    if not isinstance(space, ContinuousSpace):
+        raise TypeError(
+            f"LearnedFunction: a learned function maps real coordinates, but "
+            f"{space!r} is not a continuous space"
+        )
+    return int(space.dim)
+
+
+def function_factor_widths(space: AnySpace) -> tuple[int, ...]:
+    """The width of each factor of a learned function's domain.
+
+    Parameters
+    ----------
+    space : AnySpace
+        The domain; a `ProductSpace` lists its factors in order.
+
+    Returns
+    -------
+    tuple[int, ...]
+        One width per factor, the one width of a space that is not a
+        product.
+
+    Raises
+    ------
+    TypeError
+        If a factor is not continuous.
+    """
+    if isinstance(space, ProductSpace):
+        return tuple(_event_width(component) for component in space.components)
+    return (_event_width(space),)
+
+
+class LearnedFunction(DeterministicMorphism):
+    """A learned deterministic map ``f : X -> Y`` between continuous spaces.
+
+    The map applies a parameter source to the input's coordinates and
+    then an output nonlinearity, :math:`f(x) = \\sigma(g_\\theta(x))`,
+    with :math:`g_\\theta` a [`LinearSource`][quivers.continuous.param_source.LinearSource]
+    (the affine map :math:`W x + b`), an
+    [`MLPSource`][quivers.continuous.param_source.MLPSource], or an
+    [`IdentitySource`][quivers.continuous.param_source.IdentitySource].
+    As a kernel it is the Dirac kernel at :math:`f(x)`: it contributes
+    no density and no site, a composition through it is exact (see
+    [`point_mass_value`][quivers.continuous.deterministic.DeterministicMorphism.point_mass_value]),
+    and a scan over it is a deterministic recurrence. Its weights are
+    module parameters, fit as point estimates by the objective that
+    trains the model around it.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The input space. A `ProductSpace` takes its factors in order,
+        concatenated into one coordinate vector.
+    codomain : AnySpace
+        The output space, as wide as the source's output.
+    source : ParamSource
+        The network from input coordinates to output coordinates.
+    output : FunctionOutput
+        The nonlinearity applied to the network's output.
+
+    Raises
+    ------
+    TypeError
+        If the domain or codomain is not continuous.
+    ValueError
+        If the source's output width is not the codomain's width, or
+        ``output`` is not a `FunctionOutput`.
+    """
+
+    def __init__(
+        self,
+        domain: AnySpace,
+        codomain: AnySpace,
+        source: ParamSource,
+        output: FunctionOutput = "identity",
+    ) -> None:
+        widths = function_factor_widths(domain)
+        width = _event_width(codomain)
+        if int(source.param_dim) != width:
+            raise ValueError(
+                f"LearnedFunction: the source writes {source.param_dim} "
+                f"coordinates, but the codomain {codomain!s} is {width} wide"
+            )
+        if output not in _OUTPUTS:
+            raise ValueError(
+                f"LearnedFunction: unknown output nonlinearity {output!r}; "
+                f"expected one of {sorted(_OUTPUTS)}"
+            )
+        super().__init__(domain, codomain, self.evaluate, name="LearnedFunction")
+        self.source = source
+        self._output: FunctionOutput = output
+        self._factor_widths = widths
+        self._width = width
+
+    @property
+    def output(self) -> FunctionOutput:
+        """The nonlinearity applied to the network's output.
+
+        Returns
+        -------
+        FunctionOutput
+            Its name.
+        """
+        return self._output
+
+    @property
+    def factor_widths(self) -> tuple[int, ...]:
+        """The width of each factor of the domain, in order.
+
+        Returns
+        -------
+        tuple[int, ...]
+            One width per factor.
+        """
+        return self._factor_widths
+
+    def evaluate(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the map to a batch of inputs.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs, shape ``(batch, domain_dim)``, or ``(batch,)`` for a
+            one-wide domain; any leading axes before the coordinate axis
+            are kept.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, codomain_dim)``, with the leading axes of
+            ``x``.
+
+        Raises
+        ------
+        ValueError
+            If the coordinate axis is not the domain's width.
+        """
+        dimension = sum(self._factor_widths)
+        if x.dim() == 1 and dimension == 1:
+            x = x.unsqueeze(-1)
+        if x.dim() == 0 or int(x.shape[-1]) != dimension:
+            raise ValueError(
+                f"LearnedFunction: expected inputs whose last axis is the "
+                f"domain's {dimension} coordinates, got shape {tuple(x.shape)}"
+            )
+        if not x.is_floating_point():
+            x = x.to(torch.get_default_dtype())
+        lead = x.shape[:-1]
+        flat = x.reshape(-1, dimension)
+        image = _OUTPUTS[self._output](self.source(flat))
+        return image.reshape(*lead, self._width)
+
+    def apply_values(self, *values: torch.Tensor) -> torch.Tensor:
+        """Apply the map to one value per domain factor.
+
+        This is how a program's ``let y = f(a, b)`` calls the map: each
+        argument is one factor's value, a scalar for a one-wide factor
+        or a vector of the factor's width, possibly led by axes the
+        arguments share.
+
+        Parameters
+        ----------
+        *values : torch.Tensor
+            One value per factor, in the domain's order.
+
+        Returns
+        -------
+        torch.Tensor
+            The image, shape ``(*lead, codomain_dim)`` for the arguments'
+            shared leading axes ``lead``.
+
+        Raises
+        ------
+        ValueError
+            If the number of values is not the number of factors, or a
+            value's trailing axis is not its factor's width.
+        """
+        if len(values) != len(self._factor_widths):
+            raise ValueError(
+                f"LearnedFunction: the domain has {len(self._factor_widths)} "
+                f"factors, but the call passes {len(values)} arguments"
+            )
+        shaped: list[torch.Tensor] = []
+        for position, (value, width) in enumerate(
+            zip(values, self._factor_widths, strict=True)
+        ):
+            tensor = torch.as_tensor(value)
+            if not tensor.is_floating_point():
+                tensor = tensor.to(torch.get_default_dtype())
+            if tensor.dim() == 0 and width == 1:
+                tensor = tensor.reshape(1)
+            if tensor.dim() == 0 or int(tensor.shape[-1]) != width:
+                raise ValueError(
+                    f"LearnedFunction: argument {position} has shape "
+                    f"{tuple(tensor.shape)}, but its domain factor is "
+                    f"{width} wide"
+                )
+            shaped.append(tensor)
+        lead = torch.broadcast_shapes(*(tensor.shape[:-1] for tensor in shaped))
+        joined = torch.cat(
+            [tensor.expand(*lead, tensor.shape[-1]) for tensor in shaped], dim=-1
+        )
+        return self.evaluate(joined)
+
+    def __repr__(self) -> str:
+        return (
+            f"LearnedFunction({self.domain!s} → {self.codomain!s}, "
+            f"source={type(self.source).__name__}, output={self._output})"
+        )
+
+
 __all__ = [
     "DeterministicMorphism",
+    "FUNCTION_OUTPUTS",
+    "FunctionOutput",
+    "LearnedFunction",
+    "function_factor_widths",
     "cholesky_quad_form_morphism",
     "cumsum_morphism",
     "softmax_morphism",
