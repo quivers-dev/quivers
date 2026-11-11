@@ -377,6 +377,82 @@ writes these statistics under ArviZ's names (`diverging`, `tree_depth`,
 can be located in parameter space and tree-depth saturation checked
 draw by draw.
 
+## Tempered sequential Monte Carlo
+
+A single NUTS chain may stay in one mode of a multimodal posterior, and
+MCMC gives no estimate of the evidence $p(y)$ for model comparison.
+[`SMC`](../api/inference/mcmc.md#quivers.inference.smc.SMC) moves a
+population of particles from the prior to the posterior through the
+tempered targets $\pi_\beta(z) \propto p(z)\, L(z)^\beta$,
+$0 = \beta_0 < \dots < \beta_T = 1$ [@delmoral2006sequential]. Here
+$p(z)$ is the density of the model's latent draws, from which the
+initial particles are drawn exactly by running the model, and $L(z)$
+is everything else the model scores, its observations and its score
+steps.
+[`TemperedPotential`](../api/inference/mcmc.md#quivers.inference.smc.TemperedPotential)
+evaluates $\log p(z) + \beta \log L(z)$ and returns the two parts
+separately.
+
+Each step does four things.
+
+1. It chooses the next temperature by bisection, as the largest
+   $\beta' \le 1$ whose incremental weights $L(z_i)^{\beta' - \beta}$ keep
+   a conditional effective sample size of `target_ess` times the
+   population [@jasra2011inference; @zhou2016toward].
+2. It reweights, adding the log of the weighted mean increment to the
+   log-evidence estimate.
+3. It resamples, by `"systematic"`, `"stratified"`, `"residual"`, or
+   `"multinomial"` resampling, each of which gives every particle an
+   expected number of copies of $N$ times its weight [@douc2005comparison].
+4. It rejuvenates every particle by `num_mcmc_steps` transitions of the
+   kernel at the new temperature.
+
+Any [composed kernel](#composing-kernels) serves for rejuvenation,
+Gibbs blocks over discrete sites included. At each temperature the
+kernel is first tuned to the population (`MCMCKernel.tune` sets an HMC
+metric to the particles' covariance, and a random walk's scale to
+$2.38/\sqrt{D}$ times their spread), then tuned further on a discarded
+pilot run of `num_pilot_steps` transitions. It is then frozen, so every
+move at that temperature leaves $\pi_{\beta'}$ invariant.
+
+The product of the mean incremental weights is an unbiased estimate of
+$p(y)$, and `SMCResult.log_evidence` is its logarithm (so it tends to
+underestimate $\log p(y)$ by about half the estimate's variance).
+Agreement between independent runs, and with MCMC, is a check on both.
+Like `MCMC.run`, `SMC.run` takes a one-row input.
+
+<!-- python: skip -->
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference import SMC
+from quivers.inference.mcmc import HMCKernel
+
+model = loads(
+    "object Obs : FinSet 10\n"
+    "program p : Obs -> Obs\n"
+    "    sample mu <- Normal(loc=0.0, scale=1.0)\n"
+    "    observe y : Obs <- Normal(loc=mu, scale=1.0)\n"
+    "    return mu\n"
+    "export p\n"
+).morphism
+y = torch.linspace(0.5, 2.5, 10)
+
+result = SMC(
+    HMCKernel(num_steps=5, mass_matrix="diagonal"),
+    num_particles=200,
+    num_mcmc_steps=3,
+    target_ess=0.5,
+    resampling="systematic",
+    seed=0,
+).run(model, torch.zeros(1, 1), {"y": y})
+print(result.log_evidence)          # close to log N(y; 0, I + 1 1^T) = -13.45
+print(result.temperatures)          # the adaptive ladder, from 0 to 1
+print(result.ess, result.acceptance)
+print(result.samples["mu"].shape)   # (200,): equally weighted particles
+```
+
 ## Hybrid samplers
 
 `r_hat` compares variation within chains with variation between chains.

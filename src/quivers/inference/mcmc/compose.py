@@ -135,6 +135,17 @@ class _CompositeKernel(MCMCKernel):
             out = out | kernel.gibbs_sites
         return out
 
+    def tune(self, population: torch.Tensor) -> None:
+        """Forward a population to every component.
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            Flat positions, shape ``(N, D)``.
+        """
+        for _, kernel in self._components:
+            kernel.tune(population)
+
     def configuration(self) -> dict[str, StateValue]:
         """The class and every component's name and configuration.
 

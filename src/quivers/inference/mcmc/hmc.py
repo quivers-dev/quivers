@@ -468,6 +468,47 @@ class _HamiltonianKernel(MCMCKernel):
             ),
         )
 
+    def tune(self, population: torch.Tensor) -> None:
+        """Set the metric from a population's spread.
+
+        A diagonal or dense metric becomes the population's covariance,
+        regularised as Stan regularises a warmup estimate; the metric is
+        then held fixed through any adaptation that follows, which tunes
+        only the step size. An identity metric is left as it is.
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            Flat positions, shape ``(N, D)``, with ``N >= 2``.
+
+        Raises
+        ------
+        ValueError
+            If the population is not ``(N, D)`` with at least two rows.
+        RuntimeError
+            If the kernel has not been initialized.
+        """
+        if self._mass is None:
+            raise RuntimeError(f"{self._name}.tune: init has not been called")
+        if (
+            population.dim() != 2
+            or population.shape[1] != self._mass.dim
+            or (population.shape[0] < 2)
+        ):
+            raise ValueError(
+                f"{self._name}.tune: the population must have shape (N, "
+                f"{self._mass.dim}) with N >= 2; got {tuple(population.shape)}"
+            )
+        if self._mass.kind == "identity":
+            return
+        estimate = WelfordCovariance(
+            self._mass.dim, regularise=True, diagonal=self._mass.kind == "diagonal"
+        )
+        for row in population:
+            estimate.update(row.detach())
+        self._mass.set_inverse(estimate.covariance())
+        self._welford = None
+
     def configuration(self) -> dict[str, StateValue]:
         """The kernel's hyperparameters.
 

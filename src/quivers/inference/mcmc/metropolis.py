@@ -70,6 +70,19 @@ class Proposal(ABC):
         """
         del registry
 
+    def tune(self, population: torch.Tensor) -> None:
+        """Tune the proposal to a population of positions.
+
+        `MetropolisKernel.tune` forwards the population here; the base
+        implementation leaves the proposal as it is.
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            Flat positions, shape ``(N, D)``.
+        """
+        del population
+
     def configuration(self) -> dict[str, StateValue]:
         """The proposal's configuration, for telling kernels apart.
 
@@ -155,6 +168,39 @@ class RandomWalkProposal(Proposal):
             )
         self._scale = scale_t
 
+    def tune(self, population: torch.Tensor) -> None:
+        """Scale the walk to a population's spread.
+
+        The scale becomes :math:`2.38 / \\sqrt{D}` times each
+        coordinate's population standard deviation, the asymptotically
+        optimal random-walk scaling for a Gaussian target (Roberts,
+        Gelman, and Gilks 1997, `doi:10.1214/aoap/1034625254
+        <https://doi.org/10.1214/aoap/1034625254>`_).
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            Flat positions, shape ``(N, D)``, with ``N >= 2``.
+
+        Raises
+        ------
+        ValueError
+            If the population has fewer than two rows or a coordinate
+            with no spread.
+        """
+        if population.dim() != 2 or population.shape[0] < 2:
+            raise ValueError(
+                "RandomWalkProposal.tune: the population must have shape (N, D) "
+                f"with N >= 2; got {tuple(population.shape)}"
+            )
+        spread = population.std(dim=0)
+        if not bool((spread > 0).all()):
+            raise ValueError(
+                "RandomWalkProposal.tune: a coordinate of the population has no "
+                "spread, so no scale can be read from it"
+            )
+        self._scale = 2.38 / math.sqrt(population.shape[1]) * spread
+
     def configuration(self) -> dict[str, StateValue]:
         """The class and the step scale.
 
@@ -164,6 +210,34 @@ class RandomWalkProposal(Proposal):
             The configuration.
         """
         return {**super().configuration(), "scale": self._scale.tolist()}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The step scale, which `tune` may have changed.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The scale.
+        """
+        return {"scale": self._scale.clone()}
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore the step scale.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If the scale is missing.
+        """
+        scale = state.get("scale")
+        if not isinstance(scale, torch.Tensor):
+            raise ValueError("RandomWalkProposal.load_state_dict: bad scale")
+        self._scale = scale.clone()
 
     def bind(self, registry: LatentRegistry) -> None:
         """Check a per-coordinate scale against the flat vector's length.
@@ -387,6 +461,16 @@ class MetropolisKernel(MCMCKernel):
     def proposal(self) -> Proposal:
         """The proposal the kernel draws candidates from."""
         return self._proposal
+
+    def tune(self, population: torch.Tensor) -> None:
+        """Forward a population to the proposal (`Proposal.tune`).
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            Flat positions, shape ``(N, D)``.
+        """
+        self._proposal.tune(population)
 
     def configuration(self) -> dict[str, StateValue]:
         """The class and the proposal's configuration.

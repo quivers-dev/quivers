@@ -91,6 +91,13 @@ from quivers.inference.mcmc import (
     NUTSKernel,
 )
 from quivers.inference.svi import SVI
+from quivers.inference.smc import (
+    SMC,
+    ResamplingScheme,
+    SMCResult,
+    TemperedPotential,
+    resample,
+)
 from quivers.inference.predictive import Predictive
 from quivers.inference.dais import AutoDAIS
 from quivers.inference.warmup import WarmupThenHMC
@@ -157,6 +164,11 @@ __all__ = [
     "MCMCCheckpoint",
     "AutoDAIS",
     "WarmupThenHMC",
+    "SMC",
+    "SMCResult",
+    "TemperedPotential",
+    "ResamplingScheme",
+    "resample",
     "Objective",
     "ELBO",
     "IWAEBound",

@@ -699,6 +699,22 @@ class MCMCKernel(ABC):
         """
         return frozenset()
 
+    def tune(self, population: torch.Tensor) -> None:
+        """Tune the kernel to a population of positions.
+
+        A population sampler (`SMC`) calls this after `init`, at every
+        temperature, with the current particles; the kernel may set the
+        parameters it would otherwise adapt (a metric, a proposal scale)
+        from the population's spread. The base implementation leaves the
+        kernel as it is.
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            The particles' flat positions, shape ``(N, D)``.
+        """
+        del population
+
     def configuration(self) -> dict[str, StateValue]:
         """The kernel's configuration, for telling kernels apart.
 

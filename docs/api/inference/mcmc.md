@@ -29,6 +29,15 @@ and the type aliases that parameterize the kernels and the runner.
 
 ::: quivers.inference.mcmc
 
+## Sequential Monte Carlo
+
+[Tempered sequential Monte Carlo](../../guides/inference-mcmc.md#tempered-sequential-monte-carlo)
+moves a population from the prior to the posterior, rejuvenating it with
+any of the kernels above, and estimates the evidence
+[@delmoral2006sequential].
+
+::: quivers.inference.smc
+
 ## Variational warmup
 
 `WarmupThenHMC` fits a guide with SVI and starts the chains from it.
