@@ -180,6 +180,9 @@ def _draw_particles(
             parameter.requires_grad_(False)
     needs_fixed_log_p = estimator.needs_fixed_log_p(power)
     num_strata: int | None = None
+    guide.observe(observations)
+    if detached_guide is not None:
+        detached_guide.observe(observations)
     for _ in range(num_particles):
         if estimator.fixed_draws:
             fixed = {name: value.detach() for name, value in guide.rsample(x).items()}
@@ -723,6 +726,7 @@ class RWS(Objective):
         log_p_parts: list[torch.Tensor] = []
         log_q_parts: list[torch.Tensor] = []
         log_weight_parts: list[torch.Tensor] = []
+        guide.observe(observations)
         for _ in range(self.num_particles):
             for draw in guide.rsample_strata(x):
                 stratum_log_weight = draw.log_weight
