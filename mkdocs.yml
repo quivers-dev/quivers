@@ -349,6 +349,7 @@ nav:
       - Overview: api/continuous/spaces.md
       - Morphisms: api/continuous/morphisms.md
       - Families: api/continuous/families.md
+      - Log-Space Families: api/continuous/log_space.md
       - Parameter Sources: api/continuous/param_source.md
       - Ordered and Zero-Inflated: api/continuous/ordered.md
       - Family Registry: api/continuous/family_spec.md

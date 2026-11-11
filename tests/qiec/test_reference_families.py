@@ -79,6 +79,26 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
             [td.transforms.SigmoidTransform()],
         )
         return float(distribution.log_prob(_tensor(point)))
+    if family == "LogGamma":
+        # The log of a Gamma variable: the Gamma density at exp(y) times
+        # the Jacobian exp(y), at points where the Gamma is well scaled.
+        gamma = td.Gamma(
+            _tensor(arguments["concentration"]), _tensor(arguments["rate"])
+        )
+        log_point = _tensor(point)
+        return float(gamma.log_prob(log_point.exp()) + log_point)
+    if family == "LogitBeta":
+        # The logit of a Beta variable: the Beta density at sigmoid(x)
+        # times the Jacobian sigmoid(x) (1 - sigmoid(x)).
+        beta = td.Beta(
+            _tensor(arguments["concentration1"]), _tensor(arguments["concentration0"])
+        )
+        logit = _tensor(point)
+        return float(
+            beta.log_prob(torch.sigmoid(logit))
+            + torch.nn.functional.logsigmoid(logit)
+            + torch.nn.functional.logsigmoid(-logit)
+        )
     if family == "TruncatedNormal":
         loc, scale = _tensor(arguments["loc"]), _tensor(arguments["scale"])
         low, high = _tensor(arguments["low"]), _tensor(arguments["high"])
@@ -224,6 +244,8 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     "LogitNormal": ({"loc": 0.3, "scale": 0.8}, (0.2, 0.75)),
+    "LogGamma": ({"concentration": 0.5, "rate": 2.0}, (-3.0, 0.4)),
+    "LogitBeta": ({"concentration1": 0.5, "concentration0": 2.0}, (-4.0, 1.5)),
     "TruncatedNormal": (
         {"loc": 0.5, "scale": 1.5, "low": -1.0, "high": 2.0},
         (-0.5, 1.2, 3.0),
@@ -443,6 +465,14 @@ def test_reference_samples_land_in_the_support(family: str) -> None:
 
 _MOMENTS: dict[str, tuple[float, float]] = {
     "LogitNormal": (0.5677, 0.02),
+    # digamma(0.5) - log(2); sd sqrt(trigamma(0.5)) = 2.22 over 4000
+    # draws gives a standard error of 0.035, and the tolerance is 4.5 of them.
+    "LogGamma": (float(torch.digamma(torch.tensor(0.5))) - math.log(2.0), 0.16),
+    # digamma(0.5) - digamma(2); sd 2.36 gives a standard error of 0.037.
+    "LogitBeta": (
+        float(torch.digamma(torch.tensor(0.5)) - torch.digamma(torch.tensor(2.0))),
+        0.17,
+    ),
     "TruncatedNormal": (0.5216, 0.03),
     "Gumbel": (0.5 + 2.0 * 0.5772156649, 0.08),
     "Chi2": (3.0, 0.08),

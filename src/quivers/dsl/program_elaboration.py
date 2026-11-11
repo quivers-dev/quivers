@@ -296,6 +296,8 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     ),
     "Exponential": (("rate", "softplus"),),
     "Gamma": (("concentration", "softplus_shifted"), ("rate", "softplus")),
+    "LogGamma": (("concentration", "softplus"), ("rate", "softplus")),
+    "LogitBeta": (("concentration1", "softplus"), ("concentration0", "softplus")),
     "Chi2": (("df", "softplus_shifted"),),
     "HalfCauchy": (("scale", "softplus"),),
     "HalfNormal": (("scale", "softplus"),),
