@@ -395,8 +395,9 @@ class LogGamma(pyro.distributions.torch_distribution.TorchDistribution):
         rate: torch.Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.concentration, self.rate = torch.distributions.utils.broadcast_all(
-            concentration, rate
+        first = torch.as_tensor(concentration)
+        self.concentration, self.rate = torch.broadcast_tensors(
+            first, torch.as_tensor(rate, dtype=first.dtype)
         )
         super().__init__(self.concentration.shape, validate_args=validate_args)
 
@@ -444,8 +445,9 @@ class LogitBeta(pyro.distributions.torch_distribution.TorchDistribution):
         concentration0: torch.Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.concentration1, self.concentration0 = (
-            torch.distributions.utils.broadcast_all(concentration1, concentration0)
+        first = torch.as_tensor(concentration1)
+        self.concentration1, self.concentration0 = torch.broadcast_tensors(
+            first, torch.as_tensor(concentration0, dtype=first.dtype)
         )
         super().__init__(self.concentration1.shape, validate_args=validate_args)
 

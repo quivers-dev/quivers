@@ -134,11 +134,11 @@ class LogGamma(Distribution):
         values.
     """
 
-    arg_constraints = {
+    arg_constraints = {  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
         "concentration": _constraints.positive,
         "rate": _constraints.positive,
     }
-    support = _constraints.real
+    support = _constraints.real  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     has_rsample = True
 
     def __init__(
@@ -268,11 +268,11 @@ class LogitBeta(Distribution):
         values.
     """
 
-    arg_constraints = {
+    arg_constraints = {  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
         "concentration1": _constraints.positive,
         "concentration0": _constraints.positive,
     }
-    support = _constraints.real
+    support = _constraints.real  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     has_rsample = True
 
     def __init__(
