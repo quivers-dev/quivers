@@ -13,11 +13,6 @@ from quivers.dsl.parser.statements import _walk_statement
 
 _SNIPPET_MAX = 60
 
-#: The words a let expression reads as something other than a name: the
-#: unit value ``unit``, the Booleans ``true`` and ``false``, the negation
-#: ``not``, and the comprehension keyword ``factor``. A binder spelled as
-#: one of them could never be referred to, since every later occurrence
-#: parses as the literal or the keyword, so a binder may not use them.
 RESERVED_LET_WORDS: dict[str, str] = {
     "unit": "the unit value",
     "true": "the Boolean literal true",
@@ -25,6 +20,14 @@ RESERVED_LET_WORDS: dict[str, str] = {
     "not": "Boolean negation",
     "factor": "the factor comprehension",
 }
+"""The words a let expression reads as something other than a name.
+
+They are the unit value ``unit``, the Booleans ``true`` and ``false``,
+the negation ``not``, and the comprehension keyword ``factor``, each
+mapped to what it denotes. A binder spelled as one of them could never
+be referred to, since every later occurrence parses as the literal or
+the keyword, so a binder may not use them.
+"""
 
 #: A reserved word in a lambda parameter's place: after a binding's
 #: ``=``, an argument list's opening parenthesis or comma, or another
