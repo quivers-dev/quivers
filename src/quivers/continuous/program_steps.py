@@ -320,6 +320,11 @@ class Scan(Step):
         The initial state, of shape ``(dim H,)`` and shared by every
         row, or ``None`` to start from zero. A learned initial state is
         an ``nn.Parameter``, which the enclosing program registers.
+    initial_from : str | None
+        A binding of the enclosing program, made before the scan, whose
+        value is the initial state (``scan(cell, init=h0)``), or
+        ``None``. A scalar binding is the one entry of a one-wide state.
+        At most one of ``initial`` and ``initial_from`` is set.
     kind : Literal["scan"]
         The variant tag.
     """
@@ -330,6 +335,7 @@ class Scan(Step):
     initial: torch.Tensor | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    initial_from: str | None = None
     kind: Literal["scan"] = "scan"
 
 

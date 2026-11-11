@@ -131,8 +131,12 @@ class ScanMorphism(ContinuousMorphism):
         and codomain ``H``, where ``H`` matches the last component
         of the product domain.
     init : str
-        Initialization strategy for h_0. One of ``"zeros"``
-        (default) or ``"learned"`` (trainable initial state).
+        Initialization strategy for h_0: ``"zeros"`` (default),
+        ``"learned"`` (trainable initial state), or the name of a
+        binding of an enclosing program (``scan(cell, init=h0)``). A
+        scan that starts from a binding runs as a step of that program,
+        which supplies the binding; run on its own it has no initial
+        state and raises.
     """
 
     def __init__(self, cell: ContinuousMorphism, init: str = "zeros") -> None:
@@ -145,9 +149,10 @@ class ScanMorphism(ContinuousMorphism):
         self._hidden_dim = _event_dim(hidden_space)
         if init == "learned":
             self._h0 = nn.Parameter(torch.zeros(self._hidden_dim))
-        elif init != "zeros":
+        elif not init.isidentifier():
             raise ValueError(
-                f"unknown init strategy {init!r}; expected 'zeros' or 'learned'"
+                f"unknown init strategy {init!r}; expected 'zeros', 'learned', "
+                f"or the name of a binding"
             )
 
     @property
@@ -204,9 +209,23 @@ class ScanMorphism(ContinuousMorphism):
         return h
 
     def _initial_state(self, batch: int, x: torch.Tensor) -> torch.Tensor:
-        """The hidden state the recurrence starts from, shaped ``(batch, H)``."""
+        """The hidden state the recurrence starts from, shaped ``(batch, H)``.
+
+        Raises
+        ------
+        ValueError
+            If the scan starts from a binding of an enclosing program,
+            which a scan run on its own does not have.
+        """
         if self._init_strategy == "learned":
             return self._h0.unsqueeze(0).expand(batch, -1)
+        if self._init_strategy != "zeros":
+            raise ValueError(
+                f"scan(..., init={self._init_strategy}) starts from the binding "
+                f"{self._init_strategy!r} of the program it runs in; run it as a "
+                f"step of a program that binds {self._init_strategy!r} before the "
+                f"scan"
+            )
         dtype = x.dtype if x.is_floating_point() else torch.get_default_dtype()
         return torch.zeros(batch, self._hidden_dim, device=x.device, dtype=dtype)
 

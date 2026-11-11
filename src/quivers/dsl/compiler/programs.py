@@ -128,7 +128,11 @@ from quivers.dsl.compiler._deduction_terms import (
     variable_term,
 )
 from quivers.dsl.compiler.sugar import desugar_step
-from quivers.dsl.composite_lets import expand_program_scans, scan_let_call
+from quivers.dsl.composite_lets import (
+    expand_program_scans,
+    is_learned_scan_init,
+    scan_let_call,
+)
 from quivers.dsl.let_expr_traversal import (
     free_let_callees,
     free_let_names,
@@ -3875,7 +3879,8 @@ class _ProgramsMixin:
             The let.
         scan : tuple[str, str, str | None]
             The step program's name, the sequence's name, and the
-            learned initial state's name when there is one.
+            initial state's name when there is one: a binding of the
+            program, or a learned initial state's input.
         decl : ProgramDecl
             The program the let belongs to.
         bound_vars : dict[str, AnySpace | None]
@@ -3906,7 +3911,17 @@ class _ProgramsMixin:
                 step.col,
             )
         initial: torch.nn.Parameter | None = None
-        if init is not None:
+        initial_from: str | None = None
+        if init is not None and init in bound_vars:
+            initial_from = init
+        elif init is not None and not is_learned_scan_init(init):
+            raise CompileError(
+                f"the scan starts from {init!r} (init={init}), which the program "
+                f"does not bind before the scan",
+                step.line,
+                step.col,
+            )
+        elif init is not None:
             initial = self._scan_initial_states.get(init)
             if initial is None:
                 width = getattr(body.codomain, "dim")
@@ -3918,7 +3933,13 @@ class _ProgramsMixin:
                 self._scan_initial_states[init] = created
                 initial = created
         bound_vars[step.name] = body.codomain
-        return Scan(name=step.name, step=body, source=source, initial=initial)
+        return Scan(
+            name=step.name,
+            step=body,
+            source=source,
+            initial=initial,
+            initial_from=initial_from,
+        )
 
     def _compile_call(
         self, step: CallStep, bound_vars: dict[str, AnySpace | None]
