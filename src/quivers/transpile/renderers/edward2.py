@@ -1625,11 +1625,49 @@ class Edward2Renderer(RendererBase):
         return self._broadcast(py, arg, target_shape, input_specs, bindings)
 
     def _ref_expr(self, py: PyCtx, arg: IRArgRef) -> str:
-        """Build a Python expression for an `IRArgRef`, threading
-        bracket indices through nested ``subscript`` vertices."""
+        """Build a Python expression for an `IRArgRef`.
+
+        A number or a single-index name subscripts the tensor. An index
+        that is itself a tensor (a plated class draw, ``mu[z]``) gathers
+        through ``tf.gather``, since TensorFlow's ``__getitem__`` takes
+        no tensor index; the gather reads the outermost axis, so only
+        the first index may be a tensor.
+
+        Parameters
+        ----------
+        py : PyCtx
+            The render state.
+        arg : IRArgRef
+            The reference.
+
+        Returns
+        -------
+        str
+            The expression's vertex.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If a tensor index follows the first index.
+        """
         base = identifier(py, arg.name)
         current = base
-        for idx in arg.indices:
+        for position, idx in enumerate(arg.indices):
+            if isinstance(idx, IRArgRef) and py.name_rank.get(idx.name, 0) > 0:
+                if position > 0:
+                    raise UnsupportedConstruct(
+                        _BACKEND_KEY,
+                        [
+                            f"index:tensor-after-first:{arg.name}: a tensor "
+                            f"index after the first has no `tf.gather` reading"
+                        ],
+                    )
+                current = call(
+                    py,
+                    attribute(py, ("tf", "gather")),
+                    positional=(current, self._render_index(py, idx)),
+                )
+                continue
             sub = py.v(py.fresh("subs"), "subscript")
             py.e(sub, current, "value")
             py.e(sub, self._render_index(py, idx), "subscript")

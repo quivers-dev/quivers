@@ -56,7 +56,10 @@ from quivers.transpile.ir import (
     Plate,
 )
 from quivers.transpile._builtin_spellings import native_import, native_path
-from quivers.transpile.renderers._ranks import reduces_last_of_several_axes
+from quivers.transpile.renderers._ranks import (
+    name_plate_map,
+    reduces_last_of_several_axes,
+)
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
 )
@@ -1172,32 +1175,6 @@ def _walk_for_name_ranks(body: tuple[IRNode, ...], out: dict[str, int]) -> None:
             _walk_for_name_ranks(node.scope, out)
         elif isinstance(node, IRScore):
             out[node.name] = 0
-
-
-def name_plate_map(ir: IRProgram) -> dict[str, Plate]:
-    """Map every IR-bound name to the [`Plate`][quivers.transpile.ir.Plate]
-    its binding site declares.
-
-    The marginalize lowering reads both halves: the batch dims decide
-    whether a weight tensor is fibred over the marginalize grouping
-    axis (and so needs the observe's `via` index to reach the
-    observation axis), and the trailing event extent supplies the
-    class count of a `class_index` atom set.
-    """
-    out: dict[str, Plate] = {}
-    for inp in ir.inputs:
-        out[inp.name] = inp.plate
-    _walk_for_name_plates(ir.body, out)
-    return out
-
-
-def _walk_for_name_plates(body: tuple[IRNode, ...], out: dict[str, Plate]) -> None:
-    for node in body:
-        if isinstance(node, (IRSample, IRObserve, IRDeterministic)):
-            out[node.name] = node.plate
-        elif isinstance(node, IRMarginalize):
-            out[node.latent] = node.plate
-            _walk_for_name_plates(node.scope, out)
 
 
 def factor_tower_names(ir: IRProgram) -> frozenset[str]:

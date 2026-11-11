@@ -27,6 +27,9 @@ from quivers.dsl.ast_nodes import (
     LetExprVar,
 )
 from quivers.transpile.ir import (
+    Dim,
+    IRArg,
+    IRArgRef,
     IRDeterministic,
     IRMarginalize,
     IRNode,
@@ -77,6 +80,101 @@ def name_rank_map(ir: IRProgram) -> dict[str, int]:
     ranks: dict[str, int] = {item.name: _plate_rank(item.plate) for item in ir.inputs}
     _walk_ranks(ir.body, ranks)
     return ranks
+
+
+def name_plate_map(ir: IRProgram) -> dict[str, Plate]:
+    """Map every IR-bound name to the [`Plate`][quivers.transpile.ir.Plate]
+    its binding site declares.
+
+    The marginalize lowering reads both halves: the batch dims decide
+    whether a weight tensor is fibred over the marginalize grouping
+    axis (and so needs the observe's `via` index to reach the
+    observation axis), and the trailing event extent supplies the
+    class count of a `class_index` atom set.
+    """
+    out: dict[str, Plate] = {}
+    for inp in ir.inputs:
+        out[inp.name] = inp.plate
+    _walk_for_name_plates(ir.body, out)
+    return out
+
+
+def _walk_for_name_plates(body: tuple[IRNode, ...], out: dict[str, Plate]) -> None:
+    for node in body:
+        if isinstance(node, (IRSample, IRObserve, IRDeterministic)):
+            out[node.name] = node.plate
+        elif isinstance(node, IRMarginalize):
+            out[node.latent] = node.plate
+            _walk_for_name_plates(node.scope, out)
+
+
+def carried_dims(arg: IRArg, name_plates: Mapping[str, Plate]) -> tuple[Dim, ...]:
+    """The axes a family argument's value carries, outermost first.
+
+    A reference carries every axis of the name it reads, batch then
+    event. A gather ``mu[z]`` reads ``mu`` at one index per indexed
+    axis, so each gathered element carries the axes of ``mu`` after
+    those: none for an entry of a vector, the columns for a row of a
+    matrix. The index's own axes lead the gathered value and are the
+    plate the site iterates, so they are not among the carried axes.
+    Any other argument (a literal, a list, an expression) carries none
+    a plate states.
+
+    Parameters
+    ----------
+    arg : IRArg
+        The argument.
+    name_plates : Mapping[str, Plate]
+        The plate of each name the plan binds.
+
+    Returns
+    -------
+    tuple[Dim, ...]
+        The axes the argument's value carries beyond the plate the site
+        iterates.
+    """
+    if not isinstance(arg, IRArgRef):
+        return ()
+    plate = name_plates.get(arg.name)
+    if plate is None:
+        return ()
+    axes = (*plate.batch_dims, *plate.event_dims)
+    return axes[len(arg.indices) :] if arg.indices else axes
+
+
+def carries_event_dims(
+    args: tuple[IRArg, ...],
+    event_dims: tuple[Dim, ...],
+    name_plates: Mapping[str, Plate],
+) -> bool:
+    """Whether some argument's value already ends in a site's event axes.
+
+    A family whose argument carries the site's event axes draws those
+    axes from the argument itself, so the site lifts them into its event
+    with no broadcast of the family to their extents.
+
+    Parameters
+    ----------
+    args : tuple[IRArg, ...]
+        The family's arguments.
+    event_dims : tuple[Dim, ...]
+        The event axes the site lifts.
+    name_plates : Mapping[str, Plate]
+        The plate of each name the plan binds.
+
+    Returns
+    -------
+    bool
+        Whether an argument's carried axes end in ``event_dims``.
+    """
+    if not event_dims:
+        return False
+    names = tuple(str(dim.name) for dim in event_dims)
+    for arg in args:
+        carried = tuple(str(dim.name) for dim in carried_dims(arg, name_plates))
+        if len(carried) >= len(names) and carried[len(carried) - len(names) :] == names:
+            return True
+    return False
 
 
 def _walk_ranks(body: tuple[IRNode, ...], ranks: dict[str, int]) -> None:

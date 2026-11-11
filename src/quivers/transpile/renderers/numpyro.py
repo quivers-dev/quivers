@@ -14,7 +14,7 @@ import torch.distributions.constraints as c
 
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile.renderers._ranks import name_rank_map
+from quivers.transpile.renderers._ranks import carries_event_dims, name_rank_map
 from quivers.transpile.renderers._python_helpers import (
     PyCtx,
     arg_expr,
@@ -422,6 +422,7 @@ class NumPyroRenderer(RendererBase):
                 dist_call,
                 scored.observe.family,
                 scored.observe.plate.event_dims,
+                scored.observe.args,
             )
             term = f"{prefix}_{position}"
             py.e(
@@ -1058,10 +1059,18 @@ class NumPyroRenderer(RendererBase):
         """
         if not batch_dims:
             return inner_stmt
-        # Build innermost first, then wrap.
+        # Build innermost first, then wrap. NumPyro gives a plate with no
+        # stated `dim` the rightmost free batch axis, so the outermost of
+        # several nested plates would take the last axis and the draw
+        # would come out transposed; each plate of a nest of several
+        # states its axis, outermost leftmost.
         current = inner_stmt
-        for dim in reversed(batch_dims):
-            plate_call = self._plate_call(ctx, dim)
+        count = len(batch_dims)
+        for position in reversed(range(count)):
+            dim = batch_dims[position]
+            plate_call = self._plate_call(
+                ctx, dim, axis=None if count == 1 else position - count
+            )
             block = ctx.py.v(ctx.py.fresh("blk"), "block")
             ctx.py.e(block, current, "child_of")
             current = with_statement(
@@ -1072,9 +1081,32 @@ class NumPyroRenderer(RendererBase):
             )
         return current
 
-    def _plate_call(self, ctx: _NumPyroCtx, dim) -> str:
+    def _plate_call(
+        self, ctx: _NumPyroCtx, dim: Dim, *, axis: int | None = None
+    ) -> str:
         """Build ``numpyro.plate("<name>", <size>)`` for one
-        [`Dim`][quivers.transpile.ir.Dim]."""
+        [`Dim`][quivers.transpile.ir.Dim].
+
+        Parameters
+        ----------
+        ctx : _NumPyroCtx
+            The render state.
+        dim : Dim
+            The plate's axis.
+        axis : int | None
+            The negative batch axis the plate occupies, stated as its
+            `dim`; `None` leaves NumPyro to allocate it.
+
+        Returns
+        -------
+        str
+            The call's vertex.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the axis is neither static nor dynamic.
+        """
         py = ctx.py
         if isinstance(dim, DimStatic):
             size_vid = number_literal(py, dim.size)
@@ -1086,10 +1118,16 @@ class NumPyroRenderer(RendererBase):
                 [f"plate:dim-kind:{type(dim).__name__}"],
             )
         ctx.emitted_plate_names.add(dim.name)
+        keyword: tuple[tuple[str, str], ...] = ()
+        if axis is not None:
+            keyword = (
+                ("dim", _python_unary_minus(py, number_literal(py, float(-axis)))),
+            )
         return call(
             py,
             attribute(py, ("numpyro", "plate")),
             positional=(string_literal(py, dim.name), size_vid),
+            keyword=keyword,
         )
 
     def _dynamic_size_expr(self, py: PyCtx, size_name: str) -> str:
@@ -1151,7 +1189,9 @@ class NumPyroRenderer(RendererBase):
         """Build ``numpyro.sample("<name>", <dist>, [obs=<obs>])``."""
         py = ctx.py
         dist_call = self._distribution_call(ctx, family, args, arg_names, plate)
-        dist_call = self._wrap_event_dims(ctx, dist_call, family, plate.event_dims)
+        dist_call = self._wrap_event_dims(
+            ctx, dist_call, family, plate.event_dims, args
+        )
         sample_callee = attribute(py, ("numpyro", "sample"))
         positional = (string_literal(py, name), dist_call)
         keyword: tuple[tuple[str, str], ...] = ()
@@ -1170,6 +1210,7 @@ class NumPyroRenderer(RendererBase):
         dist_call: str,
         family: str,
         event_dims: tuple[Dim, ...],
+        args: tuple[IRArg, ...],
     ) -> str:
         """Lift the residual user-declared event dims into the
         distribution via ``.expand([s0, ..., sn]).to_event(n)``.
@@ -1184,7 +1225,27 @@ class NumPyroRenderer(RendererBase):
         A vector family (`event_rank=1`) lifts only the dims beyond the
         last; a matrix family (`event_rank=2`) only those beyond the
         last two, so the distribution never re-absorbs an axis it emits
-        natively.
+        natively. An argument that already carries the lifted axes (a
+        gathered matrix row) gives the family those axes as batch, so
+        only `.to_event(n)` is applied.
+
+        Parameters
+        ----------
+        ctx : _NumPyroCtx
+            The render state.
+        dist_call : str
+            The family call's vertex.
+        family : str
+            The family.
+        event_dims : tuple[Dim, ...]
+            The site's event axes.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+
+        Returns
+        -------
+        str
+            The lifted call's vertex.
         """
         if not event_dims:
             return dist_call
@@ -1194,6 +1255,13 @@ class NumPyroRenderer(RendererBase):
         if not residual:
             return dist_call
         py = ctx.py
+        if carries_event_dims(args, residual, ctx.py.name_plates):
+            # An argument already carries the lifted axes (a gathered
+            # row of a matrix, say): the family's batch holds them, and
+            # only their reading as event axes remains.
+            return _python_method_call(
+                py, dist_call, "to_event", (number_literal(py, len(residual)),)
+            )
         list_vid = py.v(py.fresh("list"), "list")
         for dim in residual:
             py.e(list_vid, self._dim_size_vid(ctx, dim), "child_of")
