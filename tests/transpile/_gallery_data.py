@@ -908,6 +908,13 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
 
     shared_plates = _shared_plates(source_qvr, obs_tensors)
 
+    # The program's input rows are independent runs of the whole
+    # program, and the rows a gallery program observes come from its
+    # data and its plates, so the fixture scores one run: the first row
+    # of the input the snippet built.
+    if x_input is not None:
+        x_input = _first_row(x_input)
+
     single_row = _program_is_plateless(source_qvr)
     if single_row:
         # The program denotes one row and every backend emits one, so
@@ -920,8 +927,6 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
         # SVI and MCMC demos want the full batch.
         obs_tensors = {k: _first_row(v) for k, v in obs_tensors.items()}
         params = {k: _first_row(v) for k, v in params.items()}
-        if x_input is not None:
-            x_input = _first_row(x_input)
 
     return GalleryDataset(
         observations=obs_tensors,

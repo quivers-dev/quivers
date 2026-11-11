@@ -71,6 +71,7 @@ from quivers.continuous.program_steps import (
     Step,
     StepArgument,
 )
+from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import as_torch_module
 from quivers.qiec.types import TypeExpr
@@ -681,6 +682,14 @@ class MonadicProgram(ContinuousMorphism):
         # when it is a rank-1 float.
         parts = [_lookup_arg(env, a, carries) for a in spec.args]
         morph = self._modules.get(step_key(spec))
+        if carries is not None and isinstance(morph, PlateDraw | VectorisedObserve):
+            # A plate's parameters are read along its rows within one
+            # run: the run axis a value carries is not one of its rows.
+            parts = [
+                part[0] if _arg_carries(arg, carries) else part
+                for part, arg in zip(parts, spec.args, strict=True)
+            ]
+            carries = None
         event_ranks = getattr(morph, "_param_event_ranks", None)
         param_spec = getattr(morph, "_param_spec", None)
         if event_ranks is not None and param_spec is not None:
@@ -829,7 +838,9 @@ class MonadicProgram(ContinuousMorphism):
         dtype = _parameter_dtype(parts)
         expanded = []
         for p in parts:
-            if p.dim() == 1:
+            if p.dim() == 0:
+                expanded.append(p.reshape(1, 1).to(dtype))
+            elif p.dim() == 1:
                 expanded.append(p.unsqueeze(-1).to(dtype))
             else:
                 expanded.append(p.to(dtype))
