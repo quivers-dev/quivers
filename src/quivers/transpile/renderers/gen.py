@@ -49,7 +49,11 @@ from quivers.dsl.draw_args import atom_value, bind_family_arguments
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
-from quivers.transpile.renderers._ranks import name_rank_map
+from quivers.transpile.renderers._ranks import (
+    carried_dims,
+    name_plate_map,
+    name_rank_map,
+)
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -152,6 +156,10 @@ class _GenCtx:
     # the tuple of batch Dims it lives on, in declaration order. Used
     # to thread loop indices through `IRArgRef` instances.
     decl_axes: dict[str, tuple[Dim, ...]] = dataclasses.field(default_factory=dict)
+    # Each name the plan binds mapped to its whole plate, batch and
+    # event: a gather `mu[z]` carries the axes of `mu` after the indexed
+    # ones, which each take the loop over that axis or a whole `:`.
+    name_plates: dict[str, Plate] = dataclasses.field(default_factory=dict)
     # Cards harvested from the IR for axis-name lookups.
     cards: dict[str, int] = dataclasses.field(default_factory=dict)
     # Morphism declarations needed by wrapper-family rendering.
@@ -625,6 +633,9 @@ class _ArgCtx:
     batch_loops: dict[str, str] = dataclasses.field(default_factory=dict)
     via_indexer: str | None = None
     via_loop_var: str | None = None
+    # Every loop of the step, its residual event axes included: the axis
+    # a gathered element carries reads the loop over that axis.
+    axis_loops: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _render_arg(gx: _GenCtx, arg: IRArg, *, arg_ctx: _ArgCtx) -> str:
@@ -675,7 +686,16 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
             _one_higher(gx, _render_arg(gx, idx, arg_ctx=arg_ctx), idx)
             for idx in ref.indices
         )
-        return _index_into(gx, base, rendered)
+        # Each axis the gathered element carries is read at the step's
+        # loop over that axis, or whole when no loop runs over it, so a
+        # row of a matrix is never read through one linear index.
+        carried = tuple(
+            _ident(gx, arg_ctx.axis_loops[str(dim.name)])
+            if str(dim.name) in arg_ctx.axis_loops
+            else _operator(gx, ":")
+            for dim in carried_dims(ref, gx.name_plates)
+        )
+        return _index_into(gx, base, (*rendered, *carried))
 
     if not decl_axes:
         return base
@@ -1113,7 +1133,7 @@ class GenRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        gx = _GenCtx(sb=sb, cards={}, morphisms={})
+        gx = _GenCtx(sb=sb, cards={}, morphisms={}, name_plates=name_plate_map(ir))
 
         _harvest_cards(ir, gx)
         gx.shapes = JuliaShapes(
@@ -1415,6 +1435,9 @@ class GenRenderer(RendererBase):
             batch_loops=batch_loops,
             via_indexer=via,
             via_loop_var=loop_names[-1] if via else None,
+            axis_loops={
+                str(dim.name): lv for dim, lv in zip(loop_dims, loop_names, strict=True)
+            },
         )
         dist_vid = self._build_dist_call(
             family=node.family,

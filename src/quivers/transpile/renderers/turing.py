@@ -57,7 +57,7 @@ from quivers.transpile._pipeline import (
     parser_registry,
     target_protocol,
 )
-from quivers.transpile.renderers._ranks import name_rank_map
+from quivers.transpile.renderers._ranks import carried_dims, name_rank_map
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -2341,8 +2341,10 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
     base = _identifier(sb, counter, ref.name)
     if not ref.indices:
         return base
-    parent_plate = ctx.sample_plates.get(ref.name)
-    parent_event_dim = len(parent_plate.event_dims) if parent_plate is not None else 0
+    # Each gathered element carries the parent's axes after the indexed
+    # ones: none for an entry of a vector, the columns for a row of a
+    # matrix, each read whole with a trailing `:`.
+    carried = carried_dims(ref, {**ctx.input_plates, **ctx.sample_plates})
     # Rewrite each index: a name-ref index may be threaded through the
     # via fibration.
     rendered_indices: list[str] = []
@@ -2357,7 +2359,7 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
         if isinstance(idx, IRArgRef):
             rendered = _one_higher(ctx, rendered, idx.name)
         rendered_indices.append(rendered)
-    if parent_event_dim > 0:
+    if carried:
         # `phi` is a matrix-shaped distribution sample; take its rows.
         #
         # `phi[k, :]` rather than `eachrow(phi)[k]`, because the two
@@ -2370,7 +2372,7 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
             sb,
             counter,
             base,
-            (*rendered_indices, _colon(sb, counter)),
+            (*rendered_indices, *(_colon(sb, counter) for _ in carried)),
         )
     return _index_expr(sb, counter, base, tuple(rendered_indices))
 
