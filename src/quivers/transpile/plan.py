@@ -1737,12 +1737,16 @@ class _ProgramWalk:
             )
             names[position] = "covariance_matrix"
             return
+        if self.planner.target in _RUNTIME_FACTOR_TARGETS:
+            # The target's library takes the factor itself.
+            return
         raise UnsupportedConstruct(
             f"qvr-{self.planner.target}",
             [
                 f"family:{family}:scale_tril: the {family}'s scale_tril is a "
-                "Cholesky factor known only at run time; write it as a matrix "
-                "literal"
+                f"Cholesky factor known only at run time, which "
+                f"{self.planner.target} has no Cholesky parameterization of "
+                f"{family} to take; write it as a matrix literal"
             ],
         )
 
@@ -2498,6 +2502,15 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+#: The targets whose libraries take a multivariate normal's and a
+#: Wishart's Cholesky factor itself, so a factor known only at run time
+#: reaches them as written: Stan's `multi_normal_cholesky` and a Wishart
+#: scale `multiply_lower_tri_self_transpose(L)`, the `scale_tril=` of
+#: NumPyro and Pyro, and PyMC's `chol=` with a Wishart scale `L @ L.T`.
+_RUNTIME_FACTOR_TARGETS: frozenset[str] = frozenset(
+    {"ir", "numpyro", "pymc", "pyro", "stan"}
+)
 
 _EVERY_TARGET: frozenset[str] = frozenset(
     {

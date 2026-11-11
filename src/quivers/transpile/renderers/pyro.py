@@ -1882,7 +1882,10 @@ _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
         for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
     },
     **{
-        family: {"precision_matrix": "precision_matrix"}
+        family: {
+            "precision_matrix": "precision_matrix",
+            "scale_tril": "scale_tril",
+        }
         for family in ("MultivariateNormal", "Wishart")
     },
     "BetaBinomial": {

@@ -785,6 +785,38 @@ with row covariance `U` and column covariance `V`. An inverse-Wishart
 covariance is a positive-definite latent site, which MCMC and SVI move
 through the unconstrained coordinates of its Cholesky factor.
 
+### A Cholesky factor built in the program
+
+The standard hierarchical covariance prior draws an LKJ correlation
+factor [@lewandowski2009lkj],
+scales its rows by per-coordinate standard deviations, and hands the
+product to a multivariate normal as its Cholesky factor:
+
+```qvr
+object Dk : FinSet 3
+object Row : FinSet 4
+object One : FinSet 1
+
+program correlated : One -> One
+    sample L : Dk <- LKJCholesky(concentration=2.0)
+    sample sigma : Dk <- HalfNormal(scale=1.0)
+    sample mu : Dk <- Normal(loc=0.0, scale=1.0)
+    let Ls = factor i : Dk, j : Dk in sigma[i] * L[i, j]
+    observe y : Row <- MultivariateNormal(loc=mu, scale_tril=Ls) [over=Dk]
+    return mu
+
+export correlated
+```
+
+Both execution paths score it, and so do the transpile targets whose
+libraries take a Cholesky factor known only at run time: Stan through
+`multi_normal_cholesky`, NumPyro and Pyro through `scale_tril=`, and
+PyMC through `chol=`. A `Wishart` whose `scale_tril` is such a factor
+reaches NumPyro and Pyro as `scale_tril=`, and Stan and PyMC multiplied
+out into the scale they take. The other targets refuse the factor under
+`family:<Family>:scale_tril`; a literal factor renders everywhere,
+multiplied out into a covariance.
+
 ### Alternative parameterizations
 
 Several families accept more than one complete set of keywords, and the
