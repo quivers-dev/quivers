@@ -571,10 +571,10 @@ class _StructuralMixin:
         if d is not None:
             return d
         raise CompileError(
-            f"{diag_owner}: sort {sort!r} has no dim — declare it on the "
-            f"signature's `sorts {{ … }}` block (e.g. `Term : object dim 64`) "
-            f"or override it on the encoder / decoder block "
-            f"(e.g. `dim Term = 64`)"
+            f"{diag_owner}: sort {sort!r} has no dim; declare it in the "
+            f"signature's sorts block, as in `{sort} : object [dim=64]`, "
+            f"or set it in the encoder or decoder block, as in "
+            f"`dim {sort} = 64`"
         )
 
     def _compile_encoder(self, decl: EncoderDecl) -> None:

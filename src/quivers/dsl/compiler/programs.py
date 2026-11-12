@@ -1880,8 +1880,9 @@ class _ProgramsMixin:
                 if has_over and class_size == 0:
                     raise CompileError(
                         "grouped marginalize requires an explicit class-set "
-                        "annotation (e.g. `marginalize c : K <- ...`) so the "
-                        "class axis is sized at compile time",
+                        "annotation, as in `marginalize c : K <- "
+                        "Categorical(probs=weights) [over=G]`, so the class "
+                        "axis is sized at compile time",
                         step.line,
                         step.col,
                     )
@@ -1912,8 +1913,9 @@ class _ProgramsMixin:
                     if not step.args:
                         raise CompileError(
                             "grouped marginalize requires the latent's "
-                            "categorical family to carry an explicit argument "
-                            "(e.g. `Categorical(probs=weights)`)",
+                            "categorical family to carry an explicit argument, "
+                            "as in `marginalize c : K <- "
+                            "Categorical(probs=weights) [over=G]`",
                             step.line,
                             step.col,
                         )
@@ -2041,10 +2043,10 @@ class _ProgramsMixin:
                                 raise CompileError(
                                     "grouped marginalize: every observe "
                                     "inside the body must carry its own "
-                                    "`via <idx>` clause "
-                                    "(e.g. `observe r : N via idx <- ...`); "
+                                    "via option, as in `observe r : N <- "
+                                    "Normal(loc=mu[c], scale=1.0) [via=idx]`; "
                                     f"observe {scoped_step.response_var!r} "
-                                    "has no `via`",
+                                    "has none",
                                     scoped_step.line,
                                     scoped_step.col,
                                 )

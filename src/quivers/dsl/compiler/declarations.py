@@ -87,6 +87,7 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
     ObjectProduct,
 )
+from quivers.dsl.emit import _emit_object_expr as emit_object_expr
 from quivers.dsl.compiler._options import (
     check_option_keys,
     find_option,
@@ -1183,9 +1184,13 @@ class _DeclarationsMixin:
         names: list[str],
     ) -> None:
         if decl.init_expr is None and decl.init_family is None:
+            domain_text = emit_object_expr(decl.domain)
             raise CompileError(
-                f"observed morphism {name!r} requires an "
-                f"initializer (e.g. ``~ identity({decl.domain})``)",
+                f"observed morphism {name!r} requires an initializer, as in "
+                f"`morphism {name} : {domain_text} -> "
+                f"{emit_object_expr(decl.codomain)} [role=observed] ~ "
+                f'from_data("{name}")`, or `~ identity({domain_text})` for a '
+                f"morphism from an object to itself",
                 decl.line,
                 decl.col,
             )
