@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 122 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 124 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 122   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 122   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 91 / 122   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 81 / 122   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 122   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 105 / 122  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 92 / 122   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 107 / 122  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 93 / 122   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 86 / 122   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 84 / 122   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 124   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 124   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 91 / 124   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 81 / 124   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 124   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 105 / 124  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 92 / 124   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 107 / 124  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 93 / 124   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 86 / 124   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 84 / 124   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -142,6 +142,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_positions`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_self_attention`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -366,6 +368,42 @@ Every backend reports it in the same words. `bugs` on `bnn` reports:
 no transpile target can transpile this program:
   - no transpile target can transpile this program. The refusal is tagged `morphism 'net' draws its parameters from a 'mlp' network. The network's weights are model-internal and appear in neither the wire form nor the sample sites, so no backend can reconstruct the mean the morphism computes at line 33. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.`, which has no explanation registered yet; please report it.
   - a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+```
+
+### `param-source:positions`
+
+Refused for: `steps/function_positions`.
+
+Reported kinds:
+
+```text
+param-source:positions
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_positions` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism draws its parameters from a `positions` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'pos' (line 9, through pos) applies a 'positions' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+```
+
+### `param-source:self_attention`
+
+Refused for: `steps/function_self_attention`.
+
+Reported kinds:
+
+```text
+param-source:self_attention
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_self_attention` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism draws its parameters from a `self_attention` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'attn' (line 9, through attn) applies a 'self_attention' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `qiec:capability:neural-attachment:dec`, `qiec:capability:neural-attachment:dec__nll`, `qiec:capability:neural-attachment:enc`
