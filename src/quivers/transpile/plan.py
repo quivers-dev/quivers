@@ -694,6 +694,9 @@ class _ProgramWalk:
         if shape is None:
             return ()
         wanted = tuple(shape[1])
+        gathered = self._gathered_axes(value)
+        if gathered is not None and len(gathered) == len(wanted):
+            return gathered
         for name in _referenced(value):
             known = self.axes.get(name)
             if known is None or len(known) < len(wanted):
@@ -717,6 +720,39 @@ class _ProgramWalk:
             ]
             names.append(matching[0] if len(matching) == 1 else f"axis{index}")
         return tuple(names)
+
+    def _gathered_axes(self, value: Value) -> tuple[str, ...] | None:
+        """The axis names of a gather, read off its operands.
+
+        ``table[idx]`` reads, at each position of ``idx``, the slice of
+        ``table`` left after its leading axis: its axes are ``idx``'s
+        followed by ``table``'s after the first. A gather of a gather
+        reads one more leading axis off its base.
+
+        Parameters
+        ----------
+        value : Value
+            The value.
+
+        Returns
+        -------
+        tuple[str, ...] | None
+            The gather's axis names, or ``None`` when the value is not a
+            gather of named bindings.
+        """
+        if isinstance(value, Var):
+            return self.axes.get(value.local.name)
+        if not isinstance(value, Gather):
+            return None
+        base = self._gathered_axes(value.value)
+        index = (
+            self.axes.get(value.index.local.name, ())
+            if isinstance(value.index, Var)
+            else None
+        )
+        if base is None or index is None or not base:
+            return None
+        return (*index, *base[1:])
 
     def _inferred_plate(
         self, type_: TypeExpr, axes: tuple[str, ...], value: Value

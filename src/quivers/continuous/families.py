@@ -214,6 +214,7 @@ def _make_family(
     dsl_name: str | None = None,
     support: _constraints.Constraint | None = None,
     discrete: bool | None = None,
+    inline_bounds: dict[str, tuple[float, float]] | None = None,
 ) -> type:
     """Generate a named conditional distribution class.
 
@@ -243,12 +244,28 @@ def _make_family(
     discrete : bool, optional
         Whether the family is discrete. Auto-detected from
         ``not dist_class.has_rsample`` if absent.
+    inline_bounds : dict[str, tuple[float, float]], optional
+        The closed interval each named parameter's inline clamp
+        projects onto, for a parameter whose family admits a boundary
+        value its transform's default clamp would move. See
+        [`ParamSpec`][quivers.continuous.family_spec.ParamSpec].
 
     Returns
     -------
     type
         A new `ContinuousMorphism` subclass.
+
+    Raises
+    ------
+    ValueError
+        If `inline_bounds` names a parameter the family does not have.
     """
+    bounds = dict(inline_bounds or {})
+    unknown = sorted(set(bounds) - {pname for pname, _ in param_specs})
+    if unknown:
+        raise ValueError(
+            f"_make_family: {name} has no parameter named {unknown} to bound"
+        )
     resolved_specs = [
         (pname, resolve_transform(tname).forward) for pname, tname in param_specs
     ]
@@ -298,7 +315,8 @@ def _make_family(
             name=dsl_name,
             dist_class=dist_class,
             params=tuple(
-                ParamSpec(name=pname, transform=tname) for pname, tname in param_specs
+                ParamSpec(name=pname, transform=tname, inline_bounds=bounds.get(pname))
+                for pname, tname in param_specs
             ),
             support=out_support,
             discrete=is_discrete,
@@ -1025,6 +1043,8 @@ ConditionalPoisson = _make_family(
     D.Poisson,
     [("rate", "softplus")],
     "Conditional Poisson(rate(x)). Discrete, non-negative integer counts.",
+    # A rate of zero is the point mass at zero.
+    inline_bounds={"rate": (0.0, math.inf)},
 )
 """Conditional Poisson(rate(x)). Discrete, non-negative integer counts."""
 
@@ -1033,6 +1053,9 @@ ConditionalGeometric = _make_family(
     D.Geometric,
     [("probs", "sigmoid")],
     "Conditional Geometric(probs(x)). Number of failures before first success.",
+    # A success probability of one is the point mass at zero failures;
+    # one of zero puts no mass on any count.
+    inline_bounds={"probs": (EPS, 1.0)},
 )
 """Conditional Geometric(probs(x)). Number of failures before first success."""
 

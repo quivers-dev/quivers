@@ -132,6 +132,9 @@ jobs:
       - name: Check API reference coverage
         run: python tools/check_api_reference.py site
 
+      - name: Audit rendered math
+        run: python scripts/check_rendered_math.py site
+
   # Native parser assets are part of the wheel's executable compatibility
   # contract. Exercise the installed artifact on every supported runner with
   # compiler discovery disabled so neither current parsing nor migration can
