@@ -45,7 +45,7 @@ parser, so `qvr migrate` never compiles a parser at run time.
 
 `--from` names the grammar revision the source was written for, as a release tag such
 as `vX.Y.Z`. It is required, since a `.qvr` file does not record its revision and the
-migrator does not guess. `--to` defaults to the current grammar.
+migrator does not guess. `--to` defaults to the grammar of the installed release.
 
 Migrate one file in place:
 
@@ -185,4 +185,4 @@ When a release changes the grammar:
 The migrators do not read the grammar history to perform a migration: they walk the
 parsed source. The history serves `--check` and the blame message.
 [`grammars/qvr/vcs/README.md`](https://github.com/quivers-dev/quivers/blob/main/grammars/qvr/vcs/README.md)
-describes the workflow, and [The QVR DSL: Overview](dsl-overview.md) the current syntax.
+describes the workflow, and [The QVR DSL: Overview](dsl-overview.md) the syntax.
