@@ -96,10 +96,9 @@ lists. Export a name when Python code needs it to use a capability without the D
 - constants that parameterize a public call or name one of its
   results, such as algebra singletons.
 
-Keep internal the passes and helpers whose contract is "what another
-quivers module needs today": parser walkers, compiler mixins, lowering
-and elaboration helpers, renderer internals, and generated-code
-scaffolding. These belong in a module whose `__all__` omits them, or in
+Keep internal the passes and helpers that only other quivers modules
+call: parser walkers, compiler mixins, lowering and elaboration helpers,
+renderer internals, and the scaffolding of generated code. These belong in a module whose `__all__` omits them, or in
 an underscore-prefixed module.
 
 ## Exceptions
