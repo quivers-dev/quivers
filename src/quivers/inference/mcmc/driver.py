@@ -50,6 +50,7 @@ from quivers.inference.mcmc.checkpoint import (
     MCMCCheckpoint,
     _CheckpointHeader,
     _digest,
+    observation_digest,
     read_checkpoint,
     tensor_digest,
     write_checkpoint,
@@ -457,9 +458,11 @@ class _RunSetup:
     def fingerprint(self) -> str:
         """A digest of the model and data the run samples.
 
-        It covers the registry's layout, the Gibbs sites, the input and
-        every datum, and the potential's value at two fixed positions
-        under Gibbs values drawn from a fixed generator, so a change to a
+        It covers the registry's layout, the Gibbs sites, the input,
+        every datum by content (through `observation_digest`, which
+        renders tensors, numbers, arrays, and nested sequences of tokens
+        alike), and the potential's value at two fixed positions under
+        Gibbs values drawn from a fixed generator, so a change to a
         prior, a likelihood, or the data changes it.
 
         Returns
@@ -492,7 +495,7 @@ class _RunSetup:
         ]
         gibbs_names: list[StateValue] = list(sorted(self.gibbs_sites))
         data: dict[str, StateValue] = {
-            name: tensor_digest(torch.as_tensor(value))
+            name: observation_digest(name, value)
             for name, value in sorted(self.observations.items())
         }
         description: dict[str, StateValue] = {

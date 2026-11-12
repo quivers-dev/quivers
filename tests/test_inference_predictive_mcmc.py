@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 import torch
 
@@ -232,6 +234,11 @@ _DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
     "ZeroInflatedPoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
     "HurdlePoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
     "OrderedLogistic": ("predictor=a, cutpoints=cuts", None, [0, 1, 2, 1, 0, 2]),
+    "OrderedProbit": (
+        "eta=a, cutpoints=cuts",
+        "eta=0.5, cutpoints=[-1.0, 1.0]",
+        [0, 1, 2, 1, 0, 2],
+    ),
 }
 _HOST = {"cuts": torch.tensor([-1.0, 1.0])}  # observed cutpoints
 
@@ -296,3 +303,68 @@ def test_discrete_observe_sites_sample_and_score_their_draws(
         NUTSKernel(max_tree_depth=3), num_warmup=5, num_samples=4, num_chains=1, seed=0
     ).run(model, x, {"y": y, **_HOST})
     _check(Predictive(model, fit, num_samples=3)(x, observations=_HOST)["y"])
+
+
+# ---------------------------------------------------------------------------
+# Ordinal families sample and score their closed-form category law
+# ---------------------------------------------------------------------------
+
+
+def _probit_cdf(z: torch.Tensor) -> torch.Tensor:
+    return torch.distributions.Normal(0.0, 1.0).cdf(z)
+
+
+# The cumulative distribution function of each ordinal family's latent noise.
+_ORDINAL_CDFS = {"OrderedLogistic": torch.sigmoid, "OrderedProbit": _probit_cdf}
+
+
+def _category_probabilities(
+    cdf: Callable[[torch.Tensor], torch.Tensor],
+    predictor: torch.Tensor,
+    cutpoints: torch.Tensor,
+) -> torch.Tensor:
+    """``P(Y = k) = F(c_k - eta) - F(c_{k-1} - eta)``, in float64."""
+    offsets = cutpoints.double() - predictor.double().unsqueeze(-1)
+    below = cdf(offsets)
+    zeros = torch.zeros_like(below[..., :1])
+    ones = torch.ones_like(below[..., :1])
+    return torch.cat([below, ones], dim=-1) - torch.cat([zeros, below], dim=-1)
+
+
+@pytest.mark.parametrize("family", sorted(_ORDINAL_CDFS))
+def test_ordinal_observe_sites_follow_their_closed_form_law(family: str) -> None:
+    torch.manual_seed(20261112)
+    model = _discrete_program(family, _DISCRETE_ARGUMENTS[family][0])
+    x = torch.zeros(1, 1)
+    cuts = _HOST["cuts"]
+    cdf = _ORDINAL_CDFS[family]
+    wrong = _ORDINAL_CDFS[next(name for name in _ORDINAL_CDFS if name != family)]
+
+    # The traced log density of the responses is the closed form's sum.
+    y = torch.tensor(_DISCRETE_ARGUMENTS[family][2])
+    traced = trace(model, x, observations={"y": y, **_HOST})
+    eta = traced.sites["a"].value.reshape(())
+    scored = float(traced.sites["y"].log_prob.sum())
+    expected = float(_category_probabilities(cdf, eta, cuts)[y].log().sum())
+    other = float(_category_probabilities(wrong, eta, cuts)[y].log().sum())
+    assert scored == pytest.approx(expected, abs=1e-4)
+    assert scored != pytest.approx(other, abs=1e-4)
+
+    # Posterior-predictive draws follow the category law at each draw's
+    # predictor: each category's count sits within four standard
+    # deviations of its expected count, and the other family's law is
+    # rejected by the same test.
+    guide = AutoNormalGuide(model, observed_names={"y", "cuts"})
+    draws = Predictive(model, guide, num_samples=500)(x, observations=_HOST)
+    responses = draws["y"].reshape(500, -1)
+    predictors = draws["a"].reshape(500, 1).expand_as(responses)
+
+    def _within(law: Callable[[torch.Tensor], torch.Tensor]) -> bool:
+        probs = _category_probabilities(law, predictors, cuts)
+        counts = torch.stack([(responses == k).sum() for k in range(3)]).double()
+        mean = probs.sum(dim=(0, 1))
+        sd = (probs * (1 - probs)).sum(dim=(0, 1)).sqrt()
+        return bool(((counts - mean).abs() <= 4 * sd).all())
+
+    assert _within(cdf)
+    assert not _within(wrong)

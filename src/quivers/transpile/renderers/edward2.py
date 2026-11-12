@@ -109,6 +109,7 @@ from quivers.transpile.renderers._base import (
     assert_no_dangling_refs,
     assert_no_dropped_param_map,
     ir_uses_family,
+    logit_weighted,
     mixture_normal_components,
 )
 from quivers.transpile.renderers._qiec import (
@@ -895,7 +896,11 @@ class Edward2Renderer(RendererBase):
         mixing = call(
             py,
             attribute(py, ("tfp", "distributions", "Categorical")),
-            keyword=(("probs", self._marginal_weights(py, node, raw, atoms)),),
+            keyword=(
+                ("logits", self._marginal_logit_weights(py, node, raw, atoms))
+                if logit_weighted(atoms[0])
+                else ("probs", self._marginal_weights(py, node, raw, atoms)),
+            ),
         )
         py.e(
             body_vid,
@@ -959,6 +964,63 @@ class Edward2Renderer(RendererBase):
         raise UnsupportedConstruct(
             _BACKEND_KEY,
             [f"marginalize:weight-family:{family}"],
+        )
+
+    def _marginal_logit_weights(
+        self,
+        py: PyCtx,
+        node: IRMarginalize,
+        raw: MarginalizeBody,
+        atoms: tuple[IRMarginalAtom, ...],
+    ) -> str:
+        """Log-weight tensor of a Bernoulli atom set given by its logits.
+
+        The atoms 0 and 1 are weighted by ``log_sigmoid(-l)`` and
+        ``log_sigmoid(l)``, computed in log space and stacked into a
+        fresh trailing axis; they are normalized, so they serve both as
+        a `Categorical`'s logits and as log weights.
+
+        Parameters
+        ----------
+        py : PyCtx
+            The emission context.
+        node : IRMarginalize
+            The block.
+        raw : MarginalizeBody
+            The block's scored body.
+        atoms : tuple[IRMarginalAtom, ...]
+            The atoms, weighted from the logits.
+
+        Returns
+        -------
+        str
+            The stacked log weights.
+        """
+        logits = marginal_weight_probs(
+            node,
+            raw.observe,
+            atoms[0].weight_args,
+            atoms[0].weight_arg_names,
+            name_plates=py.name_plates,
+            target=self.target,
+        )
+        return _tf_stack(
+            py,
+            (
+                call(
+                    py,
+                    attribute(py, ("tf", "math", "log_sigmoid")),
+                    positional=(
+                        _python_unary_minus(py, self._weight_ref_expr(py, logits)),
+                    ),
+                ),
+                call(
+                    py,
+                    attribute(py, ("tf", "math", "log_sigmoid")),
+                    positional=(self._weight_ref_expr(py, logits),),
+                ),
+            ),
+            -1,
         )
 
     def _weight_ref_expr(self, py: PyCtx, probs: IRArg) -> str:
@@ -1134,7 +1196,9 @@ class Edward2Renderer(RendererBase):
             assignment(
                 py,
                 lhs_name=f"{prefix}_w",
-                rhs=call(
+                rhs=self._marginal_logit_weights(py, node, raw, atoms)
+                if logit_weighted(atoms[0])
+                else call(
                     py,
                     attribute(py, ("tf", "math", "log")),
                     positional=(self._marginal_weights(py, node, raw, atoms),),

@@ -1,0 +1,10 @@
+# Exercises an observe replicated over an `over` axis whose location is a
+# vector over the same axis: each coordinate is scored at the location's
+# entry for that coordinate.
+object Feat : FinSet 3
+program p : Feat -> Feat
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feat]
+    let z = tanh(a)
+    observe y <- Normal(loc=z, scale=0.5) [over=Feat]
+    return z
+export p

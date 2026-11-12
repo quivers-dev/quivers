@@ -63,7 +63,11 @@ from quivers.transpile.ir import (
     Plate,
 )
 from quivers.transpile.renderers._ranks import let_expr_rank, name_rank_map
-from quivers.transpile.renderers._rows import take_row
+from quivers.transpile.renderers._rows import (
+    scalar_parameter,
+    take_row,
+    visited_position,
+)
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
     BlockKind,
@@ -73,6 +77,7 @@ from quivers.transpile.renderers._base import (
     RenderContext,
     assert_no_dangling_refs,
     assert_no_dropped_param_map,
+    logit_weighted,
     mixture_component_count,
     mixture_normal_components,
 )
@@ -742,7 +747,9 @@ class WebPPLRenderer(RendererBase):
         """Emit `var <name> = <maybe-batched-call>;` for a latent sample."""
         # Decide the batching strategy: `repeat` vs `mapIndexed`.
         loop_name = self._loop_name_for(name, plate)
-        index_dependent = self._args_use_surrounding_index(args, plate)
+        index_dependent = self._args_use_surrounding_index(
+            args, plate
+        ) or self._visits_scalar_parameter(meta, args, arg_names, plate)
         # Build the inner sample call: `sample(<Dist>({...}))`.
         # When index-dependent, arg refs whose binding plate aligns
         # with the surrounding plate get indexed by the loop var.
@@ -788,6 +795,13 @@ class WebPPLRenderer(RendererBase):
         `<name>_n`. The body's `<dist>` rendering threads `n` through
         the `via` fibration when present.
         """
+        # A scalar family observed over one `over` axis scores each
+        # coordinate on its own, one observation per entry, as a batch
+        # axis does: WebPPL's scalar distributions score a number, not
+        # an array.
+        residual = plate.event_dims[: len(plate.event_dims) - meta.event_rank]
+        if not plate.batch_dims and len(residual) == 1 and meta.event_rank == 0:
+            plate = Plate(event_dims=(), batch_dims=residual)
         # When unbatched, emit a top-level observe(...) statement.
         if not plate.batch_dims:
             rendered_args = self._render_arg_tuple(
@@ -1198,7 +1212,10 @@ class WebPPLRenderer(RendererBase):
         `log(1 - p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, which `_qvr_take_last` slices however many
-        grouping axes sit above it.
+        grouping axes sit above it. A `Bernoulli` atom set given by its
+        logits ``l`` weights the atoms by ``log sigmoid(-l)`` and
+        ``log sigmoid(l)`` through the runtime's `_qvr_log_sigmoid`,
+        which computes them in log space.
         """
         probs = marginal_weight_probs(
             node,
@@ -1209,6 +1226,40 @@ class WebPPLRenderer(RendererBase):
             target=self.target,
         )
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            zero = f"{prefix}_w_0"
+            one = f"{prefix}_w_1"
+            self._emit_var_decl(
+                ctx,
+                self._body_vid,
+                zero,
+                self._call(
+                    ctx,
+                    self._ident(ctx, "_qvr_log_sigmoid"),
+                    (
+                        self._call(
+                            ctx,
+                            self._ident(ctx, "_qvr_bcast"),
+                            (
+                                self._string_literal(ctx, "-"),
+                                self._number_literal(ctx, 0),
+                                self._render_arg(ctx, probs),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            self._emit_var_decl(
+                ctx,
+                self._body_vid,
+                one,
+                self._call(
+                    ctx,
+                    self._ident(ctx, "_qvr_log_sigmoid"),
+                    (self._render_arg(ctx, probs),),
+                ),
+            )
+            return (zero, one)
         if family == "Bernoulli":
             zero = f"{prefix}_w_0"
             one = f"{prefix}_w_1"
@@ -1670,6 +1721,8 @@ class WebPPLRenderer(RendererBase):
             substituted = self._substitute_for_indexing(
                 broadcasted, plate, loop_name, index_dependent
             )
+            if loop_name is not None and scalar_parameter(meta.qvr_name, raw_name):
+                substituted = self._read_at_position(substituted, plate, loop_name)
             reciprocal = raw_name in _WEBPPL_ARG_RECIPROCAL.get(
                 meta.qvr_name, frozenset()
             )
@@ -1711,6 +1764,75 @@ class WebPPLRenderer(RendererBase):
                 )
             )
         return tuple(out)
+
+    def _read_at_position(self, arg: IRArg, plate: Plate, loop_name: str) -> IRArg:
+        """Read a value over the site's axis at the position the loop visits.
+
+        A rank-0 family parameter filled by a vector `z` whose one axis
+        is the site's batch axis, such as `Normal(loc=z, ...)`
+        replicated over `Feat` with `z` drawn over `Feat`, reads the
+        entry `z[n]` in the draw at position `n`; the bare `z` would
+        hand the scalar slot the whole vector.
+
+        Parameters
+        ----------
+        arg : IRArg
+            The argument, already threaded through the batch alignment.
+        plate : Plate
+            The site's plate.
+        loop_name : str
+            The loop variable visiting the site's batch axis.
+
+        Returns
+        -------
+        IRArg
+            The argument indexed at ``loop_name`` when it is an unindexed
+            reference to a value whose every axis is the site's batch
+            axis, else `arg` unchanged.
+        """
+        if not isinstance(arg, IRArgRef) or arg.indices or len(plate.batch_dims) != 1:
+            return arg
+        loops = {str(plate.batch_dims[0].name): loop_name}
+        visited = visited_position(self._binding_plates.get(arg.name), loops)
+        if not visited:
+            return arg
+        return IRArgRef(
+            name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited)
+        )
+
+    def _visits_scalar_parameter(
+        self,
+        meta: FamilyMeta,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        plate: Plate,
+    ) -> bool:
+        """Whether a rank-0 parameter reads a value over the site's axis.
+
+        Parameters
+        ----------
+        meta : FamilyMeta
+            The family.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+        plate : Plate
+            The site's plate.
+
+        Returns
+        -------
+        bool
+            True when some argument filling a rank-0 parameter is read
+            at the site's position by `_read_at_position`.
+        """
+        if len(plate.batch_dims) != 1:
+            return False
+        return any(
+            scalar_parameter(meta.qvr_name, name)
+            and self._read_at_position(arg, plate, "_") is not arg
+            for arg, name in zip(args, arg_names, strict=False)
+        )
 
     def _maybe_broadcast(
         self,

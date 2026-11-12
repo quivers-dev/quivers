@@ -82,6 +82,7 @@ from quivers.transpile.ir import (
 )
 from quivers.transpile.renderers._one_based import fold_integers
 from quivers.transpile.renderers._ranks import LAST_AXIS_REDUCTIONS
+from quivers.transpile.renderers._rows import pointwise_let
 from quivers.transpile.renderers._base import IRArgTransform
 
 
@@ -1991,6 +1992,45 @@ def hoist_list_operands(
     )
 
 
+def event_loop_view(
+    plate: Plate, expr: LetExprNode, decl_plates: dict[str, Plate]
+) -> tuple[Plate, dict[str, Plate]]:
+    """The loop a pointwise binding of one event is computed in.
+
+    BUGS and JAGS apply a scalar function such as ``exp`` to a number,
+    not to a vector, so ``s[1:3] <- exp(a)`` does not compile. A binding
+    whose plate is one event and whose expression is pointwise is
+    computed one entry at a time instead, ``s[m] <- exp(a[m])``: its
+    event axes are looped like batch axes, and every name it reads
+    whose axes are all events is read at the loop's position.
+
+    Parameters
+    ----------
+    plate : Plate
+        The binding's plate.
+    expr : LetExprNode
+        The binding's expression.
+    decl_plates : dict[str, Plate]
+        Every bound name's declared plate.
+
+    Returns
+    -------
+    tuple[Plate, dict[str, Plate]]
+        The plate the relation is looped over and the declared plates
+        its expression is indexed against: `plate` and `decl_plates`
+        unchanged when the binding has a batch axis, no event axis, or
+        an expression that is not pointwise.
+    """
+    if plate.batch_dims or not plate.event_dims or not pointwise_let(expr):
+        return plate, decl_plates
+    looped = Plate(event_dims=(), batch_dims=plate.event_dims)
+    view = dict(decl_plates)
+    for name, declared in decl_plates.items():
+        if not declared.batch_dims and declared.event_dims == plate.event_dims:
+            view[name] = looped
+    return looped, view
+
+
 def index_letexpr_refs(
     expr: LetExprNode,
     decl_plates: dict[str, Plate],
@@ -2106,6 +2146,7 @@ __all__ = [
     "hoist_list_operands",
     "axis_rank",
     "build_decl_plates",
+    "event_loop_view",
     "collect_irargref_names",
     "collect_letexpr_vars",
     "dim_upper_text",

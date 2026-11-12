@@ -61,6 +61,7 @@ Other parameterization differences:
 | `Dirichlet(α)` | `ddirch(α)` | identity |
 | `Categorical(probs=p)` | `dcat(p)` on a drawn class, read back as `code - 1`; an observed code is refused | $y \mapsto y + 1$ |
 | `Bernoulli(p)` | `dbern(p)` | identity |
+| `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log-odds |
 | `LogNormal(μ, σ)` | `dlnorm(μ, 1/σ²)` | precision |
 | `StudentT(ν, μ, σ)` | `dt(μ, 1/σ², ν)` | precision |
 | `Exponential(λ)` | `dexp(λ)` | identity |

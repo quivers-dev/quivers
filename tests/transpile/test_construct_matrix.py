@@ -155,6 +155,7 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
     for _fixture in (
         "marginalize_body_let_chain",
         "marginalize_body_plated_let",
+        "marginalize_factor_let_rows",
         "marginalize_latent_gather",
         "marginalize_latent_value",
         "marginalize_let_probs",
@@ -163,6 +164,27 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "marginalize:ungrouped-over-plate"
         )
+# A logistic regression written with Bernoulli's logits, one log-odds per
+# row, is refused as its scalar form is by every target whose library has
+# no logit-parameterized Bernoulli.
+for _backend in ("bugs", "church", "gen", "jags", "webppl"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "steps", "observe_bernoulli_logits_rows")
+    ] = "family:Bernoulli:logits"
+# A per-token LDA: BUGS cannot shift the observed word codes to `dcat`'s
+# one-based codes, JAGS cannot lift the gather's elementwise operator over
+# an axis in an expression, and Gen and Turing read a marginalization's
+# weights only from a name with a declared plate.
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "marginalize_gathered_prior_data")] = (
+    "observe:class-code"
+)
+_EXPECTED_ORTHOGONAL_RAISES[("jags", "steps", "marginalize_gathered_prior_data")] = (
+    "let-expr:elementwise-axis-operator"
+)
+for _backend in ("gen", "turing"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "steps", "marginalize_gathered_prior_data")
+    ] = "marginalize:weight-plate"
 # A scan's sequence extent is runtime data, not a declared object a target
 # can use as a loop bound, so every target refuses a scan by its cell's
 # name, whatever bindings the cell reads and whatever its options.
@@ -339,6 +361,28 @@ for _fixture, _family, _backends in (
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             f"family:{_family}:logits"
         )
+# No target spells a continuous Bernoulli on the logit scale, so a live
+# draw from one is refused by name everywhere; marginalized, its logits
+# only weigh the atoms, which every target but BUGS scores.
+for _backend in (
+    "bugs",
+    "church",
+    "edward2",
+    "gen",
+    "jags",
+    "numpyro",
+    "pymc",
+    "pyro",
+    "stan",
+    "turing",
+    "webppl",
+):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "steps", "observe_continuous_bernoulli_logits")
+    ] = "family:ContinuousBernoulli:logits"
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("bugs", "steps", "marginalize_continuous_bernoulli_logits")
+] = "marginalize:no-collapse"
 
 # The ordered probit, inverse Wishart, and matrix normal are refused by
 # name where a target has no class or literal form for them.
@@ -431,6 +475,7 @@ for _category, _fixture in (
     ("let_expressions", "let_row_gather"),
     ("let_expressions", "let_row_gather_sampled"),
     ("steps", "observe_class_code"),
+    ("steps", "observe_shared_probs_vector"),
 ):
     _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
 # Stan's samplers draw no discrete parameter, so a sampled class is one

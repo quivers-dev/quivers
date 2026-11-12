@@ -74,8 +74,10 @@ from quivers.continuous.program_steps import (
     StepArgument,
 )
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
+from quivers.continuous.deterministic import SequenceFunction
 from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import Morphism, as_torch_module
+from quivers.core.objects import FinSet
 from quivers.qiec.types import TypeExpr
 
 
@@ -695,6 +697,65 @@ class MonadicProgram(ContinuousMorphism):
 
         return [isinstance(space, ContinuousSpace)]
 
+    def _check_domain_element(self, spec: Draw | Observe, x: torch.Tensor) -> None:
+        """Check that a step reading the program's input gets one element.
+
+        A step drawn from a morphism over the program's finite domain
+        reads the input as one element of that set per run: a ``(B,)``
+        tensor of element indices, or ``(B, 1)``. A morphism that reads
+        a sequence (a scan, or a sequence function) reads ``(B, T)``
+        instead. Any other input is no element of the domain, and
+        reading it would hand the morphism's network a row of several
+        elements.
+
+        Parameters
+        ----------
+        spec : Draw | Observe
+            The step.
+        x : torch.Tensor
+            The program's input.
+
+        Raises
+        ------
+        ValueError
+            If the step's morphism reads the program's finite domain and
+            the input is not one index per run, or an index lies outside
+            the set.
+        """
+        domain = self.domain
+        morph = self._modules.get(step_key(spec))
+        if (
+            not isinstance(domain, FinSet)
+            or morph is None
+            or not isinstance(morph, ContinuousMorphism)
+            or morph.domain != domain
+            or any(
+                isinstance(module, ScanMorphism | SequenceFunction)
+                for module in morph.modules()
+            )
+        ):
+            return
+        names = ", ".join(spec.names)
+        if x.dim() > 2 or (x.dim() == 2 and int(x.shape[1]) != 1):
+            raise ValueError(
+                f"the step binding {names!r} reads the program's input as one "
+                f"element of its domain, a finite set of {domain.cardinality} "
+                f"elements, so an input of B runs is a tensor of element "
+                f"indices of shape (B,) or (B, 1); got an input of shape "
+                f"{tuple(x.shape)}"
+            )
+        if (
+            x.numel()
+            and not x.is_floating_point()
+            and (int(x.min()) < 0 or int(x.max()) >= domain.cardinality)
+        ):
+            raise ValueError(
+                f"the step binding {names!r} reads the program's input as one "
+                f"element of a finite set of {domain.cardinality} elements "
+                f"indexed from 0, and the input holds indices from "
+                f"{int(x.min())} to {int(x.max())}"
+            )
+
     def _resolve_input(
         self,
         spec: Draw | Observe,
@@ -722,6 +783,7 @@ class MonadicProgram(ContinuousMorphism):
             Input tensor for the morphism.
         """
         if spec.args is None:
+            self._check_domain_element(spec, x)
             return x
 
         # The arguments stack along the feature dimension. When the

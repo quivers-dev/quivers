@@ -87,6 +87,7 @@ _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("df", "precision_matrix"),
     ),
     "Bernoulli": (("probs",), ("logits",)),
+    "ContinuousBernoulli": (("probs",), ("logits",)),
     "Binomial": (("total_count", "probs"), ("total_count", "logits")),
     "Geometric": (("probs",), ("logits",)),
     "NegativeBinomial": (("total_count", "probs"), ("total_count", "logits")),

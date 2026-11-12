@@ -1,8 +1,8 @@
 """Alternative parameterizations score one joint on every target.
 
 A multivariate normal or a Wishart written with a covariance or a
-precision matrix, and a Bernoulli, Binomial, Geometric, or negative
-binomial written with logits, are each scored on the compiled runtime and
+precision matrix, and a Bernoulli, continuous Bernoulli, Binomial,
+Geometric, or negative binomial written with logits, are each scored on the compiled runtime and
 the reference machine, both pinned to `torch.distributions` built with the
 same parameterization in double precision, and on every target that
 renders the fixture: natively where the target's library has the
@@ -147,6 +147,17 @@ _CASES: dict[
             _eta(v) + D.Binomial(10, logits=_t(v["eta"])).log_prob(_t(v["y"])).sum()
         ),
     ),
+    "continuous-bernoulli-logits": (
+        "ContinuousBernoulli",
+        "logits",
+        "steps/observe_continuous_bernoulli_logits",
+        {"u": [0.1, 0.45, 0.8, 0.97]},
+        _ETAS,
+        lambda v: (
+            _eta(v)
+            + D.ContinuousBernoulli(logits=_t(v["eta"])).log_prob(_t(v["u"])).sum()
+        ),
+    ),
     "geometric-logits": (
         "Geometric",
         "logits",
@@ -241,6 +252,11 @@ _REFUSED: dict[tuple[str, str], str] = {
         "steps/observe_binomial_logits",
         "Binomial",
         ("bugs", "church", "gen", "jags", "webppl"),
+    ),
+    **_logits_refused(
+        "steps/observe_continuous_bernoulli_logits",
+        "ContinuousBernoulli",
+        _EVERY_TARGET,
     ),
     **_logits_refused(
         "steps/observe_geometric_logits",

@@ -151,7 +151,7 @@ from quivers.transpile.renderers._ranks import (
     name_rank_map,
     several_axis_reductions,
 )
-from quivers.transpile.renderers._rows import take_row
+from quivers.transpile.renderers._rows import scalar_parameter, take_row
 from quivers.transpile.renderers._stan_helpers import (
     _substitute_let_expr,
     render_let_expr_stan,
@@ -1455,7 +1455,13 @@ class StanRenderer(RendererBase):
             self._emit_neg_binomial_2_args(ctx, dal, rewritten, plate, loop_names)
         else:
             for position, arg in enumerate(rewritten):
-                substituted = self._substitute_for_loops(arg, plate, loop_names)
+                substituted = self._substitute_for_loops(
+                    arg,
+                    plate,
+                    loop_names,
+                    scalar_slot=position < len(arg_names)
+                    and scalar_parameter(family, arg_names[position]),
+                )
                 arg_vid = self._render_arg(ctx, substituted)
                 if position in vector_slots and self._reads_real_array(substituted):
                     arg_vid = self._as_event(ctx, arg_vid, 1)
@@ -1686,11 +1692,14 @@ class StanRenderer(RendererBase):
         dal = self._fresh(ctx, "tdal")
         ctx.sb.vertex(dal, "distr_argument_list")
         bound_vid = self._render_arg(
-            ctx, self._substitute_for_loops(bound, plate, loop_names)
+            ctx,
+            self._substitute_for_loops(bound, plate, loop_names, scalar_slot=True),
         )
         ctx.sb.edge(dal, bound_vid, "child_of")
         for arg in family_args:
-            substituted = self._substitute_for_loops(arg, plate, loop_names)
+            substituted = self._substitute_for_loops(
+                arg, plate, loop_names, scalar_slot=True
+            )
             ctx.sb.edge(dal, self._render_arg(ctx, substituted), "child_of")
         ctx.sb.edge(de, dal, "child_of")
         return de
@@ -1796,8 +1805,10 @@ class StanRenderer(RendererBase):
                     f"(total_count, probs), got {len(args)}"
                 ],
             )
-        total_count = self._substitute_for_loops(args[0], plate, loop_names)
-        probs = self._substitute_for_loops(args[1], plate, loop_names)
+        total_count = self._substitute_for_loops(
+            args[0], plate, loop_names, scalar_slot=True
+        )
+        probs = self._substitute_for_loops(args[1], plate, loop_names, scalar_slot=True)
         # mu = total_count * probs / (1 - probs)
         product = self._stan_binop(
             ctx,
@@ -1977,6 +1988,8 @@ class StanRenderer(RendererBase):
         arg: IRArg,
         plate: Plate,
         loop_names: tuple[str, ...],
+        *,
+        scalar_slot: bool = False,
     ) -> IRArg:
         """For an [`IRArgRef`][quivers.transpile.ir.IRArgRef] whose
         referenced name itself sits on the surrounding plate, prepend
@@ -1987,8 +2000,10 @@ class StanRenderer(RendererBase):
         * User-written index already present (`phi[z]`, `mu[cls]`):
           left alone; the IR already encodes the per-element lookup.
         * Unindexed ref whose declared plate's batch_dims align (as a
-          tuple-equality on `Dim`s) with `plate.batch_dims`: prepend
-          one [`IRArgRef`][quivers.transpile.ir.IRArgRef] index per
+          tuple-equality on `Dim`s) with `plate.batch_dims`, or, when
+          the ref fills a rank-0 family parameter (`scalar_slot`),
+          whose every dimension, batch then event, does: prepend one
+          [`IRArgRef`][quivers.transpile.ir.IRArgRef] index per
           aligned batch dim, in declaration order. The loop indices
           are 1-based identifiers; the Stan
           `indexed_expression`
@@ -2000,7 +2015,30 @@ class StanRenderer(RendererBase):
         `observe y : Obs <- Normal(mu, ...)` index `mu` per-element
         rather than reading the whole array into the scalar Normal
         slot (which Stan rejects with a dimension mismatch at runtime
-        data binding).
+        data binding). A vector `z` over `Feat`, one event, read by a
+        scalar family the plan replicates over `Feat` is read at the
+        loop's position too: inside the loop a whole `vector` in the
+        location slot would score each entry of the observation
+        against every entry of `z`. A vector filling a parameter that
+        reads a whole event (`Categorical`'s `probs`) is that event at
+        every position, so only a rank-0 slot is read this way.
+
+        Parameters
+        ----------
+        arg : IRArg
+            The argument.
+        plate : Plate
+            The site's plate.
+        loop_names : tuple[str, ...]
+            The loop variable of each of the plate's batch dims.
+        scalar_slot : bool
+            Whether the argument fills a rank-0 family parameter.
+
+        Returns
+        -------
+        IRArg
+            The argument, indexed at the loops' position when it varies
+            along the axes they visit.
         """
         if not isinstance(arg, IRArgRef):
             return arg
@@ -2010,7 +2048,11 @@ class StanRenderer(RendererBase):
         if declared is None:
             return arg
         decl_plate = declared[1]
-        if decl_plate.batch_dims != plate.batch_dims:
+        if decl_plate.batch_dims != plate.batch_dims and (
+            not scalar_slot
+            or (*decl_plate.batch_dims, *decl_plate.event_dims)
+            != tuple(plate.batch_dims)
+        ):
             return arg
         if not loop_names:
             return arg
@@ -2120,6 +2162,7 @@ class StanRenderer(RendererBase):
             latent_card,
             stan_name,
             node.args,
+            node.arg_names,
             meta,
             self._prior_index_args(node, acc_loop_names, per_row),
         )
@@ -3022,6 +3065,7 @@ class StanRenderer(RendererBase):
         latent_card: int,
         stan_name: str,
         latent_args: tuple[IRArg, ...],
+        latent_arg_names: tuple[str, ...],
         latent_meta: FamilyMeta,
         prior_index_args: tuple[IRArg, ...],
     ) -> None:
@@ -3029,6 +3073,10 @@ class StanRenderer(RendererBase):
         <family>_lpmf(k | <latent_args>);` to seed each accumulator
         row with the latent's own log-pmf.
 
+        `latent_arg_names` names the parameterization the latent's
+        call gives, so a relaxation weighted from its logits seeds the
+        atoms with the discrete family's logit density
+        (`bernoulli_logit_lpmf`), which Stan computes in log space.
         `prior_index_args` selects the prior row each accumulator
         entry reads: the accumulator's own loop variables under the
         grouped reading, the observe's `via` fibration applied to the
@@ -3069,11 +3117,16 @@ class StanRenderer(RendererBase):
         binary_atoms = declared is not None and declared.atoms == "binary"
         if declared is not None and binary_atoms and declared.weight_family is not None:
             weight_meta = FAMILY_META.get(declared.weight_family)
-            weight_name = (
-                weight_meta.target_names.get("stan")
-                if weight_meta is not None
-                else None
-            ) or stan_name
+            weight_name = _stan_parameterized_name(
+                declared.weight_family,
+                latent_arg_names,
+                (
+                    weight_meta.target_names.get("stan")
+                    if weight_meta is not None
+                    else None
+                )
+                or stan_name,
+            )
         else:
             weight_name = stan_name
         de = self._fresh(ctx, "ide")

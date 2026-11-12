@@ -36,6 +36,7 @@ Per the Turing.jl idiom the renderer:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import pathlib
 
 import panproto
@@ -57,7 +58,12 @@ from quivers.transpile._pipeline import (
     parser_registry,
     target_protocol,
 )
-from quivers.transpile.renderers._ranks import carried_dims, name_rank_map
+from quivers.transpile.renderers._ranks import (
+    carried_dims,
+    name_plate_map,
+    name_rank_map,
+)
+from quivers.transpile.renderers._rows import scalar_parameter, visited_position
 from quivers.transpile.renderers._julia_helpers import (
     JuliaShapes,
     infer_array_rank,
@@ -114,6 +120,7 @@ from quivers.transpile.renderers._base import (
     SchemaFragment,
     RenderContext,
     assert_no_dropped_param_map,
+    logit_weighted,
     mixture_normal_components,
 )
 from quivers.transpile.renderers._qiec import (
@@ -536,6 +543,7 @@ class TuringRenderer(RendererBase):
             input_plates={inp.name: inp.plate for inp in ir.inputs},
             sample_plates={},
             batch_shaped_names=set(),
+            name_plates=name_plate_map(ir),
             shapes=JuliaShapes(
                 name_event_rank=name_event_rank_map(ir),
                 name_array_rank=name_array_rank_map(ir),
@@ -902,6 +910,31 @@ class TuringRenderer(RendererBase):
                 index_dep=index_dep,
             )
 
+        # A parameter whose every axis the site replicates over, such as
+        # a vector `z` over `Feat` filling a `Normal` replicated over
+        # `Feat`, holds one value per draw. Broadcasting the family over
+        # it lays one distribution per position; a plain `Family(z)`
+        # would hand the scalar constructor the whole vector. A
+        # parameter carrying the site's batch axis is read per row by
+        # the index-dependent forms below.
+        loop_dims = (*plate.batch_dims, *residual_event)
+        if (
+            via is None
+            and not own_event
+            and (residual_event or not index_dep)
+            and _visits_parameter(ctx, family, args, arg_names, loop_dims)
+        ):
+            return self._emit_elementwise(
+                ctx,
+                name=name,
+                target_dist=target_dist,
+                args=args,
+                arg_names=arg_names,
+                family=family,
+                loop_dims=loop_dims,
+                observed=observed,
+            )
+
         if index_dep and residual_event:
             raise UnsupportedConstruct(
                 "qvr-turing",
@@ -1012,6 +1045,100 @@ class TuringRenderer(RendererBase):
                 (dist, *size_vids),
             )
         stmt = _tilde(sb, counter, lhs, dist)
+        sb.edge(ctx.body, stmt, "child_of")
+        return ""
+
+    def _emit_elementwise(
+        self,
+        ctx: _TuringCtx,
+        *,
+        name: str,
+        target_dist: str,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        family: str,
+        loop_dims: tuple[Dim, ...],
+        observed: bool,
+    ) -> SchemaFragment:
+        """Emit a scalar family broadcast over the parameters it replicates.
+
+        ``y ~ product_distribution(Normal.(z, 0.5))`` for an observation
+        and ``b ~ arraydist(Normal.(z, 0.5))`` for a latent: each entry
+        of the site is drawn at the entries of its parameters at the
+        same position, scalars shared by every position.
+
+        Parameters
+        ----------
+        ctx : _TuringCtx
+            The render call's mutable state.
+        name : str
+            The site's name.
+        target_dist : str
+            The Turing.jl constructor.
+        args : tuple[IRArg, ...]
+            The family's arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+        family : str
+            The family's QVR name.
+        loop_dims : tuple[Dim, ...]
+            The axes the site replicates the family over.
+        observed : bool
+            Whether the site is conditioned on data.
+
+        Returns
+        -------
+        SchemaFragment
+            ``""``; the statement is attached to the body.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If a parameter varies along some of the replicated axes but
+            not all, which a broadcast lays out at the parameter's shape
+            rather than the site's, or a parameter reading a whole event
+            carries axes, which a broadcast would split.
+        """
+        sb, counter = ctx.sb, ctx.counter
+        axes = tuple(str(dim.name) for dim in loop_dims)
+        for arg, arg_name in zip(args, arg_names, strict=False):
+            plate = _arg_plate(ctx, arg)
+            if plate is None:
+                continue
+            carried = tuple(
+                str(dim.name) for dim in (*plate.batch_dims, *plate.event_dims)
+            )
+            if carried and not scalar_parameter(family, arg_name):
+                raise UnsupportedConstruct(
+                    "qvr-turing",
+                    [
+                        f"sample:partial-axis-parameter:{name}: the {family} "
+                        f"parameter {arg_name!r} reads a whole event, which a "
+                        f"family call broadcast over the site's axes would split"
+                    ],
+                )
+            if carried and carried != axes:
+                raise UnsupportedConstruct(
+                    "qvr-turing",
+                    [
+                        f"sample:partial-axis-parameter:{name}: a parameter "
+                        f"varies along {list(carried)!r} of the axes "
+                        f"{list(axes)!r} the site replicates over, which a "
+                        f"broadcast family call lays out at the parameter's "
+                        f"shape rather than the site's"
+                    ],
+                )
+        elemwise = _dist_expr(
+            sb,
+            counter,
+            target_dist,
+            tuple(_arg_to_julia(ctx, a, family=family) for a in args),
+            family,
+            dotted=True,
+        )
+        wrapper = "product_distribution" if observed else "arraydist"
+        rhs = _call(sb, counter, _identifier(sb, counter, wrapper), (elemwise,))
+        stmt = _tilde(sb, counter, _identifier(sb, counter, name), rhs)
         sb.edge(ctx.body, stmt, "child_of")
         return ""
 
@@ -1464,7 +1591,11 @@ class TuringRenderer(RendererBase):
         `log1p(-p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, so the weights are slices of a single
-        `log.(probs)` binding.
+        `log.(probs)` binding. A `Bernoulli` atom set given by its
+        logits ``l`` weights the atoms by ``log sigmoid(-l)`` and
+        ``log sigmoid(l)``, written in log space as
+        ``min.(x, 0) .- log1p.(exp.(-abs.(x)))``, which neither
+        overflows nor rounds where the probability would.
         """
         sb, counter = ctx.sb, ctx.counter
         probs = marginal_weight_probs(
@@ -1476,6 +1607,21 @@ class TuringRenderer(RendererBase):
             target=self.target,
         )
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            zero = f"{prefix}_w_0"
+            one = f"{prefix}_w_1"
+            self._emit_assignment(
+                ctx,
+                zero,
+                _log_sigmoid(
+                    ctx,
+                    lambda: _unary_minus(sb, counter, _arg_to_julia(ctx, probs)),
+                ),
+            )
+            self._emit_assignment(
+                ctx, one, _log_sigmoid(ctx, lambda: _arg_to_julia(ctx, probs))
+            )
+            return (zero, one)
         if family == "Bernoulli":
             zero = f"{prefix}_w_0"
             one = f"{prefix}_w_1"
@@ -1665,7 +1811,14 @@ class TuringRenderer(RendererBase):
         shim = _JlCtxShim(sb, counter, ctx.cards, "turing")
         shapes = ctx.shapes.scoped_to(len(node.plate.batch_dims))
         reduces_axis = let_expr_has_axis_reduction(shapes, node.expr)
-        rhs = render_let_expr_julia(shim, node.expr, shapes=shapes, dotted=reduces_axis)
+        # A binding of one event, a vector `z = tanh(a)` drawn over an
+        # `over` axis, is no batch the `@.` form below covers; its
+        # elementwise calls are dotted, as Julia applies `tanh` to a
+        # number and not to a vector.
+        one_event = bool(node.plate.event_dims) and not node.plate.batch_dims
+        rhs = render_let_expr_julia(
+            shim, node.expr, shapes=shapes, dotted=reduces_axis or one_event
+        )
         missing = _plate_axes_missing(shapes, node)
         if node.name in ctx.batch_shaped_names and not reduces_axis and not missing:
             rhs = _macro_call(sb, counter, ".", rhs)
@@ -1813,6 +1966,8 @@ def _transform_rhs_args(
     counter: list[int],
     rhs_args: tuple[str, ...],
     family: str,
+    *,
+    dotted: bool = False,
 ) -> tuple[str, ...]:
     """Apply the family's value-level arg transforms to rendered args.
 
@@ -1827,10 +1982,38 @@ def _transform_rhs_args(
     path that renders a family's args, whether the call is scalar,
     broadcast (`Family.(args)`) or inside an `arraydist`
     comprehension.
+
+    Parameters
+    ----------
+    sb : panproto.SchemaBuilder
+        The schema being built.
+    counter : list[int]
+        The fresh-identifier counter.
+    rhs_args : tuple[str, ...]
+        The rendered family arguments.
+    family : str
+        The QVR family name.
+    dotted : bool
+        Whether the family call is broadcast over rows, so every
+        value-level transform must broadcast too.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The transformed arguments.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If a transform's argument position is outside `rhs_args`.
     """
     if family in _RATE_TO_SCALE_INVERT_POSITIONS:
         rhs_args = _invert_rate_arg(
-            sb, counter, rhs_args, _RATE_TO_SCALE_INVERT_POSITIONS[family]
+            sb,
+            counter,
+            rhs_args,
+            _RATE_TO_SCALE_INVERT_POSITIONS[family],
+            dotted=dotted,
         )
     if family in _PROB_COMPLEMENT_POSITIONS:
         rhs_args = _complement_prob_arg(
@@ -1960,7 +2143,7 @@ def _dist_expr(
             )
         dim = _dim_to_size(sb, counter, event_dims[0])
         rhs_args = (dim, *rhs_args)
-    rhs_args = _transform_rhs_args(sb, counter, rhs_args, family)
+    rhs_args = _transform_rhs_args(sb, counter, rhs_args, family, dotted=dotted)
     return call(
         sb,
         counter,
@@ -1997,8 +2180,10 @@ def _invert_rate_arg(
     counter: list[int],
     rhs_args: tuple[str, ...],
     position: int,
+    *,
+    dotted: bool = False,
 ) -> tuple[str, ...]:
-    """Replace `rhs_args[position]` with `inv(<rhs_args[position]>)`.
+    """Replace `rhs_args[position]` with its reciprocal.
 
     Julia's `Base.inv` returns the multiplicative inverse for any
     numeric type; emitting `inv(rate)` rather than the literal
@@ -2006,7 +2191,33 @@ def _invert_rate_arg(
     child kind would need to be inferred from the arg's emitter
     output. The reciprocal is the canonical Distributions.jl
     `theta = 1/rate` substitution for the `Gamma` and `Exponential`
-    families.
+    families. Inside a broadcast family call (`Gamma.(a, inv.(rate))`)
+    the rate may be one value per row, and `inv` of a vector is a
+    `MethodError`, so the reciprocal is broadcast as well.
+
+    Parameters
+    ----------
+    sb : panproto.SchemaBuilder
+        The schema being built.
+    counter : list[int]
+        The fresh-identifier counter.
+    rhs_args : tuple[str, ...]
+        The rendered family arguments.
+    position : int
+        The 0-based position of the rate argument.
+    dotted : bool
+        Whether the family call is broadcast over rows, so the
+        reciprocal is the dot-broadcast `inv.(rate)`.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The arguments with the rate replaced by its reciprocal.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If `position` is outside `rhs_args`.
     """
     if position >= len(rhs_args):
         raise UnsupportedConstruct(
@@ -2016,7 +2227,8 @@ def _invert_rate_arg(
                 f"{len(rhs_args)} args"
             ],
         )
-    inv_call = _call(
+    call = _broadcast_call if dotted else _call
+    inv_call = call(
         sb,
         counter,
         _identifier(sb, counter, "inv"),
@@ -2055,6 +2267,8 @@ class _TuringCtx(RenderContext):
         Each sample site's plate.
     batch_shaped_names : set[str]
         The names carrying a batch axis at runtime.
+    name_plates : dict[str, Plate]
+        Every bound name's plate, inputs, sites, and lets alike.
     shapes : JuliaShapes
         The array-shape environment let expressions render under.
     module : IRQiecModule
@@ -2073,6 +2287,7 @@ class _TuringCtx(RenderContext):
         input_plates: dict[str, Plate],
         sample_plates: dict[str, Plate],
         batch_shaped_names: set[str],
+        name_plates: dict[str, Plate],
         shapes: JuliaShapes,
         module: IRQiecModule,
     ) -> None:
@@ -2083,6 +2298,7 @@ class _TuringCtx(RenderContext):
         self.input_plates = input_plates
         self.sample_plates = sample_plates
         self.batch_shaped_names = batch_shaped_names
+        self.name_plates = name_plates
         self.shapes = shapes
         self.module = module
         self.operations_bound: set[str] = set()
@@ -2210,6 +2426,52 @@ def _dotted_binary(
     operator, for expressions the renderer builds outside the `@.`
     macro."""
     return _binary_expr(sb, counter, left, f".{op}", right)
+
+
+def _log_sigmoid(ctx: _TuringCtx, operand: Callable[[], str]) -> str:
+    """``log sigmoid(x)`` elementwise, as ``min.(x, 0) .- log1p.(exp.(-abs.(x)))``.
+
+    The form is exact in floating point wherever ``x`` is finite: the
+    exponential's argument is never positive, so it neither overflows
+    nor, through ``log1p``, loses the small tail a large ``|x|`` leaves.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The emission context.
+    operand : Callable[[], str]
+        Builds a fresh vertex for ``x`` each time it is called; the
+        form reads ``x`` twice.
+
+    Returns
+    -------
+    str
+        The expression's vertex.
+    """
+    sb, counter = ctx.sb, ctx.counter
+    floor = _broadcast_call(
+        sb,
+        counter,
+        _identifier(sb, counter, "min"),
+        (operand(), _number(sb, counter, 0.0)),
+    )
+    magnitude = _broadcast_call(
+        sb, counter, _identifier(sb, counter, "abs"), (operand(),)
+    )
+    tail = _broadcast_call(
+        sb,
+        counter,
+        _identifier(sb, counter, "log1p"),
+        (
+            _broadcast_call(
+                sb,
+                counter,
+                _identifier(sb, counter, "exp"),
+                (_unary_minus(sb, counter, magnitude),),
+            ),
+        ),
+    )
+    return _dotted_binary(sb, counter, floor, "-", tail)
 
 
 def _unary_minus(sb: panproto.SchemaBuilder, counter: list[int], operand: str) -> str:
@@ -2580,6 +2842,64 @@ def _arg_indexes_plated(
                 if _arg_indexes_plated(e, sample_plates, batch_shaped_names):
                     return True
     return False
+
+
+def _arg_plate(ctx: _TuringCtx, arg: IRArg) -> Plate | None:
+    """The declared plate of an unindexed reference argument.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The render context, carrying every bound name's plate.
+    arg : IRArg
+        The argument.
+
+    Returns
+    -------
+    Plate | None
+        The plate of the name ``arg`` reads whole, else ``None``.
+    """
+    if not isinstance(arg, IRArgRef) or arg.indices:
+        return None
+    return ctx.name_plates.get(arg.name)
+
+
+def _visits_parameter(
+    ctx: _TuringCtx,
+    family: str,
+    args: tuple[IRArg, ...],
+    arg_names: tuple[str, ...],
+    loop_dims: tuple[Dim, ...],
+) -> bool:
+    """Whether a parameter holds one value per position the site replicates.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The render context, carrying every bound name's plate.
+    family : str
+        The family's QVR name.
+    args : tuple[IRArg, ...]
+        The family's arguments.
+    arg_names : tuple[str, ...]
+        The parameter each argument fills.
+    loop_dims : tuple[Dim, ...]
+        The axes the site replicates the family over.
+
+    Returns
+    -------
+    bool
+        True when an argument filling a rank-0 parameter reads whole a
+        value whose every axis is one of ``loop_dims``.
+    """
+    if not loop_dims:
+        return False
+    loops = {str(dim.name): str(dim.name) for dim in loop_dims}
+    return any(
+        scalar_parameter(family, arg_name)
+        and bool(visited_position(_arg_plate(ctx, arg), loops))
+        for arg, arg_name in zip(args, arg_names, strict=False)
+    )
 
 
 def _promote_scalar_ref(

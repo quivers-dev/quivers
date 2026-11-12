@@ -193,7 +193,11 @@ the kernel's parameter source avoids that collapse while retaining the V-Cat
 representation, because the kernel need not be linear in its input. The
 [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource)
 interface supplies the common boundary: `mlp`, `linear`, `attention`, and
-`identity` differ only in what they compute.
+`identity` differ only in what they compute. An `attention` source pools a
+sequence of rows into one parameter vector, so a program step, which hands a
+kernel one row per draw, refuses to draw through it; a program attends over a
+sequence with a [learned function](../guides/dsl-declarations.md#sequence-functions-self-attention-and-position-tables)
+declared `param_source=self_attention`.
 
 Putting a prior on the weights is then a second, independent move. It lifts the deterministic parameter $\theta$ into a sample site, so the model becomes a mixture of networks $\int p(y \mid x, \theta)\, p(\theta)\, d\theta$ rather than a single one.
 

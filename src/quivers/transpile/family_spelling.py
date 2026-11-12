@@ -206,7 +206,13 @@ def can_spell(target: str, family: str) -> bool:
 _UNSPELLED_ALTERNATIVES: dict[tuple[str, str], str] = {
     **{
         (family, "logits"): "probs"
-        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+        for family in (
+            "Bernoulli",
+            "Binomial",
+            "ContinuousBernoulli",
+            "Geometric",
+            "NegativeBinomial",
+        )
     },
     ("MultivariateNormal", "precision_matrix"): "covariance_matrix",
     ("Wishart", "precision_matrix"): "scale_tril",

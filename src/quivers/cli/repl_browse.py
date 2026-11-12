@@ -8,6 +8,8 @@ on the compiler's objects and know nothing of either front end.
 
 from __future__ import annotations
 
+from quivers.dsl.emit import draw_call_to_source
+
 # Each ``_children_for_*`` returns ``(head_label, children)`` where
 # ``children`` is a possibly nested list of either ``str`` leaves or
 # ``(label, sub_children)`` tuples. ``_populate_children`` walks that
@@ -120,10 +122,7 @@ def _index_suffix(idx):  # type: ignore[no-untyped-def]
 
 def _call_str(step):  # type: ignore[no-untyped-def]
     head = getattr(step, "morphism", "?") or "?"
-    args = getattr(step, "args", None)
-    if not args:
-        return str(head)
-    return f"{head}({', '.join(str(a) for a in args)})"
+    return draw_call_to_source(str(head), getattr(step, "args", None))
 
 
 def _children_for_deduction(name, system):  # type: ignore[no-untyped-def]
