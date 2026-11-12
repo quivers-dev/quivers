@@ -918,6 +918,14 @@ def _family_event_rank(family: str) -> int:
     raise UnsupportedConstruct("qvr-gen", [f"family:{family}: no Gen.jl event rank"])
 
 
+#: The grafted Gen.jl distribution of each family call written through
+#: an alternative parameterization: a Bernoulli given by its logits
+#: scores each outcome by the log-sigmoid of the signed logits.
+_LOGIT_CALLEES: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "qvr_bernoulli_logit",
+}
+
+
 def _gen_target_name(family: str) -> str:
     """Look up the Gen.jl distribution constructor for a family.
 
@@ -1218,6 +1226,7 @@ class GenRenderer(RendererBase):
         # names through normal Julia name lookup.
         if (
             any(_ir_uses_family(ir.body, f) for f in _GEN_RUNTIME_HELPER_FAMILIES)
+            or _ir_uses_logit_callee(ir.body)
             or qiec_helper_families_used(ir, self.target)
             or _ir_has_factor(ir.body)
         ):
@@ -1532,7 +1541,9 @@ class GenRenderer(RendererBase):
         gx = self._gx
         if family == "MixtureNormal":
             return self._mixture_normal_call(args, arg_names, arg_ctx)
-        callee_name = _gen_target_name(family)
+        callee_name = _LOGIT_CALLEES.get((family, tuple(arg_names)))
+        if callee_name is None:
+            callee_name = _gen_target_name(family)
         arg_vids: list[str] = []
         for arg, name in zip(args, arg_names, strict=False):
             rendered = _render_arg(
@@ -2067,6 +2078,30 @@ _RUNTIME_GEN_SUBTREE = _subtree_vertex_ids(_RUNTIME_GEN_SCHEMA, _RUNTIME_GEN_TOP
 #: The address namespace factor choices are traced under, so a reader
 #: of the trace tells a scored weight from a draw by its address.
 _FACTOR_NAMESPACE = "qvr_factor"
+
+
+def _ir_uses_logit_callee(body: tuple[IRNode, ...]) -> bool:
+    """Whether a site draws or scores through a grafted logit distribution.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe calls a family under a
+        parameterization `_LOGIT_CALLEES` spells.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and (
+            (node.family, tuple(node.arg_names)) in _LOGIT_CALLEES
+        ):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_uses_logit_callee(node.scope):
+            return True
+    return False
 
 
 def _ir_has_factor(body: tuple[IRNode, ...]) -> bool:

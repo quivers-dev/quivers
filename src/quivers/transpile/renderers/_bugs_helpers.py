@@ -396,6 +396,68 @@ def continuous_bernoulli_log_pdf(
     )
 
 
+def bernoulli_logit_log_pmf(
+    backend: str,
+    *,
+    variate: str,
+    args: tuple[IRArg, ...],
+    arg_names: tuple[str, ...],
+) -> LetExprNode:
+    """Build the log mass of a Bernoulli given by its log-odds.
+
+    For log-odds ``l`` and outcome ``x`` in ``{0, 1}``,
+    ``log p(x) = x * l - softplus(l)`` with
+    ``softplus(l) = (l + |l|) / 2 + log(1 + exp(-|l|))``. The
+    exponential's argument is never positive, so the form neither
+    overflows nor loses the complement's digits where the probability
+    is within an ulp of zero or one, as ``log(1 - ilogit(l))`` would.
+    The expression needs only ``abs``, ``exp``, and ``log`` from the
+    BUGS and JAGS base libraries.
+
+    Parameters
+    ----------
+    backend : str
+        The target, for the refusal's kind.
+    variate : str
+        The outcome's name.
+    args : tuple[IRArg, ...]
+        The call's arguments.
+    arg_names : tuple[str, ...]
+        The parameter each argument fills.
+
+    Returns
+    -------
+    LetExprNode
+        The log mass of one outcome.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the call supplies no logits.
+    """
+    by_name = dict(zip(arg_names, args, strict=False))
+    if "logits" not in by_name:
+        raise UnsupportedConstruct(
+            f"qvr-{backend}",
+            [
+                f"family:Bernoulli:missing-arg:logits: the closed-form mass "
+                f"reads the log-odds; the site supplies {list(arg_names)}"
+            ],
+        )
+    logit = _scalar_arg_expr(backend, "Bernoulli", "logits", by_name["logits"])
+    magnitude = LetExprCall(func="abs", args=(logit,))
+    softplus = _let_add(
+        _let_mul(LetExprLiteral(value=0.5), _let_add(logit, magnitude)),
+        _let_log(
+            _let_add(
+                LetExprLiteral(value=1.0),
+                LetExprCall(func="exp", args=(LetExprUnaryOp(operand=magnitude),)),
+            )
+        ),
+    )
+    return _let_sub(_let_mul(LetExprVar(name=variate), logit), softplus)
+
+
 def reorder_half_studentt_dt(
     args: tuple[IRArg, ...], arg_names: tuple[str, ...]
 ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:

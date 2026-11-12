@@ -549,6 +549,28 @@ var _qvr_digamma = function(x) {
   return Array.isArray(x) ? map(_qvr_digamma, x) : _qvr_digamma_scalar(x);
 };
 
+// Bernoulli given by its log-odds `l`. Each outcome scores by the
+// log-sigmoid of the signed log-odds, log p(1) = log sigmoid(l) and
+// log p(0) = log sigmoid(-l), written min(v, 0) - log1p(exp(-|v|)) so
+// it stays exact where the probability is within an ulp of zero or one
+// (`_qvr_log_sigmoid` above).
+var BernoulliLogit = function(params) {
+  var l = params.logits;
+  return {
+    qvr: true,
+    sample: function() {
+      return Math.random() < 1 / (1 + Math.exp(-l));
+    },
+    score: function(x) {
+      var one = x === true || x === 1;
+      return one ? _qvr_log_sigmoid(l) : _qvr_log_sigmoid(-l);
+    },
+    support: function() {
+      return [false, true];
+    }
+  };
+};
+
 var Logistic = function(params) {
   var loc = params.loc;
   var scale = params.scale;

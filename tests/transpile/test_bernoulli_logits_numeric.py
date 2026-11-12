@@ -1,14 +1,16 @@
 """A Bernoulli written with logits scores one joint on every target.
 
-Two fixtures write a Bernoulli likelihood through its logits: one sampled
-log-odds every row shares, and a logistic regression whose linear
-predictor is one log-odds per row, evaluated where a row saturates (a
-log-odds past 15, whose probability rounds to one in single precision).
-Each is scored on the compiled runtime and the reference machine, both
-pinned to `torch.distributions.Bernoulli(logits=...)` in double precision,
-and on every target whose library has a logit-parameterized Bernoulli. The
-targets without one refuse the fixture under `family:Bernoulli:logits`
-rather than score the log-odds as a probability.
+Three fixtures write a Bernoulli through its logits: an observation at one
+sampled log-odds every row shares, a logistic regression whose linear
+predictor is one log-odds per row, and a latent outcome drawn at a
+sampled log-odds. Each is evaluated at log-odds from -30 to 30, where the
+probability rounds to within an ulp of zero or one, so a target that
+scored through the probability would lose the complement's digits. Each
+is scored on the compiled runtime and the reference machine, both pinned
+to `torch.distributions.Bernoulli(logits=...)` in double precision, and on
+every target. BUGS, whose `dbern` takes a probability and which has no
+data block for a zeros-trick carrier, refuses the fixtures under
+`family:Bernoulli:logits` rather than score them through the probability.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
 from tests.transpile import _docker, _equivalence
+from tests.transpile.probes import _protocol
+from tests.transpile.probes.church import ChurchProbe
 from tests.transpile.test_numeric_equivalence import _BACKENDS_WITH_IMAGES
 
 type Host = float | int | list[float] | list[int]
@@ -37,6 +41,7 @@ _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 _SHARED = "steps/observe_bernoulli_logits"
 _ROWS = "steps/observe_bernoulli_logits_rows"
+_DRAWN = "steps/sample_bernoulli_logits"
 
 
 def _t(value: Host) -> torch.Tensor:
@@ -74,13 +79,29 @@ def _rows(v: Mapping[str, Host]) -> torch.Tensor:
     )
 
 
+def _drawn(v: Mapping[str, Host]) -> torch.Tensor:
+    eta, z = _t(v["eta"]), _t(v["z"])
+    return (
+        D.Normal(_t(0.0), _t(10.0)).log_prob(eta)
+        + D.Bernoulli(logits=eta).log_prob(z).sum()
+        + D.Normal(2.0 * z - 1.0, _t(1.0)).log_prob(_t(v["y"])).sum()
+    )
+
+
 #: Each case: its fixture, its program, its data, its points, its oracle.
 _CASES: dict[str, tuple[str, str, dict[str, Host], list[dict[str, Host]], Oracle]] = {
     "shared": (
         _SHARED,
         "bernoulli_logits",
         {"y": [1, 0, 1, 1]},
-        [{"eta": -1.3}, {"eta": 0.4}, {"eta": 2.2}, {"eta": 7.5}],
+        [
+            {"eta": -30.0},
+            {"eta": -1.3},
+            {"eta": 0.4},
+            {"eta": 7.5},
+            {"eta": 15.0},
+            {"eta": 30.0},
+        ],
         _shared,
     ),
     "rows": (
@@ -91,20 +112,36 @@ _CASES: dict[str, tuple[str, str, dict[str, Host], list[dict[str, Host]], Oracle
             {"a": 0.5, "b": 5.0},
             {"a": -1.0, "b": 1.25},
             {"a": 2.0, "b": -4.0},
+            {"a": 0.0, "b": 10.0},
+            {"a": 0.0, "b": -10.0},
         ],
         _rows,
     ),
+    "drawn": (
+        _DRAWN,
+        "draw_logits",
+        {"y": [0.8, -1.1, 1.3]},
+        [
+            {"eta": -30.0, "z": [0, 0, 1]},
+            {"eta": 30.0, "z": [1, 0, 1]},
+            {"eta": 0.7, "z": [1, 1, 0]},
+            {"eta": -12.0, "z": [0, 1, 0]},
+        ],
+        _drawn,
+    ),
 }
 
-_INTEGERS = frozenset({"y"})
+#: The names each fixture reads as integer outcomes.
+_INTEGERS: dict[str, frozenset[str]] = {
+    _SHARED: frozenset({"y"}),
+    _ROWS: frozenset({"y"}),
+    _DRAWN: frozenset({"z"}),
+}
 
-#: The targets whose library has no logit-parameterized Bernoulli.
-_REFUSING: tuple[str, ...] = ("bugs", "church", "gen", "jags", "webppl")
-
+#: BUGS's `dbern` takes a probability, and BUGS has no data block for
+#: the zeros-trick carrier the mass written from the logits needs.
 _REFUSED: dict[tuple[str, str], str] = {
-    (fixture, target): "family:Bernoulli:logits"
-    for fixture in (_SHARED, _ROWS)
-    for target in _REFUSING
+    (fixture, "bugs"): "family:Bernoulli:logits" for fixture in (_SHARED, _ROWS, _DRAWN)
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
@@ -126,11 +163,13 @@ def _source(fixture: str) -> str:
     return (_FIXTURES / f"{fixture}.qvr").read_text()
 
 
-def _tensor(name: str, value: Host) -> torch.Tensor:
+def _tensor(fixture: str, name: str, value: Host) -> torch.Tensor:
     """A host value as the compiled runtime reads it.
 
     Parameters
     ----------
+    fixture : str
+        The fixture, which decides which names are integers.
     name : str
         The value's name, which decides integer against real.
     value : Host
@@ -141,15 +180,19 @@ def _tensor(name: str, value: Host) -> torch.Tensor:
     torch.Tensor
         The tensor.
     """
-    dtype = torch.long if name in _INTEGERS else torch.float32
+    dtype = torch.long if name in _INTEGERS[fixture] else torch.float32
     return torch.as_tensor(value, dtype=dtype)
 
 
-def _nested(name: str, value: Host) -> float | int | bool | tuple[float | bool, ...]:
+def _nested(
+    fixture: str, name: str, value: Host
+) -> float | int | bool | tuple[float | bool, ...]:
     """A host value as the reference machine reads it.
 
     Parameters
     ----------
+    fixture : str
+        The fixture, which decides which names are outcomes.
     name : str
         The value's name; an observed Bernoulli outcome is a Boolean.
     value : Host
@@ -161,7 +204,9 @@ def _nested(name: str, value: Host) -> float | int | bool | tuple[float | bool, 
         A number, or a tuple of numbers or Booleans.
     """
     if isinstance(value, list):
-        return tuple(bool(item) if name in _INTEGERS else item for item in value)
+        return tuple(
+            bool(item) if name in _INTEGERS[fixture] else item for item in value
+        )
     return value
 
 
@@ -185,13 +230,15 @@ def _reference(case: str) -> list[float]:
     for point in points:
         merged = {**data, **point}
         expected = float(oracle(merged))
-        values = {name: _tensor(name, value) for name, value in merged.items()}
+        values = {name: _tensor(fixture, name, value) for name, value in merged.items()}
         compiled = float(program.morphism.log_joint(torch.zeros(1, 1), values).sum())
         assert compiled == pytest.approx(expected, rel=1e-5)
         run = program.run(
             program_name,
-            data={name: _nested(name, value) for name, value in data.items()},
-            sites={name: _nested(name, value) for name, value in point.items()},
+            data={name: _nested(fixture, name, value) for name, value in data.items()},
+            sites={
+                name: _nested(fixture, name, value) for name, value in point.items()
+            },
         )
         assert run.log_joint == pytest.approx(expected, rel=1e-9)
         densities.append(run.log_joint)
@@ -249,7 +296,9 @@ def test_target_scores_the_reference_joint(
         points=[{"params": dict(point), "data": dict(data)} for point in points],
         scratch=scratch / case / backend,
         shapes=shapes,
-        dtypes={name: "int" if name in _INTEGERS else "float" for name in shapes},
+        dtypes={
+            name: "int" if name in _INTEGERS[fixture] else "float" for name in shapes
+        },
     )
     _equivalence.assert_log_density_match(
         _reference(case),
@@ -257,6 +306,36 @@ def test_target_scores_the_reference_joint(
         atol=_equivalence.adaptive_atol(n_obs=math.prod(shapes["y"])),
         context=f"{backend}@{case}",
     )
+
+
+@pytest.mark.requires_probe("church")
+@pytest.mark.parametrize("case", sorted(_CASES))
+def test_church_scores_the_reference_joint(case: str, scratch: pathlib.Path) -> None:
+    fixture, _, data, points, _ = _CASES[case]
+    source = transpile(parse(_source(fixture)), target="church")
+    result = ChurchProbe().evaluate(
+        source,
+        case,
+        [_protocol.Point(params=dict(point), data=dict(data)) for point in points],
+        scratch=scratch / case / "church",
+    )
+    _equivalence.assert_log_density_match(
+        _reference(case),
+        result.log_densities,
+        atol=_equivalence.adaptive_atol(n_obs=torch.as_tensor(data["y"]).numel()),
+        context=f"church@{case}",
+    )
+
+
+def test_the_probability_route_loses_the_complement_at_large_log_odds() -> None:
+    # Scoring an outcome of zero at log-odds 30 through the probability,
+    # `log(1 - sigmoid(30))` in double precision, misses the exact
+    # `-softplus(30)` by more than the probe tolerance, so the cells above
+    # reject a target that spells the family through its probability.
+    eta = _t(30.0)
+    exact = float(D.Bernoulli(logits=eta).log_prob(_t(0.0)))
+    through_probability = float(torch.log1p(-torch.sigmoid(eta)))
+    assert abs(exact - through_probability) > _equivalence.adaptive_atol(n_obs=1)
 
 
 @pytest.mark.parametrize(("fixture", "backend"), sorted(_REFUSED))
