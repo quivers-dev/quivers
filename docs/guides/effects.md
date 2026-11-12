@@ -3,8 +3,8 @@
 An [*algebraic effect*](https://en.wikipedia.org/wiki/Effect_system) is an operation
 a computation requests from its context, such as drawing a random value, reading
 state, or adding a score, and a *handler* decides how each request is answered and
-how the computation resumes [@plotkin2003algebraic; @plotkin2009handlers;
-@bauer2015programming]. The same random request can draw a fresh value during
+how the computation resumes
+[@plotkin2003algebraic; @plotkin2009handlers; @bauer2015programming]. The same random request can draw a fresh value during
 simulation or replay a given value during scoring, as in Pyro's effect handlers
 [@pyroEffects].
 
