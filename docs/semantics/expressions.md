@@ -203,19 +203,29 @@ of the random choices of a run.
 
 ### 2.10 Currying {#210-residuation-witnesses}
 
-For $f : X \times Y \to Z$, the postfixes `f.curry_right` and `f.curry_left` are meant to denote
-the two currying bijections of a biclosed monoidal category, $\mathcal C(X \otimes Y, Z) \cong
-\mathcal C(X, Z / Y)$ and $\mathcal C(X \otimes Y, Z) \cong \mathcal C(Y, X \backslash Z)$
-([Schemas §3](schemas.md#3-residuated-type-formers)). In $\mathbf{Mat}(\mathcal V)$, where each
-object is its own dual, the corresponding bijection sends $f$ to the matrix
-$(x, (y, z)) \mapsto f((x, y), z)$ from $X$ to $Y \times Z$.
+For $f : X \times Y \to Z$, the postfixes `f.curry_right` and `f.curry_left` denote the two
+currying bijections of a closed monoidal category. $\mathbf{Mat}(\mathcal V)$ under the Cartesian
+product is compact closed, with each object its own dual, so the internal hom $[Y, Z]$ is the
+product $Y \times Z$, and the bijections are
 
-The runtime class `CurriedMorphism` computes neither. `f.curry_right` has the domain $X$ (the
-domain of $f$ without its last factor), the codomain $Z$ unchanged, and the matrix of $f$
-unchanged, of shape $X \times Y \times Z$, so its declared type does not match its entries.
-`f.curry_left` drops the first factor instead. When $Z$ is not a set of categorial types, the
-object also records a slash type built from $Z$ and the dropped factor, beside the unchanged
-codomain.
+$$
+\mathbf{Mat}(\mathcal V)(X \times Y, Z) \cong \mathbf{Mat}(\mathcal V)(X, Y \times Z),
+\qquad
+\mathbf{Mat}(\mathcal V)(X \times Y, Z) \cong \mathbf{Mat}(\mathcal V)(Y, X \times Z)
+$$
+[@maclane1998categories]:
+
+$$
+\llbracket f.\mathsf{curry\_right} \rrbracket(x, (y, z)) = \llbracket f \rrbracket((x, y), z),
+\qquad
+\llbracket f.\mathsf{curry\_left} \rrbracket(y, (x, z)) = \llbracket f \rrbracket((x, y), z).
+$$
+
+The runtime class `CurriedMorphism` computes these matrices, with declared domain and codomain
+matching its tensor, and `UncurriedMorphism` is its inverse. With more than two domain factors,
+`curry_right` moves the last factor into the codomain and `curry_left` the first. This is the
+currying of a compact closed category, not that of the biclosed categories of categorial grammar
+([Schemas §3](schemas.md#3-residuated-type-formers)), whose internal homs are the slash types.
 
 ### 2.11 Freeze
 
