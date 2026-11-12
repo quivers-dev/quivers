@@ -1,8 +1,6 @@
-# Tutorial 5: Variational Inference
+# 5. Variational inference
 
-Variational inference fits a tractable guide to a program's [posterior](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise). This chapter defines and conditions a model, constructs a guide and ELBO objective, optimizes them with SVI, and uses `Predictive` to draw from the fitted approximation and simulate observations. Blei and colleagues provide a statistical introduction to variational inference [@blei2017variational]; Hoffman and colleagues develop stochastic variational inference [@hoffman2013svi]. These sources explain the objectives and approximations, while the code below demonstrates Quivers' interfaces.
-
-The pipeline:
+[Variational inference](https://en.wikipedia.org/wiki/Variational_Bayesian_methods) approximates a posterior by the member of a tractable family, the *guide*, that maximizes the evidence lower bound (ELBO) [@blei2017variational]. Stochastic variational inference (SVI) maximizes it by stochastic gradient steps [@hoffman2013svi]. This chapter builds a `MonadicProgram` by hand, records an execution trace, conditions on observations, fits a guide by SVI, and draws from the fitted approximation with `Predictive`. The interfaces follow Pyro's ([Pyro's SVI](https://pyro.ai/examples/svi_part_i.html)) [@pyroSVI].
 
 ```mermaid
 sequenceDiagram
@@ -13,42 +11,22 @@ sequenceDiagram
     participant svi as SVI
     participant pred as Predictive
 
-    User->>trace: model + inputs
+    User->>trace: model + inputs (inspection)
     trace-->>User: Trace (values, log-densities per site)
-    User->>condition: observations dict
+    User->>condition: observations dict (inspection)
     condition-->>User: conditioned model
     User->>guide: AutoNormalGuide(model, observed_names)
     loop fit
         User->>svi: svi.step(x, observations)
         svi->>guide: rsample
         guide-->>svi: posterior draw
-        svi-->>User: ELBO loss
+        svi-->>User: negative ELBO
     end
     User->>pred: Predictive(model, posterior=guide)
     pred-->>User: posterior + predictive draws
 ```
 
-Suppose `z` is an unknown temperature and `y` is a noisy reading. A prior
-assigns plausibility to temperatures before the reading; the likelihood
-assigns a score to the reading under each temperature. Their product,
-normalized over temperatures, is the posterior we want.
-
-The [guide](https://pyro.ai/examples/svi_part_i.html#Guide) is an adjustable
-distribution used to approximate that posterior [@pyroSVI]. A [Normal guide](../qvr/06-inference-zoo.md#step-2-which-variational-guide)
-can move its center and widen or narrow its spread. SVI draws candidate
-temperatures from it, evaluates the model and guide scores, and adjusts those
-parameters. For instance, concentrating around 10 degrees would fit poorly
-if both the prior and a precise reading favor 20 degrees; the objective
-penalizes the guide for proposing temperatures with low model density.
-
-## Concepts
-
-- **Trace**: Record of a program execution with sample sites and log-densities
-- **Conditioning**: Fixing observed variables to particular values
-- **Guide**: A variational approximation to the posterior distribution
-- **ELBO**: Evidence Lower Bound, a loss function for variational inference
-- **SVI**: Stochastic Variational Inference, a gradient-based optimization algorithm
-- **Predictive**: Posterior sampling using the fitted guide
+`trace` and `condition` inspect the model. The fitting loop does not need them, because each `svi.step` receives the observations.
 
 ## Setup
 
@@ -71,7 +49,7 @@ from quivers.inference import (
 
 ## Building a model
 
-Create a simple generative model: latent variable z drives observation y.
+A latent `z` with a Normal prior and an observation `y` with a Normal likelihood given `z`:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)
@@ -90,9 +68,11 @@ model = MonadicProgram(
 )
 ```
 
+Both families have learnable parameters (the prior's mean and scale, and the likelihood's map from `z` to a mean and scale), so the fit below estimates them together with the guide.
+
 ## Simulating observed data
 
-Generate synthetic observations from the model (as if from an experiment):
+Draw 50 rows from the model:
 
 ```python
 torch.manual_seed(42)
@@ -109,11 +89,11 @@ print(y_observed.shape)  # [50, 1]
 print(y_observed.mean(), y_observed.std())
 ```
 
-In practice, these observations come from real data. Here we simulate for illustration.
+Each row of the input is an [independent run](../../guides/inference-foundations.md#input-rows-are-independent-runs) of the program, so each simulated `y` has its own `z`.
 
 ## Tracing the model
 
-A trace records the values and log-densities at each site (random variable):
+An [execution trace](../../guides/inference-foundations.md#trace-and-sample-sites) records one run of a program: for each *site*, a named draw or observation, its value and its log density [@wingate2011lightweight].
 
 ```python
 # Trace the model at a single point
@@ -131,14 +111,14 @@ print("z log_prob:", z_site.log_prob)
 
 Each site has:
 
-- `value`: The sampled value
-- `log_prob`: The log-probability under the distribution
-- `is_observed`: Whether this site is conditioned (fixed)
-- `is_deterministic`: Whether it is a let binding
+- `value`: the value drawn or observed.
+- `log_prob`: its log density under the site's distribution.
+- `is_observed`: whether the value was given by conditioning.
+- `is_deterministic`: whether the site is a `Let` binding.
 
 ## Conditioning on observations
 
-Wrap the model to fix observed variables:
+[`condition`](../../api/inference/conditioning.md) fixes the values of named sites:
 
 ```python
 # Fix y to observed values
@@ -149,28 +129,22 @@ tr_cond = conditioned_model.trace(x_single)
 
 # Now y is fixed
 print(tr_cond.sites["y"].is_observed)  # True
-print(tr_cond.sites["y"].value)         # matches y_observed[0]
+print(tr_cond.sites["y"].value)         # the conditioned values
 print(tr_cond.sites["z"].is_observed)  # False (still latent)
 ```
 
-The conditioned model still allows the latent variable z to vary.
+`z` is still drawn from its prior, and `y` is scored at the given values.
 
 ## Creating a guide
 
-A guide is a variational approximation to the posterior. It has the same interface as the model but is typically simpler (e.g., a mean-field normal distribution).
+[`AutoNormalGuide`](../../api/inference/guide.md) is a mean-field guide: it gives each latent site an independent Normal with a learnable mean and log scale.
 
 ```python
-# Create a guide: assumes posterior over z and y is normal
+# Mean-field guide over the latent z; y is observed
 guide = AutoNormalGuide(model, observed_names={"y"})
 ```
 
-The `AutoNormalGuide`:
-
-1. Identifies latent (non-observed) variables: just `z` in this case
-2. Creates learnable parameters for the mean and log-scale of a normal distribution
-3. Provides `rsample(x)` and `log_prob(x, samples)` methods
-
-Sample from the guide:
+The guide skips the sites named in `observed_names`, so here it covers `z` alone, and it provides `rsample(x)` and `log_prob(x, samples)`:
 
 ```python
 x = torch.zeros(4, dtype=torch.long)
@@ -181,8 +155,6 @@ posterior_z = posterior_samples["z"]
 print(posterior_z.shape)  # [4]
 ```
 
-Compute the guide's log-probability:
-
 ```python
 log_q = guide.log_prob(x, posterior_samples)
 print(log_q.shape)  # [4]
@@ -190,7 +162,7 @@ print(log_q.shape)  # [4]
 
 ## Passing observations at runtime
 
-Programs that use indexed observes (`observe r : N <- F(args)`) read their response tensors from a runtime `observations: dict[str, torch.Tensor]` keyed by the observed-variable name. The dict is forwarded to `MonadicProgram.rsample` (kwarg) and to `ELBO.forward` / `SVI.step` (positional, after the program input):
+A program reads the values of its observed sites from an `observations: dict[str, torch.Tensor]` keyed by site name. `MonadicProgram.rsample` takes it as a keyword argument, and `ELBO.forward` and `SVI.step` take it as the second positional argument, after the program input:
 
 ```python
 observations = {"y": y_observed}            # shape matches the program's N
@@ -198,11 +170,7 @@ observations = {"y": y_observed}            # shape matches the program's N
 #     loss = svi.step(domain_input, observations)
 ```
 
-There is no `.qvr`-level data block; observation tensors live in Python at the call site.
-
 ## Setting up inference
-
-Define the ELBO loss and optimizer:
 
 ```python
 elbo = ELBO(num_particles=1)
@@ -212,16 +180,11 @@ optimizer = optim.Adam(list(model.parameters()) + list(guide.parameters()), lr=0
 svi = SVI(model, guide, optimizer, elbo)
 ```
 
-The [`SVI`](../../api/inference/svi.md) object pairs:
-
-- `model`: the generative `MonadicProgram`. Observations are supplied to each step rather than baked in via [`condition`](../../api/inference/conditioning.md).
-- `guide`: the variational posterior.
-- `optim`: optimizer over the model and guide parameters.
-- `objective`: an [`Objective`](../../api/inference/elbo.md) such as [`ELBO`](../../api/inference/elbo.md).
+An [`SVI`](../../api/inference/svi.md) driver pairs the model, the guide, an optimizer over both sets of parameters, and an [`Objective`](../../api/inference/elbo.md) such as [`ELBO`](../../api/inference/elbo.md).
 
 ## Training loop
 
-Run inference to optimize the guide's parameters:
+Each step takes a minibatch of 10 observations. The input has one row for each observation, so each row is one run, with its own `z`, that observes one `y`:
 
 ```python
 num_steps = 5
@@ -253,42 +216,26 @@ for step in range(num_steps):
     epoch_loss = sum(batch_losses) / len(batch_losses)
     losses.append(epoch_loss)
 
-    if step % 10 == 0:
-        print(f"Step {step}: Loss {epoch_loss:.4f}")
+    print(f"Step {step}: Loss {epoch_loss:.4f}")
 ```
 
-The ELBO loss combines:
-
-1. **Model likelihood**: How well the model explains observations under the guide's samples
-2. **KL divergence**: How close the guide is to the prior (regularization)
+For latent $z$ and observations $y$, the ELBO of a guide $q$ is
 
 $$
-\operatorname{ELBO}(q)
-= \mathbb{E}_{q(z)}\!\left[\log p(\text{obs}, z)-\log q(z)\right].
+\operatorname{ELBO}(q) = \mathbb{E}_{q(z)}\bigl[\log p(y, z) - \log q(z)\bigr] = \mathbb{E}_{q(z)}\bigl[\log p(y \mid z)\bigr] - \operatorname{KL}\bigl(q(z) \,\|\, p(z)\bigr).
 $$
 
-When the joint factors as $p(\text{obs}\mid z)p(z)$, this is equivalently the expected log likelihood minus $\operatorname{KL}(q(z)\|p(z))$. `SVI.step` minimizes the negative ELBO.
+The first form is the expected log joint density plus the entropy of $q$. The second is the expected log likelihood minus the KL divergence from the guide to the prior. Since $\log p(y) = \operatorname{ELBO}(q) + \operatorname{KL}(q(z) \,\|\, p(z \mid y))$, maximizing the ELBO minimizes the KL divergence from the guide to the posterior. The expectation is estimated from draws of $q$ (`num_particles` of them), and `SVI.step` returns the negative ELBO, the loss it minimizes.
 
-In the [ELBO](https://pyro.ai/examples/svi_part_i.html#ELBO), `log p(obs, z)`
-rewards values compatible with the prior and observations; the expected
-negative `log q(z)` is the guide's entropy [@pyroSVI]. Maximizing their sum
-equivalently minimizes the KL divergence from the guide to the posterior,
-when the relevant expectations are finite. The expectation is estimated
-using guide draws, commonly called particles. Increasing their number
-estimates the same expectation with a larger sample.
-
-`SVI.step` returns a loss to minimize, the negative ELBO, so a downward loss
-trend is the expected direction. Neither a smooth curve nor a small loss proves
-the posterior approximation is adequate. Inspect uncertainty and predictive
-checks, and compare with an analytic or well-diagnosed reference when available.
+The guide here has one mean and one scale, shared by every run, whereas each run has its own `z`. The objective is the sum of the runs' ELBOs, so the fitted guide is one distribution that serves all 50 observations at once, not the posterior of any one `z`. A model in which all observations share one latent variable observes them through a plate, as the QVR programs of [chapter 1 of the QVR track](../qvr/01-first-model.md) do. A falling loss does not by itself show that the approximation is adequate. Check it against an analytic posterior or a well-diagnosed MCMC fit when one is available.
 
 ## Posterior inference
 
-After training, use the guide to make predictions on new data:
+[`Predictive`](../../api/inference/predictive.md) draws `z` from the fitted guide and `y` from the model given each draw:
 
 ```python
 # Create a Predictive: posterior samples from the guide
-predictive = Predictive(model, guide, num_samples=100)
+predictive = Predictive(model, posterior=guide, num_samples=100)
 
 # Sample posterior at a new point
 x_new = torch.zeros(1, dtype=torch.long)
@@ -299,23 +246,21 @@ z_posterior = posterior_samples["z"]
 print(z_posterior.shape)  # [100, 1] (num_samples, batch)
 ```
 
-Analyze the posterior:
-
 ```python
 # Posterior mean and std
 z_mean = z_posterior.mean(dim=0)
 z_std = z_posterior.std(dim=0)
 print(f"z posterior: mean={z_mean.item():.3f}, std={z_std.item():.3f}")
 
-# Posterior credible interval
+# Central 95% credible interval
 z_quantile_lower = z_posterior.quantile(0.025, dim=0)
 z_quantile_upper = z_posterior.quantile(0.975, dim=0)
-print(f"95% CI: [{z_quantile_lower.item():.3f}, {z_quantile_upper.item():.3f}]")
+print(f"95% interval: [{z_quantile_lower.item():.3f}, {z_quantile_upper.item():.3f}]")
 ```
 
 ## Inspecting guide and model draws
 
-Tracing a conditioned model draws `z` from its model distribution and scores the fixed observation. Drawing from the fitted guide instead uses the approximate posterior learned from that observation. The two calls below expose these different distributions:
+A trace of the conditioned model draws `z` from the prior and scores the fixed observations. A draw from the fitted guide comes from the approximation instead:
 
 ```python
 # Model draw from a trace that scores the observed y
@@ -329,71 +274,6 @@ print(f"Model draw: {z_model.item():.3f}")
 print(f"Guide z: {z_guide.item():.3f}")
 ```
 
-To validate a guide against a reference posterior, use an analytic posterior where available or compare with a sufficiently diagnosed MCMC fit.
-
-## More complex models
-
-The same pattern extends to complex models. For instance, with the PDS model from Tutorial 4:
-
-<!-- python: skip -->
-```python
-from quivers.dsl import loads
-
-prog_pds = loads("""
-object Entity : FinSet 1
-object Truth : FinSet 2
-object Resp : FinSet 1
-
-program factivity : Entity -> Truth * Truth * Truth * Resp
-    sample theta_know <- LogitNormal(mu=0.0, sigma=1.0)
-    sample theta_cg <- LogitNormal(mu=0.0, sigma=1.0)
-    let cg_complement = 1
-    sample tau_know <- Bernoulli(probs=theta_know)
-    sample cg_matrix <- Bernoulli(probs=theta_cg)
-    sample sigma <- Uniform(low=0.0, high=1.0)
-    observe response <- TruncatedNormal(mu=theta_know, sigma=sigma, low=0.0, high=1.0)
-    return (tau_know, cg_complement, cg_matrix, response)
-""")
-model_pds = prog_pds.morphism
-
-# Observed response judgments from a linguistic experiment
-observed_responses = torch.tensor([0.8, 0.6, 0.7, 0.9, 0.5])
-
-# Build a guide and an SVI loop. Observations are routed through
-# ``svi.step`` rather than wrapped into the model.
-guide_pds = AutoNormalGuide(model_pds, observed_names={"response"})
-
-elbo = ELBO(num_particles=1)
-optimizer = optim.Adam(
-    list(model_pds.parameters()) + list(guide_pds.parameters()),
-    lr=0.01,
-)
-svi = SVI(model_pds, guide_pds, optimizer, elbo)
-
-# Run training... pass {"response": observed_responses} as the
-# observations dict on each step.
-```
-
-## Summary
-
-You have:
-
-- Built a probabilistic model and simulated observations
-- Traced a model to inspect sites and log-probabilities
-- Conditioned a model on observed data
-- Created an AutoNormalGuide as a posterior approximation
-- Set up and ran a variational inference training loop
-- Used Predictive for posterior sampling
-- Distinguished conditioned forward draws from posterior draws
-
-The same trace–guide–objective–SVI sequence applies to other quivers probabilistic programs; the model's sites and support constraints determine the appropriate guide.
-
 ## Next
 
-[Tutorial 6](06-first-class-trans.md) covers first-class transformations: `MorphismTransformation` and `AlgebraHomomorphism` as values, the `>>>` composition operator, and change-of-base pipelines.
-
-## Further reading
-
-- **[Inference Guide](../../guides/inference-foundations.md):** Detailed documentation of trace, conditioning, guides, ELBO, and SVI
-- **[Continuous Morphisms](../../guides/continuous-spaces.md):** More on distributions and spaces
-- **[DSL Guide](../../guides/dsl-overview.md):** Writing models in `.qvr` syntax
+[Chapter 6](06-first-class-trans.md) treats transformations between algebras as values: `MorphismTransformation` and `AlgebraHomomorphism`, composition with `>>>`, and change of base. The [inference guide](../../guides/inference-foundations.md) documents traces, conditioning, guides, objectives, and SVI in full.
