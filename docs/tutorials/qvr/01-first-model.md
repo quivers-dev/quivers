@@ -115,7 +115,7 @@ and with `[effects=[Sample]]` it reports that the body uses `Score`. Pyro and Nu
 1. The guide must know which names are given rather than sampled. Pass them as `observed_names` to [`AutoNormalGuide`](../../api/inference/guide.md): both the observed response `y` and the data input `x_design`.
 2. Every SVI step and every MCMC run takes an `observations` dict with a tensor for each of those names.
 
-A name missing from `observed_names` or from `observations` raises at guide construction or at run time, before the model uses the value. [Host data](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays) (the library's term for data inputs) gives the full rules.
+A name missing from `observed_names` or from `observations` raises at guide construction or at run time, before the model uses the value. [Data inputs](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays) gives the full rules.
 
 ## Compile and fit
 
@@ -157,7 +157,7 @@ optimizer = torch.optim.Adam(
 )
 svi = SVI(model, guide, optimizer, elbo)
 
-x_tensor = torch.zeros(1, 1)                  # SVI dispatch input (unused)
+x_tensor = torch.zeros(1, 1)                  # one row: one run of the program
 observations = {"x_design": x_data, "y": y_data}
 for step in range(50):                        # bump to ~2000 for real fits
     loss = svi.step(x_tensor, observations)
@@ -179,7 +179,7 @@ draws = predictive(x_tensor, {"x_design": x_data})
 print("posterior mean beta_0 =", draws["beta_0"].mean().item())
 print("posterior mean beta_1 =", draws["beta_1"].mean().item())
 print("posterior mean sigma  =", draws["sigma"].mean().item())
-print("predictive mean y[0] =", draws["y"][:, 0].mean().item())   # (1000, 100)
+print("predictive mean y[0] =", draws["y"][:, 0].mean().item())   # draws["y"]: (1000, 100, 1)
 ```
 
 `Predictive` batches the draws, passes the same data inputs to every replicate, and returns posterior predictive draws of `y` in the same call. After the 50 steps above the guide is far from converged (the posterior mean of `beta_1` is about 0.43 against a true slope of 2.7). Raise the step count to about 2000 for a usable fit.
