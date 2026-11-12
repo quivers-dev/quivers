@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Fitting programs whose calls nest, branch, draw, or traverse.** A program's call of a computation is lowered to compiled steps, and the program compiled to a `MonadicProgram` whose log joint and gradients are the reference machine's, in four more cases. A pure callee that calls other pure computations is inlined with each nested call inlined in turn. An `if c then e1 else e2` between pure branches is `select(c, e1, e2)`, both branches evaluated. A callee whose only requests are the program's `Random.sample` and `Score.add` runs in place, as a draw from a program does: the site `label` it draws is the program's site `y$label` under the call's binder `y` (nested calls stack, `y$inner$label`), and each score, a `log_prob` of a family included, is a score step. `let ys <- traverse(xs, x -> f(x, ...))` maps a pure `f` as a comprehension and makes each site an `f` that draws as one plated draw `ys$label` over the object `xs` runs along; each run reads only its own item, so the runs are independent. On the reference machine a callee's site keeps its label (`label`, or `label@n` when reached more than once).
+- **A located refusal for every call the compiled runtime does not fit.** A program that keeps a call reaching a recursive call, an `if` whose branches draw or score, a callee that handles an effect, a `case`, a call with static arguments, or a call of a program as a computation still runs on the reference machine, but `trace`, MCMC, SVI, and every other fitting entry point raise a `CompileError` located at the call that says why and what to write instead (a reduction, `map`, or `scan` for recursion; drawing outside the conditional and choosing with `select`; `sample y <- sub(...)` for a program). `CheckedProgram` takes the refusal as `refusal=` and exposes it as `CheckedProgram.refusal`; reading its `steps` raises it. A parametric template making such a call is refused with the same error when it is instantiated.
+
+### Changed
+
+- **A scalar parameter is not mapped over a tensor, and the refusal says so.** A plated value passed to a scalar parameter of a computation is a type error at the call that adds "a call does not map a computation over a tensor's entries: declare the parameter as a tensor and `map` over it inside the computation". A host datum supplied with more axes than the parameter it is passed straight to fills is refused on the compiled runtime and on the reference machine with a note located at that call; `MonadicProgram.host_data_notes` holds the note for each such datum.
+
 ## [0.53.0] - 2026-11-11
 
 ### Added
