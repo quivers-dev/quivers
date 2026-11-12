@@ -11,9 +11,9 @@ its repository tests.
 
 - **Python** >= 3.14
 - **PyTorch** >= 2.0
-- **didactic** >= 0.17.1
-- **panproto** >= 0.74.4 (provides schema and lens operations plus historical-object validation)
-- **panproto-grammars-all** >= 0.74.4 (provides the eleven transpiler-target grammars)
+- **didactic** >= 0.18.2
+- **panproto** >= 0.77.0 (provides schema and lens operations plus historical-object validation)
+- **panproto-grammars-all** >= 0.77.0 (provides the eleven transpiler-target grammars)
 - **Pygments** >= 2.10, **tree-sitter** >= 0.21
 
 The didactic, panproto, panproto-grammars-all, Pygments, and
@@ -128,9 +128,9 @@ pytest tests/
 Quivers depends on:
 
 - **torch** (>= 2.0): differentiable tensors and [automatic differentiation](../tutorials/python/01-first-quiver.md#working-as-a-differentiable-module)
-- **didactic** (>= 0.17.1): typed-data, indexed-family checking, and exact extension-lowering boundary used by QVR-to-QIEC checking
-- **panproto** (>= 0.74.4): schema and theory operations used to check indexed declarations and extract a `Schema` from each `.qvr` program for diff/migrate workflows
-- **panproto-grammars-all** (>= 0.74.4): supplies the eleven target-language grammars used by the transpiler pipeline; it does not define QVR syntax
+- **didactic** (>= 0.18.2): typed-data, indexed-family checking, and exact extension-lowering boundary used by QVR-to-QIEC checking
+- **panproto** (>= 0.77.0): schema and theory operations used to check indexed declarations and extract a `Schema` from each `.qvr` program for diff/migrate workflows
+- **panproto-grammars-all** (>= 0.77.0): supplies the eleven target-language grammars used by the transpiler pipeline; it does not define QVR syntax
 - **Pygments** (>= 2.10): in-tree `qvr` lexer for documentation and notebooks
 - **tree-sitter** (>= 0.21): runtime bindings for the QVR grammar
 

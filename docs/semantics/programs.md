@@ -682,6 +682,56 @@ A call site `v <- P(a₁, …, aₖ)` inside another program is interpreted by *
 
 This is sound by a standard substitution lemma: because each formal parameter is bound at the top of the body and the body interprets to a Kleisli arrow built compositionally from its statements, substitution commutes with the body's denotation function $\mathcal{B}\llbracket \cdot \rrbracket$. Consistent α-renaming preserves the body's binding structure, so references continue to denote the same bound values. Two call sites of the same template thus contribute *distinct* factors to the caller's joint kernel, fresh latents per use, giving each call its own latent variables in a hierarchical model.
 
+### Calls of computations
+
+A program step `y <- f(a₁, …, aₖ)` calling a `define`d computation $f$ has
+the denotation of $f$'s body at the arguments, sequenced into the caller.
+The compiled runtime states that denotation as steps of the caller in four
+cases, each an instance of the substitution lemma above.
+
+1. **Pure callees.** A body that makes no request denotes a deterministic
+   value $\llbracket f \rrbracket(a) \in B$, so the call is the Dirac kernel
+   $\delta_{\llbracket f \rrbracket(a)}$ and its statements are `let`
+   bindings. A pure computation the body calls is substituted in turn; a
+   call that reaches its own callee again has no finite unfolding and is
+   refused.
+2. **Conditionals between pure branches.** For a Boolean $c$ and pure
+   branches,
+   $$
+   \llbracket \mathsf{if}\ c\ \mathsf{then}\ e_1\ \mathsf{else}\ e_2 \rrbracket
+     = \mathsf{select}(c, \llbracket e_1 \rrbracket, \llbracket e_2 \rrbracket),
+   $$
+   a value of the same type, piecewise differentiable in the branches'
+   inputs away from the surface where $c$ changes. When a branch draws or
+   scores, the set of sites, and with it the space the joint density is
+   defined on, depends on $c$; the compiled runtime fits a fixed space, so
+   such a conditional is refused.
+3. **Callees requesting only the program's `Random` and `Score`.** Such a
+   body is a Kleisli arrow $A \to \mathcal M_+(B)$ built from the caller's
+   own two effects, so substituting it into the caller is the program-draw
+   expansion above: its site labelled $s$ becomes the caller's site $y\$s$,
+   and each `Score.add` contributes its weight to the caller's joint. A
+   callee that handles an effect inside its body is refused: its denotation
+   is the handler's fold over the body, which the caller's steps do not
+   state.
+4. **`traverse` over a lambda.** With $k$ the lambda's computation, the
+   runs $k(x_0), \ldots, k(x_{n-1})$ read only their own items and names bound
+   before the traverse, so the sequential composite stated for `traverse`
+   above factorises:
+   $$
+   \llbracket \mathsf{traverse}(x, k) \rrbracket
+     = \bigotimes_{i < n} \llbracket k \rrbracket(x_i),
+   $$
+   the product kernel an indexed bind over the axis of $x$ denotes (§2.4).
+   A pure $k$ gives a deterministic tensor, a comprehension; a drawing $k$
+   gives one plated site $y\$s$ per site $s$ of $k$. A recurrence, in which
+   a run reads its predecessor, does not factorise, and is written with
+   `scan`.
+
+On the reference machine every call runs as written, recursion and
+handlers included, so a refused program keeps its joint there; only its
+fitting on the compiled runtime is refused.
+
 ## 4. Composition of programs
 
 Two programs $P : X \to Y$ and $Q : Y \to Z$ compose by Kleisli composition:

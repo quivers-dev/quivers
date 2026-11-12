@@ -18,7 +18,6 @@ import torch
 
 from quivers.continuous import MonadicProgram
 from quivers.dsl import loads
-from quivers.dsl.compiler._prelude import CompileError
 from quivers.inference import MCMC, NUTSKernel
 from quivers.diagnostics import ess as effective_sample_size
 from quivers.inference.trace import trace
@@ -210,13 +209,14 @@ export caller
 """
 
 
-def test_a_call_that_cannot_be_inlined_stays_a_located_refusal_in_a_template() -> None:
-    with pytest.raises(CompileError) as raised:
-        loads(NESTED)
-    message = str(raised.value)
-    assert "program 'part' runs `let lifted <- twice_bumped(...)`" in message
-    line = NESTED.splitlines().index("    let lifted <- twice_bumped(effect)")
-    assert message.startswith(f"line {line + 1}, col 4:")
+def test_a_template_calling_nested_pure_computations_instantiates() -> None:
+    program = loads(NESTED).morphism
+    assert isinstance(program, MonadicProgram)
+    recorded = trace(program, torch.zeros(1, 1), observations={"y": _Y[:4]})
+    effect = float(recorded.sites["a$effect"].value.reshape(()))
+    assert float(recorded.sites["a"].value.reshape(())) == pytest.approx(
+        effect + 2.0, rel=1e-6
+    )
 
 
 HALF = """

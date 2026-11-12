@@ -250,17 +250,24 @@ torch runtime alike; a target spells such a site `theta__z`. A program over
 object parameters is a computation whose telescope binds one index variable
 per object, so `qvr run` invokes it with its statics.
 
-A call of a pure computation, an effect-free chain of pure bindings ending
-in a return, is inlined into `let` steps before compilation, by the analysis
-the transpile planner inlines such calls with (`quivers.transpile._pure_calls`),
-so a program whose calls are all pure compiles to a `MonadicProgram`. A
-program that calls any other named computation has no step table the runtime
-compiler can build, so it compiles to a
+A program's calls of computations are lowered to compiled steps before
+compilation (`quivers.dsl.compiler._call_lowering`). A pure callee, with the
+pure computations it calls inlined in turn and each `if` between pure
+branches read as `select`, becomes `let` steps, by the analysis the
+transpile planner inlines such calls with (`quivers.transpile._pure_calls`,
+`inline_call`); a callee whose only requests are the program's `Random` and
+`Score` runs in place, its site `label` named `y$label` under the binder `y`
+and a log density it scores evaluated by the internal let call `$log_prob`;
+and `traverse` maps a pure callee as a comprehension and a drawing callee as
+one plated draw per site. A program that keeps any other call (recursion, an
+`if` whose branches draw, a handled effect, `case`, static arguments) has no
+step table the runtime compiler can build, so it compiles to a
 [`CheckedProgram`][quivers.effects.checked_program.CheckedProgram]: a
 morphism whose `rsample` and `log_joint` are `sample_program` and
-`run_program` on the module's own entry point. The machine scores numbers,
-so such a program keeps no gradient path to the tensors it is given; fitting
-it is the transpile targets' work.
+`run_program` on the module's own entry point, and whose `steps`, which
+every fitting entry point reads, raise the located refusal the lowering
+recorded. The machine scores numbers, so such a program keeps no gradient
+path to the tensors it is given.
 
 ## QVR surface
 
