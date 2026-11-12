@@ -217,7 +217,6 @@ _REFUSED: dict[tuple[str, str], str] = {
     # an expression; Gen and Turing read a marginalize's weights only from
     # a name with a declared plate.
     (_LDA, "bugs"): "observe:class-code:w",
-    (_LDA, "jags"): "let-expr:elementwise-axis-operator",
     (_LDA, "gen"): "marginalize:weight-plate:theta_tok",
     (_LDA, "turing"): "marginalize:weight-plate:theta_tok",
 }
@@ -361,15 +360,26 @@ def test_the_changepoint_oracle_separates_rows_from_a_shared_rate() -> None:
 
 def test_the_lda_oracle_separates_the_via_map_from_the_row_order() -> None:
     # Pairing each word with its own row's weights, as a target that
-    # leaves the `via` map unread does, scores a joint the oracle tells
-    # apart at every permuted point.
+    # leaves the `via` map unread does, scores joints whose differences
+    # from the oracle's vary across the points, so the constant-spread
+    # check a target's densities face rejects them.
     _, data, points, oracle = _CASES["lda-permuted-rows"]
+    expected: list[float] = []
+    unmapped: list[float] = []
     for point in points:
         values = {
             name: torch.as_tensor(value, dtype=torch.float64)
             for name, value in {**data, **point}.items()
         }
-        assert abs(float(oracle(values)) - float(_lda_unmapped(values))) > 0.5
+        expected.append(float(oracle(values)))
+        unmapped.append(float(_lda_unmapped(values)))
+    with pytest.raises(AssertionError):
+        _equivalence.assert_log_density_match(
+            expected,
+            unmapped,
+            atol=_equivalence.adaptive_atol(n_obs=6),
+            context="unmapped@lda-permuted-rows",
+        )
 
 
 @pytest.mark.parametrize(
