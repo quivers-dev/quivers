@@ -32,7 +32,10 @@ these laws at run time.
 | `BoundedSumProductAlgebra` (`Probability`) | $[0, 1]$ | $ab$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | product with bounded sum, not a semiring |
 | `CountingAlgebra` (`Counting`) | $\mathbb N$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | counting semiring |
 
-The default for a finite weighted morphism is `ProductFuzzyAlgebra`.
+The default for a finite weighted morphism is `ProductFuzzyAlgebra`. The classes record the
+structure: the eight semirings are subclasses of `Semiring`, the four idempotent ones (Boolean,
+Gödel, tropical, and max-plus) of `IdempotentSemiring`, and the three that are not semirings of
+`Algebra` only.
 
 The [t-norms](https://en.wikipedia.org/wiki/T-norm) in the table are the product, Łukasiewicz,
 and minimum (Gödel) t-norms, each paired with a t-conorm: the probabilistic sum
