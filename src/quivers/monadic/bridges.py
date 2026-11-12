@@ -31,7 +31,9 @@ from quivers.core._factories import parallel
 from quivers.core.morphisms import Morphism
 from quivers.core.morphisms import identity as id_morph
 from quivers.core.objects import CoproductSet, FreeMonoid, ProductSet, SetObject
+from quivers.arrows.instances import Function
 from quivers.monadic.comonads import Comonad
+from quivers.monadic.instances import Identity
 from quivers.monadic.typeclasses import Monad
 
 
@@ -231,43 +233,65 @@ class ArrowMonad(ValueModel):
 
     arrow: object = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
 
+    def _base(self) -> Monad:
+        """The monad ``a(1, -)`` amounts to, read off the arrow.
+
+        For the function arrow ``a(1, A) ≅ A`` and the monad is the
+        identity monad; for the Kleisli arrow of a monad ``m``,
+        ``a(1, A) ≅ m(A)`` and the monad is ``m`` itself. The `Arrow`
+        interface does not expose hom objects ``a(1, A)``, so no other
+        arrow determines its monad here.
+
+        Returns
+        -------
+        Monad
+            The monad whose operations this instance uses.
+
+        Raises
+        ------
+        TypeError
+            If the arrow is neither the function arrow nor a Kleisli
+            arrow.
+        """
+        if isinstance(self.arrow, Function):
+            return Identity()
+        if isinstance(self.arrow, Kleisli) and isinstance(self.arrow.monad, Monad):
+            return self.arrow.monad
+        raise TypeError(
+            "ArrowMonad needs the hom objects a(1, A) of its arrow, which "
+            "only the function arrow and Kleisli arrows determine; got "
+            f"{type(self.arrow).__name__}"
+        )
+
     def fmap_obj(self, A: SetObject) -> SetObject:
-        return A
+        """``a(1, A)``: ``A`` for the function arrow, ``m(A)`` for ``Kleisli(m)``."""
+        return self._base().fmap_obj(A)
 
     def fmap(self, A: SetObject, B: SetObject, f: Morphism) -> Morphism:
-        """``fmap(f) : ArrowMonad(a)(A) → ArrowMonad(a)(B)``.
-
-        Realized as ``arr(f)`` on the underlying arrow.
-        """
-        return self.arrow.arr(A, B, f)
+        """``fmap(f)``: post-composition with ``arr(f)`` on ``a(1, A)``."""
+        return self._base().fmap(A, B, f)
 
     def pure(self, A: SetObject) -> Morphism:
-        """``pure : A → ArrowMonad(a)(A) = arr(id_A)``."""
-        return self.arrow.id_arr(A)
+        """``pure : A → a(1, A)``, the value as a constant arrow."""
+        return self._base().pure(A)
 
     def apply(self, A: SetObject, B: SetObject) -> Morphism:
-        """``apply : ArrowMonad(a)([A → B]) ⊗ ArrowMonad(a)(A) → ArrowMonad(a)(B)``.
-
-        Routes through the underlying arrow's `ArrowApply.app`.
-        """
-        return self.arrow.app(A, B)
+        """``apply : a(1, [A → B]) ⊗ a(1, A) → a(1, B)``."""
+        return self._base().apply(A, B)
 
     def join(self, A: SetObject) -> Morphism:
-        """``join : ArrowMonad(a)(ArrowMonad(a)(A)) → ArrowMonad(a)(A)``.
-
-        ArrowMonad's fmap_obj is identity, so join is also identity.
-        """
-        return id_morph(A)
+        """``join : a(1, a(1, A)) → a(1, A)``, running the inner arrow by ``app``."""
+        return self._base().join(A)
 
     def bind(self, A: SetObject, B: SetObject, k: Morphism) -> Morphism:
-        # bind = arrow's compose of arr(k) followed by app on the result.
-        return self.arrow.compose(self.arrow.arr(A, B, k), self.arrow.id_arr(B))
+        """``bind(k) = join ∘ fmap(k)`` for ``k : A → a(1, B)``."""
+        return self.fmap(A, self.fmap_obj(B), k) >> self.join(B)
 
     def lift_a2(
         self, A: SetObject, B: SetObject, C: SetObject, f: Morphism
     ) -> Morphism:
-        """``lift_a2(f) : a(A) × a(B) → a(C)``, derived via ``arr(f)``."""
-        return self.arrow.arr(ProductSet(components=(A, B)), C, f)
+        """``lift_a2(f) : a(1, A) × a(1, B) → a(1, C)``."""
+        return self._base().lift_a2(A, B, C, f)
 
 
 Monad.register(ArrowMonad)

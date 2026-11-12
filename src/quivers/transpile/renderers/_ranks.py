@@ -87,7 +87,7 @@ def name_plate_map(ir: IRProgram) -> dict[str, Plate]:
     its binding site declares.
 
     The marginalize lowering reads both halves: the batch dims decide
-    whether a weight tensor is fibred over the marginalize grouping
+    whether a weight tensor is grouped over the marginalize grouping
     axis (and so needs the observe's `via` index to reach the
     observation axis), and the trailing event extent supplies the
     class count of a `class_index` atom set.

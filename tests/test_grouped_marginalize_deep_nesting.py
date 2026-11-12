@@ -7,7 +7,7 @@ test checks both compile-time validity and that
 ``model.log_joint`` produces a finite scalar end-to-end.
 
 The runtime's two operating modes (innermost has a row axis +
-fibration; outer levels operate on already-reduced contributions
+index map; outer levels operate on already-reduced contributions
 with no row axis) compose multiplicatively across nesting depth,
 so a passing 7-level test gives high confidence the compositional
 construction is correct.
@@ -29,7 +29,7 @@ def _build_nested_program(num_levels: int, n_resp: int = 8) -> str:
     ``num_levels`` levels of nesting.
 
     Each level declares its own grouping plate ``G_i``, class set
-    ``K_i``, fibration ``idx_i``, and categorical prior
+    ``K_i``, index map ``idx_i``, and categorical prior
     ``probs_i``. The innermost body observes a single Resp-plate
     likelihood; outer levels share the same body.
     """
@@ -45,9 +45,9 @@ def _build_nested_program(num_levels: int, n_resp: int = 8) -> str:
     prog_lines = [f"program nested_{num_levels} : Resp -> Resp"]
     for i in range(num_levels):
         prog_lines.append(f"    sample probs_{i} : K_{i} <- HalfNormal(scale=1.0)")
-    # Only the innermost block has a fibration into a response
+    # Only the innermost block has an index map into a response
     # plate, host data named by its ``via``; outer levels consume the
-    # inner block's already-scattered tensor with identity fibration.
+    # inner block's already-scattered tensor with identity index map.
     indent = "    "
     nested: list[str] = []
     for i in range(num_levels):
@@ -56,7 +56,7 @@ def _build_nested_program(num_levels: int, n_resp: int = 8) -> str:
             f"{pad}marginalize lat_{i} : K_{i} <- Categorical(probs=probs_{i}) [over=G_{i}]"
         )
     # Innermost body: a single observe step carrying the
-    # fibration to its response plate.
+    # index map to its response plate.
     inner_pad = indent * (num_levels + 1)
     nested.append(
         f"{inner_pad}observe r : Resp <- HalfNormal(scale=1.0) [via=idx_inner]"
@@ -198,16 +198,16 @@ class TestPrimitiveCompositionAcrossLevels:
 
 
 # ---------------------------------------------------------------------------
-# Varied fibration shapes
+# Varied index map shapes
 # ---------------------------------------------------------------------------
 
 
-class TestVariedFibrations:
-    """Cover the different fibration shapes the issue calls out:
+class TestVariedIndexMaps:
+    """Cover the different index map shapes the issue calls out:
     identity (per-row mixture), coarser (multi-row group), trivial
     (single group), product (multi-axis)."""
 
-    def test_identity_fibration_recovers_per_row_mixture(self) -> None:
+    def test_identity_index_map_recovers_per_row_mixture(self) -> None:
         torch.manual_seed(0)
         N, K = 5, 3
         ll = torch.randn(N, K)
@@ -218,7 +218,7 @@ class TestVariedFibrations:
         expected = torch.logsumexp(prior + ll, dim=-1).sum()
         assert torch.allclose(out, expected, atol=1e-6)
 
-    def test_trivial_fibration_single_group(self) -> None:
+    def test_trivial_index_map_single_group(self) -> None:
         torch.manual_seed(0)
         N, K = 6, 4
         ll = torch.randn(N, K)
@@ -229,7 +229,7 @@ class TestVariedFibrations:
         expected = torch.logsumexp(prior + ll.sum(dim=0), dim=-1)
         assert torch.allclose(out, expected, atol=1e-6)
 
-    def test_coarser_fibration_two_groups(self) -> None:
+    def test_coarser_index_map_two_groups(self) -> None:
         torch.manual_seed(0)
         ll = torch.randn(6, 3)
         idx = torch.tensor([0, 0, 0, 1, 1, 1])
@@ -241,7 +241,7 @@ class TestVariedFibrations:
         expected = torch.logsumexp(prior + per_group, dim=-1).sum()
         assert torch.allclose(out, expected, atol=1e-6)
 
-    def test_three_axis_product_fibration(self) -> None:
+    def test_three_axis_product_index_map(self) -> None:
         torch.manual_seed(0)
         N, K = 12, 2
         G1, G2, G3 = 2, 3, 2

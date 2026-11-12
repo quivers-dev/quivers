@@ -130,7 +130,7 @@ def test_lda_numpyro_integrates_the_topic_over_its_three_atoms() -> None:
     assert 'numpyro.plate("Doc",20)' in emitted
 
 
-def test_lda_numpyro_gathers_latent_through_the_via_fibration() -> None:
+def test_lda_numpyro_gathers_latent_through_the_via_index_map() -> None:
     """`observe w ... [via=word_idx]` gathers the mixture weights.
 
     `theta` carries the 20-document batch shape while `w` carries the
@@ -145,7 +145,7 @@ def test_lda_pymc_mixes_over_topics_with_document_weights() -> None:
     """PyMC integrates the topic out as a `Mixture` over three atoms.
 
     The mixture weights are `theta` gathered through the `via=word_idx`
-    fibration, so each word is scored under its own document's topic
+    index map, so each word is scored under its own document's topic
     mixture.
     """
     emitted = _nospace(_emit("lda", "pymc"))

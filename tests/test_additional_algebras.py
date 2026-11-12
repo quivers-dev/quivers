@@ -12,7 +12,7 @@ from quivers.core.algebras import (
 )
 
 
-class TestLukasiewiczAlgebra:
+class TestStandardMVAlgebra:
     def test_tensor_op(self):
         """Łukasiewicz t-norm: max(a + b - 1, 0)."""
         q = LUKASIEWICZ

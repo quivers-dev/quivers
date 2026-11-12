@@ -1681,11 +1681,11 @@ def marginal_weight_probs(
     target: str,
 ) -> IRArg:
     """The probability tensor weighting the atoms, aligned to the axis
-    the observed site is fibred over: the logits instead when the call
+    the observed site is grouped over: the logits instead when the call
     site names them.
 
     A weight tensor allocated per grouping row (LDA's per-document
-    `theta`) has to be gathered through the observe's `via` fibration
+    `theta`) has to be gathered through the observe's `via` index map
     before it can be added to a per-observation log-density; a weight
     tensor shared across the whole grouping plate (a single simplex
     over the latent's classes) broadcasts as it stands and must not be
@@ -1720,7 +1720,7 @@ def marginal_weight_probs(
             [
                 f"marginalize:via-weight:{node.latent}: the atom "
                 f"weights are a computed expression, so the "
-                f"{observe.via!r} fibration has no index position to "
+                f"{observe.via!r} index map has no index position to "
                 f"gather them through"
             ],
         )
@@ -1741,7 +1741,7 @@ def marginal_weight_probs(
     )
 
 
-def marginalize_fibration(
+def marginalize_index_map(
     node: IRMarginalize,
     observe: IRObserve,
     weight_args: tuple[IRArg, ...],
@@ -1750,7 +1750,7 @@ def marginalize_fibration(
     name_plates: dict[str, Plate],
     target: str,
 ) -> tuple[str, Dim] | None:
-    """The fibration a grouped block gathers its rows through, if any.
+    """The index map a grouped block gathers its rows through, if any.
 
     `docs/semantics/programs.md` §2.7 keys a grouped block's accumulator
     by group: the rows an observe fibres into one group are summed
@@ -1759,7 +1759,7 @@ def marginalize_fibration(
     groups coincide, or when the prior is allocated per group, which
     denotes one latent per row. Otherwise the per-row per-class
     log-likelihoods have to be scattered into a ``(|G|, K)`` accumulator
-    through the observe's ``via`` fibration first.
+    through the observe's ``via`` index map first.
 
     Parameters
     ----------
@@ -1779,7 +1779,7 @@ def marginalize_fibration(
     Returns
     -------
     tuple[str, Dim] | None
-        The fibration's name and the grouping plate's leading axis when
+        The index map's name and the grouping plate's leading axis when
         the rows must be scattered; ``None`` when each row reduces on
         its own.
     """
@@ -1794,7 +1794,7 @@ def marginalize_fibration(
         target=target,
     )
     if isinstance(probs, IRArgRef) and probs.indices:
-        # A per-group prior gathered through the fibration: one latent
+        # A per-group prior gathered through the index map: one latent
         # per row, each reducing on its own.
         return None
     return observe.via, node.plate.batch_dims[0]

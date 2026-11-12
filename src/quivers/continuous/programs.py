@@ -4,47 +4,43 @@ A MonadicProgram defines a ContinuousMorphism via monadic sequencing
 of draw steps. Each step samples from a named morphism, optionally
 conditioned on previously drawn variables, and binds the result.
 The program returns one or more of the bound variables as its output.
-
-This corresponds to the Kleisli composition pattern used in
-probabilistic programming languages like PDS (Grove & White),
-where a sequence of ``let' x ~ D in ...`` bindings threads
-probabilistic state through a generative model.
+Sequencing is Kleisli composition for the probability monad, as in
+the ``let x ~ D in ...`` bindings of probabilistic programming
+languages.
 
 Features
 --------
 - Single and tuple returns: ``return x`` or ``return (x, y, z)``
 - Named input parameters for product-domain sub-programs
-- Multi-argument draw steps: ``draw z ~ f(x, y)``
+- Multi-argument draw steps: ``sample z <- f(x, y)``
 - Destructuring draws from tuple-returning sub-programs:
-  ``draw (a, b) ~ sub_prog(x)``
+  ``sample (a, b) <- sub``
 
 Example
 -------
 Given morphisms f : A -> B and g : B -> C, the monadic program::
 
     program p : A -> C
-        draw x ~ f
-        draw y ~ g(x)
+        sample x <- f
+        sample y <- g(x)
         return y
 
 is equivalent to the composition f >> g, but the program form
 allows fan-out (using the input in multiple draws) and
 non-linear variable dependency graphs.
 
-PDS-style nested programs::
+A program can draw a tuple from another program and destructure it::
 
-    program cg_update(y, z) : Belief * Belief -> Truth * Truth
-        draw c ~ bern_c(y)
-        draw d ~ bern_d(z)
-        return (c, d)
+    program pair : X -> R * R
+        sample a <- Normal(loc=0.0, scale=1.0)
+        sample b <- Normal(loc=a, scale=1.0)
+        return (a, b)
 
-    program factivityPrior : Entity -> Truth * Truth * Truth
-        draw x ~ prior_x
-        draw y ~ prior_y
-        draw z ~ prior_z
-        draw b ~ bern_b(x)
-        draw (c, d) ~ cg_update(y, z)
-        return (b, c, d)
+    program main : X -> R
+        sample (u, v) <- pair
+        let s = u + v
+        sample w <- Normal(loc=s, scale=1.0)
+        return w
 """
 
 from __future__ import annotations

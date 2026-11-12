@@ -734,11 +734,11 @@ def _render_qiec_kind(backend: str, tail: str) -> str:
             f"{_language(backend)}. Write the binding with the arithmetic, "
             f"calls, indexing, lists, and factors of a let expression."
         )
-    if reason == "fibration":
+    if reason == "index_map":
         return (
             f"program `{name}` fibres an observation by an index that is "
             f"not a program input, and {_language(backend)} reads a "
-            f"fibration only as a data input. Pass the fibration as data."
+            f"index map only as a data input. Pass the index map as data."
         )
     if reason == "sample":
         return (

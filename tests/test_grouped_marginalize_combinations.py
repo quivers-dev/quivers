@@ -1,8 +1,8 @@
-"""Combination tests: marginalize blocks mixing depth, fibration
+"""Combination tests: marginalize blocks mixing depth, index map
 shape, and reduction across the same model.
 
 Each test stresses a different combination of the features issue
-#9 mentions: nesting depth × fibration arity × reduction mode ×
+#9 mentions: nesting depth × index map arity × reduction mode ×
 continuous-latent dependence. The goal is to catch regressions
 that only appear when features interact (one of the canonical
 failure modes during the refactor).
@@ -27,8 +27,8 @@ class TestSurfaceCombinations:
     """Each test compiles a program that combines several issue-#9
     features in one program."""
 
-    def test_nested_with_product_fibration_at_inner_level(self) -> None:
-        """Outer single-fibration block + inner product-fibration
+    def test_nested_with_product_index_map_at_inner_level(self) -> None:
+        """Outer single-index-map block + inner product-index-map
         block."""
         from quivers.dsl import loads
 
@@ -161,7 +161,7 @@ class TestRuntimeCombinations:
         out = model.log_joint(torch.zeros(1, 1), obs)
         assert torch.isfinite(out).all()
 
-    def test_nested_product_fibration_runs(self) -> None:
+    def test_nested_product_index_map_runs(self) -> None:
         from quivers.dsl import loads
 
         src = dedent("""
@@ -196,18 +196,18 @@ class TestRuntimeCombinations:
 
 
 # ---------------------------------------------------------------------------
-# Primitive: combinations of fibration arity, reduction mode, and
+# Primitive: combinations of index map arity, reduction mode, and
 # extra-axes (multi-level outer broadcast).
 # ---------------------------------------------------------------------------
 
 
 class TestPrimitiveCombinations:
-    """The runtime primitive composing extra axes × fibration arity ×
+    """The runtime primitive composing extra axes × index map arity ×
     reduction mode."""
 
-    def test_extra_axes_with_product_fibration(self) -> None:
+    def test_extra_axes_with_product_index_map(self) -> None:
         """Combine outer-broadcast axes (from upstream nested
-        levels) with a product fibration at the current level."""
+        levels) with a product index map at the current level."""
         torch.manual_seed(0)
         N, K = 6, 3
         K_extra1, K_extra2 = 2, 2

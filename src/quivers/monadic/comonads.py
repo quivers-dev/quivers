@@ -1,7 +1,7 @@
 """Comonads and coKleisli categories on V-enriched FinSet.
 
-A comonad (W, ε, δ) consists of an endofunctor W, a counit ε: W ⇒ Id,
-and a comultiplication δ: W ⇒ W² satisfying:
+A comonad (W, ε, δ) consists of an endofunctor W, a natural counit
+ε: W ⇒ Id, and a natural comultiplication δ: W ⇒ W² satisfying:
 
     W(δ) ∘ δ = δ_W ∘ δ     (coassociativity)
     ε_W ∘ δ = id             (left counit)
@@ -12,20 +12,30 @@ A → B are morphisms W(A) → B in the base category, composed via:
 
     f =>> g = g ∘ W(f) ∘ δ_A
 
-This module provides:
+The base category here is the category of ``V``-valued matrices, which
+is a category when ``V`` is a `Semiring`, so the comonads below require
+a semiring algebra.
 
-    Comonad (abstract)
-    ├── CofreeComonad           — cofree comonad from a functor
-    └── DiagonalComonad         — W(A) = A × A with diagonal/projection
+This module provides the abstract `Comonad`, the `CoKleisliCategory`
+adapter, and `CofreeComonad`, the product (environment) comonad
+``W(A) = A × S``.
 
-    CoKleisliCategory — wraps a comonad for composition
+References
+----------
+Uustalu, T., and Vene, V. (2008). Comonadic notions of computation.
+*Electronic Notes in Theoretical Computer Science*, 203(5), 263-284.
+[doi:10.1016/j.entcs.2008.05.029](https://doi.org/10.1016/j.entcs.2008.05.029)
 """
 
 from __future__ import annotations
+
+import itertools
 from abc import ABC, abstractmethod
+
 import torch
+
 from quivers.core.objects import SetObject, ProductSet
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import Algebra, Semiring
 from quivers.core.morphisms import FunctorMorphism, Morphism, observed, identity
 from quivers.categorical.functors import Functor
 
@@ -92,28 +102,30 @@ class Comonad(ABC):
         Morphism
             Composed coKleisli morphism W(A) → C.
         """
-        delta = self._comultiply_at_domain(f)
+        delta = self.comultiply(self.base_of(f.domain))
         wf = self.endofunctor.map_morphism(f)
         return delta >> wf >> g
 
-    def _comultiply_at_domain(self, f: Morphism) -> Morphism:
-        """Get δ for the appropriate object given f's domain structure.
-
-        Subclasses can override for efficiency.
+    @abstractmethod
+    def base_of(self, wa: SetObject) -> SetObject:
+        """Recover ``A`` from an object of the form ``W(A)``.
 
         Parameters
         ----------
-        f : Morphism
-            A coKleisli morphism whose domain is W(A).
+        wa : SetObject
+            An object ``W(A)``.
 
         Returns
         -------
-        Morphism
-            The comultiplication δ_A: W(A) → W(W(A)).
+        SetObject
+            The object ``A``.
+
+        Raises
+        ------
+        ValueError
+            If ``wa`` is not of the form ``W(A)``.
         """
-        raise NotImplementedError(
-            "Subclasses must implement _comultiply_at_domain or override cokleisli_compose"
-        )
+        ...
 
 
 class CoKleisliCategory:
@@ -170,137 +182,44 @@ class CoKleisliCategory:
         return self._comonad.cokleisli_compose(f, g)
 
 
-class DiagonalComonad(Comonad):
-    """Pair operations W(A) = A × A with projection and diagonal.
-
-    ε_A: A × A → A is the first projection.
-    δ_A: A × A → (A × A) × (A × A) is the diagonal on pairs.
-
-    This historical interface name does not describe a lawful comonad
-    in general. With W(f) = f × f, W(ε) after δ sends (a, b) to
-    (a, a), which violates the right counit law when a differs from b.
-    The methods expose the stated pair operations, not a construction
-    of the comonad induced by the product adjunction.
-
-    Parameters
-    ----------
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
-    """
-
-    def __init__(self, algebra: Algebra | None = None) -> None:
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
-        self._functor = _DiagonalFunctor()
-
-    @property
-    def algebra(self) -> Algebra:
-        """The enrichment algebra."""
-        return self._algebra
-
-    @property
-    def endofunctor(self) -> Functor:
-        """W(A) = A × A."""
-        return self._functor
-
-    def counit(self, obj: SetObject) -> Morphism:
-        """ε_A: A × A → A is first projection.
-
-        Parameters
-        ----------
-        obj : SetObject
-            The object A.
-
-        Returns
-        -------
-        ObservedMorphism
-            The projection morphism.
-        """
-        import itertools
-
-        source = ProductSet(components=(obj, obj))
-        data = torch.full((*source.shape, *obj.shape), self._algebra.zero)
-        for idx in itertools.product(*(range(s) for s in obj.shape)):
-            for idx2 in itertools.product(*(range(s) for s in obj.shape)):
-                data[idx + idx2 + idx] = self._algebra.unit
-        return observed(source, obj, data, algebra=self._algebra)
-
-    def comultiply(self, obj: SetObject) -> Morphism:
-        """δ_A: A × A → (A × A) × (A × A) is diagonal on pairs.
-
-        Maps (a1, a2) to ((a1, a2), (a1, a2)).
-
-        Parameters
-        ----------
-        obj : SetObject
-            The object A.
-
-        Returns
-        -------
-        ObservedMorphism
-            The comultiplication morphism.
-        """
-        import itertools
-
-        source = ProductSet(components=(obj, obj))
-        target = ProductSet(components=(obj, obj, obj, obj))
-        data = torch.full((*source.shape, *target.shape), self._algebra.zero)
-        for idx1 in itertools.product(*(range(s) for s in obj.shape)):
-            for idx2 in itertools.product(*(range(s) for s in obj.shape)):
-                src = idx1 + idx2
-                tgt = idx1 + idx2 + idx1 + idx2
-                data[src + tgt] = self._algebra.unit
-        return observed(source, target, data, algebra=self._algebra)
-
-    def cokleisli_compose(self, f: Morphism, g: Morphism) -> Morphism:
-        """CoKleisli composition using the diagonal comonad."""
-        delta = self.comultiply(self._extract_base(f.domain))
-        wf = self._functor.map_morphism(f)
-        return delta >> wf >> g
-
-    def _comultiply_at_domain(self, f: Morphism) -> Morphism:
-        return self.comultiply(self._extract_base(f.domain))
-
-    def _extract_base(self, wa: SetObject) -> SetObject:
-        """Extract A from W(A) = A × A.
-
-        Parameters
-        ----------
-        wa : SetObject
-            Must be a ProductSet with two identical components.
-
-        Returns
-        -------
-        SetObject
-            The base object A.
-        """
-        if isinstance(wa, ProductSet) and len(wa.components) >= 2:
-            return wa.components[0]
-        return wa
-
-    def __repr__(self) -> str:
-        return f"DiagonalComonad({self._algebra!r})"
-
-
 class CofreeComonad(Comonad):
-    """The cofree comonad W(A) = A × S for a fixed store object S.
+    """The product (environment) comonad W(A) = A × S.
 
-    Also known as the "store comonad" or "costate comonad" on
-    finite sets.
+    This is the comonad of values in an environment ``S``
+    [Uustalu and Vene (2008)], and it is the cofree comonad on the
+    constant functor at ``S``. It is not the store (costate) comonad,
+    which is ``S × (S → A)``.
 
     ε_A: A × S → A is the first projection (extract the value).
-    δ_A: A × S → (A × S) × S duplicates the store component.
+    δ_A: A × S → (A × S) × S duplicates the environment component.
+    W(f) = f × id_S.
+
+    Only the environment is copied, and morphisms act on it as the
+    identity, so ε and δ are natural for every ``V``-valued morphism,
+    not only for functions.
 
     Parameters
     ----------
     store : SetObject
-        The fixed store/environment object S.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+        The environment object S.
+    algebra : Semiring
+        The enrichment algebra; a semiring, so that the base category
+        and the coKleisli category are categories.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not a `Semiring`.
     """
 
-    def __init__(self, store: SetObject, algebra: Algebra | None = None) -> None:
+    def __init__(self, store: SetObject, algebra: Semiring) -> None:
+        if not isinstance(algebra, Semiring):
+            raise TypeError(
+                "CofreeComonad requires a Semiring algebra, so that its "
+                f"coKleisli composition is associative; got {algebra!r}"
+            )
         self._store = store
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
+        self._algebra = algebra
         self._functor = _StoreFunctor(store)
 
     @property
@@ -331,8 +250,6 @@ class CofreeComonad(Comonad):
         ObservedMorphism
             The extraction morphism.
         """
-        import itertools
-
         source = ProductSet(components=(obj, self._store))
         data = torch.full((*source.shape, *obj.shape), self._algebra.zero)
         for a_idx in itertools.product(*(range(s) for s in obj.shape)):
@@ -355,8 +272,6 @@ class CofreeComonad(Comonad):
         ObservedMorphism
             The comultiplication morphism.
         """
-        import itertools
-
         source = ProductSet(components=(obj, self._store))
         target = ProductSet(components=(obj, self._store, self._store))
         data = torch.full((*source.shape, *target.shape), self._algebra.zero)
@@ -367,54 +282,41 @@ class CofreeComonad(Comonad):
                 data[src + tgt] = self._algebra.unit
         return observed(source, target, data, algebra=self._algebra)
 
-    def _comultiply_at_domain(self, f: Morphism) -> Morphism:
-        dom = f.domain
-        if isinstance(dom, ProductSet) and len(dom.components) >= 2:
-            base = dom.components[0]
-        else:
-            base = dom
-        return self.comultiply(base)
+    def base_of(self, wa: SetObject) -> SetObject:
+        """Recover ``A`` from ``W(A) = A × S``.
+
+        Parameters
+        ----------
+        wa : SetObject
+            An object ``A × S``.
+
+        Returns
+        -------
+        SetObject
+            The object ``A``.
+
+        Raises
+        ------
+        ValueError
+            If ``wa`` is not a binary product whose second factor is
+            the environment ``S``.
+        """
+        if (
+            isinstance(wa, ProductSet)
+            and len(wa.components) == 2
+            and wa.components[1] == self._store
+        ):
+            return wa.components[0]
+        raise ValueError(
+            f"CofreeComonad: {wa!r} is not of the form A × {self._store!r}"
+        )
 
     def __repr__(self) -> str:
-        return f"CofreeComonad(store={self._store!r})"
-
-
-class _DiagonalFunctor(Functor):
-    """The diagonal functor W(A) = A × A.
-
-    On objects: A ↦ A × A.
-    On morphisms: f ↦ f × f (product morphism).
-    """
-
-    def map_object(self, obj: SetObject) -> ProductSet:
-        """A ↦ A × A."""
-        return ProductSet(components=(obj, obj))
-
-    def map_morphism(self, morph: Morphism) -> FunctorMorphism:
-        """f ↦ f × f (parallel product)."""
-        result = morph @ morph
-        return FunctorMorphism(self, morph, result.domain, result.codomain)
-
-    def map_tensor(self, tensor: torch.Tensor, algebra: Algebra) -> torch.Tensor:
-        """Compute (f ⊗ f) tensor from f's tensor."""
-        n = tensor.ndim
-        half = n // 2
-        shape_l = list(tensor.shape) + [1] * n
-        shape_r = [1] * n + list(tensor.shape)
-        outer = algebra.tensor_op(tensor.reshape(shape_l), tensor.reshape(shape_r))
-        dom_l = list(range(half))
-        cod_l = list(range(half, n))
-        dom_r = list(range(n, n + half))
-        cod_r = list(range(n + half, 2 * n))
-        perm = dom_l + dom_r + cod_l + cod_r
-        return outer.permute(*perm)
-
-    def __repr__(self) -> str:
-        return "DiagonalFunctor()"
+        return f"CofreeComonad(store={self._store!r}, algebra={self._algebra!r})"
 
 
 class _StoreFunctor(Functor):
-    """The store functor W(A) = A × S for a fixed S.
+    """The product functor W(A) = A × S for a fixed S.
 
     On objects: A ↦ A × S.
     On morphisms: f ↦ f × id_S.
@@ -457,6 +359,5 @@ class _StoreFunctor(Functor):
 __all__ = [
     "Comonad",
     "CoKleisliCategory",
-    "DiagonalComonad",
     "CofreeComonad",
 ]

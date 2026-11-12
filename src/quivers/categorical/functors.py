@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 import torch
 
 from quivers.core.objects import SetObject, FinSet, FreeMonoid
-from quivers.core.algebras import Algebra
+from quivers.core.algebras import Algebra, Semiring
 from quivers.core.tensor_ops import componentwise_lift
 
 
@@ -153,7 +153,7 @@ class ComposedFunctor(Functor):
 
 
 class FreeMonoidFunctor(Functor):
-    """The free monoid endofunctor, truncated to max_length.
+    """The length-bounded word functor A ↦ A^{≤L} on V-matrices.
 
     On objects: A ↦ FreeMonoid(generators=A, max_length=max_length)
     On morphisms: f ↦ f* (block-diagonal, componentwise on each stratum)
@@ -163,10 +163,22 @@ class FreeMonoidFunctor(Functor):
     of length k map to strings of length k via componentwise application
     of the underlying morphism.
 
+    Words of each length are mapped to words of the same length, so the
+    bound never cuts a word and the functor laws hold whenever the
+    algebra is a `Semiring` (the block for length ``k`` is the
+    ``k``-fold tensor power, and tensor powers commute with composition
+    by distributivity). The truncated free monoid is not closed under
+    concatenation, so this functor carries no monad structure.
+
     Parameters
     ----------
     max_length : int
         Maximum string length for the truncated free monoid.
+
+    Raises
+    ------
+    ValueError
+        If ``max_length`` is negative.
     """
 
     def __init__(self, max_length: int) -> None:
@@ -218,7 +230,18 @@ class FreeMonoidFunctor(Functor):
         -------
         FunctorMorphism
             Lazy image preserving gradient flow.
+
+        Raises
+        ------
+        TypeError
+            If the morphism's algebra is not a `Semiring`, under which
+            composition, and so the functor law, fails.
         """
+        if not isinstance(morph.algebra, Semiring):
+            raise TypeError(
+                "FreeMonoidFunctor is a functor on V-matrices for a Semiring "
+                f"algebra; the morphism is over {morph.algebra!r}"
+            )
         domain = self.map_object(morph.domain)
         codomain = self.map_object(morph.codomain)
 

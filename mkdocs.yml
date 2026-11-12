@@ -303,7 +303,6 @@ nav:
     - Monadic:
       - Overview: api/monadic/typeclasses.md
       - Stdlib Effect Instances: api/monadic/instances.md
-      - Monad Transformers: api/monadic/transformers.md
       - Algebraic Effects: api/monadic/algebraic.md
       - Bridges: api/monadic/bridges.md
       - Typeclass Theories: api/monadic/theories.md

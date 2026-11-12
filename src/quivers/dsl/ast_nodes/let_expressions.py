@@ -221,7 +221,7 @@ class LetExprVar(LetExprNode):
 class LetExprIndex(LetExprNode):
     """Indexed access into a finite-domain-indexed family ``a[i]``.
 
-    Categorically the *pullback* morphism: given a finite-fibration
+    Categorically the *pullback* morphism: given a finite-index-map
     ``index : N → A`` and a per-A morphism ``arr : A → B``, the
     indexed expression ``arr[index[n]]`` denotes
     ``arr ∘ index : N → B``, the natural Kleisli pullback of

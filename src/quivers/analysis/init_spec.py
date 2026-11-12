@@ -16,11 +16,11 @@ approximation predicts larger gradients. The shipped recipes are:
 * `MaxPlusAlgebra` / `TropicalAlgebra` — additive
   semiring on the (extended) reals; centered at 0 with spread
   ``1 / sqrt(k)``.
-* `LukasiewiczAlgebra` — bounded-sum t-conorm hits ½ at
+* `StandardMVAlgebra` — bounded-sum t-conorm hits ½ at
   roughly ``k`` terms of ``p ≈ 1 / k``.
 * `BooleanAlgebra`, `GodelAlgebra` — idempotent;
   init at the algebra's mid-point ``0.5``.
-* `RealAlgebra`, `ProbabilityAlgebra`,
+* `RealAlgebra`, `BoundedSumProductAlgebra`,
   `CountingAlgebra` — sum-product semirings; we recommend
   unit-variance Normal init centered at 0 (real) or an algebra-specific
   ``1 / k`` (probability / counting). These pieces are conservative
@@ -48,10 +48,10 @@ from quivers.core.algebras import (
     CountingAlgebra,
     GodelAlgebra,
     LogProbAlgebra,
-    LukasiewiczAlgebra,
+    StandardMVAlgebra,
     MarkovAlgebra,
     MaxPlusAlgebra,
-    ProbabilityAlgebra,
+    BoundedSumProductAlgebra,
     ProductFuzzyAlgebra,
     RealAlgebra,
     TropicalAlgebra,
@@ -119,7 +119,7 @@ def _algebra_init_spec(
                 f"when each cell is p ≈ ln(2)/k = {p:.4g}"
             ),
         )
-    if isinstance(algebra, LukasiewiczAlgebra):
+    if isinstance(algebra, StandardMVAlgebra):
         p = 1.0 / effective
         return InitSpec(
             distribution="uniform",
@@ -188,7 +188,7 @@ def _algebra_init_spec(
                 f"1/sqrt(k) = {spread:.4g}"
             ),
         )
-    if isinstance(algebra, (ProbabilityAlgebra, CountingAlgebra)):
+    if isinstance(algebra, (BoundedSumProductAlgebra, CountingAlgebra)):
         p = 1.0 / float(effective)
         return InitSpec(
             distribution="uniform",
@@ -196,7 +196,7 @@ def _algebra_init_spec(
             std=p / 2.0,
             lower=max(0.0, p / 2.0),
             upper=min(1.0, 3.0 * p / 2.0)
-            if isinstance(algebra, ProbabilityAlgebra)
+            if isinstance(algebra, BoundedSumProductAlgebra)
             else 3.0 * p / 2.0,
             rationale=(
                 f"{type(algebra).__name__} sum-product semiring: "

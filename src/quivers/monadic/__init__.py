@@ -1,8 +1,8 @@
-"""Monadic structures: typeclass hierarchy, instances, transformers,
+"""Monadic structures: typeclass hierarchy, instances,
 algebraic effects, comonads, algebras, and distributive laws.
 
 The `Monad` ABC lives in `typeclasses`. Concrete monad
-implementations (``FuzzyPowersetMonad``, ``FreeMonoidMonad``,
+implementations (``FuzzyPowersetMonad``,
 ``GiryMonad``, etc.) subclass it directly and provide the
 ``fmap_obj`` / ``fmap`` / ``pure`` / ``apply`` / ``join`` operations.
 ``unit`` and ``multiply`` are exposed as aliases on the concrete
@@ -21,13 +21,11 @@ from quivers.monadic.typeclasses import (
 )
 from quivers.monadic.monads import (
     FuzzyPowersetMonad,
-    FreeMonoidMonad,
     KleisliCategory,
 )
 from quivers.monadic.comonads import (
     Comonad,
     CoKleisliCategory,
-    DiagonalComonad,
     CofreeComonad,
 )
 from quivers.monadic.algebras import (
@@ -41,7 +39,6 @@ from quivers.monadic.algebras import (
 )
 from quivers.monadic.distributive_laws import (
     DistributiveLaw,
-    FreeMonoidPowersetLaw,
 )
 from quivers.monadic.instances import (
     Identity,
@@ -51,14 +48,6 @@ from quivers.monadic.instances import (
     State,
     Reader,
     Writer,
-    ListMonad,
-)
-from quivers.monadic.transformers import (
-    StateT,
-    ReaderT,
-    MaybeT,
-    ContT,
-    WriterT,
 )
 from quivers.monadic.algebraic import (
     Operation,
@@ -102,12 +91,10 @@ __all__ = [
     "MonadTrans",
     # monads
     "FuzzyPowersetMonad",
-    "FreeMonoidMonad",
     "KleisliCategory",
     # comonads
     "Comonad",
     "CoKleisliCategory",
-    "DiagonalComonad",
     "CofreeComonad",
     # algebras
     "Algebra",
@@ -119,7 +106,6 @@ __all__ = [
     "EilenbergMooreCategory",
     # distributive_laws
     "DistributiveLaw",
-    "FreeMonoidPowersetLaw",
     # instances
     "Identity",
     "Maybe",
@@ -128,13 +114,6 @@ __all__ = [
     "State",
     "Reader",
     "Writer",
-    "ListMonad",
-    # transformers
-    "StateT",
-    "ReaderT",
-    "MaybeT",
-    "ContT",
-    "WriterT",
     # algebraic
     "Operation",
     "EffectSignature",

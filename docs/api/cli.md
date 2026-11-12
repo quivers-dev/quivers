@@ -120,7 +120,7 @@ Flags:
 - `--static NAME=TERM`: specialize one static telescope binder with a closed
   type, index, or effect term. Repeat the flag once for every binder.
 - `--data NAME=JSON`: supply one program parameter by name (its data, an
-  observation, a fibration, or a scalar). Repeatable.
+  observation, an index map, or a scalar). Repeatable.
 - `--site NAME=JSON`: condition one sample site of a program on a value;
   every other site is drawn. Repeatable. A site the run never reaches is an
   error.

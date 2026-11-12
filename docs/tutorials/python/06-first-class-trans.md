@@ -44,7 +44,7 @@ The algebra tag records the result's composition semantics and is consumed by la
 
 ```python
 from quivers.core.algebra_morphisms import (
-    EXPECTATION, MATERIAL_IMPLICATION,
+    MARKOV_TO_PRODUCT_FUZZY, PRODUCT_FUZZY_TO_GODEL,
     PROBABILITY_CLAMP, PROBABILITY_TO_REAL,
     COUNTING_FROM_REAL, COUNTING_TO_REAL,
     IdentityHom, Threshold, Embedding,
@@ -105,12 +105,12 @@ compose-time check verifies that `t1.target` matches `t2.source` and raises a
 typed error when they differ.
 
 ```python
-from quivers.core.algebra_morphisms import EXPECTATION
+from quivers.core.algebra_morphisms import MARKOV_TO_PRODUCT_FUZZY
 from quivers.core.morphism_transformations import softmax
 from quivers.core.trans import compose_trans
 
 phi   = softmax(B)                # ProductFuzzyAlgebra -> Markov
-psi   = EXPECTATION               # Markov       -> ProductFuzzyAlgebra
+psi   = MARKOV_TO_PRODUCT_FUZZY   # Markov       -> ProductFuzzyAlgebra
 pipe  = compose_trans(phi, psi)   # ProductFuzzyAlgebra -> ProductFuzzyAlgebra
 
 g = f.change_base(pipe)
@@ -128,7 +128,7 @@ If the boundary types do not match (for instance,
 ```python
 pipe = compose_trans(
     softmax(B),
-    EXPECTATION,
+    MARKOV_TO_PRODUCT_FUZZY,
     softmax(B),
 )
 g = f.change_base(pipe)

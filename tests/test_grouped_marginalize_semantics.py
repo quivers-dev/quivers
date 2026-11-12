@@ -14,7 +14,7 @@ The tests check:
   correctly (the family's input depends on a non-latent bound name).
 * The semantic identity ``marginalize_grouped`` recovers the
   scalar-prior global mixture when the grouping plate is trivial
-  and the fibration is constant.
+  and the index map is constant.
 """
 
 from __future__ import annotations
@@ -287,7 +287,7 @@ def test_body_with_multiple_lets_using_latent() -> None:
 
 def test_trivial_grouped_marginalize_matches_global_logsumexp() -> None:
     """When the grouping plate is a single cell (G=1) and the
-    fibration is constant zero, the grouped marginalize reduces to
+    index map is constant zero, the grouped marginalize reduces to
     ``logsumexp(prior + sum_n ll(n))`` — exactly the global mixture
     log-likelihood."""
     torch.manual_seed(0)
@@ -300,8 +300,8 @@ def test_trivial_grouped_marginalize_matches_global_logsumexp() -> None:
     assert torch.allclose(out, expected, atol=1e-6)
 
 
-def test_identity_fibration_matches_per_row_marginalize_categorical() -> None:
-    """With the identity fibration, every row is its own group;
+def test_identity_index_map_matches_per_row_marginalize_categorical() -> None:
+    """With the identity index map, every row is its own group;
     the per-group reduction reduces row by row. The sum-over-groups
     matches the per-row logsumexp summed up — i.e. one call to
     ``marginalize_categorical`` after adding the prior."""

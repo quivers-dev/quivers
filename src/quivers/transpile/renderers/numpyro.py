@@ -27,7 +27,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -476,8 +476,8 @@ class NumPyroRenderer(RendererBase):
         )
         py.required_imports.add(_MARGINALIZE_IMPORT)
         # A grouped block keys its accumulator by group: the rows the
-        # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
+        # index map sends to one group are summed before the reduction.
+        index_map = marginalize_index_map(
             node,
             raw.observe,
             atoms[0].weight_args,
@@ -485,8 +485,8 @@ class NumPyroRenderer(RendererBase):
             name_plates=py.name_plates,
             target=self.target,
         )
-        if fibration is not None:
-            via, group = fibration
+        if index_map is not None:
+            via, group = index_map
             extent = (
                 str(group.size) if isinstance(group, DimStatic) else group.size_name
             )
@@ -739,7 +739,7 @@ class NumPyroRenderer(RendererBase):
         Observed inputs (variables also bound as
         [`IRObserve`][quivers.transpile.ir.IRObserve]) get the
         ``=None`` default; all other inputs (scalar program params,
-        via fibrations, free names) are positional.
+        via index maps, free names) are positional.
         """
         observed = self._collect_observed(ir)
         positional: list[str] = []

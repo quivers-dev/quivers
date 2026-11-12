@@ -6,7 +6,7 @@ and output objects. Including Boolean values in fuzzy scores preserves the entri
 functorial base change only when it [preserves the operations required by the composition
 law](../../semantics/algebras.md#3-base-change) [@maclane1998categories].
 
-The `BaseChange` interface and the `BoolToFuzzy` and `FuzzyToBool`
-changes of enrichment.
+The `BaseChange` interface and the `BoolToFuzzy`
+change of enrichment.
 
 ::: quivers.categorical.base_change

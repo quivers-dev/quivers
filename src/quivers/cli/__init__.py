@@ -189,8 +189,8 @@ def main() -> int:
         default=[],
         metavar="NAME=JSON",
         help=(
-            "A program parameter by name (its data, an observation, a "
-            "fibration, or a scalar); repeatable."
+            "A program parameter by name (its data, an observation, an "
+            "index map, or a scalar); repeatable."
         ),
     )
     run.add_argument(

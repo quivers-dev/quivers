@@ -1065,7 +1065,7 @@ def _flatten_steps(
     A folded-family site inside a marginalized scope still contributes
     its `log 2`. Under a `logsumexp` reduction the constant factor is
     common to every branch of the sum and so factors straight back out
-    of the reduction; under a fibred reduction it factors out of each
+    of the reduction; under a grouped reduction it factors out of each
     fibre alike. Either way the site counts exactly once per coordinate,
     as it would at the top level, so a flat walk of the nested steps is
     the right count.

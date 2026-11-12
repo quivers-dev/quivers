@@ -76,14 +76,14 @@ class ExprTrace(Expr):
 
 
 class ExprChangeBase(Expr):
-    """Change-of-base: apply a transformation (an algebra
-    homomorphism or `MorphismTransformation`) to a
+    """Change-of-base: apply a transformation (a carrier map, such
+    as an algebra homomorphism, or a `MorphismTransformation`) to a
     morphism.
 
     The transformation is a first-class value: ``phi`` is any
     expression whose compile-time value is a
     `MorphismTransformation` or
-    `AlgebraHomomorphism`.  Concretely:
+    `CarrierMap`.  Concretely:
 
     * A bare identifier resolving a registered singleton
       (``f.change_base(expectation)``) or a let-bound trans value
@@ -272,17 +272,15 @@ class ExprChartFold(Expr):
 
 
 class ExprCurry(Expr):
-    """Residuation-witness curry combinator.
+    """The curry combinator.
 
-    For an inner morphism ``f : X * Y -> Z`` whose codomain ``Z``
-    inhabits a residuated universe, ``f.curry_right`` denotes the
-    morphism ``X -> Z/Y`` and ``f.curry_left`` denotes ``Y -> X\\Z``.
-
-    The categorical interpretation is the right (resp. left) component
-    of the residuation-adjunction unit/counit triangle. Validity of the
-    construction is checked at compile time: domain must factor as a
-    non-commutative product and codomain must inhabit a residuated
-    universe (a `FreeResiduated` object in scope).
+    For ``f : X * Y -> Z``, ``f.curry_right`` denotes the curried
+    morphism ``X -> Y * Z`` and ``f.curry_left`` denotes ``Y -> X * Z``:
+    in the compact closed category of V-matrices the internal hom
+    ``[Y, Z]`` is the product set ``Y * Z``, and currying is the
+    bijection ``Hom(X * Y, Z) ≅ Hom(X, [Y, Z])`` (see
+    `quivers.core.morphisms.CurriedMorphism`). The domain must factor
+    as a product.
     """
 
     inner: Expr

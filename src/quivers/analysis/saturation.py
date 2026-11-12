@@ -11,7 +11,7 @@ analysis guide and returns `SaturationWarning` objects with `source_line` and
    ``Normal(0, 1)`` initial value will saturate noisy-OR at 1 on
    every cell; the gradient through the join goes to zero.
 2. **Intermediate-axis blowup with a small algebra unit.**
-   ``LukasiewiczAlgebra`` saturates its bounded sum at 1 when the
+   ``StandardMVAlgebra`` saturates its bounded sum at 1 when the
    intermediate axis is large; the recipe is ``p ≈ 1 / k`` and the
    warning fires when no init is declared.
 

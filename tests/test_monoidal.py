@@ -3,12 +3,16 @@
 import torch
 from quivers.core.objects import FinSet, ProductSet, CoproductSet, Unit
 from quivers.core.morphisms import identity
-from quivers.categorical.monoidal import CartesianMonoidal, CoproductMonoidal, EmptySet
+from quivers.categorical.monoidal import (
+    CartesianProductMonoidal,
+    CoproductMonoidal,
+    EmptySet,
+)
 
 
-class TestCartesianMonoidal:
+class TestCartesianProductMonoidal:
     def test_product(self):
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
         result = m.product(a, b)
@@ -16,12 +20,12 @@ class TestCartesianMonoidal:
         assert result.shape == (2, 3)
 
     def test_unit(self):
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         assert m.unit == Unit
 
     def test_associator_is_identity(self):
         """Since ProductSet flattens, associator is identity."""
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
         c = FinSet(name="C", cardinality=4)
@@ -32,7 +36,7 @@ class TestCartesianMonoidal:
 
     def test_left_unitor(self):
         """I × A → A should be an isomorphism."""
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         a = FinSet(name="A", cardinality=3)
         lu = m.left_unitor(a)
         assert lu.tensor.shape == (1, 3, 3)
@@ -41,7 +45,7 @@ class TestCartesianMonoidal:
 
     def test_right_unitor(self):
         """A × I → A should be an isomorphism."""
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         a = FinSet(name="A", cardinality=3)
         ru = m.right_unitor(a)
         assert ru.tensor.shape == (3, 1, 3)
@@ -50,7 +54,7 @@ class TestCartesianMonoidal:
 
     def test_braiding_is_involution(self):
         """σ_{B,A} ∘ σ_{A,B} = id."""
-        m = CartesianMonoidal()
+        m = CartesianProductMonoidal()
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
         sigma_ab = m.braiding(a, b)

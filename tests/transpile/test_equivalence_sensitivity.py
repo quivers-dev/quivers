@@ -643,7 +643,7 @@ def test_known_blind_spot_stays_invisible(
 def _mixture_probe_points() -> list[_ProbePoint]:
     """The mixture point set, in QVR's zero-based coding on every target.
 
-    Every target reads the grouping fibration `idx` as QVR holds it;
+    Every target reads the grouping index map `idx` as QVR holds it;
     a one-based target's program reads it one higher itself.
     """
     return [
@@ -675,7 +675,7 @@ def _mixture_reference() -> list[float]:
     trailing axis that
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]
     rejects. The coercion below is shape-aware for that reason, and the
-    grouping fibration `idx` rides on `torch.long` so its `index_add`
+    grouping index map `idx` rides on `torch.long` so its `index_add`
     sees an integer index.
     """
     if _MIXTURE_REFERENCE_CACHE:

@@ -212,7 +212,7 @@ def test_categorical_logits_are_refused_by_probability_only_targets(
         transpile(parse(CATEGORICAL_LOGITS), target=target)
 
 
-def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> None:
+def test_a_grouped_marginalization_states_its_index_map_on_the_observation() -> None:
     ir = Lower().forward(parse(GROUPED))
     probs, marginal, _ = ir.body
     assert isinstance(probs, IRSample)
@@ -227,8 +227,8 @@ def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> 
     (observe,) = marginal.scope
     assert isinstance(observe, IRObserve)
     assert observe.via == "idx"
-    fibration = next(item for item in ir.inputs if item.name == "idx")
-    assert fibration.constraint == CSIntegerInterval(lower=0, upper=7)
+    index_map = next(item for item in ir.inputs if item.name == "idx")
+    assert index_map.constraint == CSIntegerInterval(lower=0, upper=7)
 
 
 def test_a_relaxed_latent_marginalizes_one_atom_pair_per_element() -> None:

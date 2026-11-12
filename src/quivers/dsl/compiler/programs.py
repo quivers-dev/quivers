@@ -899,8 +899,8 @@ def _input_name(decl: ProgramDecl) -> str:
     return domain.name.lower() if isinstance(domain, TypeName) else ""
 
 
-def _fibration_index(env: dict[str, torch.Tensor], name: str) -> torch.Tensor:
-    """Resolve a grouped-marginalize ``via`` fibration index from the
+def _index_map_tensor(env: dict[str, torch.Tensor], name: str) -> torch.Tensor:
+    """Resolve a grouped-marginalize ``via`` index map from the
     runtime environment.
 
     The index is a per-row map from the response plate into the
@@ -912,7 +912,7 @@ def _fibration_index(env: dict[str, torch.Tensor], name: str) -> torch.Tensor:
     idx = env.get(name)
     if idx is None:
         raise CompileError(
-            f"grouped marginalize: the ``via`` fibration index {name!r} "
+            f"grouped marginalize: the ``via`` index map {name!r} "
             f"is neither a bound program variable nor supplied at runtime; "
             f"pass it in the observations dict as a long tensor of "
             f"row-to-group indices",
@@ -1446,7 +1446,7 @@ def _infer_wiring_from_signature(
 # * ``sample`` steps read the axis-role clause (``over`` / ``iid_over``),
 #   which the parser lifts into the step's `AxisSpec`.
 # * ``observe`` steps additionally read ``via`` (the per-observe
-#   fibration inside grouped marginalize blocks).
+#   index map inside grouped marginalize blocks).
 # * ``marginalize`` steps read the grouping plate (``over``) and the
 #   pushforward ``reduction``.
 # * ``program`` declarations read the ``effects`` capability row and
@@ -1835,8 +1835,8 @@ class _ProgramsMixin:
                             morphism=step.morphism,
                             args=step.args,
                             response_var=step.vars[0],
-                            fibration_var=step.via,
-                            fibration_axes=step.via_axes,
+                            index_map_var=step.via,
+                            index_map_axes=step.via_axes,
                             axes=step.axes,
                             line=step.line,
                             col=step.col,
@@ -1851,7 +1851,7 @@ class _ProgramsMixin:
                     )
                 # Grouped form: `over G` (single plate) or
                 # `over G * H` (product grouping plate). The
-                # fibration data lives on each observe inside the
+                # index map data lives on each observe inside the
                 # body via that observe's `via <idx>` (or
                 # `via product(...)`) clause; the header carries
                 # only the grouping plate.
@@ -2024,7 +2024,7 @@ class _ProgramsMixin:
                 # per-class log-likelihood to a dedicated env slot.
                 # The surrounding GroupedMarginalizeStep's runtime callable
                 # collects each slot, pairs it with that observe's
-                # `via <idx>` fibration, and scatter-sums each
+                # `via <idx>` index map, and scatter-sums each
                 # contribution into the shared `(|G|, K)`
                 # accumulator before the reduction.
                 scope_steps = step.scope if step.scope is not None else ()
@@ -2033,12 +2033,12 @@ class _ProgramsMixin:
                 if has_grouping:
                     # Walk the body forward; rewrite each observe
                     # into a GroupedBodyObserveStep with a unique
-                    # ll_slot and capture its per-observe fibration.
+                    # ll_slot and capture its per-observe index map.
                     for j, scoped_step in enumerate(expanded_scope):
                         if isinstance(scoped_step, VectorisedObserveStep):
                             if (
-                                scoped_step.fibration_var is None
-                                and scoped_step.fibration_axes is None
+                                scoped_step.index_map_var is None
+                                and scoped_step.index_map_axes is None
                             ):
                                 raise CompileError(
                                     "grouped marginalize: every observe "
@@ -2059,8 +2059,8 @@ class _ProgramsMixin:
                                 index_var=scoped_step.index_var,
                                 latent_name=latent_name,
                                 class_size=class_size,
-                                fibration_var=scoped_step.fibration_var,
-                                fibration_axes=scoped_step.fibration_axes,
+                                index_map_var=scoped_step.index_map_var,
+                                index_map_axes=scoped_step.index_map_axes,
                                 ll_slot=ll_slot,
                                 line=scoped_step.line,
                                 col=scoped_step.col,
@@ -2068,8 +2068,8 @@ class _ProgramsMixin:
                             body_observes.append(
                                 GroupedObserveEntry(
                                     ll_slot=ll_slot,
-                                    fibration_var=scoped_step.fibration_var,
-                                    fibration_axes=scoped_step.fibration_axes,
+                                    index_map_var=scoped_step.index_map_var,
+                                    index_map_axes=scoped_step.index_map_axes,
                                 )
                             )
                     if not body_observes:
@@ -2084,7 +2084,7 @@ class _ProgramsMixin:
                         # expected slot, and record a single
                         # body_observes entry whose ll_slot is the
                         # outer latent's name (no per-observe
-                        # fibration, since the inner block already
+                        # index map, since the inner block already
                         # performed its own scatter-add).
                         nested_marg_idx: int | None = None
                         for j in range(len(expanded_scope) - 1, -1, -1):
@@ -2143,7 +2143,7 @@ class _ProgramsMixin:
                 out.extend(expanded_scope)
                 # Pushforward reduction. When grouped, the
                 # GroupedMarginalizeStep carries the list of per-observe
-                # (ll_slot, fibration) entries the runtime callable
+                # (ll_slot, index map) entries the runtime callable
                 # consumes.
                 single_over = (
                     over_names[0]
@@ -2781,14 +2781,14 @@ class _ProgramsMixin:
                 renamed_body_observes = tuple(
                     GroupedObserveEntry(
                         ll_slot=rename.get(entry.ll_slot, entry.ll_slot),
-                        fibration_var=(
-                            rename.get(entry.fibration_var, entry.fibration_var)
-                            if entry.fibration_var is not None
+                        index_map_var=(
+                            rename.get(entry.index_map_var, entry.index_map_var)
+                            if entry.index_map_var is not None
                             else None
                         ),
-                        fibration_axes=(
-                            tuple(rename.get(v, v) for v in entry.fibration_axes)
-                            if entry.fibration_axes is not None
+                        index_map_axes=(
+                            tuple(rename.get(v, v) for v in entry.index_map_axes)
+                            if entry.index_map_axes is not None
                             else None
                         ),
                     )
@@ -2826,10 +2826,10 @@ class _ProgramsMixin:
                 index_var=rename.get(step.index_var, step.index_var),
                 latent_name=rename.get(step.latent_name, step.latent_name),
                 class_size=step.class_size,
-                fibration_var=rename.get(step.fibration_var, step.fibration_var)
-                if step.fibration_var is not None
+                index_map_var=rename.get(step.index_map_var, step.index_map_var)
+                if step.index_map_var is not None
                 else None,
-                fibration_axes=step.fibration_axes,
+                index_map_axes=step.index_map_axes,
                 ll_slot=step.ll_slot,
                 line=step.line,
                 col=step.col,
@@ -3665,7 +3665,7 @@ class _ProgramsMixin:
                 # and store the resulting (N, K) tensor at this
                 # observe's dedicated env slot.  The surrounding
                 # GroupedMarginalizeStep collects each slot, pairs it with
-                # the observe's fibration, and scatter-sums each
+                # the observe's index map, and scatter-sums each
                 # contribution into the shared (|G|, K) accumulator.
                 idx_space = self._resolve_plate_index(
                     step.index_set,
@@ -3923,9 +3923,9 @@ class _ProgramsMixin:
                 target_var = step.var_name
                 # Grouped form: `over G` (single plate) or
                 # `over G * H` (product plate).  Per-observe
-                # fibration data lives in ``body_observes``: each
-                # entry is ``(ll_slot, fibration_var,
-                # fibration_axes)``.  The codegen iterates the
+                # index map data lives in ``body_observes``: each
+                # entry is ``(ll_slot, index_map_var,
+                # index_map_axes)``.  The codegen iterates the
                 # entries, builds a parallel list of (ll, idx)
                 # pairs from ``env``, and calls the multi-axis
                 # form of ``marginalize_grouped``.
@@ -3971,19 +3971,19 @@ class _ProgramsMixin:
                             step.col,
                         )
                     is_product = len(over_tuple) > 1
-                    # Verify each per-observe fibration's arity and
+                    # Verify each per-observe index map's arity and
                     # bound-ness in scope.  Each entry is either
-                    # single-fibration (``fibration_var`` set) or
-                    # product-fibration (``fibration_axes`` set
+                    # single-index-map (``index_map_var`` set) or
+                    # product-index-map (``index_map_axes`` set
                     # with length equal to ``len(over_tuple)``).
                     nested_projections: dict[
                         str, tuple[tuple[int, ...], tuple[int, ...]]
                     ] = {}
                     for entry in step.body_observes:
                         slot = entry.ll_slot
-                        fib_var = entry.fibration_var
-                        fib_axes = entry.fibration_axes
-                        if fib_var is None and fib_axes is None:
+                        map_var = entry.index_map_var
+                        map_axes = entry.index_map_axes
+                        if map_var is None and map_axes is None:
                             # Nested-marginalize entry: the inner
                             # block contributes one aggregate per
                             # position of its own grouping plate,
@@ -4033,7 +4033,7 @@ class _ProgramsMixin:
                             nested_projections[slot] = ((inner_extent,), (0,))
                             continue
                         if is_product:
-                            if fib_axes is None or len(fib_axes) != len(over_tuple):
+                            if map_axes is None or len(map_axes) != len(over_tuple):
                                 raise CompileError(
                                     "grouped marginalize: observe writing "
                                     f"to slot {slot!r} must declare a "
@@ -4047,7 +4047,7 @@ class _ProgramsMixin:
                             # bound latent or host data supplied at
                             # runtime through the observations dict.
                         else:
-                            if fib_axes is not None:
+                            if map_axes is not None:
                                 raise CompileError(
                                     "grouped marginalize: `via product(...)` "
                                     "on an observe requires the marginalize "
@@ -4059,7 +4059,7 @@ class _ProgramsMixin:
                             # ``via`` may reference a bound latent OR a
                             # host-data name supplied at runtime through
                             # the observations dict (the per-row
-                            # fibration is usually a `LongTensor` of
+                            # index map is usually a `LongTensor` of
                             # row->group indices the user owns).
                     group_sizes = tuple(
                         int(self._objects[name].size) for name in over_tuple
@@ -4070,7 +4070,7 @@ class _ProgramsMixin:
                     reduction = step.reduction or "logsumexp"
                     parameterization = step.parameterization
                     observe_specs = tuple(
-                        (entry.ll_slot, entry.fibration_var, entry.fibration_axes)
+                        (entry.ll_slot, entry.index_map_var, entry.index_map_axes)
                         for entry in step.body_observes
                     )
 
@@ -4101,7 +4101,7 @@ class _ProgramsMixin:
                         # ll's trailing axis is the class axis.
                         ll_list: list[torch.Tensor] = []
                         idx_list: list[torch.Tensor | tuple[torch.Tensor, ...]] = []
-                        for slot, fib_var, fib_axes in _specs:
+                        for slot, map_var, map_axes in _specs:
                             ll = env[slot]
                             if slot in _nested:
                                 # The inner block's per-position
@@ -4124,16 +4124,16 @@ class _ProgramsMixin:
                                     f"{tuple(ll.shape)}"
                                 )
                             ll_list.append(ll)
-                            if fib_axes is not None:
+                            if map_axes is not None:
                                 idx_tuple = []
-                                for axis_name in fib_axes:
-                                    idx = _fibration_index(env, axis_name)
+                                for axis_name in map_axes:
+                                    idx = _index_map_tensor(env, axis_name)
                                     if idx.dim() == 2 and idx.shape[-1] == 1:
                                         idx = idx.squeeze(-1)
                                     idx_tuple.append(idx.to(torch.long))
                                 idx_list.append(tuple(idx_tuple))
-                            elif fib_var is not None:
-                                idx = _fibration_index(env, fib_var)
+                            elif map_var is not None:
+                                idx = _index_map_tensor(env, map_var)
                                 if idx.dim() == 2 and idx.shape[-1] == 1:
                                     idx = idx.squeeze(-1)
                                 idx_list.append(idx.to(torch.long))
@@ -4141,7 +4141,7 @@ class _ProgramsMixin:
                                 # Nested-marginalize entry: the
                                 # aggregates already sit at this
                                 # block's positions, so the
-                                # fibration is the identity.
+                                # index map is the identity.
                                 positions = torch.arange(
                                     int(ll.shape[0]),
                                     dtype=torch.long,
@@ -4236,12 +4236,12 @@ class _ProgramsMixin:
                     )
                     bound_vars[marg_name] = None
                     marginal_reads: list[str] = [probs_var, *probs_indices]
-                    for slot, fib_var, fib_axes in observe_specs:
+                    for slot, map_var, map_axes in observe_specs:
                         marginal_reads.append(slot)
-                        if fib_var is not None:
-                            marginal_reads.append(fib_var)
-                        if fib_axes is not None:
-                            marginal_reads.extend(fib_axes)
+                        if map_var is not None:
+                            marginal_reads.append(map_var)
+                        if map_axes is not None:
+                            marginal_reads.extend(map_axes)
                     steps.append(
                         (
                             Score(
@@ -7358,7 +7358,7 @@ class _ProgramsMixin:
         if isinstance(node, LetExprIndex):
             # Indexed gather along the leading axis of the array.
             # Realises the Kleisli pullback ι^* v = v ∘ ι for a finite
-            # fibration ι : N → A and a plate variable v : A → B.
+            # index map ι : N → A and a plate variable v : A → B.
             arr_fn = _ProgramsMixin._compile_let_expr(node.array, globals_=globals_)
             idx_fns = [
                 _ProgramsMixin._compile_let_expr(ix, globals_=globals_)

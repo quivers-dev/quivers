@@ -6,7 +6,7 @@ underlying lattice and clamping behavior:
 
 * :class:`RealAlgebra`: entries in :math:`\\mathbb{R}` with no
   clamping. The canonical numeric semiring.
-* :class:`ProbabilityAlgebra`: entries in ``[0, 1]`` with clamp
+* :class:`BoundedSumProductAlgebra`: entries in ``[0, 1]`` with clamp
   on every op so the unit-interval invariant is preserved.
 * :class:`CountingAlgebra`: entries in the non-negative
   integers (held as float for autograd compatibility) with
@@ -134,11 +134,11 @@ class TestRealAlgebra:
 
 
 # ---------------------------------------------------------------------------
-# Algebraic contract for ProbabilityAlgebra
+# Algebraic contract for BoundedSumProductAlgebra
 # ---------------------------------------------------------------------------
 
 
-class TestProbabilityAlgebra:
+class TestBoundedSumProductAlgebra:
     def test_name_is_probability(self) -> None:
         assert PROBABILITY.name == "Probability"
 
@@ -428,9 +428,9 @@ def test_change_base_real_to_log_prob_via_custom_homomorphism() -> None:
     """Apply ``log`` from Real to LogProb via a one-off
     homomorphism; the result is a LogProb-algebra morphism."""
     from quivers.core.algebras import LOG_PROB
-    from quivers.core.algebra_morphisms import AlgebraHomomorphism
+    from quivers.core.algebra_morphisms import CarrierMap
 
-    class _RealToLogProb(AlgebraHomomorphism):
+    class _RealToLogProb(CarrierMap):
         @property
         def source(self):
             return REAL
@@ -492,27 +492,27 @@ def test_counting_to_real_is_inclusion() -> None:
     assert torch.allclose(out, t)
 
 
-def test_lookup_homomorphism_real_to_probability() -> None:
-    from quivers.core.algebra_morphisms import lookup_homomorphism
+def test_lookup_carrier_map_real_to_probability() -> None:
+    from quivers.core.algebra_morphisms import lookup_carrier_map
 
-    phi = lookup_homomorphism(REAL, PROBABILITY)
+    phi = lookup_carrier_map(REAL, PROBABILITY)
     assert phi is not None
     assert phi.source.name == "Real"
     assert phi.target.name == "Probability"
 
 
-def test_lookup_homomorphism_real_to_counting() -> None:
-    from quivers.core.algebra_morphisms import lookup_homomorphism
+def test_lookup_carrier_map_real_to_counting() -> None:
+    from quivers.core.algebra_morphisms import lookup_carrier_map
 
-    phi = lookup_homomorphism(REAL, COUNTING)
+    phi = lookup_carrier_map(REAL, COUNTING)
     assert phi is not None
     assert phi.target.name == "Counting"
 
 
-def test_lookup_homomorphism_probability_to_real() -> None:
-    from quivers.core.algebra_morphisms import lookup_homomorphism
+def test_lookup_carrier_map_probability_to_real() -> None:
+    from quivers.core.algebra_morphisms import lookup_carrier_map
 
-    phi = lookup_homomorphism(PROBABILITY, REAL)
+    phi = lookup_carrier_map(PROBABILITY, REAL)
     assert phi is not None
 
 

@@ -14,6 +14,7 @@ specific per-op functions.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import torch
@@ -139,10 +140,54 @@ def rnn_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
     )
 
 
-def transformer_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
-    """A transformer-style encoder: each ``Cons`` step combines
-    the head's element embedding with the tail's running compressed
-    vector through a learned MLP over the concatenation.
+def _sinusoidal_positions(length: int, dim: int) -> torch.Tensor:
+    """The sinusoidal position encodings of Vaswani et al. (2017).
+
+    Parameters
+    ----------
+    length : int
+        The number of positions.
+    dim : int
+        The model width.
+
+    Returns
+    -------
+    torch.Tensor
+        A ``(length, dim)`` tensor whose row ``p`` holds
+        ``sin(p / 10000^(2i/dim))`` at even columns ``2i`` and the
+        matching cosine at odd columns.
+    """
+    position = torch.arange(length, dtype=torch.get_default_dtype()).unsqueeze(1)
+    rate = torch.exp(
+        torch.arange(0, dim, 2, dtype=torch.get_default_dtype())
+        * (-math.log(10000.0) / dim)
+    )
+    encoding = torch.zeros(length, dim)
+    encoding[:, 0::2] = torch.sin(position * rate)
+    encoding[:, 1::2] = torch.cos(position * rate[: dim // 2])
+    return encoding
+
+
+def transformer_encoder(
+    sig: Signature | None = None,
+    dim: int = 64,
+    heads: int = 4,
+    layers: int = 1,
+) -> Encoder:
+    """A transformer encoder over the elements of a sequence.
+
+    The element embeddings of ``Cons(h_0, Cons(h_1, …, Nil))``, with
+    sinusoidal position encodings added, pass through ``layers``
+    transformer encoder layers, each multi-head scaled dot-product
+    self-attention followed by a position-wise feed-forward network,
+    with residual connections and layer normalization [Vaswani et al.
+    (2017)]. The sequence embedding is the mean of the outputs over
+    positions; the empty sequence embeds as a learned vector.
+
+    The encoder uses the ``attention`` per-operation mode: the step at
+    the innermost ``Cons`` receives every element's embedding and
+    attends over all of them, so each position attends to the whole
+    sequence.
 
     Parameters
     ----------
@@ -150,41 +195,76 @@ def transformer_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
         A sequence signature with object sort ``Seq`` and data sort
         ``A``; `seq_signature` at dimension ``dim`` when omitted.
     dim : int
-        The embedding dimension of both sorts.
+        The embedding dimension of both sorts, the model width.
+    heads : int
+        The number of attention heads; it must divide ``dim``.
+    layers : int
+        The number of encoder layers.
 
     Returns
     -------
     Encoder
         The sequence encoder.
+
+    Raises
+    ------
+    ValueError
+        If ``heads`` or ``layers`` is not positive, or ``heads`` does
+        not divide ``dim``.
+
+    References
+    ----------
+    Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L.,
+    Gomez, A. N., Kaiser, Ł., and Polosukhin, I. (2017). Attention is
+    all you need. *Advances in Neural Information Processing Systems*,
+    30. [doi:10.48550/arXiv.1706.03762](https://doi.org/10.48550/arXiv.1706.03762)
     """
+    if heads < 1 or layers < 1:
+        raise ValueError(
+            f"transformer_encoder takes positive heads and layers, got "
+            f"heads={heads}, layers={layers}"
+        )
+    if dim % heads != 0:
+        raise ValueError(
+            f"transformer_encoder: {heads} heads do not divide the width {dim}"
+        )
     sig = sig or seq_signature(dim=dim)
-    head_proj = nn.Linear(dim, dim)
-    tail_proj = nn.Linear(dim, dim)
-    fuse = nn.Sequential(nn.Linear(2 * dim, dim), nn.GELU(), nn.Linear(dim, dim))
+    layer = nn.TransformerEncoderLayer(
+        d_model=dim,
+        nhead=heads,
+        dim_feedforward=4 * dim,
+        dropout=0.0,
+        activation="gelu",
+        batch_first=True,
+    )
+    stack = nn.TransformerEncoder(layer, num_layers=layers, enable_nested_tensor=False)
     nil_mod, nil_const = _learnable_nil(dim)
     table, embedder = _data_embedder(dim)
 
-    def cons_fn(a: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
-        h = head_proj(a)
-        t = tail_proj(tail)
-        cat = torch.cat([h, t], dim=-1)
-        return fuse(cat)
+    def cons_fn(
+        head: torch.Tensor, prefix: list[torch.Tensor], state: torch.Tensor
+    ) -> torch.Tensor:
+        elements = torch.stack([*prefix, head], dim=0).reshape(-1, dim)
+        positioned = elements + _sinusoidal_positions(elements.shape[0], dim)
+        return stack(positioned.unsqueeze(0)).squeeze(0).mean(dim=0)
 
     def nil_fn() -> torch.Tensor:
         return nil_const
 
     op_fns = {
         "Nil": PerOpFn("Nil", "plain", (), nil_fn),
-        "Cons": PerOpFn("Cons", "plain", ("head", "tail"), cons_fn),
+        "Cons": PerOpFn(
+            "Cons", "attention", ("head", "tail"), cons_fn, prefix_var="prefix"
+        ),
     }
     return Encoder(
-        name="Tfm",
+        name="Transformer",
         signature=sig,
         sort_dims={"Seq": dim, "A": dim},
         op_fns=op_fns,
         var_init_fns={},
         data_embedders={"A": embedder},
-        modules_owned=[head_proj, tail_proj, fuse, table, nil_mod],
+        modules_owned=[stack, table, nil_mod],
     )
 
 

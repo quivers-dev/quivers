@@ -1,5 +1,5 @@
 """Extended coverage for the grouped ``marginalize`` block:
-nesting, product fibrations, reductions, body vectorisation,
+nesting, product index maps, reductions, body vectorisation,
 continuous latents in scope, and end-to-end SVI with a
 continuous guide.
 
@@ -69,14 +69,14 @@ class TestReductionParameter:
 
 
 # ---------------------------------------------------------------------------
-# Runtime primitive: product fibration
+# Runtime primitive: product index map
 # ---------------------------------------------------------------------------
 
 
-class TestProductFibration:
+class TestProductIndexMap:
     """The runtime primitive accepts a tuple of co-indexed
-    fibrations + a tuple of group sizes (the product grouping
-    plate). Behavior matches the single-fibration form when the
+    index maps + a tuple of group sizes (the product grouping
+    plate). Behavior matches the single-index-map form when the
     product collapses to one axis, and matches a hand-rolled
     Python loop for the two-axis case."""
 
@@ -260,15 +260,15 @@ class TestNestedMarginalize:
 
 
 # ---------------------------------------------------------------------------
-# Surface: product fibration in the DSL
+# Surface: product index map in the DSL
 # ---------------------------------------------------------------------------
 
 
-class TestProductFibrationSurface:
+class TestProductIndexMapSurface:
     """``over G * H via product(idx_a, idx_b)`` parses, compiles,
-    and threads the product-fibration data into the runtime."""
+    and threads the product-index-map data into the runtime."""
 
-    def test_product_fibration_compiles(self) -> None:
+    def test_product_index_map_compiles(self) -> None:
         from quivers.dsl import loads
 
         src = """
@@ -420,7 +420,7 @@ class TestSurfaceCompileErrors:
             loads(textwrap.dedent(src))
 
 
-def test_three_axis_product_fibration_dsl_compiles() -> None:
+def test_three_axis_product_index_map_dsl_compiles() -> None:
     """`over A * B * C via product(idx_a, idx_b, idx_c)` parses
     and compiles."""
     from quivers.dsl import loads

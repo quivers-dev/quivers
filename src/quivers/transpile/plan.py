@@ -530,7 +530,7 @@ class _ProgramWalk:
             if not isinstance(index, Var):
                 raise UnsupportedConstruct(
                     f"qvr-{self.planner.target}",
-                    [f"qiec:fibration:{self.program.name}"],
+                    [f"qiec:index_map:{self.program.name}"],
                 )
             via = index.local.name
             density = density.value
@@ -1252,7 +1252,7 @@ class _ProgramWalk:
             Whether the site is a marginalized latent, whose plate
             keeps only the grouping axes.
         via : str | None
-            The fibration an observation reads its arguments through;
+            The index map an observation reads its arguments through;
             the plan states it on the observation rather than on the
             arguments, so a gather by it is stripped.
 
@@ -2067,13 +2067,13 @@ class _ProgramWalk:
         tuple[IRDataInput, ...]
             One input per entry-point parameter, grouped by role as
             the targets declare them: the program's domain, its
-            scalars, fibrations, observations, parameter maps, and
+            scalars, index maps, observations, parameter maps, and
             data.
         """
         groups: dict[str, list[IRDataInput]] = {
             "domain": [],
             "scalar": [],
-            "fibration": [],
+            "index_map": [],
             "observation": [],
             "map": [],
             "data": [],
@@ -2088,7 +2088,7 @@ class _ProgramWalk:
                 groups[parameter.role].append(node)
         return tuple(
             node
-            for role in ("domain", "scalar", "fibration", "observation", "map", "data")
+            for role in ("domain", "scalar", "index_map", "observation", "map", "data")
             for node in groups[role]
         )
 
@@ -2114,7 +2114,7 @@ class _ProgramWalk:
         if parameter.role == "observation" and name in self.observed:
             node = self.observed[name]
             return IRDataInput(name=name, constraint=node.constraint, plate=node.plate)
-        if parameter.role == "fibration":
+        if parameter.role == "index_map":
             upper = None
             batch: tuple[Dim, ...] = ()
             for node in _walk(body):
