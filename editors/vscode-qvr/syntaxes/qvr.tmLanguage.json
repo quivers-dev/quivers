@@ -178,7 +178,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.qvr",
-      "match": "\\b(identity|cup|cap|fan|repeat|stack|scan|parser|ccg|lambek|chart_fold|from_data|freeze|dagger|trace|change_base|curry_left|curry_right|FreeResiduated|FreeMonoid|abs|acos|acosh|asin|asinh|atan|atanh|ceil|concat|cos|cosh|cumsum|digamma|elu|erf|erfc|erfinv|exp|expm1|filter|floor|fold|gelu|int|length|lgamma|log|log10|log1p|log2|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|max|mean|min|mish|normalize|pow|prod|real|reciprocal|relu|relu6|round|rsqrt|selu|sigmoid|sign|silu|sin|sinh|slice|softmax|softplus|softsign|sort|sqrt|square|sum|tan|tanh|traverse|trunc|weight|weight_value)\\b"
+      "match": "\\b(identity|cup|cap|fan|repeat|stack|scan|parser|ccg|lambek|chart_fold|from_data|freeze|dagger|trace|change_base|curry_left|curry_right|FreeResiduated|FreeMonoid|abs|acos|acosh|asin|asinh|atan|atanh|ceil|concat|cos|cosh|cumsum|digamma|elu|erf|erfc|erfinv|exp|expm1|filter|floor|fold|gelu|int|layer_norm|length|lgamma|log|log10|log1p|log2|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|matmul|max|mean|min|mish|normalize|pow|prod|real|reciprocal|relu|relu6|rms_norm|round|rsqrt|select|selu|sigmoid|sign|silu|sin|sinh|slice|softmax|softplus|softsign|sort|sqrt|square|sum|tan|tanh|traverse|trunc|weight|weight_value)\\b"
     },
     "builtin-type": {
       "name": "support.class.builtin.qvr",

@@ -271,8 +271,9 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
 
 
 #: Let calls Julia spells under another name: integer division and
-#: remainder truncate toward zero, as Julia's `div` and `rem` do.
-_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem"}
+#: remainder truncate toward zero, as Julia's `div` and `rem` do, and
+#: `select(c, a, b)` is Julia's `ifelse`, which evaluates both branches.
+_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem", "select": "ifelse"}
 
 #: QVR builtins whose two-argument form is pointwise, which Julia spells
 #: as a broadcast call.
@@ -310,9 +311,8 @@ def render_let_expr_julia(
 
 def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """True iff ``expr`` contracts an axis anywhere in its tree:
-    either a reduction along the last axis of an array with an event
-    axis or with two or more axes, or the matrix-vector product an
-    affine parameter map denotes.
+    a reduction of an argument with one or more axes, or the
+    matrix-vector product an affine parameter map denotes.
 
     A binding whose body contracts an axis cannot be wrapped in
     Julia's ``@.`` macro: the macro broadcasts the contraction
@@ -323,6 +323,14 @@ def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """
     if isinstance(expr, LetExprCall):
         if _reduces_named_axis(ctx, expr.func, expr.args):
+            return True
+        if (
+            expr.func in _AXIS_REDUCING_CALLS
+            and len(expr.args) == 1
+            and infer_array_rank(ctx, expr.args[0]) >= 1
+        ):
+            # Under `@.` a reduction of a vector, a list literal
+            # included, would reduce each entry alone.
             return True
         return any(let_expr_has_axis_reduction(ctx, a) for a in expr.args)
     if isinstance(expr, LetExprBinOp):
@@ -729,8 +737,9 @@ def _emit_call(
     `_emit_axis_reduction`, which names that axis; a nested tower
     reduces each of its rows; a vector reduces whole, which is the
     same.
-    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`;
-    `pow(a, b)` emits the broadcast power `a .^ b`.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`,
+    and `select(c, a, b)` emits `ifelse.(c, a, b)`; `pow(a, b)` emits
+    the broadcast power `a .^ b`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
@@ -760,7 +769,9 @@ def _emit_call(
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
     # `max(a, b)` of two arrays compares them as wholes and returns one,
     # so the binary form always broadcasts.
-    pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
+    pointwise = (func in _BINARY_POINTWISE_CALLS and len(args) == 2) or (
+        func == "select" and len(args) == 3
+    )
     kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
     ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")

@@ -139,6 +139,8 @@ def _render(ctx, expr: LetExprNode) -> tuple[str, str]:
                 "dot_product",
                 (_vector_operand(ctx, inner.left), _vector_operand(ctx, inner.right)),
             )
+        if expr.func == "select" and len(expr.args) == 3:
+            return _emit_conditional(ctx, expr.args)
         if (
             expr.func in _REAL_POINTWISE
             and len(expr.args) == 2
@@ -265,6 +267,7 @@ _STAN_PAREN_REQUIRED_OPERAND_KINDS: frozenset[str] = frozenset(
     {
         "infix_op_expression",
         "prefix_op_expression",
+        "conditional_expression",
     }
 )
 """Operand kinds that must be wrapped in `parenthized_expression`
@@ -426,6 +429,21 @@ def _emit_infix_rendered(
     ctx.edge(vid, left_vid, "child_of")
     ctx.edge(vid, right_vid, "child_of")
     return vid, "infix_op_expression"
+
+
+def _emit_conditional(ctx, args: tuple[LetExprNode, ...]) -> tuple[str, str]:
+    """Emit `select(c, a, b)` as Stan's conditional operator `c ? a : b`.
+
+    Each operand is parenthesised where Stan's printer needs it, so a
+    comparison condition and an arithmetic branch keep their grouping.
+    """
+    rendered = [_stan_maybe_paren(ctx, _render(ctx, arg)) for arg in args]
+    vid = ctx.vertex(ctx.fresh("cond"), "conditional_expression")
+    ctx.constraint(vid, "chose-alt-fingerprint", "? :")
+    ctx.constraint(vid, "chose-alt-child-kinds", " ".join(kind for _, kind in rendered))
+    for child, _ in rendered:
+        ctx.edge(vid, child, "child_of")
+    return vid, "conditional_expression"
 
 
 def _emit_prefix(ctx, expr: LetExprUnaryOp) -> tuple[str, str]:

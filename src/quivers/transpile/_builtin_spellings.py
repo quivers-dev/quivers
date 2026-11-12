@@ -23,7 +23,8 @@ target, that settles each builtin for each target in one of four ways:
 * [`Elaborated`][quivers.transpile._builtin_spellings.Elaborated]: the
   checked elaboration writes the builtin in terms of selections, tensor
   literals, comprehensions, and other builtins before any plan is
-  drawn (``concat``, ``slice``), so no renderer meets the call and the
+  drawn (``concat``, ``slice``, ``matmul``, ``layer_norm``, ``rms_norm``),
+  so no renderer meets the call and the
   target spells what it was written in.
 
 Every target's table has an entry for every surface builtin, so adding
@@ -114,7 +115,7 @@ class ClosedForm(BuiltinSpelling):
     ----------
     body
         The definition, reading its arguments as the variables
-        ``__arg0`` and ``__arg1``. A call to a math builtin inside it is
+        ``__arg0``, ``__arg1``, and ``__arg2``. A call to a math builtin inside it is
         spelled by the same target's table in turn; a call to any other
         name is a function of the target's own.
     kind
@@ -176,6 +177,7 @@ class Refusal(BuiltinSpelling):
 
 _X = LetExprVar(name="__arg0")
 _Y = LetExprVar(name="__arg1")
+_Z = LetExprVar(name="__arg2")
 
 
 def _lit(value: float) -> LetExprLiteral:
@@ -346,6 +348,7 @@ _PYRO: dict[str, BuiltinSpelling] = {
     "max": _native("torch", "maximum"),
     "min": _native("torch", "minimum"),
     "pow": _native("torch", "pow"),
+    "select": _native("torch", "where"),
 }
 
 _NUMPYRO: dict[str, BuiltinSpelling] = {
@@ -400,6 +403,7 @@ _NUMPYRO: dict[str, BuiltinSpelling] = {
     "max": _native("jnp", "maximum"),
     "min": _native("jnp", "minimum"),
     "pow": _native("jnp", "power"),
+    "select": _native("jnp", "where"),
 }
 
 
@@ -455,6 +459,7 @@ _PYMC: dict[str, BuiltinSpelling] = {
     "max": _pmath("maximum"),
     "min": _pmath("minimum"),
     "pow": _pt("pow"),
+    "select": _pmath("switch"),
 }
 
 
@@ -515,6 +520,7 @@ _EDWARD2: dict[str, BuiltinSpelling] = {
     "max": _tfmath("maximum"),
     "min": _tfmath("minimum"),
     "pow": _tfmath("pow"),
+    "select": _native("tf", "where"),
 }
 
 
@@ -574,6 +580,7 @@ _STAN: dict[str, BuiltinSpelling] = {
     **_common(*_ACTIVATIONS),
     "max": Dedicated(reason="`max` of two integers, `fmax` of reals"),
     "min": Dedicated(reason="`min` of two integers, `fmin` of reals"),
+    "select": Dedicated(reason="the conditional operator `c ? a : b`"),
 }
 
 
@@ -626,6 +633,7 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
         "pow": Dedicated(reason="the broadcast power `.^`"),
         "max": Dedicated(reason="the broadcast `max.(a, b)`"),
         "min": Dedicated(reason="the broadcast `min.(a, b)`"),
+        "select": Dedicated(reason="the broadcast `ifelse.(c, a, b)`"),
     }
 
 
@@ -658,6 +666,7 @@ WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "log1p",
         "log2",
         "round",
+        "select",
         "sign",
         "sin",
         "sinh",
@@ -715,6 +724,7 @@ CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "max",
         "min",
         "pow",
+        "select",
     }
 )
 
@@ -796,6 +806,9 @@ _BUGS: dict[str, BuiltinSpelling] = {
         )
     ),
     **_refuse("BUGS and JAGS have no digamma function", "digamma"),
+    # OpenBUGS has no conditional function; `b + c * (a - b)` is `select`
+    # wherever both branches are finite.
+    "select": _form(_op("+", _Z, _op("*", _X, _op("-", _Y, _Z)))),
     **_common(
         "ceil",
         "expm1",
@@ -822,6 +835,18 @@ _ELABORATED: dict[str, BuiltinSpelling] = {
         reason="a tensor literal of the window's entries selected at literal "
         "positions of the last axis, under a comprehension per leading axis"
     ),
+    "matmul": Elaborated(
+        reason="a sum over a comprehension of products along the shared axis, "
+        "under a comprehension per leading axis and per column"
+    ),
+    "layer_norm": Elaborated(
+        reason="row means and variances bound once, and a comprehension of "
+        "each centered entry over the square root of its row's variance"
+    ),
+    "rms_norm": Elaborated(
+        reason="row mean squares bound once, and a comprehension of each "
+        "entry over the square root of its row's mean square"
+    ),
 }
 
 #: Every target's spelling of every math builtin and every builtin the
@@ -839,7 +864,7 @@ BUILTIN_SPELLINGS: Mapping[str, Mapping[str, BuiltinSpelling]] = {
         "webppl": _WEBPPL,
         "church": _CHURCH,
         "bugs": _BUGS,
-        "jags": _BUGS,
+        "jags": {**_BUGS, "select": _native("ifelse")},
     }.items()
 }
 
@@ -902,6 +927,8 @@ def _instantiate(
             return args[0]
         if body.name == _Y.name:
             return args[1]
+        if body.name == _Z.name:
+            return args[2]
         return body
     if isinstance(body, LetExprBinOp):
         return LetExprBinOp(

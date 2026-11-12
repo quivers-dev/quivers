@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+from torch.special import log_ndtr
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
@@ -68,13 +69,13 @@ class OrderedLogistic(Distribution):
     ) -> None:
         if cutpoints.dim() == 0:
             raise ValueError(
-                "OrderedLogistic: `cutpoints` must have at least one "
+                f"{type(self).__name__}: `cutpoints` must have at least one "
                 f"dimension carrying the K-1 thresholds, got "
                 f"shape={tuple(cutpoints.shape)}"
             )
         if cutpoints.shape[-1] < 1:
             raise ValueError(
-                "OrderedLogistic: `cutpoints` last dimension must "
+                f"{type(self).__name__}: `cutpoints` last dimension must "
                 f"have size >= 1 (K >= 2 categories), got "
                 f"shape={tuple(cutpoints.shape)}"
             )
@@ -172,6 +173,55 @@ class OrderedLogistic(Distribution):
         return self._category_log_probs().exp()
 
 
+class OrderedProbit(OrderedLogistic):
+    """Ordered-probit distribution over ``K = cutpoints.shape[-1] + 1``
+    ordered categories indexed ``0 .. K - 1``.
+
+    The ordered-logistic construction with standard normal latent noise:
+    ``P(Y <= k) = Phi(c_k - eta)`` for the standard normal distribution
+    function ``Phi``, so ``P(Y = k) = Phi(c_k - eta) - Phi(c_{k-1} -
+    eta)``. Predictor and cutpoint broadcasting follow `OrderedLogistic`.
+
+    Log probabilities are computed without forming the difference of
+    distribution functions: with ``a < b`` the offsets bounding a
+    category, ``log(Phi(b) - Phi(a)) = log Phi(b) + log(1 - exp(log
+    Phi(a) - log Phi(b)))``, and for a category above the predictor
+    (``a > 0``) the same identity on the mirrored offsets ``-b < -a``,
+    since ``Phi(b) - Phi(a) = Phi(-a) - Phi(-b)``. Each term is accurate in
+    both tails, so a category far from the predictor keeps its log
+    probability.
+
+    Parameters
+    ----------
+    predictor : Tensor
+        The real predictor ``eta``.
+    cutpoints : Tensor
+        The sorted cutpoints, ``(..., K - 1)``.
+    validate_args : bool | None
+        Whether to validate arguments and values.
+    """
+
+    def _category_log_probs(self) -> Tensor:
+        """Log probability of every category.
+
+        Returns
+        -------
+        Tensor
+            Shape ``(*batch_shape, num_categories)``.
+        """
+        offsets = self.cutpoints - self.predictor.unsqueeze(-1)
+        below = torch.full_like(offsets[..., :1], -torch.inf)
+        above = torch.full_like(offsets[..., :1], torch.inf)
+        lower = torch.cat([below, offsets], dim=-1)
+        upper = torch.cat([offsets, above], dim=-1)
+        mirror = lower > 0
+        high = torch.where(mirror, log_ndtr(-lower), log_ndtr(upper))
+        low = torch.where(mirror, log_ndtr(-upper), log_ndtr(lower))
+        # Out-of-order cutpoints give a category no mass.
+        gap = (low - high).clamp(max=0.0)
+        return high + _log1mexp(gap)
+
+
 def _log1mexp(x: Tensor) -> Tensor:
     """``log(1 - exp(x))`` for ``x <= 0``, accurate across its range.
 
@@ -198,4 +248,4 @@ def _log1mexp(x: Tensor) -> Tensor:
     )
 
 
-__all__ = ["OrderedLogistic"]
+__all__ = ["OrderedLogistic", "OrderedProbit"]

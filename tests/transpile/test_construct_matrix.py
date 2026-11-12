@@ -255,12 +255,109 @@ for _backend in (
     "turing",
     "webppl",
 ):
-    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_mvn_host_factor")] = (
-        "family:MultivariateNormal:scale_tril"
-    )
+    if _backend in ("numpyro", "pymc", "pyro", "stan"):
+        # These take a Cholesky factor known only at run time.
+        continue
+    for _fixture in ("observe_mvn_host_factor", "observe_mvn_lkj_factor"):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "family:MultivariateNormal:scale_tril"
+        )
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "sample_wishart_host_factor")] = (
         "family:Wishart:scale_tril"
     )
+
+# An alternative parameterization a target's library lacks is refused by
+# name, beside the literal-matrix limits the canonical forms meet.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_mvn_covariance"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_covariance"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_covariance"): (
+            "family:MultivariateNormal:non-ref-covariance"
+        ),
+        ("bugs", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+    }
+)
+for _fixture in ("sample_wishart_covariance", "sample_wishart_precision"):
+    for _backend, _kind in (
+        ("bugs", "arg:matrix-literal"),
+        ("jags", "arg:matrix-literal"),
+        ("church", "family:Wishart"),
+        ("edward2", "family:Wishart"),
+        ("gen", "family:Wishart"),
+        ("webppl", "family:no-webppl-target:Wishart"),
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = _kind
+for _fixture, _family, _backends in (
+    (
+        "observe_bernoulli_logits",
+        "Bernoulli",
+        ("bugs", "church", "gen", "jags", "webppl"),
+    ),
+    (
+        "observe_binomial_logits",
+        "Binomial",
+        ("bugs", "church", "gen", "jags", "webppl"),
+    ),
+    (
+        "observe_geometric_logits",
+        "Geometric",
+        ("bugs", "church", "gen", "jags", "pymc", "stan", "turing", "webppl"),
+    ),
+    (
+        "observe_negative_binomial_logits",
+        "NegativeBinomial",
+        (
+            "bugs",
+            "church",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "stan",
+            "turing",
+            "webppl",
+        ),
+    ),
+):
+    for _backend in _backends:
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            f"family:{_family}:logits"
+        )
+
+# The ordered probit, inverse Wishart, and matrix normal are refused by
+# name where a target has no class or literal form for them.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "observe_ordered_probit"): "arg:list-literal",
+        ("church", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("edward2", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("gen", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("jags", "steps", "observe_ordered_probit"): (
+            "family:no-target-name:OrderedProbit"
+        ),
+        ("turing", "steps", "observe_ordered_probit"): "family:OrderedProbit",
+        ("webppl", "steps", "observe_ordered_probit"): (
+            "family:no-webppl-target:OrderedProbit"
+        ),
+        ("bugs", "steps", "sample_inverse_wishart_factor"): "arg:matrix-literal",
+        ("church", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("edward2", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("gen", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("jags", "steps", "sample_inverse_wishart_factor"): (
+            "family:no-target-name:InverseWishart"
+        ),
+        ("pymc", "steps", "sample_inverse_wishart_factor"): "family:InverseWishart",
+        ("webppl", "steps", "sample_inverse_wishart_factor"): (
+            "family:no-webppl-target:InverseWishart"
+        ),
+        ("bugs", "steps", "sample_matrix_normal"): "arg:matrix-literal",
+        ("church", "steps", "sample_matrix_normal"): "arg:matrix-literal",
+        ("jags", "steps", "sample_matrix_normal"): "family:no-target-name:MatrixNormal",
+    }
+)
 
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.
