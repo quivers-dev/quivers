@@ -98,7 +98,7 @@ The source uses Lambek's argument-under convention throughout. `Fwd(A, B)` is `A
 | `prod_intro` | `A, B \|- A*B` | `*R` |
 | `curry` | `C/(A*B) \|- (C/B)/A` | `A, B \|- A*B` by `*R`, so `C/(A*B), A, B \|- C` by `/L`; then `/R` twice |
 
-Composition and type raising are the standard derived rules of L [@lambek1958mathematics; @moortgat1997types]. The order in `curry` matters: the argument adjacent to the functor, `A`, becomes the outer argument, so `C/(A*B)` becomes `(C/B)/A` and not `(C/A)/B`. The converse `(C/B)/A |- C/(A*B)` is also an L-theorem, but adding it as a rule would close a cycle between the two forms, so the fragment keeps one direction.
+Composition and type raising are the standard derived rules of L [@lambek1958mathematics; @moortgat1997categorial]. The order in `curry` matters: the argument adjacent to the functor, `A`, becomes the outer argument, so `C/(A*B)` becomes `(C/B)/A` and not `(C/A)/B`. The converse `(C/B)/A |- C/(A*B)` is also an L-theorem, but adding it as a rule would close a cycle between the two forms, so the fragment keeps one direction.
 
 Pattern variables (single uppercase letters such as `A`, `B`, `I`, `J`) bind at firing time. Type raising is stated at one instance because a rule's conclusion may only mention variables its premises bind: the general schema `A |- B/(A\B)` leaves `B` free. The `depth=4` option bounds the constructor depth of a rule's conclusion category; it is what keeps `prod_intro` from building ever-deeper products over a span, and the lexicon's deepest derived category, the curried `((NP\S)/NP)/NP`, sits at that bound. No rule closes a cycle, so the chart needs no `#[bounded]` rule and no convergence tolerance.
 

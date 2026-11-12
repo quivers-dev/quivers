@@ -213,7 +213,7 @@ of the [Giry monad](https://doi.org/10.1007/BFb0092872) from the row's covariate
 and category to the positive reals: the deterministic link `x |-> exp(eta)`
 followed by the `Gamma(nu, nu / mu)` kernel. The plate gathers
 `beta_0[cat_idx]` and `shape[cat_idx]` are pullbacks of the `Cat`-indexed
-plates along the fibration `Resp -> Cat` carried by the runtime index, so the
+plates along the index map `Resp -> Cat` carried by the runtime index, so the
 joint is the tensor product of the per-row kernels over `Resp`, conditional on
 the per-category parameters. [@giry1982categorical]
 

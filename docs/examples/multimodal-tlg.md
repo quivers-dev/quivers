@@ -85,7 +85,7 @@ export fit_grammar
 
 ## Overview
 
-Multimodal type-logical grammar adds unary modalities to the Lambek calculus and lets structural rules apply only to material those modalities mark [@moortgat1997types; @kurtonina1997structural]. This example implements a sound fragment of that system: the associative Lambek calculus L, the residuated pair `Dia` and `Box` (written `<>` and `[]`), and one structural postulate, controlled permutation, that only `Dia`-marked structure may use. The relative pronoun `that` is the one decorated word. Its gap is typed `<>[]NP`, and that decoration is what lets the gap sit at the left edge of the clause or before a modifier, positions plain L cannot reach. Removing the decoration removes exactly those analyses.
+Multimodal type-logical grammar adds unary modalities to the Lambek calculus and lets structural rules apply only to material those modalities mark [@moortgat1997categorial; @kurtonina1997structural]. This example implements a sound fragment of that system: the associative Lambek calculus L, the residuated pair `Dia` and `Box` (written `<>` and `[]`), and one structural postulate, controlled permutation, that only `Dia`-marked structure may use. The relative pronoun `that` is the one decorated word. Its gap is typed `<>[]NP`, and that decoration is what lets the gap sit at the left edge of the clause or before a modifier, positions plain L cannot reach. Removing the decoration removes exactly those analyses.
 
 ## Understanding the model
 
