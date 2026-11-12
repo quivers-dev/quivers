@@ -4,7 +4,7 @@ A `contraction` declaration combines several morphisms in one step by a
 [tensor contraction](https://en.wikipedia.org/wiki/Tensor_contraction) under a named
 composition rule. The contraction's [einsum](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html)
 wiring is either inferred from the declared types or given explicitly.
-[Composition Rules](../semantics/composition-rules.md#4-operadic-contractions) gives its
+[Composition rules](../semantics/composition-rules.md#4-operadic-contractions) gives its
 denotation.
 
 ## Declaration
@@ -177,7 +177,7 @@ against the shared target vector.
 
 ## See also
 
-- [Composition Rules](../semantics/composition-rules.md#4-operadic-contractions): the
+- [Composition rules](../semantics/composition-rules.md#4-operadic-contractions): the
   denotation of contractions.
 - [Algebra](dsl-declarations.md#algebra): declaring the composition rule a contraction
   uses.

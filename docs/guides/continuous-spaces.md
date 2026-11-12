@@ -5,7 +5,7 @@ numerical values: a point of `Real 3` has three real coordinates, such as
 `(0.2, -1.0, 4.5)`. A space also records constraints, which define the *support* on
 which a distribution may put mass: the entries of a simplex point are nonnegative and
 sum to one, and a positive real stays above zero. Continuous morphisms are conditional
-distributions between such spaces. [Continuous Families](continuous-families.md) lists
+distributions between such spaces. [Continuous Distribution Families](continuous-families.md) lists
 the registered distribution families.
 
 ## ContinuousSpace hierarchy {#continuousspace-hierarchy}
@@ -328,7 +328,7 @@ transforms, such as inverse autoregressive and spline flows.
 
 ## See also
 
-- [Continuous Families](continuous-families.md): the registered distribution families
+- [Continuous Distribution Families](continuous-families.md): the registered distribution families
   and their numbers of event dimensions.
 - [Probabilistic Programs](programs.md): how continuous morphisms compose into probabilistic
   programs.

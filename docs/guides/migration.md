@@ -185,4 +185,4 @@ When a release changes the grammar:
 The migrators do not read the grammar history to perform a migration: they walk the
 parsed source. The history serves `--check` and the blame message.
 [`grammars/qvr/vcs/README.md`](https://github.com/quivers-dev/quivers/blob/main/grammars/qvr/vcs/README.md)
-describes the workflow, and [DSL Overview](dsl-overview.md) the current syntax.
+describes the workflow, and [The QVR DSL: Overview](dsl-overview.md) the current syntax.

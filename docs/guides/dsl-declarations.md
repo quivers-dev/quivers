@@ -42,7 +42,7 @@ The operations
 [`f.trace(A)`](../api/core/morphisms.md#quivers.core.morphisms.Morphism.trace),
 [`cup(A)`](../api/core/morphisms.md#quivers.core.morphisms.cup), and
 [`cap(A)`](../api/core/morphisms.md#quivers.core.morphisms.cap) compile only when the
-module's rule is an `Algebra`. [Composition Rules](../semantics/composition-rules.md)
+module's rule is an `Algebra`. [Composition rules](../semantics/composition-rules.md)
 gives the denotation of each level.
 
 A rule can also be defined inline in an indented body, each entry a `let`-expression.
@@ -257,7 +257,7 @@ morphism flow : R3 -> R3 [n_layers=6, hidden_dim=32] ~ Flow()
 export s
 ```
 
-More than fifty families are registered ([Continuous Families](continuous-families.md)).
+More than fifty families are registered ([Continuous Distribution Families](continuous-families.md)).
 `Flow` is not one of them: it builds a conditional
 [normalizing flow](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 [@rezende2015flows] with `n_layers` coupling layers (4 by default) and hidden width

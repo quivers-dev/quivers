@@ -139,7 +139,7 @@ program by_pair : Out -> Out
 ```
 
 The number of index arrays must equal the number of factors.
-[Composition Rules](../semantics/composition-rules.md) gives the denotation.
+[Composition rules](../semantics/composition-rules.md) gives the denotation.
 
 ## End-to-end fit
 

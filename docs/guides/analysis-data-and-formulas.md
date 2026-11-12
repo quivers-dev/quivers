@@ -374,7 +374,7 @@ the scaling above. The full call shape lives in
 
 - [Fitting and Diagnostics](analysis-fitting-and-diagnostics.md): the `fit(...)` entry
   point, diagnostics, and initialization tools.
-- [DSL Overview](dsl-overview.md): the typed DSL the formula
+- [The QVR DSL: Overview](dsl-overview.md): the typed DSL the formula
   frontend emits source for.
 - [Hierarchical Programs](programs-hierarchical.md): the program
   representation that random-effects formulas compile to.

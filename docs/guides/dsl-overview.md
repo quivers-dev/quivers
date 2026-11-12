@@ -42,7 +42,7 @@ QVR differs in three ways:
   [LKJ](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution)
   [@lewandowski2009lkj], [Gaussian-process](https://en.wikipedia.org/wiki/Gaussian_process),
   and horseshoe [@carvalho2010horseshoe] priors are written with their usual
-  parameters ([Continuous Families](continuous-families.md)).
+  parameters ([Continuous Distribution Families](continuous-families.md)).
 - **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) as a block.**
   `marginalize z : K <- F(...)` followed by an indented body sums `z` out of the
   body's likelihood, and the compiler emits the

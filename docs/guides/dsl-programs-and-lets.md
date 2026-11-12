@@ -398,7 +398,7 @@ three topics is one Dirichlet outcome, so `Topic` is an event axis, and ten docu
 each with such a vector make `Doc` a batch axis: ten vectors, each summing to one,
 independent given their parameters. `over=Topic` names the event axis, and the plate
 annotation `: Doc` or `iid_over=Doc` names the batch axis. A family's number of event
-dimensions ([Continuous Families](continuous-families.md#event-rank-and-axis-role-syntax))
+dimensions ([Continuous Distribution Families](continuous-families.md#event-rank-and-axis-role-syntax))
 fixes how many axes one outcome has. It is 0 for scalar families such as Normal, Beta,
 and Gamma, 1 for vector families such as
 [`MultivariateNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMultivariateNormal),
@@ -724,7 +724,7 @@ program p : Out -> Out
     return y
 ```
 
-Some of the registered families ([Continuous Families](continuous-families.md#family-registry)
+Some of the registered families ([Continuous Distribution Families](continuous-families.md#family-registry)
 lists them all):
 
 | Family | Parameters | Codomain |

@@ -324,7 +324,7 @@ out    = wiring.apply(f_tensor, g_tensor)
   composition rules in a worked model.
 - [Python tutorial chapters 6 and 7](../tutorials/python/06-first-class-trans.md): the
   Python API.
-- [Composition Rules](../semantics/composition-rules.md): the denotation of each
+- [Composition rules](../semantics/composition-rules.md): the denotation of each
   level.
 - [Semirings, t-norms, and change of base](../semantics/algebras.md): the built-in instances and the
   registry of entrywise maps.
