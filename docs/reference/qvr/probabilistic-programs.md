@@ -88,7 +88,7 @@ the same way. A target whose library cannot read one parameter vector per row re
 with `data:per-row-vector-parameter`, and NumPyro, Pyro, and Edward2 render it.
 
 Each data input is given at its checked type. The reference machine validates every argument. The
-*compiled runtime*, the PyTorch implementation of a program used for gradients, stochastic variational inference (SVI), and MCMC
+compiled runtime, which computes gradients and runs stochastic variational inference (SVI) and MCMC
 (`log_joint`, `trace`, `rsample`, and the inference built on them), refuses a datum whose shape or
 element type contradicts its checked type, and names the datum and every admissible shape. Examples
 are a vector for a scalar input, an index of shape `(rows, units)` for a vector over `Row`, a
