@@ -29,7 +29,7 @@ Categorical foundations
   tensor of shape ``(|A|, *B.shape)`` whose prior contribution to
   the ELBO is the per-row log-density.
 
-* **Gather**. Given a finite fibration :math:`\\iota : N \\to A` (a
+* **Gather**. Given a finite index map :math:`\\iota : N \\to A` (a
   per-observation grouping assignment) and a plate variable
   :math:`v : A \\to B`, the gathered morphism is the pullback
   :math:`\\iota^* v = v \\circ \\iota : N \\to B`. Categorically a
@@ -508,7 +508,7 @@ class PlateDraw(ContinuousMorphism):
         return self._family.log_prob(row_input, sample).reshape(-1).sum().unsqueeze(0)
 
     def gather(self, indices: torch.Tensor) -> torch.Tensor:
-        """Pullback ``v[indices]`` along a finite fibration.
+        """Pullback ``v[indices]`` along a finite index map.
 
         ``indices`` is a long-tensor of shape ``(N,)`` with entries
         in ``[0, |A|)``; returns a tensor of shape
@@ -837,7 +837,7 @@ def _flatten_product_indices(
     group_indices: tuple[torch.Tensor, ...],
     group_sizes: tuple[int, ...],
 ) -> tuple[torch.Tensor, int]:
-    """Compose a tuple of co-indexed fibration tensors into a
+    """Compose a tuple of co-indexed index map tensors into a
     single flat group index on the product grouping plate.
 
     The product :math:`G_1 \\times G_2 \\times \\dots \\times G_r`
@@ -847,7 +847,7 @@ def _flatten_product_indices(
     \\prod_i |G_i|``.
     """
     if not group_indices:
-        raise ValueError("_flatten_product_indices: need at least one fibration tensor")
+        raise ValueError("_flatten_product_indices: need at least one index map tensor")
     if len(group_indices) != len(group_sizes):
         raise ValueError(
             "_flatten_product_indices: number of indices "
@@ -858,9 +858,9 @@ def _flatten_product_indices(
     for j, idx in enumerate(group_indices):
         if idx.shape != (n_rows,):
             raise ValueError(
-                f"_flatten_product_indices: fibration {j} has shape "
+                f"_flatten_product_indices: index map {j} has shape "
                 f"{tuple(idx.shape)}; expected ({n_rows},) to match "
-                f"the first fibration"
+                f"the first index map"
             )
     total = 1
     for size in group_sizes:
@@ -877,7 +877,7 @@ def _flatten_product_indices(
         idx_j = group_indices[j].to(torch.long)
         if (idx_j < 0).any() or (idx_j >= size).any():
             raise ValueError(
-                f"_flatten_product_indices: fibration {j} has entries "
+                f"_flatten_product_indices: index map {j} has entries "
                 f"outside [0, {size})"
             )
         flat = flat + idx_j * running
@@ -906,9 +906,9 @@ def marginalize_grouped(
     generalisation of the first.
 
     **Single response axis.** Given a per-(response, class)
-    log-likelihood tensor of shape ``(N, K)`` and a fibration
+    log-likelihood tensor of shape ``(N, K)`` and an index map
     :math:`r : \\text{Resp} \\to G` (or a tuple of co-indexed
-    fibrations into a product grouping plate
+    index maps into a product grouping plate
     :math:`G_1 \\times \\dots \\times G_r`), return the scalar
 
     .. math::
@@ -920,7 +920,7 @@ def marginalize_grouped(
     **Multiple heterogeneous response axes sharing a per-group
     class indicator.** Given ``M`` per-axis log-likelihood tensors
     :math:`\\ell_m \\in \\mathbb{R}^{N_m \\times K}` and a parallel
-    list of fibrations :math:`r_m : \\text{Resp}_m \\to G`, return
+    list of index maps :math:`r_m : \\text{Resp}_m \\to G`, return
 
     .. math::
 
@@ -931,7 +931,7 @@ def marginalize_grouped(
 
     Each per-axis log-likelihood is scatter-added into the same
     ``(|G|, K)`` accumulator before the reduction. Categorically
-    this is the right Kan extension along the coproduct fibration
+    this is the right Kan extension along the coproduct index map
     :math:`\\coprod_m r_m : \\coprod_m \\text{Resp}_m \\to G`. The
     single-axis form is the unary case (``M = 1``).
 
@@ -950,15 +950,15 @@ def marginalize_grouped(
         ``K`` must agree across all entries.
     group_index : torch.Tensor, tuple of torch.Tensor, or list of either
         Single-axis form: a long tensor of shape ``(N,)`` (single
-        fibration) or a tuple of co-indexed long tensors (product
-        fibration). Multi-axis form: a list of length ``M``,
+        index map) or a tuple of co-indexed long tensors (product
+        index map). Multi-axis form: a list of length ``M``,
         parallel to the log-likelihood list; each entry is itself
-        either a single tensor or a product-fibration tuple, exactly
+        either a single tensor or a product-index-map tuple, exactly
         as in the single-axis form.
     log_prior_per_group_per_class : torch.Tensor
         Per-(group, class) log-prior of shape ``(num_groups, K)``,
         ``(K,)`` (broadcast over the group axis), or, for product
-        fibrations, ``(num_groups_1, ..., num_groups_r, K)``.
+        index maps, ``(num_groups_1, ..., num_groups_r, K)``.
     num_groups : int or tuple[int, ...]
         Cardinality of the (product) group plate.
     reduction : {"logsumexp", "sum", "mean"}
@@ -984,7 +984,7 @@ def marginalize_grouped(
     ------
     ValueError
         If ``reduction`` is not one of the three reductions, if the
-        fibration and log-likelihood shapes disagree, if a prior has
+        index map and log-likelihood shapes disagree, if a prior has
         a shape that fits neither the group plate nor the class
         axis, or if ``per_group`` is requested for a log-likelihood
         with no row axis (there is no group axis to keep).
@@ -995,7 +995,7 @@ def marginalize_grouped(
 
     * ``K == 1``: the log-sum-exp collapses to the body's
       log-likelihood plus the constant log-prior.
-    * Identity fibration (``group_index = arange(N)`` and
+    * Identity index map (``group_index = arange(N)`` and
       ``num_groups == N``): each row is its own group, recovering
       the per-row mixture.
     * Empty fibre: contributes a multiplicative identity to the
@@ -1039,7 +1039,7 @@ def marginalize_grouped(
     # Two operating modes:
     #
     # 1. ``ll`` has a leading row axis (shape ``(N, *extra, K)``):
-    #    scatter-add along the fibration to obtain
+    #    scatter-add along the index map to obtain
     #    ``(G, *extra, K)``, apply the per-cell prior, reduce over
     #    the class axis, and sum over groups. The shape of the
     #    return value is ``(*extra,)`` — a scalar if there are no
@@ -1060,8 +1060,8 @@ def marginalize_grouped(
         flat_group_index_shape = group_index.shape
     if flat_group_index_shape:
         n_idx = flat_group_index_shape[0]
-        # If the user supplied a fibration of length N > 0, the ll
-        # MUST carry a leading axis of length N. A length-N fibration
+        # If the user supplied an index map of length N > 0, the ll
+        # MUST carry a leading axis of length N. A length-N index map
         # paired with an ll whose leading axis differs is a shape
         # mismatch — not the "no row axis" intermediate path.
         if (
@@ -1102,11 +1102,11 @@ def marginalize_grouped(
     n_classes = int(log_likelihood_per_row_per_class.shape[-1])
     extra_axes = tuple(log_likelihood_per_row_per_class.shape[1:-1])
 
-    # Resolve single-vs-product fibration into a flat group index.
+    # Resolve single-vs-product index map into a flat group index.
     if isinstance(group_index, tuple):
         if not isinstance(num_groups, tuple):
             raise ValueError(
-                "marginalize_grouped: product fibration (tuple "
+                "marginalize_grouped: product index map (tuple "
                 "group_index) requires num_groups to be a tuple of "
                 f"matching length; got {type(num_groups).__name__}"
             )
@@ -1123,7 +1123,7 @@ def marginalize_grouped(
             expected_axes = len(num_groups) + 1
             if log_prior_per_group_per_class.dim() != expected_axes:
                 raise ValueError(
-                    "marginalize_grouped: product-fibration prior "
+                    "marginalize_grouped: product-index-map prior "
                     f"must have shape (*{num_groups}, K) or (K,); "
                     f"got {tuple(log_prior_per_group_per_class.shape)}"
                 )
@@ -1154,7 +1154,7 @@ def marginalize_grouped(
         log_prior_flat = log_prior_per_group_per_class
 
     # Scatter-add the (N, *extra, K) per-row log-likelihood along
-    # the fibration to obtain a (|G|, *extra, K) per-group
+    # the index map to obtain a (|G|, *extra, K) per-group
     # accumulator. ``index_add`` operates on the leading axis;
     # ``extra`` axes ride along as broadcast.
     grouped_shape: tuple[int, ...] = (total_groups,) + extra_axes + (n_classes,)
@@ -1204,7 +1204,7 @@ def _marginalize_grouped_multi(
 
     Each ``(ll_m, idx_m)`` pair is scatter-added into a shared
     ``(|G|, K)`` accumulator before the per-group reduction. This
-    is the right Kan extension along the coproduct fibration
+    is the right Kan extension along the coproduct index map
     :math:`\\coprod_m r_m`.
 
     Empty list raises: the surface form ``in { }`` is rejected at
@@ -1216,7 +1216,7 @@ def _marginalize_grouped_multi(
     log_likelihoods : tuple[torch.Tensor, ...]
         Per-axis log-likelihoods of shapes ``(N_m, *extra, K)``.
     group_indices : tuple[torch.Tensor | tuple[torch.Tensor, ...], ...]
-        The fibration of each axis, parallel to ``log_likelihoods``.
+        The index map of each axis, parallel to ``log_likelihoods``.
     log_prior_per_group_per_class : torch.Tensor
         The per-(group, class) log-prior, shaped as for
         :func:`marginalize_grouped`.
@@ -1237,7 +1237,7 @@ def _marginalize_grouped_multi(
     ------
     ValueError
         If the reduction is unknown, the list is empty, the class or
-        extra axes disagree across entries, a fibration does not fit
+        extra axes disagree across entries, an index map does not fit
         its log-likelihood or the group plate, the prior has an
         unusable shape, or ``per_group`` is requested with no row
         axis.
@@ -1333,18 +1333,18 @@ def _marginalize_grouped_multi(
                 f"{extra_axes} but axis {m} has "
                 f"{tuple(ll.shape[1:-1])}"
             )
-        # Resolve this axis's fibration into a flat group index.
+        # Resolve this axis's index map into a flat group index.
         if isinstance(idx, tuple):
             if not isinstance(num_groups, tuple):
                 raise ValueError(
-                    "marginalize_grouped: product fibration on "
+                    "marginalize_grouped: product index map on "
                     f"axis {m} requires num_groups to be a tuple"
                 )
             flat_idx, _ = _flatten_product_indices(idx, num_groups)
         else:
             if isinstance(num_groups, tuple):
                 raise ValueError(
-                    f"marginalize_grouped: scalar fibration on axis "
+                    f"marginalize_grouped: scalar index map on axis "
                     f"{m} cannot pair with product num_groups "
                     f"{num_groups}"
                 )

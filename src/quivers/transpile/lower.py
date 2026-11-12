@@ -1079,7 +1079,7 @@ def exogenous_data_inputs(program: ProgramDecl, bound: set[str]) -> list[str]:
     referenced in `program` but not bound by any step.
 
     Sources: free names in let / score expressions; bracket-indexed
-    arg references (`mu[cls]` -> `cls`, `mu`); `via=` fibrations.
+    arg references (`mu[cls]` -> `cls`, `mu`); `via=` index maps.
     Order is deterministic by traversal order.
     """
     out: list[str] = []

@@ -20,7 +20,7 @@ Covered defects:
 * `sample-event-dims`: a scalar family stamped with event axes wraps
   an inner `map` so each draw is the declared vector.
 * `marginalize-over-batch-axis`: the marginalized latent is integrated
-  out, its prior gathered through the via fibration and each atom's
+  out, its prior gathered through the via index map and each atom's
   observe indexed by the per-row loop variable.
 * `undefined-let-builtins`: `sigmoid` and `sum` are defined in the
   grafted runtime.
@@ -201,14 +201,14 @@ def test_intrinsic_vector_family_has_no_inner_event_map() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Marginalize over batch axis + via fibration.
+# Marginalize over batch axis + via index map.
 # ---------------------------------------------------------------------------
 
 
-def test_marginalize_latent_reads_its_prior_through_the_fibration() -> None:
+def test_marginalize_latent_reads_its_prior_through_the_index_map() -> None:
     """The marginalized categorical declares no site: its per-document
     topic mixture is gathered one row per token through the ``via``
-    fibration and read as the log-weight of each atom."""
+    index map and read as the log-weight of each atom."""
     model = _nospace(_model(_church_file(_GALLERY / "lda.qvr")))
     assert "(sample(categorical" not in model
     assert (
@@ -219,7 +219,7 @@ def test_marginalize_latent_reads_its_prior_through_the_fibration() -> None:
     assert "(factor(sum-leaves__marg_z))" in model
 
 
-def test_via_fibration_threads_through_group_plate() -> None:
+def test_via_index_map_threads_through_group_plate() -> None:
     """Each atom scores the observed word against the per-topic word
     distribution the atom pins: `phi[k]` for atom `k`.
 

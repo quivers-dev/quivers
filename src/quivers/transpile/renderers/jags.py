@@ -88,7 +88,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
 )
 from quivers.transpile.renderers._base import (
     refuse_ungrouped_row_marginalize,
@@ -602,7 +602,7 @@ class JAGSRenderer(RendererBase):
         Deterministic bindings are inlined so each atom can use its own copy.
         `marginal_scope_density` supplies the observed density, while
         `marginal_weight_probs` gathers grouped weights through the observation
-        fibration.
+        index map.
 
         Rows follow the observation plate. When all atom densities are mass
         functions, the mixture is at most one and its negative log can be used
@@ -624,7 +624,7 @@ class JAGSRenderer(RendererBase):
             node,
             support_size=marginal_support_size(node),
         )
-        fibration = marginalize_fibration(
+        index_map = marginalize_index_map(
             node,
             observe,
             atoms[0].weight_args,
@@ -632,8 +632,8 @@ class JAGSRenderer(RendererBase):
             name_plates=ctx.decl_plates,
             target=self.target,
         )
-        if fibration is not None:
-            via, group = fibration
+        if index_map is not None:
+            via, group = index_map
             self._emit_grouped_marginal_reduction(
                 ctx, node, atoms, observe, via=via, group=group
             )
@@ -696,7 +696,7 @@ class JAGSRenderer(RendererBase):
         """Emit a grouped block whose rows fibre into its groups.
 
         The block keys its accumulator by group: the rows the
-        fibration sends to one group are summed per atom before the
+        index map sends to one group are summed per atom before the
         reduction over the atoms, so the integrated density is one
         weighted sum per group rather than per row:
 
@@ -715,7 +715,7 @@ class JAGSRenderer(RendererBase):
         ```
 
         The rows of a group are selected through an identity matrix
-        subscripted by the fibration, which is how a JAGS model states
+        subscripted by the index map, which is how a JAGS model states
         that an integer input is a one-based index, and the per-group
         sums are shifted by their maximum before the exponentials so
         the weighted sum stays in range.
@@ -731,7 +731,7 @@ class JAGSRenderer(RendererBase):
         observe : IRObserve
             The scope's observe, with the latent still free.
         via : str
-            The fibration sending rows to groups.
+            The index map sending rows to groups.
         group : Dim
             The grouping plate's axis.
 
@@ -919,7 +919,7 @@ class JAGSRenderer(RendererBase):
 
         The probability tensor arrives from
         `marginal_weight_probs`
-        already gathered through the observation's `via` fibration
+        already gathered through the observation's `via` index map
         where one is needed, and stays a named reference so the
         deterministic path re-indexes it against the row loop.
         """
@@ -1757,7 +1757,7 @@ class JAGSRenderer(RendererBase):
         }
 
         # Pre-rewrite every arg ONCE: thread latent loop vars + event
-        # ranges + via fibration through any ref to a previously-bound
+        # ranges + via index map through any ref to a previously-bound
         # latent. The rewrite is idempotent on its output by construction
         # (the appended event-range sentinels are not themselves latents).
         rewritten_args = tuple(
@@ -3372,7 +3372,7 @@ def _rewrite_arg(
     *,
     scalar_slot: bool = False,
 ) -> IRArg:
-    """Thread latent loop-vars + event ranges + via fibration through
+    """Thread latent loop-vars + event ranges + via index map through
     every ref nested inside `arg`.
 
     The rewrite is a SINGLE PASS: it inspects every IRArgRef in `arg`
@@ -3386,7 +3386,7 @@ def _rewrite_arg(
     in this map indexes through the *current* loop var (so two samples
     on the same axis share the same loop body); one whose axis the
     surrounding plate does not iterate indexes through the caller's
-    `via` fibration where there is one, and through the latent's own
+    `via` index map where there is one, and through the latent's own
     fallback loop var otherwise.
 
     An unindexed ref to any other declared value whose every axis the
@@ -3405,7 +3405,7 @@ def _rewrite_arg(
     axis_to_lv : dict[str, str]
         Each visited axis name mapped to its loop variable.
     via : str | None
-        The fibration the site reads its groups through, if any.
+        The index map the site reads its groups through, if any.
     scalar_slot : bool
         Whether the argument fills a rank-0 family parameter.
 
@@ -3457,7 +3457,7 @@ def _rewrite_arg(
             # reuse the current loop var (`theta[m_Doc, ...]`).
             lv_idx: IRArg = IRArgRef(name=axis_to_lv[axes[-1]])
         elif via is not None and loop_vars:
-            # Caller-set via overrides (passed via fibration).
+            # Caller-set via overrides (passed via index map).
             lv_idx = IRArgRef(
                 name=via,
                 indices=(IRArgRef(name=loop_vars[0]),),

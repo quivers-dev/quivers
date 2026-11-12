@@ -110,7 +110,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
 )
 from quivers.transpile.renderers._base import (
@@ -810,7 +810,7 @@ class TuringRenderer(RendererBase):
         * `batch_dims=()` and no `via`: plain `name ~ Family(args)`.
         * `batch_dims=(B,)` and no arg references a batch-plated name
           via index: `name ~ filldist(Family(args), B)`.
-        * Otherwise (index-dependent args or a `via` fibration):
+        * Otherwise (index-dependent args or a `via` index map):
           broadcast-dot form `name .~ Family.(idx_args)`, or the
           `arraydist([Family(args[i]) for i in 1:B])` fallback when no
           via is present.
@@ -834,7 +834,7 @@ class TuringRenderer(RendererBase):
         observed
             Whether the site is conditioned on data.
         via
-            The fibration an observe gathers its rows through, or ``None``.
+            The index map an observe gathers its rows through, or ``None``.
 
         Returns
         -------
@@ -879,7 +879,7 @@ class TuringRenderer(RendererBase):
         # Detect index-dependent arg shapes against the surrounding
         # observe/sample's batch axes. The presence of `via` is the
         # strongest signal: it always rewrites the indexing to thread
-        # through the fibration variable.
+        # through the index map variable.
         index_dep = via is not None or _args_have_batch_index(
             args,
             ctx.sample_plates,
@@ -955,7 +955,7 @@ class TuringRenderer(RendererBase):
         lhs = _identifier(sb, counter, name)
 
         if index_dep and observed and via is not None:
-            # Index-dependent observe with a `via` fibration: emit the
+            # Index-dependent observe with a `via` index map: emit the
             # broadcast-dot form `name .~ Family.(rewritten_args)`.
             rhs_args = tuple(
                 _arg_to_julia(ctx, a, via=via, family=family) for a in args
@@ -976,7 +976,7 @@ class TuringRenderer(RendererBase):
         if index_dep and observed and via is None:
             # Index-dependent observe whose arg(s) reference a
             # batch-shaped name (e.g. a let-bound vector) directly,
-            # without a `via` fibration. The plain
+            # without a `via` index map. The plain
             # `filldist(Family(args), B)` form requires the args to
             # be scalar; wrap the per-element distribution array in
             # `product_distribution(Family.(args))` and emit the
@@ -1356,8 +1356,8 @@ class TuringRenderer(RendererBase):
             )
             term_names.append(term)
         # A grouped block keys its accumulator by group: the rows the
-        # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
+        # index map sends to one group are summed before the reduction.
+        index_map = marginalize_index_map(
             node,
             raw.observe,
             atoms[0].weight_args,
@@ -1365,8 +1365,8 @@ class TuringRenderer(RendererBase):
             name_plates=plates,
             target=self.target,
         )
-        if fibration is not None:
-            via, group = fibration
+        if index_map is not None:
+            via, group = index_map
             for term in term_names:
                 self._emit_assignment(
                     ctx, term, self._group_sums(ctx, term, via, group)
@@ -1441,8 +1441,8 @@ class TuringRenderer(RendererBase):
         """`[sum(<term>[<via> .+ 1 .== g]) for g in 1:<extent>]`.
 
         The per-row log-likelihoods of one atom summed within each
-        group the fibration sends the rows to, one entry per group.
-        The fibration holds QVR's zero-based group codes, read one
+        group the index map sends the rows to, one entry per group.
+        The index map holds QVR's zero-based group codes, read one
         higher to match the one-based group counter.
 
         Parameters
@@ -1452,7 +1452,7 @@ class TuringRenderer(RendererBase):
         term : str
             The name of the per-row vector.
         via : str
-            The name of the fibration sending rows to groups.
+            The name of the index map sending rows to groups.
         group : Dim
             The grouping plate's leading axis.
 
@@ -2495,7 +2495,7 @@ def _class_axis_slice(
     the referenced name's declared plate: `initial_row` is one simplex
     sliced as `w[k]`, and a `theta` declared over a `Doc` batch is a
     dense `Doc`-by-`Topic` matrix sliced as `w[:, k]`. A `theta`
-    gathered through a fibration is the same dense shape, one row per
+    gathered through an index map is the same dense shape, one row per
     gathered index, because the gather slices the rows out rather than
     viewing them.
     """
@@ -2600,7 +2600,7 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
     """Render an [`IRArgRef`][quivers.transpile.ir.IRArgRef].
 
     Specialises on the LDA-style case: `phi[z]` with a surrounding
-    observe whose `via` fibration is `word_idx` and whose indexed
+    observe whose `via` index map is `word_idx` and whose indexed
     parent `phi` has event_dim > 0 becomes
     `eachrow(phi)[z[word_idx]]`. The vector-parent case becomes
     `phi[z[word_idx]]` (no `eachrow`).
@@ -2614,7 +2614,7 @@ def _ref_to_julia(ctx: _TuringCtx, ref: IRArgRef, *, via: str | None) -> str:
     # matrix, each read whole with a trailing `:`.
     carried = carried_dims(ref, {**ctx.input_plates, **ctx.sample_plates})
     # Rewrite each index: a name-ref index may be threaded through the
-    # via fibration.
+    # via index map.
     rendered_indices: list[str] = []
     for idx in ref.indices:
         if via is not None and isinstance(idx, IRArgRef) and not idx.indices:

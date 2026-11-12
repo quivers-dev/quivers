@@ -655,7 +655,7 @@ def run_program(
         The program's name.
     data : Mapping[str, object]
         A host value for each of the program's parameters, by name:
-        its data, observations, fibrations, and map numbers.
+        its data, observations, index maps, and map numbers.
     sites : Mapping[str, object]
         A host value for each sampled site, by label, or by label and
         occurrence as ``"<label>@<n>"`` for a site a recurrence reaches
@@ -736,7 +736,7 @@ def sample_program(
         The program's name.
     data : Mapping[str, object]
         A host value for each of the program's parameters, by name:
-        its data, observations, fibrations, and map numbers.
+        its data, observations, index maps, and map numbers.
     sites : Mapping[str, object] | None
         A host value for each conditioned site, by label, or by label
         and occurrence as ``"<label>@<n>"``; every other site is drawn
@@ -823,7 +823,7 @@ def passed_data_notes(module: QiecModule, name: str) -> dict[str, str]:
     data = {
         parameter.name
         for parameter in entry.parameters
-        if parameter.role in ("data", "fibration")
+        if parameter.role in ("data", "index_map")
     }
     body = _computation(module, entry.computation).body
     notes: dict[str, str] = {}

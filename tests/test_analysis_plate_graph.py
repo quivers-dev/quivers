@@ -112,7 +112,7 @@ def test_lda_w_is_observed_on_doc_x_word(lda_graph):
     """The inner observe lives on Doc (inherited from the
     enclosing marginalize's over axis) cross-product Token (its own
     index). It is NOT on Topic (the marginalized axis) and NOT on
-    word_idx (a fibration map, not a plate)."""
+    word_idx (an index map map, not a plate)."""
     w = next(n for n in lda_graph.nodes if n.name == "w")
     assert w.kind == "observed"
     assert w.plates == ("Doc", "Token")

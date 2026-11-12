@@ -145,7 +145,7 @@ _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
     # A grouped block whose rows fibre into its groups sums each atom's
     # rows per group before the reduction, and BUGS has no statement
     # that adds the per-group log-density to the joint.
-    ("bugs", "steps", "marginalize_step"): "marginalize:grouped-fibration",
+    ("bugs", "steps", "marginalize_step"): "marginalize:grouped-index-map",
 }
 
 # A marginalize block with no index into the observe's plate shares one

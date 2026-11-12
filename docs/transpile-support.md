@@ -1123,7 +1123,7 @@ let-expr:axis-reduction:bugs: sum(...) over a rank-3 operand reduces only the in
 bugs-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
 ```
 
-**`marginalize:grouped-fibration:cls`**
+**`marginalize:grouped-index-map:cls`**
 
 Refused for: `steps/marginalize_step`.
 
@@ -1132,7 +1132,7 @@ Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan
 Reported kinds:
 
 ```text
-marginalize:grouped-fibration:cls: the rows `idx` sends to each `Item` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
+marginalize:grouped-index-map:cls: the rows `idx` sends to each `Item` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
 ```
 
 `bugs` on `steps/marginalize_step` reports:

@@ -136,9 +136,9 @@ _FIXTURE_SOURCES: dict[str, str] = {
 #               [ log probs[k]
 #                 + sum_{n: idx[n] = g} log Obs(y_n; component_k) ]
 #
-# where ``idx`` is the per-observation fibration into the marginalize
+# where ``idx`` is the per-observation index map into the marginalize
 # block's grouping plate (here ``over=Obs`` so |G| = N and the
-# identity fibration sends each observation to its own group).
+# identity index map sends each observation to its own group).
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +223,7 @@ _ANALYTIC: dict[str, _AnalyticFn] = {
 def _beta_bernoulli_mix_points() -> list[Point]:
     n_obs = 30
     y = [1] * 15 + [0] * 15
-    # Identity fibration: each observation is its own group. This
+    # Identity index map: each observation is its own group. This
     # exercises the per-row mixture form of `marginalize_grouped`
     # (`|G| = N`, scatter-add is a no-op, one logsumexp per row).
     # Every target reads the indices in QVR's zero-based origin; a
@@ -324,7 +324,7 @@ def _coerce(
     Scalars land as 0-D tensors (so a `factor c : Cls in <expr>` body
     over a sample-site latent does not pick up a phantom trailing axis
     when the latent is scalar); lists land as 1-D tensors.
-    Discrete-fibration inputs ride on the ``integer`` flag and are
+    Discrete-index-map inputs ride on the ``integer`` flag and are
     coerced to ``torch.long`` so
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]'s
     `index_add` sees a `LongTensor` group index.
@@ -356,7 +356,7 @@ def _qvr_log_densities(
     tensor does not pick up a phantom trailing axis that
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]
     then rejects. The coercion is shape-aware (lists stay 1-D,
-    scalars stay 0-D), and the integer-fibration ``idx`` rides on
+    scalars stay 0-D), and the integer-index-map ``idx`` rides on
     ``torch.long`` so `index_add` accepts it.
     """
     del scratch  # in-process trace; no scratch files needed.

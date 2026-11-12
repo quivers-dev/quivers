@@ -227,9 +227,9 @@ class MarginalizeStep(ProgramStep):
     coordinate in trace context, and at the end of the scope pushes
     forward through the projection (logsumexp for discrete, fibrewise
     integration for continuous). When the option block carries
-    ``over=...``, the reduction is fibred (grouped marginalize); the
+    ``over=...``, the reduction is grouped (grouped marginalize); the
     ``via`` clause on each inner observe names the per-observe
-    fibration.
+    index map.
     """
 
     var: str
@@ -317,16 +317,16 @@ class GroupedObserveEntry(dx.Model):
     ``body_observes`` list.
 
     Pairs an env slot (where the captured observe writes its
-    ``(N_m, K)`` log-likelihood) with the fibration that carries
+    ``(N_m, K)`` log-likelihood) with the index map that carries
     those rows into the shared grouping plate. An entry with no
-    fibration is a nested grouped block: the slot holds the inner
+    index map is a nested grouped block: the slot holds the inner
     block's per-position aggregates over ``inner_groups``, which the
     enclosing block projects onto its own grouping plate.
     """
 
     ll_slot: str
-    fibration_var: str | None = None
-    fibration_axes: tuple[str, ...] | None = None
+    index_map_var: str | None = None
+    index_map_axes: tuple[str, ...] | None = None
     inner_groups: tuple[str, ...] | None = None
     line: int = 0
     col: int = 0
@@ -346,7 +346,7 @@ class GroupedMarginalizeStep(ProgramStep):
     / ``over_objs`` carry the grouping object (single or product);
     ``body_ll_var`` names the env slot that the grouped observe
     pushed its (N_m, K) log-likelihood into; ``body_observes`` lists
-    the (ll_slot, fibration) entries that the runtime callable
+    the (ll_slot, index map) entries that the runtime callable
     consumes for grouped pushforward.
     """
 
@@ -441,8 +441,8 @@ class VectorisedObserveStep(ProgramStep):
     morphism: str
     args: tuple[DrawArg, ...] | None = None
     response_var: str = ""
-    fibration_var: str | None = None
-    fibration_axes: tuple[str, ...] | None = None
+    index_map_var: str | None = None
+    index_map_axes: tuple[str, ...] | None = None
     axes: AxisSpec | None = None
     line: int = 0
     col: int = 0
@@ -474,8 +474,8 @@ class GroupedBodyObserveStep(ProgramStep):
     index_var: str = ""
     latent_name: str = ""
     class_size: int = 0
-    fibration_var: str | None = None
-    fibration_axes: tuple[str, ...] | None = None
+    index_map_var: str | None = None
+    index_map_axes: tuple[str, ...] | None = None
     ll_slot: str = ""
     line: int = 0
     col: int = 0
