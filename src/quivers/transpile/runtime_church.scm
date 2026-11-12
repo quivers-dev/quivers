@@ -226,6 +226,16 @@
        (if (= u 1.0) v (/ (* (log u) v) (- u 1.0)))))
    x))
 
+;; `log(sigmoid(v))` element-wise, as `min(v, 0) - log1p(exp(-|v|))`:
+;; the exponential's argument is never positive, so the form neither
+;; overflows nor rounds where `sigmoid(v)` is within an ulp of one or
+;; zero. A marginalized Bernoulli given by its logits weighs its atoms
+;; by it.
+(define (qvr-log-sigmoid x)
+  (broadcast1
+   (lambda (v) (- (min v 0.0) (qvr-log1p (exp (- (abs v))))))
+   x))
+
 (define (qvr-log2 x) (broadcast1 (lambda (v) (/ (log v) (log 2.0))) x))
 (define (qvr-log10 x) (broadcast1 (lambda (v) (/ (log v) (log 10.0))) x))
 

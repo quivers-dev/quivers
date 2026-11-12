@@ -206,7 +206,10 @@ class IRMarginalAtom(dx.Model):
     Bernoulli relaxations are integrated over the atoms 0 and 1 with
     *discrete* Bernoulli weights, matching what the QVR compiler
     enumerates, so `weight_family` reads `"Bernoulli"` and
-    `weight_args` carries only the probability argument.
+    `weight_args` carries only the probability argument, or the
+    logits when the call site names them (`weight_arg_names` reads
+    ``("logits",)``), which a renderer weights by ``log sigmoid(-l)``
+    and ``log sigmoid(l)`` in log space.
 
     `IRMarginalAtom` is a renderer-side IR extension. `Lower`
     never constructs it.
@@ -789,10 +792,16 @@ class RendererBase(abc.ABC):
                 [f"marginalize:unknown-cardinality:{node.family}"],
             )
         if support.atoms == "binary":
-            weight_args: tuple[IRArg, ...] = (
-                self._marginal_weight_arg(node, support.weight_arg),
+            weight_name = (
+                support.logit_arg
+                if support.logit_arg is not None
+                and support.logit_arg in node.arg_names
+                else support.weight_arg
             )
-            weight_arg_names: tuple[str, ...] = (support.weight_arg,)
+            weight_args: tuple[IRArg, ...] = (
+                self._marginal_weight_arg(node, weight_name),
+            )
+            weight_arg_names: tuple[str, ...] = (weight_name,)
         else:
             weight_args = node.args
             weight_arg_names = node.arg_names
@@ -846,6 +855,27 @@ class RendererBase(abc.ABC):
 # Latent substitution: pin a marginalized latent to one atom of its
 # support throughout a scope.
 # ---------------------------------------------------------------------------
+
+
+def logit_weighted(atom: IRMarginalAtom) -> bool:
+    """Whether an atom set is weighted from the logits of a Bernoulli.
+
+    Such atoms are weighted by ``log sigmoid(-l)`` for 0 and
+    ``log sigmoid(l)`` for 1, which a renderer computes in log space
+    rather than forming the probability, whose complement rounds to
+    zero where the logit is large.
+
+    Parameters
+    ----------
+    atom : IRMarginalAtom
+        Any atom of the set; every atom carries the same weights.
+
+    Returns
+    -------
+    bool
+        ``True`` when the atoms carry the Bernoulli's logits.
+    """
+    return atom.weight_family == "Bernoulli" and atom.weight_arg_names == ("logits",)
 
 
 def substitute_latent(
@@ -1552,6 +1582,7 @@ __all__ = [
     "assert_no_dropped_param_map",
     "assert_no_lists",
     "ir_uses_family",
+    "logit_weighted",
     "mixture_component_count",
     "mixture_normal_components",
     "substitute_latent",

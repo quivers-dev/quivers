@@ -89,6 +89,7 @@ from quivers.transpile.renderers._base import (
     RenderContext,
     assert_no_dropped_param_map,
     assert_no_dangling_refs,
+    logit_weighted,
 )
 from quivers.transpile.renderers._qiec import (
     emit_call_python,
@@ -1068,15 +1069,12 @@ class PyMCRenderer(RendererBase):
             term_names.append(term)
         via, group = fibration
         extent = str(group.size) if isinstance(group, DimStatic) else group.size_name
-        weights = self._marginal_weights(ctx, node, raw, atoms)
         py.e(
             ctx.with_body,
             assignment(
                 py,
                 lhs_name=f"{prefix}_w",
-                rhs=call(
-                    py, attribute(py, ("pymc", "math", "log")), positional=(weights,)
-                ),
+                rhs=self._marginal_log_weights(ctx, node, raw, atoms),
             ),
             "child_of",
         )
@@ -1152,7 +1150,10 @@ class PyMCRenderer(RendererBase):
         A `Categorical` atom set weights atom ``k`` by ``p[k]``, so the
         probability tensor's own trailing axis is already the atom
         axis. A `Bernoulli` atom set weights the atoms 0 and 1 by
-        ``1 - p`` and ``p``, which stack into a fresh trailing axis.
+        ``1 - p`` and ``p``, which stack into a fresh trailing axis;
+        from its logits ``l`` they are ``sigmoid(-l)`` and
+        ``sigmoid(l)``, each formed without the cancellation of
+        ``1 - sigmoid(l)``.
         """
         py = ctx.py
         probs = marginal_weight_probs(
@@ -1167,6 +1168,24 @@ class PyMCRenderer(RendererBase):
         family = atoms[0].weight_family
         if family == "Categorical":
             return probs_vid
+        if logit_weighted(atoms[0]):
+            return self._stack_atoms(
+                py,
+                (
+                    call(
+                        py,
+                        attribute(py, ("pymc", "math", "sigmoid")),
+                        positional=(
+                            _python_unary_minus(py, self._render_arg(ctx, probs)),
+                        ),
+                    ),
+                    call(
+                        py,
+                        attribute(py, ("pymc", "math", "sigmoid")),
+                        positional=(probs_vid,),
+                    ),
+                ),
+            )
         if family == "Bernoulli":
             complement = _python_paren(
                 py,
@@ -1177,20 +1196,101 @@ class PyMCRenderer(RendererBase):
                     self._render_arg(ctx, probs),
                 ),
             )
-            return call(
-                py,
-                attribute(py, ("pymc", "math", "stack")),
-                positional=(python_list(py, (complement, probs_vid)),),
-                keyword=(
-                    (
-                        "axis",
-                        _python_unary_minus(py, number_literal(py, 1)),
-                    ),
-                ),
-            )
+            return self._stack_atoms(py, (complement, probs_vid))
         raise UnsupportedConstruct(
             self.target,
             [f"marginalize:weight-family:{family}"],
+        )
+
+    def _marginal_log_weights(
+        self,
+        ctx: _PyMCCtx,
+        node: IRMarginalize,
+        raw: MarginalizeBody,
+        atoms: tuple[IRMarginalAtom, ...],
+    ) -> str:
+        """Log mixture-weight tensor whose trailing axis runs over the atoms.
+
+        The log of the weights of
+        [`_marginal_weights`][quivers.transpile.renderers.pymc.PyMCRenderer._marginal_weights];
+        a Bernoulli atom set given by its logits ``l`` is weighted by
+        ``-softplus(l)`` and ``-softplus(-l)``, computed in log space.
+
+        Parameters
+        ----------
+        ctx : _PyMCCtx
+            The emission context.
+        node : IRMarginalize
+            The block.
+        raw : MarginalizeBody
+            The block's scored body.
+        atoms : tuple[IRMarginalAtom, ...]
+            The atoms.
+
+        Returns
+        -------
+        str
+            The stacked log weights.
+        """
+        py = ctx.py
+        if not logit_weighted(atoms[0]):
+            return call(
+                py,
+                attribute(py, ("pymc", "math", "log")),
+                positional=(self._marginal_weights(ctx, node, raw, atoms),),
+            )
+        logits = marginal_weight_probs(
+            node,
+            raw.observe,
+            atoms[0].weight_args,
+            atoms[0].weight_arg_names,
+            name_plates=py.name_plates,
+            target=self.target,
+        )
+        return self._stack_atoms(
+            py,
+            (
+                _python_unary_minus(
+                    py,
+                    call(
+                        py,
+                        attribute(py, ("pymc", "math", "softplus")),
+                        positional=(self._render_arg(ctx, logits),),
+                    ),
+                ),
+                _python_unary_minus(
+                    py,
+                    call(
+                        py,
+                        attribute(py, ("pymc", "math", "softplus")),
+                        positional=(
+                            _python_unary_minus(py, self._render_arg(ctx, logits)),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def _stack_atoms(self, py: PyCtx, items: tuple[str, ...]) -> str:
+        """Stack per-atom tensors on a fresh trailing axis.
+
+        Parameters
+        ----------
+        py : PyCtx
+            The emission context.
+        items : tuple[str, ...]
+            The per-atom tensors, in atom order.
+
+        Returns
+        -------
+        str
+            ``pymc.math.stack([...], axis=-1)``.
+        """
+        return call(
+            py,
+            attribute(py, ("pymc", "math", "stack")),
+            positional=(python_list(py, items),),
+            keyword=(("axis", _python_unary_minus(py, number_literal(py, 1))),),
         )
 
     # ----- broadcast: np.full((K,), x) for 1D / np.full((R, C), x) for 2D --
