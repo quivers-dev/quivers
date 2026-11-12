@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **`transformer_encoder` is a transformer encoder.** The element embeddings, with sinusoidal position encodings added, pass through multi-head self-attention layers (`torch.nn.TransformerEncoder`, post-norm, GELU feed-forward of width `4 * dim`) and are mean-pooled; the factory takes `heads` (default 4, dividing `dim`) and `layers` (default 1). It had been a head/tail MLP fold with no attention.
+
 - **`Writer.join` exists at every object, and `Writer` checks its monoid.** The multiplication is reshaped to the carrier's shape, so `join` at `Writer(A)` (needed for associativity) no longer raises a shape error, and an operation that is not associative or whose `unit_index` is not a two-sided unit raises `ValueError` when used.
 
 - **The dual algebras compose matrices.** `DualAlgebra.compose`, and so composition under `REICHENBACH`, `BOOLEAN_DUAL`, `DUAL_LUKASIEWICZ` and `DUAL_GODEL`, broadcasts its operands, where it raised a stack-size error for every pair of matrices.
