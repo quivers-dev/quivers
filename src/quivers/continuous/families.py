@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -918,17 +919,50 @@ class _LogSpaceContinuousBernoulli(D.ContinuousBernoulli):
         validate_args: bool | None = None,
     ) -> None:
         super().__init__(probs=probs, logits=logits, validate_args=validate_args)
-        self._from_logits = logits is not None
+        self._source_logits: torch.Tensor | None = (
+            cast(torch.Tensor, self.logits) if logits is not None else None
+        )
 
-    def _logit_log_norm(self) -> torch.Tensor:
+    def expand(
+        self,
+        batch_shape: torch.Size | Sequence[int],
+        _instance: D.ContinuousBernoulli | None = None,
+    ) -> D.ContinuousBernoulli:
+        """The distribution broadcast to a larger batch shape.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size | Sequence[int]
+            The batch shape to broadcast to.
+        _instance : D.ContinuousBernoulli | None
+            An instance to fill, as `torch.distributions` passes it.
+
+        Returns
+        -------
+        D.ContinuousBernoulli
+            The expanded distribution, scored as this one is.
+        """
+        shape = torch.Size(batch_shape)
+        new = self._get_checked_instance(_LogSpaceContinuousBernoulli, _instance)
+        expanded = super().expand(shape, _instance=new)
+        source = self._source_logits
+        new._source_logits = None if source is None else source.expand(shape)
+        return expanded
+
+    def _logit_log_norm(self, logits: torch.Tensor) -> torch.Tensor:
         """The log normalizer ``log C(l)``, computed from the logits.
+
+        Parameters
+        ----------
+        logits : torch.Tensor
+            The logits.
 
         Returns
         -------
         torch.Tensor
             The log normalizer at each logit.
         """
-        magnitude = self.logits.abs()
+        magnitude = logits.abs()
         near = magnitude < self._SERIES_BOUND
         # Each branch is evaluated at a value inside its own range, so
         # neither forms a non-finite value (or gradient) that the other
@@ -953,15 +987,16 @@ class _LogSpaceContinuousBernoulli(D.ContinuousBernoulli):
         torch.Tensor
             The log densities.
         """
-        if not self._from_logits:
+        source = self._source_logits
+        if source is None:
             return super().log_prob(value)
         if self._validate_args:
             self._validate_sample(value)
-        value, logits = torch.broadcast_tensors(value, self.logits)
+        value, logits = torch.broadcast_tensors(value, source)
         return (
             value * F.logsigmoid(logits)
             + (1.0 - value) * F.logsigmoid(-logits)
-            + self._logit_log_norm()
+            + self._logit_log_norm(logits)
         )
 
 
