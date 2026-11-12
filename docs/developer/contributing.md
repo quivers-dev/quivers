@@ -264,7 +264,7 @@ expression refers to. Elaboration rewrites every executable declaration into exp
 [Quivers Indexed Effect Core](qiec.md) (QIEC), the typed core language, and checks their types
 and effects. Compilation builds the PyTorch objects that run the model.
 
-For instance, `observe y <- Normal(mu, sigma)` names a distribution and an observation. Its QIEC
+For instance, `observe y <- Normal(loc=mu, scale=sigma)` names a distribution and an observation. Its QIEC
 term evaluates the density at `y` and asks the `score` instance to add the log weight. The
 [reference machine](qiec.md#reference-evaluator) (the library's interpreter for QIEC), the
 [compiled runtime](../guides/dsl-overview.md#compilation-pipeline) (its PyTorch implementation),

@@ -39,12 +39,12 @@ and the result is held to the deterministic serialization contract of the Python
 | Resumption grade | How many times a handler clause may resume its continuation: never (`0`), at most once (`aff`), exactly once (`1`), or any number of times (`omega`). These are the zero, affine, linear, and unrestricted multiplicities of [substructural typing](https://en.wikipedia.org/wiki/Substructural_type_system) [@atkey2018syntax]. |
 | Stable identifier | A persistent identity used for dispatch, independent of the name shown to a user. |
 
-## Two boundaries
+## Serialized data and runtime attachments {#two-boundaries}
 
-The *stable core boundary* contains only typed, deterministic data: kinds, telescopes,
+The serialized core contains only typed, deterministic data: kinds, telescopes,
 declarations of indexed families, effect interfaces, rows, handler signatures, value and computation
-terms, source provenance, and equality evidence. Python callables and mutable resources cannot
-cross it.
+terms, source provenance, and equality evidence. Python callables and mutable resources are
+never part of it.
 
 The runtime associates stable identifiers with values and handler implementations that live
 only in the running Python process. An *attachment* is such a value
@@ -96,7 +96,7 @@ rejects unknown node tags, malformed records, non-finite floats, runtime attachm
 callables. Encoding is deterministic: the same core graph yields the same JSON text, and thus
 the same UTF-8 bytes.
 
-The format and ABI identifiers belong to the serialization boundary. An authored effect
+The format and ABI identifiers belong to the serialized format. An authored effect
 declaration contains only its name, its static telescope, and its operation signatures.
 
 The format does not depend on the internal model of didactic or on the generic carrier of
@@ -412,7 +412,7 @@ handler:
 Each handler has a grouped counterpart (`enumerate_grouped_marginal`, with the same suffixes)
 that returns one aggregate per group position. A block nested inside a grouped block uses it to add to the enclosing group's weights.
 
-Plates are typed. `xs : N <- Normal(0.0, 1.0)` samples a `Tensor[Real]([|N|])` from a
+Plates are typed. `xs : N <- Normal(loc=0.0, scale=1.0)` samples a `Tensor[Real]([|N|])` from a
 construction plated over `N`. In a grouped block, the `via` index map reindexes the latent's
 arguments to the observation rows and sums the weights back into the groups. A product group
 `[over=[G, H]]` is one flat axis of extent `|G| * |H|`, and the product index map `[via=[g, h]]`
@@ -426,14 +426,14 @@ positions, and the arguments shaped by the enclosing group are gathered by that 
 
 Three further rules apply inside a block. A `sample` that reads nothing the block binds is drawn
 once, before the block, since every shot shares it, and a draw that reads the latent is refused.
-A `sample` of a vector family written with its entries spread, `Dirichlet(1.0, 2.0, 3.0)`, gathers
-them into one concentration. A single literal is the symmetric concentration at the dimension that
+A vector family takes its vector in one named parameter, as in
+`Dirichlet(concentration=[1.0, 2.0, 3.0])`, and a positional argument is refused. A single literal is the symmetric concentration at the dimension that
 the step's plate or the program's codomain fixes.
 
 #### Open extents
 
 An input whose shape nothing in the program fixes, such as the concentration vector of
-`sample probs <- Dirichlet(alpha)` written without a plate, is typed over an index variable that
+`sample probs <- Dirichlet(concentration=alpha)` written without a plate, is typed over an index variable that
 the program's computation binds. The computation gains one `Nat` binder per open extent, recorded
 on the entry's `telescope`, and its parameter reads `Tensor[Real]([alpha_extent])`. A run reads
 each extent from the data. A call step from another program takes the extent as its own, and an
