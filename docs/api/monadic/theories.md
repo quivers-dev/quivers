@@ -1,13 +1,12 @@
 # Typeclass Theories (panproto mirror)
 
-A monad theory records [operations and equations](../../guides/effects.md#typeclass-hierarchy) describing [how effectful computations
-compose](../../semantics/effects.md#2-typeclass-denotations) [@moggi1991notions; @wadler1992essence]. Tooling uses this representation to inspect the expected interface.
-Implementations must satisfy its equations for the values they support.
-
-`TypeclassTheory` records of the sorts, operations, and laws of each
-typeclass: `ThFunctor`,
-`ThApplicative`, `ThMonad`, `ThAlternative`, `ThMonadPlus`,
-`ThMonadTrans`, `ThFoldable`, and `ThTraversable`.
+Each `TypeclassTheory` records the sorts, operations, and laws of one
+[type class](https://en.wikipedia.org/wiki/Type_class) as a panproto theory
+([type class hierarchy](../../guides/effects.md#typeclass-hierarchy)), so that tooling can inspect
+the interface an implementation must satisfy [@moggi1991notions; @wadler1992essence]. The theories
+are `ThFunctor`, `ThApplicative`, `ThMonad`, `ThAlternative`, `ThMonadPlus`, `ThMonadTrans`,
+`ThFoldable`, and `ThTraversable`, and their
+[denotations](../../semantics/effects.md#2-typeclass-denotations) are given in the semantics.
 
 ::: quivers.monadic.theories
     options:
