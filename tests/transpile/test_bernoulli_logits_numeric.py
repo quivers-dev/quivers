@@ -320,8 +320,11 @@ def test_target_scores_the_reference_joint(
         points=[{"params": dict(point), "data": dict(data)} for point in points],
         scratch=scratch / case / backend,
         shapes=shapes,
+        # A drawn outcome reaches each target as the 0.0 / 1.0 float a
+        # torch Bernoulli draws; an observed outcome as an integer code.
         dtypes={
-            name: "int" if name in _INTEGERS[fixture] else "float" for name in shapes
+            name: "int" if name in _INTEGERS[fixture] and name in data else "float"
+            for name in shapes
         },
     )
     _equivalence.assert_log_density_match(
