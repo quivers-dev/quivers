@@ -23,8 +23,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`DiscreteAsContinuous` samples and scores one distribution.** Both use the wrapped matrix's rows normalized to sum to one, where scoring had read the raw entries; a row with a negative entry or a zero sum is refused.
 - **A grouped `marginalize` reads one run's data with its run axis.** An observation given as `(1, N)` for one row of input is scored as the same `(N,)` data, where it had raised a broadcast error; data for several runs are refused, since a grouped block scores one run at a time.
 - **A `via` map is bounded by the groups it maps into.** Stan and the other targets declare a grouped `marginalize`'s index map with range `0 .. |G| - 1`, where it had been bounded by the number of observation rows.
-- **A deduction with an unknown semiring is refused.** `deduction ... [semiring=Tropical]` raises a `CompileError` naming the semirings a deduction runs in (`LogProb`, `Boolean`, `Viterbi`, `Counting`), where an unrecognised name had run the deduction in `LogProb`.
-- **The inside algorithm closes a cell under unary rules exactly.** A chart cell's weights after unary steps are the cell times `(I - U)^{-1}`, the star of the unary rule matrix, where the chart had applied `cell <- cell + cell U` up to eight times; unary rules with spectral radius at least one are refused.
 
 ## [0.55.3] - 2026-11-12
 
