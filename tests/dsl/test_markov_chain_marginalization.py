@@ -769,3 +769,35 @@ export mixture
         dim=0,
     )
     assert run.log_joint != pytest.approx(float(by_probs), rel=1e-9)
+
+
+def test_a_class_valued_parameter_indexes_a_table_in_a_draw() -> None:
+    """``means[k]`` in a draw's argument, ``k`` a parameter over a finite set.
+
+    ``means`` is host data, typed by the object ``k`` ranges over.
+    """
+    source = """
+object Kind : FinSet 3
+object Val : Real 1
+
+program pick(k, u) : Kind * Val -> Val
+    observe y <- Normal(loc=means[k], scale=1.0)
+    return u
+
+export pick
+"""
+    means = torch.tensor([-1.0, 0.5, 2.0], dtype=torch.float64)
+    expected = float(
+        D.Normal(means[2], 1.0).log_prob(torch.tensor(0.7, dtype=torch.float64))
+    )
+    program = loads(source)
+    run = program.run(
+        "pick",
+        data={"k": 2, "u": (0.0,), "y": 0.7, "means": _host(means)},
+        seed=0,
+    )
+    assert run.log_joint == pytest.approx(expected, rel=1e-9)
+    wrong = float(
+        D.Normal(means[0], 1.0).log_prob(torch.tensor(0.7, dtype=torch.float64))
+    )
+    assert run.log_joint != pytest.approx(wrong, rel=1e-9)
