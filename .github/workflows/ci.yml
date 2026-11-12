@@ -131,6 +131,7 @@ jobs:
 
       - name: Check API reference coverage
         run: python tools/check_api_reference.py site
+
       - name: Audit rendered math
         run: python scripts/check_rendered_math.py site
 
