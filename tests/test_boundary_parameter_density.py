@@ -13,13 +13,16 @@ and at interior points, where the densities must not move.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 import torch
 import torch.distributions as D
 
+from quivers.continuous._zip_hurdle import ZeroInflatedPoisson
 from quivers.continuous.families import _make_family
 from quivers.continuous.family_spec import get_family_spec
+from quivers.continuous.measure import Mixture, PointMass
 from quivers.continuous.param_transforms import closed_interval_clamp
 from quivers.core._util import EPS
 from quivers.dsl import loads
@@ -394,3 +397,335 @@ def test_a_family_refuses_bounds_for_a_parameter_it_lacks() -> None:
             dsl_name="BoundedPoissonUnregistered",
             inline_bounds={"scale": (0.0, math.inf)},
         )
+
+
+# -- the probability and trial-count boundaries of the counting families ------
+
+_PRIOR = -0.5 * math.log(2 * math.pi)
+"""The log density of the latent ``a = 0`` under its standard normal prior."""
+
+
+def _observed_program(family_call: str) -> str:
+    """A program scoring two observations under one family call.
+
+    Parameters
+    ----------
+    family_call : str
+        The family and its arguments, which read the data by name.
+
+    Returns
+    -------
+    str
+        The QVR source.
+    """
+    return (
+        "object Resp : FinSet 2\n"
+        "object Val : Real 1\n\n"
+        "program q : Resp -> Val\n"
+        "    sample a <- Normal(loc=0.0, scale=1.0)\n"
+        f"    observe y : Resp <- {family_call}\n"
+        "    return a\n\n"
+        "export q\n"
+    )
+
+
+def _both_paths(
+    family_call: str,
+    y: list[int] | list[bool],
+    data: dict[str, list[float] | list[int]],
+) -> tuple[float, float]:
+    """The compiled runtime's and the reference machine's joint at ``a = 0``.
+
+    Parameters
+    ----------
+    family_call : str
+        The family and its arguments.
+    y : list[int] | list[bool]
+        The two observations.
+    data : dict[str, list[float] | list[int]]
+        The other data, two values each.
+
+    Returns
+    -------
+    tuple[float, float]
+        The compiled and the reference log joint.
+    """
+    source = _observed_program(family_call)
+    values = {
+        "a": torch.tensor([0.0]),
+        "y": torch.tensor([float(v) for v in y]),
+        **{name: torch.tensor(value) for name, value in data.items()},
+    }
+    compiled = _compiled(source, values)
+    program = loads(source)
+    entry = program.entry_points()[0]
+    run = program.run(
+        entry.name,
+        data={"y": tuple(y), **{name: tuple(value) for name, value in data.items()}},
+        sites={"a": 0.0},
+    )
+    return compiled, float(run.log_joint)
+
+
+#: Each family at a boundary its parameters admit, the observations, the
+#: data, and the exact log mass of the two observations together.
+_BOUNDARY_CASES: dict[
+    str, tuple[str, list[int] | list[bool], dict[str, list[float] | list[int]], float]
+] = {
+    "bernoulli-success-under-zero": (
+        "Bernoulli(probs=p)",
+        [True, False],
+        {"p": [0.0, 0.0]},
+        -math.inf,
+    ),
+    "bernoulli-failure-under-one": (
+        "Bernoulli(probs=p)",
+        [True, False],
+        {"p": [1.0, 1.0]},
+        -math.inf,
+    ),
+    "bernoulli-point-masses": (
+        "Bernoulli(probs=p)",
+        [True, False],
+        {"p": [1.0, 0.0]},
+        0.0,
+    ),
+    "binomial-all-successes-under-one": (
+        "Binomial(total_count=n, probs=p)",
+        [3, 3],
+        {"n": [3, 3], "p": [1.0, 1.0]},
+        0.0,
+    ),
+    "binomial-a-failure-under-one": (
+        "Binomial(total_count=n, probs=p)",
+        [3, 2],
+        {"n": [3, 3], "p": [1.0, 1.0]},
+        -math.inf,
+    ),
+    "binomial-a-success-under-zero": (
+        "Binomial(total_count=n, probs=p)",
+        [0, 1],
+        {"n": [3, 3], "p": [0.0, 0.0]},
+        -math.inf,
+    ),
+    "binomial-zero-trials": (
+        "Binomial(total_count=n, probs=p)",
+        [0, 0],
+        {"n": [0, 0], "p": [0.4, 0.4]},
+        0.0,
+    ),
+    "binomial-a-success-in-zero-trials": (
+        "Binomial(total_count=n, probs=p)",
+        [0, 1],
+        {"n": [0, 0], "p": [0.4, 0.4]},
+        -math.inf,
+    ),
+    "negative-binomial-no-success-under-zero": (
+        "NegativeBinomial(total_count=r, probs=p)",
+        [0, 0],
+        {"r": [2.5, 2.5], "p": [0.0, 0.0]},
+        0.0,
+    ),
+    "negative-binomial-a-success-under-zero": (
+        "NegativeBinomial(total_count=r, probs=p)",
+        [0, 2],
+        {"r": [2.5, 2.5], "p": [0.0, 0.0]},
+        -math.inf,
+    ),
+    "negative-binomial-zero-failures-waited-for": (
+        "NegativeBinomial(total_count=r, probs=p)",
+        [0, 0],
+        {"r": [0.0, 0.0], "p": [0.4, 0.4]},
+        0.0,
+    ),
+    "negative-binomial-a-success-with-none-waited-for": (
+        "NegativeBinomial(total_count=r, probs=p)",
+        [0, 1],
+        {"r": [0.0, 0.0], "p": [0.4, 0.4]},
+        -math.inf,
+    ),
+    "beta-binomial-zero-trials": (
+        "BetaBinomial(total_count=n, concentration1=2.0, concentration0=3.0)",
+        [0, 0],
+        {"n": [0, 0]},
+        0.0,
+    ),
+    "beta-binomial-a-success-in-zero-trials": (
+        "BetaBinomial(total_count=n, concentration1=2.0, concentration0=3.0)",
+        [0, 1],
+        {"n": [0, 0]},
+        -math.inf,
+    ),
+    "zip-a-count-under-certain-inflation": (
+        "ZeroInflatedPoisson(zero_prob=z, rate=2.0)",
+        [0, 1],
+        {"z": [1.0, 1.0]},
+        -math.inf,
+    ),
+    "zip-zeros-under-certain-inflation": (
+        "ZeroInflatedPoisson(zero_prob=z, rate=2.0)",
+        [0, 0],
+        {"z": [1.0, 1.0]},
+        0.0,
+    ),
+    "hurdle-a-count-under-a-certain-zero": (
+        "HurdlePoisson(zero_prob=z, rate=2.0)",
+        [0, 1],
+        {"z": [1.0, 1.0]},
+        -math.inf,
+    ),
+    "hurdle-a-zero-under-no-zero": (
+        "HurdlePoisson(zero_prob=z, rate=2.0)",
+        [0, 1],
+        {"z": [0.0, 0.0]},
+        -math.inf,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BOUNDARY_CASES))
+def test_a_counting_family_at_its_boundary_scores_the_point_mass(case: str) -> None:
+    family_call, y, data, log_mass = _BOUNDARY_CASES[case]
+    compiled, reference = _both_paths(family_call, y, data)
+    expected = _PRIOR + log_mass
+    if math.isinf(expected):
+        assert compiled == expected
+        assert reference == expected
+    else:
+        assert compiled == pytest.approx(expected, abs=_ATOL)
+        assert reference == pytest.approx(expected, abs=1e-12)
+
+
+def test_the_hurdle_without_zeros_scores_the_truncated_poisson() -> None:
+    # A zero probability of zero leaves the zero-truncated Poisson.
+    compiled, reference = _both_paths(
+        "HurdlePoisson(zero_prob=z, rate=2.0)", [1, 3], {"z": [0.0, 0.0]}
+    )
+    counts = _f64([1.0, 3.0])
+    truncated = D.Poisson(_f64(2.0)).log_prob(counts) - math.log(-math.expm1(-2.0))
+    expected = _PRIOR + float(truncated.sum())
+    assert compiled == pytest.approx(expected, abs=_ATOL)
+    assert reference == pytest.approx(expected, abs=1e-12)
+
+
+#: Interior parameters, with the `torch.distributions` construction that
+#: scores them, for each counting family.
+_INTERIOR_CASES: dict[
+    str,
+    tuple[
+        str,
+        list[int] | list[bool],
+        dict[str, list[float] | list[int]],
+        Callable[[], D.Distribution],
+    ],
+] = {
+    "bernoulli": (
+        "Bernoulli(probs=p)",
+        [True, False],
+        {"p": [0.2, 0.9]},
+        lambda: D.Bernoulli(probs=_f64([0.2, 0.9])),
+    ),
+    "binomial": (
+        "Binomial(total_count=n, probs=p)",
+        [2, 5],
+        {"n": [4, 7], "p": [0.3, 0.85]},
+        lambda: D.Binomial(total_count=_f64([4.0, 7.0]), probs=_f64([0.3, 0.85])),
+    ),
+    "negative-binomial": (
+        "NegativeBinomial(total_count=r, probs=p)",
+        [0, 6],
+        {"r": [1.5, 4.0], "p": [0.25, 0.6]},
+        lambda: D.NegativeBinomial(
+            total_count=_f64([1.5, 4.0]), probs=_f64([0.25, 0.6])
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_INTERIOR_CASES))
+def test_an_interior_counting_parameter_scores_the_torch_density(case: str) -> None:
+    family_call, y, data, reference_law = _INTERIOR_CASES[case]
+    compiled, reference = _both_paths(family_call, y, data)
+    expected = _PRIOR + float(
+        reference_law().log_prob(_f64([float(v) for v in y])).sum()
+    )
+    assert compiled == pytest.approx(expected, rel=1e-5)
+    assert reference == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("case", sorted(_INTERIOR_CASES))
+def test_an_interior_counting_parameter_keeps_the_torch_gradient(case: str) -> None:
+    # The closed-interval scoring differentiates as torch's logit path does
+    # wherever the probability is strictly inside the unit interval.
+    family = {
+        "bernoulli": "Bernoulli",
+        "binomial": "Binomial",
+        "negative-binomial": "NegativeBinomial",
+    }[case]
+    spec = get_family_spec(family)
+    assert spec is not None
+    _, y, data, _ = _INTERIOR_CASES[case]
+    counts = _f64([float(v) for v in y])
+    probs = _f64(data["p"]).requires_grad_(True)
+    torch_probs = _f64(data["p"]).requires_grad_(True)
+    extra = {name: _f64(value) for name, value in data.items() if name != "p"}
+    torch_class = {
+        "bernoulli": D.Bernoulli,
+        "binomial": D.Binomial,
+        "negative-binomial": D.NegativeBinomial,
+    }[case]
+    totals = {"total_count": next(iter(extra.values()))} if extra else {}
+    closed = spec.dist_class(probs=probs, **totals).log_prob(counts).sum()
+    plain = torch_class(probs=torch_probs, **totals).log_prob(counts).sum()
+    (closed_grad,) = torch.autograd.grad(closed, probs)
+    (plain_grad,) = torch.autograd.grad(plain, torch_probs)
+    assert float(closed) == pytest.approx(float(plain), rel=1e-12)
+    assert closed_grad.tolist() == pytest.approx(plain_grad.tolist(), rel=1e-10)
+
+
+def test_torch_scores_a_boundary_probability_through_its_clamp() -> None:
+    # The oracle above rejects torch's own probability path: it scores a
+    # success under probs = 0 at about -15.9 in single precision.
+    clamped = float(D.Bernoulli(probs=torch.tensor(0.0)).log_prob(torch.tensor(1.0)))
+    assert -17.0 < clamped < -15.0
+
+
+# -- the zero-inflated Poisson's weights ---------------------------------------
+
+
+def test_a_certain_inflation_puts_no_mass_on_a_positive_count() -> None:
+    zip_law = ZeroInflatedPoisson(torch.tensor(1.0), torch.tensor(2.0))
+    assert float(zip_law.log_prob(torch.tensor(1.0))) == -math.inf
+    assert float(zip_law.log_prob(torch.tensor(0.0))) == 0.0
+
+
+@pytest.mark.parametrize("zero_prob", [0.05, 0.4, 0.93])
+def test_an_interior_inflation_scores_and_differentiates_the_closed_form(
+    zero_prob: float,
+) -> None:
+    counts = _f64([0.0, 1.0, 4.0])
+    rate = _f64(1.7)
+    pi = _f64(zero_prob).requires_grad_(True)
+    exact_pi = _f64(zero_prob).requires_grad_(True)
+    mixture = ZeroInflatedPoisson(pi, rate).log_prob(counts).sum()
+    poisson = D.Poisson(rate).log_prob(counts)
+    exact = torch.where(
+        counts == 0,
+        torch.log(exact_pi + (1.0 - exact_pi) * torch.exp(-rate)),
+        torch.log1p(-exact_pi) + poisson,
+    ).sum()
+    (grad,) = torch.autograd.grad(mixture, pi)
+    (exact_grad,) = torch.autograd.grad(exact, exact_pi)
+    assert float(mixture) == pytest.approx(float(exact), rel=1e-12)
+    assert float(grad) == pytest.approx(float(exact_grad), rel=1e-10)
+
+
+def test_a_zero_mixture_weight_has_a_finite_gradient() -> None:
+    weights = _f64([0.0, 1.0]).requires_grad_(True)
+    mixture = Mixture(weights, [PointMass(0.0), D.Poisson(_f64(2.0))])
+    log_mass = mixture.log_prob(_f64(1.0))
+    (grad,) = torch.autograd.grad(log_mass, weights)
+    assert float(log_mass) == pytest.approx(
+        float(D.Poisson(_f64(2.0)).log_prob(_f64(1.0)))
+    )
+    assert bool(torch.isfinite(grad).all())

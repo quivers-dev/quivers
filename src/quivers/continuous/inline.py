@@ -38,6 +38,7 @@ import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
+from quivers.continuous._closed_probability import ClosedBernoulli
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous.log_space import LogGamma, LogitBeta
@@ -931,7 +932,7 @@ def make_fixed_bernoulli(prob: float, codomain: AnySpace) -> FixedDistribution:
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         probs_t = torch.full((batch,), prob, device=device)
-        return D.Bernoulli(probs=probs_t)
+        return ClosedBernoulli(probs=probs_t)
 
     return FixedDistribution(
         codomain, builder, discrete=True, support=_constraints.boolean
@@ -1467,8 +1468,13 @@ def _normal_builder(params: list[torch.Tensor]) -> D.Distribution:
 
 
 def _bernoulli_builder(params: list[torch.Tensor]) -> D.Distribution:
-    """Build Bernoulli from [probs]."""
-    return D.Bernoulli(probs=params[0].clamp(EPS, 1.0 - EPS))
+    """Build Bernoulli from [probs].
+
+    A success probability of zero or one is the point mass at failure
+    or success, so ``probs`` is projected onto ``[0, 1]`` and scored
+    where it stands.
+    """
+    return ClosedBernoulli(probs=params[0].clamp(0.0, 1.0))
 
 
 def _truncated_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1760,9 +1766,11 @@ def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
 
     The distribution is the continuous-layer `_BetaBinomial`, whose
     closed-form `log_prob` exposes `sample`, `mean`, and `variance`
-    directly and keeps the inline path free of a transpile import.
+    directly and keeps the inline path free of a transpile import. Zero
+    trials is the point mass at zero, so ``total_count`` is projected
+    onto the nonnegative reals.
     """
-    total_count = params[0].clamp(min=EPS)
+    total_count = params[0].clamp(min=0.0)
     a = params[1].clamp(min=EPS)
     b = params[2].clamp(min=EPS)
     return _BetaBinomial(total_count, a, b)
@@ -1829,19 +1837,30 @@ def _codomain_dim_or_raise(family: str, codomain: AnySpace) -> int:
 def _zero_inflated_poisson_builder(
     params: list[torch.Tensor],
 ) -> D.Distribution:
-    """Build `ZeroInflatedPoisson` from ``[zero_prob, rate]``."""
+    """Build `ZeroInflatedPoisson` from ``[zero_prob, rate]``.
+
+    Both parameters are projected onto their closed domains: a
+    ``zero_prob`` of one is the point mass at zero, one of zero the
+    plain Poisson, and a ``rate`` of zero the point mass at zero.
+    """
     return ZeroInflatedPoisson(
-        params[0].clamp(EPS, 1.0 - EPS),
-        params[1].clamp(min=EPS),
+        params[0].clamp(0.0, 1.0),
+        params[1].clamp(min=0.0),
     )
 
 
 def _hurdle_poisson_builder(
     params: list[torch.Tensor],
 ) -> D.Distribution:
-    """Build `HurdlePoisson` from ``[zero_prob, rate]``."""
+    """Build `HurdlePoisson` from ``[zero_prob, rate]``.
+
+    A ``zero_prob`` of one is the point mass at zero and one of zero
+    the zero-truncated Poisson, so it is projected onto ``[0, 1]``. The
+    zero-truncated Poisson needs a positive ``rate``, which is held off
+    zero.
+    """
     return HurdlePoisson(
-        params[0].clamp(EPS, 1.0 - EPS),
+        params[0].clamp(0.0, 1.0),
         params[1].clamp(min=EPS),
     )
 
@@ -2286,7 +2305,7 @@ _BASE_DISTRIBUTION_BUILDERS: dict = {
         validate_args=True,
     ),
     "Poisson": lambda a: D.Poisson(torch.as_tensor(a[0])),
-    "Bernoulli": lambda a: D.Bernoulli(probs=torch.as_tensor(a[0])),
+    "Bernoulli": lambda a: ClosedBernoulli(probs=torch.as_tensor(a[0])),
     "Uniform": lambda a: D.Uniform(
         torch.as_tensor(a[0]),
         torch.as_tensor(a[1]),

@@ -1330,7 +1330,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         "ZeroInflatedPoisson",
         (
             FamilyParameter("zero_prob", "unit_interval", 0),
-            FamilyParameter("rate", "positive", 0),
+            FamilyParameter("rate", "nonnegative", 0),
         ),
         support="nonnegative_integer",
         element=INT,

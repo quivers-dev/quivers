@@ -54,7 +54,7 @@ class ZeroInflatedPoisson(Distribution):
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
-        "rate": _constraints.positive,
+        "rate": _constraints.nonnegative,
     }
     support = _constraints.nonnegative_integer
     has_rsample = False
