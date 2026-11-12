@@ -48,7 +48,7 @@ Every built-in algebra is a subclass of `Algebra`, so also of `Semigroupoid` and
 
 ## Building a semigroupoid
 
-`material_implication()` returns a `CustomSemigroupoid` whose $\otimes$ is the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] and whose $\oplus$ is the product. This $\otimes$ has the left identity 1, since $1 \to b = b$, but no two-sided identity, which is why the rule is not an `Algebra`. It is also not associative: with $a = b = c = 0.5$, $(a \to b) \to c = 0.625$ and $a \to (b \to c) = 0.875$. The helper therefore skips the associativity test that `semigroupoid(...)` runs, and composites under it must keep their bracketing.
+`material_implication()` returns a `CustomSemigroupoid` whose $\otimes$ is the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] and whose $\oplus$ is the product. This $\otimes$ has the left identity 1, since $1 \to b = b$, but no two-sided identity, which is why the rule is not an `Algebra`. It is also not associative: with $a = b = c = 0.5$, $(a \to b) \to c = 0.625$ and $a \to (b \to c) = 0.875$. The helper thus skips the associativity test that `semigroupoid(...)` runs, and composites under it must keep their bracketing.
 
 ```python
 import torch
