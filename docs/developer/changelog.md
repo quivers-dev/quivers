@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **`ArrowMonad` is the monad its arrow determines.** `ArrowMonad(Function())` is the identity monad and `ArrowMonad(Kleisli(m))` is `m` (`a(1, A) ≅ m(A)`), so `fmap_obj`, `pure`, `fmap` and `join` agree in their types; any other arrow raises `TypeError`, since the arrow interface does not expose its hom objects. `FreeMonad.fmap` raises `ValueError` for a morphism that is not a partial function.
 
+- **`left_kan` and `right_kan` require an `IdempotentSemiring`.** Along a function between finite sets, the Kan extensions are the pointwise join and meet of a complete lattice, so the functions refuse an algebra whose join is not a lattice join (`PRODUCT_FUZZY`, `LOG_PROB`, ...) with a `TypeError`, use the morphism's own algebra by default, and fill an empty fibre with the top element for `right_kan` (`IdempotentSemiring.top`, `+∞` for `MAX_PLUS`) where it had used the unit. Both satisfy `Lan_p ⊣ p* ⊣ Ran_p`.
+
 ### Fixed
 
 - **API docstrings state the mathematics correctly.** `quivers.stochastic.semiring` describes the log semiring on `[-∞, ∞)` as a non-idempotent semiring rather than a lattice or quantale; `quivers.core.objects` lists its six set-object variants and documents `SetObject` as an object type and `FreeResiduated` as a finite set of Lambek-calculus formulas; `quivers.continuous.programs` shows the current `sample x <- f` syntax.

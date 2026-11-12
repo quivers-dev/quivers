@@ -437,7 +437,10 @@ class IdempotentSemiring(Semiring):
     join of the partial order ``a ≤ b ⟺ a ⊕ b = b`` [Golan (1999)].
     On finite carriers of composition this is the structure that a
     quantale restricts to, and it is what the fuzzy powerset monad
-    needs (see `quivers.monadic.monads.FuzzyPowersetMonad`).
+    needs (see `quivers.monadic.monads.FuzzyPowersetMonad`). In the
+    shipped instances ``meet`` is the infimum of that order and `top`
+    is its greatest element, so each is a bounded distributive lattice
+    under ``(join, meet)``.
 
     References
     ----------
@@ -445,7 +448,15 @@ class IdempotentSemiring(Semiring):
     [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
     """
 
-    pass
+    @property
+    @abstractmethod
+    def top(self) -> float:
+        """The greatest element of the order ``a ≤ b ⟺ a ⊕ b = b``.
+
+        It absorbs the join (``a ⊕ ⊤ = ⊤``) and is the meet of the empty
+        family.
+        """
+        ...
 
 
 class DualAlgebra(Algebra):
@@ -546,6 +557,11 @@ class DualIdempotentSemiring(DualAlgebra, IdempotentSemiring):
     ``max`` is the bottom and the bottom of the reversed order, the old
     top, annihilates ``max``.
     """
+
+    @property
+    def top(self) -> float:
+        """The greatest element of the join order."""
+        return float(self._base.zero)
 
 
 def _fold_along_dim(
@@ -1099,6 +1115,11 @@ class BooleanAlgebra(IdempotentSemiring):
         """
         return DualIdempotentSemiring(self)
 
+    @property
+    def top(self) -> float:
+        """The greatest element of the join order."""
+        return 1.0
+
 
 # ============================================================================
 # Standard MV-algebra and Gödel algebra on [0, 1]
@@ -1222,6 +1243,11 @@ class GodelAlgebra(IdempotentSemiring):
         """
         return DualIdempotentSemiring(self)
 
+    @property
+    def top(self) -> float:
+        """The greatest element of the join order."""
+        return 1.0
+
 
 # ============================================================================
 # Tropical / max-plus / log-prob semirings
@@ -1289,6 +1315,11 @@ class TropicalAlgebra(IdempotentSemiring):
                 result[idx + idx] = 0.0
         return result
 
+    @property
+    def top(self) -> float:
+        """The greatest element of the join order."""
+        return 0.0
+
 
 class MaxPlusAlgebra(IdempotentSemiring):
     """Max-plus (Viterbi) semiring on ℝ ∪ {-∞}.
@@ -1350,6 +1381,11 @@ class MaxPlusAlgebra(IdempotentSemiring):
             for idx in itertools.product(*(range(s) for s in obj_shape)):
                 result[idx + idx] = 0.0
         return result
+
+    @property
+    def top(self) -> float:
+        """The greatest element of the join order."""
+        return float("inf")
 
 
 class LogProbAlgebra(Semiring):

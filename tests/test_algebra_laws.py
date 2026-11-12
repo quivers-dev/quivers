@@ -395,3 +395,27 @@ def test_dual_algebra_composes_matrices() -> None:
                 _noisy_or(float(f[i, j]), float(g[j, k])) for j in range(3)
             )
     assert _close(REICHENBACH.compose(f, g, 1), expected)
+
+
+def _lib_meet(alg: Algebra, a: float, b: float) -> float:
+    return float(alg.meet(torch.tensor([a, b], dtype=torch.float64), dim=0))
+
+
+@pytest.mark.parametrize("name", _IDEMPOTENT)
+def test_idempotent_semirings_are_bounded_lattices(name: str) -> None:
+    """``meet`` is the infimum and ``top`` the greatest element of the
+    order ``a ≤ b ⟺ a ⊕ b = b``; Kan extensions rely on both."""
+    alg, plus, _, _, _, grid = _REFERENCE[name]
+    assert isinstance(alg, IdempotentSemiring)
+
+    def leq(x: float, y: float) -> bool:
+        return _eq(plus(x, y), y)
+
+    for a in grid:
+        assert leq(a, alg.top)
+    for a, b in itertools.product(grid, repeat=2):
+        m = _lib_meet(alg, a, b)
+        assert leq(m, a) and leq(m, b)
+        for c in grid:
+            if leq(c, a) and leq(c, b):
+                assert leq(c, m)

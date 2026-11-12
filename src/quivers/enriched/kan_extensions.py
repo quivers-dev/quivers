@@ -1,25 +1,40 @@
-"""Kan extensions: generalized (re)indexing of morphisms.
+"""Kan extensions along functions between finite sets.
 
-The left Kan extension of a morphism R: A → B along a map p: A → A'
-produces a morphism Lan_p(R): A' → B via:
+A morphism R: A → B over an algebra V is a V-valued matrix, which is a
+functor from the discrete category A to the category of V-valued
+presheaves on B. For a function p: A → A' between discrete categories
+and V a complete lattice, the left and right Kan extensions along p
+are pointwise joins and meets over the fibres of p [Mac Lane (1998),
+§X.3; Kelly (1982), §4]:
 
-    (Lan_p R)(a', b) = ⋁{a : p(a) = a'} R(a, b)
+    (Lan_p R)(a', b) = ⋁{R(a, b) : p(a) = a'}
+    (Ran_p R)(a', b) = ⋀{R(a, b) : p(a) = a'}
 
-The right Kan extension uses meet (⋀) instead of join (⋁):
+An empty fibre gives the least element ⊥ for Lan and the greatest ⊤
+for Ran. This is the discrete special case of a Kan extension; the
+formulas are the Kan extensions only when ⋁ and ⋀ are the join and
+meet of V's order, so the functions require an `IdempotentSemiring`
+algebra, whose join is idempotent and whose meet is the infimum of its
+order. They satisfy the adjunctions
 
-    (Ran_p R)(a', b) = ⋀{a : p(a) = a'} R(a, b)
+    Lan_p R ≤ S  ⟺  R ≤ S ∘ p        S ∘ p ≤ R  ⟺  S ≤ Ran_p R
 
-Marginalization is a special case: left Kan extension along a
-projection π: A₁×...×Aₙ → A_{i₁}×...×A_{iₖ}.
+for every S: A' → B. Marginalization over an idempotent semiring is the
+left Kan extension along a projection π: A₁×...×Aₙ → A_{i₁}×...×A_{iₖ}.
 
-This module provides:
+This module provides the abstract `ObjectMap` (a function between
+finite sets) with `Projection` and `Inclusion`, and the `left_kan` and
+`right_kan` functions.
 
-    ObjectMap (abstract) — maps between finite sets
-    ├── Projection       — π: A₁×...×Aₙ → some subset of components
-    └── Inclusion        — ι: A → A + B (coproduct injection)
+References
+----------
+Mac Lane, S. (1998). *Categories for the Working Mathematician* (2nd
+ed.). Springer.
+[doi:10.1007/978-1-4757-4721-8](https://doi.org/10.1007/978-1-4757-4721-8)
 
-    left_kan()  — left Kan extension
-    right_kan() — right Kan extension
+Kelly, G. M. (1982). *Basic Concepts of Enriched Category Theory*.
+Cambridge University Press. Reprinted in *Reprints in Theory and
+Applications of Categories*, 10 (2005).
 """
 
 from __future__ import annotations
@@ -28,7 +43,7 @@ from abc import ABC, abstractmethod
 import torch
 from quivers.core.objects import SetObject, ProductSet, CoproductSet
 from quivers.core.morphisms import Morphism, ObservedMorphism, observed
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import Algebra, IdempotentSemiring
 
 
 class ObjectMap(ABC):
@@ -196,77 +211,121 @@ class Inclusion(ObjectMap):
         return (self._offset + flat_idx,)
 
 
+def _kan_algebra(morph: Morphism, algebra: Algebra | None) -> IdempotentSemiring:
+    """The lattice a Kan extension of ``morph`` is computed in.
+
+    Parameters
+    ----------
+    morph : Morphism
+        The morphism being extended.
+    algebra : Algebra or None
+        The algebra requested, or None for the morphism's own.
+
+    Returns
+    -------
+    IdempotentSemiring
+        The algebra.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`, or differs from
+        the morphism's algebra.
+    """
+    q = algebra if algebra is not None else morph.algebra
+    if not isinstance(q, IdempotentSemiring):
+        raise TypeError(
+            "Kan extensions along a function are joins and meets of a "
+            f"complete lattice; {q!r} is not an IdempotentSemiring"
+        )
+    if not morph.algebra.is_compatible(q):
+        raise TypeError(f"the morphism is over {morph.algebra.name}, not {q.name}")
+    return q
+
+
 def left_kan(
     morph: Morphism, along: ObjectMap, algebra: Algebra | None = None
 ) -> ObservedMorphism:
-    """Left Kan extension of a morphism along an object map.
+    """Left Kan extension of a morphism along a function.
 
-    Computes: (Lan_p R)(a', b) = ⋁{a : p(a) = a'} R(a, b)
+    Computes ``(Lan_p R)(a', b) = ⋁{R(a, b) : p(a) = a'}``, which is ⊥
+    over an empty fibre.
 
     Parameters
     ----------
     morph : Morphism
         The morphism R: A → B.
     along : ObjectMap
-        The map p: A → A'.
+        The function p: A → A'.
     algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+        The algebra, an `IdempotentSemiring`; the morphism's own when
+        omitted.
 
     Returns
     -------
     ObservedMorphism
         The left Kan extension Lan_p(R): A' → B.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring` or is not the
+        morphism's.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = _kan_algebra(morph, algebra)
     target = along.target
     codomain = morph.codomain
-    result_shape = (*target.shape, *codomain.shape)
-    result = torch.full(result_shape, q.zero)
+    result = torch.full((*target.shape, *codomain.shape), q.zero)
     source_tensor = morph.tensor.detach()
     for tgt_idx in itertools.product(*(range(s) for s in target.shape)):
         fiber = along.fiber_indices(tgt_idx)
         if not fiber:
             continue
         slices = torch.stack([source_tensor[src_idx] for src_idx in fiber])
-        joined = q.join(slices, dim=0)
-        result[tgt_idx] = joined
+        result[tgt_idx] = q.join(slices, dim=0)
     return observed(target, codomain, result, algebra=q)
 
 
 def right_kan(
     morph: Morphism, along: ObjectMap, algebra: Algebra | None = None
 ) -> ObservedMorphism:
-    """Right Kan extension of a morphism along an object map.
+    """Right Kan extension of a morphism along a function.
 
-    Computes: (Ran_p R)(a', b) = ⋀{a : p(a) = a'} R(a, b)
+    Computes ``(Ran_p R)(a', b) = ⋀{R(a, b) : p(a) = a'}``, which is ⊤
+    over an empty fibre.
 
     Parameters
     ----------
     morph : Morphism
         The morphism R: A → B.
     along : ObjectMap
-        The map p: A → A'.
+        The function p: A → A'.
     algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+        The algebra, an `IdempotentSemiring`; the morphism's own when
+        omitted.
 
     Returns
     -------
     ObservedMorphism
         The right Kan extension Ran_p(R): A' → B.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring` or is not the
+        morphism's.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = _kan_algebra(morph, algebra)
     target = along.target
     codomain = morph.codomain
-    result_shape = (*target.shape, *codomain.shape)
-    result = torch.full(result_shape, q.unit)
+    result = torch.full((*target.shape, *codomain.shape), q.top)
     source_tensor = morph.tensor.detach()
     for tgt_idx in itertools.product(*(range(s) for s in target.shape)):
         fiber = along.fiber_indices(tgt_idx)
         if not fiber:
             continue
         slices = torch.stack([source_tensor[src_idx] for src_idx in fiber])
-        met = q.meet(slices, dim=0)
-        result[tgt_idx] = met
+        result[tgt_idx] = q.meet(slices, dim=0)
     return observed(target, codomain, result, algebra=q)
 
 
