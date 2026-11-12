@@ -4,9 +4,9 @@ A [chart parser](../../examples/schema-chart-parser.md) stores partial conclusio
 with [inference rules](../../semantics/schemas.md#6-schema-declarations) [@shieber1995principles; @goodman1999semiring]. In a categorial grammar, for instance, an expression that needs a noun phrase
 on its right combines with a noun phrase to give a sentence [@lambek1958mathematics]. The
 interfaces below separate the initial facts, the inference steps, the goals, and the schedule, and
-the semiring fixes what is accumulated across derivations. The page covers the abstract deductive
-system, the rule schemas and their bundles and presets, and the components of CKY over spans
-parsing.
+the semiring fixes what is accumulated across derivations. The module holds the abstract deductive
+system, the rule schemas with their bundles and presets, and the components of CKY parsing over
+spans.
 
 ## Deductive Systems
 
