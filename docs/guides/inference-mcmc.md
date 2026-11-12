@@ -82,6 +82,22 @@ endpoint log-density in the Hamiltonian, and NUTS carries the
 selected proposal's gradient into the next transition, so a
 transition costs one target evaluation per leapfrog step and nothing
 more.
+
+An evaluation costs little beyond the model's own tensor arithmetic.
+The potential does not run the program on the reference machine at
+every position: the first evaluation at a layout of the values (the
+shapes, dtypes, and devices of the latents, the data, and the values a
+Gibbs component conditions on) compiles the program's scoring run to a
+straight-line sequence of its host steps and site densities, and every
+later evaluation replays that sequence with the same tensor operations
+in the same order. Draws, log densities, gradients, and evaluation
+counts are thus those of
+[`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint),
+bit for bit. A program with a scan, whose recursion runs over its
+sequence, is scored by `log_joint` at every evaluation, and so is any
+evaluation made while an effect handler is in scope or of a program
+whose `log_joint` is overridden.
+
 Each chain derives an independent local generator from `seed`; that
 stream controls initialization, momentum, tree direction, subtree
 selection, and acceptance. Thus repeated runs with the same seed are
