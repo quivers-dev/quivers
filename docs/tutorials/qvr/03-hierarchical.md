@@ -1,26 +1,10 @@
 # 3. Hierarchical models
 
-The eight-schools dataset [@rubin1981parallel] is a common stress test for hierarchical Bayesian inference: eight schools, one observed treatment effect and standard error per school, and the question of how much each school's effect borrows strength from the global mean. The model is small, but its centered parameterization can produce funnel-shaped posterior geometry that is difficult for mean-field VI and Hamiltonian Monte Carlo.
-
-This chapter covers:
-
-- The plate-draw syntax (`v : G <- Normal(loc=0, scale=sigma)`) for per-group random effects.
-- Centered vs non-centered parameterizations and how to write each in QVR.
-- Running NUTS with R-hat, ESS, and divergence diagnostics.
-
-Partial pooling expresses a compromise between estimating every school
-separately and assuming all schools have one effect. The population mean
-`mu` describes their shared location; `tau` describes between-school
-variation; each known `sigma_j` describes uncertainty in that school's measured
-effect. A noisy school estimate provides less evidence for a distinct effect
-and tends to be pulled more strongly toward the population mean.
-
-When `tau` is near zero, all `theta_j` must lie very close to `mu`; when `tau`
-is large, they can spread out. This changing width produces the funnel geometry
-mentioned above. Noncentering expresses each school as a standardized deviation
-before scaling it, which can make weakly informed models easier to fit.
+The eight-schools data [@rubin1981parallel] give one estimated treatment effect $y_j$ and its known standard error $\sigma_j$ for each of eight schools. A [hierarchical model](https://en.wikipedia.org/wiki/Multilevel_model) draws the school effects from a shared population distribution, so each estimate is shrunk toward the population mean by an amount that depends on its standard error (partial pooling) [@gelman2013bayesian]. This chapter writes the model in QVR with a plate over schools, fits it with SVI and with the [No-U-Turn Sampler](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) (NUTS) [@hoffman2014nuts], and compares the centered and non-centered parameterizations.
 
 ## Eight schools, centered
+
+Let $\mu$ be the population mean, $\tau$ the between-school scale, and $\theta_j$ the effect of school $j$:
 
 $$
 \mu \sim \mathrm{Normal}(0, 5), \qquad
@@ -29,20 +13,18 @@ $$
 y_j \sim \mathrm{Normal}(\theta_j, \sigma_j).
 $$
 
-The eight $\theta_j$ are a per-group random effect over the group object `School`.
-
 === "QVR"
 
     ```qvr
     object School : FinSet 8
-    program eight_schools_centred : School -> School [effects=[Sample, Score]]
+    program eight_schools_centered : School -> School [effects=[Sample, Score]]
         sample mu  <- Normal(loc=0.0, scale=5.0)
         sample tau <- HalfNormal(scale=5.0)
         sample theta : School <- Normal(loc=mu, scale=tau)
         observe y : School <- Normal(loc=theta, scale=sigma_j)
         return theta
 
-    export eight_schools_centred
+    export eight_schools_centered
     ```
 
 === "NumPyro"
@@ -56,38 +38,31 @@ The eight $\theta_j$ are a per-group random effect over the group object `School
             numpyro.sample("y", dist.Normal(theta, sigma_j), obs=y)
     ```
 
-The `theta : School <- Normal(...)` line is a *plate-draw*: it samples one value per element of `School`. The plate index is the object's cardinality (8). The `observe y : School <- ...` line is a *vectorized observe* over the same index.
-
-The compiler synthesizes a `PlateDraw` morphism whose codomain is the product space `School ⊗ Real`; you can index into it like `theta[j]` inside subsequent `let` arithmetic.
+`sample theta : School <- Normal(...)` is a [plate](https://en.wikipedia.org/wiki/Plate_notation): it draws one value for each of the eight elements of `School`, independently given `mu` and `tau`, and later `let` steps may index the result as `theta[j]`. `observe y : School <- ...` observes one value for each school in the same way. The standard errors `sigma_j` are a [data input](01-first-model.md#data-inputs-and-the-observations-dict).
 
 ## Centered parameterization and mean-field VI
 
-The centered parameterization draws each `theta_j` directly around `mu` with
-scale `tau`. When `tau` approaches zero, the conditional distribution of the
-group effects becomes narrow, coupling `theta`, `mu`, and `tau` into a
-funnel-shaped posterior ([@neal2003slice],
-§8). A diagonal variational family cannot represent that dependence and may
-put too much mass near `tau = 0`:
+In the centered form each $\theta_j$ is drawn around $\mu$ with scale $\tau$. As $\tau$ approaches zero, the conditional distribution of the $\theta_j$ narrows, and the posterior of $(\theta, \tau)$ takes the shape of a funnel ([@neal2003slice], §8). A mean-field guide has no correlation between $\theta$ and $\tau$ and may place too much mass near $\tau = 0$:
 
 ```python
 import torch
 from quivers.dsl import loads
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-CENTRED_SRC = """
+CENTERED_SRC = """
 object School : FinSet 8
 
-program eight_schools_centred : School -> School
+program eight_schools_centered : School -> School
     sample mu  <- Normal(loc=0.0, scale=5.0)
     sample tau <- HalfNormal(scale=5.0)
     sample theta : School <- Normal(loc=mu, scale=tau)
     observe y : School <- Normal(loc=theta, scale=sigma_j)
     return theta
 
-export eight_schools_centred
+export eight_schools_centered
 """
 
-program = loads(CENTRED_SRC)
+program = loads(CENTERED_SRC)
 model   = program.morphism
 
 sigma_j = torch.tensor([[15., 10., 16., 11., 9., 11., 10., 18.]])   # (1, 8)
@@ -105,15 +80,15 @@ for _ in range(50):                              # bump to ~3000 for real fits
     svi.step(x_tensor, observations)
 ```
 
-A [diagonal guide](../python/05-variational-inference.md#creating-a-guide) can concentrate near `tau = 0` because the funnel couples the group effects to their shared scale. Compare the distribution of `tau` under centered and non-centered fits, using multiple initializations and a well-mixed MCMC fit as a reference.
+To see the effect, fit both parameterizations from several initializations and compare the guide's distribution of `tau` with a well-mixed NUTS fit.
 
 ## Non-centered parameterization
 
-The standard fix is to reparameterize [@papaspiliopoulos2007parametrization]: draw $\eta_j \sim \mathrm{Normal}(0, 1)$ and define $\theta_j = \mu + \tau \cdot \eta_j$ deterministically.
+The non-centered form draws a standardized effect $\eta_j \sim \mathrm{Normal}(0, 1)$ and sets $\theta_j = \mu + \tau \eta_j$ deterministically [@papaspiliopoulos2007parametrization]. The latent variables $\eta_j$ are then independent of $\tau$ a priori, and the funnel moves out of the sampled coordinates.
 
 ```qvr
 object School : FinSet 8
-program eight_schools_noncentred : School -> School [effects=[Sample, Score]]
+program eight_schools_noncentered : School -> School [effects=[Sample, Score]]
     sample mu  <- Normal(loc=0.0, scale=5.0)
     sample tau <- HalfNormal(scale=5.0)
     sample eta : School <- Normal(loc=0.0, scale=1.0)
@@ -121,14 +96,14 @@ program eight_schools_noncentred : School -> School [effects=[Sample, Score]]
     observe y : School <- Normal(loc=theta, scale=sigma_j)
     return theta
 
-export eight_schools_noncentred
+export eight_schools_noncentered
 ```
 
-Re-running with the non-centered parameterization can improve the diagonal guide's geometry. Whether it agrees with NUTS depends on optimization and MCMC diagnostics.
+A mean-field guide often fits this form better. Whether it agrees with NUTS is a question for the diagnostics below.
 
 ## NUTS
 
-To approximate the posterior with sampling rather than a fixed variational family, use the No-U-Turn Sampler [@hoffman2014nuts]:
+NUTS is a [Hamiltonian Monte Carlo](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) (HMC) sampler that chooses its trajectory length adaptively [@neal2011mcmc; @hoffman2014nuts]:
 
 ```python
 from quivers.inference import NUTSKernel, MCMC
@@ -153,32 +128,21 @@ print("ESS tau:", result.ess["tau"].item())
 print("divergences:", result.total_divergences)
 ```
 
-Inspect rank-normalized split-R-hat [@vehtari2021rhat] for disagreement between chains and effective sample sizes for the precision of each posterior summary. The following adjustments address high R-hat, divergences, and low effective sample sizes separately.
-
-If R-hat is above 1.01 anywhere, give NUTS more warmup steps (`num_warmup=2000`). If divergences are nonzero, raise `target_accept` to 0.99 or reparameterize to non-centered. If ESS is small (<100 per chain), the chain is mixing slowly: either run longer or reparameterize.
+`result.r_hat` is the rank-normalized split R-hat [@vehtari2021rhat], which compares the variance between chains with the variance within them. `result.ess` is the effective sample size, and `result.total_divergences` counts trajectories whose numerical integration error blew up [@betancourt2015hierarchical]. With 50 warmup steps and 100 draws, R-hat for `tau` is usually above 1.01 and its effective sample size is a few dozen at most. Thresholds and remedies are in [chapter 8](08-diagnostics-and-comparison.md#convergence-diagnostics).
 
 ### Centered or non-centered?
 
-The choice of [centered or non-centered parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html#hierarchical-models-and-the-non-centered-parameterization)
-depends partly on how much the data tell us about each group effect
-[@betancourt2015hierarchical; @stanEfficiency]. A centered form tends to work
-well when the per-group likelihood scale $\sigma_j$ is small relative to
-the population scale $\tau$. A non-centered form often helps with weak
-per-group likelihoods, where the posterior narrows sharply as $\tau$
-approaches zero. Eight schools has relatively weak group likelihoods:
-$\sigma_j$ ranges from 9 to 18, while the prior puts substantial mass on
-single-digit values of $\tau$. Compare divergences and effective sample
-sizes under both parameterizations for the data you use.
+The better [parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html#hierarchical-models-and-the-non-centered-parameterization) depends on how informative each group's likelihood is [@betancourt2015hierarchical; @stanEfficiency]. The centered form tends to work when $\sigma_j$ is small relative to $\tau$, and the non-centered form when the group likelihoods are weak and the posterior narrows sharply as $\tau$ approaches zero. In eight schools $\sigma_j$ ranges from 9 to 18, while the prior puts substantial mass on values of $\tau$ below 10, so the group likelihoods are weak. Compare divergences and effective sample sizes under both forms on the data at hand.
 
-### Init strategy and mass matrix
+### Initialization and mass matrix
 
-`init_strategy="prior"` draws the chain's initial state from the model prior. The other shipped options are `"uniform"` (uniform on the unconstrained space) and `"value"` (you supply a dict). `"prior"` is the safe default: it starts the chain in regions the prior places mass on.
+`init_strategy` takes three values. `"prior"` (the default) starts each chain at a small random point near the origin of the unconstrained space, that is, $0.1\,z$ with $z$ standard Normal. `"zero"` starts at the origin, and `"guide"` draws the starting point from a fitted guide passed to `MCMC.run`.
 
-`NUTSKernel(mass_matrix="diagonal")` adapts a diagonal mass matrix during warmup, which works for most hierarchical models. `"dense"` adapts a full matrix and is worth a try when latents are strongly correlated, at quadratic memory cost. `"identity"` skips adaptation entirely and only makes sense for already-well-scaled models.
+The mass matrix is the metric that HMC adapts during warmup to rescale the latent coordinates [@neal2011mcmc]. `NUTSKernel(mass_matrix="diagonal")`, the default, adapts one variance for each coordinate. `"dense"` adapts a full covariance, which can help when latent variables are strongly correlated, at memory quadratic in their number. `"identity"` does not adapt.
 
 ## Posterior predictive
 
-[`Predictive`](../../api/inference/predictive.md) accepts either a [`Guide`](../../api/inference/guide.md) or an `MCMCResult`:
+[`Predictive`](../../api/inference/predictive.md) accepts an `MCMCResult` as well as a [`Guide`](../../api/inference/guide.md):
 
 ```python
 from quivers.inference import Predictive
@@ -189,27 +153,12 @@ print("predictive school 1:", y_hat[..., 0].mean().item(),
       "+/-", y_hat[..., 0].std().item())
 ```
 
-## What you've seen
-
-- **Plate-draws.** `v : G <- F(...)` declares one draw per index of object `G`, producing a vector-valued latent.
-- **Non-centered parameterization.** Draw a standard Normal variable and multiply it by the group scale; the model below writes these as separate steps.
-- **Diagnostics on `MCMCResult`.** R-hat, ESS, and divergences are available as fields for inspecting the fit.
-
 ## Try this
 
-- Run `AutoMultivariateNormal` on the centered parameterization. It can sometimes recover the funnel where mean-field can't.
-- Change `target_accept` from 0.95 to 0.8 and watch divergences appear. The trade-off is step size vs trajectory length.
-- Add a per-school covariate $x_j$ and lift the model to a varying-intercepts-and-slopes regression.
+- Fit the centered form with [`AutoMultivariateNormalGuide`](../../api/inference/guide.md), whose full covariance can represent part of the funnel's correlation.
+- Lower `target_accept` from 0.95 to 0.8 with longer warmup, and count divergences. A lower target gives a larger step size.
+- Add a covariate $x_j$ for each school and give each school its own intercept and slope.
 
 ## Next
 
-[Chapter 4](04-marginalize.md) introduces the `marginalize` block, which gives
-discrete latents and mixtures a typed scope.
-
-## Sources and further reading
-
-- *Estimation in Parallel Randomized Experiments* [@rubin1981parallel].
-- *Rank-normalization, folding, and localization: An improved R-hat for assessing convergence of MCMC* [@vehtari2021rhat].
-- *Hamiltonian Monte Carlo for Hierarchical Models* [@betancourt2015hierarchical].
-- *A General Framework for the Parametrization of Hierarchical Models* [@papaspiliopoulos2007parametrization].
-- *Slice sampling* [@neal2003slice].
+[Chapter 4](04-marginalize.md) sums discrete latent variables out of mixtures with the `marginalize` block.
