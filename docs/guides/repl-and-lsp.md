@@ -77,9 +77,9 @@ qvr repl --help                              # confirm the TUI is reachable
 | `qvr repl --plain` | Force the single-line prompt_toolkit frontend |
 | `qvr repl FILE.qvr` | Load FILE on startup, then drop to the prompt |
 | `qvr run FILE.qvr [NAME [JSON ...]]` | Execute one entry point (a `define` computation or a `program`), or list them when no name is given |
-| `qvr lsp` / `qvr-lsp` | Run the language server over stdio, for an editor's configuration; add `--target TARGET` to report what that transpile target cannot express |
+| `qvr lsp` / `qvr-lsp` | Run the language server over stdio, for an editor's configuration, with `--target TARGET` to report what that transpile target cannot express |
 | `qvr kernel install --user` / `qvr-kernel install --user` | Register a Jupyter kernelspec named `quivers` |
-| `qvr check FILE...` | Parse and compile files; add `--target TARGET` to report the features that target lacks; exits with a nonzero code on any error |
+| `qvr check FILE...` | Parse and compile files, with `--target TARGET` to report the features that target lacks, and exit with a nonzero code on any error |
 
 ## The REPL
 
@@ -126,8 +126,6 @@ When standard input is a terminal and Textual is installed, the TUI starts, and
 +---------------------------------------------------------+
 |  Footer: visible key bindings                           |
 ```
-
-The watches and diagnostics strips are hidden when empty.
 
 ### Status bar
 
@@ -189,7 +187,7 @@ The input pane is a multi-line `TextArea` with three additions:
    closer and parks the cursor between them.
 2. **Auto-indent on Enter.** Lines that end with `(`, `[`, `{`, `:`,
    `->`, `=`, or `<-` get one extra indent on the next line so
-   `program` / `deduction` blocks stay aligned without effort.
+   `program` / `deduction` blocks stay aligned.
 3. **Tab completion** (described below).
 
 The evaluation key ([Key bindings](#key-bindings)) evaluates the buffer and clears it
@@ -208,21 +206,21 @@ in full or with the short form in the second column.
 | `:kind T` | `:k` | Resolve a type-level name or expression (`object X : FinSet 3`, `FinSet 3 :: FinSet 3`) |
 | `:transpile TARGET` |  | Emit the loaded module for `stan`, `numpyro`, `pyro`, `pymc`, `edward2`, `turing`, `gen`, `church`, `webppl`, `bugs`, or `jags` |
 | `:runtime [PROVIDER\|FILE.json]` |  | Show the current runtime, attach a registered provider, or load an explicit provider configuration |
-| `:run [NAME [JSON ...] [--data NAME=JSON] [--site NAME=JSON] [--static NAME=TERM] [--fuel STEPS] [--seed N]]` |  | Execute an entry point, a `define` computation or a `program`, with checked arguments; alone, list the entry points |
+| `:run [NAME [JSON ...] [--data NAME=JSON] [--site NAME=JSON] [--static NAME=TERM] [--fuel STEPS] [--seed N]]` |  | Execute an entry point (a `define` computation or a `program`) with checked arguments, or list the entry points when no name is given |
 | `:detach` |  | Detach every runtime provider from the session |
 | `:info NAME` | `:i` | Show NAME's declaration verbatim from the source, plus its location and doc comment. Pass `--python` for the didactic AST `repr()` instead |
 | `:doc NAME` |  | Render only the doc comment(s) for NAME |
 | `:browse [PATH]` | `:b` | List every binding, optionally filtered by a top-level namespace (`objects`/`spaces`/`morphisms`/`rules`/...) or by a `::`-separated scope path (`lda`, `lda::z`, `CCG::fwd_app`). Paths show that binding's inner scope. |
 | `:plate PROGRAM` | `:p` | Render PROGRAM's plate diagram. Default is a Rich table; flags `--mermaid` / `--dot` / `--tikz` / `--daft` emit alternative formats; `--open` renders to PNG via daft or graphviz and opens with the system viewer. |
 | `:graph PROGRAM` | `:g` | Vertical view of the steps of PROGRAM (one row per sample / observe / let / marginalize / return step with its dependency parents). Same `--mermaid` / `--dot` / `--open` flags as `:plate`. |
-| `:where NAME` |  | List every scope path whose final segment is NAME (top-level and nested). Useful for finding every site a binding is referenced. |
+| `:where NAME` |  | List every scope path whose final segment is NAME (top-level and nested) |
 | `:effects PROGRAM` |  | Compare PROGRAM's declared `[effects=[...]]` set against the effect set the compiler infers from the body. |
 | `:shape PROGRAM` |  | Pretty-print PROGRAM's `ChainShape`: each step's depth, kind, intermediate axis size, and source location. |
 | `:dump NAME [--json]` |  | Pretty-print NAME's AST node (`--json` for didactic's `model_dump_json`) |
 | `:edit NAME` |  | Open `$EDITOR` on NAME's source, splice the edited text back into the module, recompile |
 | `:trace EXPR` |  | Step through elaboration of a morphism expression, surfacing each intermediate domain/codomain |
 | `:save [FILE]` | `:s` | Write the live module to FILE (or back to the loaded path) via [`module_to_source`](../api/dsl/emit.md) |
-| `:watch EXPR` | `:w` | Pin EXPR for re-eval on every recompile; result appears in the Watches strip |
+| `:watch EXPR` | `:w` | Pin EXPR for evaluation after every recompile, with the result in the Watches strip |
 | `:unwatch [EXPR]` |  | Remove one watch, or clear all when no argument is given |
 | `:set k=v` |  | Toggle session options (`highlight`, `unicode`, `show_axes`, `paranoid`, `autoload_on_save`, `theme`, `target`) |
 | `:help [CMD]` | `:h` | Without arg: full command list. With one: detailed help for CMD |
@@ -496,7 +494,7 @@ plates:
 
 | Flag | Output |
 | --- | --- |
-| (default) | Rich table in the TUI; plain ASCII in `--plain` mode |
+| (default) | Rich table in the TUI, plain ASCII in `--plain` mode |
 | `--mermaid` | Mermaid `graph TD` source. Paste into mermaid.live or a markdown file |
 | `--dot` | Graphviz DOT source. Pipe through `dot -Tpng > plate.png` |
 | `--tikz` | LaTeX TikZ + `tikz-network` snippet. Drop into a LaTeX document |
@@ -537,8 +535,7 @@ Same `--mermaid` / `--dot` / `--open` flags as `:plate`.
 #### `:where NAME`
 
 List every scope path in the loaded module whose final segment
-is `NAME`, sorted by depth (top-level first). Useful for finding
-every site a binding is referenced.
+is `NAME`, sorted by depth (top-level first).
 
 ```
 > :where theta
@@ -609,8 +606,7 @@ random.sample[a : Type] : Site[a] * Sampleable[a] -> a
 #### `:shape PROGRAM`
 
 Pretty-print PROGRAM's `ChainShape`: each step's depth, kind,
-intermediate axis size, source location. Useful for auditing
-chain depth before fitting.
+intermediate axis size, and source location.
 
 ```
 > :shape lda
@@ -652,7 +648,7 @@ parse error appears in the diagnostics strip.
 
 Step through elaboration of `EXPR` as a morphism expression. For
 each intermediate sub-expression, shows the inferred
-domain / codomain. Useful for understanding why a composition
+domain and codomain, which locates the step at which a composition
 fails to type-check.
 
 ```
@@ -698,7 +694,7 @@ watches (when called with no argument).
 
 #### `:set KEY=VALUE`
 
-Toggle session options. The options table:
+Toggle session options:
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -707,8 +703,8 @@ Toggle session options. The options table:
 | `show_axes` | `true` | When printing morphisms, annotate each axis with its name |
 | `paranoid` | `false` | Re-run constraint checks after every recompile |
 | `autoload_on_save` | `true` | Re-load the file when its mtime advances |
-| `theme` | `ansi_dark` | Rich/Pygments syntax theme; see the [Themes](#themes) section below for the full list |
-| `target` | (none) | A transpile target whose capability diagnostics `:load` and `:reload` report beside the module's own, as `qvr check --target` does; setting it reloads the file, and `qvr repl --target TARGET` sets it at startup |
+| `theme` | `ansi_dark` | Rich/Pygments syntax theme ([Themes](#themes)) |
+| `target` | (none) | A transpile target whose capability diagnostics `:load` and `:reload` report beside the module's own, as `qvr check --target` does. Setting it reloads the file, and `qvr repl --target TARGET` sets it at startup |
 
 ```
 > :set show_axes=true
@@ -757,7 +753,7 @@ What each container kind exposes as named children:
 
 | Container | Children |
 |---|---|
-| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return); every program is a scope, with or without typed parameters |
+| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return), and every program is a scope, with or without typed parameters |
 | `marginalize` | the same kinds of program step, nested inside the marginalize block |
 | `deduction` | rules + atoms + lexicon entries |
 | `signature` | sorts + constructors + binders + vertex_kinds + edge_kinds |
@@ -776,8 +772,7 @@ prefix.
 
 ### Program exploration
 
-Five commands work together for understanding a program's
-structure:
+Five commands report a program's structure:
 
 * `:graph PROGRAM`, vertical view of the steps (one row per program
   step with its dependency parents). The TUI default, with
@@ -785,7 +780,7 @@ structure:
 * `:plate PROGRAM`, plate-notation diagram of the program's
   random variables. Default is a Rich table with one row per
   variable + the plates it inhabits + its dependency parents. Flags
-  `--mermaid`, `--dot`, `--tikz`, `--daft` emit alternate sources;
+  `--mermaid`, `--dot`, `--tikz`, `--daft` emit alternate sources, and
   `--open` renders to PNG via daft or graphviz and launches the
   system viewer.
 * `:where NAME`, every scope path that references NAME (including
@@ -794,8 +789,7 @@ structure:
   the compiler infers from the body. Catches `[effects=[Pure]]`
   programs that accidentally contain a sample.
 * `:shape PROGRAM`, the program's `ChainShape`: step kind, chain
-  depth, intermediate axis size, source location. Useful for
-  auditing chain depth before fitting.
+  depth, intermediate axis size, source location.
 
 ### Key bindings
 
@@ -815,7 +809,7 @@ configuring the terminal.
 | `Ctrl-R` | Reload the loaded file |
 | `Ctrl-Q` | Quit |
 | `F1` | Show the meta-command help in the eval log |
-| `Ctrl-Enter`, `Ctrl-J` | Evaluate (hidden fallback; only fires in terminals that forward Ctrl-Enter, like Wezterm/Kitty/Windows Terminal/iTerm2 with a CSI-u keymap) |
+| `Ctrl-Enter`, `Ctrl-J` | Evaluate (hidden fallback, which fires only in terminals that forward Ctrl-Enter, like Wezterm/Kitty/Windows Terminal/iTerm2 with a CSI-u keymap) |
 
 Inside the TextArea, all of Textual's emacs-style editing bindings
 remain available: `Ctrl-A`/`Ctrl-E` line nav, `Ctrl-W` delete word
@@ -828,7 +822,7 @@ otherwise a TextArea action.
 > and `F4` by Mission Control and Launchpad, `F11` by Show Desktop.
 > `F8` is the only function key macOS does not already claim by
 > default. Enable "Use F1, F2, etc. keys as standard function keys"
-> in System Settings → Keyboard if you want to use F-keys without
+> in System Settings → Keyboard to use the function keys without
 > holding Fn.
 
 > **Ctrl-Enter, Alt-Enter, Cmd-Enter.** These never reach the
@@ -925,8 +919,8 @@ The strip is hidden when there are no diagnostics.
 
 Two frontends respond to clicks:
 
-- **Identifiers in rendered output.** Clicking a type-, function-,
-  or identifier colored by its namespace fires `:info NAME` in the eval
+- **Identifiers in rendered output.** Clicking an identifier colored as a
+  type, a function, or a namespace fires `:info NAME` in the eval
   log. Works on any text the renderer painted with one of those
   semantic colors: names the environment knows, types the grammar classifies,
   built-in functions, algebras.
@@ -938,14 +932,14 @@ Two frontends respond to clicks:
 ### Themes
 
 `:set theme=NAME` controls the Rich syntax theme used when bodies
-are rendered through `rich.syntax.Syntax`. Useful values:
+are rendered through `rich.syntax.Syntax`. Its values include:
 
 - `ansi_dark` (default), `ansi_light`
 - `monokai`, `dracula`, `solarized-dark`, `solarized-light`
 - `nord`, `gruvbox-dark`, `github-dark`
-- any other [Pygments style](https://pygments.org/styles/) shipped with your install
+- any other installed [Pygments style](https://pygments.org/styles/)
 
-The Textual app itself follows your terminal's color scheme, and the
+The Textual app itself follows the terminal's color scheme, and the
 theme option only affects fenced QVR / JSON blocks in `:info` and
 `:dump` output.
 
@@ -982,7 +976,7 @@ line, on standard input.
 
 `qvr-kernel install --user` registers a `quivers` kernelspec. After
 that, every Jupyter frontend (Notebook, JupyterLab, VS Code
-notebooks, `jupyter console`) sees QVR as a first-class language.
+notebooks, `jupyter console`) runs QVR cells.
 
 ```bash
 qvr-kernel install --user
@@ -1059,7 +1053,7 @@ Settings:
 | `qvr.lsp.enabled` | `true` | Master toggle |
 | `qvr.lsp.path` | `qvr-lsp` | Override the executable path |
 | `qvr.lsp.args` | `[]` | Extra CLI arguments |
-| `qvr.transpileTarget` | `""` | A transpile target whose limits the server reports as diagnostics; an empty string turns them off |
+| `qvr.transpileTarget` | `""` | A transpile target whose limits the server reports as diagnostics, or an empty string to turn them off |
 
 To build the extension from source and install it:
 
@@ -1082,8 +1076,8 @@ mkdir -p ~/.config/zed/extensions
 ln -s "$PWD/editors/zed-extension-qvr" ~/.config/zed/extensions/qvr
 ```
 
-Reload extensions from the command palette. Zed spawns `qvr-lsp` on
-`$PATH` automatically when you open a `.qvr` file.
+Reload extensions from the command palette. Zed starts `qvr-lsp` from
+`$PATH` when a `.qvr` file is opened.
 
 ### Neovim
 
@@ -1107,14 +1101,14 @@ Every capability advertised by `qvr-lsp`:
 | LSP method | What it returns |
 | --- | --- |
 | `textDocument/publishDiagnostics` | Parser, constraint-solver, compiler, and QIEC diagnostics, and the selected target's limits, with source ranges |
-| `textDocument/hover` | The declaration and inferred kind or type as fenced `qvr` blocks, with the didactic AST `repr()` beneath a collapsed `<details>`; nested constructors and operations are addressable symbols. At a call site, a **Call** pane first shows the signature the call instantiates its callee at (`identity[Int](value : Int) : Int !{}` for `identity[Int](7)`); a computation adds an **Inferred row** pane with the row its body performs once every call is expanded to its callee's signature; the operation of a `perform instance.op(...)` request shows an **Operation** pane with the instance's instantiated signature above the interface's own |
+| `textDocument/hover` | The declaration and inferred kind or type as fenced `qvr` blocks, with the didactic AST `repr()` beneath a collapsed `<details>`. Nested constructors and operations are addressable symbols. At a call site, a **Call** pane first shows the signature the call instantiates its callee at (`identity[Int](value : Int) : Int !{}` for `identity[Int](7)`), a computation adds an **Inferred row** pane with the row its body performs once every call is expanded to its callee's signature, and the operation of a `perform instance.op(...)` request shows an **Operation** pane with the instance's instantiated signature above the interface's own |
 | `textDocument/definition` | Jump to the originating declaration |
 | `textDocument/references` | Every occurrence that resolves to the selected declaration: a computation's call sites, an operation's requests and clauses, a binder's uses inside its scope |
-| `textDocument/prepareRename` / `textDocument/rename` | Rename a declaration the document makes (a computation, an operation, a handler, an instance, or a lexical binder) at every reference; a prelude name or a keyword is refused |
-| `textDocument/documentSymbol` | All top-level declarations plus their nested symbols: a computation's parameters, locals, scoped instances, branch binders, and call sites (a recursive call marked as such); a handler's clauses, each with its binders and calls; a program's steps, a call step detailed by its callee, a marginalize block's scope nested beneath it |
+| `textDocument/prepareRename` / `textDocument/rename` | Rename a declaration the document makes (a computation, an operation, a handler, an instance, or a lexical binder) at every reference. A prelude name or a keyword is refused |
+| `textDocument/documentSymbol` | All top-level declarations plus their nested symbols: a computation's parameters, locals, scoped instances, branch binders, and call sites (a recursive call marked as such), a handler's clauses, each with its binders and calls, and a program's steps, a call step detailed by its callee, a marginalize block's scope nested beneath it |
 | `textDocument/completion` | Env names, members and qualified instance operations (the prelude's `random.sample` included), grammar keywords, builtins, and paths, from the same source as the REPL completer |
 | `textDocument/semanticTokens/full` | Semantic tokens, informed by the environment and classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key color the same everywhere |
-| `textDocument/formatting` | Re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md); a document whose checked module fails to lower is left unformatted |
+| `textDocument/formatting` | Re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md). A document whose checked module fails to lower is left unformatted |
 | `textDocument/didOpen` / `didChange` / `didSave` / `didClose` | Incremental sync, full re-analysis per change |
 | `workspace/didChangeConfiguration` | Update the selected transpile target and republish diagnostics for every open document, re-running only the capability pass over the already checked module |
 
@@ -1185,6 +1179,3 @@ Each frontend is a thin adapter:
 - [`quivers.cli.repl_prompt`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_prompt.py), prompt_toolkit single-line frontend.
 - [`quivers.kernel.quivers_kernel`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/kernel/quivers_kernel.py), ipykernel adapter.
 - [`quivers.lsp.server`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/lsp/server.py), pygls server.
-
-The shared classifier gives a name such as `Source` the same category and color in
-every frontend.

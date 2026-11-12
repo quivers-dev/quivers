@@ -4,7 +4,8 @@ A morphism's scores live in one [`Algebra`](core.md#algebras-enrichment-algebras
 Two mechanisms move between algebras or change how scores combine. A *transformation*
 rewrites a morphism's scores into another `Algebra`, and a *composition rule* fixes
 the operations $\otimes$ and $\bigoplus$ that [`>>`](morphisms.md#composition-the-operator)
-uses. The second half of the page covers contractions of more than two morphisms.
+uses. A [contraction](#operadic-contractions) combines more than two morphisms under the composition
+rule.
 
 ## First-class transformations
 

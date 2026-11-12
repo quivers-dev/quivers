@@ -14,8 +14,8 @@ such meanings with the functor, applicative, and monad interfaces of functional
 programming [@bumford2026effect]. quivers provides these interfaces as Python
 abstract classes, a function that lifts grammar rules through them, and a free-monad
 construction for effects given by a signature. QVR programs declare effects and
-handlers in the [Quivers Indexed Effect Core](#qiec-effect-interfaces-and-rows),
-described at the end of the page. [Denotational Semantics](../semantics/effects.md)
+handlers in the [Quivers Indexed Effect Core](#qiec-effect-interfaces-and-rows)
+(QIEC). [Denotational Semantics](../semantics/effects.md)
 gives the denotations.
 
 ## Typeclass hierarchy
