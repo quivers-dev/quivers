@@ -122,7 +122,7 @@ def test_grouped_categorical_logits_use_log_softmax() -> None:
 
 
 def test_missing_via_index_raises_clear_error() -> None:
-    """A ``via`` fibration index is free host data: it must be
+    """A ``via`` index map is free host data: it must be
     supplied through the observations dict at runtime, exactly like
     a covariate. When it is neither a bound program variable nor
     supplied, ``log_joint`` fails with a clear message that names
@@ -136,7 +136,7 @@ def test_missing_via_index_raises_clear_error() -> None:
         "_grouped_ll_cls_0": torch.zeros(8, 2),
         # ``idx`` intentionally omitted.
     }
-    with pytest.raises(CompileError, match=r"via`` fibration index"):
+    with pytest.raises(CompileError, match=r"via`` index map"):
         model.log_joint(torch.zeros(1, 1), obs)
     with pytest.raises(CompileError, match="supplied at runtime"):
         model.log_joint(torch.zeros(1, 1), obs)
@@ -374,7 +374,7 @@ def test_two_task_mixture_recovers_joint_proportions() -> None:
     }
     # `probs` is the latent the two heterogeneous observe blocks jointly
     # identify, so it is inferred rather than clamped; the guide carries
-    # its variational parameters. The fibration indices and the grouped
+    # its variational parameters. The index map indices and the grouped
     # per-axis log-likelihoods are data.
     guide = AutoNormalGuide(
         model,

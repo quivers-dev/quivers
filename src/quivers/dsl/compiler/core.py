@@ -482,7 +482,7 @@ class Compiler(
         """Give each compiled program the checked types of its host data.
 
         A program's checked entry types every free name its steps read
-        (its ``data`` parameters) and every group map (its ``fibration``
+        (its ``data`` parameters) and every group map (its ``index map``
         parameters); the compiled program refuses a run whose supplied
         data do not inhabit those types, so it computes only the model
         the checked module describes. An input that fills a parameter of
@@ -505,7 +505,7 @@ class Compiler(
             target.host_data_types = {
                 parameter.name: parameter.type
                 for parameter in entry.parameters
-                if parameter.role in ("data", "fibration")
+                if parameter.role in ("data", "index_map")
             }
             target.host_data_shared = frozenset(
                 parameter.name for parameter in entry.parameters if parameter.per_row

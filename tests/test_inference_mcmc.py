@@ -1034,12 +1034,12 @@ def test_guide_initialisation_reads_trace_side_guide_samples() -> None:
             }
 
     model = _vector_and_scalar_program()
-    registry = LatentRegistry.from_model(model, set())
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
     position = driver._initial_position(
-        registry,
+        setup,
         _FixedGuide(),  # type: ignore[arg-type]
         torch.Generator().manual_seed(0),
     )
@@ -1053,13 +1053,13 @@ def test_guide_initialisation_rejects_a_guide_without_the_batch_axis() -> None:
             return {"v": torch.zeros(3), "s": torch.zeros(())}
 
     model = _vector_and_scalar_program()
-    registry = LatentRegistry.from_model(model, set())
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
     with pytest.raises(ValueError, match="expected the trace-side shape"):
         driver._initial_position(
-            registry,
+            setup,
             _UnbatchedGuide(),  # type: ignore[arg-type]
             torch.Generator().manual_seed(0),
         )

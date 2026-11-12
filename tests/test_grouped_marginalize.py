@@ -6,7 +6,7 @@ Covers (i) the runtime primitive
 via idx in { ... }`` that compiles to it.
 
 The runtime primitive realises the right Kan extension along a finite
-fibration ``r : Resp → G`` in :math:`\\mathbf{Kern}`, followed by
+index map ``r : Resp → G`` in :math:`\\mathbf{Kern}`, followed by
 log-sum-exp over the class axis under a categorical prior, summed
 over groups. Concretely::
 
@@ -70,8 +70,8 @@ class TestMarginalizeGroupedPrimitive:
         expected = (log_prior + grouped).sum()
         assert torch.allclose(out, expected, atol=1e-10)
 
-    def test_identity_fibration_recovers_ungrouped(self):
-        """Identity fibration (one group per row) reduces to the per-row
+    def test_identity_index_map_recovers_ungrouped(self):
+        """Identity index map (one group per row) reduces to the per-row
         mixture sum: each row is its own group, so the per-group
         accumulator equals the per-row log-likelihood."""
         n_rows = 8
@@ -240,7 +240,7 @@ class TestGroupedMarginalizeSurface:
 
         export demo
         """
-        with pytest.raises(CompileError, match="must carry its own `via"):
+        with pytest.raises(CompileError, match="must carry its own via option"):
             _compile(src)
 
     def test_grouped_requires_class_annotation(self):

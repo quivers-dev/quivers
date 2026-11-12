@@ -1,9 +1,9 @@
-"""Numeric tier for the `via` fibration push-forward.
+"""Numeric tier for the `via` index map push-forward.
 
 The companion `test_marginalize_numeric` file exercises
 [`IRMarginalize`][quivers.transpile.ir.IRMarginalize] with an
-identity fibration (`|G| = N`, each observation in its own group).
-This file specifically targets the non-identity case: a fibration
+identity index map (`|G| = N`, each observation in its own group).
+This file specifically targets the non-identity case: an index map
 :math:`g \\colon \\text{Obs} \\to \\text{Group}` re-indexes
 observations into a strictly smaller grouping plate, and the
 marginalize block's per-group accumulator must scatter-sum each
@@ -82,7 +82,7 @@ export subject_mix
 """
 """Subject-level 2-component Normal mixture.
 
-Twelve observations partitioned by a non-trivial fibration `g :
+Twelve observations partitioned by a non-trivial index map `g :
 Obs -> Group` into three groups of four. Each group has its own
 mixture-class indicator `cls_g` (marginalised analytically); all
 observations in group `g` share that group's class. The Stan
@@ -180,9 +180,9 @@ _ANALYTIC: dict[str, _AnalyticFn] = {
 
 
 def _subject_mix_points() -> list[Point]:
-    """Six-point parameter grid with a fixed non-identity fibration.
+    """Six-point parameter grid with a fixed non-identity index map.
 
-    The fibration assigns four observations to each of three groups
+    The index map assigns four observations to each of three groups
     (`g = [0]*4 + [1]*4 + [2]*4`), so |Obs| = 12 strictly exceeds
     |Group| = 3 and the per-group scatter-add path is exercised in
     full. The within-group observation patterns are designed so the
@@ -255,7 +255,7 @@ def _coerce(
     Scalars land as 0-D tensors (so the
     `factor c : Cls in mu_low + c * mu_diff` body does not pick up
     a phantom trailing axis when `mu_low` / `mu_diff` are scalar);
-    lists land as 1-D tensors. Integer fibrations are coerced to
+    lists land as 1-D tensors. Integer index maps are coerced to
     `torch.long` so
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]'s
     `index_add` accepts the group-index argument.
@@ -295,7 +295,7 @@ def _qvr_log_densities(
             raise RuntimeError(
                 f"qvr trace on {fixture_name!r}: lowered morphism is "
                 "None (program likely declares scalar inputs; the "
-                "via-fibration numeric tier targets input-free fixtures)"
+                "via-index-map numeric tier targets input-free fixtures)"
             )
         log_densities: list[float] = []
         for pt in points:
@@ -339,15 +339,15 @@ def _target_log_densities(
 
 
 @pytest.mark.parametrize("fixture_name", _FIXTURES)
-def test_via_fibration_three_way_agreement(
+def test_via_index_map_three_way_agreement(
     fixture_name: str,
     scratch: pathlib.Path,
 ) -> None:
     """QVR, Stan, and closed-form analytic agree on the joint
-    log-density up to a constant for a non-identity `via` fibration.
+    log-density up to a constant for a non-identity `via` index map.
 
     A nonzero spread on (QVR vs analytic) isolates QVR's
-    fibration push-forward (the `index_add` lowering of
+    index map push-forward (the `index_add` lowering of
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]);
     a nonzero spread on (Stan vs analytic) isolates the Stan
     renderer's `lps_cls[g[n_Obs], k] += <obs lpdf>` emit; a nonzero
@@ -397,30 +397,30 @@ def test_via_fibration_three_way_agreement(
 
     if not any_target_ran:
         pytest.xfail(
-            f"no fibration-capable backend image available for "
+            f"no index-map-capable backend image available for "
             f"{fixture_name!r}; QVR vs analytic still passed"
         )
 
 
 # ---------------------------------------------------------------------------
 # Structural witness: the transpiled Stan source must scatter-add the
-# per-row per-class log-likelihood through the supplied fibration.
-# Without this, a renderer that silently dropped the fibration and
+# per-row per-class log-likelihood through the supplied index map.
+# Without this, a renderer that silently dropped the index map and
 # scored each observation against a *fixed* group could still pass
 # the numeric leg by coincidence for symmetric per-group data.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("fixture_name", _FIXTURES)
-def test_stan_emit_scatter_through_fibration(fixture_name: str) -> None:
+def test_stan_emit_scatter_through_index_map(fixture_name: str) -> None:
     """The Stan emit indexes `lps_cls` through the host-supplied
-    fibration variable, not through the row-plate index.
+    index map variable, not through the row-plate index.
 
     Concretely the emit must contain a per-row update of the form
     `lps_cls[g[n_Obs], k] += <obs lpdf>(y[n_Obs] | mu[k], ...)`,
-    where the leading index is the *fibration* variable (`g`) and
+    where the leading index is the *index map* variable (`g`) and
     not the row index (`n_Obs`) itself. A renderer that dropped the
-    fibration and emitted `lps_cls[n_Obs, k] += ...` would silently
+    index map and emitted `lps_cls[n_Obs, k] += ...` would silently
     convert the |Group|-shaped per-group accumulator into a
     |Obs|-shaped per-row one and yield a different marginal joint.
     """
@@ -431,7 +431,7 @@ def test_stan_emit_scatter_through_fibration(fixture_name: str) -> None:
     if needle not in emit:
         raise AssertionError(
             f"stan emit for {fixture_name!r} does not scatter through "
-            f"the `g` fibration (expected substring {needle!r}):\n{emit}"
+            f"the `g` index map (expected substring {needle!r}):\n{emit}"
         )
     # And the bound emit must still close with the per-group reduction.
     if "log_sum_exp(lps_cls[" not in emit:

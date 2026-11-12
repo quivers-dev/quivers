@@ -201,7 +201,7 @@ var _qvr_take_last = function(x, k) {
 var _qvr_gather_log = function(rows, idx) {
   // Gather one row of `rows` per entry of `idx` and take its
   // elementwise logarithm. A grouped `marginalize` reads its per-row
-  // prior through a fibration, so the weights are the grouping
+  // prior through an index map, so the weights are the grouping
   // plate's rows selected once per observation. JavaScript indexes an
   // array with one integer and yields `undefined` for an array of
   // them, so the gather is a map rather than a subscript.
@@ -209,7 +209,7 @@ var _qvr_gather_log = function(rows, idx) {
 };
 var _qvr_group_sums = function(rows, via, extent) {
   // Sum the per-row entries of `rows` within each of the `extent`
-  // groups the fibration `via` sends the rows to. A grouped
+  // groups the index map `via` sends the rows to. A grouped
   // `marginalize` keys its accumulator by group, so one atom's
   // per-row log-likelihoods are pooled per group before the
   // reduction over the atoms runs.
@@ -547,6 +547,28 @@ var _qvr_digamma_scalar = function(x) {
 };
 var _qvr_digamma = function(x) {
   return Array.isArray(x) ? map(_qvr_digamma, x) : _qvr_digamma_scalar(x);
+};
+
+// Bernoulli given by its log-odds `l`. Each outcome scores by the
+// log-sigmoid of the signed log-odds, log p(1) = log sigmoid(l) and
+// log p(0) = log sigmoid(-l), written min(v, 0) - log1p(exp(-|v|)) so
+// it stays exact where the probability is within an ulp of zero or one
+// (`_qvr_log_sigmoid` above).
+var BernoulliLogit = function(params) {
+  var l = params.logits;
+  return {
+    qvr: true,
+    sample: function() {
+      return Math.random() < 1 / (1 + Math.exp(-l));
+    },
+    score: function(x) {
+      var one = x === true || x === 1;
+      return one ? _qvr_log_sigmoid(l) : _qvr_log_sigmoid(-l);
+    },
+    support: function() {
+      return [false, true];
+    }
+  };
 };
 
 var Logistic = function(params) {

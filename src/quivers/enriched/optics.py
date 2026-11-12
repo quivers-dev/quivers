@@ -18,6 +18,7 @@ This module provides concrete optic types:
     ├── Lens     — get/put on product structures
     ├── Prism    — match/build on coproduct structures
     ├── Adapter  — invertible optics (isomorphisms)
+    ├── ComposedOptic — the composite of two optics
     └── Grate    — closed-structure optics
 
     compose_optics() — compose two optics sequentially
@@ -42,6 +43,7 @@ import torch
 from quivers.core.objects import SetObject, ProductSet, CoproductSet
 from quivers.core.morphisms import Morphism, observed, identity
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.enriched._lattice import require_lattice
 from quivers.enriched.profunctors import Profunctor
 
 
@@ -152,7 +154,7 @@ class Optic(ABC):
             contra=self._source,
             co=self._target,
             tensor=tensor,
-            algebra=self._algebra,
+            algebra=require_lattice(self._algebra, "an optic's profunctor"),
         )
 
     def __repr__(self) -> str:
@@ -166,13 +168,23 @@ class Optic(ABC):
 class Lens(Optic):
     """A lens focusing on a component of a product.
 
-    A lens from (S, S) to (A, A) on a ProductSet S = A × C consists of:
+    A lens from (S, S) to (A, A) on a ProductSet S consists of
 
-        get: S → A           (extract the focus)
-        put: A × C → S       (replace the focus, keeping complement)
+        get: S → A           (extract the focus, `forward`)
+        put: S × A → S       (replace the focus, keeping the rest, `put`)
 
-    In the V-enriched setting, get is a projection morphism and put
-    reconstructs the product.
+    satisfying the lens laws GetPut ``put(s, get(s)) = s``, PutGet
+    ``get(put(s, a)) = a`` and PutPut ``put(put(s, a), a') = put(s, a')``
+    [Foster et al. (2007)]. Both maps are functions, so the laws hold
+    under every algebra.
+
+    References
+    ----------
+    Foster, J. N., Greenwald, M. B., Moore, J. T., Pierce, B. C., and
+    Schmitt, A. (2007). Combinators for bidirectional tree
+    transformations: a linguistic approach to the view-update problem.
+    *ACM Transactions on Programming Languages and Systems*, 29(3), 17.
+    [doi:10.1145/1232420.1232424](https://doi.org/10.1145/1232420.1232424)
 
     Parameters
     ----------
@@ -245,16 +257,16 @@ class Lens(Optic):
         return observed(whole, focus, data, algebra=q)
 
     def backward(self) -> Morphism:
-        """put: A → S (embed focus back, averaging over complement).
+        """The converse of get: A → S, relating a to every whole with focus a.
 
-        In the V-enriched setting, the "put" creates a morphism
-        A → S where fixing the focus component and joining over
-        the complement gives a fuzzy relation.
+        This is the dagger (relational converse) of the projection,
+        which the optic composition and the profunctor view use. It is
+        not the lens update; that is `Lens.put`, ``S × A → S``.
 
         Returns
         -------
         ObservedMorphism
-            The embedding morphism.
+            The converse of the projection.
         """
         q = self._algebra
         whole = self._source
@@ -291,14 +303,42 @@ class Lens(Optic):
 
         return observed(focus, whole, data, algebra=q)
 
+    def put(self) -> Morphism:
+        """put: S × A → S, replacing the focus and keeping the rest.
+
+        Returns
+        -------
+        ObservedMorphism
+            The function ``((..., a_old, ...), a) ↦ (..., a, ...)``.
+        """
+        q = self._algebra
+        whole = self._source
+        focus = self._focus_source
+        assert isinstance(whole, ProductSet)
+        offset = sum(c.ndim for c in whole.components[: self._focus_index])
+        domain = ProductSet(components=(whole, focus))
+        data = torch.full((*whole.shape, *focus.shape, *whole.shape), q.zero)
+        for whole_idx in itertools.product(*(range(n) for n in whole.shape)):
+            for focus_idx in itertools.product(*(range(n) for n in focus.shape)):
+                new_idx = (
+                    whole_idx[:offset] + focus_idx + whole_idx[offset + focus.ndim :]
+                )
+                data[whole_idx + focus_idx + new_idx] = q.unit
+        return observed(domain, whole, data, algebra=q)
+
 
 class Prism(Optic):
     """A prism focusing on a component of a coproduct.
 
-    A prism from (S, S) to (A, A) on a CoproductSet S = A + C consists of:
+    A prism from (S, S) to (A, A) on a CoproductSet S = A + C consists of
 
-        match: S → A + C    (attempt to extract the focus)
-        build: A → S         (embed the focus into the whole)
+        match: S → A        (the partial map defined on the A summand)
+        build: A → S        (the injection of the focus)
+
+    With match the converse of build, ``build ; match = id_A`` and
+    ``match ; build`` is the identity on the A summand and empty
+    elsewhere, the relational form of the prism laws: matching a built
+    value returns it, and a successful match rebuilds its input.
 
     Parameters
     ----------
@@ -385,11 +425,11 @@ class Prism(Optic):
 
 
 class Adapter(Optic):
-    """An adapter (isomorphism optic).
+    """An adapter (isomorphism optic) between S and A.
 
-    An adapter between (S, T) and (A, B) consists of an isomorphism
-    pair from: S → A and to: B → T. Every adapter is both a lens
-    and a prism.
+    An adapter consists of mutually inverse morphisms from: S → A and
+    to: A → S. The constructor checks ``from ; to = id_S`` and
+    ``to ; from = id_A`` and refuses a pair that is not an isomorphism.
 
     Parameters
     ----------
@@ -399,6 +439,13 @@ class Adapter(Optic):
         The backward isomorphism B → T.
     algebra : Algebra or None
         The enrichment algebra.
+    atol : float
+        Absolute tolerance of the isomorphism check.
+
+    Raises
+    ------
+    ValueError
+        If the pair is not an isomorphism ``S ≅ A``.
     """
 
     def __init__(
@@ -406,6 +453,7 @@ class Adapter(Optic):
         from_morph: Morphism,
         to_morph: Morphism,
         algebra: Algebra | None = None,
+        atol: float = 1e-5,
     ) -> None:
         super().__init__(
             source=from_morph.domain,
@@ -416,6 +464,10 @@ class Adapter(Optic):
         )
         self._from_morph = from_morph
         self._to_morph = to_morph
+        if not self.verify_isomorphism(atol):
+            raise ValueError(
+                "Adapter: from and to are not mutually inverse morphisms S ≅ A"
+            )
 
     def forward(self) -> Morphism:
         """from: S → A."""
@@ -551,14 +603,54 @@ class Grate(Optic):
         )
 
 
-def compose_optics(outer: Optic, inner: Optic) -> Optic:
+class ComposedOptic(Optic):
+    """The sequential composite of two optics.
+
+    Its ``forward`` is the composite of the outer and inner forward
+    maps and its ``backward`` the composite of the inner and outer
+    backward maps. The composite of two lenses or two prisms need not
+    be an isomorphism, so the composite is not an `Adapter`.
+
+    Parameters
+    ----------
+    outer : Optic
+        The outer optic (S, T) → (M, N).
+    inner : Optic
+        The inner optic (M, N) → (A, B).
+
+    Raises
+    ------
+    TypeError
+        If the outer optic's focus is not the inner optic's whole.
+    """
+
+    def __init__(self, outer: Optic, inner: Optic) -> None:
+        if outer.focus_source != inner.source or outer.focus_target != inner.target:
+            raise TypeError(
+                "compose_optics: the outer optic's focus must be the inner "
+                "optic's whole"
+            )
+        super().__init__(
+            source=outer.source,
+            target=outer.target,
+            focus_source=inner.focus_source,
+            focus_target=inner.focus_target,
+            algebra=outer.algebra,
+        )
+        self._outer = outer
+        self._inner = inner
+
+    def forward(self) -> Morphism:
+        """The composite forward map S → A."""
+        return self._outer.forward() >> self._inner.forward()
+
+    def backward(self) -> Morphism:
+        """The composite backward map B → T."""
+        return self._inner.backward() >> self._outer.backward()
+
+
+def compose_optics(outer: Optic, inner: Optic) -> ComposedOptic:
     """Compose two optics sequentially.
-
-    Given outer: (S, T) → (M, N) and inner: (M, N) → (A, B),
-    produces the composed optic (S, T) → (A, B).
-
-    The composition is returned as an Adapter wrapping the composed
-    forward and backward morphisms.
 
     Parameters
     ----------
@@ -569,17 +661,15 @@ def compose_optics(outer: Optic, inner: Optic) -> Optic:
 
     Returns
     -------
-    Adapter
-        The composed optic.
-    """
-    fwd = outer.forward() >> inner.forward()
-    bwd = inner.backward() >> outer.backward()
+    ComposedOptic
+        The composed optic (S, T) → (A, B).
 
-    return Adapter(
-        from_morph=fwd,
-        to_morph=bwd,
-        algebra=outer.algebra,
-    )
+    Raises
+    ------
+    TypeError
+        If the outer optic's focus is not the inner optic's whole.
+    """
+    return ComposedOptic(outer, inner)
 
 
 __all__ = [
@@ -588,5 +678,6 @@ __all__ = [
     "Prism",
     "Adapter",
     "Grate",
+    "ComposedOptic",
     "compose_optics",
 ]

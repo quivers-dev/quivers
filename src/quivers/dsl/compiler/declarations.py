@@ -19,15 +19,15 @@ import torch
 from quivers.analysis.init_spec import _algebra_init_spec
 from quivers.core.algebras import (
     Algebra,
-    BilinearForm,
+    Magmoid,
     BooleanAlgebra,
     CompositionRule,
     CustomAlgebra,
-    CustomBilinearForm,
+    CustomMagmoid,
     CustomSemigroupoid,
     GodelAlgebra,
-    LukasiewiczAlgebra,
-    ProbabilityAlgebra,
+    StandardMVAlgebra,
+    BoundedSumProductAlgebra,
     ProductFuzzyAlgebra,
     Semigroupoid,
 )
@@ -64,6 +64,7 @@ from quivers.core.objects import (
 from quivers.dsl.ast_nodes import (
     AxisSpec,
     BundleDecl,
+    DiscreteConstructor,
     CategoryDecl,
     CompositionDecl,
     CompositionRuleEntry,
@@ -87,6 +88,7 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
     ObjectProduct,
 )
+from quivers.dsl.emit import _emit_object_expr as emit_object_expr
 from quivers.dsl.compiler._options import (
     check_option_keys,
     find_option,
@@ -372,8 +374,8 @@ def _apply_auto_init(morph, domain, codomain, algebra) -> None:
             ProductFuzzyAlgebra,
             BooleanAlgebra,
             GodelAlgebra,
-            LukasiewiczAlgebra,
-            ProbabilityAlgebra,
+            StandardMVAlgebra,
+            BoundedSumProductAlgebra,
         ),
     )
 
@@ -396,6 +398,29 @@ def _apply_auto_init(morph, domain, codomain, algebra) -> None:
         else:
             mean = _logit(spec.mean) if is_sigmoid_bijected else spec.mean
             raw.data.normal_(mean=mean, std=max(spec.std, 1e-6))
+
+
+def _is_finset_literal(expr: ObjectExpr) -> bool:
+    """Whether an object expression is a finite set given by its size.
+
+    Parameters
+    ----------
+    expr : ObjectExpr
+        The declaration's right-hand side.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``FinSet N`` and a bare size ``N``.
+    """
+    if isinstance(expr, TypeName):
+        return expr.name.isdigit()
+    return (
+        isinstance(expr, DiscreteConstructor)
+        and expr.constructor == "FinSet"
+        and len(expr.args) == 1
+        and expr.args[0].isdigit()
+    )
 
 
 class _DeclarationsMixin:
@@ -441,7 +466,7 @@ class _DeclarationsMixin:
           declared level.
         * non-empty body: ``decl.body`` defines the rule's operations
           inline; the compiler synthesises a ``CustomAlgebra`` /
-          ``CustomSemigroupoid`` / ``CustomBilinearForm`` of the
+          ``CustomSemigroupoid`` / ``CustomMagmoid`` of the
           declared level.
 
         The declaration's only option key is ``level``; the parser
@@ -474,7 +499,7 @@ class _DeclarationsMixin:
         required = {
             "algebra": Algebra,
             "semigroupoid": Semigroupoid,
-            "bilinear_form": BilinearForm,
+            "bilinear_form": Magmoid,
             "rule": CompositionRule,
         }
         required_class = required.get(level, CompositionRule)
@@ -484,8 +509,8 @@ class _DeclarationsMixin:
                 if isinstance(rule, Algebra)
                 else "Semigroupoid"
                 if isinstance(rule, Semigroupoid)
-                else "BilinearForm"
-                if isinstance(rule, BilinearForm)
+                else "Magmoid"
+                if isinstance(rule, Magmoid)
                 else "CompositionRule"
             )
             raise CompileError(
@@ -579,7 +604,7 @@ class _DeclarationsMixin:
                 join=join_wrapped,
                 verify_associative=False,
             )
-        return CustomBilinearForm(
+        return CustomMagmoid(
             name=decl.name,
             tensor_op=tensor_op,
             join=join_wrapped,
@@ -854,6 +879,13 @@ class _DeclarationsMixin:
                 ) from exc
             if isinstance(resolved, ContinuousSpace):
                 self._spaces[name] = resolved
+            elif isinstance(resolved, FinSet) and _is_finset_literal(expr):
+                # A declaration of a finite set by its size introduces a
+                # new object, distinct from every other object of that
+                # size, as `FinSet(name=..., cardinality=...)` does.
+                self._objects[name] = FinSet(
+                    name=name, cardinality=resolved.cardinality
+                )
             else:
                 self._objects[name] = resolved
             return
@@ -1183,9 +1215,13 @@ class _DeclarationsMixin:
         names: list[str],
     ) -> None:
         if decl.init_expr is None and decl.init_family is None:
+            domain_text = emit_object_expr(decl.domain)
             raise CompileError(
-                f"observed morphism {name!r} requires an "
-                f"initializer (e.g. ``~ identity({decl.domain})``)",
+                f"observed morphism {name!r} requires an initializer, as in "
+                f"`morphism {name} : {domain_text} -> "
+                f"{emit_object_expr(decl.codomain)} [role=observed] ~ "
+                f'from_data("{name}")`, or `~ identity({domain_text})` for a '
+                f"morphism from an object to itself",
                 decl.line,
                 decl.col,
             )

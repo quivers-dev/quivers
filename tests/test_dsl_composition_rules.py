@@ -26,7 +26,7 @@ import torch
 
 from quivers.core.algebras import (
     Algebra,
-    BilinearForm,
+    Magmoid,
     CompositionRule,
     Semigroupoid,
 )
@@ -51,10 +51,46 @@ def test_algebra_keyword_resolves_algebra() -> None:
     assert isinstance(m.morphism.algebra, Algebra)
 
 
-def test_semigroupoid_keyword_resolves_material_implication() -> None:
-    """``material_impl`` is a Semigroupoid: associative but no unit."""
+def test_bilinear_form_level_resolves_material_implication() -> None:
+    """``material_impl`` is a magmoid: neither associative nor unital,
+    so it sits at the ``bilinear_form`` level, the DSL's no-law level."""
+    src = """
+    composition material_impl [level=bilinear_form]
+    object A : FinSet 2
+    object B : FinSet 2
+    morphism h : A -> B [role=observed] ~ from_data("H")
+    export h
+    """
+    m = loads(textwrap.dedent(src), data={"H": torch.zeros(2, 2)})
+    assert isinstance(m.morphism.algebra, Magmoid)
+    assert not isinstance(m.morphism.algebra, Algebra)
+
+
+def test_semigroupoid_level_rejects_material_implication() -> None:
+    """Material implication composes non-associatively, so declaring it
+    at the ``semigroupoid`` level is a level mismatch."""
     src = """
     composition material_impl [level=semigroupoid]
+    object A : FinSet 2
+    """
+    with pytest.raises(CompileError, match="not at level 'semigroupoid'"):
+        loads(textwrap.dedent(src))
+
+
+def test_semigroupoid_level_rejects_product_fuzzy() -> None:
+    """The default algebra fails distributivity, so it is not offered
+    at the ``semigroupoid`` level."""
+    src = """
+    composition product_fuzzy [level=semigroupoid]
+    object A : FinSet 2
+    """
+    with pytest.raises(CompileError, match="not at level 'semigroupoid'"):
+        loads(textwrap.dedent(src))
+
+
+def test_semigroupoid_level_accepts_a_semiring() -> None:
+    src = """
+    composition boolean [level=semigroupoid]
     object A : FinSet 2
     object B : FinSet 2
     morphism h : A -> B [role=observed] ~ from_data("H")
@@ -62,7 +98,6 @@ def test_semigroupoid_keyword_resolves_material_implication() -> None:
     """
     m = loads(textwrap.dedent(src), data={"H": torch.zeros(2, 2)})
     assert isinstance(m.morphism.algebra, Semigroupoid)
-    assert not isinstance(m.morphism.algebra, Algebra)
 
 
 def test_algebra_keyword_rejects_semigroupoid() -> None:
@@ -165,7 +200,7 @@ def test_inline_bilinear_form_body() -> None:
     """
     m = loads(textwrap.dedent(src), data={"H": torch.zeros(2, 2)})
     rule = m.morphism.algebra
-    assert isinstance(rule, BilinearForm)
+    assert isinstance(rule, Magmoid)
     assert not isinstance(rule, Semigroupoid)
 
 
@@ -190,7 +225,7 @@ def test_inline_body_duplicate_entry_errors() -> None:
 
 
 _NON_ALGEBRA_HEADER = """
-composition material_impl [level=semigroupoid]
+composition material_impl [level=bilinear_form]
 object A : FinSet 3
 object B : FinSet 3
 morphism f : A -> B [role=latent]
@@ -207,7 +242,7 @@ morphism f : A -> B [role=latent]
         ("cap(A)", "cap"),
     ],
 )
-def test_algebra_only_ops_rejected_under_semigroupoid(
+def test_algebra_only_ops_rejected_under_magmoid(
     expr: str,
     op_name: str,
 ) -> None:
@@ -337,11 +372,11 @@ def test_contraction_with_input_shape_mismatch_errors() -> None:
         loads(textwrap.dedent(src), data={"A1": a1, "A2": a2, "K": k})
 
 
-def test_contraction_with_semigroupoid_rule() -> None:
+def test_contraction_with_magmoid_rule() -> None:
     """A contraction can use any registered rule, including a
-    Semigroupoid such as ``material_impl``."""
+    magmoid such as ``material_impl``."""
     src = """
-    composition material_impl [level=semigroupoid]
+    composition material_impl [level=bilinear_form]
     object A : FinSet 2
     object B : FinSet 2
     object C : FinSet 2

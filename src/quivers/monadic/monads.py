@@ -4,10 +4,8 @@ The `Monad` typeclass itself lives in
 [`quivers.monadic.typeclasses`][quivers.monadic.typeclasses]; this module provides two concrete
 monad instances together with the `KleisliCategory` adapter.
 
-- `FuzzyPowersetMonad` — the powerset monad over an algebra,
-  whose Kleisli category is the V-enriched relation category.
-- `FreeMonoidMonad` — the free monoid monad on a finite alphabet,
-  truncated to a maximum length.
+- `FuzzyPowersetMonad`: the fuzzy powerset monad over an idempotent
+  semiring, whose Kleisli category is the category of V-relations.
 - `KleisliCategory` — wraps any `Monad` instance for
   composition.
 
@@ -22,32 +20,64 @@ from __future__ import annotations
 from quivers.categorical.functors import (
     IDENTITY,
     Functor,
-    FreeMonoidFunctor,
 )
-from quivers.core.morphisms import Morphism, identity, observed
-from quivers.core.objects import FinSet, FreeMonoid, SetObject
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.morphisms import Morphism, identity
+from quivers.core.objects import SetObject
+from quivers.core.algebras import Algebra, IdempotentSemiring
 from quivers.monadic.typeclasses import Monad
 
 
 class FuzzyPowersetMonad(Monad):
-    """The fuzzy powerset monad with a given algebra.
+    """The fuzzy powerset monad for an idempotent semiring ``V``.
 
-    At the set level, ``T(A) = A`` because fuzzy subsets are
-    represented as membership-function tensors, not as elements of a
-    powerset. The unit ``η_A = identity(A)`` and the multiplication
-    ``μ_A = identity(A)``.
+    The ``V``-powerset monad on sets sends ``A`` to ``V^A``, the
+    ``V``-valued fuzzy subsets of ``A``; its Kleisli category is the
+    category ``V``-Rel of ``V``-valued relations, with Kleisli
+    composition the matrix composition ``⋁_b f(a, b) ⊗ g(b, c)`` and
+    Kleisli identities the identity matrices [Hofmann, Seal and Tholen
+    (2014)]. This class works directly in that Kleisli category: an
+    object ``A`` stands for ``A``, a morphism ``A → B`` over ``V``
+    stands for the Kleisli arrow ``A → V^B``, and so ``T(A) = A``,
+    ``fmap(f) = f`` and ``η_A = μ_A = id_A``.
 
-    Kleisli composition is V-enriched composition (``>>`` on morphisms).
+    The monad laws, and associativity of Kleisli composition, need
+    ``V``-Rel to be a category, which holds when ``V`` is a semiring.
+    The powerset reading further needs ``⋁`` to be idempotent, so that
+    a fuzzy subset is a join of its points; on the finite carriers used
+    here an `IdempotentSemiring` is what a quantale restricts to. The
+    constructor therefore requires an `IdempotentSemiring`, such as
+    ``BOOLEAN`` (the ordinary powerset monad), ``GODEL`` or
+    ``TROPICAL``. ``PRODUCT_FUZZY`` is refused: product does not
+    distribute over noisy-OR, so its Kleisli composition depends on
+    bracketing.
 
     Parameters
     ----------
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra ``V``.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
+
+    References
+    ----------
+    Hofmann, D., Seal, G. J., and Tholen, W. (Eds.) (2014). *Monoidal
+    Topology: A Categorical Approach to Order, Metric, and Topology*.
+    Cambridge University Press.
+    [doi:10.1017/CBO9781107517288](https://doi.org/10.1017/CBO9781107517288)
     """
 
-    def __init__(self, algebra: Algebra | None = None) -> None:
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
+    def __init__(self, algebra: IdempotentSemiring) -> None:
+        if not isinstance(algebra, IdempotentSemiring):
+            raise TypeError(
+                "FuzzyPowersetMonad requires an IdempotentSemiring algebra, "
+                f"so that its Kleisli composition is associative; got "
+                f"{algebra!r}. Use BOOLEAN, GODEL, TROPICAL, MAX_PLUS, or "
+                "a dual of BOOLEAN or GODEL."
+            )
+        self._algebra = algebra
 
     @property
     def algebra(self) -> Algebra:
@@ -82,134 +112,35 @@ class FuzzyPowersetMonad(Monad):
         return self.join(A)
 
     def kleisli_compose(self, f: Morphism, g: Morphism) -> Morphism:
-        """Kleisli composition; V-enriched composition via ``>>``."""
+        """Kleisli composition, the matrix composition of ``V``-Rel.
+
+        Parameters
+        ----------
+        f : Morphism
+            A Kleisli arrow ``A → T(B)``, a ``V``-relation ``A → B``.
+        g : Morphism
+            A Kleisli arrow ``B → T(C)``, a ``V``-relation ``B → C``.
+
+        Returns
+        -------
+        Morphism
+            The composite ``A → T(C)``.
+
+        Raises
+        ------
+        ValueError
+            If ``f`` or ``g`` is not over this monad's algebra.
+        """
+        for arrow in (f, g):
+            if not arrow.algebra.is_compatible(self._algebra):
+                raise ValueError(
+                    f"FuzzyPowersetMonad over {self._algebra.name} cannot "
+                    f"compose a morphism over {arrow.algebra.name}"
+                )
         return f >> g
 
     def __repr__(self) -> str:
         return f"FuzzyPowersetMonad({self._algebra!r})"
-
-
-class FreeMonoidMonad(Monad):
-    """The free monoid monad, truncated to ``max_length``.
-
-    ``T(A) = FreeMonoid(generators=A, max_length=max_length) =
-    1 + A + A² + ... + A^max_length``.
-
-    - ``η_A : A → A*`` embeds each element as a length-1 word.
-    - ``μ_A : (A*)* → A*`` flattens nested words by concatenation
-      (truncated to ``max_length``).
-
-    Parameters
-    ----------
-    max_length : int
-        Maximum word length (inclusive). Defaults to 4.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
-    """
-
-    def __init__(self, max_length: int = 4, algebra: Algebra | None = None) -> None:
-        if max_length < 1:
-            raise ValueError(f"max_length must be >= 1, got {max_length}")
-        self._max_length = max_length
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
-
-    @property
-    def max_length(self) -> int:
-        return self._max_length
-
-    @property
-    def algebra(self) -> Algebra:
-        return self._algebra
-
-    @property
-    def endofunctor(self) -> Functor:
-        return FreeMonoidFunctor(max_length=self._max_length)
-
-    # Typeclass interface
-    def fmap_obj(self, A: SetObject) -> SetObject:
-        if not isinstance(A, FinSet):
-            raise TypeError(
-                f"FreeMonoidMonad.fmap_obj requires a FinSet, got {type(A).__name__}"
-            )
-        return FreeMonoid(generators=A, max_length=self._max_length)
-
-    def fmap(self, A: SetObject, B: SetObject, f: Morphism) -> Morphism:
-        return self.endofunctor.map_morphism(f)
-
-    def pure(self, A: SetObject) -> Morphism:
-        """``η_A : A → A*`` — embed elements as length-1 words.
-
-        Returns a morphism whose tensor is ``[0, I, 0, ..., 0]`` along
-        the codomain's component-axis: zero on the empty word, identity
-        on the length-1 component, zero elsewhere.
-        """
-        import torch
-
-        if not isinstance(A, FinSet):
-            raise TypeError(
-                f"FreeMonoidMonad.pure requires a FinSet, got {type(A).__name__}"
-            )
-        ta = self.fmap_obj(A)
-        n = A.cardinality
-        total = ta.size  # type: ignore[attr-defined]
-        # offset of the length-1 component
-        start, _ = ta.component_range(1)  # type: ignore[attr-defined]
-        data = torch.zeros((n, total))
-        for i in range(n):
-            data[i, start + i] = 1.0
-        return observed(A, ta, data, algebra=self._algebra)
-
-    def join(self, A: SetObject) -> Morphism:
-        """``μ_A : (A*)* → A*`` — flatten nested words by concatenation.
-
-        The flattened-result indexing follows the canonical word-encoding
-        of `FreeMonoid`; flattenings whose total length exceeds
-        ``max_length`` are dropped.
-        """
-        import torch
-
-        if not isinstance(A, FinSet):
-            raise TypeError(
-                f"FreeMonoidMonad.join requires a FinSet, got {type(A).__name__}"
-            )
-        ta = self.fmap_obj(A)  # FreeMonoid(A, max_length)
-        # The outer free monoid is over an alphabet whose elements are
-        # the indices of the inner free monoid; that alphabet is a
-        # FinSet of cardinality ta.size.
-        outer_alphabet = FinSet(
-            name=f"{A.name}*",
-            cardinality=ta.size,  # type: ignore[attr-defined]
-        )
-        tta = FreeMonoid(generators=outer_alphabet, max_length=self._max_length)
-        outer_size = tta.size  # type: ignore[attr-defined]
-        inner_size = ta.size  # type: ignore[attr-defined]
-        data = torch.zeros((outer_size, inner_size))
-        for k in range(outer_size):
-            outer_word = tta.decode(k)  # type: ignore[attr-defined]
-            # Each entry of outer_word is an index into ta; decode it
-            # to obtain the inner A-word, then concatenate.
-            concatenated: list[int] = []
-            for inner_idx in outer_word:
-                inner_word = ta.decode(inner_idx)  # type: ignore[attr-defined]
-                concatenated.extend(inner_word)
-            if len(concatenated) > self._max_length:
-                continue
-            flat = ta.encode(tuple(concatenated))  # type: ignore[attr-defined]
-            data[k, flat] = 1.0
-        return observed(tta, ta, data, algebra=self._algebra)
-
-    def unit(self, A: SetObject) -> Morphism:
-        """Alias for `pure`."""
-        return self.pure(A)
-
-    def multiply(self, A: SetObject) -> Morphism:
-        """Alias for `join`."""
-        return self.join(A)
-
-    def __repr__(self) -> str:
-        return (
-            f"FreeMonoidMonad(max_length={self._max_length}, algebra={self._algebra!r})"
-        )
 
 
 class KleisliCategory:
@@ -259,6 +190,5 @@ class KleisliCategory:
 
 __all__ = [
     "FuzzyPowersetMonad",
-    "FreeMonoidMonad",
     "KleisliCategory",
 ]

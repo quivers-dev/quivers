@@ -246,7 +246,7 @@ _REFUSED: dict[tuple[str, str], str] = {
     **_logits_refused(
         "steps/observe_bernoulli_logits",
         "Bernoulli",
-        ("bugs", "church", "gen", "jags", "webppl"),
+        ("bugs",),
     ),
     **_logits_refused(
         "steps/observe_binomial_logits",
@@ -281,6 +281,15 @@ _REFUSED: dict[tuple[str, str], str] = {
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
+
+#: Cells a target renders that this module's container probes do not reach,
+#: each with the test that scores it against the reference joint.
+_SCORED_ELSEWHERE: dict[tuple[str, str], str] = {
+    ("steps/observe_bernoulli_logits", "church"): (
+        "tests/transpile/test_bernoulli_logits_numeric.py"
+        "::test_church_scores_the_reference_joint"
+    ),
+}
 
 
 def _source(fixture: str) -> str:
@@ -474,7 +483,10 @@ def test_every_target_renders_or_refuses_every_fixture() -> None:
     for _, _, fixture, _, _, _ in _CASES.values():
         for target in _EVERY_TARGET:
             if (fixture, target) not in _REFUSED:
-                assert target in _TARGETS, (fixture, target)
+                assert target in _TARGETS or (fixture, target) in _SCORED_ELSEWHERE, (
+                    fixture,
+                    target,
+                )
                 transpile(parse(_source(fixture)), target=target)
 
 
@@ -487,3 +499,12 @@ def test_every_surface_alternative_has_a_fixture() -> None:
         for schema in schemas[1:]:
             for parameter in set(schema) - set(schemas[0]):
                 assert (record.name, parameter) in covered, (record.name, parameter)
+
+
+def test_cells_scored_elsewhere_name_a_test_that_exists() -> None:
+    for (fixture, target), node in _SCORED_ELSEWHERE.items():
+        path, _, name = node.partition("::")
+        text = (pathlib.Path(__file__).parents[2] / path).read_text()
+        assert f"def {name}(" in text, node
+        assert fixture in text, (fixture, node)
+        assert (fixture, target) not in _REFUSED

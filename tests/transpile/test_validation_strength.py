@@ -270,7 +270,7 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "lda",
             "word_idx",
-            "Names the fibration from each word position into its "
+            "Names the index map from each word position into its "
             "document, selecting the theta row the per-word mixture "
             "marginal is scored under",
         ),

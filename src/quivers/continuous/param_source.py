@@ -204,16 +204,29 @@ class EmbeddingSource(ParamSource):
 
 
 class AttentionSource(ParamSource):
-    """Single-head self-attention over the input feature dimension,
-    followed by an aggregation and a linear head. Useful when the
-    input is a set of features whose ordering carries no information
-    and the model should be permutation-equivariant.
+    """Multi-head self-attention over a sequence, mean-pooled, then a linear head.
 
-    For a `(batch, seq_len, domain_dim)` input, computes
-    scaled-dot-product attention across the sequence dimension,
-    aggregates via mean-pool, and projects to `param_dim` via a
-    linear head. When the input is `(batch, domain_dim)`, treats it
-    as a length-one sequence.
+    For a ``(batch, seq_len, domain_dim)`` input, computes multi-head
+    scaled dot-product self-attention across the sequence positions
+    (``torch.nn.MultiheadAttention`` with ``num_heads`` heads), averages
+    the attended vectors over the positions, and projects the average to
+    ``param_dim``. Self-attention is permutation-equivariant in the
+    positions and the mean is invariant, so the output does not depend
+    on the order of the positions. A ``(batch, domain_dim)`` input is a
+    batch of sequences of length one, and a ``(domain_dim,)`` input one
+    such sequence.
+
+    Parameters
+    ----------
+    domain_dim : int
+        The width of each position's feature vector; ``num_heads`` must
+        divide it.
+    param_dim : int
+        The width of the output.
+    num_heads : int
+        The number of attention heads.
+    bias : bool
+        Whether the attention projections and the head carry biases.
     """
 
     def __init__(
@@ -240,7 +253,7 @@ class AttentionSource(ParamSource):
 
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() == 1:
-            x = x.unsqueeze(-1).unsqueeze(0)
+            x = x.reshape(1, 1, -1)
         elif x.dim() == 2:
             x = x.unsqueeze(1)
         attended, _ = self.attn(x, x, x, need_weights=False)

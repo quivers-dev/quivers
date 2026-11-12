@@ -89,6 +89,10 @@ from quivers.transpile.family_meta import (
     FamilyMeta,
 )
 from quivers.transpile.ir import (
+    CSBoolean,
+    CSIntegerInterval,
+    CSNonnegativeInteger,
+    CSPositiveInteger,
     CSReal,
     ConstraintSpec,
     LetExprAffineMap,
@@ -2260,7 +2264,7 @@ class StanRenderer(RendererBase):
         grouping plate, so the loop variables index the prior
         directly. In the per-row reading the accumulator is keyed by
         the observation, so the prior row is reached through the
-        observe's `via` fibration.
+        observe's `via` index map.
         """
         if not per_row:
             return tuple(IRArgRef(name=name) for name in acc_loop_names)
@@ -2272,7 +2276,7 @@ class StanRenderer(RendererBase):
                 "qvr-stan",
                 [
                     f"marginalize:per-row-prior:{node.latent}: the "
-                    f"observe carries a `via` fibration but no "
+                    f"observe carries a `via` index map but no "
                     f"observation plate to index it with"
                 ],
             )
@@ -2282,7 +2286,7 @@ class StanRenderer(RendererBase):
         )
 
     def _marginalize_scope_via(self, node: IRMarginalize) -> str | None:
-        """The `via` fibration the scope's observe steps share, or
+        """The `via` index map the scope's observe steps share, or
         `None` when they carry none."""
         vias = {inner.via for inner in node.scope if isinstance(inner, IRObserve)}
         if len(vias) != 1:
@@ -2291,7 +2295,7 @@ class StanRenderer(RendererBase):
                 [
                     f"marginalize:per-row-prior:{node.latent}: the "
                     f"scope's observe steps disagree on the `via` "
-                    f"fibration into the grouping plate"
+                    f"index map into the grouping plate"
                 ],
             )
         return next(iter(vias))
@@ -2583,7 +2587,7 @@ class StanRenderer(RendererBase):
         """Map the outer marginalize plate's batch dims to indexing
         expressions usable inside this observe's loop body.
 
-        When the observe's `via` fibration names a per-row indexer
+        When the observe's `via` index map names a per-row indexer
         into a group axis, the group index is `<via>[<row-loop>]`;
         otherwise the surrounding marginalize loop variables apply
         directly. When the marginalize has no batch dims, returns ().
@@ -3079,7 +3083,7 @@ class StanRenderer(RendererBase):
         (`bernoulli_logit_lpmf`), which Stan computes in log space.
         `prior_index_args` selects the prior row each accumulator
         entry reads: the accumulator's own loop variables under the
-        grouped reading, the observe's `via` fibration applied to the
+        grouped reading, the observe's `via` index map applied to the
         row loop variable under the per-row reading.
         """
         current = self._wrap_in_for_loops(ctx, scope_block, batch_dims, group_idx_names)
@@ -3747,11 +3751,14 @@ class StanRenderer(RendererBase):
         Raises
         ------
         UnsupportedConstruct
-            If a sample draws a class code, which Stan has no parameter
-            type for, or the node has no Stan form.
+            If a sample draws a class code or any other discrete value,
+            which Stan has no parameter type for, or the node has no
+            Stan form.
         """
         if isinstance(node, IRSample):
-            if is_class_code_family(node.family):
+            if is_class_code_family(node.family) or isinstance(
+                node.constraint, _DISCRETE_SUPPORTS
+            ):
                 raise UnsupportedConstruct(
                     "qvr-stan",
                     [
@@ -4252,6 +4259,16 @@ class StanRenderer(RendererBase):
             elif isinstance(stmt, DefineDecl):
                 lets[stmt.name] = stmt.expr
         return morphisms, lets
+
+
+#: The supports of a discrete draw, which Stan's samplers carry no
+#: parameter of.
+_DISCRETE_SUPPORTS: tuple[type[ConstraintSpec], ...] = (
+    CSBoolean,
+    CSIntegerInterval,
+    CSNonnegativeInteger,
+    CSPositiveInteger,
+)
 
 
 def _vector_argument_slots(

@@ -99,9 +99,6 @@ from quivers.continuous.spaces import (
     Simplex,
 )
 
-# enriched/weighted_limits
-from quivers.enriched.weighted_limits import Diagram
-
 # monadic/algebraic + bridges
 from quivers.monadic.algebraic import (
     EffectSignature,
@@ -234,10 +231,6 @@ _SIMPLEX = Simplex(name="probs", dim=4)
 _POSREAL = PositiveReals(name="sigma", dim=1)
 _PRODUCT_SPACE = ProductSpace(components=(_EUCLID, _SIMPLEX))
 
-# enriched diagram
-_DIAGRAM = Diagram(objects=(_FINSET, FinSet(name="B", cardinality=2)))
-
-
 # ---------------------------------------------------------------------------
 # (root, instance) pairs for parametrization
 # ---------------------------------------------------------------------------
@@ -308,8 +301,6 @@ CASES: list[tuple[type, object]] = [
     (ContinuousSpace, _SIMPLEX),
     (ContinuousSpace, _POSREAL),
     (ContinuousSpace, _PRODUCT_SPACE),
-    # enriched diagram
-    (Diagram, _DIAGRAM),
 ]
 
 

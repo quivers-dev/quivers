@@ -112,7 +112,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
 )
 from quivers.transpile.renderers._qiec import (
     graft_scheme_forms,
@@ -224,6 +224,14 @@ def _read_event_at_position(
     if not visited:
         return arg
     return IRArgRef(name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited))
+
+
+#: The runtime constructor of each family call written through an
+#: alternative parameterization: a Bernoulli given by its logits scores
+#: each outcome by the log-sigmoid of the signed logits.
+_LOGIT_SYMBOLS: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "flip-logit",
+}
 
 
 def _is_scalar_constraint(constraint: ConstraintSpec) -> bool:
@@ -347,9 +355,9 @@ class ChurchRenderer(RendererBase):
         # The active marginalize group plate's batch axes (empty
         # outside a marginalize scope). Refs bound on this plate that
         # are read from an observe on a different plate thread through
-        # the observe's `via` fibration.
+        # the observe's `via` index map.
         self._group_plate_axes: tuple[str, ...] = ()
-        # The active observe's `via` fibration name (None otherwise).
+        # The active observe's `via` index map name (None otherwise).
         self._current_via: str | None = None
         self._module = ir.module
         # Whether the model body has bound its native operation table.
@@ -828,7 +836,7 @@ class ChurchRenderer(RendererBase):
         Each atom's deterministic bindings live inside that atom's own
         thunk, which gives them a scope: a Scheme body admits one
         definition per name. A grouped block keys its accumulator by
-        group, so the rows the fibration sends to one group are
+        group, so the rows the index map sends to one group are
         summed before the reduction; an ungrouped block shares one
         latent across the body's rows, so their log-likelihoods are
         summed to a scalar first. No site is declared for the latent:
@@ -869,7 +877,7 @@ class ChurchRenderer(RendererBase):
             out.extend(weight_forms)
         finally:
             self._group_plate_axes = prev_group
-        fibration = marginalize_fibration(
+        index_map = marginalize_index_map(
             node,
             raw.observe,
             atoms[0].weight_args,
@@ -883,8 +891,8 @@ class ChurchRenderer(RendererBase):
             zip(weight_names, term_names, strict=True)
         ):
             term_form: SchemaFragment = _sym(ctx, term)
-            if fibration is not None:
-                via, group = fibration
+            if index_map is not None:
+                via, group = index_map
                 term_form = _list(
                     ctx,
                     (
@@ -968,7 +976,12 @@ class ChurchRenderer(RendererBase):
             body.extend(self._render_body_forms(ctx, det))
         observe = scored.observe
         dist_form = self._dist_form(
-            ctx, observe.family, observe.args, observe.plate, observe.via
+            ctx,
+            observe.family,
+            observe.args,
+            observe.plate,
+            observe.via,
+            arg_names=observe.arg_names,
         )
         body.append(self._wrap_score_map(ctx, observe.name, dist_form, observe.plate))
         thunk = f"{prefix}_atom_{position}"
@@ -994,7 +1007,7 @@ class ChurchRenderer(RendererBase):
         `log(1 - p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, which `take-last` slices however many
-        grouping axes sit above it; a prior read through a fibration
+        grouping axes sit above it; a prior read through an index map
         is gathered one row per observation first.
 
         Parameters
@@ -1245,7 +1258,7 @@ class ChurchRenderer(RendererBase):
         observed
             Whether the site is conditioned on data.
         via
-            The fibration an observe gathers its rows through, or ``None``.
+            The index map an observe gathers its rows through, or ``None``.
 
         Returns
         -------
@@ -1280,7 +1293,7 @@ class ChurchRenderer(RendererBase):
                 else arg
                 for arg, arg_name in zip(args, arg_names, strict=False)
             )
-        dist_form = self._dist_form(ctx, family, args, plate, via)
+        dist_form = self._dist_form(ctx, family, args, plate, via, arg_names=arg_names)
         if observed:
             return _statement(
                 ctx, self._wrap_observe(ctx, name, dist_form, plate, event_loops)
@@ -1294,6 +1307,8 @@ class ChurchRenderer(RendererBase):
         args: tuple[IRArg, ...],
         plate: Plate,
         via: str | None,
+        *,
+        arg_names: tuple[str, ...] = (),
     ) -> SchemaFragment:
         """The distribution form of one site, its arguments indexed
         against the site's plate.
@@ -1316,7 +1331,7 @@ class ChurchRenderer(RendererBase):
         plate : Plate
             The site's plate.
         via : str | None
-            The fibration an observe gathers group-plate values through.
+            The index map an observe gathers group-plate values through.
 
         Returns
         -------
@@ -1334,6 +1349,7 @@ class ChurchRenderer(RendererBase):
         target_symbol = meta.target_names.get("church")
         if target_symbol is None:
             raise UnsupportedConstruct(_TARGET, [f"family:{family}:no-church-target"])
+        target_symbol = _LOGIT_SYMBOLS.get((family, arg_names), target_symbol)
 
         if family in _HALF_FAMILIES:
             # `HalfNormal(scale)` -> `(half (gaussian 0 scale))`;
@@ -1361,7 +1377,7 @@ class ChurchRenderer(RendererBase):
     ) -> IRArg:
         """Thread the surrounding plate's row index into any ref whose
         binding plate aligns with `plate`, or through the active
-        observe's `via` fibration when the ref is bound on the group
+        observe's `via` index map when the ref is bound on the group
         plate.
 
         Returns a rewritten IR-arg tree; the rewrite prepends a loop

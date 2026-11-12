@@ -38,9 +38,9 @@ Code that needs `identity`, `dagger`, `trace`, `cup`, or `cap` requires an `Alge
 
 ```python
 from quivers.core.algebras import (
-    CompositionRule, Semigroupoid, BilinearForm, Algebra,
+    CompositionRule, Semigroupoid, Magmoid, Algebra,
     PRODUCT_FUZZY, REAL,
-    material_implication, semigroupoid, bilinear_form,
+    material_implication, semigroupoid, magmoid,
 )
 ```
 
@@ -55,7 +55,7 @@ import torch
 from quivers.core.algebras import material_implication
 
 mi = material_implication()
-print(type(mi).__mro__)        # (CustomSemigroupoid, Semigroupoid, CompositionRule, ABC, object)
+print(type(mi).__mro__)        # (CustomMagmoid, Magmoid, CompositionRule, ABC, object)
 
 f = torch.tensor([[0.3, 0.5, 0.2]])
 g = torch.tensor([
@@ -93,7 +93,7 @@ At construction it tests associativity of $\otimes$ on a fixed set of random inp
 `bilinear_form(name, tensor_op, join)` builds a rule that claims nothing. The midpoint $(a + b)/2$ is not associative:
 
 ```python
-from quivers.core.algebras import bilinear_form
+from quivers.core.algebras import magmoid
 
 def midpoint(a, b):
     return 0.5 * (a + b)            # not associative
@@ -103,7 +103,7 @@ def sum_reduce(t, dim):
         dim = (dim,)
     return t.sum(dim=dim)
 
-bf = bilinear_form("Midpoint", midpoint, sum_reduce)
+bf = magmoid("Midpoint", midpoint, sum_reduce)
 
 # Three-way composition order matters:
 a, b, c = torch.tensor(0.3), torch.tensor(0.5), torch.tensor(0.7)

@@ -673,6 +673,29 @@ class Encoder(nn.Module):
         return self.readout(embeds)
 
 
+def encoder_draw_message(name: str) -> str:
+    """The refusal of a program ``sample`` or ``observe`` from an encoder.
+
+    An encoder is a deterministic map from the terms of its signature to
+    code vectors, so no program step draws from it.
+
+    Parameters
+    ----------
+    name : str
+        The encoder's name.
+
+    Returns
+    -------
+    str
+        The message.
+    """
+    return (
+        f"{name!r} is an encoder, a deterministic map from terms of its "
+        "signature to code vectors, so no program step draws from it; call it "
+        f"on a term in a loss body, as in `{name}(term)`"
+    )
+
+
 __all__ = [
     "BOUND_VAR_OP",
     "PerOpMode",

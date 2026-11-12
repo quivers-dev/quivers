@@ -391,7 +391,7 @@ def marginalize_row_rank(node: IRMarginalize) -> int:
     ``aggr_k [log pi(g, k) + sum_{n : iota(n) = g} l(n, k)]``. A block
     that carries a grouping plate has already keyed its accumulator by
     `g`, and each group's rows are gathered into it by the observes'
-    `via` fibrations, so nothing further is accumulated here.
+    `via` index maps, so nothing further is accumulated here.
 
     A block with no grouping plate declares one latent for its whole
     body (§2.6 reduces "the accumulated log-likelihood"), which is the
@@ -1475,7 +1475,7 @@ def assert_no_dropped_param_map(ir: IRProgram, target: str) -> None:
     reference with a different static width.
 
     Scalar arguments may broadcast from width one. Indexed references, mixture
-    arguments, and values gathered through an observation fibration are
+    arguments, and values gathered through an observation index map are
     excluded because their effective widths follow other rules. Families whose
     argument ranks are unavailable are also skipped.
     """

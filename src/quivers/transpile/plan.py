@@ -530,7 +530,7 @@ class _ProgramWalk:
             if not isinstance(index, Var):
                 raise UnsupportedConstruct(
                     f"qvr-{self.planner.target}",
-                    [f"qiec:fibration:{self.program.name}"],
+                    [f"qiec:index_map:{self.program.name}"],
                 )
             via = index.local.name
             density = density.value
@@ -1252,7 +1252,7 @@ class _ProgramWalk:
             Whether the site is a marginalized latent, whose plate
             keeps only the grouping axes.
         via : str | None
-            The fibration an observation reads its arguments through;
+            The index map an observation reads its arguments through;
             the plan states it on the observation rather than on the
             arguments, so a gather by it is stripped.
 
@@ -1503,11 +1503,12 @@ class _ProgramWalk:
                 [
                     f"family:{family}:{name}: {target} has no {family} "
                     f"parameterized by its {name}"
-                    + (
+                    + _ALTERNATIVE_REFUSAL_REASONS.get(
+                        (family, name, target),
                         "; write the matrix as a literal, which is inverted "
                         "into the covariance"
                         if name == "precision_matrix"
-                        else "; write the probability the logits name as probs"
+                        else "; write the probability the logits name as probs",
                     )
                 ],
             )
@@ -2066,13 +2067,13 @@ class _ProgramWalk:
         tuple[IRDataInput, ...]
             One input per entry-point parameter, grouped by role as
             the targets declare them: the program's domain, its
-            scalars, fibrations, observations, parameter maps, and
+            scalars, index maps, observations, parameter maps, and
             data.
         """
         groups: dict[str, list[IRDataInput]] = {
             "domain": [],
             "scalar": [],
-            "fibration": [],
+            "index_map": [],
             "observation": [],
             "map": [],
             "data": [],
@@ -2087,7 +2088,7 @@ class _ProgramWalk:
                 groups[parameter.role].append(node)
         return tuple(
             node
-            for role in ("domain", "scalar", "fibration", "observation", "map", "data")
+            for role in ("domain", "scalar", "index_map", "observation", "map", "data")
             for node in groups[role]
         )
 
@@ -2113,7 +2114,7 @@ class _ProgramWalk:
         if parameter.role == "observation" and name in self.observed:
             node = self.observed[name]
             return IRDataInput(name=name, constraint=node.constraint, plate=node.plate)
-        if parameter.role == "fibration":
+        if parameter.role == "index_map":
             upper = None
             batch: tuple[Dim, ...] = ()
             for node in _walk(body):
@@ -2505,9 +2506,33 @@ _EVERY_TARGET: frozenset[str] = frozenset(
 #: The targets whose library takes each alternative parameterization as
 #: written, keyed by family and parameter. Every other target receives a
 #: literal precision matrix inverted and refuses anything else.
+#: Why a target refuses an alternative parameterization, where the
+#: general advice does not apply.
+_ALTERNATIVE_REFUSAL_REASONS: dict[tuple[str, str, str], str] = {
+    ("Bernoulli", "logits", "bugs"): (
+        "; its `dbern` takes a probability, whose complement "
+        "`1 - ilogit(l)` keeps none of its digits once the probability "
+        "rounds to within an ulp of one, and the mass written from the "
+        "logits needs a zeros-trick carrier BUGS has no data block to "
+        "bind, so no stable spelling exists"
+    ),
+}
+
 _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
     ("Bernoulli", "logits"): frozenset(
-        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+        {
+            "ir",
+            "church",
+            "edward2",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "pyro",
+            "stan",
+            "turing",
+            "webppl",
+        }
     ),
     ("Binomial", "logits"): frozenset(
         {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}

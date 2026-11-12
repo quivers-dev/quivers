@@ -5,7 +5,7 @@ import pytest
 from quivers.core.objects import FinSet, FreeMonoid
 from quivers.core.morphisms import morphism, observed, FunctorMorphism
 from quivers.categorical.functors import FreeMonoidFunctor
-from quivers.core.algebras import BOOLEAN
+from quivers.core.algebras import BOOLEAN, PRODUCT_FUZZY, REAL
 
 
 class TestFreeMonoidFunctorObject:
@@ -38,7 +38,7 @@ class TestFreeMonoidFunctorMorphism:
         fm = FreeMonoidFunctor(max_length=1)
         a = FinSet(name="A", cardinality=3)
         b = FinSet(name="B", cardinality=4)
-        f = morphism(a, b)
+        f = morphism(a, b, algebra=REAL)
         result = fm.map_morphism(f)
         assert isinstance(result, FunctorMorphism)
 
@@ -46,7 +46,7 @@ class TestFreeMonoidFunctorMorphism:
         fm = FreeMonoidFunctor(max_length=2)
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
-        f = morphism(a, b)
+        f = morphism(a, b, algebra=REAL)
         result = fm.map_morphism(f)
         assert isinstance(result.domain, FreeMonoid)
         assert isinstance(result.codomain, FreeMonoid)
@@ -57,7 +57,7 @@ class TestFreeMonoidFunctorMorphism:
         fm = FreeMonoidFunctor(max_length=2)
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
-        f = morphism(a, b)
+        f = morphism(a, b, algebra=REAL)
         result = fm.map_morphism(f)
         assert result.tensor.shape == (7, 13)
 
@@ -67,7 +67,7 @@ class TestFreeMonoidFunctorMorphism:
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
         f_data = torch.tensor([[0.5, 0.3, 0.1], [0.2, 0.8, 0.4]])
-        f = observed(a, b, f_data)
+        f = observed(a, b, f_data, algebra=REAL)
         result = fm.map_morphism(f)
         t = result.tensor
         assert t[0, 0].item() == pytest.approx(1.0, abs=1e-06)
@@ -89,8 +89,8 @@ class TestFunctorPreservesComposition:
         c = FinSet(name="C", cardinality=2)
         f_data = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
         g_data = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
-        f = observed(a, b, f_data)
-        g = observed(b, c, g_data)
+        f = observed(a, b, f_data, algebra=REAL)
+        g = observed(b, c, g_data, algebra=REAL)
         fg = f >> g
         fm_fg = fm.map_morphism(fg)
         fm_f = fm.map_morphism(f)
@@ -106,7 +106,7 @@ class TestGradientFlowThroughFunctor:
         fm = FreeMonoidFunctor(max_length=1)
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
-        f = morphism(a, b)
+        f = morphism(a, b, algebra=REAL)
         result = fm.map_morphism(f)
         loss = result.tensor.sum()
         loss.backward()
@@ -117,7 +117,7 @@ class TestGradientFlowThroughFunctor:
         fm = FreeMonoidFunctor(max_length=1)
         a = FinSet(name="A", cardinality=2)
         b = FinSet(name="B", cardinality=3)
-        f = morphism(a, b)
+        f = morphism(a, b, algebra=REAL)
         result = fm.map_morphism(f)
         inner_params = list(f.module().parameters())
         functor_params = list(result.module().parameters())
@@ -140,3 +140,30 @@ class TestAlgebraRespected:
         t = result.tensor
         assert t[0, 0].item() == pytest.approx(1.0, abs=1e-06)
         torch.testing.assert_close(t[1:3, 1:3], f_data, atol=1e-06, rtol=1e-06)
+
+
+class TestFreeMonoidFunctorLaws:
+    """``F(f >> g) = F(f) >> F(g)`` and ``F(id) = id`` for random real
+    matrices with words up to length 2."""
+
+    def test_functor_laws_over_the_reals(self):
+        gen = torch.Generator().manual_seed(11)
+        fm = FreeMonoidFunctor(max_length=2)
+        a = FinSet(name="A", cardinality=2)
+        b = FinSet(name="B", cardinality=3)
+        c = FinSet(name="C", cardinality=2)
+        f = observed(a, b, torch.rand(2, 3, generator=gen), algebra=REAL)
+        g = observed(b, c, torch.rand(3, 2, generator=gen), algebra=REAL)
+        torch.testing.assert_close(
+            fm.map_morphism(f >> g).tensor,
+            (fm.map_morphism(f) >> fm.map_morphism(g)).tensor,
+        )
+        id_a = observed(a, a, torch.eye(2), algebra=REAL)
+        n = fm.map_object(a).size
+        torch.testing.assert_close(fm.map_morphism(id_a).tensor, torch.eye(n))
+
+    def test_refuses_an_algebra_that_is_not_a_semiring(self):
+        fm = FreeMonoidFunctor(max_length=1)
+        a = FinSet(name="A", cardinality=2)
+        with pytest.raises(TypeError, match="Semiring"):
+            fm.map_morphism(observed(a, a, torch.eye(2), algebra=PRODUCT_FUZZY))

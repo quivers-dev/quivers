@@ -40,15 +40,15 @@ homomorphism registry, and the transformation alias.
         - BOOLEAN_DUAL
         - DUAL_LUKASIEWICZ
         - DUAL_GODEL
-        - EXPECTATION
-        - LOG_PROB_HOM
-        - MAX_PLUS_HOM
-        - MATERIAL_IMPLICATION
+        - MARKOV_TO_PRODUCT_FUZZY
+        - LOG_PROB_MAP
+        - MAX_PLUS_MAP
+        - PRODUCT_FUZZY_TO_GODEL
         - PROBABILITY_CLAMP
         - COUNTING_FROM_REAL
         - PROBABILITY_TO_REAL
         - COUNTING_TO_REAL
-        - HOMOMORPHISM_REGISTRY
+        - CARRIER_MAP_REGISTRY
         - TransValue
       show_root_heading: false
       show_root_toc_entry: false

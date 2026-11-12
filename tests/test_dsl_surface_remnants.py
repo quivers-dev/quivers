@@ -286,8 +286,7 @@ export fc
 
 def test_curry_right_compiles_with_expected_shape() -> None:
     """``f.curry_right`` on ``f : A * B -> C`` keeps the first
-    factor as the domain and reinterprets (not recomputes) the
-    underlying tensor."""
+    factor as the domain and reads the same tensor as ``A → B × C``."""
     m = loads(textwrap.dedent(_CURRY_SRC.format(method="curry_right")))
     morph = m.morphism
     assert isinstance(morph, CurriedMorphism)
@@ -299,14 +298,14 @@ def test_curry_right_compiles_with_expected_shape() -> None:
 
 def test_curry_left_compiles_with_expected_shape() -> None:
     """``f.curry_left`` on ``f : A * B -> C`` keeps the second
-    factor as the domain."""
+    factor as the domain, so the tensor is re-indexed to ``B × (A × C)``."""
     m = loads(textwrap.dedent(_CURRY_SRC.format(method="curry_left")))
     morph = m.morphism
     assert isinstance(morph, CurriedMorphism)
     assert morph.direction == "left"
     assert isinstance(morph.domain, FinSet)
     assert morph.domain.cardinality == 3
-    assert m.forward().shape == (2, 3, 4)
+    assert m.forward().shape == (3, 2, 4)
 
 
 def test_trace_compiles_with_expected_shape() -> None:

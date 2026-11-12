@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 142 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 143 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 73 / 142   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 89 / 142   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 106 / 142  |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 93 / 142   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 79 / 142   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 121 / 142  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 107 / 142  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 123 / 142  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 108 / 142  |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 99 / 142   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 98 / 142   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 73 / 143   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 92 / 143   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 107 / 143  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 96 / 143   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 83 / 143   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 122 / 143  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 108 / 143  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 124 / 143  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 97 / 143   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 100 / 143  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 101 / 143  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -116,25 +116,25 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 | Program                                 | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |-----------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `statements/bundle_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/category_decl`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/composition_decl`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/contraction_decl`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `statements/bundle_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/category_decl`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/composition_decl`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/contraction_decl`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/decoder_decl`               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `statements/deduction_decl`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `statements/deduction_decl`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/encoder_decl`               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `statements/export_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `statements/export_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/let_decl`                   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/loss_decl`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `statements/morphism_decl_init_family`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/object_decl_finset`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `statements/object_decl_finset`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/object_decl_real`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/program_decl_scalar`        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/qiec_computation_decl`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/qiec_effectful_computation` | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `statements/rule_decl`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/schema_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `statements/signature_decl`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `statements/rule_decl`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/schema_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/signature_decl`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 
 #### 1.2.2 Program steps
 
@@ -151,14 +151,14 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_body_plated_let`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_continuous_bernoulli_logits` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_factor_let_rows`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
+| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | yes  | yes     | yes  | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_gather`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_value`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_probs`                   | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_vector_probs`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_step`                        | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_bernoulli_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_bernoulli_logits_rows`           | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_bernoulli_logits`                | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernoulli_logits_rows`           | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_binomial_logits`                 | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_continuous_bernoulli_logits`     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
@@ -183,6 +183,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_vector_parameter_data`           | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_vector_scale_rate`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/return_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_bernoulli_logits`                 | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_class_code`                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_inverse_wishart_factor`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
@@ -259,7 +260,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                 | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |-------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `options/option_call`   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `options/option_flag`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `options/option_flag`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `options/option_list`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `options/option_name`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `options/option_number` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -872,20 +873,20 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`, `steps/sample_bernoulli_logits`.
 
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
 
 Reported kinds:
 
 ```text
-family:Bernoulli:logits: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+family:Bernoulli:logits: bugs has no Bernoulli parameterized by its logits; its `dbern` takes a probability, whose complement `1 - ilogit(l)` keeps none of its digits once the probability rounds to within an ulp of one, and the mass written from the logits needs a zeros-trick carrier BUGS has no data block to bind, so no stable spelling exists
 ```
 
 `bugs` on `steps/observe_bernoulli_logits` reports:
 
 ```text
-bugs cannot score a draw from `Bernoulli`: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+bugs cannot score a draw from `Bernoulli`: bugs has no Bernoulli parameterized by its logits; its `dbern` takes a probability, whose complement `1 - ilogit(l)` keeps none of its digits once the probability rounds to within an ulp of one, and the mass written from the logits needs a zeros-trick carrier BUGS has no data block to bind, so no stable spelling exists
 ```
 
 **`family:BetaBinomial:no-bugs-distribution`**
@@ -1123,7 +1124,7 @@ let-expr:axis-reduction:bugs: sum(...) over a rank-3 operand reduces only the in
 bugs-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
 ```
 
-**`marginalize:grouped-fibration:cls`**
+**`marginalize:grouped-index-map:cls`**
 
 Refused for: `steps/marginalize_step`.
 
@@ -1132,7 +1133,7 @@ Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan
 Reported kinds:
 
 ```text
-marginalize:grouped-fibration:cls: the rows `idx` sends to each `Item` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
+marginalize:grouped-index-map:cls: the rows `idx` sends to each `Item` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
 ```
 
 `bugs` on `steps/marginalize_step` reports:
@@ -1217,7 +1218,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`, [`lda`](examples/lda.md).
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -1326,24 +1327,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`church` on `steps/observe_bernoulli_logits` reports:
-
-```text
-church cannot score a draw from `Bernoulli`: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:BetaBinomial:no-church-target`**
@@ -1948,24 +1931,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
 ```
 
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`gen` on `steps/observe_bernoulli_logits` reports:
-
-```text
-gen cannot score a draw from `Bernoulli`: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
 **`family:Binomial:logits`**
 
 Refused for: `steps/observe_binomial_logits`.
@@ -2276,7 +2241,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -2382,24 +2347,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`jags` on `steps/observe_bernoulli_logits` reports:
-
-```text
-jags cannot score a draw from `Bernoulli`: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Binomial:logits`**
@@ -2689,24 +2636,6 @@ let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the in
 
 ```text
 jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
-```
-
-**`let-expr:elementwise-axis-operator:jags`**
-
-Refused for: `steps/marginalize_gathered_prior_data`.
-
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-let-expr:elementwise-axis-operator:jags: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
-```
-
-`jags` on `steps/marginalize_gathered_prior_data` reports:
-
-```text
-jags-helper cannot lift an infix operator over an axis inside a `let`: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
 ```
 
 **`marginalize:ungrouped-over-plate:state`**
@@ -3246,15 +3175,34 @@ sample:discrete-latent:group: Stan has no discrete parameters, so a Categorical 
 stan cannot emit this `sample` step: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
 ```
 
+**`sample:discrete-latent:x`**
+
+Refused for: `options/option_flag`, `statements/bundle_decl`, `statements/category_decl`, `statements/composition_decl`, `statements/contraction_decl`, `statements/deduction_decl`, `statements/export_decl`, `statements/object_decl_finset`, `statements/rule_decl`, `statements/schema_decl`, `statements/signature_decl`.
+
+Renders on: `bugs`, `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+sample:discrete-latent:x: Stan has no discrete parameters, so a Bernoulli draw must be marginalized rather than sampled
+```
+
+`stan` on `options/option_flag` reports:
+
+```text
+stan cannot emit this `sample` step: Stan has no discrete parameters, so a Bernoulli draw must be marginalized rather than sampled
+```
+
 **`sample:discrete-latent:z`**
 
-Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_class_code`.
+Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_bernoulli_logits`, `steps/sample_class_code`.
 
 Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`.
 
 Reported kinds:
 
 ```text
+sample:discrete-latent:z: Stan has no discrete parameters, so a Bernoulli draw must be marginalized rather than sampled
 sample:discrete-latent:z: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
 ```
 
@@ -3560,7 +3508,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -3667,24 +3615,6 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
-```
-
-**`family:Bernoulli:logits`**
-
-Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
-
-Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:Bernoulli:logits: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
-```
-
-`webppl` on `steps/observe_bernoulli_logits` reports:
-
-```text
-webppl cannot score a draw from `Bernoulli`: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Binomial:logits`**

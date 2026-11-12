@@ -627,9 +627,9 @@ class _ArgCtx:
     """Per-call rendering context for the args of one distribution call.
 
     Carries the per-step batch-loop bindings (axis name → loop
-    variable identifier), the current step's `via` fibration (if
+    variable identifier), the current step's `via` index map (if
     any), and a flag indicating whether the inner observe sees the
-    fibration semantics so reference threading routes through it.
+    index map semantics so reference threading routes through it.
     """
 
     batch_loops: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -676,7 +676,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
     batch axis when the user did not supply explicit indices for
     that reference. The bracket is filled from `arg_ctx.batch_loops`
     when the declaration's axis has a live loop variable, or via the
-    `via=` fibration when no direct loop variable matches.
+    `via=` index map when no direct loop variable matches.
 
     If the user supplied explicit indices, the renderer treats them
     as the full bracket expression and skips automatic axis
@@ -724,7 +724,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
         if loop_var is not None:
             leading.append(_ident(gx, loop_var))
             continue
-        # No direct loop variable: route through the via fibration
+        # No direct loop variable: route through the via index map
         # if one is active; otherwise leave the axis unindexed.
         if arg_ctx.via_indexer is not None and arg_ctx.via_loop_var is not None:
             via_idx = _index_into(
@@ -732,7 +732,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
                 _ident(gx, arg_ctx.via_indexer),
                 (_ident(gx, arg_ctx.via_loop_var),),
             )
-            # The fibration holds zero-based QVR group codes.
+            # The index map holds zero-based QVR group codes.
             leading.append(_gen_binary_expr(gx, via_idx, ".+", _integer(gx, 1)))
             continue
 
@@ -917,6 +917,14 @@ def _family_event_rank(family: str) -> int:
     if family in _WRAPPER_TARGET_NAMES:
         return 0
     raise UnsupportedConstruct("qvr-gen", [f"family:{family}: no Gen.jl event rank"])
+
+
+#: The grafted Gen.jl distribution of each family call written through
+#: an alternative parameterization: a Bernoulli given by its logits
+#: scores each outcome by the log-sigmoid of the signed logits.
+_LOGIT_CALLEES: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "qvr_bernoulli_logit",
+}
 
 
 def _gen_target_name(family: str) -> str:
@@ -1219,6 +1227,7 @@ class GenRenderer(RendererBase):
         # names through normal Julia name lookup.
         if (
             any(_ir_uses_family(ir.body, f) for f in _GEN_RUNTIME_HELPER_FAMILIES)
+            or _ir_uses_logit_callee(ir.body)
             or qiec_helper_families_used(ir, self.target)
             or _ir_has_factor(ir.body)
         ):
@@ -1533,7 +1542,9 @@ class GenRenderer(RendererBase):
         gx = self._gx
         if family == "MixtureNormal":
             return self._mixture_normal_call(args, arg_names, arg_ctx)
-        callee_name = _gen_target_name(family)
+        callee_name = _LOGIT_CALLEES.get((family, tuple(arg_names)))
+        if callee_name is None:
+            callee_name = _gen_target_name(family)
         arg_vids: list[str] = []
         for arg, name in zip(args, arg_names, strict=False):
             rendered = _render_arg(
@@ -2069,6 +2080,30 @@ _RUNTIME_GEN_SUBTREE = _subtree_vertex_ids(_RUNTIME_GEN_SCHEMA, _RUNTIME_GEN_TOP
 #: The address namespace factor choices are traced under, so a reader
 #: of the trace tells a scored weight from a draw by its address.
 _FACTOR_NAMESPACE = "qvr_factor"
+
+
+def _ir_uses_logit_callee(body: tuple[IRNode, ...]) -> bool:
+    """Whether a site draws or scores through a grafted logit distribution.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe calls a family under a
+        parameterization `_LOGIT_CALLEES` spells.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and (
+            (node.family, tuple(node.arg_names)) in _LOGIT_CALLEES
+        ):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_uses_logit_callee(node.scope):
+            return True
+    return False
 
 
 def _ir_has_factor(body: tuple[IRNode, ...]) -> bool:

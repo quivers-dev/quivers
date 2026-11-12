@@ -5,11 +5,14 @@ represented here by a tensor of shape (*A.shape, *B.shape).
 The implementation treats finite weighted relations as profunctor
 representations; it does not record arbitrary source and target actions.
 
-Profunctor composition uses the coend formula:
+Between discrete V-categories (finite sets), a profunctor is a V-valued
+matrix, and composition uses the coend formula:
 
     (R ; S)(a, c) = ∫^b R(a, b) ⊗ S(b, c)
 
-which is exactly V-enriched composition. This module makes the
+which is matrix composition over V. The coend is a join, so V must be a
+complete lattice (an `IdempotentSemiring`); profunctors then compose
+associatively with the identity matrices as units. This module makes the
 profunctor structure explicit and provides composition via the
 coend from ends_coends.py.
 
@@ -24,7 +27,8 @@ import torch
 
 from quivers.core.objects import SetObject
 from quivers.core.morphisms import Morphism, ObservedMorphism, observed
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import IdempotentSemiring
+from quivers.enriched._lattice import require_lattice
 
 
 class Profunctor:
@@ -41,8 +45,15 @@ class Profunctor:
         The covariant (codomain/target) object B.
     tensor : torch.Tensor
         The profunctor's tensor of shape (*A.shape, *B.shape).
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
+    ValueError
+        If the tensor's shape is not ``(*contra.shape, *co.shape)``.
     """
 
     def __init__(
@@ -50,12 +61,12 @@ class Profunctor:
         contra: SetObject,
         co: SetObject,
         tensor: torch.Tensor,
-        algebra: Algebra | None = None,
+        algebra: IdempotentSemiring,
     ) -> None:
         self._contra = contra
         self._co = co
         self._tensor = tensor
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
+        self._algebra = require_lattice(algebra, "a profunctor")
 
         expected_shape = (*contra.shape, *co.shape)
 
@@ -81,7 +92,7 @@ class Profunctor:
         return self._tensor
 
     @property
-    def algebra(self) -> Algebra:
+    def algebra(self) -> IdempotentSemiring:
         """The enrichment algebra."""
         return self._algebra
 
@@ -98,12 +109,17 @@ class Profunctor:
         -------
         Profunctor
             The profunctor R: A ↛ B with the same tensor.
+
+        Raises
+        ------
+        TypeError
+            If the morphism's algebra is not an `IdempotentSemiring`.
         """
         return cls(
             contra=morph.domain,
             co=morph.codomain,
             tensor=morph.tensor,
-            algebra=morph.algebra,
+            algebra=require_lattice(morph.algebra, "a profunctor"),
         )
 
     def compose(self, other: Profunctor) -> Profunctor:
@@ -123,7 +139,17 @@ class Profunctor:
         -------
         Profunctor
             Composed profunctor R ; S: A ↛ C.
+
+        Raises
+        ------
+        TypeError
+            If the objects do not match or the algebras differ.
         """
+        if not self._algebra.is_compatible(other._algebra):
+            raise TypeError(
+                f"cannot compose a profunctor over {self._algebra.name} with "
+                f"one over {other._algebra.name}"
+            )
         if self._co != other._contra:
             raise TypeError(
                 f"cannot compose: R's covariant object {self._co!r} "

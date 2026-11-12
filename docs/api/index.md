@@ -41,17 +41,16 @@ structures.
 ## Monadic Package
 
 The `monadic` package contains the [type class](https://en.wikipedia.org/wiki/Type_class)
-hierarchy, monad instances and transformers, comonads, algebras, distributive laws, and algebraic
+hierarchy, monad instances, comonads, algebras, distributive laws, and algebraic
 effects.
 
 - **[Typeclass Hierarchy](monadic/typeclasses.md)**: `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Foldable`, `Traversable`, `MonadTrans` abstract base classes
-- **[Stdlib Effect Instances](monadic/instances.md)**: `Identity`, `Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`, `List`
-- **[Monad Transformers](monadic/transformers.md)**: `StateT`, `ReaderT`, `MaybeT`, `ContT`, `WriterT`
+- **[Stdlib Effect Instances](monadic/instances.md)**: `Identity`, `Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`
 - **[Algebraic Effects](monadic/algebraic.md)**: `Operation`, `EffectSignature`, `Handler`, `FreeMonad`
 - **[Bridges](monadic/bridges.md)**: `Kleisli` and `ArrowMonad`, which connect the monad and arrow hierarchies
 - **[Typeclass Theories](monadic/theories.md)**: the type classes stated as panproto theories
 - **[Typeclass Laws](monadic/laws.md)**: the laws of each type class as checkable records
-- **[Concrete Monads](monadic/monads.md)**: `KleisliCategory`, `FuzzyPowersetMonad`, `FreeMonoidMonad`
+- **[Concrete Monads](monadic/monads.md)**: `KleisliCategory`, `FuzzyPowersetMonad`
 - **[Comonads](monadic/comonads.md)**: [comonads](https://ncatlab.org/nlab/show/comonad) and their co-Kleisli categories
 - **[Algebras and Coalgebras](monadic/algebras.md)**: [algebras of a monad](https://ncatlab.org/nlab/show/algebra+over+a+monad) and coalgebras of a comonad
 - **[Distributive Laws](monadic/distributive_laws.md)**: [distributive laws](https://ncatlab.org/nlab/show/distributive+law) between monads and comonads

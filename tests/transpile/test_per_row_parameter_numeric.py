@@ -85,16 +85,29 @@ def _change(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
-def _lda(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+def _lda_prior(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     theta, phi = v["theta"], v["phi"]
-    w, doc = v["w"].long(), v["doc_idx"].long()
     prior = D.Dirichlet(torch.ones(2, dtype=torch.float64)).log_prob(theta).sum()
-    prior = (
+    return (
         prior
         + D.Dirichlet(torch.full((3,), 0.5, dtype=torch.float64)).log_prob(phi).sum()
     )
-    # Each token's topic is drawn from its own document's weights.
-    return prior + torch.log((theta[doc] * phi[:, w].T).sum(-1)).sum()
+
+
+def _lda(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    theta, phi = v["theta"], v["phi"]
+    w, doc, token = v["w"].long(), v["doc_idx"].long(), v["token_idx"].long()
+    # Word `n` belongs to token `token[n]`, whose topic is drawn from its
+    # document's weights `theta[doc[token[n]]]`.
+    weights = theta[doc][token]
+    return _lda_prior(v) + torch.log((weights * phi[:, w].T).sum(-1)).sum()
+
+
+def _lda_unmapped(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    theta, phi = v["theta"], v["phi"]
+    w, doc = v["w"].long(), v["doc_idx"].long()
+    # Word `n` paired with row `n`'s weights, the `via` map left unread.
+    return _lda_prior(v) + torch.log((theta[doc] * phi[:, w].T).sum(-1)).sum()
 
 
 #: Each case: its fixture, its data, its clamped points, and its oracle.
@@ -144,6 +157,32 @@ _CASES: dict[str, tuple[str, dict[str, Host], list[dict[str, Host]], Oracle]] = 
         ],
         _lda,
     ),
+    # The word rows arrive in an order other than the tokens', so the
+    # `via` map is a permutation and each word must be weighed by its own
+    # token's document.
+    "lda-permuted-rows": (
+        _LDA,
+        {
+            "w": [2, 0, 1, 2, 0, 0],
+            "doc_idx": [0, 0, 0, 1, 1, 1],
+            "token_idx": [3, 0, 5, 1, 4, 2],
+        },
+        [
+            {
+                "theta": [[0.875, 0.125], [0.125, 0.875]],
+                "phi": [[0.75, 0.125, 0.125], [0.0625, 0.125, 0.8125]],
+            },
+            {
+                "theta": [[0.5, 0.5], [0.875, 0.125]],
+                "phi": [[0.25, 0.25, 0.5], [0.625, 0.25, 0.125]],
+            },
+            {
+                "theta": [[0.125, 0.875], [0.625, 0.375]],
+                "phi": [[0.75, 0.125, 0.125], [0.25, 0.5, 0.25]],
+            },
+        ],
+        _lda,
+    ),
 }
 
 #: The program each fixture exports.
@@ -178,7 +217,6 @@ _REFUSED: dict[tuple[str, str], str] = {
     # an expression; Gen and Turing read a marginalize's weights only from
     # a name with a declared plate.
     (_LDA, "bugs"): "observe:class-code:w",
-    (_LDA, "jags"): "let-expr:elementwise-axis-operator",
     (_LDA, "gen"): "marginalize:weight-plate:theta_tok",
     (_LDA, "turing"): "marginalize:weight-plate:theta_tok",
 }
@@ -318,6 +356,30 @@ def test_the_changepoint_oracle_separates_rows_from_a_shared_rate() -> None:
         + D.Poisson(values["rate_before"]).log_prob(values["y"]).sum()
     )
     assert abs(float(oracle(values)) - float(shared)) > 1.0
+
+
+def test_the_lda_oracle_separates_the_via_map_from_the_row_order() -> None:
+    # Pairing each word with its own row's weights, as a target that
+    # leaves the `via` map unread does, scores joints whose differences
+    # from the oracle's vary across the points, so the constant-spread
+    # check a target's densities face rejects them.
+    _, data, points, oracle = _CASES["lda-permuted-rows"]
+    expected: list[float] = []
+    unmapped: list[float] = []
+    for point in points:
+        values = {
+            name: torch.as_tensor(value, dtype=torch.float64)
+            for name, value in {**data, **point}.items()
+        }
+        expected.append(float(oracle(values)))
+        unmapped.append(float(_lda_unmapped(values)))
+    with pytest.raises(AssertionError):
+        _equivalence.assert_log_density_match(
+            expected,
+            unmapped,
+            atol=_equivalence.adaptive_atol(n_obs=6),
+            context="unmapped@lda-permuted-rows",
+        )
 
 
 @pytest.mark.parametrize(

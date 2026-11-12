@@ -97,7 +97,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
 )
 
@@ -193,9 +193,9 @@ class WebPPLRenderer(RendererBase):
         # support constraint. Powers broadcast detection (a scalar
         # ref into a vector-arg slot needs `repeat` wrapping).
         self._binding_supports: dict[str, ConstraintSpec] = {}
-        # `via` fibrations seen on the active observe scope; used by
+        # `via` index maps seen on the active observe scope; used by
         # ref substitution to thread the per-observe loop var through
-        # references whose binding plate matches the fibration's
+        # references whose binding plate matches the index map's
         # group axis.
         self._observe_via: str | None = None
         # The per-observe loop variable name, when an observe's
@@ -204,7 +204,7 @@ class WebPPLRenderer(RendererBase):
         # The active marginalize / group plate batch_dim names. When
         # an observe inside a marginalize scope renders, refs to
         # names whose binding plate aligns with this tuple get
-        # `via[loop_var]` indexed through the fibration; refs to
+        # `via[loop_var]` indexed through the index map; refs to
         # other plates pass through unchanged.
         self._group_plate_axes: tuple[str, ...] = ()
         # Static-cardinality table snapshotted from `IRProgram.cards`
@@ -305,6 +305,7 @@ class WebPPLRenderer(RendererBase):
             # although the family itself is scored through `.score`
             # rather than through the helper path.
             or _ir_uses_family(ir.body, "Categorical")
+            or _ir_uses_logit_constructor(ir.body)
             or qiec_helper_families_used(ir, self.target)
         ):
             _graft_runtime_webppl_helper(ctx.sb, self, "prog")
@@ -439,7 +440,9 @@ class WebPPLRenderer(RendererBase):
                 "qvr-webppl",
                 [f"family:unknown:{family}"],
             )
-        webppl_name = meta.target_names.get("webppl")
+        webppl_name = _LOGIT_CONSTRUCTORS.get(
+            (family, tuple(arg_names)), meta.target_names.get("webppl")
+        )
         if webppl_name is None:
             raise UnsupportedConstruct(
                 "qvr-webppl",
@@ -793,7 +796,7 @@ class WebPPLRenderer(RendererBase):
         The per-observe loop variable is bound to `n` (mapIndexed's
         first arg); the per-element observed value is bound to
         `<name>_n`. The body's `<dist>` rendering threads `n` through
-        the `via` fibration when present.
+        the `via` index map when present.
         """
         # A scalar family observed over one `over` axis scores each
         # coordinate on its own, one observation per entry, as a batch
@@ -946,8 +949,8 @@ class WebPPLRenderer(RendererBase):
         finally:
             self._group_plate_axes = prev_group
         # A grouped block keys its accumulator by group: the rows the
-        # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
+        # index map sends to one group are summed before the reduction.
+        index_map = marginalize_index_map(
             node,
             raw.observe,
             atoms[0].weight_args,
@@ -967,8 +970,8 @@ class WebPPLRenderer(RendererBase):
         ):
             name = f"{prefix}_t_{position}"
             term_vid = self._ident(ctx, term)
-            if fibration is not None:
-                via, group = fibration
+            if index_map is not None:
+                via, group = index_map
                 term_vid = self._call(
                     ctx,
                     self._ident(ctx, "_qvr_group_sums"),
@@ -1082,7 +1085,10 @@ class WebPPLRenderer(RendererBase):
             raise UnsupportedConstruct(
                 "qvr-webppl", [f"family:unknown:{observe.family}"]
             )
-        webppl_name = meta.target_names.get("webppl")
+        webppl_name = _LOGIT_CONSTRUCTORS.get(
+            (observe.family, tuple(observe.arg_names)),
+            meta.target_names.get("webppl"),
+        )
         if webppl_name is None:
             raise UnsupportedConstruct(
                 "qvr-webppl",
@@ -1304,7 +1310,7 @@ class WebPPLRenderer(RendererBase):
             )
         log_probs = f"{prefix}_w"
         if isinstance(probs, IRArgRef) and probs.indices:
-            # A grouped block reads its prior through a fibration, so
+            # A grouped block reads its prior through an index map, so
             # the weights are one row of the grouping plate per
             # observation. JavaScript subscripts an array with a
             # single integer and yields `undefined` for an array of
@@ -1434,15 +1440,15 @@ class WebPPLRenderer(RendererBase):
 
     # ------------------------------------------------------------------
     # IR-walk override: WebPPL-specific dispatch needs to thread the
-    # observe's `via` fibration through to ref-rendering.
+    # observe's `via` index map through to ref-rendering.
     # ------------------------------------------------------------------
 
     def _dispatch_node(self, ctx: RenderContext, node: IRNode) -> None:
         """WebPPL-specific dispatch.
 
-        Tracks the active observe's `via` fibration so ref rendering
+        Tracks the active observe's `via` index map so ref rendering
         can thread the per-element loop variable through references
-        whose binding plate matches the fibration's group axis.
+        whose binding plate matches the index map's group axis.
         """
         if isinstance(node, IRSample):
             if node.family == "GP":
@@ -1908,8 +1914,8 @@ class WebPPLRenderer(RendererBase):
 
         For an unbatched call site or an index-independent call
         site, returns `arg` unchanged. For an observed step under a
-        `via` fibration, the per-observe loop var is prepended to
-        the ref's index list along the fibration's group axis.
+        `via` index map, the per-observe loop var is prepended to
+        the ref's index list along the index map's group axis.
         """
         if not index_dependent or loop_name is None:
             return arg
@@ -1938,7 +1944,7 @@ class WebPPLRenderer(RendererBase):
                     name=arg.name,
                     indices=(loop_ref, *new_indices),
                 )
-            # Apply `via` fibration to refs whose binding plate
+            # Apply `via` index map to refs whose binding plate
             # equals the active marginalize / group plate. The
             # observe loop var goes through `<via>[<loop>]` so the
             # per-row observation indexes into the per-group latent
@@ -1988,7 +1994,7 @@ class WebPPLRenderer(RendererBase):
         """True iff `name` was registered as an IRDataInput (versus
         a sample / observe / let binding). Data inputs are the
         program's function parameters; their refs do not need
-        per-element threading through a `via` fibration.
+        per-element threading through a `via` index map.
         """
         plate = self._binding_plates.get(name)
         if plate is None:
@@ -2009,7 +2015,7 @@ class WebPPLRenderer(RendererBase):
         """True iff `decl`'s batch axes equal the active marginalize
         group plate axes.
 
-        Drives the `via` fibration threading: a ref to a name bound
+        Drives the `via` index map threading: a ref to a name bound
         on the marginalize plate (Doc) referenced from an observe
         on a different plate (Word) needs to be indexed by
         `<via>[<loop>]` when `via` maps the observe's plate to the
@@ -3189,6 +3195,38 @@ _WEBPPL_TENSOR_ARGS: dict[str, frozenset[str]] = {
 _WEBPPL_MATRIX_ARGS: dict[str, frozenset[str]] = {
     "MultivariateNormal": frozenset({"covariance_matrix"}),
 }
+
+
+#: The runtime constructor of each family call written through an
+#: alternative parameterization: a Bernoulli given by its logits scores
+#: each outcome by the log-sigmoid of the signed logits.
+_LOGIT_CONSTRUCTORS: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "BernoulliLogit",
+}
+
+
+def _ir_uses_logit_constructor(body: tuple[IRNode, ...]) -> bool:
+    """Whether a site draws or scores through a runtime logit constructor.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe calls a family under a
+        parameterization `_LOGIT_CONSTRUCTORS` spells.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and (
+            (node.family, tuple(node.arg_names)) in _LOGIT_CONSTRUCTORS
+        ):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_uses_logit_constructor(node.scope):
+            return True
+    return False
 
 
 def _inject_webppl_specific_args(

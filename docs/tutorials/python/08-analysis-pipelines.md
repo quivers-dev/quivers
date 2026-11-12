@@ -46,7 +46,7 @@ result = fit(
     data=df,
     family="gaussian",
     method="svi",
-    num_samples=2000,    # under SVI, num_samples is the number of optimization steps
+    num_steps=2000,
     seed=0,
 )
 ```
@@ -141,7 +141,7 @@ result = fit(
     data=df,
     family="gaussian",
     method="svi",
-    num_samples=4000,
+    num_steps=4000,
     seed=0,
 )
 print(result.qvr_source)
@@ -214,7 +214,7 @@ result = fit(
     family="cumulative",
     thresholds_by="rater",
     method="svi",
-    num_samples=4000,
+    num_steps=4000,
     seed=0,
 )
 ```
@@ -237,7 +237,7 @@ result = fit(
     predictor=net,
     predictor_data=features,
     method="svi",
-    num_samples=4000,
+    num_steps=4000,
     seed=0,
 )
 ```
@@ -276,7 +276,7 @@ choice_fit = fit(
     data=choice_data,
     family="categorical",
     method="svi",
-    num_samples=250,
+    num_steps=250,
     seed=0,
 )
 ```
@@ -295,7 +295,7 @@ choice_fit = fit(
     predictor=classifier,
     predictor_data=features,
     method="svi",
-    num_samples=3000,
+    num_steps=3000,
 )
 ```
 
@@ -318,7 +318,7 @@ mixture_fit = fit(
     family="mixture",
     mixture_components=3,
     method="svi",
-    num_samples=250,
+    num_steps=250,
     seed=0,
 )
 ```

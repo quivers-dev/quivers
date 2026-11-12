@@ -19,6 +19,7 @@ from quivers.formulas import Formula, families, formula_from_data
 from quivers.formulas._fit import BayesianFit
 from quivers.monadic.algebraic import EffectSignature, Handler
 from quivers.monadic.bridges import ArrowMonad, CoKleisli, Kleisli
+from quivers.core.algebras import GODEL
 from quivers.monadic.monads import FuzzyPowersetMonad
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 
@@ -31,10 +32,10 @@ def _formula() -> Formula:
 
 
 def test_bridges_compare_their_wrapped_object_by_identity():
-    monad = FuzzyPowersetMonad()
+    monad = FuzzyPowersetMonad(GODEL)
     assert Kleisli(monad=monad) == Kleisli(monad=monad)
     assert hash(Kleisli(monad=monad)) == hash(Kleisli(monad=monad))
-    assert Kleisli(monad=monad) != Kleisli(monad=FuzzyPowersetMonad())
+    assert Kleisli(monad=monad) != Kleisli(monad=FuzzyPowersetMonad(GODEL))
     arrow = torch.nn.Linear(1, 1)
     assert ArrowMonad(arrow=arrow) == ArrowMonad(arrow=arrow)
     assert ArrowMonad(arrow=arrow) != ArrowMonad(arrow=torch.nn.Linear(1, 1))
@@ -43,7 +44,7 @@ def test_bridges_compare_their_wrapped_object_by_identity():
 
 
 def test_bridges_keep_their_wrapped_object_through_copy_and_pickle():
-    monad = FuzzyPowersetMonad()
+    monad = FuzzyPowersetMonad(GODEL)
     kleisli = Kleisli(monad=monad)
     assert copy.copy(kleisli).monad is monad
     assert copy.copy(kleisli) == kleisli
@@ -54,7 +55,7 @@ def test_bridges_keep_their_wrapped_object_through_copy_and_pickle():
 
 
 def test_handler_compares_signature_by_value_and_clauses_by_identity():
-    target = FuzzyPowersetMonad()
+    target = FuzzyPowersetMonad(GODEL)
     clauses: dict[str, torch.nn.Module] = {}
     left = Handler(
         signature=EffectSignature(name="E"),
@@ -71,7 +72,7 @@ def test_handler_compares_signature_by_value_and_clauses_by_identity():
     assert left != same.with_(signature=EffectSignature(name="F"))
     assert left != Handler(
         signature=EffectSignature(name="E"),
-        target=FuzzyPowersetMonad(),
+        target=FuzzyPowersetMonad(GODEL),
         operation_clauses=clauses,
     )
     assert left != Handler(

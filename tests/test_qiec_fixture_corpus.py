@@ -91,7 +91,7 @@ _REFUSALS: dict[str, dict[str, str]] = {
         "bugs": "call:graph:account",
         "jags": "call:graph:account",
     },
-    "D": {"bugs": "marginalize:grouped-fibration"},
+    "D": {"bugs": "marginalize:grouped-index-map"},
     "E": {
         target: "qiec:capability:search:Ambiguous__run"
         for target in available_targets()

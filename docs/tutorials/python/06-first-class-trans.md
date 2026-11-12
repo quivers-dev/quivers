@@ -17,7 +17,7 @@ In PyTorch, `softmax(logits, dim=-1)` returns the normalized values with no reco
 
 ```python
 from quivers.core.algebra_morphisms import (
-    EXPECTATION, MATERIAL_IMPLICATION,
+    MARKOV_TO_PRODUCT_FUZZY, PRODUCT_FUZZY_TO_GODEL,
     PROBABILITY_CLAMP, PROBABILITY_TO_REAL,
     COUNTING_FROM_REAL, COUNTING_TO_REAL,
     IdentityHom, Threshold, Embedding,
@@ -72,12 +72,12 @@ The result is an observed morphism over `Markov`. A transformation along an axis
 [`compose_trans`](../../api/core/transformations.md) combines two or more transformations of either kind into a sequence, and checks that the target of each step is the source of the next:
 
 ```python
-from quivers.core.algebra_morphisms import EXPECTATION
+from quivers.core.algebra_morphisms import MARKOV_TO_PRODUCT_FUZZY
 from quivers.core.morphism_transformations import softmax
 from quivers.core.trans import compose_trans
 
 phi   = softmax(B)                # ProductFuzzyAlgebra -> Markov
-psi   = EXPECTATION               # Markov       -> ProductFuzzyAlgebra
+psi   = MARKOV_TO_PRODUCT_FUZZY   # Markov       -> ProductFuzzyAlgebra
 pipe  = compose_trans(phi, psi)   # ProductFuzzyAlgebra -> ProductFuzzyAlgebra
 
 g = f.change_base(pipe)
@@ -95,7 +95,7 @@ TypeError: compose_trans: target of step 0 ('Markov') does not match source of s
 ```python
 pipe = compose_trans(
     softmax(B),
-    EXPECTATION,
+    MARKOV_TO_PRODUCT_FUZZY,
     softmax(B),
 )
 g = f.change_base(pipe)
