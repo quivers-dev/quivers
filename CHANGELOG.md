@@ -4,12 +4,18 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.55.3] - 2026-11-12
 
 ### Fixed
 
-- **A grouped marginalization batched over its observation plate reads the observe's `via` map on every target.** In `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]` with `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]`, the Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church renderings weigh word `n` by `theta_tok[token_idx[n]]`, as Stan, the compiled runtime, and the reference machine do, where they had paired it with row `n`'s weights whenever the map was not the identity. A prior whose leading axis is the grouping plate counts as allocated per group whatever axes follow it, and a prior shared by every group sums the rows a group collects before the reduction over the class, as on a coarser grouping plate.
-- **JAGS renders a per-token topic model whose prior gathers each token's document row.** A `let theta_tok = theta[doc_idx]` lowers to `theta_tok[n, k] <- theta[doc_idx[n] + 1, k]`, reading the gathered row one entry per loop iteration, where JAGS had refused the model.
+- **A gathered row or slice of a table keeps the table's remaining axes on every target.** `let row_probs = table[idx]` with `table` over `(Kind, Class)` has the axes of `idx` followed by `Class`, so BUGS and JAGS compute it as `row_probs[m_Resp,m_Class] <- table[idx[m_Resp]+1,m_Class]`, where JAGS had subscripted the table with the row index alone and refused the model as a dimension mismatch whenever another object shared the class axis's extent. The same holds for a drawn index and for a slice of several axes (`table[idx]` with `table` over `(Group, Part, Class)`), which Church now reads at every axis it shares with the site. Gen and Turing refuse a slice of two or more axes gathered from a factor table under `let-expr:nested-slice-gather`, since they hold the table as a nested tower of vectors.
+- **An observe over `over` axes reads a parameter that varies along them one entry at a time on the compiled runtime.** `observe y : Row <- Normal(loc=s, scale=1.0) [over=[Part, Class]]` with `s` one `(Part, Class)` slice per row scores each entry at its own location, as the reference machine does, where every entry had been scored against the whole slice.
+
+## [0.55.2] - 2026-11-12
+
+### Fixed
+
+- **The compiled runtime scores a Poisson rate of zero and a Geometric success probability of one where they stand.** A positive count under `Poisson(rate=0)` and a positive failure count under `Geometric(probs=1)` have log probability `-inf` on the compiled runtime, as on the reference machine and every rendering target, where the inline clamp had floored the rate at `1e-7` and held the probability at `1 - 1e-7`, scoring such counts as finite. Inside a zero-inflated Poisson's `marginalize` block the structural-zero branch, whose gated rate is zero, thus puts no mass on a positive count. A rate below `1e-7` is likewise scored at its own value. Each family parameter's inline clamp may declare the closed interval it projects onto (`ParamSpec.inline_bounds`); every other parameter keeps its floor, and densities at interior values are unchanged.
 
 ## [0.55.1] - 2026-11-12
 

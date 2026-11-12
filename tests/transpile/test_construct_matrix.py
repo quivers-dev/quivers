@@ -489,6 +489,24 @@ for _backend in ("bugs", "jags"):
 _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
     "sample:discrete-latent"
 )
+# A row gathered by a drawn class draws that class, which Stan cannot
+# carry, from a list-literal probability vector BUGS and JAGS do not take.
+_EXPECTED_ORTHOGONAL_RAISES[("stan", "let_expressions", "let_row_gather_drawn")] = (
+    "sample:discrete-latent"
+)
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "let_expressions", "let_row_gather_drawn")
+    ] = "arg:list-literal"
+# A slice of two axes gathered from a factor table is a nested tower on
+# Gen and Turing, and an observation over three axes WebPPL cannot carry.
+for _backend in ("gen", "turing"):
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "let_expressions", "let_slice_gather")] = (
+        "let-expr:nested-slice-gather:row_slice"
+    )
+_EXPECTED_ORTHOGONAL_RAISES[("webppl", "let_expressions", "let_slice_gather")] = (
+    "batch-rank:3"
+)
 # A gather by a sampled class draws that class, which Stan cannot carry;
 # BUGS / JAGS take no list-literal probability vector; Turing has no
 # lift of a residual event axis over a plate, and WebPPL carries one

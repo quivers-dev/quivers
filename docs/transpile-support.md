@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 140 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 142 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 72 / 140   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 87 / 140   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 104 / 140  |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 92 / 140   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 79 / 140   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 119 / 140  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 105 / 140  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 121 / 140  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 107 / 140  |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 98 / 140   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 97 / 140   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 73 / 142   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 89 / 142   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 106 / 142  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 93 / 142   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 79 / 142   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 121 / 142  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 107 / 142  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 123 / 142  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 108 / 142  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 99 / 142   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 98 / 142   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -151,7 +151,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_body_plated_let`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_continuous_bernoulli_logits` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_factor_let_rows`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | yes  | yes     | yes  | yes  | yes  | no     | yes    |
+| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_gather`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_value`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_probs`                   | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -245,10 +245,12 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_reduce_nested`           | no   | no     | yes     | no  | no   | yes     | yes  | yes  | no   | no     | yes    |
 | `let_expressions/let_reduce_plate`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_row_gather`              | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_row_gather_drawn`        | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `let_expressions/let_row_gather_sampled`      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_scalar_from_plate`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_score_host_weight`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_select`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_slice_gather`            | yes  | yes    | yes     | no  | yes  | yes     | yes  | yes  | yes  | no     | no     |
 | `let_expressions/let_template_substitution`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_tensor_builtins`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
@@ -633,7 +635,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:list-literal`**
 
-Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
+Refused for: `let_expressions/let_row_gather_drawn`, `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -643,7 +645,7 @@ Reported kinds:
 arg:list-literal
 ```
 
-`bugs` on `steps/observe_gather_event_vector` reports:
+`bugs` on `let_expressions/let_row_gather_drawn` reports:
 
 ```text
 bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
@@ -1215,7 +1217,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`, [`lda`](examples/lda.md).
 
-Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -2198,6 +2200,24 @@ let-expr:axis-reduction:gen: `sum(...)` reduces the last axis of a factor over m
 gen-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
 ```
 
+**`let-expr:nested-slice-gather:row_slice`**
+
+Refused for: `let_expressions/let_slice_gather`.
+
+Renders on: `bugs`, `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+let-expr:nested-slice-gather:row_slice: 'row_slice' gathers slices of 2 axes from the factor table 'table', which Julia holds as a nested tower of vectors, one level per binder; a site reads such a slice with one subscript per axis, which the tower does not take
+```
+
+`gen` on `let_expressions/let_slice_gather` reports:
+
+```text
+gen cannot emit a `let` body the IR carries as `nested-slice-gather` as a `let` body: 'row_slice' gathers slices of 2 axes from the factor table 'table', which Julia holds as a nested tower of vectors, one level per binder; a site reads such a slice with one subscript per axis, which the tower does not take
+```
+
 **`marginalize:ungrouped-over-plate:state`**
 
 Refused for: [`hmm`](examples/hmm.md).
@@ -2256,7 +2276,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -2276,7 +2296,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:list-literal`**
 
-Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
+Refused for: `let_expressions/let_row_gather_drawn`, `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -2286,7 +2306,7 @@ Reported kinds:
 arg:list-literal
 ```
 
-`jags` on `steps/observe_gather_event_vector` reports:
+`jags` on `let_expressions/let_row_gather_drawn` reports:
 
 ```text
 jags cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
@@ -2669,6 +2689,24 @@ let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the in
 
 ```text
 jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
+```
+
+**`let-expr:elementwise-axis-operator:jags`**
+
+Refused for: `steps/marginalize_gathered_prior_data`.
+
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:elementwise-axis-operator:jags: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
+```
+
+`jags` on `steps/marginalize_gathered_prior_data` reports:
+
+```text
+jags-helper cannot lift an infix operator over an axis inside a `let`: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
 ```
 
 **`marginalize:ungrouped-over-plate:state`**
@@ -3190,6 +3228,24 @@ stan cannot transpile this program:
   - QIEC computation `read` requires the `perform` QIEC capability, but Stan has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
+**`sample:discrete-latent:group`**
+
+Refused for: `let_expressions/let_row_gather_drawn`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+sample:discrete-latent:group: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
+```
+
+`stan` on `let_expressions/let_row_gather_drawn` reports:
+
+```text
+stan cannot emit this `sample` step: Stan has no discrete parameters, so a Categorical draw must be marginalized rather than sampled
+```
+
 **`sample:discrete-latent:z`**
 
 Refused for: `steps/observe_gather_event_vector`, `steps/observe_gather_matrix_row`, `steps/sample_class_code`.
@@ -3428,6 +3484,24 @@ let-expr:axis-reduction:turing: `sum(...)` reduces the last axis of a factor ove
 turing-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: `sum(...)` reduces the last axis of a factor over more than two binders, which the nested vector form has no single broadcast for
 ```
 
+**`let-expr:nested-slice-gather:row_slice`**
+
+Refused for: `let_expressions/let_slice_gather`.
+
+Renders on: `bugs`, `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+let-expr:nested-slice-gather:row_slice: 'row_slice' gathers slices of 2 axes from the factor table 'table', which Julia holds as a nested tower of vectors, one level per binder; a site reads such a slice with one subscript per axis, which the tower does not take
+```
+
+`turing` on `let_expressions/let_slice_gather` reports:
+
+```text
+turing cannot emit a `let` body the IR carries as `nested-slice-gather` as a `let` body: 'row_slice' gathers slices of 2 axes from the factor table 'table', which Julia holds as a nested tower of vectors, one level per binder; a site reads such a slice with one subscript per axis, which the tower does not take
+```
+
 **`marginalize:ungrouped-over-plate:state`**
 
 Refused for: [`hmm`](examples/hmm.md).
@@ -3486,7 +3560,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -3542,9 +3616,9 @@ the site is plated over 2 axes, and a WebPPL draw carries one: WebPPL emits one 
 
 **`batch-rank:3`**
 
-Refused for: `axes/observe_independent_array`, `axes/scalar_independent_array`.
+Refused for: `axes/observe_independent_array`, `axes/scalar_independent_array`, `let_expressions/let_slice_gather`.
 
-Renders on: `bugs`, `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+Renders on: `bugs`, `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`.
 
 Reported kinds:
 
