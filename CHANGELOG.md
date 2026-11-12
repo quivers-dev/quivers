@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **`quivers.giry` is removed.** Import `GiryMonad` and `FinStoch` from `quivers.stochastic.giry` or `quivers`.
 - **`ChartView.derivations(item)` returns the rule applications that derive the item.** Each is a rule name and its antecedent items in premise order, the item's incoming hyperedges in the derivation hypergraph; it had returned every item in the chart. `AgendaResult.applications` lists every rule application of a run.
 - **The stdlib `Lambek` system is `AB`.** It has forward and backward application only, which is the AB (Ajdukiewicz-Bar-Hillel) categorial grammar, not the Lambek calculus; `STDLIB_DEDUCTIONS` lists it as `"AB"`.
 - **`fit` takes the SVI step count as `num_steps`.** `fit(..., method="svi", num_steps=N)` runs `N` optimization steps (1000 by default) at the Adam rate `learning_rate` (0.01 by default); `num_warmup`, `num_samples`, and `num_chains` count MCMC iterations only (500, 1000, and 4 by default). Passing an MCMC count with `method="svi"`, or `num_steps` with NUTS or HMC, raises a `ValueError`, where `num_samples` had been read as the SVI step count.
@@ -16,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **`AttentionSource` reads a single feature vector as a sequence of length one.** A `(domain_dim,)` input is scored as one position, as a `(batch, domain_dim)` input is one position per row, where it had been split into `domain_dim` positions of width one and refused by the attention layer. A loss `on=rule(...)` that does not name both the rule and its deduction is refused with the accepted form `on=rule(RULE, DEDUCTION)`.
 - **The stdlib `CCG` and `AB` systems recognize sentences.** Their items are spans `("span", i, j, category)` and their rules combine adjacent spans, so `NP (S\NP)/NP NP` derives `S` over the whole input; they had combined bare categories wherever they stood, and their goal tested span items their rules never produced. `CCG` has forward and backward harmonic composition, as documented.
 - **A posterior block's parameters have the types of the latents it consumes.** In `program post(z) : Item -> R [effects=[Pure], over=scored]`, `z` has the type of the latent `z` that `scored` samples (a real for a real draw, a real vector for a vector draw), so `exp(z)` or `softmax(raw)` checks without an annotation, where an unannotated parameter had been typed by the block's domain factor (an index for a finite domain). A parameter that names no latent of the consumed model is refused at its declaration.
 - **Drawing from a structural decoder or encoder in a program is a located compile error.** `sample t <- Dec(h)`, `observe t <- Dec(h)`, and `sample t <- Enc(h)` raise a `CompileError` at the step, saying that a decoder's values are terms of its signature (score them with `Dec.log_prob` in a loss) and that an encoder is a deterministic map, where they had raised a bare `AttributeError`.

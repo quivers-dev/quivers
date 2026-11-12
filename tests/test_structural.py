@@ -743,3 +743,27 @@ def test_with_produces_a_term_with_its_own_structural_hash():
 def test_term_rejects_arguments_outside_term_arg(args):
     with pytest.raises(dx.ValidationError, match="Term 'C'"):
         Term(op="C", args=args)
+
+
+def test_rule_attachment_needs_the_rule_and_its_deduction():
+    """``on=rule(R)`` without the deduction is refused with the accepted form."""
+    src = """
+    signature Items
+        sorts
+            Item : object [dim=4]
+        constructors
+            NP : -> Item
+            S : -> Item
+
+    encoder C : Items
+        dim Item = 4
+
+    deduction D : Item -> Item [semiring=LogProb, signature=Items, encoder=C]
+        atoms NP, S
+        rule app : NP, NP |- S
+
+    loss per_app [weight=1.0, on=rule(app)]
+        0.5
+    """
+    with pytest.raises(CompileError, match=r"on=rule\(RULE, DEDUCTION\)"):
+        loads(textwrap.dedent(src))
