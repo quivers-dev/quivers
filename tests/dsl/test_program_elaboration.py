@@ -20,7 +20,6 @@ from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler, parse
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.qiec_lowering import QiecDiagnosticError, lower_qvr_to_qiec
-from quivers.effects.checked_program import CheckedProgram
 from quivers.inference.trace import trace
 from quivers.qiec import (
     INT,
@@ -708,17 +707,17 @@ def test_programs_and_computations_call_each_other() -> None:
     assert run.log_joint == pytest.approx(expected)
 
 
-def test_a_call_step_round_trips_through_the_emitter_and_runs_checked() -> None:
-    """A program calling a computation compiles to its checked
-    computation: the runtime compiler builds no step table for it, and
-    its Python surface runs the module's entry point, scoring the same
-    joint the reference run scores."""
+def test_a_call_step_round_trips_through_the_emitter_and_runs_in_place() -> None:
+    """A program calling a computation that only draws runs the callee's
+    steps in place: its site ``noise`` is the program's ``c$noise``, and
+    the compiled joint is the one the reference run scores under the
+    callee's own label."""
     module = parse(CALLS)
     source = module_to_source(module)
     assert "    let b <- shift(a, 2.0)\n" in source
     assert module_to_source(parse(source)) == source
     program = Compiler(module).compile()
-    assert isinstance(program.morphism, CheckedProgram)
+    assert isinstance(program.morphism, MonadicProgram)
     checked = _module(CALLS)
     reference = run_program(
         checked, "prog", data={"y": 2.4}, sites={"a": 0.3, "noise": 2.35}
@@ -729,8 +728,8 @@ def test_a_call_step_round_trips_through_the_emitter_and_runs_checked() -> None:
         torch.zeros(1, 1),
         {
             "y": torch.tensor(2.4, dtype=torch.float64),
-            "a": torch.tensor(0.3, dtype=torch.float64),
-            "noise": torch.tensor(2.35, dtype=torch.float64),
+            "a": torch.tensor([0.3], dtype=torch.float64),
+            "c$noise": torch.tensor([2.35], dtype=torch.float64),
         },
     )
     assert joint.shape == (1,)

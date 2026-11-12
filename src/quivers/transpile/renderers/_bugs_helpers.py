@@ -777,7 +777,17 @@ def _emit_binop(ctx: _LetEnv, expr: LetExprBinOp) -> str:
     ctx.constraint(b, "field:operator", expr.op)
     ctx.constraint(b, "chose-alt-fingerprint", expr.op)
     ctx.e(b, _render_bugs_operand(ctx, expr.left), "left")
-    ctx.e(b, _render_bugs_operand(ctx, expr.right), "right")
+    right = _render_bugs_operand(ctx, expr.right)
+    if (
+        expr.op == "<"
+        and isinstance(expr.right, LetExprLiteral)
+        and expr.right.value < 0
+    ):
+        # The printer writes no space around `<`, and `b<-0.5` would
+        # read as the assignment arrow: a negative right operand is
+        # parenthesized, `b<(-0.5)`.
+        right = _emit_paren(ctx, right, _arg_edge_kind(expr.right))
+    ctx.e(b, right, "right")
     return b
 
 

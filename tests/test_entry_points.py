@@ -18,7 +18,7 @@ import torch
 from quivers.cli.repl_session import ReplSession
 from quivers.cli.run import main as run_main
 from quivers.dsl import Compiler, load, parse
-from quivers.effects.checked_program import CheckedProgram
+from quivers.continuous import MonadicProgram
 from quivers.qiec import (
     ExecutionFailure,
     RuntimeConfiguration,
@@ -344,9 +344,12 @@ def test_repl_run_matches_the_cli_and_python(source_path: Path) -> None:
         assert failure.diagnostics[0].code == code, invocation
 
 
-def test_the_compiled_program_is_the_checked_entry(source_path: Path) -> None:
+def test_the_compiled_program_runs_the_callee_in_place(source_path: Path) -> None:
+    """The program's call of ``noisy``, which only draws and scores, runs
+    in place: the compiled joint at ``c$noise`` is the reference run's at
+    the callee's own site ``noise``."""
     program = load(source_path)
-    assert isinstance(program.morphism, CheckedProgram)
+    assert isinstance(program.morphism, MonadicProgram)
     assert [point.name for point in program.entry_points()] == [
         "prog",
         "shift",
@@ -354,30 +357,18 @@ def test_the_compiled_program_is_the_checked_entry(source_path: Path) -> None:
     ]
     assert program.entry("prog").kind == "program"
     run = program.run("prog", data={"y": DATA}, sites={"a": 0.5}, seed=0)
-    seed_reference_rng(0)
-    drawn = program.morphism.rsample(
-        torch.zeros(1, 1),
-        observations={"y": torch.tensor(DATA), "a": torch.tensor(0.5)},
-    )
-    assert drawn.shape == (1, 1)
-    assert float(drawn[0, 0]) == pytest.approx(run.value)
     joint = program.morphism.log_joint(
         torch.zeros(2, 1),
         {
-            "y": torch.tensor(DATA, dtype=torch.float64),
-            "a": torch.tensor(0.5, dtype=torch.float64),
-            "noise": torch.tensor(run.value, dtype=torch.float64),
+            "y": torch.tensor(DATA),
+            "a": torch.tensor([0.5]),
+            "c$noise": torch.tensor([float(run.value)]),
         },
     )
     assert joint.shape == (2,)
-    assert float(joint[0]) == pytest.approx(run.log_joint)
-    assert float(joint[1]) == pytest.approx(run.log_joint)
-    assert program.morphism.observed_names() == {"y"}
-    with pytest.raises(NotImplementedError):
-        program.morphism.log_prob(torch.zeros(1, 1), torch.zeros(1, 1))
-    with pytest.raises(ExecutionFailure) as failure:
-        program.morphism.log_joint(torch.zeros(1, 1), {"y": torch.tensor(DATA)})
-    assert failure.value.diagnostic.code == "qiec-run-evaluation"
+    assert float(joint[0]) == pytest.approx(run.log_joint, rel=1e-5)
+    assert float(joint[1]) == pytest.approx(run.log_joint, rel=1e-5)
+    assert program.morphism.observed_names == {"y"}
     sampled = program.morphism.rsample(
         torch.zeros(1, 1), torch.Size([3]), observations={"y": torch.tensor(DATA)}
     )

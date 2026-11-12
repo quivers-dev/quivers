@@ -9,6 +9,11 @@ morphism whose forward samples and joint densities are the module's own
 [`run_program`][quivers.qiec.program_runtime.run_program] runs, so the
 program's Python surface is the one entry point the command line and the
 REPL invoke.
+
+The reference machine carries numbers, not tensors, so a checked program
+cannot be fit: it has no step table, and reading one raises the refusal
+the compiler recorded, which says which call could not be lowered to
+compiled runtime steps and why.
 """
 
 from __future__ import annotations
@@ -108,15 +113,62 @@ class CheckedProgram(ContinuousMorphism):
         The checked module holding the program's entry point.
     name : str
         The program's name.
+    refusal : Exception | None
+        Why the program cannot be fit, raised by every fitting entry
+        point (`trace`, MCMC, SVI, and the rest read the program's
+        steps); ``None`` gives a refusal naming the program.
     """
 
     def __init__(
-        self, domain: AnySpace, codomain: AnySpace, module: QiecModule, name: str
+        self,
+        domain: AnySpace,
+        codomain: AnySpace,
+        module: QiecModule,
+        name: str,
+        refusal: Exception | None = None,
     ) -> None:
         super().__init__(domain, codomain)
         self._module = module
         self._name = name
         self._entry: ProgramEntry = program_entry(module, name)
+        self._refusal = refusal
+
+    @property
+    def refusal(self) -> Exception:
+        """Why the program cannot be fit.
+
+        Returns
+        -------
+        Exception
+            The located refusal the compiler recorded for the call it
+            could not lower, or a refusal naming the program.
+        """
+        if self._refusal is not None:
+            return self._refusal
+        return TypeError(
+            f"program {self._name!r} runs on the reference machine only and "
+            f"has no compiled steps to fit"
+        )
+
+    @property
+    def steps(self) -> tuple[()]:
+        """The compiled step table, which a checked program does not have.
+
+        Every fitting entry point reads a program's steps, so reading
+        them here raises the refusal that says why the program cannot
+        be fit.
+
+        Returns
+        -------
+        tuple[()]
+            Never returns.
+
+        Raises
+        ------
+        Exception
+            [`refusal`][quivers.effects.checked_program.CheckedProgram.refusal].
+        """
+        raise self.refusal
 
     @property
     def module(self) -> QiecModule:
