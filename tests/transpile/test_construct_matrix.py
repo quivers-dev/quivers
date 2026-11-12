@@ -212,6 +212,12 @@ for _backend in _BACKENDS:
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "kernel_latent_weights")] = (
         "param-source:linear:latent"
     )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "function_self_attention")] = (
+        "param-source:self_attention"
+    )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "function_positions")] = (
+        "param-source:positions"
+    )
 # BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
 # QVR reduction collapses only the last.
 for _backend in ("bugs", "jags"):

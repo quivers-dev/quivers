@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
 - **Transpiling a deeply nested expression is linear in its depth.** quivers requires `didactic>=0.18.2`, whose models keep a nested child as built rather than re-encoding it at every level, so a let that sums twelve builtin calls transpiles in a fraction of a second where it had taken most of a minute. The floor brings `panproto` and `panproto-grammars-all` to `0.77.0`, which that `didactic` requires.
 
+## [0.52.0] - 2026-11-11
+
+### Added
+
+- **Learned causal self-attention and position tables over open-length sequences.** A `[role=function]` morphism declared `param_source=self_attention, heads=h, causal=true|false` is multi-head scaled dot-product self-attention, and one declared `param_source=positions(N)` adds a learned vector to each of up to `N` positions. A program calls either in a `let` on a table `Tensor[Real]([T, d])` (the every-state binding of a scan with `outputs=all`, a `let` over one, or a host table) and reads back a table of the same length, `T` open, so a residual block is `let h = u + attn(layer_norm(u))`. Under `causal=true` position `i` attends to positions `j <= i` only. The checked elaboration builds the map from comprehensions over the open extent, with the query, key, value, and output projections (`<f>_param_query_weight`, ..., `<f>_param_weight`) and the position table (`<f>_param_positions`) as typed program inputs, so the reference machine and the compiled runtime agree on it. The runtime realization is the new `SequenceFunction` over a `SelfAttentionSource` or a `PositionSource` (`quivers.continuous`). `heads` must divide the codomain's width and `causal` must be stated; `output`, `activation`, and `weights=latent` are refused for both networks, a sequence function composed in a chain or used as a scan's cell is refused (`chain:sequence-function:<f>`), and every transpile target refuses it as `param-source:self_attention` or `param-source:positions`.
+
 ## [0.51.0] - 2026-11-11
 
 ### Changed

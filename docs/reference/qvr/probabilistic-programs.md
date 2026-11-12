@@ -548,6 +548,59 @@ sites nor data a target is given. A `param_source=identity` function has no
 weights: it is its output nonlinearity applied to its argument, and every
 target renders it.
 
+## Sequence functions
+
+A learned function declared with `param_source=self_attention` or
+`param_source=positions(N)` reads a whole sequence. A program calls it in a
+`let` with one argument, a table `Tensor[Real]([T, d])` with `d` the width
+of its domain and `T` any extent, open or fixed; a free name passed straight
+to it is a host table `Tensor[Real]([<name>_extent, d])`. The value is the
+table `Tensor[Real]([T, m])` for a codomain of width `m`.
+
+<!-- compile: false -->
+```qvr
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+morphism positions : Model -> Model [role=function, param_source=positions(32)]
+```
+
+Self-attention with `h` heads of width `e = m / h` elaborates to comprehensions
+over `T`:
+
+1. the query, key, and value tables, one affine map per row,
+   `q[i] = Wq x[i] + bq` and likewise `k` and `v`, with weights
+   `attn_param_query_weight` `(m, d)` and bias `attn_param_query_bias` `(m)`
+   (and `key`, `value`);
+2. per head `g` and position `i`, the scores
+   `s[j] = sum_u q[i, g e + u] k[j, g e + u] / sqrt(e)` and the weights
+   `softmax(s)`; under `causal=true`, the weights
+   `w[j] = [j <= i] exp(s[j] - max_{j' <= i} s[j'])` normalized to sum to
+   one, which are the softmax over the positions `j <= i` and zero after `i`;
+3. the context `c[i, col] = sum_j a[col div e, i, j] v[j, col]`, the heads'
+   weighted values laid end to end;
+4. the output projection `attn_param_weight c[i] + attn_param_bias` at every
+   position, with weight `(m, m)`.
+
+A position table elaborates to `x[i, k] + positions_param_positions[i, k]`,
+with the table `(N, d)` a program input of role `weight`; a sequence longer
+than `N` is refused when it is read. The weights are typed program inputs, so
+the reference machine runs a call with the compiled program's weights
+supplied as data, and the compiled runtime holds the network as submodule
+`_function_<f>` (parameters `source.query`, `source.key`, `source.value`,
+`source.output`, or `source.table`). Each call is bound as `<f>__call<n>`.
+
+A sequence function contributes no site. Drawing from one is refused, as is
+a call whose argument is not one table of `d`-wide rows (a single vector, for
+instance), a call inside a `factor` or lambda body, and a sequence function
+composed in a chain or used as a scan's cell, which apply their morphisms
+one position at a time (`chain:sequence-function:<f>`, where the chain is
+drawn). The options `heads`, a positive divisor of `m`, and `causal`, `true`
+or `false` and required, belong to `self_attention`; `output`, `activation`,
+and `weights=latent` are refused for both networks.
+
+Every transpile target refuses a sequence function under
+`param-source:self_attention` or `param-source:positions`, because its
+weights are neither sites nor data a target is given.
+
 ## Latent network weights
 
 A network kernel or a learned function declared `[weights=latent,

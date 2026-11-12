@@ -27,7 +27,11 @@ from torch import nn
 from torch.func import functional_call
 
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
-from quivers.continuous.param_source import ParamSource
+from quivers.continuous.param_source import (
+    ParamSource,
+    PositionSource,
+    SelfAttentionSource,
+)
 from quivers.continuous.spaces import (
     CholeskyFactor,
     ContinuousSpace,
@@ -571,10 +575,137 @@ class LearnedFunction(DeterministicMorphism):
         )
 
 
+class SequenceFunction(LearnedFunction):
+    """A learned deterministic map from a sequence of rows to a sequence.
+
+    Where a `LearnedFunction` maps each row on its own, a sequence
+    function reads every row of a sequence at once: the axis before the
+    coordinate axis is the position axis, and the image at a position may
+    depend on every other position. Its network is a
+    [`SelfAttentionSource`][quivers.continuous.param_source.SelfAttentionSource],
+    which mixes the positions, or a
+    [`PositionSource`][quivers.continuous.param_source.PositionSource],
+    which adds a learned vector per position. Like a learned function it
+    contributes no site and no density, and its weights are module
+    parameters fit as point estimates.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The space of one row of the input sequence; not a product.
+    codomain : AnySpace
+        The space of one row of the output sequence.
+    source : SelfAttentionSource | PositionSource
+        The network, from a sequence of domain rows to a sequence of
+        codomain rows.
+
+    Raises
+    ------
+    TypeError
+        If the domain or codomain is not continuous.
+    ValueError
+        If the domain is a product, or the source's output width is not
+        the codomain's width.
+    """
+
+    def __init__(
+        self,
+        domain: AnySpace,
+        codomain: AnySpace,
+        source: SelfAttentionSource | PositionSource,
+    ) -> None:
+        if isinstance(domain, ProductSpace):
+            raise ValueError(
+                f"SequenceFunction: a sequence function reads one sequence, "
+                f"but its domain {domain!s} is a product"
+            )
+        super().__init__(domain, codomain, source)
+
+    def evaluate(
+        self, x: torch.Tensor, weights: Mapping[str, torch.Tensor] | None = None
+    ) -> torch.Tensor:
+        """Apply the map to a batch of sequences.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Sequences, shape ``(..., T, domain_dim)``: the axis before the
+            coordinate axis is the position axis, and any axes before it
+            are kept.
+        weights : Mapping[str, torch.Tensor] | None
+            Must be ``None``: a sequence function's weights are point
+            estimates.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(..., T, codomain_dim)``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` has no position axis, its rows are not the domain's
+            width, or drawn weights are passed.
+        """
+        if weights is not None:
+            raise ValueError(
+                "SequenceFunction: the network's weights are point estimates, "
+                "so it reads no drawn weights"
+            )
+        (width,) = self.factor_widths
+        if x.dim() < 2 or int(x.shape[-1]) != width:
+            raise ValueError(
+                f"SequenceFunction: expected a sequence of {width}-wide rows, "
+                f"shape (..., T, {width}), got {tuple(x.shape)}"
+            )
+        if not x.is_floating_point():
+            x = x.to(torch.get_default_dtype())
+        return self.source(x)
+
+    def apply_values(
+        self,
+        *values: torch.Tensor,
+        weights: Mapping[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Apply the map to one sequence, as a program's let call does.
+
+        Parameters
+        ----------
+        *values : torch.Tensor
+            The one sequence, shape ``(..., T, domain_dim)``.
+        weights : Mapping[str, torch.Tensor] | None
+            Must be ``None``.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(..., T, codomain_dim)``.
+
+        Raises
+        ------
+        ValueError
+            If the call passes other than one value, or `evaluate`
+            refuses it.
+        """
+        if len(values) != 1:
+            raise ValueError(
+                f"SequenceFunction: a sequence function reads one sequence, "
+                f"but the call passes {len(values)} arguments"
+            )
+        return self.evaluate(torch.as_tensor(values[0]), weights)
+
+    def __repr__(self) -> str:
+        return (
+            f"SequenceFunction({self.domain!s} → {self.codomain!s}, "
+            f"source={type(self.source).__name__})"
+        )
+
+
 __all__ = [
     "DeterministicMorphism",
     "FunctionOutput",
     "LearnedFunction",
+    "SequenceFunction",
     "network_weight_sites",
     "weight_site_names",
     "cholesky_quad_form_morphism",
