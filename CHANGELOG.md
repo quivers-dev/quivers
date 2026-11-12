@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.56.0] - 2026-11-12
+
+### Added
+
+- **`Bernoulli(logits=...)` on Gen, WebPPL, JAGS, and Church.** Each target scores a Bernoulli given by its log-odds `l` from the log-odds themselves, `log p(1) = log sigmoid(l)` and `log p(0) = log sigmoid(-l)` in the form `min(v, 0) - log1p(exp(-|v|))` (JAGS: `x * l - ((l + |l|) / 2 + log(1 + exp(-|l|)))`), which keeps its digits at log-odds of ±30 where the probability is within an ulp of zero or one. Gen draws through a grafted `qvr_bernoulli_logit` distribution, WebPPL through a runtime `BernoulliLogit`, Church through `flip-logit`, and JAGS scores the mass with the zeros trick, a drawn outcome declared by a uniform `dbern(0.5)` carrier. BUGS still refuses the parameterization under `family:Bernoulli:logits`: its `dbern` takes a probability, whose complement loses its digits near ±30, and it has no data block to bind the zeros-trick carrier.
+
+### Fixed
+
+- **PyMC scores `Bernoulli(logits=...)` exactly at saturated log-odds.** The site is a grafted `BernoulliLogit` `CustomDist` whose mass is `value * l - softplus(l)`, where `pymc.Bernoulli(logit_p=...)` had lost about `1e-3` of the log density at log-odds 30.
+- **Stan refuses every discrete latent draw.** A `sample` from a family with integer support (a `Bernoulli`, a `Poisson`, ...) is refused under `sample:discrete-latent`, as a class code already was, where Stan had been handed an integer parameter it does not compile.
+
 ## [0.55.4] - 2026-11-12
 
 ### Fixed
