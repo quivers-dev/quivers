@@ -1,144 +1,86 @@
 # Transpilation architecture
 
-The transpile layer in `quivers.transpile`
-converts supported QVR modules $M$ to source bytes for a
-target probabilistic programming language $\mathsf{T}$. This page
-describes the architecture of that realization: the intermediate
-representation, the family-metadata registry, the per-target
-renderer interface, and the dispatch pattern that lets one walker
-serve eleven backends without family-name special-casing.
+The package `quivers.transpile` translates a QVR module $M$ into source text for another probabilistic
+programming language $\mathsf T$: Stan, NumPyro, Pyro, PyMC, Edward2, Turing.jl, Gen.jl, Church,
+WebPPL, BUGS, or JAGS. A translation must keep the model's factors, shapes, and supports while the
+notation changes. A Normal with `scale=2` may become a constructor that takes a standard deviation of
+$2$ or one that takes a precision of $1/2^2 = 0.25$, and copying the number without converting it
+would change the model. The pipeline below keeps meaning and spelling apart: an intermediate
+representation (IR) records what each statement means, and a renderer for each target decides how to
+write it. What the evidence for a correct translation is, and how it is checked, is on
+[Transpilation correctness](transpile-correctness/index.md).
 
-The companion [transpilation-correctness contract](transpile-correctness/index.md)
-states the evidence available for supported programs. This page
-describes how the pieces fit together.
-
-A transpiler translates a model description into another language. It must
-preserve the model's factors, shapes, and support, even when the destination
-uses different notation. For instance, a Normal family with `scale=2`
-may become a constructor with standard deviation 2 or one with precision
-$1/2^2=0.25$. Copying the number without translating its meaning would change
-the model.
-
-The intermediate representation (IR) is a structured common description of
-the model. Checking establishes its types and effects; planning identifies
-model operations; rendering expresses them in a target grammar; printing
-turns that structure into source text. Keeping these steps separate lets an
-axis or distribution argument retain its meaning while its spelling changes.
-The examples below expose each boundary before the larger LDA walkthrough.
-
-## 1. The shared pipeline
-
-The transpile pipeline elaborates and checks the module first; the program's
-plan is derived from its checked computation; the selected renderer then
-renders the plan and the module's other computations, analyzing each
-computation's capabilities before it is placed:
+## 1. The pipeline {#1-the-shared-pipeline}
 
 $$
 \mathrm{Module}
-\;\xrightarrow{\;\mathsf{Lower}=\mathsf{Check};\mathsf{Plan}\;}\;
+\xrightarrow{\ \mathsf{Lower} = \mathsf{Check} ; \mathsf{Plan}\ }
 \mathrm{IRProgram}
-\;\xrightarrow{\;\mathsf{Render}_{\mathsf{T}}[
-  \mathsf{AnalyzeQIEC}_{\mathsf{T}}]\;}\;
+\xrightarrow{\ \mathsf{Render}_{\mathsf{T}}[\mathsf{AnalyzeQIEC}_{\mathsf{T}}]\ }
 \mathrm{panproto.Schema}
-\;\xrightarrow{\;\mathsf{Pretty}_{\mathsf{T}}\;}\;
+\xrightarrow{\ \mathsf{Pretty}_{\mathsf{T}}\ }
 \mathrm{bytes}
 $$
 
-Each arrow is a small transformation; the composition is
-the correctness framework's first structural handle,
-because each arrow's correctness lemma is local to its file.
+- **`Check`** elaborates the module to the Quivers Indexed Effect Core (QIEC): it compiles the indexed
+  family declarations, elaborates every entry-point program to a named computation, and checks the whole
+  module ([Typing and checking](typing.md)). It does not depend on the target.
+- **`Plan`** reads each program's computation and recognizes the statements a probabilistic programming
+  language has: an `IRSample` for each `Random.sample` request, an `IRObserve` for each density scored at
+  an observation, an `IRDeterministic` for each pure binding, an `IRScore` for each other weight, and an
+  `IRMarginalize` for each summed-out latent variable. Each node carries the support and plate shape read
+  from the module's types, from `FAMILY_META`, and from `arg_constraints` of the PyTorch distribution
+  class. The inputs of the plan are the parameters of the entry point. The result is one `IRProgram`,
+  which also holds the whole checked module as a typed tree, `IRQiecModule`. A module with no program
+  lowers to its module and an empty plan. `Plan` does not depend on the target either.
+- **`Render[T]`** is one class for each target (`StanRenderer`, `NumPyroRenderer`, `PyMCRenderer`, and so
+  on). It turns the plan into a [panproto](https://github.com/panproto/panproto) schema of the target's
+  syntax tree, using the support predicates of §2.3 and the entries of `FAMILY_META`, and then renders
+  the module's other computations. Before it places a computation, **`AnalyzeQIEC[T]`** lists the QIEC
+  features the computation uses (open or effectful rows, static polymorphism, indexed cases, transport,
+  attachments, resumption grades) and compares them with the features the target supports. A missing
+  feature stops the rendering with a diagnostic `qiec:capability:<feature>:<computation>` that keeps the
+  computation's source location.
+- **`Pretty[T]`** is `panproto.AstParserRegistry.emit_pretty` for the target's
+  [tree-sitter](https://tree-sitter.github.io/) grammar. It prints the schema as source text.
 
-* **`Check`** elaborates the module to its checked core: it compiles the
-  indexed-family signature through Didactic's public `GADT` API, negotiates
-  the exact route, elaborates every entry-point program to a named
-  computation, validates the complete module, and returns its stable kernel
-  module. This step is target-independent.
-* **`Plan`** is
-  target-independent. It reads the program's computation and recognizes
-  the statements a probabilistic-programming target has: one `IRSample`
-  per `Random.sample` request, one `IRObserve` per scored density at an
-  observation, one `IRDeterministic` per pure binding, one `IRScore` per
-  other weight, and one `IRMarginalize` per marginalization helper whose
-  answer is scored. Each node carries the support and plate shape read off
-  the module's types, `FAMILY_META`, and
-  `torch.distributions.Distribution.arg_constraints`; the plan's inputs are
-  the entry point's parameters. The result is one `IRProgram` carrying the
-  complete module as the typed `IRQiecModule` tree beside the plan. A
-  QIEC-only source thus lowers to its module with an empty plan.
-* **`Render[T]`**
-  is one subclass per backend
-  (`StanRenderer`,
-  `NumPyroRenderer`,
-  `PyMCRenderer`,
-  ...). It consumes the plan and emits a target-specific
-  `panproto.Schema` using the support predicates of §2.3 and the `FAMILY_META`
-  entries, then renders the module's other computations with
-  `render_computations_dynamic` or `render_computations_static`, which call
-  **`AnalyzeQIEC[T]`** over each named computation first. The analysis records
-  open or effectful rows, static polymorphism, indexed cases, transport,
-  attachments, and resumption grades, then compares that set with the target's
-  declared capabilities. A mismatch has the stable form
-  `qiec:capability:<feature>:<computation>`, retains the computation's source
-  origin, and stops the rendering.
-* **Pretty[T]** is
-  `panproto.AstParserRegistry.emit_pretty`
-  for the target's tree-sitter grammar. It renders the schema as
-  the canonical source-byte serialization.
+The compiler of the runtime checks the same module and attaches its `QiecModule` to the compiled
+`Program`, but transpilation does not use that object. `transpile()` classifies the source, and
+`Lower.forward()` elaborates and checks the syntax tree itself, so a direct call of `Lower` is checked
+the same way. The analysis of target features happens inside the renderer.
 
-The ordinary compiler checks the same module and attaches its `QiecModule` to
-the compiler environment and produced `Program`. Transpilation does not depend
-on that runtime compiler object: `transpile()` classifies the surface, and
-`Lower.forward()` elaborates and checks the source AST itself, so direct
-lowering is validated the same way. Target capability analysis remains inside
-the renderer, which consumes `IRQiecModule` after source processing.
+## 2. The IR {#2-the-ir}
 
-## 2. The IR
+The IR is defined in [`quivers.transpile.ir`](../api/transpile/ir.md). Every entry is a didactic
+`Model` or `TaggedUnion`, and the IR holds structure only: no strings of a target language, no schema
+vertices, and no panproto types.
 
-The IR lives in
-`src/quivers/transpile/ir.py`. Every entry
-is a `dx.Model` or
-`dx.TaggedUnion`. The IR is purely
-structural: no target-language strings, no schema vertices, no
-panproto types.
+### 2.1 The typed QIEC module
 
-### 2.1 Typed QIEC module
+`IRProgram.module` is an `IRQiecModule`, a structural copy of the checked module without loss: every
+declaration, stable identifier, source location, row and `lacks` constraint, value, equality witness,
+transport, computation node, handler clause, and resumption grade has its own typed representation, so
+a renderer never parses a serialized string.
 
-`IRProgram.module` is the `IRQiecModule`, a lossless
-structural projection of the checked kernel module: every declaration, stable
-identifier, source origin, row and lacks constraint, value, equality witness,
-transport, computation node, handler clause, and resumption grade has its own
-`dx.Model` or `dx.TaggedUnion` representation. Thus the IR remains
-Didactic/Panproto-translatable without asking a renderer to parse a
-`qiec-json/v1` string.
+Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run this tree through an implementation of
+the QIEC runtime written for each target: free computations, handlers bound to instances, stable
+addresses of requests, constructors, case analysis on indexed families, attachments, and checks of
+resumption grades. Tests parse the source emitted for every target and, where the target's runtime is
+installed, compare its requests and results with the [reference machine](../reference/qvr/index.md).
 
-The host-language targets Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL,
-and Church consume this tree through corresponding implementations of the QIEC
-runtime ABI. These implementations provide free computations, lexical
-handlers, stable request addresses, constructors, indexed case dispatch,
-attachments, and resumption-grade checks. Conformance tests reparse every
-target's emitted source and exercise the host ABI where its runtime is
-available, comparing request dispatch and returned values with the reference execution.
+Stan, BUGS, and JAGS accept a static subset, which the analysis checks: each computation has a closed,
+empty row and no static parameters, returns a scalar, and uses only scalar `Return` and `Bind`. Stan
+admits value parameters of types `Bool`, `Int`, and `Real`. BUGS and JAGS require computations without
+parameters, since their models have no callable functions with parameters. Every other QIEC feature gets
+a capability diagnostic, and no renderer treats an executable term as metadata it may ignore.
 
-Stan, BUGS, and JAGS emit the analyzer-approved static subset. Each computation
-must have a closed, empty effect row and an empty static telescope, return a
-scalar, and contain only scalar `Return` and `Bind` forms. These restrictions do
-not rule out ordinary value parameters: Stan admits named `Bool`, `Int`, and
-`Real` parameters. BUGS and JAGS require parameterless computations because
-their graph-level definitions have no callable parameter ABI. Other QIEC
-features receive precise capability diagnostics; no renderer may treat an
-executable term as ignorable metadata.
+### 2.2 `Plate`: event and batch axes
 
-### 2.2 `Plate`: event versus batch axes
-
-Ten three-dimensional multivariate Normal draws have [batch size ten and
-event size three](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes#multivariate_distributions). A target can express them as a vectorized distribution or
-ten loop iterations, but must preserve the joint three-coordinate event
-inside each draw. With non-diagonal covariance, the score includes cross
-terms relating coordinates; three independent scalar scores would omit
-those terms. The two fields below record the [event dimensions and the batch dimensions](morphisms.md#6-axis-role-specifications).
-
-A draw's plate annotation decomposes into the event axes (the
-family's joint structure) and the batch axes (replication).
+Ten draws from a three-dimensional multivariate Normal have batch shape $(10)$ and event shape $(3)$
+([event and batch axes](morphisms.md#6-axis-role-specifications)) [@pyroTensorShapes]. A target may write
+them as one vectorized draw or as ten iterations of a loop, but it must keep the three coordinates of
+each draw joint: with a covariance that is not diagonal, the density has terms that couple coordinates,
+which three scalar densities would lose. A draw's plate records the two kinds of axes:
 
 ```python
 class Plate(dx.Model):
@@ -160,20 +102,15 @@ class DimDynamic(Dim):
     kind: Literal["dynamic"] = "dynamic"
 ```
 
-`event_dims` comes from `AxisSpec.over` (or the deprecated
-`step.index` shorthand); `batch_dims` from `AxisSpec.iid_over`.
-`Lower` preserves the source-declaration order; each renderer
-walks `batch_dims` to emit nested `for` loops (Stan), nested
-plate contexts (NumPyro / Pyro),
-`dims=(...)` declarations (PyMC), or
-`filldist` / `arraydist` wrappers
-(Turing.jl / Gen.jl) per its native idiom.
+`event_dims` comes from the draw's `over` axes and `batch_dims` from its `iid_over` axes, in source
+order. A renderer writes the batch axes in the target's own form: nested `for` loops in Stan, nested
+`plate` contexts in NumPyro and Pyro, `dims=(...)` in PyMC, and `filldist` or `arraydist` in Turing and
+Gen.
 
-### 2.3 Support classification
+### 2.3 Classifying supports
 
-`src/quivers/transpile/ir.py` exports a small set of predicates
-over
-`torch.distributions.constraints.Constraint`:
+`quivers.transpile.ir` defines predicates on the support constraints of PyTorch
+(`torch.distributions.constraints.Constraint`):
 
 ```python
 def is_real_scalar(c: Constraint) -> bool: ...
@@ -190,29 +127,16 @@ def is_int_category(c: Constraint) -> bool: ...
 def is_int_count(c: Constraint) -> bool: ...
 ```
 
-These are the only typeclass operations a renderer performs.
-Renderers never `isinstance(c, _Simplex)` directly; they call
-`is_real_simplex`. Adding
-a new support kind (ordered vectors, say) means adding one
-predicate. The predicates dispatch on torch's existing
-`Constraint`
-taxonomy.
+A renderer decides how to declare a value only through these predicates, never by testing the class of a
+constraint or the name of a family, so a new kind of support needs one new predicate. A PyTorch
+constraint does not survive didactic's encoding and decoding, so the IR stores a structural copy,
+`ConstraintSpec`, with one variant for each kind the predicates tell apart. `from_constraint` builds it
+when lowering, and `.to_constraint()` rebuilds the PyTorch constraint when a renderer needs it.
 
-Because Torch does not survive
-didactic's tagged-union encode / decode round trip, the IR
-actually stores constraints as a structural mirror
-`ConstraintSpec` that
-materializes to the underlying `Constraint` via
-`.to_constraint()` when a renderer needs the real value. The
-mirror has one variant per kind the predicates distinguish; the
-`from_constraint`
-converter goes the other way at Lower time.
+### 2.4 `IRArg`: arguments as a typed tree {#24-irarg-typed-argument-tree}
 
-### 2.3 `IRArg`: typed argument tree
-
-The parser produces stringly-typed bracket args like `"phi[z]"`;
-Lower parses them into a typed tree so renderers don't re-parse
-strings.
+The parser leaves indexed arguments as strings such as `"phi[z]"`. `Lower` parses them into a tree, so
+that no renderer parses strings:
 
 ```python
 class IRArg(dx.TaggedUnion, discriminator="kind"):
@@ -249,20 +173,14 @@ class IRArgFamilyRef(IRArg):
     kind: Literal["family_ref"] = "family_ref"
 ```
 
-Lower wraps a scalar arg in `IRArgBroadcast` when the matched
-`arg_constraints[name]`
-is `IndependentConstraint(base, n>=1)`. Each renderer translates
-the broadcast to its native op:
-`rep_vector(x, K)` in Stan,
-`jnp.full((K,), x)` in NumPyro,
-`torch.full((K,), x)` in Pyro,
-`np.full((K,), x)` in PyMC,
-`fill(x, K)` in Turing / Gen,
-`repeat(K, function() { return x; })` in WebPPL,
-`(make-list K x)` in Church. The translation lives in each
-renderer's `broadcast(value, target_shape)` method.
+The IR also has `IRArgKernel` for a kernel matrix given as an argument. `Lower` wraps a scalar argument in
+`IRArgBroadcast` when the argument's constraint is `IndependentConstraint(base, n)` with $n \ge 1$, that is,
+when the family expects a vector there. Each renderer writes the broadcast in its target:
+`rep_vector(x, K)` in Stan, `jnp.full((K,), x)` in NumPyro, `torch.full((K,), x)` in Pyro,
+`np.full((K,), x)` in PyMC, `fill(x, K)` in Turing and Gen, `repeat(K, function() { return x; })` in
+WebPPL, and `(make-list K x)` in Church.
 
-### 2.4 `IRNode`: program-body statements
+### 2.5 `IRNode`: the statements of a program
 
 ```python
 class IRNode(dx.TaggedUnion, discriminator="kind"):
@@ -306,10 +224,6 @@ class IRScore(IRNode):
     kind: Literal["score"] = "score"
 
 class IRMarginalize(IRNode):
-    """A discrete-latent integration scope. Each renderer decides
-    how to emit this: Stan as `log_sum_exp` per-group enumeration,
-    every other backend by inline lowering to `IRSample(latent) +
-    scope body`."""
     latent: str
     family: str
     args: tuple[IRArg, ...]
@@ -321,12 +235,6 @@ class IRMarginalize(IRNode):
     kind: Literal["marginalize"] = "marginalize"
 
 class IRCall(IRNode):
-    """A call of a module computation the plan did not inline. The
-    dynamic targets render it against the callee's generated entry
-    point, with the program's `Random` and `Score` instances bound to
-    the host's own sample and factor primitives; Stan calls the
-    callee as a user-defined function when it can define one, and
-    BUGS and JAGS refuse it."""
     name: str
     callee: str
     static_arguments: tuple[IRQiecStatic, ...]
@@ -339,15 +247,7 @@ class IRCall(IRNode):
 class IRReturn(IRNode):
     names: tuple[str, ...]
     kind: Literal["return"] = "return"
-```
 
-`arg_names` parallels `args` and carries the keyword names from
-torch's `arg_constraints` (`"loc"`, `"scale"`,
-`"concentration"`, ...). Renderers that prefer keyword calls
-(NumPyro, Pyro, PyMC, Edward2) read from `arg_names`; positional
-renderers (Stan, BUGS, JAGS) ignore it.
-
-```python
 class IRProgram(dx.Model):
     name: str
     inputs: tuple[IRDataInput, ...]
@@ -356,147 +256,95 @@ class IRProgram(dx.Model):
     cards: dict[str, int]
 ```
 
-## 3. `FamilyMeta`: the registry for transpile-only facts
+`arg_names` gives, for each entry of `args`, its keyword name in PyTorch's `arg_constraints` (`"loc"`,
+`"scale"`, `"concentration"`, ...). NumPyro, Pyro, PyMC, and Edward2 call families by keyword and read
+it, and Stan, BUGS, and JAGS call positionally and ignore it. An `IRCall` is a call of a computation that
+the plan did not inline: the dynamic targets call the callee's generated entry point with the program's
+`Random` and `Score` instances bound to the target's own draw and factor primitives, Stan calls it as a
+user-defined function when it can define one, and BUGS and JAGS refuse it.
 
-Distribution metadata answers translation questions rather than inferring a
-model from a distribution name. A name such as `Normal` identifies a family;
-the argument mapping says whether a target calls its location `loc` or `mu`
-and whether its spread is a scale or precision. Shape and support remain
-part of the typed distribution contract. The renderer needs both kinds of
-information to produce the intended density.
+## 3. `FamilyMeta`: facts for translation {#3-familymeta-the-registry-for-transpile-only-facts}
 
-One registry, in
-`src/quivers/transpile/family_meta.py`:
+A family name such as `Normal` identifies a family. A target may call its location `loc` or `mu`, and its
+spread a scale or a precision, and the registry records these translations. The shapes and supports of
+arguments belong to the typed distribution. The renderer needs both to write the intended density.
+The registry is `FAMILY_META` in [`quivers.transpile.family_meta`](../api/transpile/family_meta.md):
 
 ```python
 class FamilyMeta(dx.Model):
     qvr_name: str
     distribution_class: type[Distribution]
-    quivers_class: type[ContinuousMorphism] | None
     target_names: dict[str, str]
     arg_aliases: dict[str, dict[str, str]]
+    quivers_class: type[ContinuousMorphism] | None
+    structured_lowering: StructuredSampleLowering | None
+    event_rank: int
 ```
 
-* `qvr_name`: the DSL-facing family name (`"Normal"`,
-  `"Dirichlet"`).
-* `distribution_class`: the underlying
-  `torch.distributions.Distribution`
-  subclass (or a thin shim exposing the right `arg_constraints` +
-  `.support` surface for families with no native torch
-  counterpart, like `OrderedLogistic` and `HalfStudentT`). Source
-  of truth for the family's argument constraints and output
-  support.
-* `quivers_class`: the
-  [`ContinuousMorphism`][quivers.continuous.morphisms.ContinuousMorphism]
-  subclass the inference layer instantiates at runtime
-  ([`ConditionalNormal`][quivers.continuous.families.ConditionalNormal],
-  etc.). Empty for wrapper families whose runtime morphism is
-  constructed from a referenced inner morphism.
-* `target_names`: per-backend distribution-name mapping. The
-  single source of truth for backend-to-distribution-name
-  resolution. Renderers look up
-  `FAMILY_META[family].target_names[backend]`; no per-renderer
-  `_FAMILIES` dict exists.
-* `arg_aliases`: per-backend per-arg renames. Most families have
-  empty `arg_aliases`. Renderers that apply parameterization-
-  converting arithmetic (BUGS / JAGS Normal mean+scale to
-  mean+precision; PyMC's `concentration → a` rename for
-  Dirichlet) key the arithmetic on the alias's target name.
+- `qvr_name` is the family's name in QVR (`"Normal"`, `"Dirichlet"`).
+- `distribution_class` is the PyTorch `Distribution` subclass, or a small class that gives the right
+  `arg_constraints` and `support` for a family PyTorch lacks, such as `OrderedLogistic` and
+  `HalfStudentT`. It is the source of the family's argument constraints and support.
+- `target_names` maps each target to the family's name there. Renderers read
+  `FAMILY_META[family].target_names[target]` and keep no table of their own.
+- `arg_aliases` renames arguments for a target. Renderers that convert a parameterization, such as the
+  mean and precision of a BUGS or JAGS Normal, or PyMC's `a` for the Dirichlet concentration, key the
+  arithmetic on the alias.
+- `quivers_class` is the [`ContinuousMorphism`](../api/continuous/morphisms.md) subclass the runtime
+  builds, such as `ConditionalNormal`, and is empty for a family that wraps another morphism.
+- `event_rank` is the number of event dimensions.
 
-The marginalize-eligibility check is a per-call function rather
-than a per-family flag:
+`finite_enumerable_at_call_site(family_meta, args)` answers whether a `marginalize`'s index object is the
+family's support, so that summing over it removes the axis. It is true for `Bernoulli`, `Categorical`,
+`OrderedLogistic`, and `OrderedProbit`, and for `Binomial` when its `total_count` is a literal number.
 
-```python
-def finite_enumerable_at_call_site(
-    family_meta: FamilyMeta,
-    args: tuple[IRArg, ...],
-) -> bool: ...
-```
+The registry does not hold the shapes and constraints of arguments, which `Lower` reads from
+`distribution_class.arg_constraints`, or the support, which comes from `distribution_class.support`,
+evaluated on fixed parameters for a support that depends on them, as for `Uniform(low, high)`. A new
+family needs one `ContinuousMorphism` subclass and one `FamilyMeta` entry, and no renderer changes.
 
-Returns `True` for Bernoulli, Categorical, OrderedLogistic, and
-OrderedProbit unconditionally. For Binomial returns `True` only
-when `args[0]` (total_count) is a literal `IRArgNumber`; the
-Stan renderer's `marginalize` raises
-`UnsupportedConstruct`
-when the check returns `False`.
+## 4. `Lower`: from a module to the IR {#4-lower-module-ir}
 
-### 3.1 What `FAMILY_META` does not carry
+[Program elaboration](typing.md#8-program-elaboration) gives the checked computation that lowering reads,
+and the [transpilation pipeline](transpile-correctness/index.md#1-pipeline) the comparisons that test this
+stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), implements
+`dx.Mapping[Module, IRProgram]`. Its `forward`:
 
-* **Argument shapes / constraints.** Lives in
-  `distribution_class.arg_constraints`. Lower reads from there.
-* **Output support.** Lives in `distribution_class.support` (the
-  class-level support, or its evaluation on a sentinel parameter
-  set for instance-dependent supports like `Uniform(low, high)`).
-* **Event rank.** Derived from
-  `distribution_class().event_shape` on the sentinel.
+1. elaborates and checks the module, so that no direct call bypasses checking, refuses a program that has
+   no computation under the diagnostic kind the elaboration reports, and lowers a module without a program
+   to its `IRQiecModule` with an empty plan;
+2. expands composite `let` bindings, so that each step of the plan corresponds to one step of the expanded
+   source, whose morphism fixes the values a categorical draw ranges over and the form of a structured
+   family's arguments;
+3. walks the computation: a `Random.sample` becomes an `IRSample` named by its site label, a `Score.add` of
+   a density at an observation becomes an `IRObserve` whose `via` is the index map by which a `SegmentSum`
+   regroups the density, a pure binding becomes an `IRDeterministic`, or is absorbed into an `IRScore` when
+   the next request scores its value, the call of a helper for summing out a latent variable, whose result is
+   scored, becomes an `IRMarginalize` whose scope is the helper's body, and the final `Return` becomes an
+   `IRReturn`;
+4. reads each family, plate, and argument from its `DistributionValue`: a literal, a binding, an indexed
+   binding, a list, a matrix, a broadcast scalar as `IRArgBroadcast`, a kernel matrix as `IRArgKernel`, and
+   the output of a parameter map as a reference to the `IRDeterministic` bindings that compute it, in the
+   order PyTorch's constructor takes them, with the support resolved through `FAMILY_META` and narrowed by
+   the declared bounds of the site's axes;
+5. reads pure values back as `let` expressions: primitives as their operators and builtins, gathers as
+   subscripts, comprehensions as factor expressions, and last-axis reductions as builtin calls. A shared
+   [`LetValue`](../api/qiec/terms.md) becomes a deterministic statement of its own, under a fresh name,
+   before the statement that reads it, and a binding inside a comprehension is moved out as a comprehension
+   of its value over the same axis, read at the index, so each shared value is computed once;
+6. derives the inputs from the parameters of the entry point, typed by the module and named by the axes the
+   elaboration recorded, grouped as the targets declare them: the domain, scalars, index maps, observations,
+   parameter maps, and data;
+7. spells every name for the targets. A draw from a program runs the program in place under names of the
+   caller: a local `z` of a program drawn as `theta` is the site `theta$z` on the reference machine and the
+   compiled runtime, and since no target admits `$` in a name, the plan spells it `theta__z`.
 
-This separation keeps `FAMILY_META` small (under a hundred lines
-per family) and ties the structural classification to torch's
-existing implementation. Adding a new family is one
-[`Conditional*`][quivers.continuous.families.ConditionalNormal]
-class plus one `FamilyMeta` entry; no renderer touches.
+`Lower` does not depend on the target and imports no renderer.
 
-## 4. `Lower`: Module → IR
+## 5. `Renderer[T]`: from the IR to a schema {#5-renderert-ir-panprotoschema}
 
-[Program elaboration](typing.md#8-program-elaboration) describes the checked computation that lowering consumes. The [transpilation pipeline](transpile-correctness/index.md#1-pipeline) states the structural comparisons used to test this stage and the renderer that follows it.
-
-`Lower` is a single class in `src/quivers/transpile/plan.py`
-implementing `dx.Mapping[Module, IRProgram]`. Its `forward`:
-
-1. Elaborates and checks the module (`checked_module`), so a direct
-   `Lower.forward()` call cannot bypass validation; a program the
-   elaboration has no computation for is refused under the kind the gap
-   names. A module without a program lowers to its `IRQiecModule` with an
-   empty plan.
-2. Runs `expand_composite_lets` on the program, so the site each step of
-   the plan corresponds to is one step of the expanded source, whose
-   morphism fixes a class-index draw's alphabet and a structured family's
-   wire form.
-3. Walks the program's computation. A `Random.sample` request becomes an
-   `IRSample` (the site label naming it); a `Score.add` of a density at an
-   observation becomes an `IRObserve`, with the fibration a
-   `SegmentSum` re-indexes the density by stated as `via`; a pure binding
-   becomes an `IRDeterministic`, absorbed into an `IRScore` when the next
-   request scores its value; a marginalization helper's call whose answer
-   is scored becomes an `IRMarginalize` whose scope is the helper's
-   collected body; the final `Return` becomes an `IRReturn`.
-4. Reads each construction's family, plate, and arguments off its
-   `DistributionValue`: a literal, a binding, an indexed binding, a list,
-   a matrix, a spread literal as `IRArgBroadcast`, a kernel matrix as
-   `IRArgKernel`, and a parameter map's head as a reference to the
-   `IRDeterministic` bindings that compute it. Arguments are ordered as the
-   torch constructor binds them, scalars are wrapped in `IRArgBroadcast`
-   where the constraint is `IndependentConstraint(base, n>=1)`, and the
-   support is resolved through `FAMILY_META`'s sentinel instances and
-   narrowed by the declared bounds of the site's axes.
-5. Reads pure values back as let expressions: primitives as the operators
-   and builtins they implement, gathers as subscripts, comprehensions as
-   factors, and a last-axis reduction as its builtin call. A shared binding
-   of a [`LetValue`][quivers.qiec.LetValue] becomes a deterministic statement of its own, under a
-   fresh name, ahead of the statement that reads it; a binding inside a
-   comprehension is hoisted as the comprehension of its value over the same
-   axis, read at the index. The emitted program thus states each shared
-   value once, however many times the value is read.
-6. Derives the inputs from the entry point's parameters, typed by the
-   module and named by the axes the elaboration recorded, in the groups
-   the targets declare them: the program's domain, its scalars,
-   fibrations, observations, parameter maps, and data.
-7. Spells every name for the targets. A draw from a program runs the
-   program in place under names of the caller's own, a local `z` of a
-   program drawn under `theta` being the site `theta$z` on the reference
-   machine and the torch runtime; no target language admits `$` in an
-   identifier, so the plan spells such a name `theta__z` (`target_name`),
-   and the probe harness spells its points the same way.
-
-Lower is target-independent. It never imports any renderer or
-backend-specific module.
-
-## 5. `Renderer[T]`: IR → panproto.Schema
-
-Each backend implements a
-`Renderer`
-subclass with one public method `render(ir: IRProgram) ->
-panproto.Schema` and four private dispatch points:
+Each target implements the `Renderer` protocol, with one public method and four points where targets
+differ:
 
 ```python
 class Renderer(Protocol):
@@ -517,28 +365,21 @@ class Renderer(Protocol):
     def broadcast(self, value, target_shape) -> SchemaFragment: ...
 ```
 
-`BlockKind` is the renderer-side notion of where a declaration
-lands (`"data"`, `"parameters"`, `"transformed_parameters"`,
-`"generated_quantities"`, `"function_body"`). Each backend
-interprets it per its own program structure: Stan has actual
-blocks; NumPyro's "block" is the function body; PyMC's is the
-`with pymc.Model() as model:` scope; BUGS / JAGS have only a
-single `model { ... }` enclosure.
+`BlockKind` says where a declaration goes (`"data"`, `"parameters"`, `"transformed_parameters"`,
+`"generated_quantities"`, `"function_body"`), and each target reads it in its own structure: Stan has these
+blocks, NumPyro's block is the body of the model function, PyMC's is the `with pymc.Model() as model:`
+scope, and BUGS and JAGS have one `model { ... }`.
 
-`RendererBase`
-provides the IR walk (`IRDataInput → declare`, `IRSample
-(non-observed) → declare + sample`, `IRObserve → declare +
-sample(observed=True)`, `IRDeterministic → declare + assignment`,
-`IRScore → declare scalar + log-density increment`, `IRMarginalize
-→ marginalize`, `IRReturn → backend return idiom`), index-
-substitution helpers consumed by both `sample` and `marginalize`,
-and the atom enumeration (`marginal_atoms`) every backend's
-`marginalize` scores one copy of the scope under.
+`RendererBase` walks the IR: an `IRDataInput` is declared, an `IRSample` that is not observed is declared and
+sampled, an `IRObserve` is declared and sampled with `observed=True`, an `IRDeterministic` is declared and
+assigned, an `IRScore` adds to the log density, an `IRMarginalize` goes to `marginalize`, and an `IRReturn`
+becomes the target's return. It also provides the substitution of indices that `sample` and `marginalize`
+share, and `marginal_atoms`, the values of the latent at which every target's `marginalize` scores one copy
+of the scope.
 
-`declare` dispatches on the predicates of §2.3. The Stan
-renderer's table:
+`declare` decides by the predicates of §2.3. For Stan:
 
-| predicate | event | batch | declaration |
+| Predicate | Event | Batch | Declaration |
 |---|---|---|---|
 | `is_real_scalar(c)` | () | () | `real <name>;` |
 | `is_real_scalar(c)` | () | (B,) | `vector[B] <name>;` |
@@ -554,272 +395,178 @@ renderer's table:
 | `is_real_matrix(c)` | (R,C) | () | `matrix[R, C] <name>;` |
 | `is_int_bit(c)` | () | () | `int<lower=0, upper=1> <name>;` |
 | `is_int_bit(c)` | () | (B,) | `array[B] int<lower=0, upper=1> <name>;` |
-| `is_int_category(c)` | () | () | `int<lower=1, upper=K> <name>;` |
+| `is_int_category(c)` | () | () | `int<lower=0, upper=K-1> <name>;` |
 | `is_int_count(c)` | () | () | `int<lower=0> <name>;` |
 
-Other backends have analogous tables. The grammar of the table is
-the same: `(predicate, event_dims, batch_dims) → target-language
-declaration`. No row references a family name.
+The other targets have tables of the same form, from a predicate, event axes, and batch axes to a
+declaration, and no row names a family.
 
-### 5.1 Backend idioms
+### 5.1 Kinds of target
 
-The eleven backends fall into three idiomatic families:
+Van de Meent and coauthors distinguish first-order languages, whose programs have a fixed finite graph of
+random variables, from higher-order languages, which evaluate arbitrary programs and record the random
+choices of each run [@vandemeent2018introduction]. The eleven targets fall into three groups by how a model
+is written:
 
-* **Block-structured static-type** (Stan):
-  `data { ... } parameters { ... } model { ... } generated
-  quantities { ... }`. The renderer threads the per-block
-  declarations through panproto schema vertices for each block.
-* **Trace-based** (NumPyro, Pyro, Turing.jl, Gen.jl, Church,
-  WebPPL). The renderer emits a `def model(...)` (or `@model
-  function`, or `(define (model ...))`) and uses the target's
-  native plate primitive
-  (`numpyro.plate`,
-  `pyro.plate`,
-  `filldist`,
-  `@trace`,
-  `map` over `iota`, `repeat`)
-  to express batch dimensions.
-* **Graphical-model relational** (PyMC, Edward2, BUGS, JAGS).
-  PyMC and Edward2 use named-distribution constructors with
-  `dims=(...)` / `sample_shape=[...]` carrying the batch shape;
-  BUGS and JAGS use `for (m in 1:N) { name[m] ~ d<family>(args)
-  }` row-loops. The BUGS Normal mean+scale → mean+precision
-  conversion (`tau = 1 / (scale * scale)`) lives in
-  `FAMILY_META.arg_aliases["bugs"]` plus a renderer-internal
-  arithmetic-transform table keyed on the alias target name.
+- **Blocks with static types** (Stan [@carpenter2017stan]): `data { ... } parameters { ... } model { ... }
+  generated quantities { ... }`, with declarations placed in the schema vertices of each block.
+- **Model functions that record a trace** (NumPyro [@phan2019numpyro], Pyro [@bingham2019pyro], Turing.jl
+  [@ge2018turing], Gen.jl [@cusumanotowner2019gen], Church [@goodman2008church], WebPPL
+  [@goodman2014design]): the renderer writes a model function (`def model(...)`, `@model function`,
+  `(define (model ...))`) and expresses batch axes with the target's own form (`numpyro.plate`,
+  `pyro.plate`, `filldist`, `@trace`, `map` over `iota`, `repeat`).
+- **Declared graphs of random variables** (PyMC [@salvatier2016pymc3], Edward2 [@tran2018simple], BUGS
+  [@lunn2009bugs], JAGS [@plummer2003jags]): PyMC and Edward2 call named distribution constructors with the
+  batch shape in `dims=(...)` or `sample_shape=[...]`, and BUGS and JAGS loop over rows,
+  `for (m in 1:N) { name[m] ~ d<family>(args) }`. The conversion of a Normal's scale to the precision BUGS
+  takes, `tau = 1 / (scale * scale)`, is the alias in `FAMILY_META.arg_aliases["bugs"]` with a table of
+  arithmetic in the renderer.
 
-A `score` step, and a called helper's scored weight, is a term of
-the joint on every trace-based and graphical target: Stan's
-`target +=`, NumPyro's and Pyro's `factor`, PyMC's `Potential`,
-Turing's `@addlogprob!`, WebPPL's and Church's `factor`, and on
-Edward2 and Gen, which have no factor primitive of their own, a
-traced choice of a one-point distribution whose log density is the
-weight. Gen traces such choices under the `:qvr_factor` address
-namespace, and its marginalize emission is the Turing renderer's,
-writing into the Gen body with the reduced weight traced the same
-way; BUGS and JAGS write a score through the zeros trick.
+A `score` step, and the scored weight of a called helper, is a term of the log joint density on every
+target: Stan's `target +=`, NumPyro's and Pyro's `factor`, PyMC's `Potential`, Turing's `@addlogprob!`,
+and WebPPL's and Church's `factor`. Edward2 and Gen have no factor primitive, and on them the weight is a
+traced choice of a distribution with one point whose log density is the weight. Gen traces such choices
+under the address `:qvr_factor`, and its `marginalize` reuses the Turing renderer's, since both write Julia
+with Distributions.jl. BUGS and JAGS add a weight with the zeros trick, observing a zero from a Poisson
+distribution whose rate carries the weight [@lunn2012bugs]. No other renderer imports another.
 
-Each backend's renderer is roughly one file of 700 to 1400 lines.
-The Gen renderer reuses the Turing renderer's marginalize emission,
-since both emit Julia over Distributions.jl; no other imports from
-another.
+## 6. An example from source to Stan and NumPyro
 
-## 6. LDA end-to-end
-
-Latent Dirichlet Allocation (LDA) supplies several axes in one example:
-documents, topics, and words. `theta` assigns topic weights to documents;
-`phi` assigns word weights to topics. The finite latent `z` selects a topic,
-and `word_idx` maps observed rows to documents. Follow one observation
-through the pipeline: the target must use its mapped document, evaluate the
-possible topic contributions, and combine them with the grouping prescribed
-by the source. The axes and `via` map thus carry model meaning, not
-only array-layout information.
-
-The canonical Latent Dirichlet Allocation source:
+The gallery source `docs/examples/source/lda.qvr` has documents, topics, and a vocabulary. `theta` gives
+each document its topic weights, `phi` gives each topic its word weights, `z` is a summed-out topic, and
+`word_idx` is the index map from tokens to documents:
 
 ```qvr
+composition log_prob [level=algebra]
+
 object Doc : FinSet 20
 object Topic : FinSet 3
-object Word : FinSet 200
-program lda(alpha : Real, beta : Real) : Word -> Word
+object Vocab : FinSet 50
+object Token : FinSet 200
+object Mix : Real 3
+
+program lda(alpha : Real, beta : Real) : Token -> Mix
     sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
-    sample phi : Topic <- Dirichlet(concentration=beta) [over=Word, iid_over=Topic]
+    sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+
     marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-        observe w : Word <- Categorical(probs=phi[z]) [via=word_idx]
+        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+
     return theta
+
+export lda
 ```
 
-After `Lower`, the IR carries:
+The grouping `over=Doc` states one topic per document, shared by its tokens, a mixture of unigrams
+[@nigam2000text]. Since the prior `theta` is a plate over `Doc`, the evaluators instead give each token its
+own topic drawn from its document's weights ([Programs as kernels §2.7](programs.md#27-grouped-marginalize-with-multi-observe-fibration)),
+which is the per-token topic of latent Dirichlet allocation (LDA) [@blei2003lda]. The output below shows it.
 
-* Inputs: `alpha` and `beta` as `IRDataInput`s with `CSReal()`
-  constraints; `word_idx` and `w` as `IRDataInput`s with
-  `IntegerInterval` constraints and `DimDynamic(size_name="N_w")`
-  batch dimensions.
-* Body: `IRSample(theta)` with `support=CSSimplex(event_dim=3)`
-  and `plate=Plate(event_dims=(DimStatic(3, "Topic"),),
-  batch_dims=(DimStatic(20, "Doc"),))`. Its only arg is
-  `IRArgBroadcast(value=IRArgRef("alpha"), target_shape=(3,))`.
-* `IRSample(phi)` analogous, transposed dims.
-* `IRMarginalize(z)` with `args=(IRArgRef("theta"),)`, scope
-  containing one `IRObserve(w)` whose args are
-  `IRArgRef("phi", indices=(IRArgRef("z"),))` and whose
-  `via="word_idx"`.
-* `IRReturn(names=("theta",))`.
+After `Lower`, the IR has:
 
-`StanRenderer.render` produces:
+- inputs `alpha` and `beta`, real scalars, and `word_idx` and `w`, integer arrays over `Token`;
+- `IRSample(theta)` with a simplex support and the plate `Plate(event_dims=(Topic,), batch_dims=(Doc,))`,
+  whose one argument is `IRArgBroadcast(value=IRArgRef("alpha"), target_shape=(3,))`, and `IRSample(phi)`
+  likewise over `Vocab` and `Topic`;
+- `IRMarginalize(z)` with argument `IRArgRef("theta")` and a scope with one `IRObserve(w)`, whose argument is
+  `IRArgRef("phi", indices=(IRArgRef("z"),))` and whose `via` is `"word_idx"`;
+- `IRReturn(names=("theta",))`.
+
+`StanRenderer` writes:
 
 ```stan
 data {
-  real alpha;
-  real beta;
-  int N_w;
-  array[N_w] int<lower=1, upper=20> word_idx;
-  array[N_w] int<lower=1, upper=200> w;
-}
-parameters {
-  array[20] simplex[3] theta;
-  array[3] simplex[200] phi;
-}
-model {
-  for (m_Doc in 1:20)
-    theta[m_Doc] ~ dirichlet(rep_vector(alpha, 3));
-  for (m_Topic in 1:3)
-    phi[m_Topic] ~ dirichlet(rep_vector(beta, 200));
-  {
-    array[20] vector[3] lps_z;
-    for (g_Doc in 1:20)
-      for (k in 1:3)
-        lps_z[g_Doc, k] = categorical_lpmf(k | theta[g_Doc]);
-    for (n in 1:N_w)
-      for (k in 1:3)
-        lps_z[word_idx[n], k] += categorical_lpmf(w[n] | phi[k]);
-    for (g_Doc in 1:20)
-      target += log_sum_exp(lps_z[g_Doc]);
+  real alpha; real beta; array [200] int <lower = 0 , upper = 199> word_idx; array [200] int <lower = 0 , upper = 49> w;
+} parameters {
+  array [20] simplex [3] theta; array [3] simplex [50] phi;
+} model {
+  for (m_Doc in 1 : 20) {
+    target +=dirichlet_lpdf(theta[m_Doc] | rep_vector(alpha,3));
+  } for (m_Topic in 1 : 3) {
+    target +=dirichlet_lpdf(phi[m_Topic] | rep_vector(beta,50));
+  } {
+    array [200] vector [3] lps_z = rep_array(rep_vector(0,3),200); for (n_Token in 1 : 200) {
+      for (k in 1 : 3) {
+        lps_z[n_Token,k] = categorical_lpmf(k | theta[word_idx[n_Token]+1]);
+      }
+    } for (n_Token in 1 : 200) {
+      for (k in 1 : 3) {
+        lps_z[n_Token,k] += categorical_lpmf(w[n_Token]+1 | phi[k]);
+      }
+    } for (n_Token in 1 : 200) {
+      target +=log_sum_exp(lps_z[n_Token]);
+    }
   }
-}
-generated quantities {
-  array[20] simplex[3] theta_value = theta;
+}generated quantities{
+  array [20] simplex [3] theta_value = theta;
 }
 ```
 
-`NumPyroRenderer.render` produces:
+and `NumPyroRenderer` writes:
 
 ```python
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions
-
-def model(alpha, beta, word_idx, w=None):
-    with numpyro.plate("Doc", 20):
-        theta = numpyro.sample(
-            "theta",
-            numpyro.distributions.Dirichlet(jnp.full((3,), alpha)),
-        )
-    with numpyro.plate("Topic", 3):
-        phi = numpyro.sample(
-            "phi",
-            numpyro.distributions.Dirichlet(jnp.full((200,), beta)),
-        )
-    with numpyro.plate("Doc_z", 20):
-        z = numpyro.sample(
-            "z",
-            numpyro.distributions.Categorical(theta),
-        )
-    with numpyro.plate("Word_obs", w.shape[0]):
-        numpyro.sample(
-            "w",
-            numpyro.distributions.Categorical(phi[z[word_idx]]),
-            obs=w,
-        )
-    return theta
+import jax.scipy.special as jsp
+def model(alpha,beta,word_idx,w=None) :
+  with numpyro.plate("Doc" ,20) :
+    theta = numpyro.sample("theta" ,numpyro.distributions.Dirichlet(concentration=jnp.full((3,),alpha)))
+  with numpyro.plate("Topic" ,3) :
+    phi = numpyro.sample("phi" ,numpyro.distributions.Dirichlet(concentration=jnp.full((50,),beta)))
+  __marg_z_0 = numpyro.distributions.Categorical(probs=phi[0]).log_prob(w)
+  __marg_z_1 = numpyro.distributions.Categorical(probs=phi[1]).log_prob(w)
+  __marg_z_2 = numpyro.distributions.Categorical(probs=phi[2]).log_prob(w)
+  __marg_z_w = jnp.log(theta[word_idx])
+  __marg_z = jnp.stack([__marg_z_0,__marg_z_1,__marg_z_2],axis=- 1)
+  numpyro.factor("z" ,jnp.sum(jsp.logsumexp(__marg_z_w+__marg_z,axis=- 1)))
+  return theta
 ```
 
-Same IR, different renderer. The Stan renderer's `marginalize`
-emits the `log_sum_exp` enumeration; the NumPyro renderer's
-`marginalize` lowers the construct to `IRSample(z) + scope` and
-the scope's `IRObserve(w)` becomes a `numpyro.sample(..., obs=w)`
-inside a per-word
-`plate`. Neither renderer's code
-references the family name `Dirichlet` or `Categorical`; both
-dispatch on `is_real_simplex` (for the Dirichlet declaration) and
-`is_int_category` (for the Categorical observation).
+Both sum the topic out for each token: Stan by a table `lps_z` and `log_sum_exp`, NumPyro by the stacked log
+densities at each topic, `logsumexp`, and `numpyro.factor`, so no sample site remains for `z`. Both keep the
+zero-based codes of the data: Stan declares `w` with `lower = 0` and adds one where it indexes. Neither
+renderer names `Dirichlet` or `Categorical` in its code: each declares through `is_real_simplex` and
+`is_int_category`. Stan bounds `word_idx` by `Token` (`upper = 199`), not by `Doc` (`upper = 19`).
 
-## 7. Adding a new family
+## 7. Adding a family {#7-adding-a-family}
 
-1. Implement a [`ContinuousMorphism`][quivers.continuous.morphisms.ContinuousMorphism]
-   subclass in
-   [`src/quivers/continuous/families.py`][quivers.continuous.families]
-   (or a new file under `src/quivers/continuous/` if the family
-   has its own structural shape, like the cutpoint-parameterized
-   ordered families in `src/quivers/continuous/ordered.py`).
-2. Add a
-   `FamilyMeta`
-   entry to `FAMILY_META`. Populate `qvr_name`,
-   `distribution_class` (the torch class or a thin shim
-   exposing the right `arg_constraints` and `.support`),
-   `quivers_class`, `target_names`, and `arg_aliases`.
+1. Write a [`ContinuousMorphism`](../api/continuous/morphisms.md) subclass in
+   [`quivers.continuous.families`](../api/continuous/families.md), or in a new module of
+   `quivers.continuous` when the family has a structure of its own, as the ordered families with cutpoints
+   do.
+2. Add an entry to `FAMILY_META` with `qvr_name`, `distribution_class` (the PyTorch class, or a small class
+   with the right `arg_constraints` and `support`), `quivers_class`, `target_names`, and `arg_aliases`.
 
-Every backend's renderer picks the new family up automatically
-via the constraint-predicate dispatch on the family's torch
-`.support`. No per-backend edit is needed unless the family
-requires a backend-specific arithmetic transform or wrapper
-shape.
+Every renderer then handles the family through the predicates on its support. A target needs its own change
+only when the family needs a conversion of its parameters or a wrapper there.
 
-## 8. Adding a new backend
+## 8. Adding a target {#8-adding-a-new-backend}
 
-1. Choose the target tree-sitter grammar (`stan`, `python`,
-   `julia`, `scheme`, `javascript`, `bugs`, `jags`).
-2. Implement a
-   `RendererBase`
-   subclass under `src/quivers/transpile/renderers/<backend>.py`.
-   Override `declare`, `sample`, `marginalize`, and `broadcast`.
-3. Add a `target_names[<backend>] = ...` entry to every
-   `FamilyMeta` in `FAMILY_META` for the families the backend
-   supports. Omit the entry for unsupported families; the
-   renderer's call-site lookup raises
-   `UnsupportedConstruct`
-   with a precise kind.
-4. Register the renderer in `src/quivers/transpile/__init__.py`'s
-   `_RENDERERS` table, with the appropriate grammar string.
+1. Choose the target's tree-sitter grammar (`stan`, `python`, `julia`, `scheme`, `javascript`, `bugs`,
+   `jags`).
+2. Write a `RendererBase` subclass in `quivers.transpile.renderers.<target>` that overrides `declare`,
+   `sample`, `marginalize`, and `broadcast`.
+3. Add `target_names[<target>]` to each `FamilyMeta` entry whose family the target supports. A family without
+   one is refused at its use with `UnsupportedConstruct` and a precise kind.
+4. Register the renderer, with its grammar, in the table of renderers of `quivers.transpile`.
 
-The IR walk, `FAMILY_META` consultation, and constraint-
-predicate dispatch are inherited from `RendererBase`. A typical
-backend implementation is one file, 700 to 1400 lines, with no
-imports from any other backend's renderer.
+The walk of the IR, the use of `FAMILY_META`, and the dispatch on predicates are inherited from
+`RendererBase`, and no renderer imports another, except Gen's use of Turing's `marginalize`.
 
-## 9. The five rules
+## 9. Rules the architecture keeps
 
-The architecture enforces five structural invariants:
-
-1. **Single source of truth per concept.** Family metadata
-   (event rank, support, argument constraints, per-target
-   distribution name, argument aliases) lives in one place.
-   Walkers query it; they never duplicate or override.
-2. **No `if family == "X"` in any renderer.** Renderer behavior
-   dispatches on the support predicates of §2.3 and on
-   `FAMILY_META.target_names[backend]`.
-3. **No silent drops of AST fields.** Every `AxisSpec.over`,
-   `AxisSpec.iid_over`, `ObserveStep.via`,
-   `MarginalizeStep.reduction`, and `MarginalizeStep.scope` is
-   consumed by Lower or raised on by a renderer with a precise
+1. **One place for each fact.** The facts about a family (number of event dimensions, support, argument
+   constraints, name and argument names for each target) are stored once, and renderers read them there.
+2. **No test of a family's name in a renderer.** A renderer decides by the predicates of §2.3 and by
+   `FAMILY_META.target_names`.
+3. **No field of the syntax tree is dropped.** Each draw's `over` and `iid_over`, each observation's `via`,
+   and each `marginalize`'s reduction and scope is used by `Lower` or refused by a renderer with a precise
    `UnsupportedConstruct` kind.
-4. **Backend-symmetric abstractions.** Each renderer reads from
-   the same `FAMILY_META`, the same `Lower` output, and the
-   same `RendererBase` helpers. No backend is more privileged
-   than another.
-5. **No fallbacks, no placeholders.** When a renderer cannot
-   lower a construct, it raises `UnsupportedConstruct` with a
-   precise kind. Never emits `__placeholder__` or "tracked
-   later" or broken code.
+4. **The same interface for every target.** Every renderer reads the same `FAMILY_META`, the same output of
+   `Lower`, and the same helpers of `RendererBase`.
+5. **A refusal, not a guess.** A renderer that cannot write a construct raises `UnsupportedConstruct` with a
+   precise kind and does not emit placeholder or approximate code.
 
-The IR shape, the `FamilyMeta` schema, and the `Renderer`
-Protocol jointly make these invariants structural: a renderer
-that violates one of them produces a schema that fails the
-structural matrix test, or fails to compile against the
-`Renderer` Protocol, or raises a typed `UnsupportedConstruct`
-rather than emitting wrong bytes.
-
-## References
-
-* [Transpilation correctness](transpile-correctness/index.md). The
-  supported-program contract and the structural, syntax, and numerical
-  evidence used to check it.
-* [QVR programs](programs.md). The source-language `Program`
-  structure that `Lower` consumes.
-* [Continuous families](../guides/continuous-families.md). The
-  catalog of
-  [`ContinuousMorphism`][quivers.continuous.morphisms.ContinuousMorphism]
-  subclasses
-  ([`ConditionalNormal`][quivers.continuous.families.ConditionalNormal],
-  [`ConditionalDirichlet`][quivers.continuous.families.ConditionalDirichlet],
-  [`ConditionalBetaBinomial`][quivers.continuous.families.ConditionalBetaBinomial],
-  ...) the inference layer instantiates at run time.
-
-The backend papers explain the language designs that the renderers target:
-Stan [@carpenter2017stan], NumPyro [@phan2019numpyro], Pyro
-[@bingham2019pyro], Turing [@ge2018turing], Gen
-[@cusumanotowner2019gen], and Church [@goodman2008church]. For an
-implementation-oriented introduction to execution traces and inference, see
-the author-published textbook [@goodman2014design]. For worked Bayesian models
-using JAGS and Stan, see [@kruschke2014doing]. These sources supply background;
-current backend behavior is documented on each target’s correctness page.
+A renderer that breaks one of these either produces a schema that the structural tests reject, fails the
+`Renderer` protocol, or raises `UnsupportedConstruct`.
