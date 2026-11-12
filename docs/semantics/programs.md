@@ -229,9 +229,9 @@ same marginals, and the plate chooses the product. The values may still be depen
 model when their parameters share a latent variable, such as a common scale, and they are
 independent given it. Pyro calls the same construction `plate` [@pyroTensorShapes].
 
-### 2.5 Plated observations
+### 2.5 Observations over a plate {#25-plated-observations}
 
-A plated observation
+An observation over a plate
 
 ```
 observe r : N <- F(args) [via = idx]
@@ -354,8 +354,8 @@ same for every group. When the prior is itself a plate over $G$, as in
 $\sum_n \log \sum_k \theta(\iota(n), k)\, p(r_n \mid k)$, the model in which every row has its own class
 drawn from its group's prior, and the grouping of the likelihoods is lost.
 
-For a product of groups $G_1 \times G_2 \times \cdots$ paired with `via product(idx_1, idx_2, ...)`
-on each observation, the groups are the tuples, ordered with the last factor varying fastest: a row
+For a product of groups $G_1 \times G_2 \times \cdots$ paired with `via = product(idx_1, idx_2, ...)`,
+also written `via = [idx_1, idx_2, ...]`, on each observation, the groups are the tuples, ordered with the last factor varying fastest: a row
 goes to position $\iota(n) = \sum_i \iota_i(n) \prod_{j > i} |G_j|$.
 
 A grouped block may contain another. The inner block then contributes one value for each of its
@@ -594,7 +594,7 @@ integration, enumeration, Markov chain Monte Carlo, and variational inference ap
 posterior or its expectations. The module [`quivers.inference`](../api/inference/svi.md) uses the
 log joint density of a run to fit a variational family [@blei2017variational; @hoffman2013svi] or to
 sample with [Hamiltonian Monte Carlo](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) and the
-No-U-Turn Sampler [@neal2011mcmc; @hoffman2014nuts].
+No-U-Turn Sampler (NUTS) [@neal2011mcmc; @hoffman2014nuts].
 
 ## 7. Wrappers that place priors on parameters {#7-bayesian-lifts}
 

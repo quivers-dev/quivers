@@ -109,7 +109,7 @@ or rule, such as `learnable`, `bounded`, `parent`, and `weight = expr`
 | $\Gamma \vdash \phi : \tau$ | In the typing context $\Gamma$, the phrase $\phi$ has type $\tau$ |
 
 In the categorical part of the language, a *type* denotes a finite set and a *space* denotes a
-standard Borel space. QIEC also has a `Type` kind for primitive, product, distribution, and
-types of indexed families, which [Typing and checking](typing.md#4-qiec-kinds-and-types) keeps
+standard Borel space. QIEC also has a `Type` kind for primitive types, products, distributions,
+and indexed families, which [Typing and checking](typing.md#4-qiec-kinds-and-types) keeps
 separate from the first sense. We write $|X|$ for the cardinality of a finite set $X$ and
 $\dim(S)$ for the dimension of a continuous space $S$.

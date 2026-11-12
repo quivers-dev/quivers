@@ -2,8 +2,7 @@
 
 QVR phrases are interpreted in three categories: $\mathcal V$-matrices between finite sets,
 stochastic matrices between finite sets, and Markov kernels between standard Borel spaces.
-Programs that condition on data are interpreted as s-finite kernels. The definitions below are
-the ones the other semantics pages link to, and the notation fixed here is used on every page.
+Programs that condition on data are interpreted as s-finite kernels.
 
 ## 0. Categories, functors, and monads
 
@@ -209,7 +208,7 @@ standard Borel space, and this inclusion $\mathbf{FinSet} \hookrightarrow \mathb
 to a full and faithful functor $\mathbf{FinStoch} \hookrightarrow \mathbf{BorelStoch}$. A Boolean
 matrix with exactly one true entry in each row is a function, and these functions embed into
 $\mathbf{FinStoch}$ as the deterministic kernels. A `discretize` declaration denotes a
-deterministic kernel from a continuous space to a finite set, and an `embed` declaration denotes a
+kernel from a bounded interval to a finite set of bins, and an `embed` declaration denotes a
 kernel in the opposite direction ([Morphisms §5](morphisms.md#5-fragment-transitions)).
 
 ## 6. Environments {#5-environments}
