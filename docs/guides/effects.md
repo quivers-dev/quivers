@@ -1,110 +1,106 @@
 # Compositional Effects
 
-An **effect** is an operation a computation requests from its execution
-context, such as drawing a random value, reading state, or adding a score.
-A **handler** decides how that [request is interpreted](https://pyro.ai/examples/effect_handlers.html#A-first-look-at-Poutine:-Pyro%E2%80%99s-library-of-algorithmic-building-blocks) [@pyroEffects]. The same random
-request can draw a fresh value during simulation or replay a supplied
-value during scoring. A [resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) continues the computation after the
-request has received its answer.
+An [*algebraic effect*](https://en.wikipedia.org/wiki/Effect_system) is an operation
+a computation requests from its context, such as drawing a random value, reading
+state, or adding a score, and a *handler* decides how each request is answered and
+how the computation resumes
+[@plotkin2003algebraic; @plotkin2009handlers; @bauer2015programming]. The same random request can draw a fresh value during
+simulation or replay a given value during scoring, as in Pyro's effect handlers
+[@pyroEffects].
 
-In linguistic semantics, an expression can likewise carry more than its
-ordinary denotation: several alternatives, a discourse update, or a
-scope-taking operation. The monad and arrow interfaces below describe how
-to compose that extra structure [@hughes2000arrows]. The later QIEC section describes how
-source programs declare requests and [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations). These related presentations
-serve different levels of the implementation.
-
-QVR provides two parallel typeclass towers, Haskell-style [monads](monadic.md#monads) and
-Hughes-style arrows, together with a class-driven schema-lifting system.
-These components let linguistic effects (scope-taking, anaphora, focus and
-alternatives, presupposition, supplements, plurality) compose with the
-residuated category universe through the same declarations as ordinary
-categorial grammar rules.
-
-This guide describes the interfaces and their interaction. The corresponding
-denotations are in [Denotational Semantics](../semantics/effects.md).
+Linguistic meanings can carry similar extra structure: several alternatives, a
+discourse update, or a scope-taking operation. Effect-driven interpretation composes
+such meanings with the functor, applicative, and monad interfaces of functional
+programming [@bumford2026effect]. quivers provides these interfaces as Python
+abstract classes, a function that lifts grammar rules through them, and a free-monad
+construction for effects given by a signature. QVR programs declare effects and
+handlers in the [Quivers Indexed Effect Core](#qiec-effect-interfaces-and-rows)
+(QIEC). [Denotational Semantics](../semantics/effects.md)
+gives the denotations.
 
 ## Typeclass hierarchy
 
-A *typeclass* specifies operations an implementation supports. `fmap`
-applies an ordinary function while retaining its surrounding effect;
-`pure` introduces an ordinary value into that effect. `apply` combines
-effectful arguments, while `bind` lets the next computation depend on a
-value obtained from the previous one. *Lifting* a grammar rule means
-extending it to inputs that carry such extra structure.
+A [type class](https://en.wikipedia.org/wiki/Type_class) is an interface of
+operations, with laws, that a type implements [@wadler1989adhoc]. Of the classes
+here, `fmap` applies an ordinary function inside an effect, `pure` brings a plain
+value into it, `apply` combines effectful arguments, and `bind` lets the next step
+depend on a value produced by the previous one [@mcbride2008applicative]. *Lifting*
+a grammar rule means extending it to arguments that carry an effect. If an adjective
+has two possible meanings and a noun three, lifting their combination through the
+alternatives effect considers the six pairs, applies the base rule to each, and
+collects the results.
 
-For instance, if an adjective has two possible meanings and a noun has
-three, lifting their combination over alternatives considers six pairs.
-The base adjective-noun rule remains the operation applied to each pair;
-the effect interface supplies the branching and aggregation.
-
-Both towers live as Python ABCs in `quivers.monadic.typeclasses` and
-`quivers.arrows.typeclasses`. Effects (instances) implement the
-operations a typeclass requires; the lifting system dispatches on
-which classes an effect inhabits, never on the effect's identity.
-
-The monadic hierarchy:
+`quivers.monadic.typeclasses` and `quivers.arrows.typeclasses` define the classes as
+Python abstract base classes. An effect is an instance of the classes whose
+operations it implements, and the lifting function below chooses lifts by those
+classes, never by the effect's identity. The [monad](monadic.md#monads) classes:
 
 | Class | Adds | Linguistic use |
 |-------|------|----------------|
-| `Functor` | `fmap` | structure-preserving lifts |
-| `Applicative` | `pure`, `apply` | uniform-lift of base rules through an effect |
-| `Monad` | `join` (and derived `bind`) | scope-extruding lifts [@bumford2026effect] |
-| `Alternative` | `empty`, `alt` | non-deterministic / Hamblin-style branches |
-| `MonadPlus` | combines `Monad` and `Alternative` | branching effects with substitution |
-| `Foldable` / `Traversable` | `foldr`, `traverse` | distribute Applicative actions through a structure |
-| `MonadTrans` | `lift` | stack one monad on top of another |
+| `Functor` | `fmap` | lifting a function through an effect |
+| `Applicative` | `pure`, `apply` | lifting a rule through an effect, argument by argument |
+| `Monad` | `join` (and the derived `bind`) | letting an effectful argument take scope over its context |
+| `Alternative` | `empty`, `alt` | sets of alternatives |
+| `MonadPlus` | both `Monad` and `Alternative` | alternatives with scope-taking |
+| `Foldable` / `Traversable` | `foldr`, `traverse` | running an applicative action across a structure |
+| `MonadTrans` | `lift` | stacking one monad on another |
 
-The arrow hierarchy [@hughes2000arrows]:
+The [arrow](https://en.wikipedia.org/wiki/Arrow_(computer_science)) classes follow
+Hughes [@hughes2000arrows]. An arrow generalizes a function. Its `first` runs an
+arrow on one component of a pair, which gives a premonoidal (Freyd) structure rather
+than a symmetric monoidal one [@jacobs2009categorical].
 
 | Class | Adds | Use |
 |-------|------|-----|
-| `Category_` | `id_arr`, `compose` | the bare composition law |
-| `Arrow` | `arr`, `first` | symmetric-monoidal arrow shape |
-| `ArrowChoice` | `left_arr` | sum-elimination |
-| `ArrowApply` | `app` | equivalent power to `Monad` via `arrow_monad` |
-| `ArrowLoop` | `loop_arr` | feedback / fixed-point (the chart-fold) |
-| `ArrowZero` / `ArrowPlus` | `zero_arr`, `alt_arr` | pointwise alternatives on hom-sets |
-
-The `kleisli` and `arrow_monad` bridges in
-`quivers.monadic.bridges` translate between the two towers freely;
-ArrowApply and Monad are interconvertible.
+| `Category_` | `id_arr`, `compose` | identity and composition |
+| `Arrow` | `arr`, `first` | lifting functions and acting on one component of a pair |
+| `ArrowChoice` | `left_arr` | acting on one case of a disjoint union |
+| `ArrowApply` | `app` | applying an arrow given as input |
+| `ArrowLoop` | `loop_arr` | feedback, for recursive definitions |
+| `ArrowZero` / `ArrowPlus` | `zero_arr`, `alt_arr` | failure and choice between arrows |
 
 ## Stdlib effect instances
 
-Eight stdlib effects ship in `quivers.monadic.instances`:
+`quivers.monadic.instances` provides seven effects, each a `dx.Model` that holds its
+parameters (`Continuation(answer=S)` holds its answer type) and registers with its
+classes through `ABC.register`. The linguistic uses follow Bumford and Charlow
+[@bumford2026effect].
 
-| Effect | Class instances | Linguistic use |
+| Effect | Registered as | Linguistic use |
 |--------|------------------|----------------|
-| `Identity` | `Monad`, `Functor` | trivial / no-effect base case |
-| `Maybe` | `MonadPlus`, `Functor` | partiality / presupposition failure |
-| `Alternative_` | `MonadPlus`, `Foldable`, `Traversable` | Hamblin alternatives, focus, questions |
-| `Continuation(answer)` | `Monad`, `Functor` | scope-taking, generalized quantifiers |
-| `State(state)` | `Monad`, `Functor` | dynamic anaphora, discourse referents |
-| `Reader(env)` | `Monad`, `Functor` | assignment functions, indexicality |
-| `Writer(monoid)` | `Monad`, `Functor` | supplements, nonrestrictive content |
-| `List(max_length)` | `MonadPlus`, `Foldable`, `Traversable` | bag-of-readings parsers |
+| `Identity` | `Monad` | no effect |
+| `Maybe` | `MonadPlus` | presupposition failure |
+| `Alternative_` | `MonadPlus`, `Foldable`, `Traversable` | alternatives, focus, questions |
+| `Continuation(answer)` | `Monad` | scope-taking, generalized quantifiers |
+| `State(state)` | `Monad` | dynamic anaphora, discourse referents |
+| `Reader(env)` | `Monad` | assignment functions, indexicals |
+| `Writer(monoid)` | `Monad` | appositives, nonrestrictive relative clauses |
 
-Each effect is a `dx.Model` carrying the relevant parameters (e.g.
-`Continuation(answer=S)` is parameterized by the answer type), and
-each registers against its appropriate ABC(s) via `ABC.register(...)`.
+`Alternative_` is the powerset monad, presented by its Kleisli category $\mathbf{Rel}$, so its morphisms
+are over `BOOLEAN`. `State`, `Reader`, `Writer`, and `Continuation` are monads on finite sets and
+functions: their operations act on morphisms whose rows have exactly one nonzero entry and raise
+`ValueError` on any other morphism. `Writer` checks at construction that its monoid is associative
+with a two-sided unit.
 
-## Class-driven schema lifting
+Every `Monad` is also an `Applicative` and a `Functor`, since the classes are
+subclasses of one another.
 
-The `class_directed_lifts(base_schema, effect)` function in
-`quivers.stochastic.effect_lifts` introspects which typeclasses an
-effect inhabits and emits one lifted schema per class:
+## Lifting rule schemas by type class {#class-driven-schema-lifting}
 
-| Effect class | Lifts emitted |
-|--------------|---------------|
-| `Applicative` | `pure_T`, `apply_T` |
-| `Monad` | adds `bind_T` (scope-extruding) |
-| `Alternative` | adds `alt_T` |
-| `MonadPlus` | union of Monad + Alternative |
+`class_directed_lifts(base_schema, effect)` in `quivers.stochastic.effect_lifts`
+checks which classes an effect is an instance of and returns one lifted
+[rule schema](deduction.md) per applicable operation. For a base rule named `r` and an
+effect `T`, the lifts are:
 
-Each lift is a real `SchemaDecl` and feeds into the existing
-`PatternBinarySchema` / `PatternUnarySchema` runtime; the chart parser
-consumes lifted and base schemas uniformly.
+| Effect class | Lifted schema | Shape |
+|--------------|---------------|-------|
+| `Applicative` | `pure_T_r` | $X \vdash T(X)$ |
+| `Applicative` | `apply_T_r` | $T(X/Y),\ T(Y) \vdash T(X)$ |
+| `Monad` | `bind_T_r` | $T(X),\ T(Y)/X \vdash T(Y)$ |
+| `Alternative` | `alt_T_r` | $T(X),\ T(X) \vdash T(X)$ |
+
+Each lift is a `SchemaDecl`, the same value a QVR `schema` declaration produces, so a
+chart parser treats lifted and written schemas alike.
 
 ```python
 from quivers.dsl.ast_nodes import (
@@ -133,172 +129,106 @@ forward_app = SchemaDecl(
 )
 
 cont_lifts = class_directed_lifts(forward_app, Continuation(answer=S))
-# 3 lifts: pure_Continuation, apply_Continuation, bind_Continuation
+# pure_Continuation_forward_app, apply_Continuation_forward_app,
+# bind_Continuation_forward_app
 
 alt_lifts = class_directed_lifts(forward_app, Alternative_())
-# 4 lifts: pure_Alternative, apply_Alternative, bind_Alternative, alt_Alternative
+# the same three for Alternative, plus alt_Alternative_forward_app
 ```
+
+`lift_rule_set(base_schemas, effects)` returns the base schemas followed by every
+lift of each one under each effect. `swap_rule_set(laws)` returns, for each
+[distributive law](monadic.md#distributive-laws) $\lambda : S \circ T \Rightarrow
+T \circ S$, a schema $S(T(X)) \vdash T(S(X))$ that exchanges the order of two
+effects. Both results are tuples of schemas that a chart parser takes as ordinary
+rules. The parser does not add them by itself, and no step of the parser applies a
+handler.
 
 ## Algebraic effects + handlers
 
-An operation signature describes what may be requested without choosing
-how requests run. A free monad records those requests and the remaining
-computation as syntax; a handler interprets that syntax. For a `Choose`
-request, one handler might select an alternative and another might explore
-all alternatives. The operation's type stays fixed while the handling
-policy changes.
+A signature lists the operations a computation may request without fixing how they
+run. The [free monad](https://ncatlab.org/nlab/show/free+monad) over a signature
+represents a computation as a tree of requests waiting for answers, and a handler
+interprets that tree in some target monad [@swierstra2008data; @plotkin2009handlers].
+For a `Choose` request, one handler might pick an alternative and another might
+explore all of them, while the operation's type stays the same.
+`quivers.monadic.algebraic` provides:
 
-For effects that don't fit a closed-form typeclass instance,
-`quivers.monadic.algebraic` provides a free-monad-over-signature
-construction:
-
-- `Operation(name, parameter, result)`: one operation in a signature.
-- `EffectSignature(name, operations)`: a signature; lifts to a
-  panproto theory via `to_theory()`.
-- `FreeMonad(signature)`: the free monad over the signature; a
-  `Monad` instance automatically.
-- `Handler(signature, target, return_clause, operation_clauses)` :
-  interprets a `FreeMonad`-valued computation in a target monad.
-  Equivalently: a panproto theory morphism from
-  `signature.to_theory()` into the target monad's theory.
-
-Handlers compose with a `deduction` block to produce parsers
-that interpret their effect-typed denotation through registered
-handlers, ending in an effect-pure target.
+- `Operation(name, parameter, result)`: one operation;
+- `EffectSignature(name, operations)`: a signature, whose `to_theory()` returns it as
+  a [panproto](https://github.com/panproto/panproto) theory;
+- `FreeMonad(signature)`: the free monad over the signature, an instance of `Monad`;
+- `Handler(signature, target, return_clause, operation_clauses)`: an interpretation
+  of `FreeMonad` computations in the monad `target`, whose `as_theory_morphism()`
+  returns a panproto theory with one operation for the return clause and one for each
+  operation clause.
 
 ## QIEC effect interfaces and rows
 
-Read an [effect row](../reference/qvr/effects-and-handlers.md#effect-rows) as a list of named services a computation may still
-request. `!{random, score}` permits random draws and scoring through
-those two instances; `!{}` leaves no unhandled requests. Two state
-instances are like two distinct cells even if both hold integers.
-Handling one cell does not handle the other. A total handler removes its
-instance from the row because it accounts for every request on that
-instance; a partial handler leaves an obligation for the surrounding
-context.
+The Quivers Indexed Effect Core (QIEC) is the typed core language to which every
+executable QVR declaration elaborates ([language reference](../reference/qvr/index.md)).
+Each computation in it has an
+[effect row](../reference/qvr/effects-and-handlers.md#effect-rows), the list of effect
+instances it may still request. `!{random, score}` permits random draws and scoring
+through those two instances, and `!{}` permits no unhandled request. A probabilistic
+`program`'s `sample` and `observe` steps request operations of the built-in `random`
+and `score` instances, and its `[effects=[...]]` option summarizes that row.
 
-QVR's **QIEC effect calculus** is the source-level interface every
-computation of a module is checked under, a probabilistic `program` included:
-its `sample` and `observe` steps perform `Random.sample` and `Score.add` on the
-module's canonical instances, and a `program [effects=[...]]` signature is a
-summary of that row. An `effect` may take heterogeneous static
-parameters and declares operations. An `instance` applies that
-interface and receives a lexical identity, so two instances of `State[Int]`
-remain different row entries. A typed computation records those entries in an
-exact or open row, including row-tail `lacks` constraints.
+An `effect` declaration names an interface and its operations, and an `instance`
+declaration creates a named occurrence of it [@bauer2015programming]. Two instances
+of `State[Int]` are thus different row entries, like two different memory cells, and
+handling one leaves the other. A
+[handler](../reference/qvr/effects-and-handlers.md#handler-declarations) matches one
+instance. A total handler answers every operation of its instance and removes the
+instance from the row, and a partial handler leaves it there for an enclosing handler.
+Each handler clause also declares a
+[resumption grade](../reference/qvr/effects-and-handlers.md#resumption-grades), how many
+times it may resume the computation.
+[Effects and handlers](../reference/qvr/effects-and-handlers.md) specifies the
+source forms, and [Transpiler support](../transpile-support.md) lists which targets
+accept which effects.
 
-Handlers match an applied interface and one lexical instance. Their stable
-declarations record total or partial coverage, forwarding policy, introduced
-effects, and a resumption grade for each operation. A total handler removes the
-matched instance from the residual row; a partial handler retains it. An
-explicitly forwarding partial handler passes structurally uncovered operations
-to an outer handler.
+## Bridges between monads and arrows {#bridges-between-the-two-towers}
 
-This calculus unifies the types used by logic-style `Choose`, weighted
-accumulation, state, abort, random choice, and scoring. A handler's clauses
-are authored in the source, each resuming as its grade admits, or supplied as
-process-local attachments; the effect handlers of `quivers.effects` are
-themselves lexical handlers of the kernel's `Random`, `Score`, `Compute`, and
-`Param` interfaces. Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and
-Church run the same computation graph through corresponding implementations
-of the stable-ID runtime ABI. Tests compare their scores with the
-reference machine at specified clamped values. Stan lowers a
-computation with a closed empty effect row, an empty static telescope, and a
-scalar result as a user-defined function; BUGS and JAGS refuse every call.
-These targets reject unsupported control or value features explicitly, under
-`qiec:capability:<feature>:<name>` and `call:graph:<name>`. The [effects and
-handlers reference](../reference/qvr/effects-and-handlers.md) specifies the
-source and operational contract. The [QIEC developer note](../developer/qiec.md)
-specifies the checker, serialization boundary, evaluator, and transpiler ABI.
+`quivers.monadic.bridges` converts between the two kinds of interface:
 
-## Bridges between the two towers
+- `kleisli(monad)` wraps a `Monad` as its Kleisli arrow, an instance of `Arrow` and
+  `ArrowApply`;
+- `arrow_monad(arrow)` wraps an `ArrowApply` as a `Monad`.
 
-`quivers.monadic.bridges` contains:
-
-- `kleisli(monad)`: wraps a `Monad` as a `Kleisli` arrow registered
-  against `Arrow` and `ArrowApply`.
-- `arrow_monad(arrow)`: wraps an `ArrowApply` as an `ArrowMonad`
-  registered against `Monad`.
-
-The pair gives a free choice of presentation: write effects as monads
-or as arrows; the framework treats them uniformly.
-
-## Joint type-and-effect dispatch in the parser
-
-A chart cell records what a span can mean and which effects that meaning
-still carries. An ordinary rule combines plain denotations. A lifted rule
-combines denotations inside an effect. A handler interprets an effect, and
-a registered distributive law permits a particular change in effect order.
-The parser searches these choices alongside the syntactic category
-choices. Swapping two effects requires a registered distributive law
-for that pair and direction.
-
-When the chart parser fires at span `(i, j)`, each cell carries a
-distribution over `(Cat, EffectStack)` pairs (the residuated universe
-×️ a stack of declared effects). At each cell the parser considers:
-
-1. **Base firings**, when both children are effect-pure, the base
-   schema's pattern unifies on the type coordinate as in classical
-   Lambek.
-2. **Lift firings**, when child effect-stacks differ, the
-   class-driven lifts of `class_directed_lifts` interpose `pure_T` /
-   `fmap_T` / `apply_T` / `bind_T` etc. as appropriate.
-3. **Handler firings**, when the cell holds a `T(α)` distribution and
-   a `Handler` from `T` is registered, applying the handler produces
-   a fresh cell at a strictly-shorter effect-stack.
-4. **Commutation firings**, when a `DistributiveLaw(T, U)` (or arrow
-   analogue) is registered, the `swap_TU` schema exchanges sibling
-   effect orderings.
-
-The four kinds compose freely; the chart's CKY enumeration explores
-the joint search space.
+Only arrows with `app` correspond to monads in this way [@hughes2000arrows], so an
+arrow without `ArrowApply` has no monad counterpart.
 
 ## Worked example: scope-taking via Continuation
 
-The example file `docs/examples/source/quantifier_scope.qvr`
-illustrates a grammar that composes expressions with scope-taking effects [@bumford2026effect]:
+The gallery grammar `docs/examples/source/quantifier_scope.qvr` derives quantifier
+scope with categories of continuations [@bumford2026effect]. Its rules write
+categories in Steedman notation, with the result leftmost: `Fwd(A, B)` is `A/B`,
+which takes a `B` on its right to give `A`, and `Bwd(A, B)` is `A\B`, which takes a
+`B` on its left to give `A` [@steedman2000syntactic]. `Cont(X)` is a category of
+continuation type.
 
-```text
+```qvr
 object Term : FinSet 16
-deduction QScope : Term -> Term [semiring=LogProb, start=S, depth=6]
-    atoms S, NP, N, VP, PP, Fwd, Bwd, Cont, span
 
-    # Base forward / backward application.
-    rule fwd_app
-        : span(I, K, Fwd(A, B)), span(K, J, B)
-        |- span(I, J, A)
-    rule bwd_app
-        : span(I, K, B), span(K, J, Bwd(A, B))
-        |- span(I, J, A)
-
-    # Applicative lift of forward application under Cont:
-    #   Cont(A/B) * Cont(B) ⊢ Cont(A)
-    rule fwd_app_cont
-        : span(I, K, Cont(Fwd(A, B))), span(K, J, Cont(B))
-        |- span(I, J, Cont(A))
-
-    # Pure: A ⊢ Cont(A)
-    rule pure_cont
-        : span(I, J, A) |- span(I, J, Cont(A))
-
-    # Scope-extruding bind: a Cont-typed expression takes scope
-    # over an inner argument by absorbing the surrounding context.
-    #   Cont(A) * (A\B) ⊢ Cont(B)
-    rule scope_take
-        : span(I, K, Cont(A)), span(K, J, Bwd(B, A))
-        |- span(I, J, Cont(B))
+deduction QScope : Term -> Term [semiring=LogProb, start=S, depth=4, tolerance=1e-5]
+    atoms S, NP, N, Fwd, Bwd, Cont, span, every, dog, barks
+    rule fwd_app : span(I, K, Fwd(A, B)), span(K, J, B) |- span(I, J, A) #[learnable]
+    rule bwd_app : span(I, K, B), span(K, J, Bwd(A, B)) |- span(I, J, A) #[learnable]
+    rule fwd_app_cont : span(I, K, Cont(Fwd(A, B))), span(K, J, Cont(B)) |- span(I, J, Cont(A)) #[learnable]
+    rule pure_cont : span(I, J, A) |- span(I, J, Cont(A)) #[learnable, bounded]
+    rule scope_take : span(I, K, Cont(A)), span(K, J, Bwd(B, A)) |- span(I, J, Cont(B)) #[learnable]
+    rule cont_elim : span(I, J, Cont(S)) |- span(I, J, S) #[learnable, bounded]
+    lexicon
+        "every" : Cont(Fwd(NP, N)) = every #[learnable]
+        "dog"   : N                = dog   #[learnable]
+        "barks" : Bwd(S, NP)       = barks #[learnable]
 ```
 
-In production code, the lifted schemas (`apply_Cont_fwd`,
-`scope_take`) are auto-generated by `class_directed_lifts`; the
-explicit declaration above demonstrates what a user would write to enumerate
-the lifts manually.
-
-## Further reading
-
-- [@bauer2015programming]
-- [@charlow2025scope]
-- [@bumford2026effect]
-- [@plotkin2003algebraic]
-- [@hughes2000arrows]
-- [@mcbride2008applicative]
+`fwd_app_cont` is the applicative lift of forward application,
+`Cont(A/B), Cont(B) ⊢ Cont(A)`, and has the same shape as the schema `apply_Continuation_r`
+that `class_directed_lifts` generates. `pure_cont` is the unit, `A ⊢ Cont(A)`.
+`scope_take`, `Cont(A), B\A ⊢ Cont(B)`, lets an argument whose category is a continuation take scope
+over the function that consumes it, and `cont_elim` lowers a `Cont(S)` to an `S`.
+These two are written by hand: the generated `bind` lift has the different shape
+`T(X), T(Y)/X ⊢ T(Y)`.

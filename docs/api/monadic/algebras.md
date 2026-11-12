@@ -1,10 +1,11 @@
 # Algebras and Coalgebras
 
-An algebra for a monad [interprets its structured values](../../guides/monadic.md#algebras-and-coalgebras). For the list monad, a monoid
-operation combines a list into one value; associativity makes this compatible with
-flattening nested lists [@moggi1991notions; @wadler1992essence]. A coalgebra for a comonad equips a value with structured
-context. The equations below specify the required compatibility.
-
-Monad algebras, comonad coalgebras, and their structural properties.
+An [algebra of a monad](https://ncatlab.org/nlab/show/algebra+over+a+monad) evaluates its
+structured values into a carrier, compatibly with the monad's unit and multiplication
+[@maclane1998categories]. For the list monad, an associative operation with a unit folds a list
+into one value, and associativity makes the fold agree with flattening nested lists. A coalgebra
+of a [comonad](https://ncatlab.org/nlab/show/comonad) dually equips a value with structured
+context. The module gives [monad algebras and comonad coalgebras](../../guides/monadic.md#algebras-and-coalgebras)
+with their compatibility equations.
 
 ::: quivers.monadic.algebras

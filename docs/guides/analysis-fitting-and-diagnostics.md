@@ -1,19 +1,16 @@
 # Analysis: Fitting and Diagnostics
 
-After specifying a model, use the
-`fit(...)` entry point to estimate its posterior. The sections below cover
-[ArviZ](https://python.arviz.org/) diagnostics, initialization for each
-algebra, and morphism transforms that preserve gradients. [Data and Formulas](analysis-data-and-formulas.md)
-covers data loading and the formula DSL.
+`fit(...)` estimates the posterior of a model given by a formula, and
+`quivers.diagnostics` checks the result with [ArviZ](https://python.arviz.org/) and
+with convergence and calibration diagnostics of its own. `quivers.analysis` derives
+initializations from a program's structure. [Data and Formulas](analysis-data-and-formulas.md)
+covers data loading and formulas.
 
 ## One-line fit
 
-A fit combines three choices: a model (formula, family, and priors),
-an inference method, and data. The returned object preserves the model
-source as well as the approximation to its posterior. Inspecting the
-source shows which parameters were introduced and which data columns
-they use. The diagnostics below assess chain exploration and compare
-replicated observations with the supplied data.
+A fit combines a model (formula, family, and priors), an inference method, and data.
+The result keeps the generated QVR source with the posterior approximation, and the
+source shows which parameters were introduced and which data columns they read.
 
 <!-- python: skip -->
 ```python
@@ -31,13 +28,11 @@ result = fit(
 )
 ```
 
-The returned [`BayesianFit`](../api/formulas/fit.md) is itself a
-frozen [`dx.Model`](https://didactic.dev/api/Model), with
-`.formula`, `.family`, `.program` (the compiled
-    [`MonadicProgram`](../api/continuous/programs.md)), `.posterior`
-    (either an [`MCMCResult`](../api/inference/mcmc.md) or a
-[`Guide`](../api/inference/guide.md)), and `.observations` (the
-inference-time observations dict).
+The result is a [`BayesianFit`](../api/formulas/fit.md), a frozen
+[`dx.Model`](https://didactic.dev/api/Model) with `.formula`, `.family`, `.program`
+(the compiled [`MonadicProgram`](../api/continuous/programs.md)), `.posterior` (an
+[`MCMCResult`](../api/inference/mcmc.md) or a [`Guide`](../api/inference/guide.md)),
+and `.observations` (the observations dict used for inference).
 
 <!-- python: skip -->
 ```python
@@ -61,37 +56,35 @@ result = fit(
 )
 ```
 
-Prior keys reference the latent name as it appears in the emitted
-QVR source; use `formula_to_qvr` to inspect names upfront.
+A prior's key is the latent's name in the generated QVR source, which `formula_to_qvr`
+shows before fitting.
 
 ## Diagnostics: `quivers.diagnostics`
 
-Chain diagnostics such as
-R-hat and effective sample size assess aspects of [MCMC exploration](inference-mcmc.md#mcmc-hmc-and-nuts).
-[Posterior predictive](inference-svi.md#predictive-sampling) checks ask whether simulated data reproduce chosen
-[features of the observations](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#which-statistics-to-test) [@stanPredictiveChecks]. Predictive comparison estimates performance
-on held-out observations. For instance, chains may agree closely on a
-Normal model’s parameters while its replicated data miss the extreme
-values in the observations.
+Chain diagnostics such as $\hat R$ and the effective sample size assess how well
+[MCMC](inference-mcmc.md#mcmc-hmc-and-nuts) explored the posterior.
+[Posterior predictive](inference-svi.md#predictive-sampling) checks ask whether
+simulated data reproduce chosen features of the observations [@stanPredictiveChecks],
+and predictive comparison estimates performance on held-out observations. Chains can
+agree closely on a normal model's parameters while its replicated data miss the
+extreme values of the observations.
 
-**Leave-one-out (LOO)** comparison estimates prediction for each observation
-when it is left out of the fit. **Pareto-smoothed importance sampling
-(PSIS)** approximates that calculation by reweighting posterior draws.
-Large Pareto shape estimates indicate unstable reweighting. For those
-observations, refitting with the observation omitted can give a more
-reliable predictive comparison. Stacking chooses weights to improve the
-combined predictive distribution on held-out data.
+Leave-one-out (LOO) comparison estimates how well the model predicts each observation
+when that observation is left out of the fit, and Pareto-smoothed importance sampling
+(PSIS) approximates it by reweighting posterior draws [@vehtari2017loo]. A large
+estimated Pareto shape marks an observation whose reweighting is unstable, for which
+refitting without it gives a more reliable estimate. Stacking chooses model weights
+that maximize the leave-one-out predictive performance of the combination
+[@yao2018stacking].
 
-A posterior predictive p-value compares a statistic of replicated data
-with the same statistic of observed data. For instance, a mean-response
-check asks whether replicated means tend to fall above or below the
-observed mean. A value near one half can coexist with a poor fit to the
-variance: two distributions may have the same mean and very different
-spreads. Choose statistics that reflect the features your model should explain.
+A posterior predictive p-value is the probability that a statistic of replicated data
+exceeds the same statistic of the observed data [@gelman1996predictive]. A mean check
+asks whether replicated means tend to fall above or below the observed mean, and a value
+near one half can coexist with a poor fit to the variance, so the statistics should be
+the features the model is meant to explain.
 
-The [diagnostics adapter](../api/diagnostics/index.md) connects
-between quivers' inference records and
-[ArviZ](https://python.arviz.org/). It returns an
+The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
+records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 with ArviZ-compatible groups.
 
@@ -134,34 +127,29 @@ az.plot_forest(idata_a, var_names=["beta_x"])
 ```
 
 [`to_datatree`](../api/diagnostics/arviz_io.md#quivers.diagnostics.arviz_io.to_datatree)
-populates the canonical ArviZ groups (`posterior`, `sample_stats`,
+fills the ArviZ groups (`posterior`, `sample_stats`,
 `posterior_predictive`, `log_likelihood`, `observed_data`,
 `constant_data`) from the `(num_chains, num_samples, *site_shape)`
 tensors that
 [`MCMCResult`](../api/inference/mcmc.md) already produces, with its
-per-draw sampler statistics under ArviZ's names (`diverging`,
+sampler statistics of each draw under ArviZ's names (`diverging`,
 `tree_depth`, `n_steps`, `energy`, `step_size`, `acceptance_rate`).
 [`compare`](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.compare)
 delegates to
 [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html)
-with stacking weights
-[@yao2018stacking].
-Its `round_to` parameter is ArviZ's rounding policy:
-`"auto"` is the display-oriented default, an integer selects decimal
+with stacking weights. Its `round_to` parameter is ArviZ's rounding policy:
+`"auto"` is the default for display, an integer selects decimal
 places, and `"none"` preserves full numeric precision. The
 [`loo` wrapper](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.loo)
 delegates PSIS to [`arviz.loo`](https://python.arviz.org/en/stable/api/generated/arviz.loo.html);
 with `pointwise=True`, its `elpd_i` and `pareto_k` arrays contain
 one value per observation without filtering nonfinite Pareto estimates.
 [`posterior_predictive_check`](../api/diagnostics/predictive_checks.md#quivers.diagnostics.predictive_checks.posterior_predictive_check)
-computes the canonical
-[posterior-predictive p-value](https://en.wikipedia.org/wiki/Posterior_predictive_p-value)
-for a user-chosen
+computes the posterior predictive p-value for a chosen
 [test statistic](../api/diagnostics/predictive_checks.md),
 optionally grouped by a named dim.
 
-No information-criterion math is reimplemented here; LOO, comparison,
-and predictive checks come from ArviZ.
+ArviZ computes LOO, comparison, and the predictive checks.
 
 ### Convergence diagnostics for any draws
 
@@ -183,10 +171,10 @@ Each estimator answers a different question.
 [R-hat](https://mc-stan.org/docs/reference-manual/analysis.html#potential-scale-reduction)
 compares split halves of the chains after replacing every draw by the
 normal score of its rank, and reports the larger of that statistic and
-the same statistic for the absolute deviations from the median; the
+the same statistic for the absolute deviations from the median. The
 second detects chains that agree on location but disagree on scale.
-Values near 1 are consistent with mixing, and Vehtari et al. suggest
-1.01 as a threshold. Bulk
+Values near 1 are consistent with mixing, and Vehtari et al. suggest 1.01 as a
+threshold. Bulk
 [effective sample size](https://mc-stan.org/docs/reference-manual/analysis.html#effective-sample-size.section)
 measures precision for location summaries such as the mean and the
 median, while tail ESS (the smaller of the ESS values for the 5% and
@@ -237,8 +225,8 @@ NaN for them rather than a number that would read as valid: a
 coordinate with a NaN or infinite draw, fewer than four draws per
 chain, or a constant value (and, for R-hat, fewer than two chains).
 The constant case departs from ArviZ, which reports the total draw
-count as the ESS of a constant chain; a sampler stuck at its initial
-value would otherwise look perfectly mixed. Chains that are each
+count as the ESS of a constant chain, so that a sampler stuck at its initial
+value would look perfectly mixed. Chains that are each
 constant but sit at different values give an infinite R-hat. On every
 other input the estimators agree with ArviZ's `rhat`, `ess`, and
 `mcse` to floating-point rounding.
@@ -255,11 +243,11 @@ prior, draw data from the program given those parameters, fit the
 data, and record the rank of each true parameter among its posterior
 draws. If the procedure samples the exact posterior, each rank is
 uniform on `{0, ..., L}` for `L` posterior draws, whatever the program.
-Ranks piled at both ends mean posteriors that are too narrow; piled in
-the middle, too wide; tilted to one side, biased.
+Ranks piled at both ends mean posteriors that are too narrow, ranks piled in
+the middle mean posteriors that are too wide, and ranks tilted to one side mean bias.
 
 [`sbc`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc)
-runs the loop for a program, a one-row input, and a fit
+runs the loop for a program, an input with one row, and a fit
 `fit(observations, seed)` that returns an
 [`MCMCResult`](../api/inference/mcmc.md), a fitted
 [`Guide`](../api/inference/guide.md), or a mapping of site names to
@@ -321,7 +309,7 @@ Three details decide whether the check has the size it claims.
 First,
 [`sbc_ranks`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc_ranks)
 breaks ties between a true value and its posterior draws uniformly at
-random; without that, a discrete quantity (a count, an indicator) has
+random. Without that, a discrete quantity (a count, an indicator) has
 non-uniform ranks even under an exact sampler. Second,
 [`sbc_uniformity`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc_uniformity)
 compares the ranks with the discrete uniform distribution on
@@ -343,7 +331,7 @@ statistics.
 
 By default every coordinate of every latent site is ranked. The
 `statistics=` argument names other test quantities, each a function of
-a batch of parameter draws and the data; quantities that read the
+a batch of parameter draws and the data, and quantities that read the
 data, such as a residual sum of squares or a log-likelihood, can
 detect miscalibration that the parameters alone miss
 [@modrak2025sbc].
@@ -352,31 +340,24 @@ writes the ranks into the `prior_sbc` group that ArviZ's
 `plot_ecdf_pit` reads, for the graphical version of the uniformity
 test.
 
-## Algebra-guided training tooling
+## Initialization tools {#algebra-guided-training-tooling}
 
-The `quivers.analysis` subpackage
-collects static-analysis passes that read a compiled QVR program
-and return structured data the user can act on: chain shapes,
-algebra-specific init recipes, and saturation warnings. None of
-the passes here rewrite the program; they only derive metadata,
-diagnostics, or sampler / init parameters that respect the source
-as the canonical specification.
+`quivers.analysis` reads a parsed QVR module and returns data about it: the shape of its
+chain of steps, an initialization recipe for each `Algebra`, and warnings about
+initializations. None of these functions changes the program.
 
 ### ChainShape
 
-`ChainShape.from_module(module)` walks
-a compiled `Module`, returning per-step `StepShape` records that
-tag every program step (`latent`, `observe`, `marginalize`, or
-`let`) with:
+`ChainShape.from_module(module)` reads a `Module` and returns one `StepShape` record
+for every program step (`latent`, `observe`, `marginalize`, or `let`), with:
 
 - the bound variable name (`name`),
 - the step `kind`,
 - the source position (`source_line`, `source_col` from the
   tree-sitter parse),
-- the chain `depth`: the 1-indexed position of the step among
-  stochastic binds (`latent` / `observe` / `marginalize`). `let`
-  steps inherit the depth of the most recent stochastic
-  predecessor; a `let` before any stochastic step has depth `0`,
+- the chain `depth`: the position of the step among the stochastic steps (`latent`,
+  `observe`, `marginalize`), counted from 1. A `let` has the depth of the most recent
+  stochastic step before it, or `0` if there is none,
 - the governing `algebra_name` (read from the surrounding
   `composition <name> [level=<algebra>]` declaration),
 - the inferred `intermediate_size` after the step's [contraction](dsl-contractions.md#type-driven-wiring-inference)
@@ -395,23 +376,22 @@ for step in shape.steps:
           f"depth={step.depth} dim={step.intermediate_size}")
 ```
 
-This metadata supplies init-recipe selection, saturation diagnostics, and
-layer-width checks through `ChainShape`.
+`recommend_init` and `saturation_warnings` below read these records.
 
 ### Algebra.init_spec
 
-Each algebra exposes an algebra-specific init recipe via
-[`Algebra.init_spec(depth, intermediate_size) -> InitSpec`](../api/core/algebras.md).
-The recipes target the algebra's neutral element: a `k`-way noisy-OR
-under `ProductFuzzy` starts near $p \approx \ln(2) / k$ so
-the aggregate stays near $1/2$; Boolean / Gödel weights start
-at $1/2$; probabilistic kernels start at $1 / k$ for a $k$-way
-output; Real algebras use the conventional Kaiming-style scale.
+[`Algebra.init_spec(depth, intermediate_size) -> InitSpec`](../api/core/algebras.md)
+gives an initialization recipe for each `Algebra`. Noisy-OR over $k$ independent terms
+of probability $p$ is $1 - (1 - p)^k \approx 1 - e^{-kp}$, which is $1/2$ at
+$p = \ln(2)/k$, so under `ProductFuzzy` the recipe starts entries near
+$\ln(2)/k$ with $k$ = `depth * intermediate_size`. Boolean and Gödel weights start at
+$1/2$, probability kernels at $1/k$ for $k$ outputs, and `REAL` uses the scale of He
+et al. for rectifier networks [@he2015delving].
 
 <!-- python: skip -->
 ```python
 from quivers.core.algebras import ProductFuzzyAlgebra
-# Importing the analysis package monkey-patches Algebra.init_spec on.
+# Importing quivers.analysis attaches init_spec to Algebra.
 import quivers.analysis  # noqa: F401
 
 algebra = ProductFuzzyAlgebra()
@@ -420,21 +400,18 @@ spec = algebra.init_spec(depth=6, intermediate_size=1)
 # noisy-OR over k=6 cells lands at 1/2 when each cell is p ≈ ln(2)/6.
 ```
 
-The `[init=auto]` annotation on a latent declaration consumes this
-spec at compile time; see the
-[DSL declarations guide](dsl-declarations.md#init-recipes-initauto)
-for the corresponding syntax.
+The option `[init=auto]` on a learnable table applies this recipe at compile time
+([DSL declarations](dsl-declarations.md#init-recipes-initauto)).
 
 ### recommend_init and apply_init_spec
 
-Given a program,
-`recommend_init(module)` produces a
-per-latent `InitSpec` by composing `ChainShape` with each
-algebra's `init_spec`.
-`apply_init_spec(tensor, spec)`
-materializes the spec onto a single learnable tensor, with
-[`torch.nn.init`](https://docs.pytorch.org/docs/stable/nn.init.html)
-integration for the standard distributions.
+`recommend_init(module)` gives an `InitSpec` for each latent by calling the `Algebra`'s
+`init_spec` with the step's `ChainShape` depth and intermediate size. The depth is the
+step's position among the stochastic steps, so the recipe's $k$ is that position times
+the size, not a count of noisy-OR terms in the model. `apply_init_spec(tensor, spec)`
+writes a spec into one learnable tensor, through
+[`torch.nn.init`](https://docs.pytorch.org/docs/stable/nn.init.html) for the standard
+distributions.
 
 <!-- python: skip -->
 ```python
@@ -450,32 +427,24 @@ for name, param in program.named_parameters():
         apply_init_spec(param, specs[name])
 ```
 
-The full pipeline is what `[init=auto]` does at compile time;
-calling `recommend_init` post-hoc lets you swap in algebra-guided
-init on a program that was originally compiled with the default
-random init.
+This is what `[init=auto]` does at compile time, and calling `recommend_init` afterward
+applies the recipes to a program compiled with the default random initialization.
 
 ### saturation_warnings
 
-Saturation occurs when a numerical transformation becomes insensitive
-to its input: a sigmoid far into either tail has a small derivative.
-A long product can likewise drive scores toward zero, while repeated
-noisy-OR can drive them toward one. Initialization recipes aim to keep
-early calculations in a range with usable gradients. After a warning,
-inspect the affected scores and their gradients during training; scores
-clustered near zero or one with tiny gradients can motivate a different
-initialization or parameterization.
+A transformation saturates when it becomes insensitive to its input: a sigmoid far into
+either tail has a small derivative, a long product drives scores toward zero, and
+repeated noisy-OR drives them toward one. The initialization recipes aim to start in a
+range with usable gradients.
 
-`saturation_warnings(module)` returns
-source-keyed warnings about latents whose algebra-guided init
-recipe differs materially from the default `Normal(0, 1)` init. It
-walks every `latent` step at depth $\geq 2$ or with intermediate
-size $> 1$, asks the shape module for the recommended `InitSpec`,
-and flags the step when either the recipe's mean shifts by more
-than $0.2$ from $0$ or its std moves by more than $20\%$ away from
-$1$. The 20% threshold is a single generic cutoff, applied
-identically across ProductFuzzyAlgebra, BooleanAlgebra, Godel,
-Markov, and other supported algebras.
+`saturation_warnings(module)` returns a warning, located at its source line and column,
+for each latent whose recommended `InitSpec` differs from the default `Normal(0, 1)`
+initialization. It considers every `latent` step at depth at least 2 or with
+intermediate size above 1, and warns when the recipe's mean differs from $0$ by more
+than $0.2$ or its standard deviation from $1$ by more than $20\%$, the same cutoffs for
+every `Algebra`. A warning thus says that the default initialization is far from the
+recipe. It does not measure saturation during training, which shows in the scores and
+their gradients, clustered near zero or one with tiny gradients.
 
 <!-- python: skip -->
 ```python
@@ -488,18 +457,14 @@ for warning in saturation_warnings(module):
           f"{warning.message()}")
 ```
 
-Use these warnings as a static-analysis pass during model
-development: a model that fits but trains slowly often turns out
-to be saturated under its default init.
 
-## Module-to-source: `quivers.dsl.emit`
 
-[`module_to_source`](../api/dsl/emit.md) walks a
-[`Module`](../api/dsl/ast_nodes.md) AST and produces canonical
-`.qvr` source for every current statement, program-step, and
-expression variant. The emit is one-way and semantic: passing the
-emitted source to [`quivers.dsl.loads`](../api/dsl/parser.md) compiles a
-program with the same declarations as the original AST.
+## From a module back to source: `quivers.dsl.emit` {#module-to-source-quiversdslemit}
+
+[`module_to_source`](../api/dsl/emit.md) writes a [`Module`](../api/dsl/ast_nodes.md)
+AST as `.qvr` source, covering every declaration, program step, and expression form.
+Compiling the result with [`quivers.dsl.loads`](../api/dsl/parser.md) gives a program
+with the same declarations as the AST.
 
 ## Autograd-safe morphism transforms
 
@@ -512,32 +477,18 @@ return a
 whose `.tensor` is recomputed from the source's tensor on each
 access, and whose `.module()` registers the source as a submodule
 so `.parameters()` walks reach the upstream learnable parameters.
-Every backward through a fresh `.tensor` access gets its own
-autograd graph, so multi-step optimization propagates gradients
-through the V-Cat representation correctly.
-
-[`ObservedMorphism`](../api/core/morphisms.md#quivers.core.morphisms.ObservedMorphism)
-is the wrapper for fixed data tensors (the
-`from_data(...)` path); it does not double as the wrapper for
-derived-from-source morphisms. The categorical distinction "this
-morphism is a tensor function of another morphism" earns the
-separate
-[`TransformedMorphism`](../api/core/morphisms.md#quivers.core.morphisms.TransformedMorphism)
-class.
+Each access of `.tensor` builds a new autograd graph, so gradients reach the source's
+parameters on every step of an optimization.
+[`ObservedMorphism`](../api/core/morphisms.md#quivers.core.morphisms.ObservedMorphism),
+by contrast, holds a fixed tensor of data.
 
 ### Multi-step optimization pattern
 
-Keeping the source in the module tree preserves parameter registration,
-but derivatives still depend on the transformation itself. A hard
-threshold returns discrete decisions and has no useful gradient through
-those decisions. The example uses a differentiable conversion; train
-with an appropriate smooth objective before applying a hard threshold
-for reporting or a later discrete calculation.
-
-The pattern below trains a latent `W` and uses
-`W.change_base(...).dagger` with a differentiable identity conversion in the loss; both passes through the
-optimizer see the gradient flowing back through `W`'s underlying
-parameter.
+Keeping the source in the module tree keeps its parameters registered, but the
+derivatives still depend on the transformation: a hard threshold makes discrete
+decisions and passes no useful gradient through them. The example below trains a
+learnable table `W` through `W.change_base(...).dagger` with an identity map, so the
+gradient reaches `W`'s parameter on every step.
 
 <!-- python: skip -->
 ```python
@@ -615,22 +566,15 @@ print(posterior_predictive_check(
 fit_full.dump_qvr("acceptability_model.qvr")
 ```
 
-The same workflow drops down to the QVR DSL whenever the formula
-language is too restrictive: `formula_to_qvr(...)` emits the
-program, the user edits the source, and feeds it back through
-[`quivers.dsl.loads`](../api/dsl/parser.md).
+When a formula cannot express a model, `formula_to_qvr(...)` emits the program, the
+source can be edited, and [`quivers.dsl.loads`](../api/dsl/parser.md) compiles the
+edited version.
 
 ## See also
 
-- [Data and Formulas](analysis-data-and-formulas.md): the front-half
-  of the analysis stack.
+- [Data and Formulas](analysis-data-and-formulas.md): data schemas and formulas.
 - [Variational Inference: SVI](inference-svi.md) and
   [MCMC](inference-mcmc.md): the inference drivers `fit(...)`
   wraps.
-- [DSL Declarations](dsl-declarations.md#init-recipes-initauto):
-  the `[init=auto]` annotation that consumes
-  `Algebra.init_spec` at compile time.
-
-## Further reading
-
-- [@yao2018stacking]
+- [DSL Declarations](dsl-declarations.md#init-recipes-initauto): the `[init=auto]`
+  option, which applies `Algebra.init_spec` at compile time.

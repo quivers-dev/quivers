@@ -1,70 +1,44 @@
-# Structural Compression: Signatures and Encoders
+# Tree and Graph Autoencoders: Signatures and Encoders
 
-An encoder turns a structured value, such as a syntax tree, into a
-fixed-length vector. A [decoder](structural-compression-decoders-and-losses.md#decoder-blocks) assigns probabilities to structures given
-such a vector. The structure determines the recursion; learnable functions
-determine how child representations combine. This lets a model reuse one
-function at every occurrence of a constructor, including occurrences in
-trees of different sizes.
+An encoder turns a structured value, such as a syntax tree, into a fixed-length
+vector, and a [decoder](structural-compression-decoders-and-losses.md#decoder-blocks)
+assigns probabilities to structures given such a vector. Together they form an
+[autoencoder](https://en.wikipedia.org/wiki/Autoencoder) over terms, the design of
+recursive autoencoders [@pollack1990recursive], tree-LSTM encoders
+[@tai2015treelstm], and message-passing graph encoders
+[@gilmer2017neural; @battaglia2018relational]. `quivers.structural` and the QVR
+declarations `signature`, `encoder`, `decoder`, and `loss` implement them.
+[Decoders and losses](structural-compression-decoders-and-losses.md) covers the last
+two.
 
-For instance, encode `App(Const("dog"), Const("cat"))` by first encoding
-the two constants, then applying the learned `App` function to their
-vectors. Formally,
-$C(\mathrm{App}(t,u)) = \widehat C_{\mathrm{App}}(C(t),C(u))$.
-This equation explains the [algebra-homomorphism](../semantics/structural.md#22-denotation-structural-recursion) terminology below:
-constructing a term and then encoding agrees with encoding its children
-and combining them with the corresponding vector operation. Two terms
-can receive the same vector; the decoder models which reconstructions
-are likely from that vector.
+A *signature* $\Sigma$ lists sorts and the constructors that build terms of each
+sort, and $T_\Sigma$ is the set of terms it generates. An encoder gives each
+constructor $\mathrm{op} : s_1 \times \dots \times s_n \to s$ a learnable function
+$\widehat C_{\mathrm{op}}$ on vectors and computes the code of a term bottom-up:
 
-Quivers exposes a uniform algebraic interface for compressing
-arbitrary structured objects to fixed-length vectors and decoding
-them back under a learned distribution. The interface is built on
-two categorical primitives:
+$$
+C(\mathrm{op}(t_1, \dots, t_n)) = \widehat C_{\mathrm{op}}(C(t_1), \dots, C(t_n)).
+$$
 
-- An **encoder** is a [Σ-algebra
-  homomorphism](https://ncatlab.org/nlab/show/algebra+over+an+endofunctor)
-  $T_\Sigma \to \mathrm{Vec}_D$: for each operation $\mathrm{op} :
-  s_1 \times \cdots \times s_n \to s$ in a multi-sorted signature
-  $\Sigma$, a parametric function $\hat{C}_{\mathrm{op}} :
-  \mathrm{Vec}_D \times \cdots \times \mathrm{Vec}_D \to
-  \mathrm{Vec}_D$. The recursion over the term tree is supplied by
-  the framework; the analyst supplies only the per-operation
-  parametric functions.
-- A **decoder** is a [Kleisli
-  coalgebra](https://ncatlab.org/nlab/show/coalgebra+over+an+endofunctor)
-  $\mathrm{Vec}_D \to \mathrm{Kern}(T_\Sigma)$: a structure choice,
-  primitive choice, factor split, and binder selection together
-  corecursively generate a `Term` (with per-term `log_prob`
-  available for observed terms).
-
-Encoder plus decoder is a stochastic autoencoder on $T_\Sigma$. The
-same interface represents transformers (sequence encoder +
-autoregressive decoder), tree-LSTMs (tree encoder), graph neural
-networks (message-passing graph encoder), variational autoencoders
-(encoder + decoder pair on $T_\Sigma$ with a KL term), the
-vector inside-outside parser of Le-Zuidema / Drozdov / Kim
-(chart-item signature + attached encoder), and typed-LF induction
-pipelines (binders with annotation sorts threading the type of each
-bound variable through a de-Bruijn context).
-
-This page covers signature and encoder declarations; the
-[decoder and loss declarations](structural-compression-decoders-and-losses.md#decoder-blocks)
-are documented on a separate page.
+To encode `App(Const("dog"), Const("cat"))`, for instance, it encodes the two
+constants and applies the learned `App` function to their vectors. One function is
+reused at every occurrence of a constructor, in trees of any size. In algebraic terms
+the functions $\widehat C_{\mathrm{op}}$ make the vector space $\mathrm{Vec}_D$ an
+[algebra for the signature](https://ncatlab.org/nlab/show/algebra+for+an+endofunctor),
+and $C$ is the unique map from the term algebra $T_\Sigma$ that respects every
+constructor, the [catamorphism](https://en.wikipedia.org/wiki/Catamorphism) or fold
+[@meijer1991functional]. Different terms can receive the same vector, and the decoder
+models which terms are likely given a vector.
 
 ## Signature blocks
 
-A **signature** lists the kinds of value, called sorts, and the
-constructors that build them. In the example, `Const` builds a term from
-a name, while `App` builds a term from two terms. `Term` and `Type`
-specify which constructors are allowed; they can have different
-constructors even when their embeddings have the same length. The `dim` fields specify representations used by the neural modules.
+A `signature` declares the sorts, the constructors, the binders, and, for graphs,
+the vertex and edge kinds. In the example, `Const` builds a `Term` from a `Name`, and
+`App` builds a `Term` from two `Term`s. `Term` and `Type` admit different
+constructors even though both are vectors in the end, and the `dim` options give the
+vector length of each sort.
 
-A `signature` declares the sorts, constructors, binders, and (for
-graph signatures) vertex / edge kinds of an inductive (or
-graph-shaped) algebra.
-
-<!-- compile: false -->
+<!-- compile: cumulative -->
 ```qvr
 signature LF
     sorts
@@ -79,142 +53,94 @@ signature LF
         All : binds (x : Term : ty : Type) in (body : Term) -> Term
 ```
 
-Three sort kinds:
+A sort is one of three kinds:
 
-- `object`: the principal sorts whose terms are compressed /
-  decoded recursively.
-- `data`: opaque atoms (string / int / float / bytes / bool)
-  consumed by per-data-sort embedders. A data sort may declare a
-  closed vocabulary inline via `vocab { ... }` listing string,
-  integer, and / or float literals; the decoder samples and scores
-  data-sorted children from exactly these tokens.
-- `index`: [de-Bruijn
-  index](https://en.wikipedia.org/wiki/De_Bruijn_index) slots.
+- `object`: a sort whose terms are encoded and decoded recursively;
+- `data`: leaves that carry a string, integer, float, byte string, or Boolean, each
+  embedded by an embedder for its sort. A data sort may list a closed vocabulary
+  with the option `vocab=[...]`, and the decoder then samples and scores leaves of
+  that sort from exactly those values;
+- `index`: positions for [de Bruijn indices](https://en.wikipedia.org/wiki/De_Bruijn_index)
+  [@debruijn1972lambda].
 
-Reserved op names: `BoundVar` and `Data`. These are
-framework-built-in op tags. The compiler rejects them as
-user-declared constructor / binder names.
+A constructor with no arguments is written with an empty domain, `Leaf : -> Tree`.
+The names `BoundVar` and `Data` are reserved for the library's own constructors and
+cannot be declared.
 
-### Binders, de-Bruijn context, and type annotations
+### Binders, de Bruijn context, and type annotations
 
-A binder makes a variable available only inside a particular body.
-De Bruijn indices identify bound variables by their distance from the
-innermost binder: in nested binders, index zero refers to the most
-recently introduced variable, and index one to the next outer variable.
-Renaming a bound variable thus does not change this representation.
-The context `Gamma` records the available variables together with their
-embeddings and annotations, so nested scopes remain distinct.
+A binder makes a variable available inside one body only. A
+[de Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index) names a bound
+variable by its distance from the innermost binder, so index 0 is the most recently
+bound variable, and renaming a bound variable does not change the representation. The
+declaration `binds (x : Term : ty : Type) in (body : Term) -> Term` builds a `Term`
+and, in the argument `body`, binds a variable `x` of sort `Term` annotated by a term
+`ty` of sort `Type`. Signatures of this kind, with constructors that bind variables in
+some arguments, are binding signatures [@fiore1999abstract].
 
-A binder declaration introduces one or more typed scoped variables.
-`binds (x : Term : ty : Type) in (body : Term) -> Term` reads:
-"constructs a value of sort `Term`; in the scope of argument
-`body`, introduces a variable `x` of sort `Term` annotated by a
-`Type`-sorted term `ty`."
+The encoder and the decoder both carry a context $\Gamma$ of bound variables. Each
+entry is a triple `(var_sort, embedding, type_term)` of the variable's sort, its
+vector, and its annotation, and `BoundVar(i)` in a position of object sort reads the
+entry at depth `i`. The encoder's `var_init` rule, below, computes a variable's vector
+from its annotation.
 
-The framework threads a de-Bruijn context $\Gamma$ through both the
-encoder's recursion and the decoder's corecursion. Each entry of
-$\Gamma$ is a triple `(var_sort, embedding, type_term)` that records
-the variable's sort, vector representation, and type annotation.
-`BoundVar(i)` at any object-sorted
-position reads $\Gamma$ at depth `i`. The encoder's `var_init`
-function (see below) computes the variable's vector embedding from
-its type annotation.
-
-Strict declaration rules:
-
-- Every sort a constructor or binder mentions (domain, codomain,
-  annotation sort) must be declared in the signature's
-  `sorts { ... }` block. There is no silent auto-registration.
-- Every sort with no inline `dim` must have its dim supplied by
-  every encoder / decoder over the signature. The compiler raises
-  if a sort's dim is unresolved.
+Every sort that a constructor or binder mentions must be declared under `sorts`, and
+every sort without a `dim` option must receive one from each encoder and decoder over
+the signature. The compiler raises an error otherwise.
 
 ## Encoder blocks
 
-The encoder replaces each constructor by a function on child vectors.
-A leaf embedding handles a value with no recursive children; a binary
-constructor consumes two already-computed vectors. This is a bottom-up
-fold over a tree. The framework supplies the traversal, while each
-`op` body supplies the local computation. The formal account uses
-algebras over a signature functor; the concrete recurrence above is the
-behavior a model author needs to implement.
+An `encoder` gives the vector length of each sort and a body for each constructor and
+binder. A body is a let-expression over the children's vectors, and an omitted body
+defaults to a learned two-layer MLP with the right input and output lengths:
 
-An encoder declares the carrier dim per sort plus one parametric
-function per constructor / binder. Bodies are optional; the
-compiler scaffolds a 2-layer MLP per omitted op with the correct
-per-arg dim sequence.
-
-<!-- compile: false -->
+<!-- compile: cumulative -->
 ```qvr
 encoder C : LF
     dim Term = 64
     dim Type = 32
-
-    op Const(n) |-> name_embed
-    op App(f, x) |-> mlp_app([f, x])
-
-    op Lam(ty, body) |-> mlp_lam([ty, body])
-    op All(ty, body) |-> mlp_all([ty, body])
-
-    var_init Term from Type as ty |-> mlp_typed_var(ty)
+    op App(f, x) |-> gelu(f + x)
 ```
 
-For binder constructors, the framework's calling convention is:
+Here `App` sums its children's vectors and applies GELU, and `Const`, `Lam`, and `All`
+take the default MLPs. For a binder the library proceeds in four steps:
 
-1. The annotation arguments (one per annotated bound variable) are
-   compressed in the **outer** context $\Gamma$.
-2. Each `var_init <var_sort> from <annot_sort> as <name> |-> body`
-   declaration is invoked to mint a fresh variable embedding from
-   the annotation embedding; the framework pushes
-   `(var_sort, embedding, annot_term)` onto $\Gamma$.
-3. The scoped arguments are compressed in the **extended** context
-   $\Gamma'$.
-4. The per-op function receives the flat child-embedding list
-   `[annot_1, ..., annot_k, scoped_1, ..., scoped_m]` in
-   declaration order.
+1. it encodes the annotation arguments in the outer context $\Gamma$;
+2. for each annotated variable, it runs the matching
+   `var_init <var_sort> from <annot_sort> as <name> |-> body` rule to compute the
+   variable's vector from its annotation's vector, and pushes
+   `(var_sort, embedding, annot_term)` onto $\Gamma$;
+3. it encodes the scoped arguments in the extended context;
+4. it passes the binder's body the list `[annot_1, ..., annot_k, scoped_1, ..., scoped_m]`
+   in declaration order.
 
-Multiple `var_init` declarations are allowed per encoder, one per
-`(var_sort, annot_sort)` pair the signature's binders introduce.
-Unannotated binders (those without an annotation sort) use a
-learnable nullary constant keyed by `var_sort` alone.
+An encoder may give one `var_init` rule for each `(var_sort, annot_sort)` pair its
+signature's binders use. A pair without a rule gets a learned two-layer MLP, and an
+unannotated variable gets a learned constant vector for its sort.
 
 ### Primitives and user-defined callables in rule bodies
 
-Rule bodies are let-expressions over the same fixed primitive pool
-the rest of the DSL uses (every `torch.nn.functional` activation,
-the simplex maps, pointwise transcendentals, `dim=-1` reductions,
-layer-norm, dropout; see the
-[let-expression primitive reference](dsl-programs-and-lets.md#checked-primitive-reference))
-plus any callable declared at the module level.
+Rule bodies use the same primitives as let-expressions elsewhere in QVR, listed in the
+[primitive reference](dsl-programs-and-lets.md#checked-primitive-reference): the
+activations of `torch.nn.functional`, the simplex maps, pointwise functions,
+reductions over the last axis, `layer_norm`, and `dropout`. They can also call any
+`morphism`, `program`, `encoder`, `decoder`, or `deduction` declared at the top level
+of the module, as `f(arg, ...)`.
 
-**Module-scope callables resolve by name.** Top-level `morphism`,
-`program`, `encoder`, `decoder`, and `deduction` declarations are
-visible inside encoder bodies and may be called as `f(arg, ...)`.
+A name in a body resolves first to a primitive, then to a top-level declaration, then
+to a constructor. A constructor with a primitive's name, such as `relu`, is accepted,
+but a call `relu(x)` in a body reaches the primitive.
 
-**Resolution order**: the dispatcher resolves builtins first, then
-user globals, then user-declared constructors. This means a
-let-expression primitive name shadows a user constructor with the
-same name (the compiler will refuse to register such a constructor
-when it's first declared).
+The compiler checks the number of arguments at each call:
 
-**Arity checking.** Each call site checks the number of positional
-arguments against the callee's declared arity at compile time. The
-arity rules:
+- a `MonadicProgram` with named `params` takes `len(params)` arguments;
+- a `MonadicProgram` without `params` takes one, its packed input;
+- a `Morphism` takes one, the domain tensor;
+- any other callable takes its positional parameters without defaults, and a
+  `*args` parameter disables the check.
 
-- A `MonadicProgram` with named `params`: arity equals
-  `len(params)`.
-- A `MonadicProgram` without `params`: arity is 1 (the packed
-  program input).
-- A `Morphism`: arity is 1 (the domain tensor).
-- Any other callable: positional parameters without defaults; a
-  `*args` parameter makes arity unknowable, in which case the
-  compiler accepts the call.
-
-**Shape-error reporting.** Errors raised inside a user callable are
-reported with the encoder call site named, rather than being buried in
-the PyTorch traceback. The dispatcher captures the call site
-(filename, line, column from the tree-sitter parse) and re-raises
-with that frame attached.
+An error raised inside a called function is re-raised with the file, line, and column
+of the encoder call that reached it.
 
 <!-- compile: false -->
 ```qvr
@@ -227,48 +153,48 @@ encoder C : LF
     op App(f, x) |-> gelu(embed(f) + embed(x))
 ```
 
+The program `embed` here assumes objects `Pixel` and `Latent` and a parameter `W1`
+declared elsewhere in the module.
+
 ### Factory form
 
-For encoders that fit one of the standard architectures, the
-explicit `{ ... }` body can be replaced by a factory invocation:
+An encoder can instead name a factory from `quivers.structural.shapes` (the
+[encoder API](../api/structural/encoder.md)). The bracketed options other than
+`factory` are passed to it and checked against its parameters. One declaration uses
+either a body or a factory, and a module may mix both kinds of declaration.
 
-<!-- compile: false -->
+<!-- compile: cumulative -->
 ```qvr
-encoder rnn_enc : seq [factory=rnn_encoder, dim=128]
-encoder tfm_enc : seq [factory=transformer_encoder, dim=256]
-encoder bow_enc : seq [factory=bow_encoder]
-encoder tree : lf [factory=tree_lstm_encoder]
-encoder graph : mol [factory=gnn_encoder]
+signature Seq0
+    sorts
+        A : data [dim=16, vocab=["a", "b"]]
+        Seq : object [dim=16]
+    constructors
+        Nil : -> Seq
+        Cons : A, Seq -> Seq
+
+encoder rnn_enc : Seq0 [factory=rnn_encoder, dim=16]
+encoder tfm_enc : Seq0 [factory=transformer_encoder, dim=16]
+encoder bow_enc : Seq0 [factory=bow_encoder]
 ```
 
-Factories live in `quivers.structural.shapes` (see the [encoder API
-page](../api/structural/encoder.md)); the registry mapping factory
-name to import path is
-`quivers.dsl.compiler.structural._ENCODER_FACTORY_REGISTRY`.
-Bracketed kwargs are forwarded to the factory and validated against
-its signature. The two forms (explicit body and factory) are
-mutually exclusive on a single declaration but coexist in the same
-module.
-
-The factory signatures and what they produce:
-
-| Factory | Signature | What it builds |
+| Factory | Signature | What it computes |
 |---|---|---|
-| `rnn_encoder(sig, dim)` | sequence signature | GRU-cell right-fold over the chain |
-| `transformer_encoder(sig, dim)` | sequence signature | Per-`Cons` head + tail-projection MLP over their concatenation |
-| `bow_encoder(sig, dim)` | sequence signature | Order-independent sum over chain elements |
-| `tree_lstm_encoder(sig, dim)` | tree signature | Child-sum binary-tree LSTM [@tai2015treelstm] |
-| `gnn_encoder(sig, iterations, dim, readout)` | graph signature | Per-edge-kind message MLP, per-vertex-kind GRU update, mean / sum / max readout |
+| `rnn_encoder(sig, dim)` | sequence | a right fold over the list with a GRU cell [@cho2014encoder] |
+| `transformer_encoder(sig, dim, heads, layers)` | sequence | a transformer encoder [@vaswani2017attention]: the element embeddings plus sinusoidal position encodings pass through `layers` layers of multi-head self-attention and a position-wise feed-forward network, with residual connections and layer normalization, and the sequence vector is the mean over positions |
+| `bow_encoder(sig, dim)` | sequence | the sum of the element embeddings, which ignores order |
+| `tree_lstm_encoder(sig, dim)` | tree | a child-sum tree-LSTM over binary trees [@tai2015treelstm] |
+| `gnn_encoder(sig, iterations, dim, readout)` | graph | message passing with one MLP per edge kind, one GRU update per vertex kind, and a mean, sum, or max readout |
 
-All factories return an
-[`Encoder`](../api/structural/encoder.md) instance over the
-underlying signature; the explicit-body form and the factory form
-produce interchangeable runtime values.
+`transformer_encoder` uses the `attention` form of the next section: the step at the
+innermost `Cons` receives every element's embedding and attends over all of them, and the
+empty sequence embeds as a learned vector. `heads` must divide `dim`. Every factory returns an
+[`Encoder`](../api/structural/encoder.md), the same runtime value an explicit body produces.
 
-### Sequence-shaped sugar
+### Shorthand for sequences {#sequence-shaped-sugar}
 
-For sequence signatures (`Seq[A] = Nil | Cons(A, Seq)`), two extra
-body shapes are available:
+For sequence signatures, $\mathrm{Seq} = \mathrm{Nil} \mid \mathrm{Cons}(A, \mathrm{Seq})$,
+a `Cons` rule can take one of two extra forms:
 
 <!-- compile: false -->
 ```qvr
@@ -281,28 +207,23 @@ encoder Tfm : Seq
     op Cons(head, tail) attention prefix |-> tfm_step(head, prefix)
 ```
 
-- `recurrent <state>` binds the named state variable to the
-  recursive child's already-computed embedding, exactly the
-  standard right-fold F-algebra recursion, with the user's chosen
-  name for the running state.
-- `attention <prefix>` iteratively walks the chain of recursive
-  applications outside-in. At step $i$, the body sees `prefix =
-  [head_0_emb, ..., head_{i-1}_emb]` (the running list of
-  non-recursive children's embeddings collected outside-in). The
-  encoder's final embedding is the deepest (innermost) step's
-  output.
+- `recurrent <state>` binds the named variable to the tail's vector, so the body is
+  the step function of an ordinary right fold.
+- `attention <prefix>` walks the list from the outside in. At step $i$ the body
+  receives `prefix = [head_0, ..., head_{i-1}]`, the vectors of the heads already
+  passed, and the encoder returns the output of the innermost step. Any attention over
+  the prefix is computed by the body, and the form itself computes no attention weights.
 
-### Graph-shaped sugar
+`gru_step` and `tfm_step` stand for functions the module declares.
 
-Trees have a direct parent-child evaluation order, but graphs can contain
-cycles. Message passing instead updates vertex representations for a
-fixed number of rounds. Each edge sends information from a source to a
-target; each target combines incoming messages with its current state;
-a readout aggregates the resulting vertex states. The iteration count
-controls how many rounds of local communication are available.
+### Shorthand for graphs {#graph-shaped-sugar}
 
-Graph signatures declare `vertex_kinds` and `edge_kinds` (with
-typed endpoints), and the encoder body uses message-passing:
+Graphs can contain cycles, so there is no bottom-up order. Message passing instead
+updates every vertex's vector for a fixed number of rounds: each edge sends a message
+from its source to its target, each vertex combines its incoming messages with its
+current vector, and a readout pools the final vectors [@gilmer2017neural]. A graph
+signature declares `vertex_kinds` and `edge_kinds`, and the encoder gives the
+initialization, message, update, and readout functions:
 
 <!-- compile: false -->
 ```qvr
@@ -326,45 +247,28 @@ encoder GNN : Mol
     readout |-> mean_pool
 ```
 
-Undirected edges (`Atom -- Atom`) emit messages in both directions;
-directed edges (`Atom -> Bond`) emit only in the declared
-direction.
+An undirected edge kind (`Atom -- Atom`) sends messages both ways, and a directed one
+(`Atom -> Bond`) only in its declared direction. The embedding tables and MLPs named
+in the bodies stand for declarations elsewhere in the module.
 
 ## Stdlib shapes
 
-`quivers.structural.shapes` provides ready-to-use signatures and
-encoders / decoders for the three principal compressible shapes:
+`quivers.structural.shapes` provides signatures to go with the factories above:
 
-- `seq_signature(name, dim)`: `Seq[A] = Nil | Cons(A, Seq)`.
-- `rnn_encoder(sig, dim)`: GRU-cell right-fold.
-- `transformer_encoder(sig, dim)`: head + tail-projection MLP.
-- `bow_encoder(sig, dim)`: order-independent sum.
-
+- `seq_signature(name, dim)`: $\mathrm{Seq} = \mathrm{Nil} \mid \mathrm{Cons}(A, \mathrm{Seq})$;
 - `tree_signature(name, dim)`:
-  `Tree[L, B] = Leaf(L) | Node(B, Tree, Tree)`.
-- `tree_lstm_encoder(sig, dim)`: child-sum binary-tree LSTM.
+  $\mathrm{Tree} = \mathrm{Leaf}(L) \mid \mathrm{Node}(B, \mathrm{Tree}, \mathrm{Tree})$;
+- `graph_signature(name, vertex_kinds, edge_kinds)`: a graph signature with the given
+  vertex and edge kinds.
 
-- `graph_signature(name, vertex_kinds, edge_kinds)`: vertex /
-  edge-kinded graph signature.
-- `gnn_encoder(sig, iterations, dim, readout)`: per-edge-kind
-  message MLP, per-vertex-kind GRU update, mean / sum / max
-  readout.
-
-All shapes are realized on top of the generic
-[`Encoder`](../api/structural/encoder.md) and
-[`Decoder`](../api/structural/decoder.md) runtimes, the same
-algebra-homomorphism / Kleisli coalgebra pattern, no special-casing.
+They run on the same [`Encoder`](../api/structural/encoder.md) and
+[`Decoder`](../api/structural/decoder.md) classes as declared encoders and decoders.
 
 ## See also
 
-- [Structural Compression: Decoders and Losses](structural-compression-decoders-and-losses.md):
-  the dual Kleisli arrow back to terms and the loss declarations.
-- [Weighted Deduction Systems](deduction.md): the chart-parser
-  representation to which an encoder can attach, exposing
-  `chart.embedding(item)` as a differentiable value.
-- [Structural autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
-  checked entry invocation, autograd, and checkpoint registration.
-
-## Further reading
-
-- [@tai2015treelstm]
+- [Decoders and losses](structural-compression-decoders-and-losses.md): the decoder,
+  a Markov kernel from vectors to terms, and the loss declarations.
+- [Weighted Deduction Systems](deduction.md): the chart parser, to which an encoder
+  can attach to expose `chart.embedding(item)` as a differentiable value.
+- [Tree autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
+  running entries, gradients, and checkpoints.

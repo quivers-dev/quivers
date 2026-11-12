@@ -1,14 +1,12 @@
 # Transformations
 
-[Transformations change a table’s entries or their interpretation](../../guides/transformations.md#first-class-transformations). A logarithm acts on
-each entry; softmax uses an entire row to produce normalized weights. The source and
-target algebras specify the available operations before and after conversion. Preserving
-composition imposes additional equations on the transformation [@kelly1982basic].
-
-Change-of-base transformations between algebras: pointwise algebra
-homomorphisms, shape-aware morphism transformations, and the sequences
-`compose_trans` builds from them. Each is consumed by
-`Morphism.change_base`.
+A [transformation](../../guides/transformations.md#first-class-transformations) rewrites a morphism's
+entries into another `Algebra`. An entrywise map (`CarrierMap`), such as a logarithm, acts
+on each entry alone. A `MorphismTransformation`, such as softmax or L1 row normalization, reads a
+whole row. `compose_trans` builds sequences of both, and `Morphism.change_base` applies them. An
+entrywise map that preserves $\otimes$, $\oplus$, and their units commutes with composition, and
+then applying it is a [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
+[@kelly1982basic].
 
 ::: quivers.core.algebra_morphisms
     options:
@@ -24,5 +22,5 @@ homomorphisms, shape-aware morphism transformations, and the sequences
         - "!^_"
         - "!^TransValue$"
 
-The homomorphism singletons, their registry, and the `TransValue`
+The carrier map singletons, their registry, and the `TransValue`
 alias are documented on the [core overview](objects.md#package-constants).

@@ -1,29 +1,17 @@
 # 9. Debugging quivers programs
 
-When a fit doesn't converge or a compile fails, you need to know what to look at. This chapter walks the tools for inspecting a quivers program: reading `CompileError` messages, dumping a compiled `Program`, tracing intermediate tensors, and watching per-site log-densities during SVI.
-
-First locate the failed boundary. A syntax error means the source cannot be
-read. A type or algebra error means its declared pieces cannot connect as
-written. A runtime error can concern supplied data or a distribution's support.
-A model can pass all of these checks and still fit poorly because its [posterior](../qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid)
-is hard to approximate or its assumptions do not describe the data.
-
-Start with the reported failure: inspect the source position for a compile
-error, the [supplied tensor](../qvr/02-glms.md#common-mistakes) and its support for a runtime error, or the loss
-and sampling diagnostics for a poor fit. The sections below show the tools
-for each step.
+A failing model fails at one of four stages. A syntax error means the source cannot be parsed. A type, effect, or algebra error means the declarations do not fit together. A runtime error concerns the data given at run time or the support of a distribution. And a model that passes all three can still fit poorly, because its [posterior](../qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid) is hard to approximate or its assumptions do not describe the data. The tools, one for each stage, are `CompileError` messages, the compiled steps of a `Program`, execution traces, the stochastic variational inference (SVI) loss and gradients, and the diagnostics of the No-U-Turn Sampler (NUTS).
 
 ## Reading `CompileError`
 
-Every DSL compile failure raises a [`CompileError`](../../api/dsl/compiler.md) with a `line` and `col` field pointing at the offending source position. Common error categories:
+A compile failure raises a [`CompileError`](../../api/dsl/compiler.md) whose `line` and `col` give the source position and whose message names the problem. A program declared `Pure` that draws:
 
 ```python
-from quivers.dsl import loads
-from quivers.dsl.compiler._prelude import CompileError
+from quivers.dsl import CompileError, loads
 
 src = """
 object A : FinSet 3
-program p : A -> A
+program p : A -> A [effects=[Pure]]
     sample x <- Normal(loc=0, scale=1)  # Sample used in a Pure body
     return x
 
@@ -32,22 +20,27 @@ export p
 try:
     loads(src)
 except CompileError as e:
-    print(f"line {e.line}, col {e.col}: {e.args[0]}")
+    print(e)
 ```
 
-The five error classes you'll see most often:
+```text
+line 3, col 0: program 'p' is declared as Pure but body uses effects ['Sample']
+```
 
-| Category | Example trigger | Where to look |
+The common kinds of error:
+
+| Kind | Example | Remedy |
 |---|---|---|
-| Effect mismatch | `[effects=[Pure]]` body contains `<-` or `observe` | Loosen the effect tag or remove the offending step |
-| Name or input error | A declaration is unknown, or an expected host input is missing at execution | Check spelling and scope; supply recorded host inputs in the observations mapping |
-| Algebra mismatch | The two operands of `>>` carry different algebras | Insert a `change_base` on one operand so both share an algebra |
-| Shape mismatch | Tensor argument has the wrong cardinality for an object | Check object declarations against the data |
-| Unknown identifier | A family name (`Norma`, typo) isn't in the prelude | Check the [family catalog](../../api/continuous/families.md) |
+| Effect mismatch | A body under `[effects=[Pure]]` draws or observes | Widen the declared effects or remove the step. |
+| Undefined name | `Norma(...)`: `undefined morphism or distribution family 'Norma'` | Check the spelling against the [family catalog](../../api/continuous/families.md) and the declarations in scope. |
+| Algebra mismatch | The operands of `>>` have different algebras | Apply `change_base` to one operand ([QVR chapter 7](../qvr/07-categorical.md#change-of-base)). |
+| Shape mismatch | A tensor has the wrong size for a declared object | Compare the declared sizes with the data. |
+
+A [data input](../qvr/01-first-model.md#data-inputs-and-the-observations-dict) missing from the observations is not a compile error: `loads` records free names, and the run that needs the value raises.
 
 ## Inspecting a compiled `Program`
 
-`loads` returns a [`Program`](../../api/program.md), which is a `torch.nn.Module` wrapping a [`MonadicProgram`](../../api/continuous/programs.md). Both are inspectable:
+`loads` returns a [`Program`](../../api/program.md), a `torch.nn.Module` whose `morphism` is the compiled [`MonadicProgram`](../../api/continuous/programs.md):
 
 ```python
 import torch
@@ -78,18 +71,12 @@ x_data = torch.randn(100)
 y_data = 1.5 + 2.7 * x_data + 0.3 * torch.randn(100)
 ```
 
-Each step has a `name`, an `inputs` tuple (names it depends on), and a `family` or `transform` it dispatches to. Reading this list is the fastest way to see what the compiler actually built.
+`steps` holds the step records of [chapter 3](03-probabilistic-programs.md#building-a-monadicprogram): a `Draw` has `names`, a `morphism` (the distribution it draws from), and `args` (the bindings it reads), and `Let`, `Observe`, and `Score` steps follow. Comparing this list with the source shows what the compiler built. This program has no learnable parameters, so the loop over `named_parameters` prints nothing.
 
 ## Tracing intermediate values
 
-A joint log density can be computed by [recording distributions and values
-at named sites](https://pyro.ai/examples/effect_handlers.html#Introduction)
-and adding their log probabilities [@pyroEffects]. The Quivers trace below
-exposes those ingredients, allowing a surprising joint score to be traced
-to an individual site.
+An execution trace records, for each site, its value and its log density, so a surprising log joint density can be traced to the site that causes it [@pyroEffects]. [`trace`](../../api/inference/trace.md) runs the program once:
 
-[`trace`](../../api/inference/trace.md) runs the program forward once and records the value and log-density at every sample site:
-<!-- python: skip -->
 ```python
 from quivers.inference import trace
 
@@ -102,18 +89,24 @@ for name, site in tr.sites.items():
           f"log_prob={site.log_prob.sum().item():.2f}")
 ```
 
-If a log-density comes back `nan` or `-inf`, you have a numerical failure at that site. The usual causes:
+```text
+sigma        value.shape=(1, 1) log_prob=-0.45
+beta_0       value.shape=(1, 1) log_prob=-3.94
+beta_1       value.shape=(1, 1) log_prob=-1.78
+mu           value.shape=(1, 100) log_prob=0.00
+y            value.shape=(100,) log_prob=-11345.67
+```
 
-- A scale parameter that drifted to zero (`HalfNormal` posterior collapsing).
-- A `let` that produces invalid arguments to the next family (negative variance, out-of-simplex probabilities).
-- An observation that's outside the support of the likelihood (a negative count under `Poisson`, for instance).
+The latent variables are drawn from their priors, so the observed `y` has a very low log likelihood under them. A log density of `nan` or `-inf` marks a numerical failure at that site, usually for one of these reasons:
 
-`trace` is the right place to confirm which.
+- A scale parameter has gone to zero.
+- A `let` produces an invalid argument for the next family, such as a negative scale or probabilities off the simplex.
+- An observation lies outside the support of its likelihood, such as a negative count under `Poisson`.
 
 ## Watching SVI training
 
-During the SVI loop, print per-step ELBO and gradient norms:
-<!-- python: skip -->
+Print the ELBO and the norm of the guide's gradient during the loop:
+
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
@@ -136,41 +129,30 @@ for step in range(20):                # bump to ~2000 for a real fit
         print(f"step {step:4d}  ELBO={-loss:.3f}  grad_norm={total_grad:.3f}")
 ```
 
-A healthy SVI run often improves the ELBO, but `SVI.step` returns its negative, so the reported loss should tend downward. Gradient norms and loss can both fluctuate because of Monte Carlo or minibatch noise. Failure modes:
+`SVI.step` returns the negative ELBO, which should tend downward, with fluctuations from Monte Carlo and minibatch noise. Typical failures:
 
-- ELBO plateaus while posterior checks remain poor: the guide or optimizer may be inadequate. Try a richer guide ([`AutoMultivariateNormalGuide`](../../api/inference/guide.md), [`AutoIAFGuide`](../../api/inference/guide.md)) and check the learning rate.
-- ELBO going to `nan`: a sample-site log-density blew up. Drop in a `trace` call at the same step and find the offending site.
-- ELBO oscillating with grad_norm growing: learning rate too large. Halve it.
+- The ELBO levels off while the fit still looks wrong: the guide may be too restrictive or the learning rate unsuitable. Try a richer guide ([`AutoMultivariateNormalGuide`](../../api/inference/guide.md), [`AutoIAFGuide`](../../api/inference/guide.md)) and another learning rate.
+- The ELBO becomes `nan`: some site's log density failed. Trace the model at the current guide draw to find it.
+- The ELBO oscillates while the gradient norm grows: the learning rate is too large.
 
 ## NUTS diagnostics that point at root causes
 
-[`MCMCResult`](../../api/inference/predictive.md) carries three first-class diagnostic fields:
+An `MCMCResult` has three diagnostic fields:
 
-- `result.r_hat[site]`: maximum of rank-normalized and folded split-R-hat per site.
-- `result.ess[site]`: rank-normalized cross-chain bulk effective sample size per site.
-- `result.total_divergences`: integer count of divergent transitions across all chains.
+- `result.r_hat[site]`: the rank-normalized split R-hat of each site [@vehtari2021rhat].
+- `result.ess[site]`: the bulk effective sample size of each site.
+- `result.total_divergences`: the number of divergent transitions over all chains.
 
-The mapping from observation to fix:
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| R-hat > 1.01 on one site | Chain hasn't mixed | More warmup, longer chains |
-| ESS < 100 on one site | Highly correlated samples | More samples, or richer step adaptation |
-| Divergences > 0 | Integrator missed posterior curvature | Raise `target_accept` to 0.99, or reparameterize |
-| All chains stuck at init | Initial point in a bad region | Switch `init_strategy` to `"prior"` or supply a `"value"` dict |
-
-The full diagnostic semantics live in the [inference guide](../../guides/inference-foundations.md).
+Their thresholds and remedies are in the [diagnostics table of QVR chapter 8](../qvr/08-diagnostics-and-comparison.md#convergence-diagnostics). One further symptom: when every chain stays at its starting point, change `init_strategy` (`"jitter"`, `"prior"`, `"zero"`, or `"guide"` with a fitted guide passed to `MCMC.run`, as in [QVR chapter 3](../qvr/03-hierarchical.md#initialization-and-mass-matrix)).
 
 ## A debugging recipe
 
-When a fit is misbehaving, follow this order:
-
-1. Run `trace(model, inputs, observations)` and confirm no site returns a `nan` or `-inf` log-density.
-2. Print `program.morphism.steps` and verify the compiled steps match what you wrote.
-3. Run a short SVI for 100 steps with prints every 10 steps; the ELBO trajectory tells you whether the guide can fit at all.
-4. If SVI looks reasonable but the posterior means are off, switch to NUTS and check `result.r_hat` and `result.total_divergences`.
-5. If NUTS reports divergences on a hierarchical model, reparameterize centered to non-centered ([QVR chapter 3](../qvr/03-hierarchical.md)).
+1. Run `trace(model, inputs, observations)` and confirm that no site has a `nan` or `-inf` log density.
+2. Print `program.morphism.steps` and check that the steps match the source.
+3. Run SVI for 100 steps, printing every 10. A loss that does not fall at all points to the model or the guide, not to the length of the run.
+4. If SVI runs but the posterior means look wrong, fit with NUTS and check `result.r_hat` and `result.total_divergences`.
+5. If NUTS reports divergences on a hierarchical model, switch to the non-centered parameterization ([QVR chapter 3](../qvr/03-hierarchical.md#non-centered-parameterization)).
 
 ## Next
 
-Continue to the [examples gallery](../../examples/index.md) for fully-worked models, or jump back to the [QVR DSL track](../qvr/01-first-model.md) and the chapter that matches the model shape you're working on.
+The [examples gallery](../../examples/index.md) has complete models. The [QVR track](../qvr/01-first-model.md) covers each class of model in turn.

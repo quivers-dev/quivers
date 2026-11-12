@@ -1,262 +1,263 @@
-# Composition Rules
+# Composition rules
 
-A composition rule specifies how to combine stages and alternatives in a
-weighted-table calculation. The implementation offers several interfaces for
-these operations. Associativity permits regrouping a chain of stages;
-distributivity permits moving a multiplication across a reduction. This page
-explains which interfaces supply the operations and which equations require
-these laws.
+A *composition rule* is the library's name for a pair of operations, a binary product $\otimes$
+and a reduction $\bigoplus$, that `>>` uses to compose finite weighted morphisms by the matrix
+product of [Setting §2](setting.md#2-v-enriched-relations). Every [`Algebra`](algebras.md) is a
+composition rule, and so are rules that claim fewer laws. A rule's *level* states which laws it
+claims, and the compiler allows an operation only at a level whose laws it needs. The same
+operations also evaluate einsum contractions of several inputs and, through morphism transformations,
+convert a morphism from one rule to another.
 
-## 1. The hierarchy
+## 1. Levels
 
-In the formula below, $i$ names an input, $k$ an output, and $j$ a possible
-intermediate value. For each $j$, combine $f[i,j]$ with $g[j,k]$ using
-$\otimes$; then reduce those contributions using $\bigoplus$. Ordinary
-matrix multiplication uses multiplication and addition. Other rules can
-answer reachability or minimum-cost questions with the same index pattern.
+**Definition.** A composition rule $\mathcal R = (V, \otimes, \bigoplus)$ consists of a set $V$, a
+binary operation $\otimes : V \times V \to V$, and for every finite index set $I$ a reduction
+$\bigoplus : V^I \to V$. No law is assumed.
 
-A *composition rule* is the minimal algebraic data required to evaluate the composition kernel
+The composite of $f \in V^{A \times B}$ and $g \in V^{B \times C}$ is the matrix product
 
 $$
-(f \mathbin{>\!>} g)[i, k] \;=\; \bigoplus_{j}\ f[i, j]\, \otimes\, g[j, k].
+(f \mathbin{>\!>} g)[a, c] = \bigoplus_{b \in B} f[a, b] \otimes g[b, c],
 $$
 
-This requires only a binary $\otimes$ and a join $\bigoplus$ over a finite axis. Neither operation is required to satisfy any algebraic law.
+which evaluates for any rule. Which equations it satisfies depends on the laws of $\mathcal R$:
 
-We organize composition rules into a hierarchy of progressively stronger structures.
+- A [*semicategory*](https://ncatlab.org/nlab/show/semicategory) (also *semigroupoid*) has an
+  associative composition and need not have identities [@tilson1987categories]. The matrix
+  product is associative when $\otimes$ is associative, $\bigoplus$ is associative and commutative
+  with a zero, and $\otimes$ distributes over $\bigoplus$ on both sides.
+- The matrix product has identities when $\otimes$ has a unit $\mathbf 1$, $\bigoplus$ has a
+  zero $\mathbf 0$, and $\mathbf 0$ annihilates. With associativity as well, that is, when
+  $\mathcal V$ is a semiring, finite sets and matrices form a category
+  ([Setting §2](setting.md#2-v-enriched-relations)).
+- A rule with neither guarantee makes composites of three or more morphisms depend on the
+  parenthesization. The morphisms then form a
+  [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no associativity and no
+  identities.
 
-**Definition (composition rule).** A *composition rule* $\mathcal{R} = (V, \otimes, \bigoplus)$ consists of a carrier set $V$, a binary operation $\otimes : V \times V \to V$, and an indexed-reduction operation $\bigoplus : V^I \to V$ for every finite index set $I$.
-
-**Definition (bilinear form).** A *bilinear form* is a composition rule. The name records that no associativity or unit law is promised: the surface caller is responsible for fixing an association order when chaining compositions.
-
-**Mathematical requirement (semigroupoid).** A *semigroupoid* has associative
-composition of compatible arrows, without requiring identity arrows. For the
-matrix formula here, a standard sufficient condition is an associative
-$\otimes$, an associative and commutative finite reduction with a zero, and
-distributivity of $\otimes$ over that reduction on both sides. Reassociating
-three matrices uses both laws: associativity regroups scalar products, and
-distributivity moves those products through the inner reductions.
-
-**Implementation interface (`Algebra`).** An `Algebra` supplies the
-composition operations, `unit`, `zero`, `meet`, and `negate`. A unital
-quantale additionally has the complete-lattice and distributivity laws
-stated in [Setting](setting.md). Finite semirings supply a different
-sufficient setting for associative matrix composition, without requiring a
-complete lattice. The interface admits both, as well as operations that
-satisfy neither full set of laws.
-
-The implementation reflects this hierarchy as a class lattice in which `BilinearForm` and `Semigroupoid` are siblings under `CompositionRule` and `Algebra` extends `Semigroupoid`:
+The library has one class for each claim:
 
 ```mermaid
 graph TD
   CR["CompositionRule"]
-  BF["BilinearForm"]
+  MG["Magmoid"]
   SG["Semigroupoid"]
-  Q["Algebra"]
-  CR --> BF
+  AL["Algebra"]
+  SR["Semiring"]
+  IS["IdempotentSemiring"]
+  CR --> MG
   CR --> SG
-  SG --> Q
+  CR --> AL
+  SG --> SR
+  AL --> SR
+  SR --> IS
   class CR qv-input
-  class BF,SG qv-checked
-  class Q qv-output
+  class MG,SG,AL qv-checked
+  class SR,IS qv-output
 ```
-The eleven shipped algebras implement the `Algebra` interface. Their actual laws differ; see [Algebraic scope](algebras.md#2-algebraic-scope).
 
-Associativity and identity are the defining composition laws in the
-categorical account [@maclane1998categories]. Their usefulness here is
-operational: they say which regroupings can preserve a result.
+| Class | Level keyword | Claim |
+|---|---|---|
+| `CompositionRule` | `rule` | none |
+| `Magmoid` | `bilinear_form` | none |
+| `Semigroupoid` | `semigroupoid` | associative composition |
+| `Algebra` | `algebra` | identities, with a unit, a zero, a meet, and a negation |
+| `Semiring` | `algebra` or `semigroupoid` | the semiring laws, so composition is associative and has identities |
+| `IdempotentSemiring` | `algebra` or `semigroupoid` | a semiring whose $\bigoplus$ is idempotent, so its values form a lattice |
 
-## 2. The denotation of `>>` at each level
+A `Semiring` is both an `Algebra` and a `Semigroupoid`, so a module that declares either level
+accepts it. A level is a claim the library does not prove at run time. Of the eleven built-in
+instances, the eight semirings are of class `Semiring`, four of them (Boolean, Gödel, tropical, and
+max-plus) `IdempotentSemiring`. Product with noisy-OR, Łukasiewicz with bounded sum, and product
+with bounded sum are of class `Algebra` only, and they fail distributivity
+([Semirings, t-norms, and change of base §2](algebras.md#2-algebraic-scope)).
 
-Let $\mathcal{R} = (V, \otimes, \bigoplus)$ be a composition rule and let $f \in V^{A \times B}$, $g \in V^{B \times C}$ be tensors. The binary composition is
+## 2. The denotation of `>>` at each level {#2-the-denotation-of-at-each-level}
+
+Let $\mathcal R$ be the module's composition rule. Then
 
 $$
-\llbracket f \mathbin{>\!>} g \rrbracket_{\mathcal{R}}\ [a, c] \;=\; \bigoplus_{b \in B}\ f[a, b]\, \otimes\, g[b, c].
+\llbracket f \mathbin{>\!>} g \rrbracket_{\mathcal{R}}[a, c] = \bigoplus_{b \in B} \llbracket f \rrbracket[a, b] \otimes \llbracket g \rrbracket[b, c]
 $$
 
-This formula evaluates whenever $\otimes$ and $\bigoplus$ are available, so `>>` runs at every level of the hierarchy. Rewriting a composition uses stronger assumptions:
+at every level. What a rewrite of a composite may assume depends on the laws $\mathcal R$
+satisfies:
 
-| Level | Guarantee on `>>` |
+| Laws of $\mathcal R$ | Equations on `>>` |
 |---|---|
-| `BilinearForm` | None beyond well-definedness. |
-| Lawful semigroupoid composition | Associativity: $f \mathbin{>\!>} (g \mathbin{>\!>} h) = (f \mathbin{>\!>} g) \mathbin{>\!>} h$. |
-| Suitable unital, distributive algebra | Associativity, identity ($\mathrm{id}_A \mathbin{>\!>} f = f = f \mathbin{>\!>} \mathrm{id}_B$), and distributivity. |
+| none | none beyond the formula |
+| the semicategory conditions of §1 | $f \mathbin{>\!>} (g \mathbin{>\!>} h) = (f \mathbin{>\!>} g) \mathbin{>\!>} h$ |
+| a semiring | associativity and $\mathrm{id}_A \mathbin{>\!>} f = f = f \mathbin{>\!>} \mathrm{id}_B$ |
 
-The implementation gates `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` at the `Algebra` level. This API gate requires the full interface, including meet and negation. The mathematical hypotheses used by each construction are stated in [Expressions](expressions.md). The compiler enforces this statically: in a module declared with `composition X [level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]`, the operations above raise a typed `CompileError`.
+The compiler allows `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` only when the
+module's rule is an `Algebra`. In a module whose `composition` declaration has
+`[level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]`, each of these raises a
+`CompileError`. The conditions under which these operations satisfy their equations are stated in
+[Expressions §3](expressions.md).
 
-## 3. User-defined composition rules
+## 3. Declaring a composition rule
 
-The `.qvr` surface admits the declaration of a fresh composition rule via the unified `composition` keyword, the level chosen by a `[level=...]` option, and the rule body supplied as an indented block of entries:
+The `composition` declaration selects the module's rule. Without a body it looks up a built-in
+rule by name and checks that its class is at least the declared level. With a body it defines a
+rule whose operations are `let` arithmetic expressions:
 
 ```
 composition NAME [level=algebra]
     tensor_op(a, b) = E_⊗
-    join(t)         = E_⋁
+    join(t)         = E_⊕
     unit            = E_1
     zero            = E_0
     negation(a)     = E_¬     # optional
-    meet(t)         = E_⋀     # optional
+    meet(t)         = E_∧     # optional
 
 composition NAME [level=semigroupoid]
     tensor_op(a, b) = E_⊗
-    join(t)         = E_⋁
-
-composition NAME [level=bilinear_form]
-    tensor_op(a, b) = E_⊗
-    join(t)         = E_⋁
-
-composition NAME [level=rule]
-    tensor_op(a, b) = E_⊗
-    join(t)         = E_⋁
+    join(t)         = E_⊕
 ```
 
-The `composition` keyword is a top-level *selector* / *definer* statement: with no body and no `[level=...]` option it resolves the named rule from the built-in catalog and registers it as the module's composition rule; with a `[level=...]` option but no body it resolves a built-in rule and verifies it matches the declared algebraic level; with a body it declares the rule's operations inline as shown above. The level travels in the option block, so `composition X [level=algebra]`, `composition X [level=semigroupoid]`, `composition X [level=bilinear_form]`, and `composition X [level=rule]` are the four declared forms.
+The bodies for `[level=bilinear_form]` and `[level=rule]` have the same two entries as
+`semigroupoid`. A declaration without a `level` option has level `rule`. The built-in names are
+the eleven instances of [Semirings, t-norms, and change of base](algebras.md) (in snake case:
+`product_fuzzy`, `log_prob`, and so on), the de Morgan duals `reichenbach`, `boolean_dual`,
+`dual_lukasiewicz`, and `dual_godel`, and `material_impl`.
 
-Each entry's RHS is a let-expression (the same fragment used in `let v = expr` lines elsewhere in the surface, [§ Expressions](expressions.md)). The declaration's denotation is the named composition rule
+The declaration denotes the rule $(V, \otimes, \bigoplus)$ whose operations are the denotations of
+the entry bodies, together with $\mathbf 1$, $\mathbf 0$, $\neg$, and the meet at the `algebra`
+level. The compiler checks that:
 
-$$
-\llbracket \text{NAME} \rrbracket \;=\; \bigl(V_{\mathrm{tensor}},\ \otimes,\ \bigoplus,\ [\mathbf{1},\ \bot,\ \neg,\ \bigwedge]\bigr),
-$$
+1. each entry the level requires is present: `tensor_op` and `join` at every level, and also
+   `unit` and `zero` at the `algebra` level;
+2. `tensor_op`, `join`, `negation`, and `meet` are written as functions, `key(params) = body`,
+   and `unit` and `zero` as values, `key = body`;
+3. the class built for the rule (`CustomAlgebra`, `CustomSemigroupoid`, or `CustomMagmoid`)
+   matches the level.
 
-where $\otimes$ and $\bigoplus$ are interpreted by the body expressions $E_\otimes$ and $E_\bigvee$ under the standard let-arithmetic semantics, and the bracketed components are present only at the `algebra` level.
+Beyond these checks, the laws a level claims are the author's responsibility: the compiler builds
+an inline rule without testing any law. The Python constructors test a little. `CustomSemigroupoid`
+tests associativity of $\otimes$ on one fixed random sample of four scalars, which does not test
+distributivity, and `CustomAlgebra` tests $\mathbf 1 \otimes a = a = a \otimes \mathbf 1$ and
+$\mathbf 0 \otimes a = \mathbf 0$ on five values of $a$ in $[0, 1]$.
 
-The keyword choice fixes the *declared level* of the named rule. The compiler verifies that:
+## 4. Einsum contractions {#4-operadic-contractions}
 
-1. Every entry required for the declared level is present (`tensor_op` and `join` everywhere; additionally `unit` and `zero` for `algebra`).
-2. Function-valued entries are written in the function form `key(params) = body`; value-valued entries are written in the bare form `key = literal`.
-3. The implementation class chosen at compile time matches the declared level (`CustomAlgebra`, `CustomSemigroupoid`, `CustomBilinearForm`).
+A *contraction* composes several morphisms at once. It is written in
+[Einstein summation](https://en.wikipedia.org/wiki/Einstein_notation) (einsum) notation, a string
+such as `ab,bc,cd->ad` that names each axis by a letter and reduces every letter absent from the
+output [@vasilache2018tensor]. Under the module's rule, $\otimes$ replaces multiplication and
+$\bigoplus$ replaces the sum, so `ab,bc->ac` is the composite `>>`.
 
-The well-typedness of the declaration is independent of any algebraic law; whether the user-supplied operations actually satisfy the laws their level promises is the user's responsibility. For `CustomSemigroupoid` the constructor performs an associativity smoke check on a fixed pseudo-random sample at build time; for `CustomAlgebra` the constructor checks the identity and absorbing laws against a small set of canned values. Neither check is exhaustive.
-
-## 4. Operadic contractions
-
-The [bilinear scoring example](../guides/dsl-contractions.md#worked-example-bilinear-scoring) gives a concrete contraction with three inputs. [Type-driven wiring inference](../guides/dsl-contractions.md#type-driven-wiring-inference) explains how named boundaries determine which axes are contracted.
-
-A contraction generalizes matrix multiplication to several tables at once.
-For the wiring `ab,bc,cd->ad`, the letters name axes: $b$ and $c$ are
-internal and disappear after reduction; $a$ and $d$ remain visible.
-The result combines every route $a\to b\to c\to d$. The term *operadic*
-refers to assembling many-input operations by plugging outputs into inputs.
-For a rule without the required associativity and distributivity laws, the
-specified fold and reduction order remains part of the computation.
-
-The binary composition `>>` is the 2-ary case of a wider operadic structure. An *n-ary contraction* under a composition rule $\mathcal{R} = (V, \otimes, \bigoplus)$ is a morphism
-
-$$
-\Phi : V^{X_1} \times \cdots \times V^{X_n} \to V^Y
-$$
-
-between tensor spaces over a finite index sets $X_1, \dots, X_n, Y$, parameterized by a *wiring specification* $w$ that designates, for each axis letter $\ell$:
-
-- the inputs $i \in \{1, \dots, n\}$ on which $\ell$ appears (its *occurrence set*), and
-- whether $\ell$ survives to the output ($\ell \in Y$) or is contracted ($\ell \notin Y$).
-
-A wiring is *flat* if no axis letter appears twice in any single input and no letter appears twice in the output. The library admits only flat wirings; diagonal / trace contractions are out of scope at this stratum.
-
-**Denotation.** Given a flat wiring $w$ with universe of axis letters $\mathcal{L}$, let $S(\ell) \subseteq \{1, \dots, n\}$ be the occurrence set of $\ell$, $|\ell|$ the cardinality of the axis it indexes, and $\mathcal{L}_c = \mathcal{L} \setminus Y$ the contracted-letter set. The denotation of $\Phi$ on inputs $T_1, \dots, T_n$ is
+Let the inputs $T_1, \dots, T_n$ have letter sequences $\mathrm{spec}_1, \dots, \mathrm{spec}_n$
+over a set $\mathcal L$ of letters, let $Y \subseteq \mathcal L$ be the output letters, and let
+$\mathcal L_c = \mathcal L \setminus Y$ be the reduced letters. The library accepts only wirings in
+which no letter occurs twice within one input or within the output, so a diagonal or a trace
+cannot be written as a contraction. For such a wiring the contraction denotes
 
 $$
-\llbracket \Phi \rrbracket_w(T_1, \dots, T_n)[\,y\,]
-\;=\;
-\bigoplus_{\substack{c\, :\, \mathcal{L}_c \to [\![\,|\ell|\,]\!]}}\
-\bigotimes_{i = 1}^{n}\ T_i\bigl(\,y\!\restriction_{\,\mathrm{spec}_i}\,,\ c\!\restriction_{\,\mathrm{spec}_i \cap \mathcal{L}_c}\,\bigr),
+\llbracket \Phi \rrbracket(T_1, \dots, T_n)[y] = \bigoplus_{c} \bigotimes_{i = 1}^{n} T_i\bigl[(y, c)|_{\mathrm{spec}_i}\bigr],
 $$
 
-where $\mathrm{spec}_i \subseteq \mathcal{L}$ is the letter sequence of input $i$ and the joint subscript denotes the index obtained by reading the components of $y$ and $c$ that lie in $\mathrm{spec}_i$.
+where $c$ ranges over assignments of an index to each reduced letter, and $(y, c)|_{\mathrm{spec}_i}$
+is the index of $T_i$ read off the output index $y$ and the assignment $c$. The runtime evaluates
+the formula in four steps: it broadcasts each input to all of $\mathcal L$, folds the inputs
+from left to right with $\otimes$, reduces the letters of $\mathcal L_c$ with $\bigoplus$, and
+permutes the remaining axes into the order of the output. For a rule that is not a commutative
+semiring, the result can depend on this order of the inputs.
 
-The contraction algorithm reduces to four steps:
-
-1. *Broadcast.* For each input $T_i$, lift to a tensor over the full universe $\mathcal{L}$ by inserting singleton dimensions for letters not in $\mathrm{spec}_i$.
-2. *Fold.* Left-fold the broadcast inputs under $\otimes$, yielding a tensor over $\mathcal{L}$.
-3. *Reduce.* Apply $\bigoplus$ over the contracted axes $\mathcal{L}_c$.
-4. *Permute.* Reorder the surviving axes into the output letter order.
-
-The binary case $w = (s_1 s_2 \cdots s_k, t_1 t_2 \cdots t_l \to ?)$ recovers the standard $\mathcal{V}$-relational composition when the wiring is $w = (\text{spec}_1\, \text{spec}_2 \to \text{output})$ with a single shared letter; the operadic surface generalizes this without any algebraic strengthening.
-
-The `.qvr` surface for a contraction is
+A contraction is declared as
 
 ```
-contraction NAME (input_1 : A_1 -> B_1, ..., input_n : A_n -> B_n) : DOM -> COD [rule=R, wiring="SPEC"]
+contraction NAME (x_1 : A_1 -> B_1, ..., x_n : A_n -> B_n) : DOM -> COD [rule=R, wiring="SPEC"]
 ```
 
-where `R` names a `CompositionRule` and `SPEC` is an optional einsum-style flat wiring string. The compiler may infer the wiring from the typed signature when `wiring=` is absent. The declared `NAME` is callable from an expression site as `NAME(arg_1, ..., arg_n)`.
+where `rule=R` is required and names one of the built-in rules of §3, and `wiring="SPEC"` is an
+optional einsum string, with no letter repeated within one input or the output, that the compiler otherwise infers from the declared types. An
+expression calls the contraction as `NAME(e_1, ..., e_n)`.
 
-**Categorical content.** Under laws that make substitution of wirings agree with composition of their evaluations, the contraction surface admits a *colored-operad* interpretation. The required equality says that substituting one wiring into another and then evaluating gives the same result as evaluating the inner wiring first. The composition rule $\mathcal{R}$ is the enriching algebra: the operad's operation $w$ is realized as the multi-input morphism above. When $w$ is a binary wiring with a single contracted letter, the operadic action reduces to the binary composition of $\mathcal{V}\text{-}\mathbf{Rel}$.
+Contractions of this kind are operations of the
+[operad](https://ncatlab.org/nlab/show/operad) of wiring diagrams, in which an operation with $n$
+inputs can be plugged into an input of another
+[@spivak2013operad; @vagner2015algebras]. When $\mathcal R$ is a commutative semiring, evaluating
+a wiring diagram built by plugging gives the same tensor as evaluating its parts one after another.
+For other rules no such equation is claimed.
 
-## 5. First-class transformations
+## 5. Morphism transformations {#5-first-class-transformations}
 
-A *transformation* is either an [algebra homomorphism](algebras.md#3-base-change) $\varphi : \mathcal{V} \to \mathcal{W}$ (pointwise lax monoidal map) or a *morphism transformation* $\psi$ (shape-aware action that may consult axis information). Both expose a *source* and a *target* algebra and an action on tensors. The DSL surface treats transformations as values in a dedicated *transformation namespace* (disjoint from the morphism namespace) that can be let-bound, composed, and passed to `change_base`.
+A *transformation* is a value that converts a morphism over one rule into a morphism over
+another. It is either an entrywise map of class `CarrierMap`
+([Semirings, t-norms, and change of base §3](algebras.md#3-base-change)) or a
+`MorphismTransformation`, the library's class for maps that rewrite a whole matrix, such as a row
+normalization. Each transformation $t$ has a source rule and a target rule, and we write
+$t : \mathrm{Trans}[\mathcal V, \mathcal W]$ when its source is $\mathcal V$ and its target is
+$\mathcal W$. Transformations live in their own namespace, separate from morphisms. They may be
+bound with `let`, composed with `>>>`, and passed to `change_base`.
 
-### 5.1 The transformation sort
+### 5.1 Composition
 
-A transformation value has a sort
-
-$$
-t \;:\; \mathrm{Trans}[\mathcal{V},\, \mathcal{W}],
-$$
-
-read as "$t$ is a transformation from $\mathcal{V}$-enriched morphisms to $\mathcal{W}$-enriched morphisms". The source and target are concrete algebra instances; the sort is a tagged pair under the implementation.
-
-### 5.2 Composition
-
-For $t_1 : \mathrm{Trans}[\mathcal{V}, \mathcal{W}]$ and $t_2 : \mathrm{Trans}[\mathcal{W}, \mathcal{X}]$, the *sequential composition* $t_1 \mathbin{>\!>\!>} t_2 : \mathrm{Trans}[\mathcal{V}, \mathcal{X}]$ is the transformation whose action on a morphism $f \in \mathcal{V}\text{-}\mathbf{Rel}$ is
-
-$$
-\llbracket t_1 \mathbin{>\!>\!>} t_2 \rrbracket(f) \;=\; \llbracket t_2 \rrbracket\bigl(\,\llbracket t_1 \rrbracket(f)\,\bigr).
-$$
-
-The boundary condition
-$\mathrm{target}(t_1) = \mathrm{source}(t_2)$ is verified at compose time; a
-mismatch raises a typed error before any tensor evaluation runs. Sequential
-composition is associative, so chains of length $\ge 3$ flatten unambiguously
-into a single sequence of base steps.
-
-The implementation realizes the composition as a flattened `TransSeq` whose `apply` method iterates the steps. Single-step transformations need no boxing; they are their own representation.
-
-### 5.3 Constructors
-
-The library ships singleton transformations (no arguments) and parametric constructors (one argument). Each carries a fixed $(\mathrm{source}, \mathrm{target})$ pair:
-
-| Constructor | Argument | Source | Target |
-|---|---|---|---|
-| `softmax(B)` | object $B$ | $\mathcal{V}_{\mathrm{pf}}$ | $\mathcal{V}_{\mathrm{M}}$ |
-| `l1_normalize(B)` | object $B$ | $\mathcal{V}_{\mathbb{R}}$ | $\mathcal{V}_{\mathrm{M}}$ |
-| `l2_normalize(B)` | object $B$ | $\mathcal{V}_{\mathbb{R}}$ | $\mathcal{V}_{\mathbb{R}}$ |
-| `bayes_invert(p)` | morphism $p$ | $\mathcal{V}_{\mathrm{M}}$ | $\mathcal{V}_{\mathrm{M}}$ |
-
-The named singletons of [§ Algebras § 3](algebras.md#3-base-change) (`expectation`, `log_prob`, `material_implication`, `threshold`, ...) are zero-ary transformation references. Surface form $t = \text{NAME}$ for singletons; $t = \text{NAME}(\text{arg})$ for constructors.
-
-### 5.4 The `change_base` denotation
-
-The change-of-base postfix $f.\mathrm{change\_base}(t)$ has denotation
+For $t_1 : \mathrm{Trans}[\mathcal V, \mathcal W]$ and $t_2 : \mathrm{Trans}[\mathcal W, \mathcal X]$,
+the sequential composite $t_1 \mathbin{>\!>\!>} t_2 : \mathrm{Trans}[\mathcal V, \mathcal X]$ acts on a
+morphism $f$ over $\mathcal V$ by
 
 $$
-\llbracket f.\mathrm{change\_base}(t) \rrbracket
-\;=\;
-\llbracket t \rrbracket\bigl(\llbracket f \rrbracket\bigr)
-\;\in\; \mathrm{target}(t)\text{-}\mathbf{Rel}.
+\llbracket t_1 \mathbin{>\!>\!>} t_2 \rrbracket(f) = \llbracket t_2 \rrbracket\bigl(\llbracket t_1 \rrbracket(f)\bigr).
 $$
 
-When $t$ is a `TransSeq` of base steps $(t_1, \dots, t_k)$, the denotation unfolds as $\llbracket t_k \rrbracket \circ \cdots \circ \llbracket t_1 \rrbracket$ applied to $\llbracket f \rrbracket$. The intermediate morphisms live in the intermediate algebras; only the final morphism is observable.
+This is composition of functions, so `>>>` is associative. The library stores a chain as one
+flat `TransSeq` and applies its steps in order. A mismatch between the target of one step and the
+source of the next, compared as rule instances, raises an error before any tensor is computed.
 
-### 5.5 Well-typedness conditions
+### 5.2 Constructors
 
-The type-checker verifies, at compose time and at change-of-base call time:
+| Constructor | Argument | Source | Target | Action |
+|---|---|---|---|---|
+| `softmax(B)` | object $B$ | ProductFuzzy (by default) | Markov | [softmax](https://en.wikipedia.org/wiki/Softmax_function) along the axis of $B$ |
+| `l1_normalize(B)` | object $B$ | Real (by default) | Markov | sets negative entries to zero, then divides by the sum along the axis of $B$ |
+| `l2_normalize(B)` | object $B$ | Real (by default) | the source | divides by the Euclidean norm along the axis of $B$ |
+| `bayes_invert(p)` | prior $p$ on $A$ | Markov | Markov | Bayesian inversion of a kernel $A \to B$ to a kernel $B \to A$ |
 
-- $\mathrm{source}(t_1)$ in `compose_trans(t_1, t_2, \dots)` matches $\mathrm{target}(t_0)$ for each adjacent pair (the boundary check uses algebra class identity, not name).
-- $f.\mathrm{change\_base}(t)$ requires $\mathrm{source}(t) = \mathrm{algebra}(f)$.
+For a stochastic matrix $f : A \to B$ and a prior $p$ on $A$, the
+[Bayesian inversion](https://en.wikipedia.org/wiki/Bayes%27_theorem) is the kernel
+$f^\dagger_p : B \to A$ with
 
-A mismatch produces a typed compile-time error naming the two clashing
-algebras. Inside a `program` block, the compiler raises a `CompileError` with
-the line and column of the offending expression.
+$$
+f^\dagger_p(a \mid b) = \frac{f(b \mid a)\, p(a)}{\sum_{a'} f(b \mid a')\, p(a')},
+$$
+
+the conditional of the joint distribution $p(a) f(b \mid a)$ given $b$ [@cho2019disintegration].
+It is determined only for $b$ of positive marginal probability. For a $b$ of marginal probability
+zero, the runtime divides by a small constant instead of zero and returns a row of zeros, which is
+not a distribution. The entrywise maps of
+[Semirings, t-norms, and change of base §3](algebras.md#3-base-change) (`expectation`, `log_prob`,
+`material_implication`, `threshold`, and the others) are transformations that take no argument,
+written $t = \mathrm{NAME}$. A constructor is written $t = \mathrm{NAME}(\mathrm{arg})$.
+
+### 5.3 The `change_base` method
+
+The expression $f.\mathrm{change\_base}(t)$ denotes
+
+$$
+\llbracket f.\mathrm{change\_base}(t) \rrbracket = \llbracket t \rrbracket\bigl(\llbracket f \rrbracket\bigr),
+$$
+
+a morphism over the target of $t$. For a chain $t_1 \mathbin{>\!>\!>} \cdots \mathbin{>\!>\!>} t_k$
+it is $\llbracket t_k \rrbracket \circ \cdots \circ \llbracket t_1 \rrbracket$ applied to
+$\llbracket f \rrbracket$. Bayesian inversion also swaps the domain and the codomain.
+
+### 5.4 Typing
+
+The checker requires that the source of each step equal the target of the step before it, and
+that the source of $t$ equal the rule of $f$ in $f.\mathrm{change\_base}(t)$. A mismatch is a
+compile error that names the two rules, with the line and column of the expression.
 
 ## 6. Relation to the rest of the language
 
-The composition-rule hierarchy and the operadic contraction surface are stratified additions: they extend the language conservatively over the [§ Setting](setting.md). Concretely:
-
-- A module declared with `composition X [level=algebra]` denotes a morphism in $X\text{-}\mathbf{Rel}$ exactly as in [§ Morphisms](morphisms.md). The new strata add no new morphisms at this level.
-- A module declared with `composition X [level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]` denotes a morphism in the corresponding weaker enriched category, with the compact-closed surface restricted as described in § 2 above.
-- The operadic contraction operation `op_apply(a_1, ..., a_n)` denotes the wiring's action on the supplied morphisms; the result lives in the same enriched category and is composable with the rest of the program under `>>` (under the algebraic hypotheses stated above).
-- First-class transformations refine the existing [§ Algebras § 3](algebras.md#3-base-change) base-change surface: every named singleton there is now a let-bindable value, every parametric constructor produces a let-bindable value, and `>>>` composes them.
-
-The conservativity claim is the formal content of the implementation's class hierarchy: changing a composition's `[level=semigroupoid]` or `[level=bilinear_form]` to `[level=algebra]` for the same rule (when the named rule is in fact at algebra level) gives a strictly stronger module that admits every operation the original did, plus the compact-closed surface.
+- In a module whose rule is a semiring, a finite weighted morphism denotes a morphism of
+  $\mathbf{Mat}(\mathcal V)$ as on [Morphisms](morphisms.md), and every equation stated there
+  holds.
+- In a module whose rule is not a semiring, the same phrases denote the same matrices, computed
+  by the same formulas, but the equations that need associativity or identities may fail.
+  Declaring a lower level removes `identity`, `cup`, `cap`, `dagger`, and `trace` from the module
+  and changes nothing else.
+- A contraction call denotes the einsum of §4 applied to its arguments, and its result composes
+  with other morphisms by `>>`.
+- Morphism transformations act on the matrix a phrase denotes. Only the entrywise maps that are
+  semiring homomorphisms commute with composition.

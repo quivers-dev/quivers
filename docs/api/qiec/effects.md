@@ -1,10 +1,11 @@
 # Effects
 
-An effect interface declares what operations can be requested and the types of their
-arguments and results [@plotkin2009handlers; @bauer2015programming]. A [lexical instance](../../tutorials/qvr/10-effects-and-handlers.md#2-write-an-authored-handler) identifies a particular use of that interface;
-an [effect row](../../reference/qvr/effects-and-handlers.md#effect-rows) records the requests permitted at a boundary. Two state instances can
-share an interface without sharing the same state.
-
-Typed effect interfaces, lexical rows, and handler signatures.
+An effect interface declares the operations a computation can request and the types of their
+arguments and results [@plotkin2009handlers; @bauer2015programming]. An *effect instance* is one
+named occurrence of an interface, so two state instances share an interface without sharing their
+state ([instances](../../tutorials/qvr/10-effects-and-handlers.md#2-write-an-authored-handler)). An
+[effect row](../../reference/qvr/effects-and-handlers.md#effect-rows) lists the instances a
+computation may request [@leijen2014koka]. The module gives typed effect interfaces, rows, and
+handler signatures.
 
 ::: quivers.qiec.effects

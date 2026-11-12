@@ -1,19 +1,14 @@
 # The QVR DSL: Overview
 
-QVR is a domain-specific language: its declarations express models using
-objects, typed operations, random draws, and observations. Read `A -> B` as
-"takes an input of type A and produces an output of type B"; for a
-probability kernel, the output is random. The
-[concepts introduction](../getting-started/concepts.md) explains the
-distinction between relation scores, kernels, and fitted posteriors.
-
-
-`.qvr` is the file format you write probabilistic programs in. A
-`.qvr` file declares some types (objects and [continuous spaces](continuous-spaces.md#continuousspace-hierarchy)),
-some morphisms (parameters, kernels, observed data), and one or
-more `program` blocks that sample, observe, and return values.
-Compilation produces a trainable [PyTorch
-`nn.Module`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html).
+QVR is the modeling language of quivers, written in `.qvr` files. A file declares
+types (finite objects and [continuous spaces](continuous-spaces.md#continuousspace-hierarchy)),
+morphisms (parameter tables, Markov kernels, observed data), and usually one or more
+`program` blocks that draw, observe, and return values. `A -> B` is the type of
+something that takes an input of type `A` and produces an output of type `B`, which
+for a kernel is random. Compiling a file gives a trainable PyTorch
+[`nn.Module`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html),
+and [Concepts](../getting-started/concepts.md) introduces composition, the choice of
+`Algebra`, and the steps of a program.
 
 ```python
 import torch
@@ -32,97 +27,73 @@ export f
 optimizer = torch.optim.Adam(prog.parameters())
 ```
 
-`load("model.qvr")` reads the same syntax from a file path.
+`load("model.qvr")` reads the same syntax from a file.
 
-The main program keywords describe a generative model: `sample x <- F(...)` draws a value,
-`observe` scores data, `marginalize` integrates out a discrete latent,
-`let` is a deterministic binding, and `return` names the program's
-output.
+Inside a program, `sample x <- F(...)` draws a value, `observe` scores data,
+`marginalize` sums out a discrete latent variable, `let` binds a deterministic
+value, and `return` gives the program's output. Compared with probabilistic
+programming languages such as Stan and Pyro [@carpenter2017stan; @bingham2019pyro],
+QVR differs in three ways:
 
-A few features distinguish QVR from those alternatives:
+- **Priors on weight matrices.** A learnable table takes a prior directly,
+  `morphism W : A -> B [role=latent] ~ Family(args)`, and a draw marks which axes
+  form one joint event with the `[over=..., iid_over=...]` clause after its family.
+  [Matrix-normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution),
+  [LKJ](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution)
+  [@lewandowski2009lkj], [Gaussian-process](https://en.wikipedia.org/wiki/Gaussian_process),
+  and horseshoe [@carvalho2010horseshoe] priors are written with their usual
+  parameters ([Continuous Distribution Families](continuous-families.md)).
+- **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) as a block.**
+  `marginalize z : K <- F(...)` followed by an indented body sums `z` out of the
+  body's likelihood, and the compiler emits the
+  [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) over its values.
+- **Declared effects.** A program may declare which effects its body uses, as in
+  `program p : A -> B [effects=[Sample, Score]]`, from `Pure`, `Sample`, `Score`, and
+  `Marginal`. The compiler rejects a body that uses an effect the declaration omits,
+  for instance a `sample` step in a program declared `[effects=[Pure]]`.
 
-- **First-class structured priors on weight matrices** via
-  `morphism W : A -> B [role=latent] ~ Family(args)` with an
-  `[over=..., iid_over=...]` axis-role clause on each `sample` /
-  `observe` / `marginalize` step.
-  [Matrix-Normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution),
-  LKJ [@lewandowski2009lkj],
-  [Gaussian-process](https://en.wikipedia.org/wiki/Gaussian_process),
-  and Horseshoe [@carvalho2010horseshoe] priors take
-  the form they take on paper.
-- **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) as a control-flow construct.**
-  `marginalize z : K <- F(...)` followed by an indented body is a
-  syntactic block, not a runtime flag; the compiler emits the
-  [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp).
-- **Compile-time effect signatures.** Every program declares its
-  effect row in the option block:
-  `program p(...) : A -> B [effects=[Sample, Score]]`. Allowed
-  effects are `Pure`, `Sample`, `Score`, `Marginal`; the compiler
-  rejects an effectful step inside a `[effects=[Pure]]` block
-  before training starts.
-- **Explicit mathematical structure.** The [semantics chapter](../semantics/index.md)
-  states interpretations and their algebraic assumptions. Typed boundaries
-  catch incompatible compositions; stronger categorical laws require the
-  hypotheses of the selected structure. You can begin with the modeling
-  syntax and consult that layer when deriving laws or extending the language.
+[Semantics](../semantics/index.md) gives each form its mathematical meaning and
+states the assumptions under which the composition laws hold.
 
 ## Compilation pipeline
 
-Compilation first reads source syntax, then resolves names and checks
-types, then constructs executable representations. An **abstract syntax
-tree (AST)** is the structured representation of what was written.
-**Elaboration** expands convenient syntax into more explicit typed
-operations. The checked core provides a shared representation for
-execution and translation; a backend still has to support the operations
-that a particular model uses. The diagram gives the detailed paths.
-
+The compiler parses the source with a [tree-sitter](https://tree-sitter.github.io/)
+grammar into an abstract syntax tree (AST), resolves names, checks types, and then
+builds executable values along two routes. *Elaboration* translates convenient
+source forms into explicit typed core terms. The core is the Quivers Indexed Effect
+Core (QIEC), the typed language with indexed families, effect rows, and handlers to
+which every executable declaration elaborates
+([language reference](../reference/qvr/index.md)).
 
 ```mermaid
 flowchart TB
-    SRC[".qvr source"] -->|packaged grammar| PARSE["tree-sitter parse"] --> AST["Typed source AST<br/><small>didactic dx.Model</small>"]
-    AST -->|runtime route| COMPILER["Probabilistic compiler"] --> PROG["Program<br/><small>torch.nn.Module</small>"]
-    AST -->|kernel route| ELAB["QIEC elaboration<br/><small>Didactic GADT</small>"] --> CORE["Checked QiecModule"]
-    PROG -->|execute| RUN["Inference runtime"]
-    CORE -->|evaluate or lower| PORTABLE["Reference machine<br/>or target transpiler"]
+    SRC[".qvr source"] -->|"packaged grammar"| PARSE["tree-sitter parse"] --> AST["Typed source AST<br/><small>didactic dx.Model</small>"]
+    AST -->|"compiled runtime"| COMPILER["Probabilistic compiler"] --> PROG["Program<br/><small>torch.nn.Module</small>"]
+    AST -->|"elaboration"| ELAB["QIEC elaboration"] --> CORE["Checked QiecModule"]
+    PROG -->|"execute"| RUN["Inference runtime"]
+    CORE -->|"evaluate or lower"| PORTABLE["Reference machine<br/>or target transpiler"]
     class SRC qv-input
     class PARSE,AST,COMPILER,ELAB,CORE qv-checked
     class PROG,RUN,PORTABLE qv-output
 ```
 
-The grammar at `grammars/qvr/` is authoritative. Quivers compiles that current
-source from the checkout during development and ships it in the wheel, avoiding
-a silent fallback to a stale grammar bundle. The AST nodes are documented in
-[`ast_nodes`](../api/dsl/ast_nodes.md); resolution between
-syntactic [`ObjectExpr`](../api/dsl/ast_nodes.md) trees and runtime
-[`SetObject`](../api/core/objects.md) /
-[`ContinuousSpace`](../api/continuous/spaces.md) values is handled
-by the resolution mixin in
-[`resolution.py`](../api/dsl/resolution.md). Each compiled program
-extracts to a panproto `Schema` via
-[`program_theory`](../api/dsl/program_theory.md), so diff, migrate,
-and lens-generation tooling applies directly to `.qvr` programs.
+The *compiled runtime* is the PyTorch implementation of a module (`Program`,
+`MonadicProgram`), used for gradients, stochastic variational inference, and Markov
+chain Monte Carlo. The *reference machine* is the library's interpreter for QIEC, the
+closest standard notion being a definitional (reference) interpreter
+[@reynolds1972definitional]. It runs entry points and computes a program's log joint
+density, and it fixes what a checked program means operationally.
 
-The [`Compiler`](../api/dsl/compiler.md) transforms the AST to a
-[`Program`](../api/program.md) by walking the module's statements
-in source order, dispatching each to a per-form handler
-(`_compile_statement`). A single sweep threads three concerns:
-
-1. **Resolve declarations**: as each `object`, `space`, `morphism`,
-   `contraction`, `schema`, `define`, or program declaration is
-   visited, its type expressions are resolved through the mixin in
-   [`quivers.dsl.compiler.resolution`](../api/dsl/resolution.md).
-   `_resolve_any_space` walks an `ObjectExpr` and returns either a
-   `SetObject` or a `ContinuousSpace`; `_resolve_type` and
-   `_resolve_space` are type-narrowing wrappers.
-2. **Type-check compositions**: domain and codomain agreement is
-   enforced at the point of use, so ill-typed compositions fail
-   during the same pass that constructs the morphism modules.
-3. **Wrap the exported expression**: after all statements are
-   handled, the compiler compiles the exported expression into a
-   root morphism and wraps it in an
-   [`nn.Module`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html)
-   that manages the parameters, deductions, encoders, decoders,
-   and losses accumulated along the way.
+The [`Compiler`](../api/dsl/compiler.md) builds a [`Program`](../api/program.md) in
+one pass over the module's declarations in source order. As it reaches each `object`,
+`morphism`, `contraction`, `schema`, `define`, or program declaration, it resolves the
+declaration's type expressions to finite objects
+([`SetObject`](../api/core/objects.md)) or continuous spaces
+([`ContinuousSpace`](../api/continuous/spaces.md)) and checks that domains and
+codomains agree where morphisms are composed, so an ill-typed composition fails in
+that same pass. It then compiles the exported expression and wraps it in a module
+that holds the parameters, deductions, encoders, decoders, and losses collected along
+the way. The AST classes are documented in [`ast_nodes`](../api/dsl/ast_nodes.md).
 
 ```python
 from quivers.dsl import Compiler, parse
@@ -139,41 +110,29 @@ program = compiler.compile()
 
 ### One checked core
 
-Every executable declaration of a module elaborates to a computation of the
-[QVR language reference](../reference/qvr/index.md): `index`, `family`,
-`effect`, `instance`, `handler`, and typed `define` declarations map to it
-directly, and a `program` is domain-specific notation for a named
-computation over the module's canonical `random` and `score` instances, whose
-`sample` and `observe` steps perform `Random.sample` and `Score.add`, whose
-plates are typed tensor shapes, and whose `marginalize` blocks are helper
-computations enumerated under the prelude's enumeration handler. Quivers
-constructs the module's first-order projection through Didactic's `GADT` API,
-which checks indexed-family declarations and constructor refinements through
-Panproto; Didactic then negotiates the exact route `qvr-source/v0.20` to
-`qiec-core/v1alpha1`, and the QIEC checker validates [effect rows](../reference/qvr/effects-and-handlers.md#effect-rows), handler
-coverage, call graphs, and branch-local evidence over the whole module at
-once.
+Every executable declaration of a module elaborates to a QIEC computation. `index`,
+`family`, `effect`, `instance`, `handler`, and typed `define` declarations are core
+forms already. A `program` is notation for a named computation over the built-in
+effect instances `random` and `score`: its `sample` and `observe` steps request their
+operations, its plates become tensor shapes, and each `marginalize` block becomes a
+helper computation that an enumeration handler sums. The QIEC checker then validates
+[effect rows](../reference/qvr/effects-and-handlers.md#effect-rows), handler coverage,
+and call graphs for the whole module at once.
 
-The checked module is what every downstream tool reads. The reference
-machine runs a `define` or a `program` through one entry-point invocation
-([`invoke_entry`](../api/qiec/entries.md)); the torch runtime lowers a
-program's calls of computations to its own steps where it can, and binds a
-program that keeps a call it cannot lower to a
-[`CheckedProgram`](../api/effects/checked_program.md), which scores the same
-joint but cannot be fit; and the transpiler lowers a program's plan from its checked
-computation and places the module's other computations beside it. Pyro,
-NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church execute the complete
-computation graph through generated host runtimes. Stan, BUGS, and JAGS accept
-a checked, effect-free scalar subset and report a feature-specific capability
-diagnostic for other computations. See
-[QVR language reference](../reference/qvr/index.md) for the complete syntax
-and target boundary, and the [QIEC developer note](../developer/qiec.md)
-for the kernel and runtime ABI.
+Every downstream tool reads the checked module. The reference machine runs a `define`
+or a `program` through one call of an entry point
+([`invoke_entry`](../api/qiec/entries.md)). The compiled runtime lowers a program's
+calls of other computations to its own steps where it can. A program with a call it
+cannot lower becomes a [`CheckedProgram`](../api/effects/checked_program.md), which
+runs on the reference machine, scores the same joint, and cannot be fitted. The
+transpilers lower the well-typed computation to each target language;
+[Transpiler support](../transpile-support.md) lists what each target accepts.
 
 ### Programs as panproto schemas
 
-After compilation, the resolved environment can be exported as a
-panproto `Schema` over `QVR_PROGRAM_PROTOCOL`:
+A compiled module can be exported as a schema of
+[panproto](https://github.com/panproto/panproto), the schema and migration toolkit
+used to version QVR's grammar, under the protocol `QVR_PROGRAM_PROTOCOL`:
 
 ```python
 from quivers.dsl import parse, Compiler, extract_program_schema
@@ -189,168 +148,125 @@ compiler.compile()
 schema = extract_program_schema(compiler)  # Schema instance
 ```
 
-The schema's vertices enumerate every declared object, space, and
-morphism (with kinds drawn from `finset`, `product_set`,
-`coproduct_set`, `free_monoid`, `empty_set`, `euclidean`,
-`simplex`, `positive_reals`, `product_space`, plus the declaration
-variants). This makes `panproto schema diff`,
-`panproto lens generate`, and the rest of the panproto toolbox
-available on `.qvr` programs without further work.
+The schema has one vertex for each declared object, space, and morphism, with kinds
+such as `finset`, `product_set`, `coproduct_set`, `free_monoid`, `empty_set`,
+`euclidean`, `simplex`, `positive_reals`, and `product_space`. panproto's `schema diff`
+and `lens generate` then apply to `.qvr` modules.
 
 ## Grammar
 
-Use this table to look up how declarations and expressions fit together.
-In the EBNF notation below, `|` separates alternatives, `[...]` marks
-optional syntax, and `*` means zero or more repetitions. The declaration
-and program guides explain these forms through examples.
-
-
-The authoritative grammar is the tree-sitter source at
-`grammars/qvr/grammar.js` in the quivers repository and in the installed wheel.
-The summary
-below is a human-readable EBNF view of the same productions; the
-tree-sitter grammar is the source of truth.
+The grammar is the tree-sitter source `grammars/qvr/grammar.js`, which the wheel
+includes. The summary below writes its main productions in EBNF, where `|` separates
+alternatives, `[...]` marks an optional part, and `*` and `+` mean zero or more and
+one or more repetitions. The declarations of the core language (`index`, `family`,
+`effect`, `instance`, `handler`, and typed `define`) are specified in the
+[language reference](../reference/qvr/index.md) and abbreviated here.
 
 ```ebnf
 module         := statement*
 
-statement      := composition_decl
-                | category_decl
-                | rule_decl
-                | schema_decl
-                | object_decl
-                | morphism_decl
-                | bundle_decl
-                | program_decl
-                | contraction_decl
-                | define_decl
-                | export_decl
-                | deduction_decl
-                | signature_decl
-                | encoder_decl
-                | decoder_decl
-                | loss_decl
-                | pragma_outer
-                | pragma_inner
+statement      := index_decl | family_decl | effect_decl | instance_decl
+                | handler_decl | computation_decl
+                | composition_decl | category_decl | rule_decl | schema_decl
+                | object_decl | morphism_decl | bundle_decl | program_decl
+                | contraction_decl | define_decl | export_decl
+                | deduction_decl | signature_decl | encoder_decl
+                | decoder_decl | loss_decl
+                | pragma_outer | pragma_inner
+
+(* Core-language declarations; see the language reference. *)
+index_decl     := 'index' IDENT '=' index_ctor ('|' index_ctor)*
+family_decl    := 'family' IDENT ...
+effect_decl    := 'effect' IDENT ...
+instance_decl  := 'instance' IDENT ':' effect_ref ...
+handler_decl   := 'handler' IDENT ...
+computation_decl
+               := 'define' IDENT telescope ... (* a typed computation *)
 
 (* Selects the module's composition rule. The `[level=LEVEL]` option
-   fixes the algebraic level the surrounding morphisms must live in;
-   the optional indented body declares a fresh rule inline (each entry
-   is a let-expression). *)
+   states the laws the rule claims; the optional indented body defines
+   a rule inline, one let-expression per entry. *)
 composition_decl
-               := 'composition' IDENT
-                  [option_block]
-                  [composition_rule_block]
+               := 'composition' IDENT [option_block]
+                  [INDENT composition_rule_entry+ DEDENT]
 composition_level              (* the value of the `level` option key *)
                := 'algebra' | 'semigroupoid' | 'bilinear_form' | 'rule'
 composition_rule_entry
                := IDENT ['(' IDENT (',' IDENT)* ')'] '=' let_expr
 
-(* Objects. The RHS is one of: an enum literal `{a, b, c}`,
+category_decl  := 'category' IDENT (',' IDENT)*
+
+(* Objects. The right side is an enum literal `{a, b, c}`,
    `FreeResiduated(...)`, `FreeMonoid(...)`, or any object
-   expression (e.g. `FinSet N`, `Real n`, `Euclidean(...)`,
-   products, coproducts, etc.). *)
+   expression (`FinSet N`, `Real n`, products, coproducts, ...). *)
 object_decl    := 'object' IDENT ':' object_value
-object_value   := enum_set_literal
-                | free_residuated_expr
-                | free_monoid_expr
-                | object_expr
+object_value   := enum_set_literal | free_residuated_expr
+                | free_monoid_expr | object_expr
 
-(* Morphisms. The role keyword (`latent` / `observed` / `kernel` /
-   `embed` / `discretize`) and every other modifier live in the
-   bracketed option block. An optional `~ Family(args)` initializer
-   attaches a distribution family; without it the morphism is bare
-   structural data. *)
-morphism_decl  := 'morphism' IDENT ':' object_expr '->' object_expr
-                  [option_block]
-                  ['~' morphism_init]
-morphism_init  := morphism_init_family | expr
-morphism_init_family
-               := IDENT '(' [draw_arg (',' draw_arg)*] ')'
+(* Morphisms. The role (`latent`, `observed`, `kernel`, `embed`,
+   `discretize`) and other modifiers live in the option block. An
+   optional `~ Family(args)` attaches a distribution family. *)
+morphism_decl  := 'morphism' IDENT (',' IDENT)* ':' object_expr '->' object_expr
+                  [option_block] ['~' morphism_init]
+morphism_init  := IDENT '(' [draw_arg (',' draw_arg)*] ')' | expr
 
-(* Option block. Keys depend on the surrounding form. For
-   morphisms / sample / observe / marginalize, the recognized keys
-   include `role`, `effects`, `over`, `iid_over`, `via`, `init`,
-   `reduction`. `[]` is the empty option block. *)
 option_block   := '[' [option_entry (',' option_entry)*] ']'
 option_entry   := IDENT '=' option_value
-option_value   := IDENT | string | integer | float | option_list
+option_value   := IDENT | string | integer | float | option_list | option_call
 option_list    := '[' [option_value (',' option_value)*] ']'
 
-(* Operadic n-ary contraction. Inputs are named morphisms; the
-   `wiring` / `share` / `rule` options live in the option block. *)
+(* Many-input contraction; `wiring` and `rule` live in the option block. *)
 contraction_decl
                := 'contraction' IDENT
                   '(' contraction_input (',' contraction_input)* ')'
-                  ':' object_expr '->' object_expr
-                  [option_block]
+                  ':' object_expr '->' object_expr [option_block]
 contraction_input
                := IDENT ':' object_expr '->' object_expr
 
-(* Bundle: a named tuple of rule references. *)
-bundle_decl    := 'bundle' IDENT ':' '[' IDENT (',' IDENT)* ']'
+bundle_decl    := 'bundle' IDENT ':' '[' [IDENT (',' IDENT)*] ']'
 
-(* Top-level production-style rule. *)
+(* Top-level categorial grammar rule. *)
 rule_decl      := 'rule' IDENT '(' IDENT (',' IDENT)* ')'
-                  ':' object_expr (',' object_expr)*
-                  '|-' object_expr
+                  ':' object_expr (',' object_expr)* ('|-' | '⊢') object_expr
 
-(* Schema: a parameterised morphism shape. *)
+(* Rule schema: a rule template with typed parameters. *)
 schema_decl    := 'schema' IDENT '(' schema_parameter (',' schema_parameter)* ')'
                   ':' object_expr '->' object_expr
 schema_parameter
                := IDENT (',' IDENT)* ':' object_expr
 
-(* Weighted deduction system: the agenda-based framework subsumes
-   CKY, Earley, Viterbi, inside-outside, semi-naive Datalog, A*,
-   Knuth, and bidirectional MLTT proof search. *)
 deduction_decl := 'deduction' IDENT ':' object_expr '->' object_expr
                   [option_block] INDENT deduction_body_entry+ DEDENT
 deduction_body_entry
                := deduction_atoms | deduction_binders | deduction_rule
                 | deduction_lexicon | deduction_lexicon_from_file
 
-(* Signature / encoder / decoder / loss for structural compression. *)
 signature_decl := 'signature' IDENT ['(' IDENT (',' IDENT)* ')']
                   INDENT signature_body_entry+ DEDENT
+encoder_decl   := 'encoder' IDENT ':' IDENT ['(' IDENT (',' IDENT)* ')']
+                  [option_block] [INDENT encoder_body_entry+ DEDENT]
+decoder_decl   := 'decoder' IDENT ':' IDENT ['(' IDENT (',' IDENT)* ')']
+                  [option_block] INDENT decoder_body_entry+ DEDENT
+loss_decl      := 'loss' IDENT [option_block] INDENT let_arith DEDENT
 
-encoder_decl   := 'encoder' IDENT ':' IDENT
-                  ['(' IDENT (',' IDENT)* ')']
-                  [option_block]
-                  [INDENT encoder_body_entry+ DEDENT]
-
-decoder_decl   := 'decoder' IDENT ':' IDENT
-                  ['(' IDENT (',' IDENT)* ')']
-                  [option_block]
-                  INDENT decoder_body_entry+ DEDENT
-
-loss_decl      := 'loss' IDENT [option_block]
-                  INDENT loss_body_entry+ DEDENT
-
-(* Program. The option block holds `effects`, `over`, etc. The
-   body is an indented sequence of steps, terminated by a required
-   `return`. *)
+(* Program. The body is an indented sequence of steps ending in a
+   required `return`. *)
 program_decl   := 'program' IDENT ['(' program_param (',' program_param)* ')']
-                  ':' object_expr '->' object_expr
-                  [option_block]
+                  ':' object_expr '->' object_expr [option_block]
                   INDENT program_step* return_step DEDENT
 program_param  := IDENT | (IDENT ':' param_kind)
-param_kind     := 'FinSet' | 'Space' | 'Object'
-                | 'Real' | 'Nat'
+param_kind     := 'FinSet' | 'Space' | 'Object' | 'Real' | 'Nat'
                 | 'Mor' '[' object_expr ',' object_expr ']'
 program_step   := sample_step | observe_step | marginalize_step
                 | let_step | score_step
 
 sample_step    := 'sample' var_pattern [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')']
-                  [option_block]
+                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
 observe_step   := 'observe' IDENT [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')']
-                  [option_block]
+                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
 marginalize_step
                := 'marginalize' IDENT [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')']
-                  [option_block]
+                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
                   INDENT program_step+ DEDENT
 let_step       := 'let' IDENT '=' let_arith
 score_step     := 'score' IDENT '=' let_arith
@@ -359,23 +275,28 @@ return_step    := 'return' return_pattern
 define_decl    := 'define' IDENT '=' expr ['where' INDENT define_decl+ DEDENT]
 export_decl    := 'export' expr
 
-(* Pragmas. `#[...]` attaches to the next declaration; `#![...]`
-   attaches to the enclosing module. *)
 pragma_outer   := '#[' pragma_entry (',' pragma_entry)* ']'
 pragma_inner   := '#![' pragma_entry (',' pragma_entry)* ']'
 pragma_entry   := IDENT ['=' option_value]
 ```
 
-Each declaration form is detailed in its own page:
-[declarations](dsl-declarations.md),
-[programs and let-expressions](dsl-programs-and-lets.md),
-and [contractions](dsl-contractions.md). The
-[grammar fragment in the semantics chapter](../semantics/grammar.md)
-gives the productions a categorical denotation.
+[Declarations](dsl-declarations.md),
+[programs and let-expressions](dsl-programs-and-lets.md), and
+[contractions](dsl-contractions.md) describe each form, and
+[the grammar fragment of Semantics](../semantics/grammar.md) gives the productions
+their denotations.
 
 ## Comments
 
-Lines starting with `#` are ignored:
+The character `#` starts five kinds of token, told apart by the character after it:
+
+| Token | Form | Meaning |
+|---|---|---|
+| line comment | `#` followed by anything except `!`, `[`, or `{` | ignored to the end of the line |
+| block comment | `#{ ... }#` | ignored, possibly across lines |
+| doc comment | `#!` not followed by `[` | attached to the next declaration |
+| outer pragma | `#[ ... ]` | options for the next declaration |
+| inner pragma | `#![ ... ]` | options for the enclosing module |
 
 ```text
 # This is a comment
@@ -387,10 +308,10 @@ morphism f : X -> X [role=latent]
 
 ### Doc comments
 
-Lines starting with `#!` are *doc comments*: they're attached to
-the declaration that immediately follows and remain available through the
-AST, the panproto schema, and tooling (`qvr check --json`, LSP
-hover). Plain `#` line comments are dropped at parse time.
+A doc comment attaches to the declaration that follows it and stays available
+through the AST, the panproto schema, `qvr check --json`, and editor hover, while a
+plain `#` comment is dropped at parse time. Every declaration form accepts doc
+comments.
 
 ```qvr
 #! The terminal vocabulary; cardinality 256 is one byte.
@@ -399,21 +320,16 @@ object Token : FinSet 256
 morphism emit : Token -> Token [role=latent]
 ```
 
-Doc comments are recognized on every declaration that carries a
-`docs:` field, including `object`, `morphism`, `composition`,
-`bundle`, `contraction`, `schema`, `program`, `deduction`,
-`signature`, `encoder`, `decoder`, `loss`, `let`, and `export`.
-
 ## Error handling
 
-The DSL provides two error types:
+The DSL raises two error types:
 
-- [`ParseError`](../api/dsl/parser.md#quivers.dsl.parser.ParseError):
-  syntactic error (the tree-sitter grammar reported an error node,
-  or a required field was missing in the parse tree).
-- [`CompileError`](../api/dsl/compiler.md#quivers.dsl.compiler.CompileError):
-  semantic error (type mismatch, undefined name, ill-formed program
-  structure).
+- [`ParseError`](../api/dsl/parser.md#quivers.dsl.parser.ParseError) for a
+  syntactic error: the grammar reported an error node or a required field is
+  missing. Lexical errors are parse errors too, since tree-sitter's lexer is part of
+  the grammar.
+- [`CompileError`](../api/dsl/compiler.md#quivers.dsl.compiler.CompileError) for a
+  semantic error: a type mismatch, an undefined name, or an ill-formed program.
 
 ```python
 from quivers.dsl import loads, ParseError, CompileError
@@ -431,33 +347,21 @@ except CompileError as e:
     print(f"Compilation error: {e}")
 ```
 
-Tree-sitter's lexer is integrated with the grammar, so lexical
-errors raise `ParseError`.
-
 ## Tips
 
-1. **Always declare objects before using them** in morphisms.
-2. **Algebra must come first** (if specified).
-3. **Use `define` to name top-level compositions** and `let` for program-local values.
-4. **Programs are the main output**: use them for
-   [inference](inference-foundations.md).
-5. **Type errors in composition** happen at compile time, not
-   runtime.
+1. Declare objects before the morphisms that use them.
+2. Use `define` to name compositions at the top level and `let` for values inside a
+   program.
+3. Fit [programs](inference-foundations.md) to data. An exported morphism is a
+   trainable module too, but the inference drivers take programs.
+4. Composition type errors are compile-time errors.
 
 ## Where to next
 
-- [DSL Declarations](dsl-declarations.md): every declaration form
-  (objects, morphisms, spaces, kernels, algebras, deductions,
-  aliases, combinators, exports).
-- [Programs and Let-Expressions](dsl-programs-and-lets.md): the
-  `program` block syntax, bind / observe / marginalize / let
-  steps, the axis-role clause, factor expressions, the
-  let-expression primitives, and inline distribution
+- [DSL Declarations](dsl-declarations.md): objects, morphisms, spaces, kernels,
+  composition rules, deductions, combinators, and exports.
+- [Programs and Let-Expressions](dsl-programs-and-lets.md): `program` blocks, their
+  steps, the `over` clause, factor expressions, primitives, and inline distribution
   families.
-- [Contractions](dsl-contractions.md): operadic n-ary contractions,
-  type-driven wiring inference, `share`, and the explicit `wiring`
-  escape hatch.
-
-## Further reading
-
-- [@carvalho2010horseshoe]
+- [Contractions](dsl-contractions.md): contractions of several inputs, wiring inference,
+  and the explicit `wiring` option.

@@ -1,13 +1,12 @@
 # Monoidal Structures
 
-A monoidal structure lets us combine interfaces side by side [@maclane1998categories]. Cartesian products pair
-values; coproducts select a tagged alternative. [Associators regroup nested combinations
-and braidings exchange their order](../../guides/categorical.md#monoidal-structures). These operations concern how inputs and outputs are
-organized; the selected morphism algebra separately determines how their weights
-combine.
-
-The `MonoidalStructure` interface with cartesian-product and
-coproduct implementations.
+A [monoidal structure](https://ncatlab.org/nlab/show/monoidal+category) combines objects and morphisms
+side by side [@maclane1998categories]. The cartesian product pairs values, and the coproduct selects
+a tagged alternative. [Associators regroup nested combinations and braidings exchange their order](../../guides/categorical.md#monoidal-structures).
+These operations arrange inputs and outputs, and the chosen `Algebra` separately fixes how their
+weights combine. The module gives the `MonoidalStructure` interface with the instances
+`CartesianProductMonoidal` and `CoproductMonoidal`. On weighted relations the Cartesian product is
+a symmetric monoidal product, not a categorical product.
 
 ::: quivers.categorical.monoidal
     options:

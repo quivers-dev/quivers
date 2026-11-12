@@ -1,126 +1,95 @@
 # Stan
 
-This page records the per-target obligations and evidence for
-[Transpilation correctness](index.md) for $\mathsf{T} = \mathrm{Stan}$.
+A Stan program declares data and parameters and computes a log density by adding terms to the
+accumulator `target` [@carpenter2017stan]. The Stan renderer writes each draw and observation of a QVR
+program as a term `target += f_lpdf(x | args);` and each score as `target += expr;`, so the emitted
+program's `target` is the QVR log joint density, up to the conversions below
+([Transpilation correctness](index.md)).
 
-Stan model code describes a log density to evaluate at candidate parameter
-values. With `z ~ normal(0, 1)`, a supplied value of `z` contributes its
-Normal log density to `target`. A QVR `sample` from that family contributes
-the same prior factor when its result is clamped to that value. The
-comparison below checks those factors in the coordinates used by Stan.
+## How Stan evaluates a log density
 
-## Semantics
-
-Stan specifies a density through contributions to a log-density accumulator
-[@carpenter2017stan]. This can be understood as a product of factors
-[@koller2009probabilistic]. A `~` statement adds a distribution’s log-density
-contribution to `target`; parameter-independent constants may be omitted, as
-described in the [Stan reference manual](https://mc-stan.org/docs/reference-manual/statements.html). The log-density probe is
+The terms added to `target` are summed, so the program's log density is a sum of factors, the logarithm
+of a product of the model's conditional densities. A statement `x ~ f(args)` may omit constants that do
+not depend on the parameters, and a term `target += f_lpdf(x | args)` keeps them
+([Stan reference manual](https://mc-stan.org/docs/reference-manual/statements.html)). The renderer
+writes the second form. The test probe is
 [`cmdstanpy.CmdStanModel.log_prob`](https://mc-stan.org/cmdstanpy/api.html#cmdstanpy.CmdStanModel.log_prob),
-which evaluates the program's `target` at a parameter point on the
-unconstrained scale.
+which evaluates `target` at a point given in unconstrained coordinates.
 
-The reference is Carpenter, Gelman, Hoffman, Lee, Goodrich,
-Betancourt, Brubaker, Guo, Li, and Riddell
-[@carpenter2017stan].
+## Change of variables to unconstrained coordinates {#unconstrained-space-change-of-variables}
 
-## Unconstrained-space change of variables
+A parameter declared with a constraint is sampled in unconstrained coordinates: $\theta = \Psi(u)$, where
+$u$ ranges over $\mathbb R^n$ and $\theta$ satisfies the declaration. For a positive scalar
+$\theta = e^u$, and the density in $u$ includes the
+[log Jacobian](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables)
+$u$ [@stanReparameterization]. The [Stan transforms reference](https://mc-stan.org/docs/reference-manual/transforms.html)
+gives every transform.
 
-Stan's density probe requires attention to unconstrained coordinates.
-Write $\theta=\Psi_{\mathsf{Stan}}(u)$, where $u$ is unconstrained and
-$\theta$ is a model parameter satisfying its declared support. For a
-positive scalar, $\theta=e^u$, so the density in $u$ includes the [log
-Jacobian $u$](https://mc-stan.org/docs/stan-users-guide/reparameterization.html#changes-of-variables). The [Stan transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)
-describes these corrections. Other targets may also transform coordinates
-inside inference; the relevant question is which coordinates a probe scores.
-
-| Declaration | $\Psi_{\mathsf{Stan}}$ (unconstrained → constrained) | $\log\bigl\lvert\det J_{\Psi_{\mathsf{Stan}}}\bigr\rvert$ |
+| Declaration | $\Psi$ (unconstrained to constrained) | $\log \lvert \det J_\Psi \rvert$ |
 |---|---|---|
-| `real<lower=0>` | $\theta = \exp(\widetilde\theta)$ | $\widetilde\theta$ |
-| `real<lower=0, upper=1>` | $\theta = \mathrm{logit}^{-1}(\widetilde\theta)$ | $\widetilde\theta - 2\log(1 + e^{\widetilde\theta})$ |
-| `vector<lower=0>[K]` | per-element $\exp$ | $\sum_k \widetilde\theta_k$ |
-| `simplex[K]` | simplex transform used by the installed Stan version | see the Stan transform reference |
-| `cov_matrix[K]` | Cholesky factorization + log-Cholesky | see the transform reference |
-| `cholesky_factor_corr[K]` | correlation Cholesky transform | see the Stan transform reference |
-| `corr_matrix[K]` | correlation-matrix transform | see the Stan transform reference |
+| `real<lower=0>` | $\theta = \exp(u)$ | $u$ |
+| `real<lower=0, upper=1>` | $\theta = \mathrm{logit}^{-1}(u)$ | $u - 2\log(1 + e^{u})$ |
+| `vector<lower=0>[K]` | $\exp$ in each coordinate | $\sum_k u_k$ |
+| `simplex[K]` | Stan's simplex transform | see the transforms reference |
+| `cov_matrix[K]` | Cholesky factorization with a logarithm on the diagonal | see the transforms reference |
+| `cholesky_factor_corr[K]` | Stan's transform for Cholesky factors of correlation matrices | see the transforms reference |
+| `corr_matrix[K]` | Stan's transform for correlation matrices | see the transforms reference |
 
-The Stan renderer emits the constrained-space declaration; Stan's
-runtime adds $\log|\det J_{\Psi_{\mathsf{Stan}}}|$ to the `target`
-accumulator automatically (see the [transform reference](https://mc-stan.org/docs/reference-manual/transforms.html)). The renderer never emits the Jacobian term itself.
-
-When a target's unconstrained density includes the Jacobian, the desired
-constrained-space comparison is
+The renderer writes the constrained declaration, and Stan adds the log Jacobian to `target` itself, so the
+renderer never writes it. When the probe includes the Jacobian, the comparison is
 
 $$
-\ell_{\mathsf{Stan},u}(u;y)
--\log\left|\det D\Psi_{\mathsf{Stan}}(u)\right|
-=\ell_{\mathrm{QVR}}(\Psi_{\mathsf{Stan}}(u);y)+C.
+\ell_{\mathsf{Stan},u}(u ; y) - \log\left|\det D\Psi(u)\right| = \ell_{\mathrm{QVR}}(\Psi(u) ; y) + C,
 $$
 
-Here $C$ may depend on the fixed model and data but must not vary with $u$.
-If the probe disables Jacobian adjustment, compare its output directly with
-the constrained QVR density, omitting the subtraction above.
+where $C$ may depend on the model and the data but not on $u$. When the probe leaves the Jacobian out, its
+value is compared with the QVR density directly.
 
 ## Family parameterizations
 
-Stan's families use the canonical parameterizations of the
-[Stan Functions Reference](https://mc-stan.org/docs/functions-reference/).
-Most map identically from QVR's parameterization (Wikipedia
-canonical forms). The non-trivial cases:
+Stan's families are parameterized as in the
+[Stan functions reference](https://mc-stan.org/docs/functions-reference/). The cases that need a
+conversion or a constant:
 
-| QVR family | Stan call | $\pi_{F, \mathsf{Stan}}$ | $c_{F, \mathsf{Stan}}$ |
+| QVR family | Stan | $\pi_{F, \mathsf{Stan}}$ | $c_{F, \mathsf{Stan}}$ |
 |---|---|---|---|
 | `Normal(μ, σ)` | `normal(μ, σ)` | identity | 0 |
-| `HalfNormal(σ)` | `normal(0, σ)` with `<lower=0>` declaration | $\sigma \mapsto (0, \sigma)$ | $-\log 2$ (target minus normalized QVR density) |
-| `HalfCauchy(γ)` | `cauchy(0, γ)` with `<lower=0>` | $\gamma \mapsto (0, \gamma)$ | $-\log 2$ |
+| `HalfNormal(σ)` | `normal(0, σ)` on a parameter declared `<lower=0>` | $\sigma \mapsto (0, \sigma)$ | $-\log 2$ |
+| `HalfCauchy(γ)` | `cauchy(0, γ)` on a parameter declared `<lower=0>` | $\gamma \mapsto (0, \gamma)$ | $-\log 2$ |
 | `MultivariateNormal(μ, Σ)` | `multi_normal(μ, Σ)` | identity | 0 |
 | `LKJCorrCholesky(η)` | `lkj_corr_cholesky(η)` | identity | 0 |
-| `Dirichlet(α)` | `dirichlet(α)` | identity (scalar broadcast via `rep_vector`) | 0 |
-| `Categorical(probs=p)` | `categorical(p)` scoring the code `y + 1` | $y \mapsto y + 1$ | 0 |
+| `Dirichlet(α)` | `dirichlet(α)` | identity, a scalar broadcast by `rep_vector` | 0 |
+| `Categorical(probs=p)` | `categorical(p)` at the code `y + 1` | $y \mapsto y + 1$ | 0 |
 | `Bernoulli(p)` | `bernoulli(p)` | identity | 0 |
 | `Bernoulli(logits=l)` | `bernoulli_logit(l)` | identity | 0 |
-| `LogitNormal(mu=μ, sigma=σ)` | `logit_normal(μ, σ)`, a grafted `logit_normal_lpdf` (Stan ships none): `normal_lpdf(logit(y) \| μ, σ) - log(y) - log1m(y)`, on a parameter declared `<lower = 0, upper = 1>` | identity | 0 |
-| other families | consult the target registry | family-specific mapping or refusal | check the emitted density |
+| `LogitNormal(mu=μ, sigma=σ)` | a `logit_normal_lpdf` added to the program, since Stan has none: `normal_lpdf(logit(y) \| μ, σ) - log(y) - log1m(y)`, on a parameter declared `<lower = 0, upper = 1>` | identity | 0 |
 
-QVR codes a Categorical value from zero and Stan's `categorical`
-counts from one. The data keeps QVR's coding (an outcome is declared
-`int<lower=0, upper=K-1>`), and the emitted log-pmf reads the code one
-higher, `categorical_lpmf(y[n] + 1 | p)`; `ordered_logistic` and
-`ordered_probit` read their codes the same way. Inside a marginalize
-block the enumeration counter `k` runs over `1:K` and already is
-Stan's class, so `categorical_lpmf(k | p)` takes it directly, while
-the latent read as a number is the code `k - 1`. Stan has no discrete
-parameters, so a drawn class is refused with
-`sample:discrete-latent:<name>`.
+For another family, the registry gives the mapping or the refusal. The half families leave out the factor
+$2$ of the truncation, so each such site adds $c = -\log 2$ to the difference between Stan's density and
+the normalized QVR density. These constants sum to one constant for the program, which normalization
+removes.
 
-Omitting the half-distribution normalizer contributes target-minus-QVR
-$c_{F,\mathsf{Stan}}=-\log 2$ per call site. This is collected into
-the per-program constant $C_{\mathsf{Stan}}(M)$ and absorbed by
-Bayes-rule normalization.
+QVR codes a categorical value from zero, and Stan's `categorical` counts from one. The data keep QVR's
+codes (an outcome is declared `int<lower=0, upper=K-1>`), and the emitted log probability reads the code
+one higher, `categorical_lpmf(y[n] + 1 | p)`. `ordered_logistic` and `ordered_probit` read their codes the
+same way. Inside a `marginalize` block, the counter `k` runs over `1:K` and is Stan's class, so
+`categorical_lpmf(k | p)` takes it directly, and the latent variable read as a number is `k - 1`. Stan has
+no discrete parameters, so a drawn class is refused with `sample:discrete-latent:<name>`.
 
-## Per-construct emit
+## Emitted constructs {#per-construct-emit}
 
-**`SampleStep(x, F, args)`.** `top_var_decl_no_assign` of type
-$\tau_F$ in `parameters` (with the right constraint per the
-family's `.support`); `sampling_statement` $x \sim F_{\mathsf{Stan}}(\mathrm{args})$
-in `model`. Soundness: by Stan's `~` desugaring, the contribution
-to `target` is exactly $\log f_{F, \mathsf{Stan}}(x \mid
-\mathrm{args})$.
+**`sample x <- F(args)`.** A declaration of `x` in `parameters`, constrained by the family's support, and
+`target += f_lpdf(x | args);` in `model`, which adds $\log f_{F, \mathsf{Stan}}(x \mid \mathrm{args})$.
 
-**`ObserveStep(y, F, args)`.** $y$ declared in `data`; same `~`
-statement in `model` contributing $\log f_{F, \mathsf{Stan}}(y \mid
-\mathrm{args})$.
+**`observe y <- F(args)`.** `y` declared in `data`, and the same term at `y` in `model`.
 
-**`Plate` (Indexed Bind / Indexed Observe).** Nested
-`for (m_<axis> in 1:N_<axis>) { ... }` loops; the latent or
-observation is declared as `array[N_<axis>] <type>`. Per Stan
-reference manual’s loop semantics, the for-loop's contribution to `target` is
-the additive sum of per-iteration `~` contributions. Soundness
-follows from [the plate discussion](index.md#5-plates-marginalization-and-via).
+**Plates.** Nested loops `for (m_<axis> in 1:N_<axis>) { ... }`, with the variable declared as
+`array[N_<axis>] <type>`. The terms added in the loop's iterations sum, so the loop adds the logarithm of
+the product of the factors ([plates](index.md#5-plates-marginalization-and-via)).
 
-**`MarginalizeStep`.** Stan emits the canonical `log_sum_exp`
-enumeration. For a grouped marginalize with latent $z : K$ on
-group axis $G$ and scope observe via fibration $g : R \to G$:
+**`marginalize`.** Stan enumerates the latent variable and reduces with `log_sum_exp`. For a grouped block
+with a latent $z$ over $K$ values, groups $G$, and an observation whose index map is $g$ from the rows $R$
+to $G$:
 
 ```stan
 {
@@ -136,40 +105,27 @@ group axis $G$ and scope observe via fibration $g : R \to G$:
 }
 ```
 
-The inner accumulation implements the required finite sum of log factors; the outer `log_sum_exp` is the documented
-`log_sum_exp` primitive that computes $\log \sum_k \exp(\cdot)$
-accurately. Under [the finite-enumeration strategy](index.md#5-plates-marginalization-and-via),
-the emitted log-density equals the marginalized joint up to the
-parameter-independent normalizing constants discussed above, subject to
-floating-point error and the supported-family contract.
+The loops sum the log factors of each group and value, and `log_sum_exp` computes
+$\log \sum_k \exp(\cdot)$ stably. The emitted density is then the density with $z$ summed out, up to the
+constants above and floating-point error. When the prior of the block is a plate over the groups, the
+renderer writes one row of `lps_z` per observation instead, as the
+[architecture example](../transpile-architecture.md#6-an-example-from-source-to-stan-and-numpyro) shows.
+The renderer refuses a block whose family has no finite support with
+`marginalize:non-finite-support:<family>`. The [ZIP regression](../../examples/zip-regression.md) example
+sums out a binary gate.
 
-The Stan renderer raises
-`UnsupportedConstruct(["marginalize:non-finite-support:<family>"])`
-when `finite_enumerable_at_call_site`
-returns False; cf.
-[ZIP regression](../../examples/zip-regression.md) for the
-continuous-support workaround.
+**`score s = expr`.** `target += expr;` in `model`, which adds the weight $\exp(\mathrm{expr})$ in log
+space.
 
-**`ScoreStep(name, expr)`.** `real <name> = <expr>;` in
-`transformed_parameters`, plus `target += <name>;` in `model`.
-Contribution: $\log w_{\mathrm{name}} = \mathrm{expr}$.
+**`let v = expr`.** `real v = expr;` in `transformed parameters`. It adds no term.
 
-**`LetStep(name, expr)`.** `real <name> = <expr>;` in
-`transformed_parameters`. Denotationally inert.
+**`return v`.** `<type> v_value = v;` in `generated quantities`, since Stan does not allow a parameter to be
+declared twice. It adds no term.
 
-**`Return(v_1, \dots, v_m)`.** `generated quantities { <type> v_i_value = v_i; }`
-for each return variable that is already a parameter (Stan rejects
-re-declaration). Denotationally inert.
+## Evidence
 
-## Acceptance
-
-* **Tier 1 pipeline composition.** Structural checks cover the
-  expected Stan blocks and the `Lower >> StanRenderer >>
-  EmitPretty(stan)` pipeline.
-* **Tier 2 external syntax.** `stanc` accepts the generated
-  programs in the external-validation matrix.
-* **Tier 3 numeric equivalence.** For selected fixtures,
-  `cmdstanpy.log_prob` is compared with the QVR reference on the
-  shared finite grid and tolerance described in
-  [the test contract](index.md#6-evidence-tiers), after
-  applying any documented backend-specific correction.
+- **Level 1.** Structural tests check the Stan blocks and the pipeline `Lower`, `StanRenderer`, and
+  `EmitPretty(stan)`.
+- **Level 2.** `stanc` accepts the programs of the syntax matrix.
+- **Level 3.** On selected fixtures, `cmdstanpy`'s `log_prob` is compared with the QVR density on the shared
+  grid and tolerance ([evidence](index.md#6-evidence-tiers)), after the corrections above.

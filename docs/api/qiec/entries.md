@@ -1,10 +1,10 @@
 # Entry points
 
-[Entry information](../../reference/qvr/execution-and-tooling.md#list-entry-points) identifies a computation exported by a checked module and [describes
-its inputs](../../tutorials/qvr/13-release-workflow.md#2-inspect-the-public-boundary). The command line, REPL, and Python interface use it to invoke the same
-entry. For posterior inference, the caller additionally selects an inference algorithm
-and its settings.
-
-The executable entry points of a checked module, and one invocation the command line, the REPL, and Python share.
+An *entry point* is a named computation or program that a checked module exposes
+([list entry points](../../reference/qvr/execution-and-tooling.md#list-entry-points)), with a
+description of [its inputs](../../tutorials/qvr/13-release-workflow.md#2-inspect-the-public-boundary).
+`entry_points` lists them, and `invoke_entry` runs one in the same way for the command line, the
+REPL, and Python. Posterior inference also needs an algorithm and its settings, which the caller
+chooses.
 
 ::: quivers.qiec.entries

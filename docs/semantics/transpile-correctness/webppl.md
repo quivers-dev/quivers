@@ -1,86 +1,66 @@
 # WebPPL
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{WebPPL}$.
+WebPPL is a probabilistic programming language with the syntax of a subset of JavaScript
+[@goodman2014design]. Its compiler rewrites a program into
+[continuation-passing style](https://en.wikipedia.org/wiki/Continuation-passing_style), in which each
+computation takes the rest of the computation, its *continuation*, as an argument, so that inference
+algorithms can control what happens after each random choice. Continuation-passing style is how WebPPL is
+implemented, not its semantics: a program's joint log density is the sum of the log densities of the choices
+of an execution ([Transpilation correctness](index.md)).
 
-WebPPL expresses random choices and observations in JavaScript-like syntax.
-A continuation is the remaining computation after a choice receives its
-answer; transforming code into continuation-passing style lets the runtime
-control that continuation. The repository's density probe fixes values and
-evaluates distribution scores, yielding a joint log density at each supplied
-parameter point.
+## How the test evaluates a log density
 
-## Semantics
+The test probe rewrites each emitted `sample` and `observe` into a call of the distribution's
+`score(value)` method at the fixed parameter values and data, and sums the results, which gives the joint log
+density at each point.
 
-WebPPL's denotational semantics is the [continuation-passing-style](https://dippl.org/chapters/03-enumeration.html#continuations)
-trace semantics of Goodman and Stuhlmüller
-[@goodman2014design]. A program is a JavaScript-syntax
-WebPPL function whose `sample` and `observe` calls are reified by
-the WebPPL compiler into [CPS-transformed continuations](https://dippl.org/chapters/03-enumeration.html#cps-transform-in-action); the trace
-is the sequence of `(address, distribution, value)` triples
-visited. The repository's numeric probe rewrites rendered `sample`
-and `observe` sites into calls to each distribution object's
-`score(value)` method at clamped parameter and data values.
+## Change of variables
 
-## Unconstrained-space change of variables
-
-Identity. WebPPL distributions are operationally defined; no
-automatic reparameterization layer.
+WebPPL's distributions are defined by their samplers and densities, with no automatic change of variables, so
+$\Psi_{\mathsf{WebPPL}} = \mathrm{id}$.
 
 ## Family parameterizations
 
-WebPPL families use JavaScript-object keyword arguments:
-`Dirichlet({alpha: ...})`, `Categorical({ps: ...})`,
-`Gaussian({mu: ..., sigma: ...})`, `Bernoulli({p: ...})`, etc.
-The QVR ↔ WebPPL arg mapping requires non-trivial aliases that
-live in `FAMILY_META.arg_aliases["webppl"]`:
+WebPPL's families take a JavaScript object of named arguments: `Dirichlet({alpha: ...})`,
+`Categorical({ps: ...})`, `Gaussian({mu: ..., sigma: ...})`, `Bernoulli({p: ...})`, and so on. The names are
+recorded in `FAMILY_META.arg_aliases["webppl"]`:
 
-| QVR arg | WebPPL arg |
+| QVR argument | WebPPL argument |
 |---|---|
 | `loc` | `mu` |
 | `scale` | `sigma` |
 | `concentration` (Dirichlet) | `alpha` |
 | `probs` | `ps` |
 
-The renamings are syntactic; $c_{F, \mathsf{WebPPL}} = 0$ for every
-family with native WebPPL support.
+The renaming changes no value, so $c_{F, \mathsf{WebPPL}} = 0$ for every family WebPPL has.
 
-## Per-construct emit
+## Emitted constructs
 
-**Sample / observe.** `var <name> = sample(<Family>({args}));`
-for latents; `observe(<Family>({args}), <obs>);` for observations.
+**`sample` and `observe`.** `var <name> = sample(<Family>({args}));` for a latent variable and
+`observe(<Family>({args}), <obs>);` for an observation.
 
-**Plate.** `repeat(B, function() { return sample(<dist>); })` for
-index-independent batches; `mapIndexed(function(m, _) { return
-sample(<dist using m>); }, repeat(B, 0))` for index-dependent.
-Under the execution interpretation [@goodman2014design], `repeat` denotes the documented
-$B$-fold product measure.
+**Plates.** `repeat(B, function() { return sample(<dist>); })` for copies of one distribution, and
+`mapIndexed(function(m, _) { return sample(<dist using m>); }, repeat(B, 0))` for copies whose parameters
+depend on the index. The density of the $B$ independent draws is the product of their densities.
 
-**Marginalize.** The renderer evaluates each finite support value, combines
-its prior and scope scores with `_qvr_logsumexp`, and passes the resulting
-log weight to `factor`. Grouping is applied before the support reduction.
-The resulting density sums over the hidden coordinate.
+**`marginalize`.** The renderer evaluates each value of the latent variable, combines its prior and the scores
+of the scope with `_qvr_logsumexp`, and passes the log weight to `factor`. Grouping is applied before the
+reduction, and the density has the latent variable summed out.
 
-**Score / let / return.** [`factor(expr)`](https://webppl.readthedocs.io/en/master/inference.html#factor)
-for score; `var <name> = <expr>;` for let; native `return`. A `let`
-whose value has no axis is one expression, whatever plated names it reads
-at an index. A `let` whose value has a leading axis is built one row at a
-time, `mapIndexed(function(i, _) { return <row i>; }, repeat(N, 0))`. The
-row is the expression read at `i`: each operand that carries the leading
-axis is read at `i`, and an operand of lower rank passes through
-unchanged. An operator over an array that a row still holds goes through
-the elementwise `_qvr_bcast` helper, because a JavaScript operator would
-coerce the array to `NaN`. A site over a plate reads, at its row, every
-name bound over the same leading axis.
+**`score`, `let`, `return`.** [`factor(expr)`](https://webppl.readthedocs.io/en/master/inference.html#factor)
+for a score, `var <name> = <expr>;` for a `let`, and JavaScript's `return`. A `let` whose value has no axis is
+one expression, whatever plated names it reads at an index. A `let` whose value has a leading axis is built one
+row at a time, `mapIndexed(function(i, _) { return <row i>; }, repeat(N, 0))`, where the row is the expression
+read at `i`: each operand with the leading axis is read at `i`, and an operand of lower rank passes through. An
+operator on an array that a row still holds goes through the elementwise helper `_qvr_bcast`, since a
+JavaScript operator would turn the array into `NaN`. A site over a plate reads, at its row, every name bound
+over the same leading axis.
 
-## Acceptance
+## Evidence
 
-* **Tier 1 structural.** Every emit has `var model = function(...)
-  { ... };` whose body uses `sample`, `observe`, `factor`,
-  `repeat`, and `mapIndexed`.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** [`node --check /dev/stdin`](https://nodejs.org/api/cli.html#--check)
-  checks JavaScript syntax. Checking WebPPL primitives and their execution
-  requires a WebPPL runtime.
-* **Tier 3 numeric equivalence.** The rewritten `.score(value)`
-  probe is compared with the QVR reference on selected fixture grids.
+- **Level 1.** Every emitted model is a `var model = function(...) { ... };` whose body uses `sample`,
+  `observe`, `factor`, `repeat`, and `mapIndexed`, and calling the stages directly or composed gives the same
+  output.
+- **Level 2.** [`node --check /dev/stdin`](https://nodejs.org/api/cli.html#--check) checks the JavaScript
+  syntax. Checking WebPPL's primitives and running the program need a WebPPL runtime.
+- **Level 3.** The rewritten `.score(value)` probe is compared with the QVR density on selected fixture grids.

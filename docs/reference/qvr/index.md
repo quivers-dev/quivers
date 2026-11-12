@@ -1,56 +1,46 @@
 # QVR language reference
 
-This section is the user reference for QVR. It specifies the source
-forms you can write, the checked computations they create, and the boundaries
-between the reference machine, attached PyTorch modules, and transpile
-targets. The [QIEC developer note](../../developer/qiec.md) instead documents
-the internal kernel, serialization format, and runtime ABI.
+QVR is the modeling language of quivers, written in `.qvr` files, which the compiler parses,
+checks, elaborates to QIEC, and then runs, fits, or transpiles. The *Quivers Indexed Effect Core*
+(QIEC) is the typed core language that every executable QVR declaration elaborates to. It has
+indexed families, effect rows, and handlers, and both the [reference machine](../../developer/qiec.md#reference-evaluator), the
+library's interpreter for QIEC, and the transpilers read it. Its checker, serialization, and runtime interface are specified in the
+[QIEC developer note](../../developer/qiec.md).
 
-QVR has one compilation model: every executable declaration lowers to a
-checked computation in the **Quivers Indexed Effect Core (QIEC)**. A `define`
-declaration writes such a computation directly. A probabilistic `program`, a
-`deduction`, a schema-backed `parser(...)`, and a structural
-`encoder`/`decoder`/`loss` graph elaborate to the same core. This common target is why `qvr run`, `Program.run`, the REPL,
-the language server, and the transpilers report the same types, [effect rows](effects-and-handlers.md#effect-rows),
+A *computation* is a typed procedure that returns a value and may perform
+[effects](https://en.wikipedia.org/wiki/Effect_system): requests, such as drawing a random value,
+that a *handler* answers, possibly by resuming the suspended computation
+[@plotkin2003algebraic; @plotkin2009handlers]. Its
+*effect row* lists the effect instances it may still request [@leijen2014koka]. *Elaboration* is
+the compiler step that rewrites a declaration into explicit QIEC terms. A `define` declaration
+writes a computation directly, and a probabilistic `program`, a `deduction`, a `parser(...)`
+built from rule schemata, and a structural `encoder`, `decoder`, or `loss` elaborate to
+computations. Since every declaration reaches the same core, `qvr run`, `Program.run`, the REPL, the language server,
+and the transpilers report the same types, [effect rows](effects-and-handlers.md#effect-rows),
 and diagnostic codes.
 
-## Choose a page
+## Pages
 
-For a first reading, a **computation** is a typed procedure that can
-return a value and request effects such as sampling. An **effect row**
-lists which named requests remain available to it. **Elaboration**
-translates higher-level declarations into those explicit operations.
-The [concepts introduction](../../getting-started/concepts.md) works
-through these operations on a small model.
-
-
-| If you need to… | Read |
+| To | Read |
 | --- | --- |
-| declare closed indices, [indexed families](types-and-indexed-families.md#family-declarations), constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
-| declare an effect, create lexical instances, write rows, or handle requests | [Effects and handlers](effects-and-handlers.md) |
+| declare finite index types, [indexed families](types-and-indexed-families.md#family-declarations), constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
+| declare an effect, create effect instances, write rows, or handle requests | [Effects and handlers](effects-and-handlers.md) |
 | write `define`, call a computation, recurse, branch, or distinguish pure and effectful binding | [Computations](computations.md) |
-| map, traverse, fold, or normalize a fixed tensor | [Finite collection expressions](collection-expressions.md) |
-| write a model with samples, observations, calls, [marginalization](probabilistic-programs.md#exact-marginalization), groups, or scans | [Probabilistic programs](probabilistic-programs.md) |
-| understand what parsers, deductions, and structural models generate | [Generated computation graphs](generated-computations.md) |
-| list and run entries, attach providers, inspect [traces](../../guides/inference-foundations.md#trace-and-sample-sites), use the LSP, or check a target | [Execution and tooling](execution-and-tooling.md) |
+| map, traverse, fold, or normalize a tensor of fixed shape | [Finite collection expressions](collection-expressions.md) |
+| write a model with draws, observations, calls, [marginalization](probabilistic-programs.md#exact-marginalization), groups, or scans | [Probabilistic programs](probabilistic-programs.md) |
+| see what parsers, deductions, and structural models elaborate to | [Generated computation graphs](generated-computations.md) |
+| list and run entry points, attach providers, inspect [execution traces](../../guides/inference-foundations.md#trace-and-sample-sites), use the language server, or check a target | [Execution and tooling](execution-and-tooling.md) |
 
-The [compressed grammar](../../semantics/grammar.md#11-qiec-fragment) is the
-production-level syntax summary. The pages here add typing rules, operational
-behavior, examples, and failure modes.
+The production rules of the grammar are summarized in the
+[QIEC fragment of the grammar](../../semantics/grammar.md#11-qiec-fragment).
 
 ## A minimal mixed module
 
-The module below exercises several language features together.
-`Measurement` distinguishes present and missing values in their types.
-`half_weight` interprets a request to shrink a value. `robustify`
-uses that handler, and `observations` calls the computation while
-defining a probabilistic model. You can read or write an ordinary
-regression before needing all four features.
-
-
-The following module contains an indexed family, an authored handler, a pure
-computation, and a probabilistic program. It illustrates the shared representation without
-requiring a custom runtime provider.
+The module below declares an indexed family `Measurement`, whose type records whether a value is
+present, an effect `Robust` with a handler `half_weight` that halves the value it is asked to
+shrink, a pure computation `robustify` that installs that handler, and a probabilistic program
+`observations` that calls `robustify`. Every handler in it has a body written in QVR, so it runs
+with the built-in `core` [runtime provider](execution-and-tooling.md#runtime-providers) alone.
 
 <!-- compile: qiec -->
 ```qvr
@@ -88,13 +78,19 @@ program observations : Row -> Row
 export observations
 ```
 
-The surface declarations differ, but `robustify` and `observations` are both
-[entry points](execution-and-tooling.md#list-entry-points). `observations` performs through the module's canonical
-`Random` and `Score` instances; an invocation installs handlers for both. The
-call to `robustify` is pure because `half_weight` removes the only effect from
-its body.
+`robustify` and `observations` are both [entry points](execution-and-tooling.md#list-entry-points),
+the named computations a module exposes to `qvr run` and `Program.run`. `observations` performs
+effects through the two built-in [effect instances](effects-and-handlers.md#prelude-interfaces)
+`random` and `score`, and each invocation installs a handler for both. The call to `robustify` is
+pure because `half_weight` handles the only effect its body performs.
 
 ## Compilation and execution map
+
+The diagram follows a source file from parsing to its two consumers. The *reference machine* is the
+library's interpreter for QIEC, the closest standard notion being a definitional interpreter
+[@reynolds1972definitional], and it fixes what a checked program means operationally
+([reference machine](../../developer/qiec.md#reference-evaluator)). The transpilers lower the same
+module to an intermediate representation (IR) shared by all targets and render it for each target.
 
 ```mermaid
 flowchart TB
@@ -102,7 +98,7 @@ flowchart TB
         direction LR
         S["QVR source<br/><small>qvr-source/v0.20</small>"] -->|parse| P["Quivers parser"] --> A["Typed source AST"]
     end
-    subgraph KERNEL["Checked interchange boundary"]
+    subgraph CORE["Checked interchange boundary"]
         direction LR
         A -->|elaborate + check| Q["QIEC module<br/><small>qiec-core/v1alpha1</small>"]
         Q -->|serialize| J["qiec-json/v1"]
@@ -117,49 +113,24 @@ flowchart TB
     class R,C,H qv-output
 ```
 
-Quivers owns and vendors the QVR grammar used by this path. It installs
-that native parser into Panproto's registry at process start; Panproto supplies
-the generic parse-tree carrier, migration protocol, and non-QVR target
-grammars. Thus a Panproto bundle may carry the stable QIEC envelope without
-being the source of truth for current QVR parsing. See [Execution and
-tooling](execution-and-tooling.md#grammar-ownership-and-panproto) for the
-release contract.
+The three identifiers in the diagram name the source grammar, the core, and the serialized form.
+They are listed under [format identifiers](execution-and-tooling.md#format-identifiers).
 
-## Compatibility identifiers
+## Target support
 
-Three version identifiers describe different boundaries:
-
-| Identifier | Boundary |
-| --- | --- |
-| `qvr-source/v0.20` | source grammar and elaboration route |
-| `qiec-core/v1alpha1` | typed kernel ABI |
-| `qiec-json/v1` | deterministic serialized envelope |
-
-The source version may advance without changing the core ABI when new syntax
-elaborates to existing terms. Conversely, the serialized format may advance
-without changing how `.qvr` files parse. Code that exchanges checked modules
-should test the latter two identifiers, while editors and migration tooling
-should test the first.
-
-## Support is an explicit boundary
-
-The reference machine executes the kernel and all distribution families.
-Some computations also need a process-local provider, such as the neural
-attachments created for a structural [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks). A transpile target either emits
-the complete reachable computation graph or refuses it with a stable
-`qiec:capability:*` diagnostic. It never treats an unsupported body as inert
-metadata.
-
-Use [`qvr check --target`](execution-and-tooling.md#check-before-you-run) while
-editing, and consult the measured [transpilation support
-matrix](../../transpile-support.md) before choosing a deployment target.
+The reference machine runs every well-typed computation and every distribution family. A computation
+that calls a neural network, such as a structural
+[encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks), also
+needs a runtime provider that holds the PyTorch module. A transpile target either emits the whole
+reachable computation graph or refuses it with a stable `qiec:capability:*` diagnostic, and it never
+drops an unsupported body. What each target accepts is listed under
+[Transpilation](execution-and-tooling.md#transpilation).
 
 ## Tutorials and examples
 
-Start with [Indexed data and total functions](../../tutorials/qvr/09-indexed-data.md),
-then continue through [Effects and handlers](../../tutorials/qvr/10-effects-and-handlers.md),
-[Parsing as an effectful computation](../../tutorials/qvr/11-parsing-and-search.md),
-and [Structural autoencoders](../../tutorials/qvr/12-structural-autoencoders.md).
-The [Amortized Bayesian Semantics](../../examples/amortized-bayesian-semantics.md)
-example combines indexed data, effects, probabilistic programs, and structural
-attachments in one statistical model.
+The QVR tutorials on [indexed data and total functions](../../tutorials/qvr/09-indexed-data.md),
+[effects and handlers](../../tutorials/qvr/10-effects-and-handlers.md),
+[parsing as an effectful computation](../../tutorials/qvr/11-parsing-and-search.md), and
+[tree autoencoders](../../tutorials/qvr/12-structural-autoencoders.md) build one feature
+each. The [Amortized Bayesian Semantics](../../examples/amortized-bayesian-semantics.md) example
+combines indexed data, effects, probabilistic programs, and attachments in one model.

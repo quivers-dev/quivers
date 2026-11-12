@@ -1,33 +1,16 @@
-# Tutorial 4: Fuzzy Logic Factorization
+# 4. Fuzzy logic factorization
 
-Fuzzy factorization approximates an observed relation by composing learnable morphisms under the product-fuzzy [algebra](https://ncatlab.org/nlab/show/algebra). It replaces ordinary matrix multiplication with probabilistic [fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic): product is fuzzy AND and [noisy-OR](01-first-quiver.md#composition) is fuzzy OR.
+Matrix factorization approximates an observed matrix $R$ by a product $F G$ of two smaller matrices. Boolean matrix factorization replaces sum and product by OR and AND [@miettinen2008discrete]. Factorize a relation with entries in $[0, 1]$ under the `PRODUCT_FUZZY` operations of [chapter 1](01-first-quiver.md#composition), which interpolate between the two: the product [t-norm](https://en.wikipedia.org/wiki/T-norm) $a \otimes b = ab$ as fuzzy AND, and the probabilistic sum (noisy-OR) as fuzzy OR [@klement2000triangular].
 
 ## Background
 
-In standard [matrix factorization](../../examples/pmf.md#understanding-the-model), we approximate a matrix $R \approx F \cdot G$ using real-valued multiplication and addition. In **fuzzy logic factorization**, we replace these with operations from an algebra:
-
-- **Fuzzy AND** (product t-norm): $a \otimes b = a \cdot b$
-- **Fuzzy OR** (probabilistic sum / noisy-OR): $\bigvee_i x_i = 1 - \prod_i (1 - x_i)$
-
-Given an observed fuzzy relation $R: X \to Z$ with values in $[0, 1]$, we seek two learnable fuzzy relations $f: X \to Y$ and $g: Y \to Z$ such that their $\mathcal{V}$-enriched composition approximates $R$:
+Given an observed relation $R : X \to Z$ with entries in $[0, 1]$, find learnable relations $f : X \to Y$ and $g : Y \to Z$ whose composite approximates $R$:
 
 $$
-(g \circ f)(x, z) = \bigvee_{y \in Y} f(x, y) \otimes g(y, z) = 1 - \prod_{y \in Y} \bigl(1 - f(x, y) \cdot g(y, z)\bigr)
+(f \mathbin{>\!\!>} g)(x, z) = \bigoplus_{y \in Y} f(x, y) \otimes g(y, z) = 1 - \prod_{y \in Y} \bigl(1 - f(x, y)\, g(y, z)\bigr).
 $$
 
-Each entry of the composed relation asks: "is there *some* intermediate $y$ through which $x$ relates to $z$?" The "some" is the noisy-OR and the "through" is the product. The latent set $Y$ acts as a bottleneck of fuzzy features.
-
-For a concrete reading, let `X` be users, `Z` be items, and the three elements
-of `Y` be learned preferences. A high value of `f(x, y)` says user `x` has
-preference `y`; a high value of `g(y, z)` says item `z` matches it. Several
-preferences can support the same user-item relation. The bottleneck makes
-these patterns reusable across rows and columns.
-
-The training loss compares the reconstructed membership table with the observed
-table. Swapping two hidden features in both factors leaves that reconstruction
-unchanged, so several parameter settings represent the same preferences.
-Noisy-OR also has a probability interpretation for independent causes: the
-product of their failure probabilities is the probability that all fail.
+Each entry of the composite measures whether *some* intermediate $y$ links $x$ to $z$: the product is the "through $y$" and the noisy-OR the "some". With independent causes, $1 - \prod_y (1 - p_y)$ is the probability that at least one cause succeeds [@pearl1988probabilistic]. Where an ordinary factorization adds the contributions of the latent dimensions, this one treats them as independent chances. The small set $Y$ is a bottleneck of features: if $X$ are users and $Z$ items, $f(x, y)$ says how strongly user $x$ has preference $y$ and $g(y, z)$ how well item $z$ matches it. Permuting the features in both factors leaves the composite unchanged, so the factors are identified only up to that permutation.
 
 ## Setup
 
@@ -36,7 +19,7 @@ import torch
 from quivers import FinSet, morphism, observed, Program
 ```
 
-Define three finite sets. The latent set $Y$ has smaller cardinality than $X$ and $Z$, forcing the factorization to compress the relation through a low-dimensional bottleneck:
+`Y` is smaller than `X` and `Z`:
 
 ```python
 X = FinSet(name="X", cardinality=6)   # domain: 6 elements
@@ -46,7 +29,7 @@ Z = FinSet(name="Z", cardinality=8)   # codomain: 8 elements
 
 ## Observed relation
 
-Create a synthetic fuzzy relation $R: X \to Z$ with values in $[0, 1]$ using [`observed`](../../api/core/morphisms.md). We build it from two ground-truth factors to ensure it has a low-rank fuzzy structure:
+Build a synthetic relation from two random factors, so that an exact factorization through three features exists, and wrap it with [`observed`](../../api/core/morphisms.md):
 
 ```python
 torch.manual_seed(42)
@@ -62,24 +45,20 @@ R_data = 1.0 - (1.0 - product).prod(dim=1)            # (6, 8)
 R = observed(X, Z, R_data)
 ```
 
-The tensor `R_data` has shape $(6, 8)$ with entries in $[0, 1]$, representing the fuzzy membership of each $(x, z)$ pair.
-
 ## Learnable factorization
 
-Define two **latent morphisms** with [`morphism`](../../api/core/morphisms.md), learnable $\mathcal{V}$-enriched relations whose parameters are optimized during training:
+Two learnable morphisms, created with [`morphism`](../../api/core/morphisms.md):
 
 ```python
 f = morphism(X, Y)   # learnable: X -> Y
 g = morphism(Y, Z)   # learnable: Y -> Z
 ```
 
-Each latent morphism stores unconstrained real-valued parameters and applies a sigmoid to produce values in $(0, 1)$. The composition `f >> g` automatically uses the [`ProductFuzzyAlgebra`](../../api/core/algebras.md) algebra:
+Each stores unconstrained logits and exposes their sigmoid, in $(0, 1)$. Their composite uses [`ProductFuzzyAlgebra`](../../api/core/algebras.md), the default:
 
 ```python
-h = f >> g            # V-enriched composition: X -> Z
+h = f >> g            # composite under PRODUCT_FUZZY: X -> Z
 ```
-
-Wrap the composition as a trainable [`Program`](../../api/program.md) (an `nn.Module`):
 
 ```python
 model = Program(h)
@@ -87,7 +66,7 @@ model = Program(h)
 
 ## Training
 
-`Program` provides a [`bce_loss`](../../api/program.md) method that computes binary cross-entropy between the materialized composition and a target tensor. The loss compares the model output and target as fuzzy membership values in $[0, 1]$:
+[`Program.bce_loss`](../../api/program.md) is the binary cross-entropy between the composite's tensor and a target in $[0, 1]$:
 
 ```python
 optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
@@ -102,11 +81,9 @@ for step in range(500):
         print(f"step {step+1:>4d}  loss={loss.item():.4f}")
 ```
 
-Gradients flow through the noisy-OR composition and the sigmoid parameterization back to the raw parameters of `f` and `g`.
+Gradients flow through the noisy-OR and the sigmoid to the logits of `f` and `g`.
 
-## Inspecting the Result
-
-After training, materialize the composed tensor and compare to the target:
+## Inspecting the result
 
 ```python
 with torch.no_grad():
@@ -118,8 +95,6 @@ print(f"max error:  {error.max().item():.4f}")
 print(f"mean error: {error.mean().item():.4f}")
 ```
 
-Examine the learned factors:
-
 ```python
 print("f (X -> Y):")
 print(f.tensor.detach())
@@ -128,48 +103,27 @@ print("\ng (Y -> Z):")
 print(g.tensor.detach())
 ```
 
-Each row of `f.tensor` assigns fuzzy membership over the three latent features for a given element of $X$. Each column of `g.tensor` shows how a latent feature relates to elements of $Z$.
-
-## Why Fuzzy Logic?
-
-Standard (real-valued) matrix factorization uses addition to aggregate contributions from latent dimensions. Fuzzy factorization uses the **noisy-OR**, which has a different semantics:
-
-- In standard factorization: latent contributions *add up*
-- In fuzzy factorization: latent contributions provide *independent chances*
-
-The noisy-OR interpretation applies when each latent feature provides an independent "reason" for a relation to hold and any one reason is sufficient. Applications include:
-
-- **Knowledge base completion**: an entity pair is related if any latent pattern supports it
-- **Recommendation**: a user likes an item if any latent preference dimension matches
-- **Feature detection**: a sample belongs to a category if any diagnostic feature is present
+Row $x$ of `f.tensor` gives the membership of $x$ in each of the three features, and column $z$ of `g.tensor` how each feature relates to $z$.
 
 ## Alternative algebras
 
-Quivers ships several other [algebras](../../api/core/algebras.md) that change the meaning of composition:
+Other [algebras](../../api/core/algebras.md) change what the composite means:
 
 ```python
-from quivers import BOOLEAN, LUKASIEWICZ, GODEL, TROPICAL
+from quivers import BOOLEAN, LUKASIEWICZ, GODEL
 
-# Boolean: AND/OR (crisp relations)
+# Boolean: AND and OR (crisp relations)
 f_bool = morphism(X, Y, algebra=BOOLEAN)
 
-# Łukasiewicz: bounded sum ([resource-sensitive logic](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic))
+# Lukasiewicz t-norm with bounded sum
 f_luk = morphism(X, Y, algebra=LUKASIEWICZ)
 
-# Gödel: min/max ([possibilistic, minimax composition](https://en.wikipedia.org/wiki/G%C3%B6del%E2%80%93Dummett_logic))
+# Goedel: min and max
 f_godel = morphism(X, Y, algebra=GODEL)
 ```
 
-Each algebra gives the same code structure (`morphism`, `>>`, `Program`) but a different algebraic semantics for composition.
+`BOOLEAN` composes crisp relations. `LUKASIEWICZ` uses the t-norm of [Łukasiewicz logic](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic) with the bounded sum $\min(1, \sum_i x_i)$. `GODEL` uses minimum and maximum, the operations of [Gödel–Dummett logic](https://en.wikipedia.org/wiki/G%C3%B6del%E2%80%93Dummett_logic) and of possibility theory. The code is the same for each, and only the meaning of composition changes.
 
-## Summary
+## Next
 
-In this tutorial you:
-
-- Defined an observed fuzzy relation as an `ObservedMorphism`
-- Factorized it into two learnable `LatentMorphism` instances
-- Composed them with `>>` using the product fuzzy logic algebra
-- Trained the factorization with BCE loss via `Program`
-- Inspected the learned fuzzy features
-
-Next, learn how to fit probabilistic models to data with variational inference in [Tutorial 5](05-variational-inference.md).
+[Chapter 5](05-variational-inference.md) fits probabilistic programs by variational inference.

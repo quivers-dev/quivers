@@ -1,9 +1,8 @@
 # Module
 
-A module groups declarations, definitions, and entry information for checking and
-serialization. [Run the checker](../../reference/qvr/execution-and-tooling.md#check-before-you-run) before executing its computations, and provide the
-runtime services required by the [chosen entry](../../tutorials/qvr/13-release-workflow.md#2-inspect-the-public-boundary).
-
-Serializable whole-module containers.
+A `QiecModule` holds a module's declarations, definitions, and entry points as one serializable
+value. A module is [checked](../../reference/qvr/execution-and-tooling.md#check-before-you-run)
+before its computations run, and a run needs the runtime services that the
+[chosen entry](../../tutorials/qvr/13-release-workflow.md#2-inspect-the-public-boundary) requires.
 
 ::: quivers.qiec.module

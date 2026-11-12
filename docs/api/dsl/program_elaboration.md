@@ -1,10 +1,9 @@
-# [Program elaboration](../../semantics/typing.md#8-program-elaboration)
+# Program elaboration
 
-Program elaboration turns a parsed program body into executable steps, resolving its
-names and dependencies along the way. Extend this implementation when adding syntax
-whose meaning affects how [draws, observations, or deterministic bindings](../../reference/qvr/probabilistic-programs.md#step-reference) execute.
-
-Elaboration of `program` declarations into QIEC computations.
+These functions [elaborate](../../semantics/typing.md#8-program-elaboration) a `program` declaration
+into a [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) computation, resolving its names and dependencies. A change to how
+[draws, observations, or deterministic bindings](../../reference/qvr/probabilistic-programs.md#step-reference)
+run is made here.
 
 !!! note "Internal module"
     This module is an implementation detail of the compiler and its

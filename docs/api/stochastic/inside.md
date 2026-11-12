@@ -1,13 +1,11 @@
 # Inside Algorithm
 
-The [inside algorithm](../../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) combines the weights of every derivation for a span by [dynamic
-programming](../../guides/deduction.md#charts-as-first-class-differentiable-values). It multiplies contributions within a derivation and adds across
-alternatives, or performs the corresponding operations in log space [@goodman1999semiring]. The result is a
-sentence probability only when the grammar’s weights and normalization justify that
-interpretation.
-
-The CKY inside algorithm computes inside log weights by dynamic programming
-over the supported parse trees. Normalized PCFG weights give sentence log
-probabilities.
+The [inside algorithm](https://en.wikipedia.org/wiki/Inside%E2%80%93outside_algorithm) computes, by
+[dynamic programming](../../guides/deduction.md#charts-as-first-class-differentiable-values) over
+CKY spans, the semiring sum over all derivations of a span of the product of their weights
+[@goodman1999semiring]. This module computes these
+[inside weights](../../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) in log space.
+The weight of the whole sentence is its log probability only when the grammar is a normalized
+PCFG.
 
 ::: quivers.stochastic.inside

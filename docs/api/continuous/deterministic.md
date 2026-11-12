@@ -1,14 +1,12 @@
 # Deterministic Morphisms
 
-A [deterministic kernel](../../guides/programs.md#let-steps) places all its mass at a function’s output. It lets
-transformations such as softmax or covariance reconstruction participate in a
-[probabilistic pipeline](../../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram) without introducing another random draw. If the input is random,
-the output can still be random across executions; “deterministic” describes the
-dependence on the input.
-
-Dirac kernels for deterministic maps: cumulative sums for monotone
-splines, the softmax projection onto the simplex, and covariance
-reconstruction from a correlation Cholesky factor and scales.
+A [deterministic kernel](https://en.wikipedia.org/wiki/Dirac_measure) sends each input to a Dirac
+measure at a function's output, so a transformation such as softmax can take part in a
+[probabilistic program](../../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram)
+([let steps](../../guides/programs.md#let-steps)) without a further random draw. Its output is
+still random when its input is. The module gives deterministic kernels for cumulative sums of
+monotone splines, the softmax projection onto the simplex, and covariance reconstruction from a
+correlation Cholesky factor and scales.
 
 [`LearnedFunction`][quivers.continuous.deterministic.LearnedFunction] is the
 learned case: a [parameter source](param_source.md) applied to the input's

@@ -1,21 +1,15 @@
 # Execution and tooling
 
-Every executable QVR declaration uses the same entry-point interface.
-The command line, [REPL](../../guides/repl-and-lsp.md#the-repl), TUI, and Python API all list the checked entry, validate
-static and value arguments, attach runtime providers, run the evaluator, and
-return stable `qiec-run-*` diagnostics through this boundary.
+Every executable QVR declaration is run through one interface. The command line, the
+[REPL](../../guides/repl-and-lsp.md#the-repl) with its terminal interface (TUI), and the Python
+API all list the checked entry points, validate static and value arguments, attach runtime
+providers, run the reference machine, and return stable `qiec-run-*` diagnostics. The *reference
+machine* is the library's interpreter for QIEC, the Quivers Indexed Effect Core
+([reference machine](../../developer/qiec.md#reference-evaluator)).
 
 ## Check before you run
 
-`check` validates a model's structure; `run` executes it on supplied
-inputs; inference fits a posterior; `transpile` writes a representation
-for another backend. Run `check` while editing to catch incompatible
-types, then `run` with representative inputs to inspect returned values.
-For posterior inference, use the [inference drivers](../../guides/inference-foundations.md)
-and their diagnostics.
-
-
-Parse, compile, and validate one or more files with:
+`qvr check` parses, compiles, and validates one or more files:
 
 ```bash
 qvr check model.qvr
@@ -23,36 +17,38 @@ qvr check model.qvr other.qvr
 qvr check --target stan model.qvr
 ```
 
-Without `--target`, checking reports parser, constraint, compiler, and QIEC
-diagnostics. With a target, it also analyzes the reachable QIEC computation
-graph and reports unsupported core capabilities as `qiec:capability:*` or a
-more specific QIEC code. Run `qvr transpile --target TARGET` next to
-exercise the renderer and produce target source; renderer-specific
-restrictions can appear at that stage. Executing the generated source
-then tests it with the target toolchain.
+Without `--target`, it reports parser, constraint, compiler, and QIEC diagnostics. With a target,
+it also analyzes the reachable QIEC computation graph and reports each feature the target lacks as
+`qiec:capability:*` or as a more specific QIEC code. `qvr transpile --to TARGET` then runs the
+renderer and writes target source, and it can report restrictions particular to that renderer.
+Running the generated source tests it with the target's own toolchain. `qvr check --json` emits the
+diagnostics as JSON. Posterior inference is run through the
+[inference drivers](../../guides/inference-foundations.md), not through `qvr run`.
 
-Use the same target in the [language server](../../guides/repl-and-lsp.md#the-language-server):
+The [language server](../../guides/repl-and-lsp.md#the-language-server) and the REPL take the same
+option:
 
 ```bash
 qvr lsp --target numpyro
+qvr repl --target numpyro model.qvr
 ```
 
-The VS Code/Cursor extension exposes it as `qvr.transpileTarget`. LSP clients
-may update `transpileTarget` with `workspace/didChangeConfiguration`; the
-server rechecks open documents without reparsing them.
+The VS Code and Cursor extension exposes the target as the setting `qvr.transpileTarget`. A client
+may change it with `workspace/didChangeConfiguration`, and the server then rechecks every open
+document without reparsing it.
 
 ## List entry points
+
+An *entry point* is a named computation or program that a module exposes to `qvr run`,
+[`Program.run`][quivers.program.Program.run], and the transpilers.
 
 ```bash
 qvr run model.qvr --list
 ```
 
-The listing distinguishes `computation` entries declared with `define` from
-`program` entries and shows value parameters, static binders, residual
-effects, result type, and program sites. Omitting both the entry name and
-`--list` produces the same listing.
-
-The Python equivalent is:
+The listing marks each entry as a `computation` (declared with `define`) or a `program`, and shows
+its value parameters, static binders, residual effects, result type, and, for a program, its sample
+sites. Omitting both the entry name and `--list` prints the same listing. In Python:
 
 ```python
 from quivers.dsl import load
@@ -66,26 +62,26 @@ for entry in compiled.entry_points():
 
 ### Computation arguments
 
-Pass runtime arguments as JSON literals in declaration order:
+Value arguments are JSON literals in declaration order:
 
 ```bash
 qvr run functions.qvr robustify 8.0
 qvr run functions.qvr pair 1 '[2.0, 3.0]'
 ```
 
-Close static binders by name:
+Static binders are closed by name:
 
 ```bash
 qvr run vectors.qvr total 1.0 2.0 3.0 --static n=3
 ```
 
-The static value must be a closed type, index, effect application, or integer
-for a `Nat` binder. No source variable may remain free.
+A static value is a closed type, index, effect application, or, for a `Nat` binder, an integer. No
+source variable may remain free in it.
 
 ### Program data and sites
 
-Program parameters may be positional JSON arguments or named `--data`
-bindings. `--site` replays one sample site; every unmentioned site is drawn:
+A program's parameters are given as positional JSON arguments or as named `--data` bindings. Each
+`--site NAME=JSON` conditions one sample site on a value, and every site not named is drawn:
 
 ```bash
 qvr run model.qvr regression \
@@ -98,11 +94,10 @@ qvr run model.qvr regression \
   --json
 ```
 
-Each invocation owns its data, observations, sites, generator state, parameter
-store, score accumulator, and [trace](../../guides/inference-foundations.md#trace-and-sample-sites). No handler or mutable provider state is
-shared implicitly with the next invocation.
-
-The Python form uses the same names:
+Each invocation owns its data, observations, sites, generator state, parameter store, score
+accumulator, and [execution trace](../../guides/inference-foundations.md#trace-and-sample-sites),
+the record of every site's value and log density. No handler or mutable provider state is shared
+with the next invocation. [`Program.run`][quivers.program.Program.run] takes the same names:
 
 <!-- python: skip -->
 ```python
@@ -115,35 +110,35 @@ run = compiled.run(
 print(run.value, run.log_joint)
 ```
 
-`EntryRun.result.trace` contains the same stable events emitted by
-`qvr run --trace`; `EntryRun.to_data()` returns the JSON-compatible payload.
+It returns an [`EntryRun`][quivers.qiec.entries.EntryRun]. `EntryRun.result.trace` holds the
+events that `qvr run --trace` prints, and `EntryRun.to_data()` returns the payload that
+`qvr run --json` prints.
 
 ## Execution controls
 
 | Option | Meaning |
 | --- | --- |
-| `--seed N` | seed the reference generator for unspecified program sites |
-| `--fuel STEPS` | stop a recursive computation after a bounded number of evaluator steps |
-| `--trace` | write stable trace events to stderr in plain mode |
-| `--json` | emit result, type, runtime, diagnostics, trace, entry kind, and program log joint as JSON |
-| `--runtime FILE.json` | select an explicit provider configuration |
+| `--seed N` | seed the reference generator that draws the sites not given with `--site` |
+| `--fuel STEPS` | stop after `STEPS` evaluation steps with `qiec-run-fuel` |
+| `--trace` | print the execution trace events to stderr (without `--json`) |
+| `--json` | print, on success, the value, result type, runtime label, trace, entry kind, and for a program the log joint, or, on failure, the diagnostics |
+| `--runtime FILE.json` | use the provider configuration in `FILE.json` |
 
-Fuel is especially useful for a recursive `define` or generated [deduction](../../guides/deduction.md#the-framework).
-The default is appropriate for ordinary terminating entries; a failed bound
-uses `qiec-run-fuel`.
+*Fuel* is a bound on the number of evaluation steps. Without `--fuel` a run has no bound, so a
+recursive `define` or a generated [deduction](../../guides/deduction.md#the-framework) that does
+not terminate runs until it is stopped.
 
 ## Runtime providers
 
-A provider supplies executable behavior for a typed request, such as
-drawing from a distribution or calling an attached [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks). The
-serialized module records what is needed and under which stable
-identifier; the current process supplies the implementation. This
-separation permits inspection and exchange of typed modules without
-embedding arbitrary host-language objects in their serialized form.
+A *runtime provider* is an object that binds handlers and type validators, held only in the
+running Python process, into a run ([`RuntimeProvider`][quivers.qiec.execution.RuntimeProvider]).
+It gives the behavior for a typed request, such as drawing from a distribution or calling an
+attached [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks).
+A serialized module records only what it needs and under which stable identifier. It never holds a
+Python callable or a mutable object, so a checked module can be inspected and exchanged without
+executable content.
 
-
-The stable core contains identifiers and typed attachment descriptors, never
-host callables or mutable objects. A runtime provider configuration selects process-local implementations. A configuration has this shape:
+A provider configuration names providers and their options:
 
 ```json
 {
@@ -153,136 +148,138 @@ host callables or mutable objects. A runtime provider configuration selects proc
 }
 ```
 
-`core` supplies the reference evaluator, distributions, standard [handlers](effects-and-handlers.md#handler-declarations),
-search, weights, and parameter lookup. Installed packages may expose another
-provider through the `quivers.qiec_runtime` entry-point group. Structural
-programs automatically compose the core provider with attachments for their
-compiled encoders and decoders when invoked through `Program.run`.
+The `core` provider gives the reference machine, the distribution families, the standard
+[handlers](effects-and-handlers.md#handler-declarations), search, weights, and parameter lookup. An
+installed package may register another provider under the `quivers.qiec_runtime` entry-point group.
+When a structural program is invoked through `Program.run`, the core provider is composed with the
+attachments for its compiled encoders and decoders.
 
-A configuration is non-executable data. It may name a provider and options,
-but cannot contain a Python callable. The module and provider are matched by
-stable attachment, handler, instance, and operation identifiers before
-evaluation begins.
+A configuration is data and cannot contain a Python callable. Before evaluation begins, the module
+and the provider are matched by their stable attachment, handler, instance, and operation
+identifiers.
 
 ## REPL and TUI
 
-Start an interactive session with `qvr repl model.qvr`. The commands specific
-to the entry boundary are:
+`qvr repl model.qvr` starts an interactive session, in the TUI unless `--plain` is given. The
+commands that run entry points are:
 
 | Command | Purpose |
 | --- | --- |
-| `:run` | list entries |
+| `:run` | list entry points |
 | `:run NAME JSON ...` | invoke a computation |
 | `:run NAME --data x=JSON --site z=JSON` | invoke a program |
 | `:runtime` | show the active provider configuration |
 | `:runtime core` | select a registered provider |
 | `:runtime FILE.json` | load a provider configuration |
-| `:detach` | detach all runtime providers |
-| `:effects NAME` | inspect the inferred row and call contributions |
-| `:dump NAME --json` | inspect the checked declaration |
+| `:detach` | detach every runtime provider |
+| `:effects NAME` | show the declared and inferred effects |
+| `:dump NAME --json` | print the declaration's syntax tree as JSON |
 
-The Textual status bar shows the active runtime and last result. The complete
-command and key-binding reference is in [Interactive tools: REPL, kernel, and
-language server](../../guides/repl-and-lsp.md).
+The TUI status bar shows the active runtime and the last result. Every command and key binding is
+listed in [Interactive tools: REPL, kernel, and language server](../../guides/repl-and-lsp.md).
 
 ## Language-server features
 
-The QVR LSP uses the same typed source model as the compiler. It provides:
+The QVR language server (LSP) uses the compiler's typed source model. It provides:
 
-- source-ranged parser, checker, QIEC, and target-capability diagnostics;
+- parser, checker, QIEC, and target capability diagnostics, each with a source range;
 - hovers for declarations, calls, operations, instances, and inferred rows;
-- definitions, references, and safe renaming for QVR-owned symbols;
-- nested document symbols for handler clauses, locals, calls, and program
-  scopes;
-- context-sensitive completion for operations, names, keywords, built-ins,
-  and paths;
-- semantic tokens classified by the same rules as the Pygments lexer; and
-- canonical formatting through the QVR emitter.
+- definitions, references, and renaming for symbols the QVR source declares;
+- nested document symbols for handler clauses, locals, calls, and program scopes;
+- completion of operations, names, keywords, built-ins, and paths by context;
+- semantic tokens classified by the rules of the Pygments lexer; and
+- formatting through the QVR emitter.
 
-The first-party VS Code/Cursor and Zed extensions start `qvr-lsp`. Neovim and
-other clients can launch it over stdio. See [Editor support](../../getting-started/highlighting.md)
-for installation and [the LSP capability table](../../guides/repl-and-lsp.md#capabilities)
-for method-level details.
+The VS Code, Cursor, and Zed extensions start `qvr-lsp`. Neovim and other clients launch it over
+stdio. [Editor support](../../getting-started/highlighting.md) gives the installation, and the
+[LSP capability table](../../guides/repl-and-lsp.md#capabilities) lists the supported methods.
 
 ## Transpilation
 
-List the exact CLI surface with `qvr transpile --help`, then emit a target with
-the target and output options shown there. Check the target first, then run
-the transpiler itself:
+`qvr transpile --list-targets` prints the targets, and `qvr transpile --help` prints the options:
+`--to TARGET` for one target, `--to-all` for every target, `-o FILE` for the output of one target,
+and `-d DIR` for the files of `--to-all`. Check the target first, then transpile:
 
 ```bash
 qvr check --target pyro model.qvr
 qvr transpile --to pyro model.qvr
 ```
 
-Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church emit reachable
-QIEC computations through the common runtime ABI. Stan emits the closed,
-monomorphic, effect-free scalar fragment as user-defined functions. BUGS and
-JAGS accept their measured program subset and refuse unsupported call graphs.
-The generated [transpilation support matrix](../../transpile-support.md) is the
-authoritative per-feature and per-example report.
+Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church render every reachable QIEC
+computation as a function in the target language, called through one convention for all eight
+([target calling convention](../../developer/qiec.md#target-runtime-abi)). Stan emits a closed, monomorphic scalar
+computation with no effects as a user-defined function. BUGS and JAGS accept a measured subset of
+programs and refuse calls they cannot express (`call:graph:*`). The generated
+[transpilation support matrix](../../transpile-support.md) reports, feature by feature and example
+by example, what each target accepts.
 
-QVR indices count from zero, and so does every value the program holds that a
-subscript reads: a `factor` binder, a marginalized latent, an index covariate
-such as `group_idx`, and a class code (a Categorical, OrderedLogistic, or
-OrderedProbit outcome, or a drawn class). Stan, BUGS, JAGS, Turing, and Gen
-count from one; their programs keep every value in QVR's origin and read it one
-higher only where it subscripts an array or where the target's categorical
-family scores it, so a subscript such as `y[2 - t]` reads the same entry it
-reads in QVR, and a caller passes every target the same zero-based data. A drawn
-class is returned zero-based as well. The one exception is BUGS, whose language
-has neither a data block to shift an observed class code nor a free log-density
-statement to score it otherwise: it refuses an observed class code with
-`observe:class-code:<name>` (JAGS binds the shifted code in its `data` block).
-Stan has no discrete parameters and refuses a drawn class with
-`sample:discrete-latent:<name>`; marginalize it instead.
+QVR counts indices from zero, and so does every value a program holds that a subscript reads: a
+`factor` binder, a marginalized latent, an index covariate such as `group_idx`, and a class code (a
+`Categorical`, `OrderedLogistic`, or `OrderedProbit` outcome, or a drawn class). A caller passes
+every target the same zero-based data, and a drawn class is returned zero-based.
+
+| Target | Origin of its arrays | What the generated program does |
+| --- | --- | --- |
+| Pyro, NumPyro, PyMC, Edward2, WebPPL, Church | zero | reads every value as QVR does |
+| Stan, Turing, Gen | one | keeps each value zero-based and adds one where it subscripts an array or where a categorical family scores it, so `y[2 - t]` reads the entry it reads in QVR |
+| JAGS | one | as Stan, and binds an observed class code, shifted by one, in its `data` block |
+| BUGS | one | as Stan, but refuses an observed class code with `observe:class-code:<name>`, since BUGS has no `data` block to shift it in and no statement that adds an arbitrary log density to score it |
+
+Stan has no discrete parameters and refuses a drawn class with `sample:discrete-latent:<name>`.
+Marginalize the class instead ([exact marginalization](probabilistic-programs.md#exact-marginalization)).
 
 ## Stable diagnostic families
 
-| Prefix | Boundary |
+| Prefix | Raised by |
 | --- | --- |
-| `parse` | source grammar |
-| `compile` and constraint-specific codes | surface resolution and elaboration |
-| `qiec-*` | kernel kinding, typing, rows, coverage, and module validation |
+| `parse` | the source grammar |
+| `compile` and the codes of particular constraints | surface resolution and elaboration |
+| `qiec-*` | the QIEC checker: kinds, types, rows, coverage, and module validation |
 | `qiec-run-*` | entry selection, arguments, providers, evaluation, and results |
-| `qiec:capability:*` | target cannot represent a reachable checked feature |
-| `call:graph:*` | target cannot preserve a reachable call |
+| `qiec:capability:*` | a target that cannot represent a reachable checked feature |
+| `call:graph:*` | a target that cannot keep a reachable call |
 
-Prefer matching the stable code in tests and automation. Human-readable
-messages explain the particular source form and may become more specific.
+Tests and scripts should match the stable code. The message explains the particular source form,
+and its wording may change.
 
 ## Grammar ownership and Panproto
 
-Quivers is the source of truth for the current QVR grammar:
+quivers holds the grammar that defines QVR. [tree-sitter](https://tree-sitter.github.io/) is the
+parser generator in which the grammar is written, and
+[panproto](https://github.com/panproto/panproto) is the schema and migration toolkit that versions
+it.
 
-- `grammars/qvr/grammar.js` defines the tree-sitter grammar;
-- generated parser sources and wheel-native libraries ship with Quivers;
-- a manifest verifies that the grammar, generated source, queries, and native
-  parser agree; and
-- Quivers installs this parser into Panproto's registry before ordinary QVR
-  parsing.
+- `grammars/qvr/grammar.js` defines the tree-sitter grammar.
+- The generated parser sources and the compiled parser libraries ship in the quivers wheel.
+- A manifest checks that the grammar, the generated sources, the queries, and the compiled parser
+  agree.
+- quivers installs this parser into panproto's parser registry before it parses any QVR source.
 
-`panproto-grammars-all` supplies the other language grammars used by the eleven
-transpile targets. Its vendored QVR grammar may lag the Quivers release without
-changing how Quivers parses `.qvr` files. Panproto still carries the generic
-tree and composes the versioned migration chain. The migration from v0.18 to
-the current source protocol is validating and byte-preserving because that
-grammar extension was additive.
+The package `panproto-grammars-all` gives the grammars of the other languages that the eleven
+transpile targets emit. Its copy of the QVR grammar may lag behind the one in quivers, and this does
+not change how quivers parses `.qvr` files. panproto gives the generic parse tree and composes the
+chain of grammar migrations that `qvr migrate` applies.
 
-For editor highlighting, build against the Quivers `grammars/qvr/` directory
-or install a first-party extension. Pointing an editor directly at
-Panproto's aggregate grammar package may select an older QVR grammar and omit
-current tokens.
+For editor highlighting, build against `grammars/qvr/` in the quivers repository or install one of
+the quivers editor extensions. An editor pointed at panproto's grammar package may load an older
+QVR grammar that lacks some tokens.
 
-## Release checklist
+### Format identifiers
 
-Before publishing a module or package:
+Three identifiers name three formats, and each can change without the others:
 
-1. run `qvr check` on every `.qvr` source;
-2. run `qvr check --target` for every promised backend;
-3. invoke each public entry through `qvr run` or `Program.run` with a small
-   fixture;
-4. inspect a trace for computations with handlers or random sites;
-5. verify editor semantic highlighting with `qvr-lsp` attached; and
-6. migrate a copy from the previous source revision when compatibility is part
-   of the release claim.
+| Identifier | Names |
+| --- | --- |
+| `qvr-source/v0.20` | the source grammar and its elaboration to QIEC |
+| `qiec-core/v1alpha1` | the typed core that checked modules are written in |
+| `qiec-json/v1` | the deterministic JSON serialization of a checked module |
+
+New syntax that elaborates to existing core terms changes the first identifier and not the second,
+and a new serialization changes the third without changing how `.qvr` files parse. Code that
+exchanges checked modules tests the second and third, and editors and migration tools test the
+first.
+
+## Before a release
+
+The [release workflow tutorial](../../tutorials/qvr/13-release-workflow.md) checks every source and
+promised target, runs each public entry point, and inspects a trace before a module is published.

@@ -1,34 +1,12 @@
 # 4. Mixtures and discrete latents
 
-When a model has a discrete latent variable, you can sample it, which incurs score-function variance when pathwise gradients are unavailable, or marginalize it over its finite support. Marginalization produces a deterministic contribution from that latent and often improves gradients, but its cost grows with the support and the body of the block.
+A discrete latent variable can be sampled or summed out. Sampling it rules out the [reparameterization gradient](https://en.wikipedia.org/wiki/Reparameterization_trick), so stochastic variational inference (SVI) must fall back on the [score-function estimator](https://en.wikipedia.org/wiki/Policy_gradient_method) and its higher variance [@ranganath2014bbvi]. Summing it out, or [marginalizing by enumeration](https://pyro.ai/examples/enumeration.html) [@pyroEnumeration; @stanFiniteMixtures], removes that variance at a cost that grows with the size of the support. It is an instance of [Rao–Blackwellization](https://en.wikipedia.org/wiki/Rao%E2%80%93Blackwell_theorem), the replacement of a sampled quantity by its conditional expectation [@casella1996rao].
 
-QVR makes finite marginalization a first-class block. The body runs once per
-value in an enumerable support; the runtime combines the resulting scope
-weights with the prior by `logsumexp`. This operation exactly sums out a
-finite discrete latent and is the categorical-prior form of
-Rao–Blackwellization [@casella1996rao].
-It does not numerically integrate a continuous latent: a `marginalize` whose
-family has no finite support follows the ordinary sampling path, and an
-explicit reduction on such a family is rejected.
-
-A mixture gives several possible explanations for one observation. If the
-components have [prior probabilities](../../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise)
-`0.3` and `0.7`, and assign likelihoods `0.2` and `0.5` to the observation,
-its [marginal likelihood](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#summing-out-the-responsibility-parameter)
-is `0.3 * 0.2 + 0.7 * 0.5 = 0.41` [@stanFiniteMixtures]. Each possible
-assignment contributes to the sum. For continuous observations, component
-densities may exceed one; the [mixture weights](../../examples/mixture-model.md#understanding-the-model)
-are probabilities and sum to one.
-
-The implementation works with logarithms to avoid multiplying many tiny
-numbers. Adding log likelihoods represents multiplication; `logsumexp`
-represents adding the underlying positive weights. This finite sum is exact
-for the eliminated assignment. Uncertainty about component means and scales
-still requires inference.
+QVR writes enumeration as a `marginalize` block. The block body runs once for each value of the latent, and the runtime combines the resulting log weights with the log prior probabilities by `logsumexp`. The latent must have a finite support, such as the elements of a `FinSet` under a `Categorical` prior. `marginalize` does not integrate a continuous latent variable.
 
 ## A two-component Gaussian mixture
 
-Each observation comes from one of two Gaussian clusters; we don't know which.
+Each observation comes from one of two Normal components, and the component is unknown.
 
 === "QVR"
 
@@ -86,22 +64,12 @@ Each observation comes from one of two Gaussian clusters; we don't know which.
     }
     ```
 
-`probs` is one point on the component simplex; the annotation on `mu_k` and
-`sd_k` instead draws one scalar for each component. The
-`marginalize ... [over=Item]` block gives each row its own latent assignment;
-the host supplies `item_idx = arange(500)`, the identity fibration from rows to
-those groups. This implements the Stan `log_sum_exp` pattern. The `Marginal`
-entry in the optional effect summary records the finite reduction.
+The option `[over=Component]` on `probs` makes the Dirichlet draw one point of the [probability simplex](https://en.wikipedia.org/wiki/Simplex#Probability) on `Component`, whereas the annotation `mu_k : Component` draws one independent scalar for each component. `[over=Item]` on the `marginalize` header gives each item its own component assignment. `[via=item_idx]` names an *index map* from observation rows to those items, given as an integer array: here `item_idx = arange(500)`, the identity, since each row is its own item. The block computes the same sum as the Stan `log_sum_exp` loop.
 
 ## Fitting the mixture
 
-The gallery's
-[`mixture_model.qvr`](../../examples/source/mixture_model.qvr) uses the
-closed-form `MixtureNormal` family instead. The code below shows the explicit
-finite-marginalization form so that the latent support and grouping rule remain
-visible.
+The gallery program [`mixture_model.qvr`](../../examples/source/mixture_model.qvr) writes the same model with the `MixtureNormal` family, which sums the components in closed form. The explicit `marginalize` block below shows the support and the grouping.
 
-<!-- python: skip -->
 ```python
 import torch
 from quivers.dsl import loads
@@ -131,7 +99,7 @@ torch.manual_seed(0)
 true_mu = torch.tensor([-2.0, 2.0])
 true_sd = torch.tensor([0.5, 0.7])
 z_true  = torch.bernoulli(torch.full((500,), 0.6)).long()
-y_data  = (torch.randn(500) * true_sd[z_true] + true_mu[z_true]).unsqueeze(0)
+y_data  = torch.randn(500) * true_sd[z_true] + true_mu[z_true]
 
 guide = AutoNormalGuide(model, observed_names={"y", "item_idx"})
 elbo  = ELBO(num_particles=1)
@@ -148,11 +116,11 @@ for _ in range(20):                            # bump to ~3000 for real fits
     svi.step(x_tensor, observations)
 ```
 
-The `marginalize` block is integrated out exactly at every SVI step, so the gradients on `mu_k`, `sd_k`, and `probs` flow through a smooth `logsumexp`. No discrete-sampling variance contaminates the ELBO.
+The assignment `z` is summed out exactly at every SVI step, so the gradients with respect to `mu_k`, `sd_k`, and `probs` pass through a differentiable `logsumexp`, and the ELBO estimate has no Monte Carlo variance from `z`.
 
 ## Hierarchical mixtures with grouping
 
-Suppose each observation belongs to one of `G` groups, and the categorical mixture proportions vary by group. The marginalization has to respect group membership: the log-likelihood over the discrete latent gets aggregated *per group*, not per row. The `marginalize` header declares the grouping plate (`over G`); each observe inside the body carries its own `via <idx>` clause naming the fibration from its response plate into the grouping plate.
+Suppose each observation belongs to one of $G$ groups, and all observations in a group share one component. The likelihoods of a group's observations must then be multiplied within each component before the sum over components. `[over=Group]` on the `marginalize` header declares one assignment for each group, and `[via=group_idx]` on the observe statement names the index map from observation rows to groups.
 
 ```qvr
 object Item : FinSet 1000
@@ -171,40 +139,27 @@ program grouped_mixture : Item -> Weights [effects=[Sample, Score, Marginal]]
 export grouped_mixture
 ```
 
-The `[over=Group]` entry declares the grouping plate. The free host-data name
-`group_idx` is the integer-valued fibration from observation rows into that
-plate; `[via=group_idx]` gathers each row into its group before the reduction.
-It is data, not a sampled `HalfNormal` latent. The block contributes
+`group_idx` is a [data input](01-first-model.md#data-inputs-and-the-observations-dict): an integer array $\iota$ with $\iota(n)$ the group of row $n$. The rows of group $g$ are the [fiber](https://en.wikipedia.org/wiki/Fiber_(mathematics)) $\iota^{-1}(g)$. With $\pi_{g,k}$ the probability of component $k$ in group $g$ and $f(\cdot \mid \mu_k, \sigma_k)$ the Normal density of component $k$, the block adds
 
 $$
-\sum_{g \in G}\ \log\!\sum_{k=1}^{K}\exp\!\left[\log \pi_{g,k} + \sum_{n:\ \mathrm{group\_idx}(n)=g}\ \log f(y_n \mid \mu_k, \sigma_k)\right]
+\sum_{g \in G}\ \log\!\sum_{k=1}^{K}\exp\!\left[\log \pi_{g,k} + \sum_{n \in \iota^{-1}(g)}\ \log f(y_n \mid \mu_k, \sigma_k)\right]
 $$
 
-to the log-density, which is the right Kan extension along the fibration `Item -> G` and requires aggregating the component-specific row log likelihoods within each group before applying a mixture reduction. A grouped block can contain multiple observes, each with its own `[via=<idx>]` entry, when several heterogeneous response axes share the same per-group class indicator; the per-axis log-likelihoods scatter-sum into the same `(|G|, K)` accumulator before the log-sum-exp.
+to the log joint density. A group with two rows thus contributes $\sum_k \pi_{g,k}\, f(y_1 \mid k)\, f(y_2 \mid k)$, not $\bigl(\sum_k \pi_{g,k} f(y_1 \mid k)\bigr)\bigl(\sum_k \pi_{g,k} f(y_2 \mid k)\bigr)$. A block may contain several observe statements, each with its own `[via=...]` index map, when several response arrays share one assignment for each group. Their log likelihoods are added into one array of shape $(|G|, K)$ before the `logsumexp`. The [hierarchical programs guide](../../guides/programs-hierarchical.md) covers product groups and nested blocks.
 
-Grouping changes the statistical question. With one component per row,
-each row can choose a different explanation, giving a product of mixture
-likelihoods. With one component shared by a group, all rows must be explained
-by the same component, so their likelihoods multiply before the component
-sum. A group with two rows thus contributes
-`sum_k pi[k] * f(y1 | k) * f(y2 | k)`, not
-`(sum_k pi[k] * f(y1 | k)) * (sum_k pi[k] * f(y2 | k))`.
+## When to marginalize and when to sample
 
-## When to marginalize vs sample
+- `marginalize` costs about $K$ times the cost of the body for each evaluation. It gives exact gradients with respect to the parameters of the discrete prior and no Monte Carlo variance from the latent.
+- Sampling the latent with the [`ScoreFunction`](../../api/inference/estimators.md) estimator evaluates one branch but adds variance, which depends on the prior, the component likelihoods, and any control variate.
 
-The decision is a straight cost-benefit:
-
-- `marginalize` costs roughly `K × (body cost)` per evaluation. The reward is exact gradients with respect to the discrete-prior parameters and zero Monte Carlo variance on the discrete latent.
-- Sampling the discrete latent with `ScoreFunction` (REINFORCE) evaluates one sampled branch but introduces Monte Carlo variance. The variance depends on the prior, the component likelihoods, and any control variate.
-
-There is no repository-wide support-size threshold at which one method wins. Profile the full model. For larger supports, possible alternatives include score-function estimators with baselines or a relaxed proxy such as the Concrete distribution [@maddison2017concrete]; each changes the computational or statistical tradeoff.
+No fixed support size decides between them, so profile the full model. For large supports, the options include score-function estimators with baselines and continuous relaxations such as the Concrete distribution [@maddison2017concrete], each with its own computational and statistical cost.
 
 | Discrete support per row | Recommendation |
 |---|---|
 | Small finite `K` and cheap body | Start with `marginalize`. |
 | Larger finite `K` or expensive body | Profile marginalization against a sampled estimator. |
-| Very large or unbounded support | Use a sampled estimator or a model-specific approximation. |
-| Continuous-discrete mixture | `marginalize` the discrete part, reparameterize the continuous part. |
+| Very large or unbounded support | Use a sampled estimator or an approximation designed for the model. |
+| Mixed continuous and discrete latents | `marginalize` the discrete part and reparameterize the continuous part. |
 
 ```mermaid
 flowchart LR
@@ -221,21 +176,10 @@ flowchart LR
 
 ## Try this
 
-- Change the model to four components and inspect the recovered means.
-  Mixture models have a label-switching symmetry
-  [@stephens2000labels]; sorting draws
-  after inference can summarize exchangeable components, but a deterministic
-  `sort(mu_k)` inside the likelihood is not the same as an ordered prior.
-- Convert the grouped mixture to a `marginalize` without the `over` / `via` clauses and observe the difference: per-row marginalization versus per-group.
-- Combine with chapter 3's plate-draws: a hierarchical mixture where each group has its own `mu_k` drawn from a hyperprior.
+- Fit four components and inspect the recovered means. Permuting the components leaves a mixture likelihood unchanged (label switching) [@stephens2000labels]. Sorting the draws after inference summarizes exchangeable components, but a deterministic `sort(mu_k)` inside the likelihood is not the same model as an ordered prior.
+- Remove `[over=Group]` and `[via=group_idx]` from the grouped mixture and compare the fit: each row then has its own assignment.
+- Combine the grouped mixture with the plates of [chapter 3](03-hierarchical.md): give each group its own `mu_k`, drawn around a population mean.
 
 ## Next
 
-[Chapter 5](05-time-series.md) examines sequence-shaped models: HMMs,
-state-space models, and chart-based weighted deduction.
-
-## Sources and further reading
-
-- *The Concrete Distribution: A Continuous Relaxation of Discrete Random Variables* [@maddison2017concrete].
-- *Rao-Blackwellisation of sampling schemes* [@casella1996rao].
-- *Dealing with label switching in mixture models* [@stephens2000labels].
+[Chapter 5](05-time-series.md) builds sequence models: hidden Markov models, state space models, and chart parsing by weighted deduction.

@@ -1,9 +1,10 @@
 # Morphisms
 
-A finite morphism stores a weight for each input–output pair. [Composing a user-to-feature table with a feature-to-item table](../../guides/morphisms.md#composition-the-operator) eliminates the feature axis and produces
-user-to-item weights. An observed morphism holds supplied values; a latent morphism
-holds trainable parameters. The chosen algebra determines how those values combine.
-
-Base morphism classes, composition operations, and shared morphism utilities.
+A finite morphism stores one weight for each pair of an input and an output, as a tensor.
+[Composing](../../guides/morphisms.md#composition-the-operator) a table from users to features with a
+table from features to items sums out the feature axis under the chosen `Algebra` and gives
+weights from users to items. An `ObservedMorphism` holds given values, and a `LatentMorphism` holds
+learnable parameters. The module defines the base morphism classes, their composition, and shared
+morphism utilities.
 
 ::: quivers.core.morphisms

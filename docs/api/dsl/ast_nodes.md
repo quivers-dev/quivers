@@ -1,10 +1,9 @@
 # AST Nodes
 
-An [abstract syntax tree (AST)](https://docs.python.org/3/library/ast.html) represents source structure as records. A declaration
-contains its name, arguments, and expressions, giving tools access to these parts during
-analysis or transformation. [Elaboration then resolves names](../../guides/dsl-overview.md#compilation-pipeline) and [makes implicit
-operations explicit](../../semantics/adequacy.md#2-direct-correspondences).
-
-Abstract syntax tree node definitions for the QVR DSL.
+The AST node classes of QVR, each a didactic `Model`, record the structure of a parsed module: a
+declaration holds its name, arguments, and expressions, so tools can read and transform these
+parts. [Elaboration](../../guides/dsl-overview.md#compilation-pipeline), the compiler step that
+rewrites declarations into explicit core terms, then resolves names and makes implicit operations
+explicit ([correspondences](../../semantics/adequacy.md#2-direct-correspondences)).
 
 ::: quivers.dsl.ast_nodes

@@ -1,31 +1,16 @@
-# Tutorial 8: Analysis Pipelines
+# 8. Analysis pipelines
 
-The formula compiler turns a regression specification and a dataframe into a QVR program. This chapter inspects that program, fits hierarchical and Bernoulli regressions with SVI and NUTS, compares models with PSIS-LOO, and runs a posterior-predictive check on synthetic data.
+`quivers.formulas` compiles a regression formula in the notation of lme4 and brms [@bates2015lme4; @burkner2017brms] and a dataframe into a QVR program, and fits it. `y ~ x` models the response column `y` by an intercept and the predictor `x`, and `(1 | g)` adds an intercept for each level of `g`, drawn from a shared population distribution so that groups with little data are pulled toward the population mean (partial pooling, as in [QVR chapter 3](../qvr/03-hierarchical.md)) [@gelman2013bayesian]. Inspect the generated programs, fit Gaussian, hierarchical, ordinal, categorical, and mixture regressions, compare two models by PSIS-LOO, and run a posterior predictive check.
 
-The formula `y ~ x` says that a response column `y` is modeled using predictor
-`x` and an intercept. Adding `(1 | g)` gives each group its own intercept
-offset, with a common population distribution controlling how much those
-offsets can vary. A group with little evidence can borrow information from
-that shared distribution; this is [partial pooling](../qvr/03-hierarchical.md#eight-schools-centered). Gelman and colleagues
-develop hierarchical modeling and posterior predictive checks
-[@gelman2013bayesian].
+The main objects:
 
-A fit represents uncertainty over coefficients through a posterior.
-Drawing coefficients from it gives a collection of possible regression lines. Predicted responses add observation noise to those draws. The
-workflow below first inspects that uncertainty, then asks whether replicated
-data resemble observations and whether another model predicts them better.
-
-## Concepts
-
-- **Formula**: A brms / lme4-style string like `"y ~ x + (1 | g)"` that names a response, predictors, and random-effect structure.
-- **`fit`**: The one-liner that parses the formula against a dataframe, compiles to a QVR [`MonadicProgram`](../../api/continuous/programs.md), and dispatches to NUTS / HMC / SVI.
-- **`BayesianFit`**: The returned record. Carries the parsed `Formula`, the compiled program, the posterior (either an `MCMCResult` or a `Guide`), and the inference-time observations dict.
-- **Posterior**: For NUTS / HMC, an [`MCMCResult`](../../api/inference/predictive.md) with `(chain, draw)`-shaped sample tensors per site. For SVI, a fitted [`Guide`](../../api/inference/guide.md) from which you draw via `rsample`.
-- **`DataTree`**: The [ArviZ 1.x](https://python.arviz.org/) container used by the diagnostics layer. [`to_datatree`](../../api/diagnostics/arviz_io.md) accepts an `MCMCResult`; [`to_datatree_from_svi`](../../api/diagnostics/arviz_io.md) accepts SVI samples, and [`to_datatree_any`](../../api/diagnostics/arviz_io.md) dispatches between supported inputs.
+- `fit` parses the formula against a dataframe, compiles it to a [`MonadicProgram`](../../api/continuous/programs.md), and runs the No-U-Turn Sampler (NUTS), Hamiltonian Monte Carlo (HMC), or stochastic variational inference (SVI). It returns a [`BayesianFit`](../../api/formulas/fit.md).
+- The posterior of a fit is an `MCMCResult` for NUTS and HMC, whose samples have shape `(chain, draw)` for each site, or a fitted [`Guide`](../../api/inference/guide.md) for SVI.
+- [`to_datatree`](../../api/diagnostics/arviz_io.md) converts an `MCMCResult` to the [ArviZ](https://python.arviz.org/) `DataTree` that the diagnostics read. `to_datatree_from_svi` converts SVI draws, and `to_datatree_any` accepts either.
 
 ## Setup
 
-The analysis workflow requires the `formulas`, `data`, and `diagnostics` extras:
+The workflow needs the `formulas`, `data`, and `diagnostics` extras:
 
 ```bash
 pip install "quivers[formulas,data,diagnostics]"
@@ -41,7 +26,7 @@ from quivers.diagnostics import to_datatree, compare, posterior_predictive_check
 
 ## A first fit: Gaussian regression in one line
 
-Generate 200 rows of synthetic data with a known linear relationship:
+Simulate 200 rows with a known linear relation:
 
 ```python
 torch.manual_seed(0)
@@ -53,7 +38,7 @@ y = 1.0 + 2.0 * x + 0.5 * np.random.randn(N)
 df = pd.DataFrame({"y": y, "x": x})
 ```
 
-Fit `y ~ x` under a Gaussian family using SVI to optimize a variational [`Guide`](../../api/inference/guide.md):
+Fit `y ~ x` with a Gaussian family by SVI:
 
 ```python
 result = fit(
@@ -66,16 +51,18 @@ result = fit(
 )
 ```
 
-`result` is a [`BayesianFit`](../../api/formulas/fit.md): a frozen `dx.Model` with these load-bearing fields:
+Under `method="svi"`, `num_steps` is the number of optimization steps and `learning_rate` the step size of the optimizer (default `1e-2`). Under NUTS and HMC, `num_warmup`, `num_samples`, and `num_chains` set the chains, and SVI refuses them.
 
-| Field         | What it holds                                                                 |
-|---------------|--------------------------------------------------------------------------------|
-| `.formula`    | The parsed [`Formula`](../../api/formulas/formula.md): columns, family, response. |
-| `.program`    | The compiled [`MonadicProgram`](../../api/continuous/programs.md).                |
-| `.posterior`  | An [`MCMCResult`](../../api/inference/predictive.md) (NUTS / HMC) or a [`Guide`](../../api/inference/guide.md) (SVI). |
-| `.observations` | The inference-time observations dict (response values + host-data covariates + plate-index codes). |
+A [`BayesianFit`](../../api/formulas/fit.md) has these fields:
 
-Inspect the QVR program the formula compiled to:
+| Field | Contents |
+|---|---|
+| `.formula` | The parsed [`Formula`](../../api/formulas/formula.md): columns, family, response. |
+| `.program` | The compiled [`MonadicProgram`](../../api/continuous/programs.md). |
+| `.posterior` | An `MCMCResult` (NUTS or HMC) or a [`Guide`](../../api/inference/guide.md) (SVI). |
+| `.observations` | The observations dict used for inference: response values, [data inputs](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays), and group indices. |
+
+The QVR program that the formula compiled to:
 
 ```python
 print(result.qvr_source)
@@ -83,12 +70,13 @@ print(result.qvr_source)
 
 ```text
 object Resp : FinSet 200
+
 program model : Resp -> Resp
     sample intercept <- Normal(loc=0.0, scale=5.0)
-    sample beta_x <- Normal(loc=0.0, scale=5.0)
-    let beta_x_per_row = (beta_x * x)
+    sample beta_x <- Normal(loc=0.0, scale=4.883378911472473)
+    let beta_x_per_row = beta_x * x
     sample sigma <- HalfCauchy(scale=2.0)
-    let eta = (intercept + beta_x_per_row)
+    let eta = intercept + beta_x_per_row
     let mu = eta
     observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
@@ -96,18 +84,22 @@ program model : Resp -> Resp
 export model
 ```
 
-Per-row predictor values do not appear in the program: the `(beta_x * x)` term references a free variable `x` that the inference path resolves from the observations dict at fit time (the *host-data channel*; see [`quivers.inference.trace`](../../api/inference/trace.md)). The intercept latent stays unindexed because the constant-1 design column doesn't need a per-row binding.
+The predictor values do not appear in the program: `x` is a [data input](../qvr/01-first-model.md#data-inputs-and-the-observations-dict), read from the observations at fit time. The default prior on a coefficient, `Normal(0.0, 5.0)`, is divided by the root mean square of its column, which gives `beta_x` its scale of about 4.88. The intercept has no row index because its column is constant.
 
-You can also emit the source without fitting:
+Emit the source without fitting:
 
 ```python
+import tempfile
+from pathlib import Path
+
 src = formula_to_qvr("y ~ x", data=df)
-result.dump_qvr("regression.qvr")          # write the same source to disk
+with tempfile.TemporaryDirectory() as tmp:
+    result.dump_qvr(Path(tmp) / "regression.qvr")   # write the same source to disk
 ```
 
 ### Recover the coefficients
 
-Under SVI the posterior is an `AutoNormalGuide`. Draw from it and check the means against the true values (`intercept=1.0`, `beta_x=2.0`):
+Under SVI the posterior is an `AutoNormalGuide`. Compare the means of its draws with the true values (intercept 1.0, slope 2.0):
 
 ```python
 draws = [result.posterior.rsample(torch.zeros(1, 1)) for _ in range(200)]
@@ -118,15 +110,15 @@ print(f"beta_x    (true 2.0): {bx.mean().item():.3f} ± {bx.std().item():.3f}")
 ```
 
 ```text
-intercept (true 1.0): 0.927 ± 0.036
-beta_x    (true 2.0): 2.023 ± 0.030
+intercept (true 1.0): 0.933 ± 0.035
+beta_x    (true 2.0): 2.031 ± 0.036
 ```
 
-The printed `±` values are standard deviations of guide draws. They describe the fitted approximation's spread. To assess its accuracy on this synthetic problem, repeat the fit from different initial values and compare its coefficient intervals with a well-mixed NUTS fit.
+The `±` values are standard deviations of the guide's draws, the spread of the approximation. Whether that spread is accurate needs a reference, such as a well-mixed NUTS fit of the same model.
 
 ## Random effects: hierarchical model under SVI
 
-Eight groups with their own intercept offsets, twelve rows per group:
+Eight groups, each with its own intercept offset, and twelve rows per group:
 
 ```python
 torch.manual_seed(0)
@@ -141,7 +133,7 @@ y = 1.5 + 0.7 * x + alpha[g] + 0.4 * np.random.randn(N_g * N_per)
 df = pd.DataFrame({"y": y, "x": x, "g": g})
 ```
 
-The formula adds a `(1 | g)` random intercept:
+Add the group intercept `(1 | g)`:
 
 ```python
 result = fit(
@@ -157,16 +149,18 @@ print(result.qvr_source)
 
 ```text
 object Resp : FinSet 96
+
 object g : FinSet 8
+
 program model : Resp -> Resp
     sample intercept <- Normal(loc=0.0, scale=5.0)
-    sample beta_x <- Normal(loc=0.0, scale=5.0)
-    let beta_x_per_row = (beta_x * x)
+    sample beta_x <- Normal(loc=0.0, scale=5.019989651784464)
+    let beta_x_per_row = beta_x * x
     sample sigma_g_Intercept <- HalfNormal(scale=1.0)
     sample z_g_Intercept : g <- Normal(loc=0.0, scale=1.0)
-    let alpha_g_per_row = (sigma_g_Intercept * z_g_Intercept[g_idx])
+    let alpha_g_per_row = sigma_g_Intercept * z_g_Intercept[g_idx]
     sample sigma <- HalfCauchy(scale=2.0)
-    let eta = ((intercept + beta_x_per_row) + alpha_g_per_row)
+    let eta = intercept + beta_x_per_row + alpha_g_per_row
     let mu = eta
     observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
@@ -174,9 +168,7 @@ program model : Resp -> Resp
 export model
 ```
 
-The random-intercept structure expands to a `HalfNormal` scale latent `sigma_g_Intercept`, a *standard-Normal* plate draw `z_g_Intercept` of size `|g|`, and a per-row contribution `sigma_g_Intercept * z_g_Intercept[g_idx]`. This is the non-centered parameterization: `alpha_g[i] = sigma * z[i]` is computed deterministically rather than drawn as `alpha_g[i] ~ Normal(loc=0, scale=sigma)`. Non-centering often improves posterior geometry in weakly informed hierarchical models.
-
-Recovery:
+The group intercept becomes a scale `sigma_g_Intercept` with a `HalfNormal` prior, a plate `z_g_Intercept` of standard Normal draws over the levels of `g`, and the term `sigma_g_Intercept * z_g_Intercept[g_idx]` for each row, where `g_idx` is the index map from rows to groups. This is the non-centered parameterization [@papaspiliopoulos2007parametrization]: the offsets are computed from standardized draws rather than drawn as `Normal(0, sigma_g_Intercept)`.
 
 ```python
 def mean_param(res, name, n=200):
@@ -196,83 +188,65 @@ for name, true in [
 ```
 
 ```text
-intercept            (true 1.50): 1.748 ± 0.035
-beta_x               (true 0.70): 0.620 ± 0.038
-sigma_g_Intercept    (true 0.60): 0.273 ± 0.014
-sigma                (true 0.40): 0.375 ± 0.028
+intercept            (true 1.50): 2.034 ± 0.037
+beta_x               (true 0.70): 0.641 ± 0.041
+sigma_g_Intercept    (true 0.60): 0.653 ± 0.040
+sigma                (true 0.40): 0.418 ± 0.032
 ```
 
-This short SVI fit recovers the fixed effects more closely than the group-level scale. Mean-field VI can underestimate posterior uncertainty and distort variance-component estimates. For a richer approximation, pass `guide=AutoMultivariateNormalGuide`; for sampling-based inference, use `method="nuts"` and inspect its diagnostics.
+The intercept is about 0.5 above its true value, far more than its reported spread of 0.04. The eight simulated offsets `alpha` have mean 0.53, and the data identify only the sum of the intercept and the mean offset, $1.5 + 0.53 \approx 2.03$, which is what the fit recovers. The spread of 0.04 may still be too small, since a mean-field guide ignores the posterior correlation between the intercept and the offsets and tends to understate uncertainty [@blei2017variational]. For a richer approximation pass `guide=AutoMultivariateNormalGuide`, and for sampling use `method="nuts"` and check its diagnostics.
 
-### Knobs: `method`, `guide`, `reparameterize`
+### Options: `method`, `guide`, `reparameterize`
 
-The following choices control the inference path:
+- **`method="nuts" | "hmc" | "svi"`**. The default, `"nuts"`, samples the posterior with the No-U-Turn Sampler and returns an `MCMCResult`. `"svi"` fits a [`Guide`](../../api/inference/guide.md) by optimization, which can be faster on large models. Both need diagnostics.
+- **`guide=Cls`** (SVI only). The default is [`AutoNormalGuide`](../../api/inference/guide.md), a mean-field Normal. The alternatives include `AutoMultivariateNormalGuide` (full covariance), `AutoLowRankMultivariateNormalGuide` (memory $O(D \cdot \mathit{rank})$), `AutoLaplaceApproximation` (a Normal at the MAP), and `AutoIAFGuide` (an inverse autoregressive flow), described in [QVR chapter 6](../qvr/06-inference-zoo.md#step-2-which-variational-guide). Pass the class, not an instance: `fit(..., guide=AutoMultivariateNormalGuide)`.
+- **`reparameterize="noncentered" | "centered"`**. [`fit`](../../api/formulas/fit.md) and [`formula_to_qvr`](../../api/formulas/compile.md) pass it to the formula compiler, and `result.qvr_source` shows the program it produced.
 
-- **`method="nuts" | "hmc" | "svi"`**. The default `"nuts"` samples the joint posterior with the No-U-Turn extension to HMC and produces an `MCMCResult`. `"svi"` fits a [`Guide`](../../api/inference/guide.md) by optimization and may be more practical for large models. Either method still requires diagnostics.
-- **`guide=Cls`** (SVI only). Defaults to [`AutoNormalGuide`](../../api/inference/guide.md) (mean-field diagonal Normal). Other choices: [`AutoMultivariateNormalGuide`](../../api/inference/guide.md) for a full-rank Cholesky; [`AutoLowRankMultivariateNormalGuide`](../../api/inference/guide.md) for `O(D·rank)` memory on high-dimensional models; [`AutoLaplaceApproximation`](../../api/inference/guide.md) for a Gaussian fit at the MAP; [`AutoIAFGuide`](../../api/inference/guide.md) for an inverse-autoregressive normalizing flow. Pass the class, not an instance: `fit(..., guide=AutoMultivariateNormalGuide)`.
-- **`reparameterize="noncentered" | "centered"`**. Both [`fit`](../../api/formulas/fit.md) and [`formula_to_qvr`](../../api/formulas/compile.md) pass this option into the formula compiler. Inspect `result.qvr_source` to confirm the fitted program.
+## Ordinal responses with thresholds for each rater
 
-## Ordinal responses with participant-specific scale use
-
-An ordinal response needs ordered cutpoints in addition to its linear
-predictor. The cumulative family learns those cutpoints rather than
-requiring them as external data. The grouped form below gives each
-participant a partially pooled spacing vector while retaining crossed
-participant and item intercepts:
+A cumulative (ordinal) model treats ordered categories as intervals of a latent continuous scale cut at ordered thresholds [@mccullagh1980regression]. The family `cumulative` learns the thresholds. With `thresholds_by`, each level of a grouping column gets its own spacing of the thresholds, partially pooled, beside crossed rater and item intercepts:
 
 <!-- python: skip -->
 ```python
 result = fit(
-    "rating ~ condition + (1 | participant) + (1 | item)",
+    "rating ~ condition + (1 | rater) + (1 | item)",
     data=ratings,
     family="cumulative",
-    thresholds_by="participant",
+    thresholds_by="rater",
     method="svi",
     num_steps=4000,
     seed=0,
 )
 ```
 
-Response labels must be contiguous integers beginning at zero. The
-generated program exponentiates log spacings, cumulatively sums them,
-and centers each participant's cutpoint vector. Thus cutpoints stay
-ordered on every draw, the random intercept remains the location effect,
-and the thresholds describe differences in how participants use the
-response scale.
+The response labels must be consecutive integers starting at zero. The generated program exponentiates log spacings, sums them cumulatively, and centers each rater's thresholds, so the thresholds are ordered in every draw, the rater intercept is a shift of location, and the thresholds describe how each rater uses the scale.
 
-### Joint training with a neural predictor
+### Training with a neural predictor
 
-Suppose a neural parser produces one grammaticality score per item. Its
-score can enter the same mixed model additively on the latent scale:
+A PyTorch module that produces one score for each row can enter the linear predictor additively:
 
 <!-- python: skip -->
 ```python
-parser = NeuralChartParser(...)
+net = torch.nn.Linear(feature_count, 1)
 
 result = fit(
-    "rating ~ condition + (1 | participant) + (1 | item)",
+    "rating ~ condition + (1 | rater) + (1 | item)",
     data=ratings,
     family="cumulative",
-    thresholds_by="participant",
-    predictor=parser,
-    predictor_data=sentence_features,
+    thresholds_by="rater",
+    predictor=net,
+    predictor_data=features,
     method="svi",
     num_steps=4000,
     seed=0,
 )
 ```
 
-The optimizer sees the parser parameters alongside the QVR program and
-guide parameters. The generated QVR names the parser output as the free
-host input `neural_eta`; the Python module itself remains a runtime
-attachment. Trainable predictors thus use SVI. A frozen predictor
-can also be used with NUTS or HMC.
+The optimizer updates the module's parameters together with the program's and the guide's. The generated QVR reads the module's output as the data input `neural_eta`, and the module itself is an [attachment](../qvr/12-structural-autoencoders.md), held in the Python process and not part of the program. A predictor that is trained must thus use SVI. A frozen predictor also works with NUTS or HMC.
 
 ## Unordered choices with varying effects
 
-For an unordered response, encode the alternatives as consecutive integers
-beginning at zero. This synthetic example has three choices and a
-participant-specific intercept:
+Encode the alternatives of an unordered response as consecutive integers starting at zero. Three choices with an intercept for each participant:
 
 ```python
 rng = np.random.default_rng(4)
@@ -294,8 +268,7 @@ choice_data = pd.DataFrame({
 })
 ```
 
-The categorical compiler takes category zero as the reference and learns
-two coefficient vectors, one for each non-reference category:
+The family `categorical` takes category zero as the reference and learns one coefficient vector for each other category:
 
 ```python
 choice_fit = fit(
@@ -308,15 +281,9 @@ choice_fit = fit(
 )
 ```
 
-The generated program builds an `(N, 3)` logit matrix whose first column
-is zero, then applies softmax along the category axis. Fixed coefficients
-and non-centered random effects have two entries apiece. Thus every term
-has the same reference-category interpretation, and the additive logit
-direction is identified.
+The program builds an `(N, 3)` matrix of logits whose first column is zero and applies a softmax along the categories. Each fixed coefficient and each non-centered group effect has two entries, one for each non-reference category, so every term is a contrast with the reference category and the logits are identified.
 
-A neural classifier can contribute either all three logits or the two
-non-reference logits. `fit` converts a full `(N, 3)` output to reference
-contrasts before adding it to the formula predictor:
+A neural classifier may give all three logits or only the two non-reference ones. `fit` converts a full `(N, 3)` output to contrasts with the reference before adding it:
 
 <!-- python: skip -->
 ```python
@@ -332,11 +299,9 @@ choice_fit = fit(
 )
 ```
 
-## A finite-mixture regression
+## A finite mixture of regressions {#a-finite-mixture-regression}
 
-Some continuous responses combine several regimes. Here each observation
-comes from one of three Gaussian components, while `x` shifts every
-component location:
+Each observation comes from one of three Gaussian components, and `x` shifts every component's location:
 
 ```python
 rng = np.random.default_rng(8)
@@ -358,20 +323,11 @@ mixture_fit = fit(
 )
 ```
 
-The formula intercept is the common location. The compiler centers three
-component offsets around it, projects two free logit and offset contrasts
-through an orthonormal Helmert basis, turns the three resulting logits into
-shared weights, and learns one positive scale per component. `MixtureNormal`
-sums over the component assignment inside the likelihood, so the guide
-contains only continuous sites. The components remain exchangeable;
-inspect permutation-invariant summaries or impose a substantively
-motivated labeling convention when interpreting them. The 250-step SVI
-budgets keep these tutorial fits quick; increase them and inspect diagnostics
-before interpreting either posterior.
+The formula intercept is the common location. The compiler centers three component offsets around it, maps two free contrasts of the logits and of the offsets through an orthonormal Helmert basis ([contrasts](https://en.wikipedia.org/wiki/Contrast_(statistics))), turns the three logits into mixture weights, and learns one positive scale for each component. `MixtureNormal` sums over the component assignment inside the likelihood, so the guide has only continuous sites. The components are exchangeable (label switching [@stephens2000labels]), so summarize them by quantities invariant to permutation, or by a labeling convention the application motivates. The SVI budgets of 250 steps keep these fits short. Raise them and check diagnostics before reading either posterior.
 
 ## Model comparison with PSIS-LOO
 
-Two models on the same Bernoulli outcome: with and without the predictor. The smaller `N` and short MCMC keeps the example fast.
+Fit a Bernoulli outcome with and without its predictor, with a small $N$ and short chains:
 
 ```python
 torch.manual_seed(0)
@@ -393,7 +349,7 @@ res_intercept = fit(
 )
 ```
 
-Compute per-row log-likelihoods under each model's posterior (the ArviZ comparison needs them):
+PSIS-LOO needs the log likelihood of each observation under each posterior draw [@vehtari2017loo]:
 
 ```python
 y_obs = torch.as_tensor(y, dtype=torch.float32)
@@ -411,7 +367,7 @@ ll_with_x = per_row_log_lik(res_with_x, y_obs, x_t)
 ll_intercept = per_row_log_lik(res_intercept, y_obs, x_t)
 ```
 
-Wrap each posterior into an ArviZ `DataTree` with the canonical groups:
+Convert each posterior to a `DataTree` with an observed data group and a log likelihood group:
 
 ```python
 idata_with_x = to_datatree(
@@ -426,23 +382,24 @@ idata_intercept = to_datatree(
 )
 ```
 
-[`compare`](../../api/diagnostics/comparison.md) delegates to ArviZ's PSIS-LOO ranking and stacking weights:
+[`compare`](../../api/diagnostics/comparison.md) ranks the fits by PSIS-LOO and computes stacking weights [@yao2018stacking]:
 
 ```python
-print(compare({"with_x": idata_with_x, "intercept_only": idata_intercept}))
+table = compare({"with_x": idata_with_x, "intercept_only": idata_intercept}, round_to=2)
+print(table.to_string())
 ```
 
 ```text
-                rank  elpd    p  elpd_diff  weight   se  dse  warning
-with_x             0 -43.0  0.0        0.0    0.98  4.4  0.0    False
-intercept_only     1 -50.0  0.0       -6.0    0.02  3.3  3.4    False
+                rank  elpd_diff   dse  p_worse diag_diff diag_elpd     p   elpd    se  weight
+with_x             0       0.00  0.00      NaN                      2.15 -45.38  4.88    0.85
+intercept_only     1      -5.32  3.95     0.91   N < 100            1.01 -50.70  3.45    0.15
 ```
 
-In this illustrative output, `with_x` receives most of the stacking weight. Interpret the comparison from the values produced by your run, including the standard errors and Pareto-$k$ warnings.
+The model with the predictor ranks first and takes most of the stacking weight. Its advantage in `elpd`, 5.32, is about 1.3 standard errors (`dse` 3.95), and `diag_diff` warns that with fewer than 100 observations the normal approximation behind `dse` and `p_worse` is unreliable. The columns are explained in [QVR chapter 8](../qvr/08-diagnostics-and-comparison.md#comparing-models).
 
-## Posterior-predictive checks
+## Posterior predictive checks
 
-[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior-predictive p-value for a chosen test statistic. Generate replicated responses under each posterior draw of `(intercept, beta_x)` and check whether the observed mean is in the bulk of the replicated distribution:
+[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior predictive p-value $\Pr(T(y^{\text{rep}}) \ge T(y))$ of a test statistic $T$ [@gelman1996predictive]. Draw replicated responses under each posterior draw of the intercept and slope, and compare their mean with the observed mean:
 
 ```python
 samples = res_with_x.posterior.samples
@@ -463,17 +420,15 @@ print(f"ppp (mean):    {ppc['ppp']:.3f}")
 
 ```text
 observed mean: 0.312
-predictive mean: 0.312
-ppp (mean):    0.557
+predictive mean: 0.314
+ppp (mean):    0.540
 ```
 
-A posterior-predictive p-value near 0.5 places the observed mean near the middle of the replicated distribution for this statistic. Values near 0 or 1 can indicate that the model does not capture the chosen statistic, though the interpretation depends on how the check was constructed.
+A p-value near 0.5 puts the observed mean in the middle of the replicated distribution. Values near 0 or 1 suggest that the model misses the statistic. The mean of a Bernoulli outcome is a weak test, since a model with an intercept tends to reproduce it. The built-in statistics are `mean`, `median`, `sd`, `var`, `min`, `max`, `q05`, and `q95`, and a callable is also accepted. `by=` computes the check separately for each level of a named dimension of the data.
 
-Built-in statistics: `mean`, `median`, `sd`, `var`, `min`, `max`, `q05`, `q95`. The `by=` argument splits the calculation along a named dim (e.g. `by="Verb"` for a per-category check); for arbitrary statistics, pass a callable.
+## Recovering the formula
 
-## What about the original formula?
-
-`BayesianFit` keeps both the parsed [`Formula`](../../api/formulas/formula.md) and the compiled program. You can round-trip:
+A `BayesianFit` keeps the parsed [`Formula`](../../api/formulas/formula.md) beside the compiled program:
 
 ```python
 print(result.formula.formula)         # original formula string
@@ -482,10 +437,17 @@ for col in result.formula.fixed_columns:
     print(f"  {col.qvr_name}: term={col.term!r}, is_intercept={col.is_intercept}")
 ```
 
-The lens behind the scenes (`FormulaToQVRModule`) is a typed [`dx.Lens`](https://github.com/aaronstevenwhite/didactic) whose forward emits `(Module, FormulaData)`. `FormulaData` is the strict subset of the formula that isn't encoded in the QVR program: the per-row data arrays, the original (pre-`_qvr_name`) identifier names, presentation labels, the formula string itself. Calling `lens.backward(module, complement)` decodes the structural skeleton out of the Module and fuses it with the complement to reproduce the original `Formula` byte-for-byte: `lens.backward(module, complement) == formula` holds, and formula equality compares every field, the per-row arrays included. See the [formulas API reference](../../api/formulas/compile.md) for the full lens signature.
+```text
+y ~ x + (1 | g)
+y
+  intercept: term='Intercept', is_intercept=True
+  x: term='x', is_intercept=False
+```
+
+The translation is a [lens](https://ncatlab.org/nlab/show/lens+%28in+computer+science%29) (`FormulaToQVRModule`): a pair of maps in which the forward map emits the QVR module together with a complement, `FormulaData`, holding what the module does not encode (the data arrays, the original column names, display labels, and the formula string). The backward map rebuilds the original `Formula` from the module and the complement, and `lens.backward(module, complement) == formula` holds, comparing every field, data arrays included. The [formulas API reference](../../api/formulas/compile.md) gives the signatures.
 
 ## Next
 
-- The [Analysis Pipelines guide](../../guides/analysis-data-and-formulas.md) documents `quivers.formulas`, `quivers.data`, and `quivers.diagnostics`, including the full prior-override syntax and the [`DatasetSchema`](../../api/data/schema.md) bridge from dataframes to QVR programs without writing a formula.
-- The [Variational Inference tutorial](05-variational-inference.md) shows the lower-level path: building a `MonadicProgram` by hand, tracing, and running SVI without the formula compiler.
-- The [DSL guide](../../guides/dsl-overview.md) is the right place to go if you want to write or hand-edit `.qvr` programs directly.
+- The [analysis guide](../../guides/analysis-data-and-formulas.md) documents `quivers.formulas`, `quivers.data`, and `quivers.diagnostics`, including the prior override syntax and the [`DatasetSchema`](../../api/data/schema.md) path from a dataframe to a QVR program without a formula.
+- [Chapter 5](05-variational-inference.md) builds and fits a `MonadicProgram` without the formula compiler.
+- The [DSL guide](../../guides/dsl-overview.md) covers writing `.qvr` programs directly.

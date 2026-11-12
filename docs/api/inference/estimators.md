@@ -1,17 +1,14 @@
 # Estimators
 
-[Gradient estimators](../../guides/inference-svi.md#objectives-and-gradient-estimators) approximate derivatives of objectives containing expectations. A
-pathwise estimator differentiates through a transformation of fixed base noise. A score-function estimator uses derivatives of log probabilities, allowing discrete sample
-values [@hoffman2013svi; @ranganath2014bbvi]. The available estimators differ in their differentiability requirements and
-sampling variance.
-
-Gradient-estimator strategies for [Objectives](elbo.md):
-`Reparameterized` supplies the default pathwise gradient;
-`StickingTheLanding` reduces variance near convergence;
-`DoublyReparameterized` supplies DReG for `IWAEBound` at large K; and
-`ScoreFunction` supplies REINFORCE with the draws held fixed, for guides
-whose draws are not differentiable. `ChiVI` accepts `Reparameterized`
-and `ScoreFunction`, which estimate the gradient of the exponentiated
-CUBO through `GradientEstimator.moment_surrogate` [@dieng2017chi].
+A [gradient estimator](../../guides/inference-svi.md#objectives-and-gradient-estimators)
+approximates the gradient of an objective that contains an expectation [@hoffman2013svi].
+`Reparameterized`, the default, differentiates through a transformation of fixed noise
+([reparameterization trick](https://en.wikipedia.org/wiki/Reparameterization_trick))
+[@kingma2014autoencoding]. `StickingTheLanding` reduces its variance near convergence
+[@roeder2017sticking]. `DoublyReparameterized` gives the DReG estimator for `IWAEBound` at large
+$K$ [@tucker2019dreg]. `ScoreFunction` gives the score function (REINFORCE) estimator with the draws
+held fixed, for guides whose draws are not differentiable [@ranganath2014bbvi]. `ChiVI` accepts
+`Reparameterized` and `ScoreFunction`, which estimate the gradient of the exponentiated CUBO through
+`GradientEstimator.moment_surrogate` [@dieng2017chi].
 
 ::: quivers.inference.estimators
