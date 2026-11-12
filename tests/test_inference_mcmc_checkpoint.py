@@ -14,7 +14,12 @@ Cover:
 4. A checkpoint from a different model, data, kernel configuration,
    run settings, seed, or format version is refused, and so is a file
    that would need code to be executed to load.
-5. Per-draw statistics: shapes, exact evaluation counts against the
+5. Every observation kind a run accepts enters its fingerprint by
+   content: a run on a corpus of tokens checkpoints and resumes, a
+   corpus differing in one token is refused, equal data (tensor, list,
+   array, corpus, mapping) render equally, differing data render
+   differently, and a datum of an unknown kind is refused, not dropped.
+6. Per-draw statistics: shapes, exact evaluation counts against the
    integrator's arithmetic, the kinetic energy implied by ``energy``
    against its stationary Gamma law, and the ArviZ mapping.
 """
@@ -26,6 +31,7 @@ import math
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy
 import pytest
 import torch
 
@@ -49,6 +55,11 @@ from quivers.inference.mcmc import (
     NUTSKernel,
     RandomWalkProposal,
     StateValue,
+)
+from quivers.inference.mcmc.checkpoint import (
+    ObservedDatum,
+    _digest,
+    observation_digest,
 )
 import quivers.inference.mcmc.driver as driver_module
 from quivers.diagnostics import ess as effective_sample_size
@@ -419,6 +430,148 @@ def test_run_refuses_to_overwrite_and_resume_needs_a_checkpoint(
         _mcmc("nuts-single").resume(empty, _location_scale_model(), _X, _Y)
     with pytest.raises(Exception, match="every must be >= 1"):
         MCMCCheckpoint(directory=str(empty), every=0)
+
+
+# ---------------------------------------------------------------------------
+# Fingerprints of non-tensor observations
+# ---------------------------------------------------------------------------
+
+_PCFG = """
+object Term : FinSet 16
+object Weight : Real 1
+object Sentence : FinSet 2
+
+deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4, normalize=lhs]
+    atoms S, NP, VP, Det, N, V, span, the, a, cat, dog, sleeps, runs
+    rule s_np_vp : span(I, K, NP), span(K, J, VP) |- span(I, J, S)
+    rule np_det_n : span(I, K, Det), span(K, J, N) |- span(I, J, NP)
+    rule vp_v : span(I, J, V) |- span(I, J, VP)
+    lexicon
+        "the"    : Det = the
+        "a"      : Det = a
+        "cat"    : N   = cat
+        "dog"    : N   = dog
+        "sleeps" : V   = sleeps
+        "runs"   : V   = runs
+
+program bayesian_pcfg : Term -> Weight
+    sample p_det <- Dirichlet(concentration=[1.0, 1.0])
+    sample p_n <- Dirichlet(concentration=[1.0, 1.0])
+    sample p_v <- Dirichlet(concentration=[1.0, 1.0])
+    let chart = parse(PCFG, corpus, Sentence, ("Det", p_det), ("N", p_n), ("V", p_v))
+    score evidence = chart.goal_weight()
+    return evidence
+
+export bayesian_pcfg
+"""
+
+_CORPUS = [["the", "cat", "runs"], ["a", "dog", "sleeps"]]
+
+
+def _pcfg_mcmc(
+    checkpoint: MCMCCheckpoint | None = None, callback: MCMCCallback | None = None
+) -> MCMC:
+    return MCMC(
+        NUTSKernel(max_tree_depth=3),
+        num_warmup=6,
+        num_samples=6,
+        num_chains=1,
+        seed=5,
+        checkpoint=checkpoint,
+        callback=callback,
+    )
+
+
+def test_mcmc_runs_and_resumes_on_a_token_corpus(tmp_path: Path) -> None:
+    program = loads(_PCFG).morphism
+    assert isinstance(program, MonadicProgram)
+    reference = _pcfg_mcmc().run(program, _X, {"corpus": _CORPUS})
+    assert reference.samples["p_det"].shape[-1] == 2
+
+    checkpoint = MCMCCheckpoint(directory=str(tmp_path), every=2)
+    with pytest.raises(_Crash):
+        _pcfg_mcmc(checkpoint, callback=_crash_at(0, 3, "sampling")).run(
+            program, _X, {"corpus": _CORPUS}
+        )
+    # A corpus differing in one token is different data.
+    swapped = [["the", "cat", "runs"], ["a", "cat", "sleeps"]]
+    with pytest.raises(ValueError, match="different model or data"):
+        _pcfg_mcmc(checkpoint).resume(tmp_path, program, _X, {"corpus": swapped})
+    # The same corpus, rebuilt from tuples, is the same data.
+    rebuilt = tuple(tuple(sentence) for sentence in _CORPUS)
+    resumed = _pcfg_mcmc(checkpoint).resume(
+        tmp_path, program, _X, {"corpus": rebuilt}
+    )
+    _assert_identical(reference, resumed)
+
+
+def _rendered(value: ObservedDatum) -> str:
+    """The digest a run fingerprint takes of one datum."""
+    return _digest(observation_digest("datum", value))
+
+
+_EQUAL_DATA: dict[str, tuple[ObservedDatum, ObservedDatum]] = {
+    "tensor": (torch.arange(6.0).reshape(2, 3), torch.arange(6.0).reshape(2, 3)),
+    "tensor-and-list": (
+        torch.tensor([[0.5, 1.5], [2.5, 3.5]]),
+        [[0.5, 1.5], [2.5, 3.5]],
+    ),
+    "tensor-and-array": (
+        torch.tensor([1, 2, 3]),
+        numpy.array([1, 2, 3], dtype=numpy.int64),
+    ),
+    "number": (3, 3),
+    "corpus": (
+        [["the", "cat", "runs"], ["a", "dog", "sleeps"]],
+        (("the", "cat", "runs"), ("a", "dog", "sleeps")),
+    ),
+    "ragged-corpus": ([["the", "cat"], ["runs"]], [["the", "cat"], ["runs"]]),
+    "token": ("cat", "cat"),
+    "mapping": (
+        {"tokens": ["a", "b"], "weights": torch.ones(2)},
+        {"weights": torch.ones(2), "tokens": ["a", "b"]},
+    ),
+}
+
+_DIFFERING_DATA: dict[str, tuple[ObservedDatum, ObservedDatum]] = {
+    "tensor-value": (torch.zeros(3), torch.tensor([0.0, 0.0, 1e-7])),
+    "tensor-dtype": (torch.zeros(3), torch.zeros(3, dtype=torch.float64)),
+    "tensor-shape": (torch.zeros(2, 3), torch.zeros(3, 2)),
+    "number": (3, 4),
+    "number-and-string": (1, "1"),
+    "corpus-token": (
+        [["the", "cat", "runs"], ["a", "dog", "sleeps"]],
+        [["the", "cat", "runs"], ["a", "dog", "runs"]],
+    ),
+    "corpus-order": (
+        [["the", "cat", "runs"], ["a", "dog", "sleeps"]],
+        [["a", "dog", "sleeps"], ["the", "cat", "runs"]],
+    ),
+    "corpus-length": ([["the", "cat", "runs"]], [["the", "cat", "runs"]] * 2),
+    "corpus-split": ([["the", "cat"], ["runs"]], [["the"], ["cat", "runs"]]),
+    "token-and-sentence": ("cat", ["cat"]),
+    "mapping-value": ({"tokens": ["a", "b"]}, {"tokens": ["a", "c"]}),
+    "mapping-key": ({"tokens": ["a", "b"]}, {"words": ["a", "b"]}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_EQUAL_DATA))
+def test_equal_observations_have_equal_fingerprints(case: str) -> None:
+    first, second = _EQUAL_DATA[case]
+    assert _rendered(first) == _rendered(second)
+
+
+@pytest.mark.parametrize("case", sorted(_DIFFERING_DATA))
+def test_differing_observations_have_differing_fingerprints(case: str) -> None:
+    first, second = _DIFFERING_DATA[case]
+    assert _rendered(first) != _rendered(second)
+
+
+def test_an_observation_of_an_unknown_kind_is_refused_not_dropped() -> None:
+    with pytest.raises(TypeError, match="'datum' holds a value of type set"):
+        _rendered(["the", {"cat"}])  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="key 1 of type int"):
+        _rendered({1: "cat"})  # pyright: ignore[reportArgumentType]
 
 
 # ---------------------------------------------------------------------------
