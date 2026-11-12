@@ -219,7 +219,7 @@ nav:
     - Compositional Effects: semantics/effects.md
     - The Program Theory: semantics/program-theory.md
     - Type Theory: semantics/typing.md
-    - Adequacy: semantics/adequacy.md
+    - Implementation correspondence and limits: semantics/adequacy.md
     - Transpilation architecture: semantics/transpile-architecture.md
     - Transpilation correctness:
       - Contract and evidence: semantics/transpile-correctness/index.md
