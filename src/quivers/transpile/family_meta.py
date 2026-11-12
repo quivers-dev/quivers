@@ -18,6 +18,7 @@ import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
     ConditionalBernoulli,
@@ -348,60 +349,6 @@ class _TruncatedNormal(Distribution):
         self.scale = scale
         self.low = low
         self.high = high
-        super().__init__(validate_args=validate_args)
-
-
-class _InverseWishart(Distribution):
-    """Inverse-Wishart over positive-definite matrices."""
-
-    arg_constraints: dict[str, c.Constraint] = {
-        "df": c.positive,
-        "scale_tril": c.lower_cholesky,
-    }
-    support: c.Constraint = c.positive_definite
-    has_rsample: bool = False
-
-    def __init__(
-        self,
-        df: torch.Tensor,
-        scale_tril: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.df = df
-        self.scale_tril = scale_tril
-        # `scale_tril` is `(..., dim, dim)`; carry the trailing two
-        # axes as the matrix event shape so transpile shape inference
-        # picks up the square dimension.
-        event_shape = scale_tril.shape[-2:]
-        batch_shape = scale_tril.shape[:-2]
-        super().__init__(
-            batch_shape=batch_shape,
-            event_shape=event_shape,
-            validate_args=validate_args,
-        )
-
-
-class _MatrixNormal(Distribution):
-    """Matrix-Normal: a normal over real matrices with Kronecker covariance."""
-
-    arg_constraints: dict[str, c.Constraint] = {
-        "loc": c.independent(c.real, 2),
-        "row_covariance": c.positive_definite,
-        "col_covariance": c.positive_definite,
-    }
-    support: c.Constraint = c.independent(c.real, 2)
-    has_rsample: bool = True
-
-    def __init__(
-        self,
-        loc: torch.Tensor,
-        row_covariance: torch.Tensor,
-        col_covariance: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.loc = loc
-        self.row_covariance = row_covariance
-        self.col_covariance = col_covariance
         super().__init__(validate_args=validate_args)
 
 
@@ -1131,7 +1078,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
     "InverseWishart": FamilyMeta(
         qvr_name="InverseWishart",
         event_rank=2,
-        distribution_class=_InverseWishart,
+        distribution_class=InverseWishart,
         quivers_class=ConditionalInverseWishart,
         target_names={
             "stan": "inv_wishart",
@@ -1139,11 +1086,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pyro": "InverseWishart",
             "turing": "InverseWishart",
         },
+        arg_aliases={"numpyro": {"df": "concentration"}},
     ),
     "MatrixNormal": FamilyMeta(
         qvr_name="MatrixNormal",
         event_rank=2,
-        distribution_class=_MatrixNormal,
+        distribution_class=MatrixNormal,
         quivers_class=ConditionalMatrixNormal,
         target_names={
             "stan": "matrix_normal",

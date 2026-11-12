@@ -1216,6 +1216,8 @@ class _ProgramWalk:
             self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
+        if distribution.name == "InverseWishart" and "scale_tril" in names:
+            self._inverse_wishart_scale(pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
         if set(ordered) >= set(names) and len(ordered) >= len(names):
             order = {name: index for index, name in enumerate(ordered)}
@@ -1339,6 +1341,69 @@ class _ProgramWalk:
         self.structured_inputs.setdefault(
             datum.name, (CSReal(), Plate(event_dims=dims, batch_dims=()))
         )
+
+    def _inverse_wishart_scale(self, pre: list[IRArg], names: list[str]) -> None:
+        """Hand an inverse Wishart's scale to the target as it reads it.
+
+        A source's ``InverseWishart(df, scale_tril=L)`` draws the inverse
+        of a ``Wishart(df, scale_tril=L)`` draw: in the conventional
+        ``IW(df, Psi)`` the scale is ``Psi = (L L^T)^-1``. Stan, NumPyro,
+        and Turing take ``Psi`` itself, under ``scale_matrix``; Pyro's
+        grafted class takes the Cholesky factor of ``Psi``, under
+        ``scale_tril``. A literal factor is converted here, in place.
+
+        Parameters
+        ----------
+        pre : list[IRArg]
+            The call's wire arguments, rewritten in place.
+        names : list[str]
+            The parameter each argument fills, rewritten in place.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the factor is not a literal, or is singular.
+        """
+        position = names.index("scale_tril")
+        factor = pre[position]
+        scale = None
+        if isinstance(factor, IRArgMatrix) and all(
+            isinstance(entry, IRArgNumber)
+            for row in factor.rows
+            for entry in row.elements
+        ):
+            rows = [
+                [cast(IRArgNumber, entry).value for entry in row.elements]
+                for row in factor.rows
+            ]
+            product = [
+                [sum(a * b for a, b in zip(left, right, strict=True)) for right in rows]
+                for left in rows
+            ]
+            scale = _literal_inverse(_matrix_literal(product))
+        if scale is None:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    "family:InverseWishart:scale_tril: the InverseWishart's "
+                    "scale_tril is a Cholesky factor known only at run time; "
+                    "write it as a matrix literal"
+                ],
+            )
+        if self.planner.target == "pyro":
+            cholesky = _literal_cholesky(scale)
+            if cholesky is None:
+                raise UnsupportedConstruct(
+                    "qvr-pyro",
+                    [
+                        "family:InverseWishart:scale_tril: the scale the factor "
+                        "names is not positive definite"
+                    ],
+                )
+            pre[position] = cholesky
+            return
+        pre[position] = scale
+        names[position] = "scale_matrix"
 
     def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
         """Hand a Cholesky factor to the target as it reads it.
@@ -2185,6 +2250,63 @@ _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
     ("Wishart", "covariance_matrix"): _EVERY_TARGET,
     ("Wishart", "precision_matrix"): frozenset({"ir", "numpyro", "pyro"}),
 }
+
+
+def _matrix_literal(rows: list[list[float]]) -> IRArgMatrix:
+    """A literal matrix argument from its rows of numbers.
+
+    Parameters
+    ----------
+    rows : list[list[float]]
+        The rows.
+
+    Returns
+    -------
+    IRArgMatrix
+        The literal.
+    """
+    return IRArgMatrix(
+        rows=tuple(
+            IRArgList(elements=tuple(IRArgNumber(value=value) for value in row))
+            for row in rows
+        )
+    )
+
+
+def _literal_cholesky(matrix: IRArgMatrix) -> IRArgMatrix | None:
+    """The lower Cholesky factor of a literal positive-definite matrix.
+
+    Parameters
+    ----------
+    matrix : IRArgMatrix
+        The matrix, square and symmetric with numeric entries.
+
+    Returns
+    -------
+    IRArgMatrix | None
+        Its lower Cholesky factor in double precision, or ``None`` when
+        an entry is not a number or the matrix is not positive definite.
+    """
+    if not all(
+        isinstance(entry, IRArgNumber) for row in matrix.rows for entry in row.elements
+    ):
+        return None
+    rows = [
+        [cast(IRArgNumber, entry).value for entry in row.elements]
+        for row in matrix.rows
+    ]
+    size = len(rows)
+    factor = [[0.0] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(i + 1):
+            partial = rows[i][j] - sum(factor[i][k] * factor[j][k] for k in range(j))
+            if i == j:
+                if partial <= 0.0:
+                    return None
+                factor[i][j] = partial**0.5
+            else:
+                factor[i][j] = partial / factor[j][j]
+    return _matrix_literal(factor)
 
 
 def _literal_inverse(matrix: IRArgMatrix) -> IRArgMatrix | None:

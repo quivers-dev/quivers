@@ -56,6 +56,7 @@ _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
         "LogGamma": ("LogGamma",),
         "LogitBeta": ("LogitBeta",),
         "InverseWishart": ("InverseWishart",),
+        "OrderedProbit": ("OrderedProbit",),
     },
     "numpyro": {
         "LogitNormal": ("LogitNormal",),

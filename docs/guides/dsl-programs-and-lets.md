@@ -748,7 +748,8 @@ full set is documented in
 | `Dirichlet` | `concentration` | `Simplex K` |
 | `TruncatedNormal` | `mu`, `sigma`, `low`, `high` | `Real N [low=..., high=...]` |
 | `MultivariateNormal` | `loc`, `scale_tril` | `Real N` (event_rank 1) |
-| `MatrixNormal` | `loc`, `row_scale`, `col_scale` | `Real R C` (event_rank 2) |
+| `MatrixNormal` | `loc`, `row_covariance`, `col_covariance` | `R x C` matrix (event_rank 2) |
+| `OrderedProbit`, `OrderedLogistic` | `eta` (`predictor`), `cutpoints` | ordered categories |
 | `LKJCholesky` | `concentration` | `CholeskyFactor K` |
 | `Wishart`, `InverseWishart` | `df`, `scale_tril` | `Covariance K` |
 | `Horseshoe` | `scale` | `Real N` (sparse-shrinkage prior) |
@@ -813,11 +814,58 @@ the size the checked program reads it at; one datum read at two sizes,
 or a tied argument whose size differs from the event axis it spans, is
 refused at the draw. A free name filling a vector parameter of a draw
 whose plate names event axes is instead one value the plate broadcasts,
-as in `Dirichlet(concentration=alpha) [over=K]`; a Cholesky factor or a
-covariance is never a broadcast scalar, so it stays a matrix there. The
+as in `Dirichlet(concentration=alpha) [over=K]`; a matrix parameter,
+a Cholesky factor, a covariance, or a matrix normal's mean, is never a
+broadcast scalar, so it stays a matrix there. The
 compiled runtime sizes every parameter when it builds the program, so it
 refuses a multivariate draw whose event size nothing in the program
 fixes, and the message lists the ways to fix it.
+
+### Ordinal, inverse-Wishart, and matrix-normal draws
+
+An ordinal response under a probit link, a covariance drawn from an
+inverse Wishart, and a matrix drawn from a matrix normal are written
+inline like their logistic and Wishart siblings:
+
+```qvr
+object Row : FinSet 6
+object One : FinSet 1
+object Dim : FinSet 2
+object Rows : FinSet 2
+object Cols : FinSet 3
+
+program ordinal : One -> One
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    observe y : Row <- OrderedProbit(eta=eta, cutpoints=[-1.0, 0.0, 1.5])
+    return eta
+
+program covariance : One -> One
+    sample sigma : Dim <- InverseWishart(df=5.0, scale_tril=[[1.0, 0.0], [0.3, 0.8]])
+    observe x : Row <- MultivariateNormal(loc=[0.0, 0.0], covariance_matrix=sigma) [over=Dim]
+    return sigma
+
+program regression : One -> One
+    sample B <- MatrixNormal(loc=B0, row_covariance=U, col_covariance=V) [over=[Rows, Cols]]
+    return B
+
+export ordinal
+export covariance
+export regression
+```
+
+`OrderedProbit` puts category `k` at `Phi(c_k - eta) - Phi(c_{k-1} -
+eta)` for the standard normal distribution function `Phi`, scored in log
+space so a category far from the predictor keeps its probability.
+`InverseWishart(df, scale_tril=L)` is the law of the inverse of a
+`Wishart(df, scale_tril=L)` draw, the conventional
+[inverse Wishart](https://en.wikipedia.org/wiki/Inverse-Wishart_distribution)
+`IW(df, Psi)` with `Psi = (L L^T)^-1`; a transpile target that takes
+`Psi` receives the literal factor converted. `MatrixNormal(loc, U, V)`
+draws an `R x C` matrix whose row-major entries have covariance `U (x)
+V`, the [matrix normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution)
+with row covariance `U` and column covariance `V`. An inverse-Wishart
+covariance is a positive-definite latent site, which MCMC and SVI move
+through the unconstrained coordinates of its Cholesky factor.
 
 ### Alternative parameterizations
 
