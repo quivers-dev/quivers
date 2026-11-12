@@ -14,7 +14,7 @@ represent marginal locations and scales, and covariance and flow guides also rep
 dependence.
 
 `quivers.inference` re-exports every guide, and `quivers.inference.guides`
-adds the Pyro-style short names (`AutoNormal`, `AutoMultivariateNormal`,
+adds the short names that Pyro uses (`AutoNormal`, `AutoMultivariateNormal`,
 `AutoLowRankMVN`, `AutoDelta`, `AutoLaplace`, `AutoIAFNormal`), each bound
 to the guide class it names, and the type aliases that configure
 `AutoStructured`.

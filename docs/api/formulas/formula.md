@@ -11,7 +11,7 @@ depend on the data and the category encoding as well as on the formula.
 compare by every field. Two formulas are equal only when their formula
 strings, response names, fixed columns (labels and data), random
 terms, response values, group levels, and group indices all agree, and
-hashing agrees with equality. The per-row arrays are stored as
+hashing agrees with equality. The arrays with one entry per row are stored as
 read-only copies made at construction: writing into
 `formula.response_values` or a column's `data` raises `ValueError`, and
 changing the source data frame afterwards does not change the formula.

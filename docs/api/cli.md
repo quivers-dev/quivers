@@ -83,7 +83,7 @@ migration without changing the earlier migration steps.
 
 Start the interactive REPL. Without a file, the REPL opens an empty
 session. With a file, it loads and elaborates the file before showing
-the prompt. `--plain` uses the single-line front end instead of the
+the prompt. `--plain` uses the plain front end that reads one line at a time instead of the
 TUI, and `--target TARGET` makes every load report the capability
 diagnostics of that transpile target beside the module's own, as
 `qvr check --target` does. See
@@ -213,7 +213,7 @@ and `--prefix PREFIX` selects an explicit Jupyter prefix.
 ## Module reference
 
 The `quivers.cli` package exports the `qvr` entry point together with
-the tooling its subcommands share: per-file checking, the REPL session
+the tooling its subcommands share: checking of each file, the REPL session
 and its front ends, completion, and highlighting.
 `quivers.cli.migrations` exports the grammar migration chain, the
 language server is built by `quivers.lsp`, and the Jupyter kernel

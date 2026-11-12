@@ -14,9 +14,9 @@ returns the weighted partial sum for one attachment site.
 The QVR compiler compiles loss bodies as let-expression closures with
 signature `(env) -> Tensor`. For a global loss, `env` contains the
 compiled module's program, deduction, encoder, and decoder bindings as
-top-level names. For a rule-attached loss, it also contains `"rule"`,
+top-level names. For a loss attached to a rule, it also contains `"rule"`,
 `"deduction"`, `"antecedents"`, `"conclusion"`, and `"weight"`
-keys populated by the agenda's rule-firing callback.
+keys populated by the callback the agenda calls when a rule fires.
 
 ::: quivers.structural.losses
     options:

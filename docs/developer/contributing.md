@@ -239,7 +239,7 @@ parameters (`def func(a, /, b)`), and `Literal[...]` discriminators for `dx.Tagg
 ### Value types are didactic Models
 
 [didactic](https://github.com/panproto/didactic) is the library whose `Model` types hold the
-data values of quivers. Record-shaped values (AST nodes, `FinSet`, `ProductSet`, `CoproductSet`,
+data values of quivers. Values with named fields (AST nodes, `FinSet`, `ProductSet`, `CoproductSet`,
 the `ContinuousSpace` and `Category` variants, `RuleSystem`) subclass `didactic.api.Model`.
 Recursive sums are `dx.TaggedUnion` roots discriminated by a `kind: Literal[...]` field.
 `dx.field(..., converter=...)` normalizes a field (for instance, flattening nested `ProductSet`

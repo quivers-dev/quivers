@@ -26,7 +26,7 @@ Corecursion over a signature Σ proceeds as follows:
 4. Binder ops extend Γ before recursing on their scoped arguments, as
    in the encoder.
 
-Construction sets a recursion-depth bound. At that bound, the decoder
+Construction sets a bound on the depth of recursion. At that bound, the decoder
 restricts the choice set to terminating ops. If a sort has no such op,
 the decoder raises an error that identifies the sort.
 
