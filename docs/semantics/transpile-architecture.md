@@ -529,7 +529,7 @@ zero-based codes of the data: Stan declares `w` with `lower = 0` and adds one wh
 renderer names `Dirichlet` or `Categorical` in its code: each declares through `is_real_simplex` and
 `is_int_category`. Stan bounds `word_idx` by `Token` (`upper = 199`), not by `Doc` (`upper = 19`).
 
-## 7. Adding a family {#7-adding-a-family}
+## 7. Adding a family {#7-adding-a-new-family}
 
 1. Write a [`ContinuousMorphism`](../api/continuous/morphisms.md) subclass in
    [`quivers.continuous.families`](../api/continuous/families.md), or in a new module of
