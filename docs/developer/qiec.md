@@ -42,7 +42,7 @@ and the result is held to the deterministic serialization contract of the Python
 ## Two boundaries
 
 The *stable core boundary* contains only typed, deterministic data: kinds, telescopes,
-indexed-family declarations, effect interfaces, rows, handler signatures, value and computation
+declarations of indexed families, effect interfaces, rows, handler signatures, value and computation
 terms, source provenance, and equality evidence. Python callables and mutable resources cannot
 cross it.
 
@@ -824,7 +824,7 @@ probabilistic `program`. A mixed module keeps both its probabilistic nodes and i
 `IRQiecModule`. Acceptance depends on the target:
 
 - modules that only declare are valid on every target;
-- the eight host-language targets accept executable modules written only in QIEC;
+- the eight targets that generate code in a host language accept executable modules written only in QIEC;
 - the three static targets accept them only when every computation lies in the subset above;
 - mixed modules must also satisfy the target's support for ordinary probabilistic programs.
 

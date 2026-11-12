@@ -23,7 +23,7 @@ Every benchmark is an `(algorithm, problem)` cell. A *problem* fixes:
 
 1. A generative model written in QVR and loaded from `tests/benchmarks/models/*.qvr`.
 2. A deterministic data generator (fixed `torch.manual_seed`) that produces the observations the model is conditioned on.
-3. A *reference posterior* moment for one latent site, computed analytically (conjugate problems), by quadrature on a dense grid (constrained-support problems), or by a long cached run of the No-U-Turn Sampler (NUTS) (Eight Schools).
+3. A *reference posterior* moment for one latent site, computed analytically (conjugate problems), by quadrature on a dense grid (problems with constrained support), or by a long cached run of the No-U-Turn Sampler (NUTS) (Eight Schools).
 4. A scalar metric (almost always $|\mathbb{E}_q[\cdot] - \mathbb{E}_{\text{ref}}[\cdot]|$) and a tolerance.
 
 A *cell* runs the algorithm on the problem, draws posterior samples for the target site, and compares the recovered moment against the reference.
@@ -34,7 +34,7 @@ Throughput is reported as SVI iterations per second for the variational guides a
 
 - **PASS**: recovered moment is within tolerance of the reference.
 - **FAIL**: algorithm runs cleanly but the moment is outside tolerance.
-- **ERROR**: algorithm raised during execution (NaN gradient, support-boundary explosion, divergent trajectory, etc.).
+- **ERROR**: algorithm raised during execution (NaN gradient, a value that blows up at the boundary of the support, divergent trajectory, etc.).
 - *capture* problems invert the convention: PASS means the metric *exceeds* the tolerance, confirming a documented failure mode.
 
 Determinism: every cell calls `torch.manual_seed(0)` before constructing the problem, so the same `(algorithm, problem)` pair reproduces across runs given fixed PyTorch and NumPy versions.
@@ -45,13 +45,13 @@ All algorithms are evaluated on every problem with hyperparameters held fixed ac
 
 | Algorithm | Family | Key hyperparameters |
 |---|---|---|
-| `AutoNormal` | Mean-field SVI, factorized diagonal Normal in unconstrained space | Adam, lr=0.05, 800 steps (1500 for positive-support sites), 1500 posterior draws |
-| `AutoMVN` | Full-covariance SVI, single MVN in unconstrained space | Adam, lr=0.05, 800 steps (1500 for positive-support sites), `init_scale=0.3`, 1500 draws |
+| `AutoNormal` | Mean-field SVI, factorized diagonal Normal in unconstrained space | Adam, lr=0.05, 800 steps (1500 for sites with positive support), 1500 posterior draws |
+| `AutoMVN` | Full-covariance SVI, single MVN in unconstrained space | Adam, lr=0.05, 800 steps (1500 for sites with positive support), `init_scale=0.3`, 1500 draws |
 | `AutoLaplace` | MAP plus a Gaussian centered at the mode with Hessian covariance [@tierney1986laplace] | Adam, lr=0.05, 500 steps, 1500 draws |
 | `HMC` | Hamiltonian Monte Carlo with fixed integrator length | `step_size=0.1` (adapted), `num_steps=10`, diagonal mass matrix (adapted), 200 warmup, 400 samples, 2 chains |
 | `NUTS` | No-U-Turn HMC | `target_accept=0.8`, `max_tree_depth=8`, diagonal mass matrix, 200 warmup, 400 samples, 2 chains |
 
-Variational guides operate in unconstrained space via the bijector attached to each latent's support, so positive-support and bounded-support sites are exercised through `exp` / `softplus` / `sigmoid` transforms rather than through constrained Gaussian families.
+Variational guides operate in unconstrained space via the bijector attached to each latent's support, so sites with positive and with bounded support are exercised through `exp` / `softplus` / `sigmoid` transforms rather than through constrained Gaussian families.
 
 ## Tier 1: conjugate posteriors
 
@@ -232,7 +232,7 @@ with $\rho = 0.95$ and $N = 50$.
 
 **Reference.** Closed-form Gaussian posterior in which $a$ and $b$ have a correlation near $-0.99$.
 
-The mean-field guide ignores this correlation. The first-moment metric below still passes, since the underfit shows in the second moments.
+The mean-field guide ignores this correlation. The metric on the first moment below still passes, since the underfit shows in the second moments.
 
 **Metric.** `|E[a]_q - E[a]_true|`, tolerance `0.2`.
 

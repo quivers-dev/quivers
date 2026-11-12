@@ -26,7 +26,7 @@ appears in one of them.
 
 1. **Import from the package.** The supported import path for a public
    name is the public package whose `__all__` lists it, as in
-   `from quivers.continuous import PlateDraw`. A leaf-module path such
+   `from quivers.continuous import PlateDraw`. A path to a leaf module such
    as `quivers.continuous.plate` records where the name is defined.
    It is not part of the contract, so a name may move between the
    leaf modules of its package without a breaking change.
