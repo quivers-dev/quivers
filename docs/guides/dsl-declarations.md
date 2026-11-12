@@ -513,8 +513,8 @@ states.
 ## Deduction
 
 `deduction NAME : Domain -> Codomain [options]` with an indented body declares a
-[weighted deduction system](deduction.md#the-framework) that the agenda engine
-evaluates. The body gives the item constructors and the rules, and the option block
+[weighted deduction system](deduction.md#the-framework) that an agenda algorithm
+evaluates [@eisner2005compiling]. The body gives the item constructors and the rules, and the option block
 gives the semiring, the goal, and the evaluation bounds:
 
 ```qvr
@@ -551,7 +551,7 @@ usual further names are `Tns(X, Y)` for a product, `Dia(X)` and `Box(X)` for the
 modalities ◇ and □, and `Cont(X)` for a continuation-typed category, and a grammar may
 declare any others.
 
-### Axiom sources
+### Axioms {#axiom-sources}
 
 The axioms are the weighted items the input contributes. A deduction obtains them in
 one of three ways:
@@ -924,8 +924,8 @@ combinators give
 | `f.curry_right` | a morphism `X -> Z/Y` |
 | `f.curry_left`  | a morphism `Y -> X\Z` |
 
-where `Z/Y` and `X\Z` are categorial types over the codomain in the argument-under
-(Lambek) notation [@lambek1958mathematics]. The tensor is unchanged, and only its
+where `Z/Y` and `X\Z` are categorial types over the codomain in Lambek notation, with the
+argument under the slash [@lambek1958mathematics]. The tensor is unchanged, and only its
 split into domain and codomain axes is reread, so the domain must be a product of at
 least two factors.
 
@@ -1018,7 +1018,7 @@ written in QVR (`[implementation=authored]`, each clause a `=>` body that may
 [effects and handlers](../reference/qvr/effects-and-handlers.md), and
 [computations](../reference/qvr/computations.md) specify these forms.
 
-## Structural compression: `signature`, `encoder`, `decoder`, `loss`
+## Tree and graph autoencoders: `signature`, `encoder`, `decoder`, `loss` {#structural-compression-signature-encoder-decoder-loss}
 
 These four declarations define autoencoders over terms. A `signature` declares sorts
 and constructors, an `encoder` folds a term into a vector with one learnable function

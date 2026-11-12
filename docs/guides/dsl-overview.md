@@ -125,7 +125,7 @@ or a `program` through one entry-point call
 calls of other computations to its own steps where it can. A program with a call it
 cannot lower becomes a [`CheckedProgram`](../api/effects/checked_program.md), which
 runs on the reference machine, scores the same joint, and cannot be fitted. The
-transpilers lower the checked computation to each target language;
+transpilers lower the well-typed computation to each target language;
 [Transpiler support](../transpile-support.md) lists what each target accepts.
 
 ### Programs as panproto schemas

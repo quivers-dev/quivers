@@ -325,5 +325,5 @@ out    = wiring.apply(f_tensor, g_tensor)
   Python API.
 - [Composition Rules](../semantics/composition-rules.md): the denotation of each
   level.
-- [Algebras and Base Change](../semantics/algebras.md): the built-in instances and the
+- [Semirings, t-norms, and change of base](../semantics/algebras.md): the built-in instances and the
   registry of entrywise maps.

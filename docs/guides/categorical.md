@@ -220,7 +220,7 @@ XY = monoidal.product(X, Y)
 assert XY == X + Y
 ```
 
-## Base Change
+## Change of Base {#base-change}
 
 A [`BaseChange`](../api/categorical/base_change.md) applies an entrywise map from one
 `Algebra` to another to a morphism and keeps its domain and codomain. When the map is
