@@ -949,10 +949,9 @@ With the covariate `x` a data input over `Row`, the log-odds vary by row, each r
 its own gate, and the block adds
 $\sum_n \log\bigl[(1 - \sigma(\eta_n))\, \mathbb 1[y_n = 0] + \sigma(\eta_n)\, \mathrm{Poisson}(y_n; 3)\bigr]$
 to the log joint density. With a single scalar log-odds instead, the block has one gate
-shared by all rows. At a `marginalize` head, `ContinuousBernoulli` and
-`RelaxedBernoulli` are summed over the same two values 0 and 1 with the Bernoulli
-weights of their parameter. Those families have densities on $[0, 1]$, so this sum is
-not their marginal, and a gate should use `Bernoulli`.
+shared by all rows. A gate uses `Bernoulli`: `ContinuousBernoulli` and
+`RelaxedBernoulli` have densities on $[0, 1]$ rather than two atoms, so a sum over the
+values 0 and 1 is not their marginal.
 
 A conditional distribution whose parameters a network learns from the input is a
 [`morphism f : A -> B ~ Family`](dsl-declarations.md#kernel) declaration instead.
