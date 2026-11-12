@@ -1687,7 +1687,13 @@ def _render_family_ref_kind(backend: str, tail: str, explained: bool) -> str:
 
 def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
     """`morphism:<reason>:<name>` -- a morphism the resolver cannot
-    turn into a distribution."""
+    turn into a distribution.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the reason is not ``cycle``, ``no-init`` or ``duplicate``.
+    """
     reason, _, rest = tail.partition(":")
     name = rest.partition(":")[0]
     if reason == "cycle":
@@ -1951,6 +1957,11 @@ def _render_data_kind(backend: str, tail: str) -> str:
     -------
     str
         The explanation.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the form is not one the planner raises.
     """
     form, _, rest = tail.partition(":")
     name = rest.partition(":")[0] or "the input"
@@ -2032,7 +2043,14 @@ def _render_head(
     declarations: tuple[RefusedDeclaration, ...],
     module_has_program: bool,
 ) -> str:
-    """Dispatch one kind's head to the renderer that owns it."""
+    """Dispatch one kind's head to the renderer that owns it.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If no renderer owns the head, or the owner does not recognise
+        the kind's shape.
+    """
     if head in _DECLARATION_MEANING:
         entries = tuple(e for e in declarations if e.kind == head)
         return _render_declaration_kind(backend, head, entries, module_has_program)
@@ -2161,6 +2179,28 @@ def user_facing_message(
 
     One kind renders as one sentence-or-more; several render as a
     headed bullet list, one bullet per independent problem.
+
+    Parameters
+    ----------
+    target : str
+        The backend the refusal is reported for, such as ``"qvr-stan"``.
+    kinds : tuple[str, ...]
+        The structured kinds, each optionally followed by ``": "`` and
+        the raise site's explanation.
+    declarations : tuple[RefusedDeclaration, ...]
+        The refused top-level declarations, for a declaration kind.
+    module_has_program : bool
+        Whether the refused module declares a program.
+
+    Returns
+    -------
+    str
+        The message.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If a kind has no registered explanation.
     """
     backend = _backend_display_name(target)
     lines = [_render_kind(backend, k, declarations, module_has_program) for k in kinds]
