@@ -362,5 +362,5 @@ variable.
 In the compiled runtime the prior is not applied. The compiler checks the clause's axes against
 the family and then builds the same `LatentMorphism` as for a declaration without a clause: a free
 table initialized from a Normal with standard deviation `scale` and passed through the sigmoid. The
-compiled runtime therefore fits a point estimate of the table where the clause describes a
+compiled runtime thus fits a point estimate of the table where the clause describes a
 posterior over it.
