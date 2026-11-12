@@ -4,7 +4,7 @@ The eight-schools data [@rubin1981parallel] give one estimated treatment effect 
 
 ## Eight schools, centered
 
-Let $\mu$ be the population mean, $\tau$ the between-school scale, and $\theta_j$ the effect of school $j$:
+Let $\mu$ be the population mean, $\tau$ the scale of the variation between schools, and $\theta_j$ the effect of school $j$:
 
 $$
 \mu \sim \mathrm{Normal}(0, 5), \qquad

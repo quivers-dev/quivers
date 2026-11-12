@@ -299,7 +299,7 @@ choice_fit = fit(
 )
 ```
 
-## A finite-mixture regression
+## A finite mixture of regressions {#a-finite-mixture-regression}
 
 Each observation comes from one of three Gaussian components, and `x` shifts every component's location:
 

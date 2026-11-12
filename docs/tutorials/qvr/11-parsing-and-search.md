@@ -130,4 +130,4 @@ A target without search reports the diagnostic `qiec:capability:search:<entry>` 
 
 ## Next
 
-[Chapter 12](12-structural-autoencoders.md) attaches neural encoders and decoders to typed terms. The [generated-computation reference](../../reference/qvr/generated-computations.md) lists everything the compiler generates for a parser.
+[Chapter 12](12-structural-autoencoders.md) attaches neural encoders and decoders to typed terms. The [reference on generated computations](../../reference/qvr/generated-computations.md) lists everything the compiler generates for a parser.

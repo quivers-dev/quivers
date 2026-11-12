@@ -163,7 +163,7 @@ output = program.rsample(batch)
 
 The value of a `Let` is a callable applied to the bindings so far, a string naming an existing variable, or a float constant. A `Let` draws nothing, though its value varies from run to run when its inputs do.
 
-## Multi-variable outputs
+## Outputs with several variables {#multi-variable-outputs}
 
 A program that returns several variables yields a dict keyed by name:
 

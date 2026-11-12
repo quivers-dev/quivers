@@ -80,7 +80,7 @@ No probabilistic programming target supports these attachments. Checking against
 qvr check --target numpyro docs/examples/source/term_autoencoder.qvr
 ```
 
-The [term autoencoder example](../../examples/term-autoencoder.md) develops the encoder and decoder rules. The [generated-computation reference](../../reference/qvr/generated-computations.md#structural-signatures-and-autoencoders) specifies how attachments are bound.
+The [term autoencoder example](../../examples/term-autoencoder.md) develops the encoder and decoder rules. The [reference on generated computations](../../reference/qvr/generated-computations.md#structural-signatures-and-autoencoders) specifies how attachments are bound.
 
 ## Next
 
