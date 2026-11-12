@@ -346,6 +346,12 @@ of row $n$ of observation $m$ under class $k$, $\pi(g, k)$ is the prior weight o
 $g$, and $\operatorname{aggr}_R$ is the reduction over $k$: log-sum-exp by default, which sums the
 class out, or `sum` or `mean`.
 
+The compiled runtime and the transpilation targets compute this formula when the prior $\pi$ is the
+same for every group. When the prior is itself a plate over $G$, as in
+`marginalize z : K <- Categorical(probs=theta) [over=G]` with `theta : G`, they compute instead
+$\sum_n \log \sum_k \theta(\iota(n), k)\, p(r_n \mid k)$, the model in which every row has its own class
+drawn from its group's prior, and the grouping of the likelihoods is lost.
+
 For a product of groups $G_1 \times G_2 \times \cdots$ paired with `via product(idx_1, idx_2, ...)`
 on each observation, the groups are the tuples, ordered with the last factor varying fastest: a row
 goes to position $\iota(n) = \sum_i \iota_i(n) \prod_{j > i} |G_j|$.
