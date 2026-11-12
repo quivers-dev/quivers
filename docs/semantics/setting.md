@@ -238,4 +238,6 @@ $\Gamma$ records, for each name in scope, its sort (object, space, or morphism w
 codomain), where $\rho$ records its denotation. The compiler checks these judgments before it
 builds any runtime object, and the denotation $\llbracket \phi \rrbracket_\rho$ is defined only
 for well-typed phrases. [Typing and checking](typing.md#1-the-two-judgments) gives the judgments
-of the source checker and of the QIEC checker.
+of the source checker and of the checker of the
+[Quivers Indexed Effect Core](../reference/qvr/index.md) (QIEC), the typed core language that QVR
+elaborates to.

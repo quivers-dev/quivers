@@ -21,7 +21,7 @@ with kinds, constraints, and edge rules for QVR. Its vertices fall into these gr
 | Finite sets | `finset`, `product_set`, `coproduct_set`, `free_monoid`, `empty_set`, `enum_set`, `free_residuated` |
 | Spaces | `euclidean`, `simplex`, `positive_reals`, `product_space` |
 | Declarations | `object_decl`, `space_decl`, a kind for each morphism role, `output_decl`, `schema_decl` |
-| QIEC declarations | `effect_decl`, `operation`, `instance_decl`, `handler_decl`, `handler_clause`, `computation_decl`, `computation_parameter` |
+| Declarations of the Quivers Indexed Effect Core (QIEC) | `effect_decl`, `operation`, `instance_decl`, `handler_decl`, `handler_clause`, `computation_decl`, `computation_parameter` |
 | Entry points | `program_entry`, `program_parameter`, `program_site` |
 | Root | `program` |
 

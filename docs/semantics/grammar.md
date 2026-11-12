@@ -28,7 +28,8 @@ A rule's patterns may contain variables, which range over items, and rules fire 
 substitutions that [unification](https://en.wikipedia.org/wiki/Unification_(computer_science))
 finds for them. An identifier in a rule is a variable exactly when it is neither a declared symbol
 nor a numeral, whatever its spelling, and single uppercase letters are the convention. A declared
-symbol always denotes itself, in the agenda's chart and in the checked QIEC search alike, so a
+symbol always denotes itself, in the agenda's chart and in the search computation of the
+[Quivers Indexed Effect Core](../reference/qvr/index.md) (QIEC) alike, so a
 variable must not be spelled like a symbol. A symbol is a valid ground pattern in a category slot.
 In a chart position slot (§2.1) it is a compile error naming the rule and the identifier, since a
 position slot holds a position variable or an integer.
