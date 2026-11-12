@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.53.0] - 2026-11-11
+
+### Added
+
+- **Marginalized chains: the forward algorithm for a scan over a finite state.** A program cell `cell(x_t, z_prev) : X * S -> S`, with `S` a finite set, that binds lets, marginalizes its next state `z` from a `Categorical` reading `z_prev`, observes what `z` emits inside the block, and returns `z` is a step of a discrete Markov chain, and `sample path <- scan(cell, init=p)` sums every path of states out: `z_0 ~ p`, each position's transition and observations are weighed at every pair of states, and the chain's log marginal likelihood, computed in log space in `O(T K^2)`, is added to the joint under `path`. A long chain whose path probabilities underflow keeps a finite marginal. The compiled runtime and the reference machine both compute it, with gradients to every parameter the cell reads; an observation named after the cell's entry scores the scanned value itself, so a hidden Markov model scans its observed symbols, and the cell's lets may read the entry, so transitions can depend on a covariate. `reverse=true` runs the chain right to left. No grammar change: the form parses today. Forms the forward algorithm does not cover are refused where they are written, on both paths, under `scan:marginal:<reason>:<cell>`: another cell type, steps other than lets before the block or lets and single observations inside it, a family other than `Categorical`, a grouped block or another reduction, a chain without `init=`, with `outputs=all`, composed with other elements, observed, or inside a `marginalize` block, a later read of the chain's binding, and a draw or call of the cell outside a scan. Every transpile target refuses a marginalized chain with `scan:marginal:no-lowering:<cell>`.
+
+### Fixed
+
+- **The reference machine enumerates a `Categorical` given by its logits.** `marginalize c <- Categorical(logits=w)` sums over the classes of `w` on the checked path, where it had stopped with "Categorical enumeration needs its probabilities".
+- **A class-valued program parameter indexes host data in a draw's arguments.** In `program pick(k, u) : Kind * Val -> Val` the checked elaboration reads the alphabet of `k` off `Kind`, so `Normal(loc=means[k], ...)` types the host table `means` over `Kind` rather than refusing it as indexed by an unknown alphabet.
+
 ## [0.52.0] - 2026-11-11
 
 ### Added
