@@ -4925,7 +4925,20 @@ class _ProgramsMixin:
                 else sequence.reshape(-1, entry_width)
             )
             length = int(entries.shape[0])
-            sequences = {name: env[name].reshape(length, -1) for name in observed}
+            sequences: dict[str, torch.Tensor] = {}
+            for name in observed:
+                values = env[name]
+                if values.dim() > 0 and int(values.shape[0]) != length:
+                    # Data every run shares arrive with the run's axis
+                    # of one ahead of the positions.
+                    values = values.reshape(values.shape[1:])
+                if values.dim() == 0 or int(values.shape[0]) != length:
+                    raise ValueError(
+                        f"the marginalized chain over {cell.name!r} observes "
+                        f"{name!r} at each of {length} positions, but its value "
+                        f"has shape {tuple(env[name].shape)}"
+                    )
+                sequences[name] = values
             start = env[init_name].reshape(count)
             log_filter = torch.log(start) - torch.log(start.sum())
             total = torch.zeros((), dtype=log_filter.dtype, device=log_filter.device)
@@ -4934,7 +4947,7 @@ class _ProgramsMixin:
                 here = dict(env)
                 here[cell.entry] = entries[position]
                 for name, values in sequences.items():
-                    here[name] = values[position].reshape(env[name].shape[1:])
+                    here[name] = values[position]
                 rows: list[torch.Tensor] = []
                 for previous in states:
                     row_env = dict(here)
