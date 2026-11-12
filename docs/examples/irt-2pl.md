@@ -24,7 +24,9 @@ The 2PL [item response theory](https://en.wikipedia.org/wiki/Item_response_theor
 # Resp enumerates the full 100 x 20 person-by-item crossing, one
 # row per response; the per-row person and item indices are host
 # data, read through the plate-gather idiom
-# (ability[person_idx], difficulty[item_idx]).
+# (ability[person_idx], difficulty[item_idx]). The response is scored
+# from its logit, so a saturated predictor keeps its precision; the
+# program returns the response probabilities.
 
 object Person : FinSet 100
 object Item : FinSet 20
@@ -42,7 +44,7 @@ program irt_2pl : Resp -> Val
     let eta = a * (theta - b)
     let p = sigmoid(eta)
 
-    observe y : Resp <- Bernoulli(probs=p)
+    observe y : Resp <- Bernoulli(logits=eta)
     return p
 
 export irt_2pl
@@ -73,7 +75,7 @@ response, while `return p` returns real-valued probabilities, reflected in
 `Val : Real 1`. Indexing a response and describing its value are different
 roles, which the program's annotations should keep distinct.
 
-`ability`, `difficulty`, and `discrim` are plate-bound on `Person` and `Item`; `discrim` carries a LogNormal prior so it's positive by construction. The runtime supplies `person_idx` and `item_idx` at fit time, and the gather idiom `ability[person_idx]` / `difficulty[item_idx]` / `discrim[item_idx]` realizes the standard cross-classified design. The Bernoulli link `sigmoid(a * (theta - b))` is the canonical [logistic](https://en.wikipedia.org/wiki/Logistic_function) form of the 2PL response function.
+`ability`, `difficulty`, and `discrim` are plate-bound on `Person` and `Item`; `discrim` carries a LogNormal prior so it's positive by construction. The runtime supplies `person_idx` and `item_idx` at fit time, and the gather idiom `ability[person_idx]` / `difficulty[item_idx]` / `discrim[item_idx]` realizes the standard cross-classified design. The Bernoulli link `sigmoid(a * (theta - b))` is the canonical [logistic](https://en.wikipedia.org/wiki/Logistic_function) form of the 2PL response function. The observation is scored as `Bernoulli(logits=eta)`, from the linear predictor itself: where `eta` is large, `sigmoid(eta)` rounds to 1 in float32 and the log probability of a wrong response computed from it loses precision, while the logit form keeps it. `p = sigmoid(eta)` is still computed, for the program to return. Gen, WebPPL, JAGS, BUGS, and Church have no Bernoulli given by its logits and refuse the program.
 
 ## Try it
 

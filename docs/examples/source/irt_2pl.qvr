@@ -15,7 +15,9 @@
 # Resp enumerates the full 100 x 20 person-by-item crossing, one
 # row per response; the per-row person and item indices are host
 # data, read through the plate-gather idiom
-# (ability[person_idx], difficulty[item_idx]).
+# (ability[person_idx], difficulty[item_idx]). The response is scored
+# from its logit, so a saturated predictor keeps its precision; the
+# program returns the response probabilities.
 
 object Person : FinSet 100
 object Item : FinSet 20
@@ -33,7 +35,7 @@ program irt_2pl : Resp -> Val
     let eta = a * (theta - b)
     let p = sigmoid(eta)
 
-    observe y : Resp <- Bernoulli(probs=p)
+    observe y : Resp <- Bernoulli(logits=eta)
     return p
 
 export irt_2pl
