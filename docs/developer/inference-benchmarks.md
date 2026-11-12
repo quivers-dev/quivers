@@ -23,7 +23,7 @@ Every benchmark is an `(algorithm, problem)` cell. A *problem* fixes:
 
 1. A generative model written in QVR and loaded from `tests/benchmarks/models/*.qvr`.
 2. A deterministic data generator (fixed `torch.manual_seed`) that produces the observations the model is conditioned on.
-3. A *reference posterior* moment for one latent site, computed analytically (conjugate problems), by quadrature on a dense grid (constrained-support problems), or by a long cached NUTS run (Eight Schools).
+3. A *reference posterior* moment for one latent site, computed analytically (conjugate problems), by quadrature on a dense grid (constrained-support problems), or by a long cached run of the No-U-Turn Sampler (NUTS) (Eight Schools).
 4. A scalar metric (almost always $|\mathbb{E}_q[\cdot] - \mathbb{E}_{\text{ref}}[\cdot]|$) and a tolerance.
 
 A *cell* runs the algorithm on the problem, draws posterior samples for the target site, and compares the recovered moment against the reference.
