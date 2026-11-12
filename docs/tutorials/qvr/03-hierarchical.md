@@ -1,6 +1,6 @@
 # 3. Hierarchical models
 
-The eight-schools data [@rubin1981parallel] give one estimated treatment effect $y_j$ and its known standard error $\sigma_j$ for each of eight schools. A [hierarchical model](https://en.wikipedia.org/wiki/Multilevel_model) draws the school effects from a shared population distribution, so each estimate is shrunk toward the population mean by an amount that depends on its standard error (partial pooling) [@gelman2013bayesian]. Write the model in QVR with a plate over schools, fit it with SVI and with the [No-U-Turn Sampler](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) (NUTS) [@hoffman2014nuts], and compare the centered and non-centered parameterizations.
+The eight-schools data [@rubin1981parallel] give one estimated treatment effect $y_j$ and its known standard error $\sigma_j$ for each of eight schools. A [hierarchical model](https://en.wikipedia.org/wiki/Multilevel_model) draws the school effects from a shared population distribution, so each estimate is shrunk toward the population mean by an amount that depends on its standard error (partial pooling) [@gelman2013bayesian]. Write the model in QVR with a plate over schools, fit it with stochastic variational inference (SVI) and with the [No-U-Turn Sampler](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) (NUTS) [@hoffman2014nuts], and compare the centered and non-centered parameterizations.
 
 ## Eight schools, centered
 

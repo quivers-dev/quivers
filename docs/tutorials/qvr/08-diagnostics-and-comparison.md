@@ -1,6 +1,6 @@
 # 8. Diagnostics and model comparison
 
-Three checks follow a fit: whether the MCMC chains converged, whether data replicated from the fitted model resemble the observed data (a posterior predictive check), and how the model's predictive accuracy compares with another model's (leave-one-out cross-validation). [`quivers.diagnostics`](../../api/diagnostics/index.md) runs all three through [ArviZ](https://python.arviz.org/). Apply them to the regression of [chapter 1](01-first-model.md), fitted with NUTS.
+Three checks follow a fit: whether the MCMC chains converged, whether data replicated from the fitted model resemble the observed data (a posterior predictive check), and how the model's predictive accuracy compares with another model's (leave-one-out cross-validation). [`quivers.diagnostics`](../../api/diagnostics/index.md) runs all three through [ArviZ](https://python.arviz.org/). Apply them to the regression of [chapter 1](01-first-model.md), fitted with the No-U-Turn Sampler (NUTS).
 
 ## The DataTree bridge
 
@@ -84,7 +84,7 @@ The diagnostics and the usual thresholds [@vehtari2021rhat]:
 | `r_hat` | Rank-normalized split R-hat, the larger of its bulk and folded forms: between-chain against within-chain variance | below 1.01 for every quantity | More warmup, more draws, or a better parameterization. |
 | `ess_bulk`, `ess_tail` | Effective sample size: the number of independent draws with the same precision, for the center and the tails of the distribution | at least 100 per chain | Longer runs or a better parameterization. |
 | `mcse_mean`, `mcse_sd` | Monte Carlo standard error of the posterior mean and standard deviation | small relative to `sd` | More draws. |
-| divergences (`result.total_divergences`) | HMC trajectories whose integration error blew up [@betancourt2015hierarchical] | zero | Raise `target_accept` toward 0.99, or reparameterize ([chapter 3](03-hierarchical.md#non-centered-parameterization)). |
+| divergences (`result.total_divergences`) | trajectories of Hamiltonian Monte Carlo (HMC) whose integration error blew up [@betancourt2015hierarchical] | zero | Raise `target_accept` toward 0.99, or reparameterize ([chapter 3](03-hierarchical.md#non-centered-parameterization)). |
 
 With 50 warmup steps and 100 draws for each of two chains, the run above misses the R-hat and effective sample size thresholds. Raise the budget for real fits.
 

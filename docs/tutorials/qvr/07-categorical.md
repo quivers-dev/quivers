@@ -125,7 +125,7 @@ A *Markov kernel* from $X$ to $Y$ assigns to each $x$ a probability distribution
 - `marginalize v : A <- F(args)` runs its indented body once for each element of the finite set `A` and combines the resulting log weights ([chapter 4](04-marginalize.md)).
 - `return v` keeps `v` and discards the other bindings.
 
-For the regression of [chapter 1](01-first-model.md), the kernel draws `sigma`, `beta_0`, and `beta_1`, and its weight is the Normal density of the observed `y`. SVI fits a guide to the normalized posterior, and NUTS samples it through the log joint density. Neither changes the program that defines the model. The compiler checks the effect summary (`Sample`, `Score`, `Marginal`, `Pure`) against the body, and [chapter 10](10-effects-and-handlers.md) introduces the finer effect rows of the core language.
+For the regression of [chapter 1](01-first-model.md), the kernel draws `sigma`, `beta_0`, and `beta_1`, and its weight is the Normal density of the observed `y`. Stochastic variational inference (SVI) fits a guide to the normalized posterior, and the No-U-Turn Sampler (NUTS) samples it through the log joint density. Neither changes the program that defines the model. The compiler checks the effect summary (`Sample`, `Score`, `Marginal`, `Pure`) against the body, and [chapter 10](10-effects-and-handlers.md) introduces the finer effect rows of the core language.
 
 ## Next
 

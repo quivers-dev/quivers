@@ -125,7 +125,7 @@ Check R-hat, effective sample size, and divergences before using the draws. [Cha
 
 ## Hybrid samplers
 
-- `WarmupThenHMC(guide, kernel, svi_steps, mcmc_warmup, mcmc_samples)` runs `svi_steps` of SVI and then starts MCMC chains from draws of the trained guide, which can shorten HMC's warmup.
+- `WarmupThenHMC(guide, kernel, svi_steps, mcmc_warmup, mcmc_samples)` runs `svi_steps` of stochastic variational inference (SVI) and then starts MCMC chains from draws of the trained guide, which can shorten HMC's warmup.
 - `AutoDAIS(base, model, observations, num_steps=..., init_step_size=...)` follows each draw of a base guide with `num_steps` Hamiltonian transitions without accept or reject steps along an annealing path, as in differentiable annealed importance sampling (DAIS) [@zhang2021dais; @geffner2021uha]. Each draw carries the importance weight of its own trajectory, so `ELBO()` estimates a valid lower bound on the log evidence. It can represent posteriors that a mean-field guide misses, at extra cost. Use the default `Reparameterized` estimator, since the guide has no density at arbitrary points.
 
 <!-- python: skip -->

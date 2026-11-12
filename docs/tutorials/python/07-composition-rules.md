@@ -235,4 +235,4 @@ export combined
 
 ## Next
 
-[Chapter 8](08-analysis-pipelines.md) fits regression formulas: a `fit("y ~ x + (1|g)", data=df, ...)` call, the QVR program it compiles to, NUTS, PSIS-LOO model comparison, and posterior predictive checks.
+[Chapter 8](08-analysis-pipelines.md) fits regression formulas: a `fit("y ~ x + (1|g)", data=df, ...)` call, the QVR program it compiles to, the No-U-Turn Sampler (NUTS), PSIS-LOO model comparison, and posterior predictive checks.

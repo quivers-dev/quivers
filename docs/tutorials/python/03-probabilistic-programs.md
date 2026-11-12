@@ -128,7 +128,7 @@ log_joint = program.log_joint(
 print(log_joint.shape)  # [3]
 ```
 
-[Chapter 5](05-variational-inference.md) fits such a program by SVI.
+[Chapter 5](05-variational-inference.md) fits such a program by stochastic variational inference (SVI).
 
 ## Let bindings
 

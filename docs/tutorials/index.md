@@ -4,9 +4,9 @@ Two tracks. The QVR track writes and fits statistical models in [QVR](../referen
 
 ## QVR track
 
-1. **[Your first model](qvr/01-first-model.md)**. Bayesian linear regression beside PyMC and NumPyro, effect signatures, data inputs, an SVI fit, and posterior draws.
+1. **[Your first model](qvr/01-first-model.md)**. Bayesian linear regression beside PyMC and NumPyro, effect signatures, data inputs, a fit by stochastic variational inference (SVI), and posterior draws.
 2. **[Generalized linear models](qvr/02-glms.md)**. Logistic and Poisson regression, inverse link functions, and the calibration of the posterior mean probability.
-3. **[Hierarchical models](qvr/03-hierarchical.md)**. Eight schools, plates, centered and non-centered parameterizations, and NUTS.
+3. **[Hierarchical models](qvr/03-hierarchical.md)**. Eight schools, plates, centered and non-centered parameterizations, and the No-U-Turn Sampler (NUTS).
 4. **[Mixtures and discrete latents](qvr/04-marginalize.md)**. Summing a discrete latent variable out with `marginalize`, for each row or for each group of rows.
 5. **[Sequence models](qvr/05-time-series.md)**. `scan`, recurrent networks, hidden Markov models summed by the forward algorithm, and state space models.
 6. **[Choosing an inference algorithm](qvr/06-inference-zoo.md)**. Guides, variational objectives, gradient estimators, MCMC kernels, and hybrids, with the literature for each.

@@ -179,7 +179,7 @@ The fitting code is the logistic code with this source and count data in place o
 
 - Add an exposure offset to the Poisson model, `let log_rate = beta_0 + beta_1 * x_design + offset`. The compiler records `offset` as a second data input, so add it to `observed_names` and to `observations`.
 - Replace the Bernoulli likelihood with `Binomial(total_count=n_trials, probs=p)`, where `n_trials` is a data input.
-- Fit the logistic model with NUTS instead of SVI, as in [chapter 6](06-inference-zoo.md#step-1-vi-mcmc-or-hybrid).
+- Fit the logistic model with the No-U-Turn Sampler (NUTS) instead of stochastic variational inference (SVI), as in [chapter 6](06-inference-zoo.md#step-1-vi-mcmc-or-hybrid).
 
 ## Next
 

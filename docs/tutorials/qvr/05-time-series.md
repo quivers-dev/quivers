@@ -191,7 +191,7 @@ Each position draws a latent state, addressed `s@0`, `s@1`, and so on, and score
 ## Try this
 
 - Give each of several sequences its own transition scale, drawn around a shared population scale as in chapter 3.
-- Replace the linear `transition` in the state space program with a neural Gaussian cell from `deep_markov.qvr` and compare the ELBO after the same number of SVI steps.
+- Replace the linear `transition` in the state space program with a neural Gaussian cell from `deep_markov.qvr` and compare the ELBO after the same number of stochastic variational inference (SVI) steps.
 - Feed the HMM a sequence of 2000 symbols and confirm that `log_joint` stays finite.
 
 ## Next

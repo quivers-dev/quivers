@@ -1,6 +1,6 @@
 # 9. Debugging quivers programs
 
-A failing model fails at one of four stages. A syntax error means the source cannot be parsed. A type, effect, or algebra error means the declarations do not fit together. A runtime error concerns the data given at run time or the support of a distribution. And a model that passes all three can still fit poorly, because its [posterior](../qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid) is hard to approximate or its assumptions do not describe the data. The tools, one for each stage, are `CompileError` messages, the compiled steps of a `Program`, execution traces, the SVI loss and gradients, and the NUTS diagnostics.
+A failing model fails at one of four stages. A syntax error means the source cannot be parsed. A type, effect, or algebra error means the declarations do not fit together. A runtime error concerns the data given at run time or the support of a distribution. And a model that passes all three can still fit poorly, because its [posterior](../qvr/06-inference-zoo.md#step-1-vi-mcmc-or-hybrid) is hard to approximate or its assumptions do not describe the data. The tools, one for each stage, are `CompileError` messages, the compiled steps of a `Program`, execution traces, the stochastic variational inference (SVI) loss and gradients, and the diagnostics of the No-U-Turn Sampler (NUTS).
 
 ## Reading `CompileError`
 

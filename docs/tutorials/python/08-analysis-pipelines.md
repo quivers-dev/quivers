@@ -4,7 +4,7 @@
 
 The main objects:
 
-- `fit` parses the formula against a dataframe, compiles it to a [`MonadicProgram`](../../api/continuous/programs.md), and runs NUTS, HMC, or SVI. It returns a [`BayesianFit`](../../api/formulas/fit.md).
+- `fit` parses the formula against a dataframe, compiles it to a [`MonadicProgram`](../../api/continuous/programs.md), and runs the No-U-Turn Sampler (NUTS), Hamiltonian Monte Carlo (HMC), or stochastic variational inference (SVI). It returns a [`BayesianFit`](../../api/formulas/fit.md).
 - The posterior of a fit is an `MCMCResult` for NUTS and HMC, whose samples have shape `(chain, draw)` for each site, or a fitted [`Guide`](../../api/inference/guide.md) for SVI.
 - [`to_datatree`](../../api/diagnostics/arviz_io.md) converts an `MCMCResult` to the [ArviZ](https://python.arviz.org/) `DataTree` that the diagnostics read. `to_datatree_from_svi` converts SVI draws, and `to_datatree_any` accepts either.
 
