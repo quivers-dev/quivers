@@ -19,7 +19,6 @@ Two tracks. The QVR track writes and fits statistical models in [QVR](../referen
 13. **[Check, inspect, and transpile](qvr/13-release-workflow.md)**. Target checks, entry points, traces, the language server, and transpiling before a release.
 14. **[Exact Bayes with finite collection expressions](qvr/14-collection-programs.md)**. `traverse`, `map`, and `logsumexp_over` in a posterior computed by enumeration.
 
-Chapters 1 to 6 and 8 need no category theory.
 
 ## Python track
 
