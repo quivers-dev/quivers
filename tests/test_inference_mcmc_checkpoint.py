@@ -499,9 +499,7 @@ def test_mcmc_runs_and_resumes_on_a_token_corpus(tmp_path: Path) -> None:
         _pcfg_mcmc(checkpoint).resume(tmp_path, program, _X, {"corpus": swapped})
     # The same corpus, rebuilt from tuples, is the same data.
     rebuilt = tuple(tuple(sentence) for sentence in _CORPUS)
-    resumed = _pcfg_mcmc(checkpoint).resume(
-        tmp_path, program, _X, {"corpus": rebuilt}
-    )
+    resumed = _pcfg_mcmc(checkpoint).resume(tmp_path, program, _X, {"corpus": rebuilt})
     _assert_identical(reference, resumed)
 
 
