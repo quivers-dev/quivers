@@ -210,11 +210,11 @@ The result is a
 [`Conditioned`](../api/inference/conditioning.md#quivers.inference.conditioning.Conditioned)
 model that wraps the original and fixes the observed sites.
 
-### Host data: per-row covariates and index arrays
+### Data inputs: per-row covariates and index arrays {#host-data-per-row-covariates-and-index-arrays}
 
 A *data input* is a name that a program reads but no step binds, such as a covariate
-or an index array; its value is given at run time, as with a variable of a Stan `data`
-block [@carpenter2017stan]. In the `condition` dict, or the `observations` dict of an
+or an index array, whose value is given at run time, as with a variable of a Stan
+`data` block [@carpenter2017stan]. In the `condition` dict, or the `observations` dict of an
 inference call, a key that matches no sample or observe site is a data input, visible
 to `let` expressions:
 
