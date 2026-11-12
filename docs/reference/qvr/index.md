@@ -13,9 +13,9 @@ that a *handler* answers, possibly by resuming the suspended computation
 [@plotkin2003algebraic; @plotkin2009handlers]. Its
 *effect row* lists the effect instances it may still request [@leijen2014koka]. *Elaboration* is
 the compiler step that rewrites a declaration into explicit QIEC terms. A `define` declaration
-writes a computation directly, and a probabilistic `program`, a `deduction`, a schema-backed
-`parser(...)`, and a structural `encoder`, `decoder`, or `loss` elaborate to computations. Since
-every declaration reaches the same core, `qvr run`, `Program.run`, the REPL, the language server,
+writes a computation directly, and a probabilistic `program`, a `deduction`, a `parser(...)`
+built from rule schemata, and a structural `encoder`, `decoder`, or `loss` elaborate to
+computations. Since every declaration reaches the same core, `qvr run`, `Program.run`, the REPL, the language server,
 and the transpilers report the same types, [effect rows](effects-and-handlers.md#effect-rows),
 and diagnostic codes.
 
@@ -90,7 +90,7 @@ The diagram follows a source file from parsing to its two consumers. The *refere
 library's interpreter for QIEC, the closest standard notion being a definitional interpreter
 [@reynolds1972definitional], and it fixes what a checked program means operationally
 ([reference machine](../../developer/qiec.md#reference-evaluator)). The transpilers lower the same
-module to a target-independent intermediate representation (IR) and render it for each target.
+module to an intermediate representation (IR) shared by all targets and render it for each target.
 
 ```mermaid
 flowchart TB

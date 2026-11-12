@@ -12,7 +12,7 @@ to the source line.
 | --- | --- | --- |
 | `program` | one computation over the built-in `random` and `score` instances, with helpers for [marginalization](probabilistic-programs.md#exact-marginalization) and scans | the core handlers, and any model attachments |
 | `deduction` | a family of items, a recursive derivation, `Search`, `Weight[K]`, `Param`, handlers that collect the weights, and a run entry | the core search, semiring, and parameter providers |
-| `define p = parser(...)` | a finite family of items and a goal-directed [deduction](../../guides/deduction.md#the-framework) instantiated from rule schemata and bundles | the search runtime of a deduction |
+| `define p = parser(...)` | a finite family of items and a [deduction](../../guides/deduction.md#the-framework) instantiated from rule schemata and bundles, searched from the goal | the search runtime of a deduction |
 | `signature` | an opaque family of terms indexed by the declared sorts | structural term values held in the Python process |
 | `encoder` | a typed `Compute[Term, Code]` request and a named computation | an attached PyTorch [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) |
 | `decoder` | a typed `Compute[Code, Term]` request and computations for the negative log-likelihood | an attached PyTorch [decoder](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks) |
@@ -68,7 +68,7 @@ weights, and parameter values.
 The [weighted deduction guide](../../guides/deduction.md) and the
 [parsing tutorial](../../tutorials/qvr/11-parsing-and-search.md) build deductions step by step.
 
-## Schema-backed parsers
+## Parsers from rule schemata {#schema-backed-parsers}
 
 `parser(rules=[...], terminal=Token, start=S, depth=n)` builds a parser from *rule schemata*, rule
 templates with pattern variables [@shieber1995principles]. It instantiates the schemata over the

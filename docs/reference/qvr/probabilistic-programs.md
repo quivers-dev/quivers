@@ -61,7 +61,7 @@ type is inferred from the name's uses:
 | Use of the data input `x` | Checked type of `x` |
 | --- | --- |
 | fills a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
-| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter; several index vectors in one subscript select one entry per position, `x[i[n], j[n]]` |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter (several index vectors in one subscript select one entry per position, `x[i[n], j[n]]`) |
 | combined entry by entry with a value of known shape, as in `x * resid` | that value's shape |
 | read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
 | used as an index, or gathered from in an index position as in `E[tokens[q], k]` | a tensor of `Int` |
@@ -92,7 +92,7 @@ Each data input is given at its checked type. The reference machine validates ev
 (`log_joint`, `trace`, `rsample`, and the inference built on them), refuses a datum whose shape or
 element type contradicts its checked type, and names the datum and every admissible shape. Examples
 are a vector for a scalar input, an index of shape `(rows, units)` for a vector over `Row`, a
-cutpoint table of neither the per-row nor the shared shape, and a floating-point tensor for an `Int`
+cutpoint table of neither the shape with one row per draw nor the shared shape, and a floating-point tensor for an `Int`
 index. An open extent takes the length of the first datum it shapes. Both runtimes thus score the
 model that the checked module and every transpiled program describe.
 
@@ -211,7 +211,7 @@ machine's:
 | --- | --- |
 | a pure callee: no effect, no static arguments, pure bindings ending in a return | `let` steps, the callee's bindings under fresh names |
 | a pure callee that calls other pure computations | the same, with each nested call inlined in turn |
-| a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`; both branches are evaluated, so a branch undefined where it is not selected (a `log` of a negative number) gives a NaN gradient |
+| a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`, which evaluates both branches, so a branch undefined where it is not selected (a `log` of a negative number) gives a NaN gradient |
 | a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a draw from a program runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score becomes a score step |
 | `let ys <- traverse(xs, x -> f(x, ...))` with a pure `f` | a comprehension over the items of `xs` |
 | the same with an `f` that draws | one plated draw per site of `f`, named `ys$label`, over the object that `xs` runs along |
@@ -323,8 +323,8 @@ A scan takes its options in any order, each at most once, as in
 
 | Option | Meaning |
 | --- | --- |
-| `init` | the initial state: zero by default; `init=learned` adds a learned input for it; `init=h0` starts from `h0`, a binding the scanning program makes before the scan |
-| `outputs` | `last`, the default, binds the final state; `all` binds the sequence of every state, one per position |
+| `init` | the initial state: zero by default, a learned input with `init=learned`, or with `init=h0` the value of `h0`, a binding the scanning program makes before the scan |
+| `outputs` | `last`, the default, binds the final state, and `all` binds the sequence of every state, one per position |
 | `reverse` | `true` visits the positions from the last to the first |
 
 With `init=h0`, a binding of the state's type is read as it is, and a scalar binding is the one

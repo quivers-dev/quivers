@@ -72,8 +72,8 @@ shows how static arguments are received, and the
 fix to compute result shapes.
 
 Family names and constructor names live in separate namespaces. A constructor's static arguments
-are the family's parameters followed by the constructor's own telescope. A three-element real
-vector is thus built as follows:
+are the family's parameters followed by the constructor's own telescope. A real vector of
+three elements is thus built as follows:
 
 <!-- compile: qiec -->
 ```qvr
@@ -165,8 +165,8 @@ of fixed shape `map`, `fold`, `length`, and `logsumexp_over`.
 | --- | --- |
 | `sum`, `mean`, `prod`, `max`, `min`, `logsumexp` | collapse the last axis, so shape `(n, k)` becomes `(n,)` and a vector becomes a number |
 | `softmax`, `log_softmax`, `cumsum`, `sort`, `normalize` | act along the last axis and keep the shape |
-| `concat(a, b, ...)` | join tensors along the last axis; the leading axes agree and the last extents add |
-| `slice(v, start, length)` | keep `length` entries of the last axis from `start`; both bounds are integer literals |
+| `concat(a, b, ...)` | join tensors along the last axis, whose extents add, with the leading axes equal |
+| `slice(v, start, length)` | keep `length` entries of the last axis from `start`, with both bounds integer literals |
 | `select(c, a, b)` | `a` where the `Bool` `c` holds and `b` elsewhere, entry by entry, with both evaluated |
 | `real(c)`, `int(c)` | read a `Bool` as one or zero |
 | `matmul(a, b)` | sum the last axis of `a` against the first axis of a vector or matrix `b` |

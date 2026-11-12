@@ -51,7 +51,7 @@ These interfaces need no source declaration:
 
 Every probabilistic `program` performs through two built-in instances, `random : Random` and
 `score : Score`. A `Search` interface is generated for each
-[deduction](../../guides/deduction.md#the-framework) and each schema-backed parser, because the
+[deduction](../../guides/deduction.md#the-framework) and each parser built from rule schemata, because the
 number of alternatives at a choice depends on the elaborated system. Structural declarations create
 `Compute` instances, which a caller reaches through `Program.run` rather than by writing the
 requests.
@@ -139,8 +139,8 @@ quantitative type theory [@atkey2018syntax]:
 | `1` | resumes exactly once | a state read or update |
 | `omega` | resumes any number of times | a search clause that explores each alternative |
 
-The checker records each clause's grade, and the reference machine enforces it. A grade of `omega` lets the continuation run more than once, which also
-repeats the requests that follow. Each handler installed in that continuation must thus be one the
+The checker records each clause's grade, and the reference machine enforces it. A grade of `omega`
+lets the continuation run more than once, which also repeats the requests that follow. Each handler installed in that continuation must thus be one the
 runtime can copy for a second resumption.
 
 ## Scoped instances

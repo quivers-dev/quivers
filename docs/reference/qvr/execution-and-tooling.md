@@ -121,7 +121,7 @@ events that `qvr run --trace` prints, and `EntryRun.to_data()` returns the paylo
 | `--seed N` | seed the reference generator that draws the sites not given with `--site` |
 | `--fuel STEPS` | stop after `STEPS` evaluation steps with `qiec-run-fuel` |
 | `--trace` | print the execution trace events to stderr (without `--json`) |
-| `--json` | print, on success, the value, result type, runtime label, trace, entry kind, and for a program the log joint; on failure, the diagnostics |
+| `--json` | print, on success, the value, result type, runtime label, trace, entry kind, and for a program the log joint, or, on failure, the diagnostics |
 | `--runtime FILE.json` | use the provider configuration in `FILE.json` |
 
 *Fuel* is a bound on the number of evaluation steps. Without `--fuel` a run has no bound, so a
@@ -182,7 +182,7 @@ listed in [Interactive tools: REPL, kernel, and language server](../../guides/re
 
 The QVR language server (LSP) uses the compiler's typed source model. It provides:
 
-- parser, checker, QIEC, and target-capability diagnostics, each with a source range;
+- parser, checker, QIEC, and target capability diagnostics, each with a source range;
 - hovers for declarations, calls, operations, instances, and inferred rows;
 - definitions, references, and renaming for symbols the QVR source declares;
 - nested document symbols for handler clauses, locals, calls, and program scopes;
