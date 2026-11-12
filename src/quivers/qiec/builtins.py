@@ -916,7 +916,8 @@ def _support(sampleable: object) -> tuple[object, ...]:
     -------
     tuple[object, ...]
         The values one draw can take: the family's declared finite
-        support, or the class indices of a ``Categorical``.
+        support, or the class indices of a ``Categorical``, read off
+        its probabilities or its logits.
 
     Raises
     ------
@@ -932,10 +933,12 @@ def _support(sampleable: object) -> tuple[object, ...]:
     if record.relaxes is not None:
         return tuple(record.relaxes[1])
     if sampleable.family == "Categorical":
-        probs = sampleable.arguments.get("probs")
-        classes = _weight_shape(probs)
+        weights = sampleable.arguments.get("probs", sampleable.arguments.get("logits"))
+        classes = _weight_shape(weights)
         if not classes:
-            raise InvalidHandlerError("Categorical enumeration needs its probabilities")
+            raise InvalidHandlerError(
+                "Categorical enumeration needs its probabilities or logits"
+            )
         return tuple(range(classes[-1]))
     raise InvalidHandlerError(
         f"family {sampleable.family!r} has no finite support to enumerate"

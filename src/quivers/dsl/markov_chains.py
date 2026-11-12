@@ -184,9 +184,7 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
             f"the block over {latent!r} in the cell {name!r} is grouped; a "
             f"marginalized chain sums one state per position",
         )
-    if block.index is not None and not _same_object(
-        block.index, declaration.codomain
-    ):
+    if block.index is not None and not _same_object(block.index, declaration.codomain):
         _refuse(
             "state",
             name,

@@ -1889,7 +1889,9 @@ class _ProgramElaboration:
                 implementation="foreign",
             )
         declared_handlers[ENUMERATE_TABLE_HANDLER] = HandlerDef(
-            HandlerId.derive(self.source.module_name, "handler", ENUMERATE_TABLE_HANDLER),
+            HandlerId.derive(
+                self.source.module_name, "handler", ENUMERATE_TABLE_HANDLER
+            ),
             ENUMERATE_TABLE_HANDLER,
             random.ref,
             (HandlerClauseDef(sample.id, ResumptionGrade.UNRESTRICTED),),
@@ -3807,7 +3809,9 @@ class _ProgramElaboration:
         visited = Local("__chain_t", INT)
         sequence = Local("__chain_xs", local.type)
         carried = Local("__chain_log_filter", filter_type)
-        passed_locals = tuple(Local(f"__chain_{item.name}", item.type) for item in passed)
+        passed_locals = tuple(
+            Local(f"__chain_{item.name}", item.type) for item in passed
+        )
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
             identity,
@@ -3848,7 +3852,9 @@ class _ProgramElaboration:
             else Var(visited)
         )
         entry = Local("__chain_x", entry_type)
-        rows = tuple(Local(f"__chain_row_{index}", table_type) for index in range(count))
+        rows = tuple(
+            Local(f"__chain_row_{index}", table_type) for index in range(count)
+        )
         table = Local("__chain_table", filter_type)
         evidence = Local("__chain_evidence", REAL)
         following = Local("__chain_next", filter_type)
@@ -3968,7 +3974,9 @@ class _ProgramElaboration:
                 continuation,
             )
         body: Computation = If(
-            self._primitive("eq_int", (Var(visited), length), node, (*path, "finished")),
+            self._primitive(
+                "eq_int", (Var(visited), length), node, (*path, "finished")
+            ),
             Return(LiteralValue(0.0, REAL)),
             Bind(
                 position,
@@ -4023,7 +4031,12 @@ class _ProgramElaboration:
             identity,
             name,
             statics,
-            (LiteralValue(0, INT), Var(local), initial, *(Var(item) for item in passed)),
+            (
+                LiteralValue(0, INT),
+                Var(local),
+                initial,
+                *(Var(item) for item in passed),
+            ),
             REAL,
             signature.effects,
             _origin_at(self, path, "call", node),

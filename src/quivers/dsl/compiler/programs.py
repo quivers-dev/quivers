@@ -76,7 +76,6 @@ from quivers.dsl.ast_nodes import (
     DrawStep,
     Expr,
     ExprIdent,
-    ExprScan,
     ExprMorphismCall,
     ExprTransCompose,
     DefineDecl,
@@ -151,7 +150,7 @@ from quivers.dsl.let_expr_traversal import (
     walk_let_expr,
 )
 from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
-from quivers.dsl.step_resolution import StepResolutionError
+from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
@@ -4843,8 +4842,10 @@ class _ProgramsMixin:
             if transition.args and isinstance(transition.args[0], DrawArgNamed)
             else None
         )
-        if transition.args is None or len(transition.args) != 1 or (
-            parameterization not in ("probs", "logits")
+        if (
+            transition.args is None
+            or len(transition.args) != 1
+            or (parameterization not in ("probs", "logits"))
         ):
             raise CompileError(
                 f"the cell {cell.name!r} draws its next state {cell.latent!r} from "
@@ -7227,7 +7228,7 @@ class _ProgramsMixin:
                 self._transformations.pop(name, None)
 
     def _scans_marginalized_cell(self, expr: Expr) -> bool:
-        """Whether an expression scans the cell of a marginalized chain.
+        """Whether an expression names the cell of a marginalized chain.
 
         Parameters
         ----------
@@ -7237,15 +7238,14 @@ class _ProgramsMixin:
         Returns
         -------
         bool
-            ``True`` for ``scan(cell, ...)`` with ``cell`` a program that
-            returns the latent it marginalizes.
+            ``True`` when the expression mentions a program that returns
+            the latent it marginalizes, which only a scan drawn by a
+            program runs; the expansion of that draw checks the form.
         """
-        if not isinstance(expr, ExprScan) or not isinstance(expr.expr, ExprIdent):
-            return False
-        name = expr.expr.name
+        names = _expr_ident_names(expr)
         return any(
             isinstance(statement, ProgramDecl)
-            and statement.name == name
+            and statement.name in names
             and returns_marginalized_latent(statement)
             for statement in self._module.statements
         )

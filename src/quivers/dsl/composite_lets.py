@@ -157,6 +157,7 @@ def expand_composite_lets(
                 _domain_names(stmt),
                 _domain_factors(stmt.domain),
             )
+            _refuse_cell_uses(stmt.draws, program_table)
             new_draws = _expand_draws(stmt.draws, program)
             refuse_marginal_chain_reads(tuple(new_draws), stmt.return_vars)
             # A scan's step program is declared before the program that
@@ -370,6 +371,7 @@ def expand_program_scans(
         if isinstance(statement, ProgramDecl)
     }
     declared = set(programs)
+    _refuse_cell_uses(declaration.draws, programs)
     if not _selects(declaration.draws, morphisms, lets, _scans):
         return declaration.draws, {}
     program = _Program(
@@ -489,7 +491,6 @@ def _expand_draws(
     any_changed = False
     out: list[ProgramStep] = []
     for step in draws:
-        _refuse_cell_use(step, program.programs)
         if isinstance(step, MarginalizeStep):
             scope_expanded = _expand_draws(step.scope, program, select)
             if scope_expanded is step.scope:
@@ -1326,12 +1327,12 @@ def refuse_marginal_chain_reads(
         if scan is None or not scan.marginal:
             continue
         readers = [
-            later for later in draws[index + 1 :] if step.name in _step_value_names(later)
+            later
+            for later in draws[index + 1 :]
+            if step.name in _step_value_names(later)
         ]
         if readers or step.name in returned:
-            where = (
-                f"line {readers[0].line}" if readers else "the program's return"
-            )
+            where = f"line {readers[0].line}" if readers else "the program's return"
             raise StepResolutionError(
                 "qvr-expand",
                 [
@@ -1342,6 +1343,31 @@ def refuse_marginal_chain_reads(
                     f"log marginal likelihood to the joint",
                 ],
             )
+
+
+def _refuse_cell_uses(
+    draws: tuple[ProgramStep, ...], programs: dict[str, ProgramDecl]
+) -> None:
+    """Refuse every draw or call of a cell that returns a marginalized latent.
+
+    Parameters
+    ----------
+    draws : tuple[ProgramStep, ...]
+        A program body, searched through marginalization scopes.
+    programs : dict[str, ProgramDecl]
+        The module's programs by name.
+
+    Raises
+    ------
+    StepResolutionError
+        If a step draws from or calls such a cell other than as the cell
+        of a scan.
+    """
+    for step in draws:
+        if isinstance(step, MarginalizeStep):
+            _refuse_cell_uses(step.scope, programs)
+        else:
+            _refuse_cell_use(step, programs)
 
 
 def _refuse_cell_use(step: ProgramStep, programs: dict[str, ProgramDecl]) -> None:
