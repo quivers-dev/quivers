@@ -35,6 +35,12 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._closed_probability import (
+    ClosedBernoulli,
+    ClosedBinomial,
+    ClosedNegativeBinomial,
+    ClosedPoisson,
+)
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._ordered import OrderedLogistic
 from quivers.core.objects import SetObject
@@ -1040,7 +1046,7 @@ ConditionalFisherSnedecor = _make_family(
 
 ConditionalPoisson = _make_family(
     "ConditionalPoisson",
-    D.Poisson,
+    ClosedPoisson,
     [("rate", "softplus")],
     "Conditional Poisson(rate(x)). Discrete, non-negative integer counts.",
     # A rate of zero is the point mass at zero.
@@ -1061,10 +1067,14 @@ ConditionalGeometric = _make_family(
 
 ConditionalNegativeBinomial = _make_family(
     "ConditionalNegativeBinomial",
-    D.NegativeBinomial,
+    ClosedNegativeBinomial,
     [("total_count", "softplus_shifted"), ("probs", "sigmoid")],
     "Conditional NegativeBinomial(total_count(x), probs(x)). "
     "Discrete, over-dispersed count distribution.",
+    # A total count of zero, or a success probability of zero, is the
+    # point mass at zero; a success probability of one is no
+    # distribution, so it is held below one.
+    inline_bounds={"total_count": (0.0, math.inf), "probs": (0.0, 1.0 - EPS)},
 )
 """Conditional NegativeBinomial(total_count(x), probs(x)). Discrete, over-dispersed count distribution."""
 
@@ -3492,8 +3502,12 @@ _register_family(
 _register_family(
     FamilySpec(
         name="Bernoulli",
-        dist_class=D.Bernoulli,
-        params=(ParamSpec(name="probs", transform="sigmoid"),),
+        dist_class=ClosedBernoulli,
+        # A success probability of zero or one is the point mass at
+        # failure or success.
+        params=(
+            ParamSpec(name="probs", transform="sigmoid", inline_bounds=(0.0, 1.0)),
+        ),
         support=_constraints.boolean,
         discrete=True,
         output_kind="categorical",
@@ -3518,10 +3532,17 @@ _register_family(
 _register_family(
     FamilySpec(
         name="Binomial",
-        dist_class=D.Binomial,
+        dist_class=ClosedBinomial,
+        # Zero trials, or a success probability of zero or one, is a
+        # point mass.
         params=(
-            ParamSpec(name="total_count", transform="softplus_shifted", kind="integer"),
-            ParamSpec(name="probs", transform="sigmoid"),
+            ParamSpec(
+                name="total_count",
+                transform="softplus_shifted",
+                kind="integer",
+                inline_bounds=(0.0, math.inf),
+            ),
+            ParamSpec(name="probs", transform="sigmoid", inline_bounds=(0.0, 1.0)),
         ),
         support=_constraints.nonnegative_integer,
         discrete=True,

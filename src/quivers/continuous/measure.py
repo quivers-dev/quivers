@@ -100,14 +100,33 @@ class PointMass(Measure):
         return torch.zeros(self.batch_shape) if self.batch_shape else torch.tensor(0.0)
 
     def log_prob(self, value: Tensor) -> Tensor:
+        """The log mass at a point: zero at the atom, ``-inf`` elsewhere.
+
+        The result takes the floating dtype of ``value`` (the default
+        dtype for an integer or Boolean value), so a double-precision
+        mixture is not rounded to single precision by its atom's term.
+
+        Parameters
+        ----------
+        value : Tensor
+            The points.
+
+        Returns
+        -------
+        Tensor
+            The log masses.
+        """
         value_b = torch.as_tensor(value)
         match = value_b == self.value
         if match.dtype != torch.bool:
             match = match.bool()
+        dtype = (
+            value_b.dtype if value_b.is_floating_point() else torch.get_default_dtype()
+        )
         out = torch.full(
             torch.broadcast_shapes(value_b.shape, self.value.shape),
             _NEG_INF,
-            dtype=torch.get_default_dtype(),
+            dtype=dtype,
         )
         out = torch.where(match, torch.zeros_like(out), out)
         return out
@@ -482,12 +501,27 @@ class Mixture(Measure):
     def support(self) -> _constraints.Constraint:
         return _constraints.real
 
-    def log_normalizer(self) -> Tensor:
-        log_w = torch.log(
-            self.weights.clamp_min(
-                torch.finfo(self.weights.dtype).tiny,
-            )
+    def _log_weights(self) -> Tensor:
+        """The log of each mixing weight, ``-inf`` for a zero weight.
+
+        A zero weight drops its component from the mixture exactly. The
+        logarithm is taken of a weight replaced by one where it is zero
+        and then masked, so the gradient through a zero weight is zero
+        rather than the ``0 * inf`` of differentiating ``log`` there.
+
+        Returns
+        -------
+        Tensor
+            The log weights, shaped as the weights.
+        """
+        positive = self.weights > 0
+        safe = torch.where(positive, self.weights, torch.ones_like(self.weights))
+        return torch.where(
+            positive, torch.log(safe), torch.full_like(self.weights, -torch.inf)
         )
+
+    def log_normalizer(self) -> Tensor:
+        log_w = self._log_weights()
         component_norms = []
         for c in self.components:
             if isinstance(c, Measure):
@@ -510,11 +544,7 @@ class Mixture(Measure):
         return torch.logsumexp(stacked, dim=-1)
 
     def log_prob(self, value: Tensor) -> Tensor:
-        log_w = torch.log(
-            self.weights.clamp_min(
-                torch.finfo(self.weights.dtype).tiny,
-            )
-        )
+        log_w = self._log_weights()
         component_lps = [c.log_prob(value) for c in self.components]
         stacked = torch.stack(
             [
@@ -604,11 +634,7 @@ class Mixture(Measure):
         total mass of the subset must be positive.
         """
         restricted_raw = [Restrict(c, low=low, high=high) for c in self.components]
-        log_w = torch.log(
-            self.weights.clamp_min(
-                torch.finfo(self.weights.dtype).tiny,
-            )
-        )
+        log_w = self._log_weights()
         log_masses = [r.log_normalizer() for r in restricted_raw]
         stacked = torch.stack(
             [

@@ -91,7 +91,7 @@ _REFUSALS: dict[str, dict[str, str]] = {
         "bugs": "call:graph:account",
         "jags": "call:graph:account",
     },
-    "D": {"bugs": "marginalize:grouped-fibration"},
+    "D": {"bugs": "marginalize:grouped-index-map"},
     "E": {
         target: "qiec:capability:search:Ambiguous__run"
         for target in available_targets()
@@ -720,7 +720,8 @@ def test_f_every_target_refuses_the_network_under_its_kind() -> None:
     for target in available_targets():
         with pytest.raises(UnsupportedConstruct) as caught:
             transpile(module, target=target)
-        assert "param-source:mlp" in caught.value.kinds
+        reported = {k.partition(": ")[0] for k in caught.value.kinds}
+        assert "param-source:mlp" in reported
 
 
 def test_f_the_reference_answers_the_prelude_draw() -> None:

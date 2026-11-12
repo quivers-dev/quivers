@@ -1,14 +1,10 @@
-# [Resolution](../../semantics/types-and-spaces.md#6-resolution-in-code)
+# Resolution
 
-Resolution turns a symbolic object expression into a runtime object or space. A [product
-expression](../../guides/core.md#productset-and-coproductset) must retain the distinction between a finite index and a real-valued
-component even when both appear in one signature. These adapters implement that
-interpretation for the compiler.
-
-The compiler mixin that resolves QVR `ObjectExpr` ASTs to runtime
-`SetObject` and `ContinuousSpace` values. A single walk handles both
-strata, so a mixed-domain product such as `Real 3 * Token` resolves to
-one `ProductSpace`.
+The compiler mixin that [resolves](../../semantics/types-and-spaces.md#6-resolution-in-code) a QVR
+`ObjectExpr` to a runtime `SetObject` or `ContinuousSpace`. One walk handles both, so a
+[product](../../guides/core.md#productset-and-coproductset) that mixes the two, such as
+`Real 3 * Token`, resolves to one `ProductSpace` that keeps the finite index apart from the real
+component.
 
 !!! note "Internal module"
     This module is an implementation detail of the compiler and its

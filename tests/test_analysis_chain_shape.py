@@ -40,10 +40,10 @@ from quivers.core.algebras import (
     CountingAlgebra,
     GodelAlgebra,
     LogProbAlgebra,
-    LukasiewiczAlgebra,
+    StandardMVAlgebra,
     MarkovAlgebra,
     MaxPlusAlgebra,
-    ProbabilityAlgebra,
+    BoundedSumProductAlgebra,
     ProductFuzzyAlgebra,
     RealAlgebra,
     TropicalAlgebra,
@@ -144,7 +144,7 @@ class TestInitSpec:
         assert math.isclose(spec.mean, math.log(2.0) / 4.0, rel_tol=1e-9)
 
     def test_lukasiewicz_mid_saturation(self):
-        spec = _algebra_init_spec(LukasiewiczAlgebra(), depth=5, intermediate_size=1)
+        spec = _algebra_init_spec(StandardMVAlgebra(), depth=5, intermediate_size=1)
         assert spec.distribution == "uniform"
         assert math.isclose(spec.mean, 1.0 / 5.0, rel_tol=1e-9)
 
@@ -187,7 +187,9 @@ class TestInitSpec:
         assert math.isclose(spec.std, 1.0 / 3.0, rel_tol=1e-9)
 
     def test_probability_p_eq_inv_k(self):
-        spec = _algebra_init_spec(ProbabilityAlgebra(), depth=5, intermediate_size=1)
+        spec = _algebra_init_spec(
+            BoundedSumProductAlgebra(), depth=5, intermediate_size=1
+        )
         assert spec.distribution == "uniform"
         assert math.isclose(spec.mean, 0.2, rel_tol=1e-9)
 

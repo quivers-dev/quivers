@@ -67,12 +67,14 @@ from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
 
-InitStrategy = Literal["prior", "zero", "guide"]
+InitStrategy = Literal["jitter", "prior", "zero", "guide"]
 """How `MCMC` chooses each chain's initial point in the unconstrained
-latent space: ``"prior"`` draws a small seeded standard-normal
-perturbation of the origin, ``"zero"`` starts at the origin, and
-``"guide"`` maps one draw of a fitted guide into the unconstrained
-space."""
+latent space: ``"jitter"`` draws a seeded perturbation ``0.1 * N(0, I)``
+of the origin, ``"prior"`` draws every latent from its prior given the
+data (the model run forward with its observed sites held at their
+values) and maps the draw into the unconstrained space, ``"zero"``
+starts at the origin, and ``"guide"`` maps one draw of a fitted guide
+into the unconstrained space."""
 
 
 StopReason = Literal["draws", "seconds", "evaluations"]
@@ -523,8 +525,8 @@ class MCMC:
         Post-warmup samples per chain.
     num_chains : int
         Independent chains. Default ``4`` (Stan / NumPyro default).
-    init_strategy : {"prior", "zero", "guide"}
-        How to pick each chain's initial position.
+    init_strategy : {"jitter", "prior", "zero", "guide"}
+        How to pick each chain's initial position (`InitStrategy`).
     seed : int, optional
         Base seed used to derive an independent local generator for
         each chain. Repeated calls to `run` with the same seed are
@@ -560,7 +562,7 @@ class MCMC:
         num_warmup: int,
         num_samples: int,
         num_chains: int = 4,
-        init_strategy: InitStrategy = "prior",
+        init_strategy: InitStrategy = "jitter",
         *,
         seed: int | None = None,
         generator: torch.Generator | None = None,
@@ -653,13 +655,41 @@ class MCMC:
 
     def _initial_position(
         self,
-        registry: LatentRegistry,
+        setup: _RunSetup,
         guide: Guide | None,
         generator: torch.Generator,
     ) -> torch.Tensor:
+        """A chain's initial point in the unconstrained latent space.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's model, input, data, and registry.
+        guide : Guide | None
+            The guide for ``init_strategy="guide"``.
+        generator : torch.Generator
+            The chain's generator, which every random strategy draws from.
+
+        Returns
+        -------
+        torch.Tensor
+            The flat unconstrained position, shape ``(D,)``.
+
+        Raises
+        ------
+        ValueError
+            If ``init_strategy="guide"`` has no guide.
+        """
+        registry = setup.registry
         D = registry.total_unconstrained_dim
         if self.init_strategy == "zero":
             return torch.zeros(D)
+        if self.init_strategy == "prior":
+            prior_trace = _with_generator(
+                generator, lambda: trace(setup.model, setup.x, setup.observations)
+            )
+            unc, _ = registry.to_unconstrained(registry.trace_draw(prior_trace))
+            return registry.flatten_unconstrained(unc)
         if self.init_strategy == "guide":
             if guide is None:
                 raise ValueError(
@@ -671,8 +701,8 @@ class MCMC:
             draw = registry.trace_row(trace_side)
             unc, _ = registry.to_unconstrained(draw)
             return registry.flatten_unconstrained(unc)
-        # "prior": draw a fresh standard-normal position, scaled
-        # mildly so chains spread out without diverging.
+        # "jitter": a seeded standard-normal position, scaled mildly so
+        # chains spread out near the origin.
         return 0.1 * torch.randn(D, generator=generator)
 
     @staticmethod
@@ -761,8 +791,9 @@ class MCMC:
                 f"MCMC.run: {self.checkpoint.path} already holds a checkpoint; "
                 "continue it with MCMC.resume, or remove it to start afresh"
             )
-        setup = self._setup(model, x, observations, "MCMC.run")
-        header = self._header(setup, self._run_seed())
+        run_seed = self._run_seed()
+        setup = self._setup(model, x, observations, "MCMC.run", run_seed)
+        header = self._header(setup, run_seed)
         records: list[_ChainRecord | None] = [None] * self.num_chains
         return self._execute(setup, header, records, guide)
 
@@ -814,7 +845,9 @@ class MCMC:
         stored_header, stored_chains = read_checkpoint(
             Path(directory) / CHECKPOINT_FILENAME
         )
-        setup = self._setup(model, x, observations, "MCMC.resume")
+        setup = self._setup(
+            model, x, observations, "MCMC.resume", stored_header.run_seed
+        )
         header = self._header(setup, stored_header.run_seed)
         for field_name, what in (
             ("model_fingerprint", "a different model or data"),
@@ -854,6 +887,7 @@ class MCMC:
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
         consumer: str,
+        run_seed: int,
     ) -> _RunSetup:
         """Check the inputs and build the registry and potential.
 
@@ -867,6 +901,9 @@ class MCMC:
             The data.
         consumer : str
             The method named in errors.
+        run_seed : int
+            The run's base seed, from which the recording run's stream
+            is derived.
 
         Returns
         -------
@@ -883,9 +920,13 @@ class MCMC:
         _check_observed_support(model, observations, consumer)
         # The latents are the sites one run at (x, observations) reaches,
         # every position of a scan included. The run draws its latents
-        # from a forked stream, so Torch's global RNG is left as it was.
+        # from a stream derived from the run's seed, so a seeded run
+        # records the same latents whatever the global RNG holds, and
+        # Torch's global RNG is left as it was.
+        recording = self._chain_generator(run_seed, -1)
         try:
             with torch.random.fork_rng(devices=[]):
+                torch.random.set_rng_state(recording.get_state())
                 recorded = trace(model, x, observations=observations)
         except Exception as error:
             error.add_note(
@@ -962,7 +1003,7 @@ class MCMC:
             If the initial position is not finite or scores a
             non-finite log-density.
         """
-        init_pos = self._initial_position(setup.registry, guide, generator)
+        init_pos = self._initial_position(setup, guide, generator)
         if not torch.isfinite(init_pos).all():
             raise ValueError(
                 f"MCMC.run: chain {chain} initial_position must contain "

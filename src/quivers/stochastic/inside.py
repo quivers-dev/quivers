@@ -24,16 +24,21 @@ All computation is done in log-space for numerical stability,
 using logsumexp for marginalization. This preserves gradient
 flow for learning rule probabilities end-to-end.
 
-Categorical perspective
------------------------
-The inside algorithm implements a morphism
+Unary rules
+-----------
+An optional unary morphism adds rules ``A -> B``. A chain of them
+derives a category over a span from another over the same span, so
+each chart cell is closed once under the closure matrix
+``U* = (I - U)^{-1}`` of Stolcke (1995), section 4.5.2, which sums the
+probability of every chain exactly once.
 
-    inside(binary, lexical) : FreeMonoid(T) -> 1
-
-that maps variable-length terminal strings to their probability
-under the grammar. This is the counit of the adjunction between
-the free monad on the polynomial functor induced by the grammar
-and the forgetful functor to strings.
+What it computes
+----------------
+The algorithm computes a function from nonempty terminal strings to
+their inside weights under the start symbol: the sum, over the parse
+trees of the string, of the product of the weights of the rules in the
+tree. When the rule weights of each nonterminal form a probability
+distribution over its productions, this is the string's probability.
 
 Examples
 --------
@@ -49,10 +54,14 @@ Examples
 """
 
 from __future__ import annotations
+
 import torch
 import torch.nn as nn
+
 from quivers.core.morphisms import Morphism
 from quivers.core.objects import ProductSet
+from quivers.stochastic._kleene import kleene_star
+from quivers.stochastic.semiring import LOG_PROB
 
 
 class InsideAlgorithm(nn.Module):
@@ -77,13 +86,26 @@ class InsideAlgorithm(nn.Module):
     start : int
         Index of the start symbol in N (default 0).
     unary : Morphism or None
-        Optional unary production rules, a morphism ``N -> N``
-        closed over at every chart cell.
+        Optional unary production rules, a morphism ``N -> N`` read in
+        the derivation direction: ``unary[B, A]`` is the probability of
+        the rule ``A -> B``, which derives ``A`` over a span from ``B``
+        over the same span. Each chart cell is closed under these rules
+        once, by the matrix ``U* = I + U + U² + ... = (I - U)⁻¹``, so a
+        chain of unary rules is counted once
+        [Stolcke (1995)](<https://aclanthology.org/J95-2002/>),
+        section 4.5.2.
 
     Raises
     ------
     TypeError
         If the morphisms have incompatible types.
+
+    Notes
+    -----
+    The closure exists only when the spectral radius of ``U`` is below
+    one; a row-stochastic ``U`` (every category rewrites by some unary
+    rule with probability one) has spectral radius one, and parsing
+    with it raises `DivergentClosureError`.
     """
 
     def __init__(
@@ -150,15 +172,16 @@ class InsideAlgorithm(nn.Module):
         -------
         torch.Tensor
             Chart of shape ``(batch, N, seq_len, seq_len+1)``.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the unary rules' closure diverges.
         """
         batch, seq_len = tokens.shape
         log_binary = torch.log(self._binary.tensor.clamp(min=1e-30))
         log_lexical = torch.log(self._lexical.tensor.clamp(min=1e-30))
-        log_unary = (
-            torch.log(self._unary.tensor.clamp(min=1e-30))
-            if self._unary is not None
-            else None
-        )
+        log_star = _log_star(self._unary.tensor) if self._unary is not None else None
         N = self._n_nonterm
         cells: list[list[torch.Tensor | None]] = [
             [None for _ in range(seq_len + 1)] for _ in range(seq_len)
@@ -166,8 +189,8 @@ class InsideAlgorithm(nn.Module):
         for i in range(seq_len):
             tok_i = tokens[:, i]
             cell = log_lexical[:, tok_i].T
-            if log_unary is not None:
-                cell = _apply_unary_closure(cell, log_unary)
+            if log_star is not None:
+                cell = _apply_unary_closure(cell, log_star)
             cells[i][i + 1] = cell
         for span_len in range(2, seq_len + 1):
             for i in range(seq_len - span_len + 1):
@@ -188,8 +211,8 @@ class InsideAlgorithm(nn.Module):
                     parts.append(split_score)
                 stacked = torch.stack(parts, dim=0)
                 cell = _masked_logsumexp(stacked, dim=0)
-                if log_unary is not None:
-                    cell = _apply_unary_closure(cell, log_unary)
+                if log_star is not None:
+                    cell = _apply_unary_closure(cell, log_star)
                 cells[i][j] = cell
         chart = torch.full(
             (batch, N, seq_len, seq_len + 1), float("-inf"), device=tokens.device
@@ -221,6 +244,8 @@ class InsideAlgorithm(nn.Module):
         ------
         ValueError
             If the sentences are empty.
+        DivergentClosureError
+            If the unary rules' closure diverges.
         """
         squeeze = False
         if tokens.dim() == 1:
@@ -293,41 +318,52 @@ def _masked_logsumexp(scores: torch.Tensor, dim: int) -> torch.Tensor:
     return torch.where(all_empty, torch.full_like(reduced, float("-inf")), reduced)
 
 
-def _apply_unary_closure(
-    log_cell: torch.Tensor, log_unary: torch.Tensor, max_iters: int = 8
-) -> torch.Tensor:
-    """Reflexive-transitive closure under unary rules in log-space.
+def _log_star(unary: torch.Tensor) -> torch.Tensor:
+    """The log of the unary rules' closure ``U* = (I - U)⁻¹``.
 
-    Iteratively updates ``cell[A] ← logsumexp_B(cell[B] + log_unary[B, A])``
-    and joins with the original ``cell`` until a fixed point is reached
-    (or ``max_iters`` is exceeded). Convergence is guaranteed for unary
-    matrices whose absorbing spectrum is below the algebra's unit.
+    Parameters
+    ----------
+    unary : torch.Tensor
+        Shape ``(N, N)``: ``unary[B, A]`` is the probability of deriving
+        ``A`` from ``B`` over one span.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(N, N)``: the log of the total probability of the chains
+        of unary rules deriving ``A`` from ``B`` (``0`` on the diagonal
+        when no cycle returns there), ``-inf`` where there is none.
+
+    Raises
+    ------
+    DivergentClosureError
+        If the spectral radius of ``U`` is at least one.
+    """
+    log_unary = torch.where(
+        unary > 0, unary.clamp(min=torch.finfo(unary.dtype).tiny).log(), -torch.inf
+    )
+    return kleene_star(log_unary, LOG_PROB)
+
+
+def _apply_unary_closure(
+    log_cell: torch.Tensor, log_star: torch.Tensor
+) -> torch.Tensor:
+    """Close a chart cell under the unary rules: ``cell · U*`` in log space.
 
     Parameters
     ----------
     log_cell : torch.Tensor
-        Shape ``(batch, N)``: the current cell's log-probabilities
-        for each nonterminal.
-    log_unary : torch.Tensor
-        Shape ``(N, N)``: the log-probability matrix of unary rules.
-    max_iters : int
-        Closure-iteration cap.
+        Shape ``(batch, N)``: the cell's log inside weights from its
+        lexical or binary derivations.
+    log_star : torch.Tensor
+        Shape ``(N, N)``: the log closure from `_log_star`.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(batch, N)``: ``log Σ_B exp(cell[B]) U*[B, A]``.
     """
-    cell = log_cell
-    for _ in range(max_iters):
-        # cell_unary[batch, A] = logsumexp_B(cell[batch, B] + log_unary[B, A])
-        cell_unary = _masked_logsumexp(
-            cell.unsqueeze(2) + log_unary.unsqueeze(0), dim=1
-        )
-        # Algebra-join (noisy-OR in log-space) of cell and cell_unary
-        # ≈ logaddexp, taken as a masked reduction so a category
-        # unreachable on both sides stays unreachable without a
-        # ``nan`` gradient.
-        new_cell = _masked_logsumexp(torch.stack((cell, cell_unary), dim=-1), dim=-1)
-        if torch.allclose(new_cell, cell, atol=1e-6, rtol=1e-6):
-            return new_cell
-        cell = new_cell
-    return cell
+    return _masked_logsumexp(log_cell.unsqueeze(2) + log_star.unsqueeze(0), dim=1)
 
 
 __all__ = [

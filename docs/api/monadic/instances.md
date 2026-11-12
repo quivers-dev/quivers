@@ -1,13 +1,11 @@
 # Stdlib Effect Instances
 
-Choose an instance by [what a computation carries along with its result](../../guides/effects.md#stdlib-effect-instances): possible failure
-(`Maybe`), alternatives (`ListMonad`), shared input (`Reader`), mutable state passed
-explicitly (`State`), or accumulated output (`Writer`). The same sequencing interface
-then handles that information consistently [@moggi1991notions; @wadler1992essence]. The classes below specify the concrete
-representations and supported operations.
-
-Effect instances registered with their typeclass ABCs: `Identity`,
-`Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`,
-and `ListMonad`.
+Each instance carries a different [kind of information](../../guides/effects.md#stdlib-effect-instances)
+along with a computation's result: possible failure (`Maybe`), alternatives (`Alternative_`), a
+shared input (`Reader`), state passed explicitly (`State`), accumulated output (`Writer`), a
+continuation (`Continuation`), or nothing (`Identity`). The
+[monad](https://en.wikipedia.org/wiki/Monad_(functional_programming)) interface sequences each one
+[@moggi1991notions; @wadler1992essence]. Every instance is registered with its type class abstract
+base classes.
 
 ::: quivers.monadic.instances

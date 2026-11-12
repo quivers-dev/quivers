@@ -15,7 +15,7 @@ backend matrix.
 ## Choose a first example
 
 Start with [Bayesian regression](bayesian-regression.md) to connect unknown
-[coefficients, observations, and posterior draws](../tutorials/qvr/01-first-model.md#what-inference-will-answer). Then try the
+[coefficients, observations, and posterior draws](../tutorials/qvr/01-first-model.md#the-model). Then try the
 [Beta-Binomial example](beta-binomial-ab-test.md) for variation across batches,
 [partial pooling](parametric-pooling.md) for shared group structure, and a
 [mixture](mixture-model.md) for alternative explanations of an observation.

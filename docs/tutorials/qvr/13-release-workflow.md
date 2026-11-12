@@ -1,20 +1,8 @@
-# Check, inspect, and transpile a module
+# 13. Check, inspect, and transpile a module
 
-This tutorial turns the QVR tooling into a short pre-release workflow. The
-goal is to check a deployment claim: every public entry is exercised
-on the reference machine, and every advertised target is checked against the
-reachable computation graph before artifacts are emitted.
+Before releasing a QVR module, check that every public entry point runs on the [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for its core language, and that every promised transpile target supports what the module reaches. The example is the authored handler of [chapter 10](10-effects-and-handlers.md), which has an effect, a handler, a resumption, an open row, and one entry point with an empty row.
 
-We will use the authored handler from [tutorial 10](10-effects-and-handlers.md) because it
-contains a custom effect, a handler, a resumption, an open row, and one pure
-public wrapper.
-
-A successful source check says the declared computation is well formed.
-A successful target check says its required features pass that target's
-capability checks. Emission then produces source in the target language, whose
-own parser and runtime provide further checks. Matching [numerical scores](../../developer/contributing.md#test-tiers)
-requires a separate comparison with the original model. Each step answers a
-different question, which is why the workflow retains all of them.
+Each check answers a separate question. A source check says that the module is well formed and well typed. A target check says that each feature the module reaches is one the target supports (the target's *capabilities*). Transpiling produces source in the target language, whose own parser and runtime check it further. Whether the target computes the same scores as the original needs a separate numerical comparison.
 
 ## 1. Check the source and one target
 
@@ -23,24 +11,16 @@ qvr check docs/tutorials/qvr/source/authored-handler.qvr
 qvr check --target pyro docs/tutorials/qvr/source/authored-handler.qvr
 ```
 
-The first command establishes that parsing, surface resolution, elaboration,
-QIEC typing, handler coverage, and module validation succeed. The second adds
-the Pyro QIEC-capability pass. Repeat the target check for every backend named
-in your release notes or package metadata. Then run `qvr transpile` for each
-promised target: the capability pass does not exercise every
-surface-to-target renderer path.
+The first command parses the module, resolves its names, elaborates it to the [Quivers Indexed Effect Core](../../reference/qvr/index.md) (QIEC), type-checks the result, checks handler coverage, and validates the module. The second also checks the module against the capabilities of the Pyro target. Repeat the target check for every target named in the release notes or the package metadata. Then run `qvr transpile` for each of them, because the capability check does not exercise every renderer.
 
-## 2. Inspect the public boundary
+## 2. Inspect the public entry points {#2-inspect-the-public-boundary}
 
 ```bash
 qvr run docs/tutorials/qvr/source/authored-handler.qvr --list
 qvr run docs/tutorials/qvr/source/authored-handler.qvr robustify 8.0 --json
 ```
 
-The listing exposes `robust_request` and `robustify`. Only `robustify` is
-self-contained: its total handler removes `robust` from the row. If
-`robust_request` is intentionally public, its runtime provider is part of the
-deployment contract and should be documented beside it.
+The listing shows `robust_request` and `robustify`. Only `robustify` runs without outside help, because its total handler removes `robust` from its row. If `robust_request` is meant to be public, the provider that handles `robust` for it is part of the release and should be documented with it.
 
 ## 3. Inspect one trace
 
@@ -48,13 +28,11 @@ deployment contract and should be documented beside it.
 qvr run docs/tutorials/qvr/source/authored-handler.qvr robustify 8.0 --trace
 ```
 
-Confirm that the expected request reaches the expected handler and resumes the
-expected number of times. For a probabilistic program, also replay a small set
-of sites with `--site` and inspect the reported log joint.
+Confirm that each request reaches the intended handler and resumes the intended number of times. For a probabilistic program, also fix a few sites with `--site` and inspect the reported log joint density.
 
 ## 4. Use target diagnostics while editing
 
-Launch the language server with the intended backend:
+Start the language server for one target:
 
 ```bash
 qvr lsp --target pyro
@@ -68,12 +46,9 @@ In VS Code or Cursor, set:
 }
 ```
 
-The LSP republishes `qiec:capability:*` diagnostics as the call graph changes.
-Hovers show a call's instantiated signature and inferred row, while document
-symbols expose nested handler clauses, local instances, and generated program
-scopes.
+The language server reports `qiec:capability:*` diagnostics again whenever the call graph changes. Hovers show the instantiated signature and inferred row of a call, and the document outline lists handler clauses, local instances, and generated program scopes.
 
-## 5. Emit only after the check passes
+## 5. Transpile after the checks pass
 
 ```bash
 qvr transpile --to pyro docs/tutorials/qvr/source/authored-handler.qvr \
@@ -82,45 +57,28 @@ qvr transpile --to-all docs/tutorials/qvr/source/authored-handler.qvr \
   --out-dir generated
 ```
 
-`--to-all` tries each target and reports its result. A target that cannot
-represent a reachable construct returns a capability diagnostic. Use the
-[support matrix](../../transpile-support.md) to inspect release-corpus results,
-then run the command on your own module to check the operations it uses.
+`--to-all` tries each target and reports the result. A target that cannot represent a construct the module reaches returns a capability diagnostic. The [support matrix](../../transpile-support.md) gives the results on the gallery programs, and running the command on the module itself checks the operations it uses.
 
-## 6. Verify editor grammar provenance
+## 6. Editor grammar and migrations
 
-The current QVR grammar ships from this repository, including the tree-sitter
-queries and first-party editor extensions. For an editor built manually, point
-the parser at `grammars/qvr/`, not at a possibly older aggregate Panproto
-grammar package. `qvr-lsp` then supplies semantic tokens from the same typed
-source model used by `qvr check`.
-
-Panproto remains part of the migration and generic-tree path. When a release
-promises compatibility with an earlier source version, test the corresponding
-migration on a copy. For instance:
+Editors should load the tree-sitter grammar shipped in `grammars/qvr/` of the installed release, as [editor support](../../getting-started/highlighting.md) describes, so that their highlighting agrees with `qvr check`. When a release promises compatibility with source written for an earlier grammar, test the migration on a copy, with `OLD` the git tag of the earlier grammar:
 
 ```bash
-qvr migrate --from 0.18.0 --to HEAD old-model.qvr
+qvr migrate --from OLD --to HEAD old-model.qvr
 qvr check old-model.qvr
 ```
-
-The v0.18-to-current hop is validating and byte-preserving because that
-grammar extension was additive.
 
 ## 7. Automate the checks
 
 A release job should, in order:
 
-1. check every source without a target;
-2. check every promised source-target pair;
-3. invoke each public entry on a small fixture;
-4. compare a stable result or trace invariant;
-5. emit target artifacts; and
-6. run the target's own parser or compiler when its toolchain is available.
+1. Check every source file without a target.
+2. Check every promised pair of source file and target.
+3. Run each public entry point on a small fixture.
+4. Compare a stable result or a property of the trace.
+5. Transpile to each target.
+6. Run the target's own parser or compiler when its toolchain is installed.
 
-This ordering attributes failures to the narrowest boundary. A source or QIEC
-error appears before target emission; a capability refusal appears before a
-host toolchain starts; and a host syntax failure is not confused with either.
+In this order each failure is reported at the earliest step that can detect it. A source or QIEC error appears before any transpiling, and a capability refusal before any target toolchain starts, so a syntax error from a target's toolchain cannot be confused with either.
 
-The [execution reference](../../reference/qvr/execution-and-tooling.md) gives
-the complete CLI, provider, LSP, diagnostic, and grammar-ownership contract.
+The [execution reference](../../reference/qvr/execution-and-tooling.md) documents the command line, providers, language server, diagnostics, and grammar files.

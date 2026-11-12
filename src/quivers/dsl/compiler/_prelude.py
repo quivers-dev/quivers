@@ -56,10 +56,10 @@ from quivers.core.morphism_transformations import (
 from quivers.core.algebra_morphisms import (
     COUNTING_FROM_REAL,
     COUNTING_TO_REAL,
-    EXPECTATION,
-    LOG_PROB_HOM as _LOG_PROB_HOM,
-    MATERIAL_IMPLICATION,
-    MAX_PLUS_HOM as _MAX_PLUS_HOM,
+    MARKOV_TO_PRODUCT_FUZZY,
+    LOG_PROB_MAP as _LOG_PROB_MAP,
+    PRODUCT_FUZZY_TO_GODEL,
+    MAX_PLUS_MAP as _MAX_PLUS_HOM,
     PROBABILITY_CLAMP,
     PROBABILITY_TO_REAL,
     embedding as _make_embedding,
@@ -81,7 +81,7 @@ from quivers.dsl.ast_nodes import (
 # ``algebra X``, ``semigroupoid X``, ``bilinear_form X``,
 # ``composition_rule X``) to its concrete rule instance.  The
 # type is widened to ``CompositionRule`` (the common parent of
-# ``Algebra``, ``Semigroupoid``, and ``BilinearForm``) so
+# ``Algebra``, ``Semigroupoid``, and ``Magmoid``) so
 # user-defined non-algebra composition rules can be registered
 # alongside the shipped ones.
 _ALGEBRA_REGISTRY: dict[str, "CompositionRule"] = {
@@ -192,7 +192,7 @@ def _build_default_trans_singletons() -> dict:
     """Built-in transformation singletons available as bare-name
     references in the DSL.
 
-    Each value is a `AlgebraHomomorphism` or
+    Each value is a `CarrierMap` or
     `MorphismTransformation` (collectively, a ``Trans``
     value).  Bare-name lookup produces the singleton:
 
@@ -200,10 +200,10 @@ def _build_default_trans_singletons() -> dict:
         define g = f.change_base(phi)
     """
     return {
-        "expectation": EXPECTATION,
-        "log_prob": _LOG_PROB_HOM,
+        "expectation": MARKOV_TO_PRODUCT_FUZZY,
+        "log_prob": _LOG_PROB_MAP,
         "max_plus": _MAX_PLUS_HOM,
-        "material_implication": MATERIAL_IMPLICATION,
+        "material_implication": PRODUCT_FUZZY_TO_GODEL,
         "threshold": _make_threshold(0.5),
         "boolean_embedding": _make_embedding(BOOLEAN, PRODUCT_FUZZY),
         "probability_clamp": PROBABILITY_CLAMP,

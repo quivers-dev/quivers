@@ -1,13 +1,14 @@
-"""A marginalized Bernoulli-family latent weighted from its logits scores exactly.
+"""A marginalized Bernoulli latent weighted from its logits scores exactly.
 
 A zero-inflated count is a two-component mixture whose weights are the
 logistic function of a linear predictor ``eta`` and its complement. Written
-as ``ContinuousBernoulli(probs=sigmoid(eta))`` at a ``marginalize`` head, the
-compiled runtime forms ``log1p(-sigmoid(eta))`` in single precision, which
-cancels once ``eta`` passes about 10. Written as
-``ContinuousBernoulli(logits=eta)`` or ``Bernoulli(logits=eta)``, both
+as ``Bernoulli(probs=sigmoid(eta))`` at a ``marginalize`` head, the compiled
+runtime forms ``log1p(-sigmoid(eta))`` in single precision, which cancels
+once ``eta`` passes about 10. Written as ``Bernoulli(logits=eta)``, both
 execution paths weigh the atoms by ``log sigmoid(-eta)`` and
-``log sigmoid(eta)``, computed in log space.
+``log sigmoid(eta)``, computed in log space. A ``ContinuousBernoulli`` is a
+density on the whole unit interval, so it has no atoms to weigh and a
+``marginalize`` head refuses it.
 
 Each joint is checked against an exact double-precision computation of the
 zero-inflated Poisson likelihood at moderate and extreme predictors. The
@@ -29,6 +30,7 @@ import torch
 import torch.distributions as D
 
 from quivers.dsl import loads
+from quivers.dsl.compiler import CompileError
 
 #: The compiled runtime's relative tolerance: 64 float32 ulps.
 _FLOAT32_TOLERANCE = 2.0**-18
@@ -170,7 +172,6 @@ def _reference(source: str, eta: float) -> float:
 #: gated rate reads it: a Bernoulli's Boolean atoms are read as reals.
 _LOGIT_HEADS = {
     "bernoulli": ("Bernoulli(logits=eta)", "real(z)"),
-    "continuous-bernoulli": ("ContinuousBernoulli(logits=eta)", "z"),
 }
 
 
@@ -201,7 +202,9 @@ def test_complement_logits_weigh_the_other_atom(eta: float) -> None:
     # The weight `1 - sigmoid(eta)` is `sigmoid(-eta)`: written as logits
     # `-eta`, the block scores the mixture at the negated predictor, under a
     # prior symmetric about zero.
-    source = _program("ContinuousBernoulli(logits=neg)", "    let neg = 0.0 - eta\n")
+    source = _program(
+        "Bernoulli(logits=neg)", "    let neg = 0.0 - eta\n", gate="real(z)"
+    )
     expected = _exact(-eta)
     assert _compiled(source, eta) == pytest.approx(expected, rel=_FLOAT32_TOLERANCE)
     assert _reference(source, eta) == pytest.approx(expected, rel=_FLOAT64_TOLERANCE)
@@ -211,9 +214,9 @@ def test_logits_read_as_probabilities_would_score_another_density() -> None:
     # A renderer or runtime that read the logits as the probability would
     # clamp them into the unit interval and score a different mixture.
     misread = _exact(0.0)
-    compiled = _compiled(_program("ContinuousBernoulli(logits=eta)"), 0.7)
+    compiled = _compiled(_program("Bernoulli(logits=eta)", gate="real(z)"), 0.7)
     assert abs(compiled - _exact(0.7)) < abs(compiled - misread)
-    probability = _compiled(_program("ContinuousBernoulli(probs=eta)"), 0.7)
+    probability = _compiled(_program("Bernoulli(probs=eta)", gate="real(z)"), 0.7)
     assert abs(compiled - probability) > 1e-2
 
 
@@ -225,8 +228,42 @@ def test_the_probability_scale_weight_falls_outside_the_tolerance() -> None:
     # logit spelling of the same weight passes it.
     eta = 15.0
     source = _program(
-        "ContinuousBernoulli(probs=pi_z)", "    let pi_z = 1.0 - sigmoid(eta)\n"
+        "Bernoulli(probs=pi_z)",
+        "    let pi_z = 1.0 - sigmoid(eta)\n",
+        gate="real(z)",
     )
     expected = _exact(-eta)
     compiled = _compiled(source, eta)
     assert abs(compiled - expected) > _FLOAT32_TOLERANCE * abs(expected)
+
+
+@pytest.mark.parametrize(
+    "head", ["ContinuousBernoulli(logits=eta)", "ContinuousBernoulli(probs=eta)"]
+)
+def test_a_continuous_bernoulli_head_is_refused(head: str) -> None:
+    # A ContinuousBernoulli has a density on all of [0, 1] and no atom at
+    # 0 or 1; summing the block over those two points under Bernoulli
+    # weights scores a different model than the one the program samples.
+    with pytest.raises(CompileError, match="no finite support to sum over"):
+        loads(_program(head))
+
+
+def test_the_two_atom_sum_is_not_the_continuous_bernoulli_marginal() -> None:
+    # The marginal of y under z ~ ContinuousBernoulli(0.3), y ~ Normal(4z,
+    # 0.5) is the integral of the joint over z in [0, 1], here by a
+    # midpoint rule fine enough to fix four digits. The two-atom sum under
+    # Bernoulli(0.3) weights, which a marginalize head would compute if it
+    # admitted the family, misses it by nearly seven nats.
+    n = 200_000
+    z = (torch.arange(n, dtype=torch.float64) + 0.5) / n
+    prior = D.ContinuousBernoulli(probs=torch.tensor(0.3, dtype=torch.float64))
+    y = torch.tensor(2.0, dtype=torch.float64)
+    integrand = prior.log_prob(z) + D.Normal(4.0 * z, 0.5).log_prob(y)
+    integral = float(torch.logsumexp(integrand, 0) - math.log(n))
+    atoms = float(
+        torch.logaddexp(
+            math.log(0.7) + D.Normal(0.0, 0.5).log_prob(y),
+            math.log(0.3) + D.Normal(4.0, 0.5).log_prob(y),
+        )
+    )
+    assert integral - atoms > 6.0

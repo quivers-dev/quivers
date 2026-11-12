@@ -1,7 +1,7 @@
 """First-class transformation composition.
 
 A *transformation* in quivers is either a
-`quivers.core.algebra_morphisms.AlgebraHomomorphism`
+`quivers.core.algebra_morphisms.CarrierMap`
 (pointwise, lax monoidal) or a
 `quivers.core.morphism_transformations.MorphismTransformation`
 (shape-aware).  Both expose a ``source`` and ``target`` algebra
@@ -17,18 +17,18 @@ always a single flat sequence of base transformations.
 This is the Python-side surface for the DSL's ``t1 >>> t2``
 operator: in the ``.qvr`` surface,
 ``let pipe = softmax(B) >>> expectation`` builds the same value
-that ``compose_trans(softmax(B), EXPECTATION)`` builds here.
+that ``compose_trans(softmax(B), MARKOV_TO_PRODUCT_FUZZY)`` builds here.
 """
 
 from __future__ import annotations
 
 from quivers.core.morphism_transformations import MorphismTransformation
-from quivers.core.algebra_morphisms import AlgebraHomomorphism
+from quivers.core.algebra_morphisms import CarrierMap
 
 
-type TransValue = AlgebraHomomorphism | MorphismTransformation
+type TransValue = CarrierMap | MorphismTransformation
 """A single base transformation: either a
-`AlgebraHomomorphism` (pointwise) or a
+`CarrierMap` (pointwise) or a
 `MorphismTransformation` (shape-aware)."""
 
 
@@ -93,7 +93,7 @@ def compose_trans(*steps: TransValue | TransSeq) -> TransSeq:
     """Compose two or more transformations into a single sequence.
 
     Each argument is either a base transformation (a
-    ``AlgebraHomomorphism`` or ``MorphismTransformation``) or
+    ``CarrierMap`` or ``MorphismTransformation``) or
     another `TransSeq` whose steps are inlined.  The
     resulting sequence is flat; nested compositions never appear
     in `TransSeq.steps`.

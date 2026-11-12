@@ -123,9 +123,11 @@ def fit(
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     method: Literal["nuts", "hmc", "svi"] = "nuts",
-    num_warmup: int = 500,
-    num_samples: int = 1000,
-    num_chains: int = 4,
+    num_warmup: int | None = None,
+    num_samples: int | None = None,
+    num_chains: int | None = None,
+    num_steps: int | None = None,
+    learning_rate: float = 1e-2,
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     priors: Mapping[str, str] | None = None,
@@ -160,18 +162,76 @@ def fit(
         Registered response family or a family value.
     method : {"nuts", "hmc", "svi"}
         Inference algorithm.
+    num_warmup : int or None
+        MCMC warmup iterations per chain (NUTS and HMC only); 500 when
+        omitted.
+    num_samples : int or None
+        MCMC draws kept per chain after warmup (NUTS and HMC only); 1000
+        when omitted.
+    num_chains : int or None
+        MCMC chains (NUTS and HMC only); 4 when omitted.
+    num_steps : int or None
+        SVI optimization steps (SVI only); 1000 when omitted.
+    learning_rate : float
+        The Adam learning rate of the SVI optimizer (SVI only).
+    fixed_prior : str
+        Prior of every fixed-effect coefficient.
+    random_scale_prior : str
+        Prior of every random-effect standard deviation.
+    priors : Mapping[str, str] or None
+        Per-parameter priors that override the defaults.
+    guide : type or None
+        The SVI guide class; `AutoNormalGuide` when omitted.
+    reparameterize : {"centered", "noncentered"}
+        Parameterization of the random effects.
+    binomial_trials : int or str
+        Trials per row for ``family="binomial"``: a constant or a column.
+    thresholds_by : str or None
+        Column grouping the cutpoints of an ordinal family.
     mixture_components : int
         Number of Gaussian components for the mixture family.
     predictor : nn.Module or None
         Optional differentiable contribution on the linear-predictor scale.
     predictor_data : torch.Tensor or None
         Input passed to ``predictor`` on each SVI step.
+    seed : int
+        The torch seed set before inference.
 
     Returns
     -------
     BayesianFit
         Parsed formula, compiled program, fitted posterior, and observations.
+
+    Raises
+    ------
+    ValueError
+        If the family is unknown, a predictor and its data are not given
+        together, a trainable predictor is used without SVI, or a count
+        is given to a method it does not apply to (``num_steps`` to NUTS
+        or HMC; ``num_warmup``, ``num_samples``, or ``num_chains`` to
+        SVI).
     """
+    if method == "svi":
+        given = [
+            name
+            for name, value in (
+                ("num_warmup", num_warmup),
+                ("num_samples", num_samples),
+                ("num_chains", num_chains),
+            )
+            if value is not None
+        ]
+        if given:
+            raise ValueError(
+                f"fit: {', '.join(given)} count MCMC iterations, and "
+                "method='svi' runs none; give the optimization steps as "
+                "num_steps"
+            )
+    elif num_steps is not None:
+        raise ValueError(
+            f"fit: num_steps counts SVI optimization steps, and method={method!r} "
+            "runs MCMC; give num_warmup, num_samples, and num_chains"
+        )
     if isinstance(family, str):
         if family not in families:
             raise ValueError(
@@ -258,7 +318,8 @@ def fit(
         posterior = _fit_svi(
             program,
             observations,
-            num_samples,
+            1000 if num_steps is None else num_steps,
+            learning_rate=learning_rate,
             guide_cls=guide,
             predictor=predictor,
             predictor_data=predictor_data,
@@ -270,9 +331,9 @@ def fit(
             program,
             observations,
             sampler=method,
-            num_warmup=num_warmup,
-            num_samples=num_samples,
-            num_chains=num_chains,
+            num_warmup=500 if num_warmup is None else num_warmup,
+            num_samples=1000 if num_samples is None else num_samples,
+            num_chains=4 if num_chains is None else num_chains,
         )
 
     return BayesianFit(
@@ -370,6 +431,7 @@ def _fit_svi(
     observations,
     num_steps,
     *,
+    learning_rate: float,
     guide_cls=None,
     predictor: nn.Module | None = None,
     predictor_data: torch.Tensor | None = None,
@@ -392,7 +454,7 @@ def _fit_svi(
     parameters = list(program.parameters()) + list(guide.parameters())
     if predictor is not None:
         parameters.extend(predictor.parameters())
-    optimizer = torch.optim.Adam(parameters, lr=1e-2)
+    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
     svi = SVI(program, guide, optimizer, ELBO())
     n_obs = int(observations[next(iter(observations))].shape[0])
     # One run of the program: its observation rows come from the data

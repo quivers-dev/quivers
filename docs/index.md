@@ -13,10 +13,10 @@ hide:
 
 # Functional probabilistic programming for PyTorch.
 
-<p class="qv-hero__lede">Each Quivers program is a typed value with an executable PyTorch implementation and a precise mathematical interpretation.</p>
+<p class="qv-hero__lede">quivers is a Python library for typed composition of weighted relations, Markov kernels, and probabilistic programs, with a PyTorch runtime.</p>
 
 <div class="qv-hero__actions">
-  <a href="getting-started/installation/" class="md-button md-button--primary">Install Quivers</a>
+  <a href="getting-started/installation/" class="md-button md-button--primary">Install quivers</a>
   <a href="getting-started/quickstart/" class="md-button">Run the quickstart</a>
 </div>
 
@@ -46,56 +46,57 @@ export regression
 
 ## [Fit a model](getting-started/quickstart.md)
 
-Install Quivers, compile a QVR program, and run inference over observed data.
+Install quivers, write a regression in QVR, fit it with variational inference, and read the posterior.
 
 </article>
 <article class="qv-pathway" markdown="block">
 
 ## [Learn QVR](tutorials/qvr/01-first-model.md)
 
-Work from a first model through indexed data, handlers, deduction, and transpilation.
+From a first regression through hierarchical models, mixtures, effect handlers, weighted deduction, and transpilation.
 
 </article>
 <article class="qv-pathway" markdown="block">
 
 ## [Read the semantics](semantics/index.md)
 
-Connect each well-typed phrase to its denotation and the assumptions that support it.
+The denotation of each well-typed QVR phrase and the conditions under which its laws hold.
 
 </article>
 <article class="qv-pathway" markdown="block">
 
-## [Extend the library](getting-started/architecture.md)
+## [Read the source](getting-started/architecture.md)
 
-Trace the implementation from enriched relations through compilation and inference.
+The subpackages of the library, what each provides, and how they depend on one another.
 
 </article>
 </nav>
 
-## Start with the modeling question
+## The modeling language
 
-Suppose repeated measurements vary around a line. You know the measurements
-and their predictors, but not the line's slope or the amount of noise.
-A probabilistic program describes plausible slopes and noise levels and how
-they generate measurements. Inference uses the observed measurements to update
-that uncertainty; prediction uses the fitted model to generate new measurements.
+QVR is the modeling language of quivers. Programs are written in `.qvr` files,
+which the compiler parses, checks, and elaborates to a typed core language, the
+[Quivers Indexed Effect Core (QIEC)](reference/qvr/index.md), before running,
+fitting, or transpiling them.
 
-The [conceptual introduction](getting-started/concepts.md) explains this workflow
-and the typed composition behind it using small examples. No previous
-probabilistic programming or category theory is required. The tutorials then
-connect those examples to executable QVR and Python, while the semantics gives
-the precise assumptions and equations.
+The program above is a [Bayesian linear regression](https://en.wikipedia.org/wiki/Bayesian_linear_regression).
+Each `sample` step draws a latent variable from its prior, `let` computes a value
+from earlier ones, and `observe` scores the responses `y` under the likelihood,
+with one draw for each element of the finite set `Item`. The name `x` is bound
+nowhere in the program, so the compiler treats it as a
+[data input](reference/qvr/probabilistic-programs.md#host-data), a value the
+program reads and the caller gives at run time. The option
+`[effects=[Sample, Score]]` declares the effects the body may perform, and the
+compiler rejects a body that performs any other.
 
-## One language, three levels
-
-The documentation presents each construct at three levels: QVR syntax, mathematical interpretation, and executable implementation. Links between those levels show how a source phrase is parsed, what it denotes, and how it runs.
+## Syntax, denotation, and implementation
 
 <div class="qv-crosswalk" markdown="block">
 <section class="qv-crosswalk__stage" markdown="block">
 
 ### QVR syntax
 
-Programs, effects, indexed families, handlers, deductions, and structural attachments use one typed source language.
+Probabilistic programs, effects and handlers, indexed families, weighted deduction systems, and tree autoencoders share one typed source language.
 
 [Read the language reference](reference/qvr/index.md)
 
@@ -104,7 +105,7 @@ Programs, effects, indexed families, handlers, deductions, and structural attach
 
 ### Denotation
 
-The semantics interprets programs in enriched categories, stochastic kernels, and effectful computation structures.
+Each well-typed phrase denotes a weighted relation between finite sets, a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel), or a computation with effects.
 
 [Open the semantics](semantics/index.md)
 
@@ -113,7 +114,7 @@ The semantics interprets programs in enriched categories, stochastic kernels, an
 
 ### Implementation
 
-The compiler lowers checked QVR to the indexed effect core, Python runtimes, and supported probabilistic languages.
+The compiler elaborates checked QVR to QIEC, runs it in PyTorch, and transpiles it to eleven other probabilistic programming languages.
 
 [Inspect the API](api/index.md)
 
@@ -122,15 +123,44 @@ The compiler lowers checked QVR to the indexed effect core, Python runtimes, and
 
 ## What composes
 
-A program has a domain, codomain, algebra, and effect signature. The compiler checks these components before execution. Programs [sequentially compose](tutorials/python/01-first-quiver.md#composition) with `>>`, parallel-compose with `@`, change base across algebras, and scope [finite marginalization](tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture) over a typed body.
+A morphism `f : A -> B` between finite sets is stored as a PyTorch tensor of
+shape `(|A|, |B|)`. Its entries are weights combined by the two operations of an
+[`Algebra`](api/core/algebras.md): $\otimes$ combines the weights along a path,
+and $\bigoplus$ combines alternative paths. Composition `f >> g` contracts the
+shared axis, so entry $(a, c)$ of the result is $\bigoplus_b f(a, b) \otimes g(b, c)$.
+Composition is associative when the two operations form a
+[semiring](https://en.wikipedia.org/wiki/Semiring), in which $\otimes$
+distributes over $\bigoplus$ [@goodman1999semiring]. The
+default `Algebra`, product with [noisy-OR](getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine),
+is not distributive, so regrouping a chain of compositions can change its result.
 
-Inference, deduction, and structural compression compile to the same typed core. The compiler can thus combine a [Bayesian regression](tutorials/qvr/01-first-model.md#what-inference-will-answer), a CKY parser declared as a `deduction`, and a transformer attached to a `signature` while preserving their distinct types.
+The compiler checks domains and codomains before any tensor is evaluated:
+`f >> g` requires the codomain of `f` to equal the domain of `g`. Beyond
+sequential composition,
+[`f @ g`](guides/morphisms.md#tensor-product-the-operator) runs two morphisms
+side by side on a pair of inputs,
+[`change_base`](api/core/morphisms.md) applies an entrywise map or a row
+normalization to a morphism's weights, and a program's `marginalize` step
+[sums a discrete latent variable out](tutorials/qvr/04-marginalize.md#a-two-component-gaussian-mixture)
+of the likelihood. Probabilistic programs, weighted deduction systems declared
+with `deduction` (for instance a [CKY](https://en.wikipedia.org/wiki/CYK_algorithm)
+parser), and tree autoencoders declared with `signature` elaborate to the same
+core language.
 
-The checked representation also supports inspection. Quivers provides more than forty distribution families, automatic variational guides, HMC and NUTS, ArviZ integration, mixed-effect formulas, static program analysis, a REPL, a language server, and transpilers for eleven probabilistic programming systems. Each transpiler either emits the reachable computation graph or reports which indexed-core capability it cannot represent.
+The library also provides:
+
+- [Distribution families](api/continuous/families.md): more than fifty, discrete and continuous
+- [Stochastic variational inference (SVI)](guides/inference-svi.md): automatic guides and several objectives
+- [Hamiltonian Monte Carlo (HMC)](guides/inference-mcmc.md), with the No-U-Turn Sampler (NUTS) [@hoffman2014nuts]
+- [Diagnostics](guides/analysis-fitting-and-diagnostics.md): convergence statistics, posterior predictive checks, and model comparison through ArviZ
+- [Formulas](guides/analysis-data-and-formulas.md): mixed-effects regression from R-style formulas
+- [Static analysis](api/analysis/index.md) of program structure, including plate diagrams
+- [Interactive tools](guides/repl-and-lsp.md): a REPL, a Jupyter kernel, and a language server
+- [Transpilation](transpile-support.md) to Stan, PyMC, NumPyro, Pyro, Edward2, Turing, Gen, Church, WebPPL, BUGS, and JAGS. A target that cannot express a feature the program uses reports it at the feature's source location.
 
 ## Architecture
 
-The map separates four questions: what a user writes, what the compiler checks, what the checked program can do, and which mathematical structure gives those operations their meaning. Read solid arrows as computation and dotted arrows as interpretation.
+Solid arrows are computation steps, and dotted arrows are interpretation.
 
 ```mermaid
 flowchart LR
@@ -142,26 +172,26 @@ flowchart LR
 
     subgraph CHECK["2 · Parse, elaborate, and check"]
         direction TB
-        AST["Typed source AST"] -->|"elaborate + check"| QIEC["Checked QIEC module<br/><small>indexed types · effect rows</small>"]
+        AST["Source AST"] -->|"elaborate + check"| QIEC["Checked QIEC module<br/><small>indexed types · effect rows</small>"]
     end
 
     subgraph USE["3 · Use the checked program"]
         direction TB
         RUN["Execute + infer<br/><small>SVI · HMC · NUTS</small>"]
         INSPECT["Inspect<br/><small>analysis · diagnostics · LSP</small>"]
-        TARGET["Translate<br/><small>11 PPL targets</small>"]
+        TARGET["Translate<br/><small>11 target languages</small>"]
     end
 
-    subgraph SEM["4 · Shared denotation"]
-        FOUNDATION["Probabilistic program → stochastic morphism<br/><small>monadic + enriched structure over a V-enriched algebra</small>"]
+    subgraph SEM["4 · Denotation"]
+        FOUNDATION["Weighted relations · Markov kernels<br/><small>computations with effects</small>"]
     end
 
-    QVR -->|parse| AST
-    QIEC -->|run| RUN
-    QIEC -->|analyze| INSPECT
-    QIEC -->|lower| TARGET
+    QVR -->|"parse"| AST
+    QIEC -->|"run"| RUN
+    QIEC -->|"analyze"| INSPECT
+    QIEC -->|"lower"| TARGET
     QIEC -. interpret .-> FOUNDATION
-    PY -->|construct| FOUNDATION
+    PY -->|"construct"| FOUNDATION
 
     class QVR,PY qv-input
     class AST,QIEC qv-checked
@@ -169,10 +199,14 @@ flowchart LR
     class FOUNDATION qv-foundation
 ```
 
-The finite-tensor layer uses morphisms between finite sets, parameterized by a composition algebra. Continuous kernels and effectful programs extend this layer with distributions and computations. A morphism `f : A -> B` is a PyTorch tensor of shape `(|A|, |B|)` whose entries take values in that algebra. Composition `f >> g` contracts along the shared dimension under the algebra's tensor and join operations. Different algebras satisfy different laws; the documentation states those assumptions instead of treating them as properties of every runtime `Algebra`.
-
 ## Foundations
 
-The [denotational semantics](semantics/index.md) interprets each well-typed QVR phrase in a $\mathcal{V}$-enriched symmetric monoidal closed category. The implementation draws on enriched category theory [@kelly1982basic], categorical approaches to probability ([@giry1982categorical]; [@fritz2020synthetic]), and standard methods for SVI and HMC ([@hoffman2013svi]; [@neal2011mcmc]; [@hoffman2014nuts]).
+The [denotational semantics](semantics/index.md) interprets each well-typed QVR
+phrase as a weighted relation, a Markov kernel, or a computation with effects. It
+draws on enriched category theory [@kelly1982basic], categorical treatments of
+probability [@giry1982categorical; @fritz2020synthetic], and the monadic
+semantics of effects [@moggi1991notions]. The inference algorithms follow the
+standard sources for SVI [@hoffman2013svi], HMC [@neal2011mcmc], and NUTS
+[@hoffman2014nuts].
 
 </div>

@@ -1,14 +1,10 @@
 # Constraint Solver
 
-[Constraint checking reports problems](../../guides/dsl-overview.md#error-handling) visible in the parsed module, including invalid
-effect conventions and unresolved bundle members. It supplies diagnostics before runtime
-objects are constructed. Subsequent elaboration and type checking use the resolved
-declarations to perform further checks.
-
-`check_constraints(module)` walks a parsed `Module` and reports
-well-formedness violations (residuated context, effect-name
-convention, bundle-member resolvability) without invoking the full
-compiler.
+`check_constraints(module)` walks a parsed `Module` and reports violations of well-formedness, such
+as an invalid residuated context, an effect name that breaks the naming convention, or a bundle
+member that does not resolve, without running the compiler
+([error handling](../../guides/dsl-overview.md#error-handling)). Elaboration and type checking
+perform further checks on the resolved declarations.
 
 ```python
 from quivers.dsl import Violation, check_constraints

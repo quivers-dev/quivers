@@ -78,7 +78,7 @@ from quivers.transpile.renderers._qiec import render_computations_static
 from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
 )
 from quivers.transpile.renderers._one_based import is_class_code_family
 from quivers.transpile.renderers._bugs_helpers import (
@@ -347,7 +347,7 @@ class _BugsCtx(RenderContext):
     """BUGS-renderer-internal carrier extending `RenderContext`.
 
     Adds the declaration-plate table (axis-name lookup for index
-    emission), the current `via` fibration in scope (the active
+    emission), the current `via` index map in scope (the active
     scope's [`IRObserve.via`][quivers.transpile.ir.IRObserve.via]
     when rendering arg indices), and the enclosing plate / loop-
     name pair so an arg's index expansion can resolve loop
@@ -1058,7 +1058,7 @@ class BUGSRenderer(RendererBase):
     def _emit_observe_node(self, ctx: _BugsCtx, node: IRObserve) -> None:
         """Render an [`IRObserve`][quivers.transpile.ir.IRObserve] node.
 
-        Observes carry an optional `via` fibration: when present,
+        Observes carry an optional `via` index map: when present,
         index-references in the args whose target sits on a
         different plate are rewritten as `<name>[via[loop]]`. This
         is the BUGS idiom for "observation `n` maps to latent group
@@ -1140,24 +1140,19 @@ class BUGSRenderer(RendererBase):
             if isinstance(inner, IRObserve):
                 _refuse_observed_class_code(self.target, inner)
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
-        atoms = self.marginal_atoms(
+        # Building the atoms checks the latent's support has a size
+        # the block can enumerate before the scope is inspected.
+        self.marginal_atoms(
             node,
             support_size=marginal_support_size(node),
         )
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=ctx.decl_plates,
-            target=self.target,
-        )
-        if fibration is not None:
-            via, group = fibration
+        index_map = marginalize_index_map(node, raw.observe)
+        if index_map is not None:
+            via, group = index_map
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
                 [
-                    f"marginalize:grouped-fibration:{node.latent}: the rows "
+                    f"marginalize:grouped-index-map:{node.latent}: the rows "
                     f"`{via}` sends to each `{group.name}` are summed before "
                     f"the reduction over the atoms, and BUGS has no statement "
                     f"that adds the per-group log-density to the joint"
@@ -1217,7 +1212,7 @@ class BUGSRenderer(RendererBase):
         `inprod` contracts against the weights. The weights render
         through the ordinary reference path in the observation's own
         loop and `via` context, so a weight row declared on a coarser
-        axis is gathered by the fibration exactly as it would be at the
+        axis is gathered by the index map exactly as it would be at the
         observation itself.
         """
         observe = mixture.observe
@@ -1430,7 +1425,7 @@ class BUGSRenderer(RendererBase):
         if not isinstance(family_ref, IRArgFamilyRef):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["truncated:expected IRArgFamilyRef at arg 0"],
+                ["truncated: expected IRArgFamilyRef at arg 0"],
             )
         decl = ctx.morphisms.get(family_ref.name)
         if not isinstance(decl, MorphismDecl):
@@ -1498,7 +1493,7 @@ class BUGSRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -2357,7 +2352,7 @@ class BUGSRenderer(RendererBase):
            referenced variable's declaration plate, drawn from the
            surrounding loop variables by axis-name lookup. When the
            axis does not match any enclosing loop and the enclosing
-           observe has a `via` fibration in scope, the axis renders
+           observe has a `via` index map in scope, the axis renders
            as `via[enclosing_loop]`.
         3. One `1:E` slice per event dim of the referenced
            variable's declaration plate. When the referenced
@@ -2403,7 +2398,7 @@ class BUGSRenderer(RendererBase):
                 auto_leading.append(_IndexPiece.ident(loop_var))
                 continue
             # No surrounding loop on this axis. If the enclosing
-            # observe has a via fibration, apply it; the fibration
+            # observe has a via index map, apply it; the index map
             # holds zero-based QVR group codes.
             if ctx.via is not None and ctx.enclosing_loop_names:
                 via_inner = ctx.enclosing_loop_names[-1]
@@ -2811,7 +2806,7 @@ class BUGSRenderer(RendererBase):
         if not bounds or len(bounds) > 2:
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                [f"truncation:expected 1 or 2 bounds, got {len(bounds)}"],
+                [f"truncation: expected 1 or 2 bounds, got {len(bounds)}"],
             )
         tr = self._fresh(ctx, "tr")
         ctx.sb.vertex(tr, "truncation")

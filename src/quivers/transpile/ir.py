@@ -1037,14 +1037,15 @@ class IRScore(IRNode):
 
 
 class IRMarginalize(IRNode):
-    """A discrete-latent integration scope.
+    """A scope that sums a finite latent out.
 
-    Each backend's renderer decides how to emit this construct.
-    Stan emits `log_sum_exp` per-group enumeration; backends that
-    natively sample discrete latents lower it inline to `IRSample`
-    plus the scope body. The Stan renderer raises when
-    `finite_enumerable_at_call_site(family_meta, args)` returns
-    False.
+    Every renderer enumerates the atoms of the latent's support
+    (`marginalize_support`), weighs each atom's scope log-density by
+    the atom's prior log-mass, and reduces over the atoms, one
+    reduction per group of the block's grouping plate; no target
+    samples the latent. A family with no finite support is refused
+    under `marginalize:non-finite-support`, except where a target
+    declares a continuous latent as a parameter of the joint.
     """
 
     latent: str

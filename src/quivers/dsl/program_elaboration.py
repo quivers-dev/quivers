@@ -1,7 +1,7 @@
 """Elaboration of ``program`` declarations into QIEC computations.
 
 A program is domain-specific notation for a named computation: its data,
-observations, and fibrations are the computation's typed parameters, its
+observations, and index maps are the computation's typed parameters, its
 ``sample`` steps perform ``Random.sample`` on the module's canonical
 ``random`` instance, its ``observe`` and ``score`` steps perform
 ``Score.add`` on the canonical ``score`` instance, its ``let`` steps bind
@@ -14,7 +14,7 @@ registry, and the diagnostics of every other declaration.
 Plates are typed data. A step's ``over`` and ``iid_over`` axes, its
 ``: Axis`` annotation, and a morphism's ``Real N`` codomain fix a
 ``PlateShape`` on the step's distribution, whose sample type is the
-tensor over those axes; a ``via`` fibration re-indexes a grouped latent's
+tensor over those axes; a ``via`` index map re-indexes a grouped latent's
 arguments to the observation rows and segments the observation's weights
 back to the groups.
 """
@@ -749,15 +749,11 @@ def _enumerable(record: DistributionFamily) -> bool:
     Returns
     -------
     bool
-        ``True`` for a family with a finite support, a class-index
-        family, or a continuous relaxation of a discrete family, whose
-        hard atoms the marginalization enumerates.
+        ``True`` for a family with a finite support or a class-index
+        family. A continuous family, a relaxation of a discrete one
+        included, has no atoms to sum: its marginal is an integral.
     """
-    return (
-        record.finite_support is not None
-        or record.name in _CLASS_INDEX_FAMILIES
-        or record.relaxes is not None
-    )
+    return record.finite_support is not None or record.name in _CLASS_INDEX_FAMILIES
 
 
 def _bare_init_family(morphism: MorphismDecl) -> str | None:
@@ -1413,7 +1409,7 @@ def _elaborate_marginal_chain(
     try:
         cell = markov_cell(cell_decl)
     except StepResolutionError as error:
-        elaborator._fail(node, "; ".join(error.kinds), code="qiec-program")
+        elaborator._fail(node, error.detail, code="qiec-program")
     states = elaborator._object_axis(cell.state_object, node)
     if not isinstance(states.size, IndexLiteral):
         elaborator._fail(
@@ -2239,7 +2235,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         except StepResolutionError as error:
             self._fail(
                 declarations[0],
-                "; ".join(error.kinds),
+                error.detail,
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
         self._refuse_kernel_arguments()
@@ -2250,6 +2246,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if isinstance(declaration, ProgramDecl)
         }
         computations: list[NamedComputation] = []
+        # The type of each latent every elaborated program samples, by
+        # program, for the posterior blocks that consume them.
+        self._program_latent_types: dict[str, dict[str, TypeExpr]] = {}
         # The cell of a marginalized chain returns the latent it
         # marginalizes; it elaborates only as the row of the scan that
         # runs it.
@@ -2496,6 +2495,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state.tables = _gathered_tables(declaration.draws)
         state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
+        self._program_latent_types[declaration.name] = {
+            site.name: scope.locals[site.name].type
+            for site in state.sites
+            if site.kind == "sample" and site.name in scope.locals
+        }
         self._unify_result_extents(declaration, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
@@ -2628,7 +2632,23 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"parameter(s) for a domain of {len(factors)} factor(s)",
                     code="qiec-program",
                 )
+            consumed = self._consumed_latent_types(declaration)
             for name, factor in zip(declaration.params, factors, strict=True):
+                if consumed is not None:
+                    latent = consumed.get(name)
+                    if latent is None:
+                        self._fail(
+                            declaration,
+                            f"posterior block {declaration.name!r} names the "
+                            f"parameter {name!r}, which is not a latent the "
+                            "model it consumes samples; its latents are "
+                            + (", ".join(repr(n) for n in consumed) or "none"),
+                            code="qiec-program",
+                        )
+                    self._declare_parameter(
+                        name, latent, "domain", scope, state, declaration
+                    )
+                    continue
                 info = self._object_info(factor, declaration)
                 if info.real_width is not None:
                     type_: TypeExpr = tensor_type(REAL, (_extent(info.real_width),))
@@ -2734,6 +2754,46 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             self._program_objects[parameter.name] = info
             state.template_objects.append(parameter.name)
+
+    def _consumed_latent_types(
+        self: _Elaborator, declaration: ProgramDecl
+    ) -> dict[str, TypeExpr] | None:
+        """The latent types of the model a posterior block consumes.
+
+        A posterior block (``[over=model]``) names the model's latents as
+        its parameters, so each parameter has the type of the model's
+        site of that name: real for a real draw, a real vector for a
+        vector draw, an index for a draw over a finite set.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+
+        Returns
+        -------
+        dict[str, TypeExpr] | None
+            The consumed model's sampled latents and their types, or
+            ``None`` when the program is not a posterior block.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the consumed model is not a program elaborated before the
+            block.
+        """
+        over = _option_entry(declaration.options, "over")
+        if not isinstance(over, OptionName):
+            return None
+        latents = self._program_latent_types.get(over.value)
+        if latents is None:
+            self._fail(
+                declaration,
+                f"posterior block {declaration.name!r} consumes {over.value!r}, "
+                "which is not a program declared before it",
+                code="qiec-program",
+            )
+        return latents
 
     def _declare_parameter(
         self: _Elaborator,
@@ -3166,7 +3226,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         canonical ``score`` instance. Inside one it goes to the scope's
         weight instance: as the weight vector over the group axis when
         the observation is plated over it, segmented by the ``via``
-        fibration when the observation rows map to groups, or as its
+        index map when the observation rows map to groups, or as its
         total in an ungrouped scope.
 
         Parameters
@@ -3194,11 +3254,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         name = step.vars[0]
         group = _enclosing_group(scope)
-        via = _fibration_names(step)
+        via = _index_map_names(step)
         if via is not None and group is None:
             self._fail(
                 step,
-                f"observation {name!r} names the fibration {'*'.join(via)!r} "
+                f"observation {name!r} names the index map {'*'.join(via)!r} "
                 "outside a grouped marginalization",
                 code="qiec-program",
             )
@@ -3273,16 +3333,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 if len(batch) != 1:
                     self._fail(
                         step,
-                        f"observation {name!r} is fibred by {'*'.join(via)!r} "
+                        f"observation {name!r} is grouped by {'*'.join(via)!r} "
                         "but is not plated over one row axis",
                         code="qiec-program",
                     )
-                fibration = self._fibration(
+                index_map = self._index_map(
                     via, batch[0].size, batch[0].name, weight_scope, scope, state, step
                 )
                 weight = SegmentSum(
                     density,
-                    fibration,
+                    index_map,
                     weight_scope.group.size,
                     tensor_type(LOG_WEIGHT, (weight_scope.group.size,)),
                 )
@@ -3295,7 +3355,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     step,
                     f"observation {name!r} inside the marginalization over "
                     f"{weight_scope.group.name!r} is plated over neither that "
-                    "axis nor a fibration into it",
+                    "axis nor an index map into it",
                     code="qiec-program",
                 )
         assert weight_scope.weight_instance is not None
@@ -4568,7 +4628,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """Pass a called program's remaining inputs through the caller.
 
         A program's computation takes every input the program reads:
-        its domain, and then its data, observations, fibrations, and
+        its domain, and then its data, observations, index maps, and
         the numbers of its parameter maps. A call that supplies the
         leading parameters alone passes the rest through: each becomes
         an input of the caller under the callee's name and role, and
@@ -4821,8 +4881,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if chart is not None:
             self._fail(
                 node,
-                f"{chart} has no elaboration yet; deduction charts are a "
-                "logic-programming construct outside the program calculus",
+                f"let:chart; {chart} has no elaboration yet; deduction charts "
+                "are a logic-programming construct outside the program calculus",
                 code=GAP_CODE,
             )
         host_only = next(
@@ -6244,7 +6304,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         site : str
             The site's name, for diagnostics and identities.
         via : str | None
-            The fibration re-indexing grouped arguments, for an observe.
+            The index map re-indexing grouped arguments, for an observe.
         group : PlateAxis | None
             The grouping axis of the enclosing or this marginalization.
         refinement : tuple[PlateAxis, Value] | None
@@ -6297,7 +6357,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 if network is None:
                     self._fail(
                         step,
-                        "; ".join(error.kinds),
+                        error.detail,
                         code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
                     )
                 resolved = network
@@ -6896,8 +6956,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         The step's own arguments keep their structure; positions the
         resolver filled from a morphism's declaration or options come in
         wire form. Each is lowered against the parameter it fills, and a
-        grouped argument reaching a fibred observation is re-indexed by
-        the fibration.
+        grouped argument reaching a grouped observation is re-indexed by
+        the index map.
 
         Parameters
         ----------
@@ -6914,7 +6974,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state : _ProgramState
             The program's accumulating state.
         via : str | None
-            The fibration of a grouped observation.
+            The index map of a grouped observation.
         group : PlateAxis | None
             The grouping axis in force.
         morphism : MorphismDecl | None
@@ -7101,7 +7161,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state : _ProgramState
             The program's accumulating state.
         via : str | None
-            The fibration of a grouped observation.
+            The index map of a grouped observation.
         group : PlateAxis | None
             The grouping axis in force.
 
@@ -7167,7 +7227,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         for position, (parameter, _) in enumerate(pairs):
             value = values[position]
             if via is not None and group is not None:
-                value = self._fibred(value, via, group, plate, scope, state, step)
+                value = self._grouped(value, via, group, plate, scope, state, step)
             arguments.append((parameter.name, value))
         return arguments
 
@@ -8261,7 +8321,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 target="qvr-qiec",
             )
         except StepResolutionError as error:
-            self._fail(node, "; ".join(error.kinds), code="qiec-program")
+            self._fail(node, error.detail, code="qiec-program")
         record = FAMILIES.get(resolved.family)
         if record is None:
             self._fail(
@@ -8341,7 +8401,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             provisional.origin,
         )
 
-    def _fibred(
+    def _grouped(
         self: _Elaborator,
         value: Value,
         via: tuple[str, ...],
@@ -8358,7 +8418,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         value : Value
             The argument.
         via : tuple[str, ...]
-            The fibration's names, one per factor of the group.
+            The index map's names, one per factor of the group.
         group : PlateAxis
             The grouping axis.
         plate : PlateShape
@@ -8373,7 +8433,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Returns
         -------
         Value
-            The argument gathered by the fibration when its leading
+            The argument gathered by the index map when its leading
             dimension is the group axis, else unchanged.
 
         Raises
@@ -8387,17 +8447,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if len(plate.batch) != 1:
             self._fail(
                 node,
-                f"fibration {'*'.join(via)!r} needs an observation plated over "
+                f"index map {'*'.join(via)!r} needs an observation plated over "
                 "one row axis",
                 code="qiec-program",
             )
         rows = plate.batch[0].size
         grouped = _weight_scope(scope)
         assert grouped is not None
-        fibration = self._fibration(
+        index_map = self._index_map(
             via, rows, plate.batch[0].name, grouped, scope, state, node
         )
-        return Gather(value, fibration, tensor_type(shape[0], (rows, *shape[1][1:])))
+        return Gather(value, index_map, tensor_type(shape[0], (rows, *shape[1][1:])))
 
     def _refined(
         self: _Elaborator,
@@ -8437,7 +8497,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         rows = plate.batch[0].size
         return Gather(value, projection, tensor_type(shape[0], (rows, *shape[1][1:])))
 
-    def _fibration(
+    def _index_map(
         self: _Elaborator,
         via: tuple[str, ...],
         rows: IndexTerm,
@@ -8449,14 +8509,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> Value:
         """The index of each observation row's group.
 
-        A single fibration is the program input of that name; a product
-        fibration into a product group is the row-major flattening of
+        A single index map is the program input of that name; a product
+        index map into a product group is the row-major flattening of
         its factors' indices, the last factor varying fastest.
 
         Parameters
         ----------
         via : tuple[str, ...]
-            The fibration's names, one per factor of the group.
+            The index map's names, one per factor of the group.
         rows : IndexTerm
             The observation's row extent.
         rows_name : str
@@ -8479,7 +8539,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Raises
         ------
         QiecDiagnosticError
-            If the fibration names fewer or more factors than the group
+            If the index map names fewer or more factors than the group
             has, or a name is bound by a step at another type.
         """
         factors = grouped.factors
@@ -8487,7 +8547,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if len(via) != len(factors):
             self._fail(
                 node,
-                f"fibration {'*'.join(via)!r} names {len(via)} factor(s) but the "
+                f"index map {'*'.join(via)!r} names {len(via)} factor(s) but the "
                 f"group {grouped.group.name!r} has {len(factors)}",
                 code="qiec-program",
             )
@@ -8498,7 +8558,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if bound is not None and bound.type != index_type:
                 self._fail(
                     node,
-                    f"fibration {name!r} is bound by a step at "
+                    f"index map {name!r} is bound by a step at "
                     f"{self._render(bound.type)}, not a Tensor[Int] over the rows",
                     code="qiec-program",
                 )
@@ -8506,14 +8566,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 entry: Value = Var(bound)
             else:
                 parameter = self._declare_parameter(
-                    name, index_type, "fibration", scope, state, node, axes=(rows_name,)
+                    name, index_type, "index_map", scope, state, node, axes=(rows_name,)
                 )
                 entry = Var(parameter)
             if flat is None:
                 flat = entry
                 continue
             assert isinstance(factor.size, IndexLiteral)
-            path = ("programs", state.declaration.name, "fibrations", name)
+            path = ("programs", state.declaration.name, "index_maps", name)
             scaled = self._primitive(
                 "mul_int",
                 (flat, LiteralValue(factor.size.value, INT)),
@@ -9903,8 +9963,8 @@ def _axis_name(expr: ObjectExpr) -> str:
     return expr.kind
 
 
-def _fibration_names(step: ObserveStep) -> tuple[str, ...] | None:
-    """The names of an observation's fibration into its group.
+def _index_map_names(step: ObserveStep) -> tuple[str, ...] | None:
+    """The names of an observation's index map into its group.
 
     Parameters
     ----------
@@ -9915,7 +9975,7 @@ def _fibration_names(step: ObserveStep) -> tuple[str, ...] | None:
     -------
     tuple[str, ...] | None
         The single ``via`` name, the product's names, or ``None`` when
-        the observation is not fibred.
+        the observation is not grouped.
     """
     if step.via_axes:
         return tuple(step.via_axes)

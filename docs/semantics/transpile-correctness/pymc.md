@@ -1,50 +1,35 @@
 # PyMC
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{PyMC}$.
+A PyMC model is a graph of random variables and deterministic expressions, built inside a
+`with pymc.Model()` context, from which PyMC compiles functions that evaluate the joint log density
+[@salvatier2016pymc3]. The renderer must keep which variables are observed, which are latent, and which
+coordinates belong to one joint event ([Transpilation correctness](index.md)). PyMC's documentation is at
+[pymc.io](https://www.pymc.io/projects/docs/en/stable/).
 
-PyMC first builds a graph of random variables and deterministic expressions;
-a compiled log-density function then evaluates that graph at supplied values.
-The renderer must preserve which variables are observed, which remain
-unknown, and which coordinates belong to one joint event. Axis names help
-identify dimensions, but the distribution's batch structure determines the
-independence assumptions.
+## How PyMC evaluates a log density
 
-## Semantics
+Each constructor `pymc.<Distribution>(name, ..., dims=..., observed=...)` in the model's context adds a
+random variable, and [`pymc.Potential`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Potential.html)
+adds a term to the log density. The joint log density is the sum of the log densities of the random
+variables and the potentials. The test probe sums
+[`pymc.logp`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.logp.html) over every free and
+observed variable, at the free variables' constrained values and the observed data.
 
-PyMC assembles a joint density from [distributions and additional log-density
-factors](https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html#model-specification), using the graphical-model perspective [@koller2009probabilistic].
-The implementation uses the
-[`pymc.Model`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html)
-context: each `pymc.<Distribution>(name, ..., dims=..., observed=...)`
-constructor inside the `with pymc.Model()` scope registers a
-random variable; the joint log-density is computed by
-[`pymc.Model.compile_logp`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html#pymc.Model.compile_logp).
-The reference is Salvatier, Wiecki, and Fonnesbeck
-[@salvatier2016pymc3] for PyMC3 and the
-[PyMC v5 documentation](https://www.pymc.io/projects/docs/en/stable/)
-for the current API.
+## Change of variables
 
-## Unconstrained-space change of variables
-
-PyMC applies per-distribution unconstrained-space transforms
-during inference (e.g.
-[`pymc.distributions.transforms.log`](https://www.pymc.io/projects/docs/en/stable/api/distributions/transforms.html)
-for `<lower=0>`-style constraints) and adds the Jacobian
-automatically via the same change-of-variables principle as Stan.
-The constrained-space density that `compile_logp` returns at a
-constrained-space point is the QVR reference; no model-side
-emit-time Jacobian is needed. $\Psi_{\mathsf{PyMC}} = \mathrm{id}$
-at the constrained-space level.
+PyMC samples a constrained variable in unconstrained coordinates, through a transform such as
+[`log`](https://www.pymc.io/projects/docs/en/stable/api/distributions/transforms.html) for a positive
+variable, and [`Model.compile_logp`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Model.html#pymc.Model.compile_logp)
+expects transformed values and adds the Jacobian. The probe does not use `compile_logp`: it evaluates
+`pymc.logp` at constrained values, without a Jacobian, which is the convention of the QVR density, so
+$\Psi_{\mathsf{PyMC}} = \mathrm{id}$ for the comparison.
 
 ## Family parameterizations
 
-PyMC families use the
-[`pymc.distributions.*`](https://www.pymc.io/projects/docs/en/stable/api/distributions.html)
-classes with PyMC-specific keyword arguments. The QVR ↔ PyMC arg
-mapping requires non-trivial aliases:
+PyMC's [distributions](https://www.pymc.io/projects/docs/en/stable/api/distributions.html) use their own
+argument names:
 
-| QVR arg | PyMC arg |
+| QVR argument | PyMC argument |
 |---|---|
 | `loc` | `mu` |
 | `scale` | `sigma` |
@@ -55,47 +40,30 @@ mapping requires non-trivial aliases:
 | `total_count` (Binomial) | `n` |
 | `df` (StudentT) | `nu` |
 
-These live in
-`FAMILY_META[F].arg_aliases["pymc"]`
-as the shared source of target argument names. The renamings are syntactic; the density
-$f_{\mathsf{PyMC}}(v \mid \text{renamed args})$ equals
-$f_{\mathrm{QVR}}(v \mid \text{original args})$ term-by-term, so
-$c_{F, \mathsf{PyMC}} = 0$ for every family with native PyMC
-support.
+They are recorded in `FAMILY_META[F].arg_aliases["pymc"]`. The renaming changes no value, so
+$c_{F, \mathsf{PyMC}} = 0$ for every family PyMC has.
 
-## Per-construct emit
+## Emitted constructs
 
-**Sample / observe.** `<name> = pymc.<Family>(<name>, **args,
-dims=(<plate axes>), observed=<obs>)` inside the
-`with pymc.Model() as model:` scope. The `dims=` declaration
-carries the batch-axis names; PyMC's `coords` (in the
-`pymc.Model(coords=...)` constructor) declares each axis with its
-size.
+**`sample` and `observe`.** `<name> = pymc.<Family>("<name>", **args, dims=(<plate axes>), observed=<obs>)`
+inside `with pymc.Model(coords=...) as model:`. `dims` names the batch axes, and `coords` gives each axis
+its labels.
 
-**Plate.** `dims=` names axes and `coords` supplies their labels or
-sizes. Independence comes from the distribution's batch shape and
-parameter broadcasting. For instance, a scalar Normal with batch size ten
-represents ten independent scalar events, while an MvNormal with event size
-ten represents one joint event whose covariance determines dependence.
+**Plates.** The independence of the draws comes from the distribution's batch shape and the broadcasting
+of its arguments. A scalar Normal with batch size ten is ten independent scalar events, and an `MvNormal`
+with event size ten is one joint event whose covariance couples its coordinates.
 
-**Marginalize.** Supported finite blocks are enumerated and their integrated
-log density is added through a `pymc.Potential`. Grouped row contributions
-are accumulated before the latent-axis reduction, eliminating the
-marginalized coordinate.
+**`marginalize`.** A supported block is enumerated, and its log density, with the variable summed out, is added with a
+`pymc.Potential`. The rows of each group are summed before the reduction.
 
-**Score / let / return.**
-[`pymc.Potential("name", expr)`](https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.Potential.html)
-adds a score directly to the joint log density;
-deterministic assignment for let; the function returns the
-`pymc.Model` instance.
+**`score`, `let`, `return`.** `pymc.Potential("name", expr)` for a score, an assignment for a `let`, and
+`pymc.Deterministic("<name>_value", ...)` for each returned value. The emitted `build_model` returns the
+model.
 
-## Acceptance
+## Evidence
 
-* **Tier 1 structural.** Every emit has a `def build_model(...)`
-  with a `with pymc.Model(coords=...) as model:` body containing
-  one `pymc.<Family>(...)` call per IR sample / observe step plus
-  `return model`.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** Python's AST parser accepts the emitted source.
-* **Tier 3 numeric equivalence.** `pymc.Model.compile_logp()` is
-  compared with the QVR reference on the selected fixture grids.
+- **Level 1.** Every emitted module has a `def build_model(...)` with a `with pymc.Model(coords=...) as model:`
+  body, one `pymc.<Family>(...)` call for each draw and observation, and `return model`, and calling the
+  stages directly or composed gives the same output.
+- **Level 2.** Python's `ast` parser accepts the emitted source.
+- **Level 3.** The summed `pymc.logp` is compared with the QVR density on the selected fixture grids.

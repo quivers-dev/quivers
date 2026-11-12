@@ -1021,6 +1021,63 @@ def _weighted_deductions(statements: tuple[object, ...]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _longest_unary_chain(
+    unary_rules: tuple[tuple[int, ...], ...],
+    n_categories: int,
+) -> int | None:
+    """The number of rules in the longest chain of unary rules.
+
+    The reference machine enumerates a schema parser's derivation
+    trees one by one, so every tree must be finite: the unary rules,
+    each deriving one category from another over the same span, must
+    not cycle. The classic chart sums a cycle's series in closed form,
+    which tree enumeration cannot reproduce.
+
+    Parameters
+    ----------
+    unary_rules : tuple[tuple[int, ...], ...]
+        The unary rules as ``(result, premise)`` category indices.
+    n_categories : int
+        The number of categories.
+
+    Returns
+    -------
+    int | None
+        The longest chain's length in rules (``0`` without unary
+        rules), or ``None`` when the unary rules cycle.
+    """
+    successors: list[list[int]] = [[] for _ in range(n_categories)]
+    for result, premise in unary_rules:
+        successors[premise].append(result)
+    longest: dict[int, int] = {}
+    # Depth-first search with an explicit stack: grey nodes are on
+    # the current path, so meeting one again closes a cycle.
+    grey: set[int] = set()
+    for root in range(n_categories):
+        if root in longest:
+            continue
+        stack: list[tuple[int, int]] = [(root, 0)]
+        grey.add(root)
+        while stack:
+            node, position = stack[-1]
+            if position < len(successors[node]):
+                stack[-1] = (node, position + 1)
+                successor = successors[node][position]
+                if successor in grey:
+                    return None
+                if successor not in longest:
+                    grey.add(successor)
+                    stack.append((successor, 0))
+                continue
+            stack.pop()
+            grey.discard(node)
+            longest[node] = max(
+                (1 + longest[successor] for successor in successors[node]),
+                default=0,
+            )
+    return max(longest.values(), default=0)
+
+
 class _DeductionElaboration:
     """Deduction elaboration, mixed into the QIEC elaborator.
 
@@ -1047,6 +1104,7 @@ class _DeductionElaboration:
             for statement in self.source.syntax.statements
             if isinstance(statement, DeductionDecl)
         ]
+        self._schema_unary_chain: dict[str, int] = {}
         schema_parsers = self._schema_parser_declarations()
         declarations.extend(declaration for declaration, _ in schema_parsers)
         if not declarations:
@@ -1057,11 +1115,13 @@ class _DeductionElaboration:
             system = self._read_deduction(declaration)
             if any(item[0] is declaration for item in schema_parsers):
                 # A schema parser's ``depth`` bounds its category algebra,
-                # not its derivation. The classic chart applies unary closure
-                # three times per cell, so four units of fuel per sentence
-                # position cover those rounds and the binary spine.
+                # not its derivation. A root-to-leaf path of a tree over a
+                # sentence of length L visits at most L spans, at most L - 1
+                # binary rules, and at most one chain of unary rules per
+                # span, so L times one more than the longest chain units of
+                # fuel reach every tree.
                 system.depth = None
-                system.span_fuel_factor = 4
+                system.span_fuel_factor = 1 + self._schema_unary_chain[declaration.name]
                 first_word = system.entries[0].word
                 category_count = next(
                     (
@@ -1115,14 +1175,11 @@ class _DeductionElaboration:
                 and isinstance(statement.expr, ExprParser)
             ):
                 continue
-            translated.append(
-                (
-                    self._schema_parser_declaration(
-                        statement, statement.expr, schemas, bundles, objects
-                    ),
-                    statement,
-                )
+            declaration = self._schema_parser_declaration(
+                statement, statement.expr, schemas, bundles, objects
             )
+            if declaration is not None:
+                translated.append((declaration, statement))
         return translated
 
     def _schema_parser_declaration(
@@ -1132,8 +1189,21 @@ class _DeductionElaboration:
         schemas: dict[str, SchemaDecl],
         bundles: dict[str, BundleDecl],
         objects: list[ObjectDecl],
-    ) -> DeductionDecl:
-        """Build the deduction denoted by one schema parser definition."""
+    ) -> DeductionDecl | None:
+        """Build the deduction denoted by one schema parser definition.
+
+        Returns
+        -------
+        DeductionDecl | None
+            The deduction, or ``None`` for a parser whose unary rules
+            cycle when the module is lowered without its programs.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the parser's rules do not elaborate, with code
+            ``qiec-program-gap`` for unary rules that cycle.
+        """
 
         def expand(name: str, seen: frozenset[str]) -> list[str]:
             bundle = bundles.get(name)
@@ -1233,20 +1303,31 @@ class _DeductionElaboration:
                 )
             )
         for index, (result, premise) in enumerate(rule_system.unary_rules):
-            # `UnarySpanDeduction` applies its closure update three times.
-            # Three same-named branches reproduce that multiplicity while
-            # sharing the one learned rule weight.
-            for _ in range(3):
-                rules.append(
-                    SequentRule(
-                        name=f"unary_{index}",
-                        premises=(self._span("I", "J", category_patterns[premise]),),
-                        conclusion=self._span("I", "J", category_patterns[result]),
-                        options=learnable,
-                        line=definition.line,
-                        col=definition.col,
-                    )
+            rules.append(
+                SequentRule(
+                    name=f"unary_{index}",
+                    premises=(self._span("I", "J", category_patterns[premise]),),
+                    conclusion=self._span("I", "J", category_patterns[result]),
+                    options=learnable,
+                    line=definition.line,
+                    col=definition.col,
                 )
+            )
+        chain = _longest_unary_chain(rule_system.unary_rules, len(category_patterns))
+        if chain is None:
+            if not self.source.elaborate_programs:
+                # Lowered again after the gap below: the module keeps its
+                # other declarations and records the gap.
+                return None
+            self._fail(
+                definition,
+                f"schema parser {definition.name!r} has unary rules that "
+                "cycle; its derivation trees are unbounded, and the reference "
+                "machine, which enumerates them, has no elaboration of the "
+                "closed-form sum the chart parser computes",
+                code="qiec-program-gap",
+            )
+        self._schema_unary_chain[definition.name] = chain
         lexicon = tuple(
             LexiconEntry(
                 words=(word,),
@@ -6056,8 +6137,8 @@ class _Context:
         if system.by_yield:
             derived = self.yield_root(parameters[0])
         elif system.schema_categories:
-            # A schema parser's finite category algebra closes its unary
-            # rules within a fixed number of rounds per position.
+            # A schema parser's acyclic unary rules bound every tree's
+            # depth by the fuel factor per sentence position.
             fuel_value = length
             for _ in range(system.span_fuel_factor - 1):
                 fuel_value = self.primitive("add_int", fuel_value, length)

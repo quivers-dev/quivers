@@ -27,7 +27,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -476,17 +476,10 @@ class NumPyroRenderer(RendererBase):
         )
         py.required_imports.add(_MARGINALIZE_IMPORT)
         # A grouped block keys its accumulator by group: the rows the
-        # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
-        if fibration is not None:
-            via, group = fibration
+        # index map sends to one group are summed before the reduction.
+        index_map = marginalize_index_map(node, raw.observe)
+        if index_map is not None:
+            via, group = index_map
             extent = (
                 str(group.size) if isinstance(group, DimStatic) else group.size_name
             )
@@ -558,12 +551,7 @@ class NumPyroRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
@@ -739,7 +727,7 @@ class NumPyroRenderer(RendererBase):
         Observed inputs (variables also bound as
         [`IRObserve`][quivers.transpile.ir.IRObserve]) get the
         ``=None`` default; all other inputs (scalar program params,
-        via fibrations, free names) are positional.
+        via index maps, free names) are positional.
         """
         observed = self._collect_observed(ir)
         positional: list[str] = []
@@ -908,7 +896,7 @@ class NumPyroRenderer(RendererBase):
         if not isinstance(kernel_arg, IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         if kernel_arg.kernel != "rbf":
             raise UnsupportedConstruct(
@@ -1540,7 +1528,7 @@ class NumPyroRenderer(RendererBase):
         if total is None or probs is None:
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:NegativeBinomial:expected (total_count, probs)"],
+                ["family:NegativeBinomial: expected (total_count, probs)"],
             )
         total_vid = self._render_arg(ctx, total)
         probs_vid = self._render_arg(ctx, probs)

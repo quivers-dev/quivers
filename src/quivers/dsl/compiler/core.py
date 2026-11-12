@@ -26,6 +26,7 @@ from quivers.dsl.ast_nodes import (
     LossDecl,
     Module,
     MorphismDecl,
+    MorphismInitFamily,
     ProgramDecl,
     RuleDecl,
     SchemaDecl,
@@ -165,6 +166,10 @@ class Compiler(
         self._objects: dict[str, SetObject] = {}
         self._spaces: dict = {}
         self._morphisms: dict = {}
+        # The `~ Family(...)` prior of each `role=latent` morphism that
+        # declares one: a draw from the morphism draws from this family,
+        # as the reference machine and every transpile target read it.
+        self._latent_priors: dict[str, MorphismInitFamily] = {}
         self._groups: dict[str, list[str]] = {}
         self._output_expr: Expr | None = None
         # Parametric-program templates: dependent kernels Π(p:P).Kern(dom(p),cod(p))
@@ -482,7 +487,7 @@ class Compiler(
         """Give each compiled program the checked types of its host data.
 
         A program's checked entry types every free name its steps read
-        (its ``data`` parameters) and every group map (its ``fibration``
+        (its ``data`` parameters) and every group map (its ``index map``
         parameters); the compiled program refuses a run whose supplied
         data do not inhabit those types, so it computes only the model
         the checked module describes. An input that fills a parameter of
@@ -505,7 +510,7 @@ class Compiler(
             target.host_data_types = {
                 parameter.name: parameter.type
                 for parameter in entry.parameters
-                if parameter.role in ("data", "fibration")
+                if parameter.role in ("data", "index_map")
             }
             target.host_data_shared = frozenset(
                 parameter.name for parameter in entry.parameters if parameter.per_row

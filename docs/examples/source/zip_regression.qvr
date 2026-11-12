@@ -21,12 +21,11 @@
 #   p(y = 0) = pi + (1 - pi) * exp(-rate)
 #   p(y = k) = (1 - pi) * Poisson(k | rate),   k > 0
 #
-# At a marginalize head, a ContinuousBernoulli prior is scored on
-# the two atoms {0, 1} with the Bernoulli weights (pi, 1 - pi);
-# its value is real-valued, so the gate z * rate needs no
-# Bool-to-number conversion. The prior is given by its logit,
-# -eta_zero, so both weights are computed in log space and keep
-# their digits where the predictor saturates.
+# The marginalize block sums the Bernoulli gate z over its two atoms,
+# with weights (pi, 1 - pi); real(z) turns the gate into the number 0
+# or 1 that multiplies the rate. The prior is given by its logit,
+# -eta_zero, so both weights are computed in log space and keep their
+# digits where the predictor saturates.
 #
 # Reference: [Lambert 1992](https://doi.org/10.1080/00401706.1992.10485228).
 
@@ -48,8 +47,8 @@ program zip_regression : Resp -> Val
     let eta_poisson = -eta_zero
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- ContinuousBernoulli(logits=eta_poisson)
-        let gated_rate = z * rate
+    marginalize z : Resp <- Bernoulli(logits=eta_poisson)
+        let gated_rate = real(z) * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 
     return beta_rate

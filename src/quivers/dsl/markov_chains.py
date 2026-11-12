@@ -282,7 +282,7 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
                 "observation",
                 name,
                 f"the cell {name!r} observes one value per position; the "
-                f"observation at line {step.line} is plated, fibred, or "
+                f"observation at line {step.line} is plated, grouped, or "
                 f"destructured",
             )
     entry, previous = declaration.params
@@ -315,7 +315,9 @@ def _refuse(reason: str, cell: str, message: str) -> NoReturn:
     StepResolutionError
         Always.
     """
-    raise StepResolutionError("qvr-expand", [f"scan:marginal:{reason}:{cell}", message])
+    raise StepResolutionError(
+        "qvr-expand", [f"scan:marginal:{reason}:{cell}"], explanation=(message)
+    )
 
 
 def _same_object(left: ObjectExpr, right: ObjectExpr) -> bool:

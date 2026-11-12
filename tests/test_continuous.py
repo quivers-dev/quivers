@@ -3,6 +3,7 @@
 from __future__ import annotations
 import pytest
 import torch
+from quivers.core.morphisms import observed
 from quivers.core.objects import FinSet
 from quivers.continuous.spaces import (
     Euclidean,
@@ -1085,3 +1086,47 @@ class TestFactoryFamilySampleShape:
         x = torch.tensor([0, 1])
         s = f.rsample(x, torch.Size([5]))
         assert s.shape == (5, 2, 2)
+
+
+class TestDiscreteAsContinuousIsOneDistribution:
+    """Sampling and scoring use the same rows: the wrapped matrix's rows
+    normalized to sum to one."""
+
+    _MATRIX = torch.tensor([[0.2, 0.6, 0.2], [1.0, 1.0, 2.0]])
+
+    def _kernel(self) -> DiscreteAsContinuous:
+        A = FinSet(name="A", cardinality=2)
+        B = FinSet(name="B", cardinality=3)
+        return DiscreteAsContinuous(observed(A, B, self._MATRIX))
+
+    def test_log_prob_is_the_normalized_row(self) -> None:
+        kernel = self._kernel()
+        x = torch.tensor([1, 1, 1, 0])
+        y = torch.tensor([0, 1, 2, 1])
+        expected = torch.log(torch.tensor([0.25, 0.25, 0.5, 0.6]))
+        assert torch.allclose(kernel.log_prob(x, y), expected, atol=1e-6)
+        # The unnormalized entries, which scoring used to read, differ.
+        assert not torch.allclose(
+            kernel.log_prob(x, y), torch.log(self._MATRIX[x, y]), atol=1e-2
+        )
+
+    def test_samples_follow_the_scored_distribution(self) -> None:
+        kernel = self._kernel()
+        torch.manual_seed(0)
+        n = 40000
+        samples = kernel.rsample(torch.ones(n, dtype=torch.long))
+        frequencies = torch.bincount(samples, minlength=3).double() / n
+        probabilities = (
+            kernel.log_prob(torch.ones(3, dtype=torch.long), torch.arange(3))
+            .exp()
+            .double()
+        )
+        # Five binomial standard errors at the largest probability, 0.5.
+        assert torch.allclose(frequencies, probabilities, atol=5 * (0.25 / n) ** 0.5)
+
+    def test_a_row_that_is_no_distribution_is_refused(self) -> None:
+        A = FinSet(name="A", cardinality=1)
+        B = FinSet(name="B", cardinality=2)
+        kernel = DiscreteAsContinuous(observed(A, B, torch.tensor([[0.0, 0.0]])))
+        with pytest.raises(ValueError, match="sums to zero"):
+            kernel.log_prob(torch.tensor([0]), torch.tensor([1]))

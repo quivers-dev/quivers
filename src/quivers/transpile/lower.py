@@ -863,9 +863,9 @@ def _apply_declared_bounds(
         raise UnsupportedConstruct(
             "qvr-lower",
             [
-                f"object-bounds:empty-support:{name}:[{low}, {high}]: "
-                f"the declared box and the family's own support do "
-                f"not overlap"
+                f"object-bounds:empty-support:{name}: the declared box "
+                f"and the family's own support do not overlap, their "
+                f"intersection running from {low} to {high}"
             ],
         )
     return _range_spec(low, high, name, "axis")
@@ -1079,7 +1079,7 @@ def exogenous_data_inputs(program: ProgramDecl, bound: set[str]) -> list[str]:
     referenced in `program` but not bound by any step.
 
     Sources: free names in let / score expressions; bracket-indexed
-    arg references (`mu[cls]` -> `cls`, `mu`); `via=` fibrations.
+    arg references (`mu[cls]` -> `cls`, `mu`); `via=` index maps.
     Order is deterministic by traversal order.
     """
     out: list[str] = []

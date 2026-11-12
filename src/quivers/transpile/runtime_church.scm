@@ -491,7 +491,7 @@
       (map (lambda (row) (take-last row k)) x)
       (list-ref x k)))
 
-;; Per-group sums of a per-row list through a fibration: entry g is
+;; Per-group sums of a per-row list through an index map: entry g is
 ;; the sum of the rows `via` sends to group g, over `extent` groups.
 (define (group-sums rows via extent)
   (map (lambda (g)

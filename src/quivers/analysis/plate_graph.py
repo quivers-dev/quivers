@@ -15,7 +15,7 @@ ingredients:
   annotation on a draw (``sample theta : Doc <- ...`` puts ``theta``
   on the ``Doc`` plate), by ``iid_over`` on the same step, by the
   ``over`` axis on a marginalize block (which scopes every inner
-  observation), or by the grouping fibration ``[via=...]`` on an
+  observation), or by the grouping index map ``[via=...]`` on an
   observe step.
 
 The extractor in this module walks a compiled
@@ -229,7 +229,7 @@ def _plates_for_step(
     3. The step's ``iid_over`` axes (each adds a plate).
 
     The ``via`` option on an observe is intentionally *not* a
-    plate: it names a fibration index variable that routes
+    plate: it names an index map variable that routes
     observations into the enclosing marginalize's grouping plate,
     which the walker has already added to ``parent_plates``.
 

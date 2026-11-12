@@ -1,13 +1,12 @@
 # Arrow Typeclass Hierarchy
 
-Arrows organize computations with [explicit input and output interfaces](../monadic/bridges.md). [Sequential
-composition](../../guides/effects.md#typeclass-hierarchy) connects compatible interfaces; `first` applies a computation to one part of
-a pair while carrying the other part along. Choice and loop add further capabilities.
-These interfaces are useful when the shape of a computation matters independently of the
-values flowing through it [@hughes2000arrows].
-
-The Hughes-style arrow hierarchy: `Category_`, `Arrow`, `ArrowChoice`,
-`ArrowApply`, `ArrowLoop`, `ArrowZero`, and `ArrowPlus`.
+[Arrows](https://en.wikipedia.org/wiki/Arrow_(computer_science)) organize computations by their
+input and output interfaces [@hughes2000arrows]. The hierarchy is `Category_`, `Arrow`,
+`ArrowChoice`, `ArrowApply`, `ArrowLoop`, `ArrowZero`, and `ArrowPlus`.
+[Sequential composition](../../guides/effects.md#typeclass-hierarchy) connects matching interfaces,
+`first` applies a computation to one component of a pair and carries the other along, and the
+choice and loop classes add branching and feedback. The [bridges](../monadic/bridges.md) relate
+arrows to monads.
 
 ::: quivers.arrows.typeclasses
 

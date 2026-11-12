@@ -47,7 +47,10 @@ from quivers.dsl.ast_nodes import (
     LetExprVar,
 )
 from quivers.transpile._api import UnsupportedConstruct
-from quivers.transpile._diagnostics import user_facing_message
+from quivers.transpile._diagnostics import (
+    UnregisteredRefusalKind,
+    user_facing_message,
+)
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.renderers._bugs_helpers import render_let_expr_bugs
 from quivers.transpile.renderers._javascript_helpers import (
@@ -713,14 +716,15 @@ def test_grammar_fuzz_round_trip(target: str, seed: int) -> None:
             f"explain it; tree={expr!r}"
         )
         for kind in exc.kinds:
-            message = user_facing_message(f"qvr-{target}", (kind,))
-            assert "no explanation registered" not in message, (
-                f"{target} refused the tree for seed {seed} with kind "
-                f"{kind!r}, which renders as the report-a-bug "
-                f"fallback. Register an explanation in `_diagnostics` "
-                f"so the refusal says what the target cannot express; "
-                f"tree={expr!r}"
-            )
+            try:
+                user_facing_message(f"qvr-{target}", (kind,))
+            except UnregisteredRefusalKind:
+                pytest.fail(
+                    f"{target} refused the tree for seed {seed} with kind "
+                    f"{kind!r}, which has no explanation registered. "
+                    f"Register one in `_diagnostics` so the refusal says "
+                    f"what the target cannot express; tree={expr!r}"
+                )
         return
     if not emitted:
         pytest.xfail(

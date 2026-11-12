@@ -135,10 +135,10 @@ nav:
   - Learn:
     - Getting started:
       - Installation: getting-started/installation.md
-      - Concepts by example: getting-started/concepts.md
+      - Concepts: getting-started/concepts.md
       - Quickstart: getting-started/quickstart.md
       - Architecture: getting-started/architecture.md
-      - Editor highlighting: getting-started/highlighting.md
+      - Editor support and syntax highlighting: getting-started/highlighting.md
     - Tutorial overview: tutorials/index.md
     - QVR tutorials:
       - 1. Your first model: tutorials/qvr/01-first-model.md
@@ -147,14 +147,14 @@ nav:
       - 4. Mixtures and discrete latents: tutorials/qvr/04-marginalize.md
       - 5. Sequence models: tutorials/qvr/05-time-series.md
       - 6. Choosing an inference algorithm: tutorials/qvr/06-inference-zoo.md
-      - "7. Under the hood: the categorical surface": tutorials/qvr/07-categorical.md
+      - 7. Categorical foundations: tutorials/qvr/07-categorical.md
       - 8. Diagnostics and model comparison: tutorials/qvr/08-diagnostics-and-comparison.md
       - 9. Indexed data and total functions: tutorials/qvr/09-indexed-data.md
       - 10. Effects and handlers: tutorials/qvr/10-effects-and-handlers.md
       - 11. Parsing as an effectful computation: tutorials/qvr/11-parsing-and-search.md
-      - 12. Structural autoencoders: tutorials/qvr/12-structural-autoencoders.md
-      - 13. Check, inspect, and transpile: tutorials/qvr/13-release-workflow.md
-      - 14. Exact Bayes with finite collections: tutorials/qvr/14-collection-programs.md
+      - 12. Tree autoencoders: tutorials/qvr/12-structural-autoencoders.md
+      - 13. Check, inspect, and transpile a module: tutorials/qvr/13-release-workflow.md
+      - 14. Exact Bayes with finite collection expressions: tutorials/qvr/14-collection-programs.md
     - Python API tutorials:
       - 1. Your first quiver: tutorials/python/01-first-quiver.md
       - 2. Stochastic relations: tutorials/python/02-stochastic-relations.md
@@ -162,77 +162,77 @@ nav:
       - 4. Fuzzy logic factorization: tutorials/python/04-fuzzy-factorization.md
       - 5. Variational inference: tutorials/python/05-variational-inference.md
       - 6. First-class transformations: tutorials/python/06-first-class-trans.md
-      - 7. Composition rules: tutorials/python/07-composition-rules.md
+      - 7. Composition rules beyond algebras: tutorials/python/07-composition-rules.md
       - 8. Analysis pipelines: tutorials/python/08-analysis-pipelines.md
       - 9. Debugging quivers programs: tutorials/python/09-debugging.md
   - QVR:
     - Guides:
       - Overview: guides/index.md
       - Core Types & Algebras: guides/core.md
-      - Transformations & Composition Rules: guides/transformations.md
+      - Transformations and Composition Rules: guides/transformations.md
       - Morphisms & Composition: guides/morphisms.md
-      - DSL Overview: guides/dsl-overview.md
+      - "The QVR DSL: Overview": guides/dsl-overview.md
       - DSL Declarations: guides/dsl-declarations.md
       - DSL Programs and Let-Expressions: guides/dsl-programs-and-lets.md
       - DSL Contractions: guides/dsl-contractions.md
-      - Monadic Programs: guides/programs.md
+      - Probabilistic Programs: guides/programs.md
       - Hierarchical Programs: guides/programs-hierarchical.md
       - Continuous Spaces and Morphisms: guides/continuous-spaces.md
-      - Continuous Families: guides/continuous-families.md
+      - Continuous Distribution Families: guides/continuous-families.md
       - Stochastic Morphisms: guides/stochastic.md
       - Inference Foundations: guides/inference-foundations.md
-      - "Inference: Guides, Objectives, and SVI": guides/inference-svi.md
-      - Inference MCMC and Hybrid Samplers: guides/inference-mcmc.md
+      - "Variational Inference: Guides, Objectives, and SVI": guides/inference-svi.md
+      - MCMC and Hybrid Samplers: guides/inference-mcmc.md
       - Categorical Structures: guides/categorical.md
       - Monads & Comonads: guides/monadic.md
       - Enriched Category Theory: guides/enriched.md
       - Compositional Effects: guides/effects.md
       - Weighted Deduction Systems: guides/deduction.md
-      - "Structural Compression: Signatures and Encoders": guides/structural-compression-signatures-and-encoders.md
-      - "Structural Compression: Decoders and Losses": guides/structural-compression-decoders-and-losses.md
+      - "Tree and Graph Autoencoders: Signatures and Encoders": guides/structural-compression-signatures-and-encoders.md
+      - "Tree and Graph Autoencoders: Decoders and Losses": guides/structural-compression-decoders-and-losses.md
       - "Analysis: Data and Formulas": guides/analysis-data-and-formulas.md
       - "Analysis: Fitting and Diagnostics": guides/analysis-fitting-and-diagnostics.md
-      - "Interactive: REPL and Language Server": guides/repl-and-lsp.md
-      - Migrating .qvr Source Between Grammar Revisions: guides/migration.md
+      - "Interactive tools: REPL, kernel, and language server": guides/repl-and-lsp.md
+      - Migrating .qvr source between grammar revisions: guides/migration.md
     - Language reference:
       - Overview: reference/qvr/index.md
-      - Types and Indexed Families: reference/qvr/types-and-indexed-families.md
-      - Effects and Handlers: reference/qvr/effects-and-handlers.md
+      - Types and indexed families: reference/qvr/types-and-indexed-families.md
+      - Effects and handlers: reference/qvr/effects-and-handlers.md
       - Computations: reference/qvr/computations.md
-      - Finite Collection Expressions: reference/qvr/collection-expressions.md
-      - Probabilistic Programs: reference/qvr/probabilistic-programs.md
-      - Generated Computation Graphs: reference/qvr/generated-computations.md
-      - Execution and Tooling: reference/qvr/execution-and-tooling.md
-      - Transpilation Support: transpile-support.md
+      - Finite collection expressions: reference/qvr/collection-expressions.md
+      - Probabilistic programs: reference/qvr/probabilistic-programs.md
+      - Generated computation graphs: reference/qvr/generated-computations.md
+      - Execution and tooling: reference/qvr/execution-and-tooling.md
+      - Transpilation support: transpile-support.md
   - Semantics:
     - Overview: semantics/index.md
-    - Setting and Notation: semantics/setting.md
-    - Algebras and Base Change: semantics/algebras.md
-    - Composition Rules: semantics/composition-rules.md
-    - Types and Spaces: semantics/types-and-spaces.md
+    - Setting and notation: semantics/setting.md
+    - Semirings, t-norms, and change of base: semantics/algebras.md
+    - Composition rules: semantics/composition-rules.md
+    - Types and spaces: semantics/types-and-spaces.md
     - Morphisms: semantics/morphisms.md
     - Expressions: semantics/expressions.md
-    - Programs: semantics/programs.md
-    - Grammar Fragment: semantics/grammar.md
-    - Schemas and Bundles: semantics/schemas.md
-    - Structural Compression: semantics/structural.md
-    - Compositional Effects: semantics/effects.md
-    - The Program Theory: semantics/program-theory.md
-    - Type Theory: semantics/typing.md
-    - Adequacy: semantics/adequacy.md
+    - Programs as kernels: semantics/programs.md
+    - Weighted deduction: semantics/grammar.md
+    - Categorial types, rules, schemas, and bundles: semantics/schemas.md
+    - Tree and graph autoencoders: semantics/structural.md
+    - Effects and type classes: semantics/effects.md
+    - The program-shape protocol: semantics/program-theory.md
+    - Typing and checking: semantics/typing.md
+    - Implementation correspondence and limits: semantics/adequacy.md
     - Transpilation architecture: semantics/transpile-architecture.md
     - Transpilation correctness:
       - Contract and evidence: semantics/transpile-correctness/index.md
       - BUGS: semantics/transpile-correctness/bugs.md
       - Church: semantics/transpile-correctness/church.md
       - Edward2: semantics/transpile-correctness/edward2.md
-      - Gen: semantics/transpile-correctness/gen.md
+      - Gen.jl: semantics/transpile-correctness/gen.md
       - JAGS: semantics/transpile-correctness/jags.md
       - NumPyro: semantics/transpile-correctness/numpyro.md
       - PyMC: semantics/transpile-correctness/pymc.md
       - Pyro: semantics/transpile-correctness/pyro.md
       - Stan: semantics/transpile-correctness/stan.md
-      - Turing: semantics/transpile-correctness/turing.md
+      - Turing.jl: semantics/transpile-correctness/turing.md
       - WebPPL: semantics/transpile-correctness/webppl.md
   - Examples:
     - Overview: examples/index.md
@@ -299,19 +299,18 @@ nav:
       - Natural Transformations: api/categorical/natural_transformations.md
       - Adjunctions: api/categorical/adjunctions.md
       - Monoidal Structures: api/categorical/monoidal.md
-      - Base Change: api/categorical/base_change.md
+      - Change of Base: api/categorical/base_change.md
       - Traced Monoidal: api/categorical/traced.md
     - Monadic:
       - Overview: api/monadic/typeclasses.md
       - Stdlib Effect Instances: api/monadic/instances.md
-      - Monad Transformers: api/monadic/transformers.md
       - Algebraic Effects: api/monadic/algebraic.md
       - Bridges: api/monadic/bridges.md
       - Typeclass Theories: api/monadic/theories.md
       - Typeclass Laws: api/monadic/laws.md
       - Concrete Monads: api/monadic/monads.md
       - Comonads: api/monadic/comonads.md
-      - Algebras & Coalgebras: api/monadic/algebras.md
+      - Algebras and Coalgebras: api/monadic/algebras.md
       - Distributive Laws: api/monadic/distributive_laws.md
     - Arrows:
       - Overview: api/arrows/typeclasses.md
@@ -333,7 +332,7 @@ nav:
       - Queries: api/stochastic/queries.md
       - Giry Monad: api/stochastic/giry.md
       - Categories: api/stochastic/categories.md
-      - Biclosed Monoidal: api/stochastic/biclosed.md
+      - "Deductive Systems, Rule Schemas, and Span Components": api/stochastic/biclosed.md
       - Rule Systems: api/stochastic/rules.md
       - Chart Semirings: api/stochastic/semiring.md
       - Chart Parsers: api/stochastic/parsers.md
@@ -369,9 +368,9 @@ nav:
       - Overview: api/dsl/index.md
       - Parser: api/dsl/parser.md
       - AST Nodes: api/dsl/ast_nodes.md
-      - Family Schemas: api/dsl/family_schemas.md
-      - Let-Expression Traversal: api/dsl/let_expr_traversal.md
-      - Pygments Lexer: api/dsl/pygments_lexer.md
+      - Family schemas: api/dsl/family_schemas.md
+      - Let-expression traversal: api/dsl/let_expr_traversal.md
+      - Pygments lexer: api/dsl/pygments_lexer.md
       - Compiler: api/dsl/compiler.md
       - Resolution Lenses: api/dsl/resolution.md
       - AST → Source Emit: api/dsl/emit.md
@@ -391,7 +390,7 @@ nav:
       - Overview: api/structural/signature.md
       - Encoders: api/structural/encoder.md
       - Decoders: api/structural/decoder.md
-      - Loss Registry: api/structural/losses.md
+      - Loss registry: api/structural/losses.md
       - Shapes: api/structural/shapes.md
     - CLI: api/cli.md
     - Inference:
@@ -423,11 +422,11 @@ nav:
       - Fit Entry Point: api/formulas/fit.md
     - Analysis:
       - Overview: api/analysis/index.md
-      - Chain Shapes: api/analysis/chain_shape.md
+      - Chain shapes: api/analysis/chain_shape.md
       - Initialization Recipes: api/analysis/init_spec.md
       - Saturation Diagnostics: api/analysis/saturation.md
-      - Plate Graphs: api/analysis/plate_graph.md
-      - Plate Renderers: api/analysis/plate_render.md
+      - Plate graphs: api/analysis/plate_graph.md
+      - Plate diagram renderers: api/analysis/plate_render.md
       - Scope Inspection: api/analysis/scope.md
     - Program: api/program.md
     - Effects:
@@ -442,7 +441,7 @@ nav:
       - Handlers: api/effects/handlers.md
       - Collapse: api/effects/collapse.md
       - Conjugate marginals: api/effects/conjugate.md
-      - Reparameterisation: api/effects/reparam.md
+      - Reparameterization: api/effects/reparam.md
     - Transpile:
       - Overview: api/transpile/index.md
       - Plan: api/transpile/plan.md
@@ -482,7 +481,7 @@ nav:
       - Entry points: api/qiec/entries.md
   - Develop:
     - Overview: developer/contributing.md
-    - Public API and exports: developer/public-api.md
-    - Indexed effects and GADTs: developer/qiec.md
+    - Public API and Exports: developer/public-api.md
+    - Quivers Indexed Effect Core: developer/qiec.md
     - Changelog: developer/changelog.md
-    - Inference benchmarks: developer/inference-benchmarks.md
+    - Inference benchmark results: developer/inference-benchmarks.md

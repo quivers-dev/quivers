@@ -270,7 +270,7 @@ _UNPERTURBABLE_COORDINATES: tuple[UnperturbableCoordinate, ...] = tuple(
         (
             "lda",
             "token_idx",
-            "Names the fibration from each observed word into its own "
+            "Names the index map from each observed word into its own "
             "token, so each token's topic is summed out on its own",
         ),
         (

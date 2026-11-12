@@ -21,10 +21,13 @@ from quivers.dsl.program_theory import (
 )
 from quivers.stochastic.agenda import Wildcard
 from quivers.stochastic.stdlib import (
+    AB,
+    CCG,
     STDLIB_DEDUCTIONS,
     Datalog,
     MLTT,
 )
+from quivers.stochastic.semiring import COUNTING
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +39,7 @@ class TestStdlibRegistry:
     def test_registry_contains_canonical_systems(self):
         expected = {
             "CCG",
-            "Lambek",
+            "AB",
             "STLC",
             "MLTT",
             "Datalog",
@@ -70,6 +73,68 @@ class TestStdlibRegistry:
         targets = sorted(item[2] for item, _ in reaches)
         # 1 can only reach 2; not 3, 4.
         assert targets == [2]
+
+
+def _fwd(result, argument):
+    return ("slash", "/", result, argument)
+
+
+def _bwd(result, argument):
+    return ("slash", "\\", argument, result)
+
+
+def _lexicon(categories):
+    """One axiom per token: ``("span", i, i + 1, category)`` of log weight 0."""
+    return [
+        (("span", i, i + 1, category), torch.tensor(0.0))
+        for i, category in enumerate(categories)
+    ]
+
+
+class TestCategorialStdlib:
+    """CCG and AB recognize ``S`` over the whole input from adjacent spans."""
+
+    TRANSITIVE = _fwd(_bwd("S", "NP"), "NP")  # (S\\NP)/NP
+
+    def test_application_derives_a_transitive_clause(self):
+        """NP (S\\NP)/NP NP has exactly one AB derivation of S."""
+        for system in (AB, CCG):
+            view = system(_lexicon(["NP", self.TRANSITIVE, "NP"]))
+            assert len(view.goal_items) == 1
+            assert view.goal_items[0][0] == ("span", 0, 3, "S")
+
+    def test_adjacency_is_required(self):
+        """Categories that combine but are not adjacent derive nothing."""
+        axioms = [
+            (("span", 0, 1, _fwd("S", "NP")), torch.tensor(0.0)),
+            (("span", 2, 3, "NP"), torch.tensor(0.0)),
+            (("span", 1, 2, "PP"), torch.tensor(0.0)),
+        ]
+        assert AB(axioms).goal_items == []
+
+    def test_composition_is_ccg_only(self):
+        """S/VP VP/NP NP: CCG adds the composed bracketing; AB has one parse."""
+        categories = [_fwd("S", "VP"), _fwd("VP", "NP"), "NP"]
+        ab = AB(_lexicon(categories))
+        ccg = CCG(_lexicon(categories))
+        assert ("span", 0, 2, _fwd("S", "NP")) not in {i for i, _ in ab.chart.items()}
+        assert ("span", 0, 2, _fwd("S", "NP")) in {i for i, _ in ccg.chart.items()}
+
+    def test_ccg_counts_both_bracketings(self):
+        """Under Counting, S/VP VP/NP NP has 2 CCG derivations and 1 AB derivation."""
+        categories = [_fwd("S", "VP"), _fwd("VP", "NP"), "NP"]
+        axioms = [(item, torch.tensor(1.0)) for item, _ in _lexicon(categories)]
+        counts = {}
+        for name, system in (("AB", AB), ("CCG", CCG)):
+            counted = type(system)(
+                rules=system.rules,
+                semiring=COUNTING,
+                axiom_injector=system.axiom_injector,
+                goal=system.goal,
+                agenda_factory=system.agenda_factory,
+            )
+            counts[name] = float(counted(axioms).goal_weight())
+        assert counts == {"AB": 1.0, "CCG": 2.0}
 
 
 # ---------------------------------------------------------------------------

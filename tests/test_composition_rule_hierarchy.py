@@ -1,17 +1,16 @@
-"""Tests for the three-level composition-rule hierarchy:
+"""Tests for the composition-rule hierarchy:
 
-* :class:`CompositionRule` — the bare composition surface
-  (``tensor_op`` + ``join``; no identity required).
-* :class:`Semigroupoid` — adds the associativity assumption.
-* :class:`Algebra` — adds identity, meet, negation, and the
-  compact-closed structure.
+* `CompositionRule`: the bare composition surface
+  (``tensor_op`` and ``join``; no law).
+* `Semigroupoid`: associative composition.
+* `Algebra`: adds identity, meet, and negation.
+* `Semiring`: an algebra whose composition is also associative.
 
-Verifies type-checked subclass relationships, that existing
-algebras reclassify as ``Algebra`` (i.e. also ``Semigroupoid``
-and ``CompositionRule``), that user-defined semigroupoids ship
-via :func:`semigroupoid` and :func:`material_implication`, and
-that operations needing identity (cup, cap, dagger, ...) reject
-non-algebra composition rules at the API boundary.
+Verifies the subclass relationships, that only the semiring algebras
+claim associativity, that user-defined semigroupoids ship via
+`semigroupoid`, and that the non-associative `material_implication`
+is a `Magmoid`. The laws themselves are checked in
+``tests/test_algebra_laws.py``.
 """
 
 from __future__ import annotations
@@ -26,7 +25,9 @@ from quivers.core.algebras import (
     CompositionRule,
     CustomSemigroupoid,
     Algebra,
+    Magmoid,
     Semigroupoid,
+    Semiring,
     material_implication,
     semigroupoid,
 )
@@ -37,16 +38,26 @@ from quivers.core.algebras import (
 # ---------------------------------------------------------------------------
 
 
-def test_algebra_extends_semigroupoid_extends_composition_rule() -> None:
-    assert issubclass(Algebra, Semigroupoid)
+def test_semiring_extends_algebra_and_semigroupoid() -> None:
+    assert issubclass(Semiring, Algebra)
+    assert issubclass(Semiring, Semigroupoid)
+    assert not issubclass(Algebra, Semigroupoid)
     assert issubclass(Semigroupoid, CompositionRule)
 
 
-@pytest.mark.parametrize("instance", [PRODUCT_FUZZY, BOOLEAN, REAL])
-def test_shipped_algebras_are_at_all_three_levels(instance) -> None:
+@pytest.mark.parametrize("instance", [BOOLEAN, REAL])
+def test_semiring_algebras_are_at_every_level(instance) -> None:
+    assert isinstance(instance, Semiring)
     assert isinstance(instance, Algebra)
     assert isinstance(instance, Semigroupoid)
     assert isinstance(instance, CompositionRule)
+
+
+def test_product_fuzzy_does_not_claim_associativity() -> None:
+    """Product does not distribute over noisy-OR, so the default
+    algebra is an `Algebra` but not a `Semigroupoid`."""
+    assert isinstance(PRODUCT_FUZZY, Algebra)
+    assert not isinstance(PRODUCT_FUZZY, Semigroupoid)
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +120,10 @@ def test_associativity_smoke_check_can_be_disabled() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_material_implication_is_semigroupoid_not_algebra() -> None:
+def test_material_implication_is_a_magmoid() -> None:
     mi = material_implication()
-    assert isinstance(mi, Semigroupoid)
+    assert isinstance(mi, Magmoid)
+    assert not isinstance(mi, Semigroupoid)
     assert not isinstance(mi, Algebra)
 
 
@@ -138,13 +150,13 @@ def test_material_implication_compose_matches_reichenbach_formula() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Semigroupoids lack the Algebra operations
+# Non-algebra rules lack the Algebra operations
 # ---------------------------------------------------------------------------
 
 
 def test_semigroupoid_has_no_unit_or_zero() -> None:
     mi = material_implication()
-    # ``Semigroupoid`` doesn't declare ``unit`` / ``zero``; accessing
+    # ``Magmoid`` doesn't declare ``unit`` / ``zero``; accessing
     # them surfaces a clean AttributeError.
     with pytest.raises(AttributeError):
         _ = mi.unit
@@ -189,3 +201,14 @@ def test_compatible_across_levels() -> None:
     """A Algebra instance is compatible with itself (degenerate
     case)."""
     assert PRODUCT_FUZZY.is_compatible(PRODUCT_FUZZY)
+
+
+def test_semigroupoid_construction_leaves_the_global_random_stream_alone() -> None:
+    """The associativity smoke check draws from a local generator: the
+    global stream continues as if no rule had been built."""
+    torch.manual_seed(1234)
+    expected = torch.rand(5)
+    torch.manual_seed(1234)
+    semigroupoid("BoundedSumMax", _bounded_sum, _max_reduce)
+    CustomSemigroupoid("Again", _bounded_sum, _max_reduce)
+    torch.testing.assert_close(torch.rand(5), expected)

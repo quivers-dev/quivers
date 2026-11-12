@@ -900,14 +900,14 @@ def _refuse_program_leaves(
         ):
             raise StepResolutionError(
                 "qvr-expand",
-                [
-                    f"chain:program:{elem.name}",
+                [f"chain:program:{elem.name}"],
+                explanation=(
                     f"the morphism {step.morphism!r} drawn at line {step.line} "
                     f"composes the program {elem.name!r} with `>>`, `repeat`, "
                     f"`stack`, `fan`, or `@`; a program composes by drawing "
                     f"from it, `sample y <- {elem.name}(x)`, or runs at every "
-                    f"position as the cell of `scan({elem.name})`",
-                ],
+                    f"position as the cell of `scan({elem.name})`"
+                ),
             )
 
 
@@ -950,14 +950,14 @@ def _refuse_sequence_function_leaves(
             continue
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"chain:sequence-function:{name}",
+            [f"chain:sequence-function:{name}"],
+            explanation=(
                 f"the morphism {step.morphism!r} drawn at line {step.line} "
                 f"composes {name!r}, which reads a whole sequence at once, in "
                 f"a chain or a scan that applies it one position at a time; "
                 f"bind the sequence and apply it in a let, as in "
-                f"`sample xs <- states` then `let ys = {name}(xs)`",
-            ],
+                f"`sample xs <- states` then `let ys = {name}(xs)`"
+            ),
         )
 
 
@@ -1178,12 +1178,12 @@ def _emit_chain(
         if prev_var is not None and not prev_sequence:
             raise StepResolutionError(
                 "qvr-expand",
-                [
-                    f"scan:input:{scan.name}",
+                [f"scan:input:{scan.name}"],
+                explanation=(
                     f"the scan over {scan.name!r} drawn at line {original.line} "
                     f"runs over {prev_var!r}, one value rather than a sequence; "
-                    f"a scan before it returns every state with `outputs=all`",
-                ],
+                    f"a scan before it returns every state with `outputs=all`"
+                ),
             )
         source = _scan_input(prev_var, head_args, program, original)
         var = terminal_var if not rest else program.fresh(f"{base_name}_chain")
@@ -1280,43 +1280,43 @@ def _marginal_scan(
     if prefixed or followed:
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:marginal:chain:{name}",
+            [f"scan:marginal:chain:{name}"],
+            explanation=(
                 f"the marginalized chain over {name!r} drawn at line "
                 f"{original.line} is composed with other elements; it reads its "
-                f"sequence directly and is the whole of what the step draws",
-            ],
+                f"sequence directly and is the whole of what the step draws"
+            ),
         )
     if isinstance(original, ObserveStep):
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:marginal:observe:{name}",
+            [f"scan:marginal:observe:{name}"],
+            explanation=(
                 f"the marginalized chain over {name!r} is observed at line "
                 f"{original.line}; its states are summed out and its "
-                f"observations are the cell's, so draw it with `sample`",
-            ],
+                f"observations are the cell's, so draw it with `sample`"
+            ),
         )
     if scan.init in ("zeros", "learned"):
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:marginal:init:{name}",
+            [f"scan:marginal:init:{name}"],
+            explanation=(
                 f"the marginalized chain over {name!r} drawn at line "
                 f"{original.line} names no distribution of its first state; "
                 f"write `scan({name}, init=p)` with `p` a probability vector "
-                f"over the states bound before the scan",
-            ],
+                f"over the states bound before the scan"
+            ),
         )
     if scan.outputs == "all":
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:marginal:outputs:{name}",
+            [f"scan:marginal:outputs:{name}"],
+            explanation=(
                 f"the marginalized chain over {name!r} drawn at line "
                 f"{original.line} sums its states out, so it has no state per "
-                f"position to return with `outputs=all`",
-            ],
+                f"position to return with `outputs=all`"
+            ),
         )
     return LetStep(
         name=var,
@@ -1366,12 +1366,12 @@ def refuse_marginal_chain_reads(
                 if scan is not None and scan.marginal:
                     raise StepResolutionError(
                         "qvr-expand",
-                        [
-                            f"scan:marginal:scope:{scan.step}",
+                        [f"scan:marginal:scope:{scan.step}"],
+                        explanation=(
                             f"the marginalized chain over {scan.step!r} at line "
                             f"{inner.line} lies inside the block over "
-                            f"{step.var!r}; draw it in the program's body",
-                        ],
+                            f"{step.var!r}; draw it in the program's body"
+                        ),
                     )
             continue
         if not isinstance(step, LetStep):
@@ -1388,13 +1388,13 @@ def refuse_marginal_chain_reads(
             where = f"line {readers[0].line}" if readers else "the program's return"
             raise StepResolutionError(
                 "qvr-expand",
-                [
-                    f"scan:marginal:read:{step.name}",
+                [f"scan:marginal:read:{step.name}"],
+                explanation=(
                     f"{step.name!r} binds the marginalized chain over "
                     f"{scan.step!r}, whose states are summed out, so it holds "
                     f"no state for {where} to read; the chain contributes its "
-                    f"log marginal likelihood to the joint",
-                ],
+                    f"log marginal likelihood to the joint"
+                ),
             )
 
 
@@ -1448,12 +1448,12 @@ def _refuse_cell_use(step: ProgramStep, programs: dict[str, ProgramDecl]) -> Non
     if cell is not None and returns_marginalized_latent(cell):
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:marginal:entry:{cell.name}",
+            [f"scan:marginal:entry:{cell.name}"],
+            explanation=(
                 f"the step at line {step.line} runs {cell.name!r}, which returns "
                 f"the latent it marginalizes and so has no value of its own; it "
-                f"runs only as the cell of `scan({cell.name}, init=p)`",
-            ],
+                f"runs only as the cell of `scan({cell.name}, init=p)`"
+            ),
         )
 
 
@@ -1516,13 +1516,13 @@ def _refuse_sequence_reader(
     name = getattr(elem, "name", type(elem).__name__)
     raise StepResolutionError(
         "qvr-expand",
-        [
-            f"scan:outputs:{name}",
+        [f"scan:outputs:{name}"],
+        explanation=(
             f"the morphism {original.morphism!r} drawn at line {original.line} "
             f"applies {name!r} to the every-state sequence of a scan with "
             f"`outputs=all`; a morphism reads each state only inside a later "
-            f"scan, as in `scan(cell, outputs=all) >> {name} >> scan(next)`",
-        ],
+            f"scan, as in `scan(cell, outputs=all) >> {name} >> scan(next)`"
+        ),
     )
 
 
@@ -1563,21 +1563,21 @@ def _scan_input(
             return head_args[0].text
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:input:{original.morphism}",
+            [f"scan:input:{original.morphism}"],
+            explanation=(
                 f"the scan drawn at line {original.line} runs over one sequence, "
-                f"but the step conditions on {len(head_args)} arguments",
-            ],
+                f"but the step conditions on {len(head_args)} arguments"
+            ),
         )
     if len(program.domain_names) == 1 and program.domain_names[0]:
         return program.domain_names[0]
     raise StepResolutionError(
         "qvr-expand",
-        [
-            f"scan:input:{original.morphism}",
+        [f"scan:input:{original.morphism}"],
+        explanation=(
             f"the scan drawn at line {original.line} runs over the program's "
-            f"input, which is not one named factor",
-        ],
+            f"input, which is not one named factor"
+        ),
     )
 
 
@@ -1663,19 +1663,17 @@ def _scan_step_program(
     else:
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:cell:{cell}",
-                f"`scan({cell})` names neither a program nor a morphism",
-            ],
+            [f"scan:cell:{cell}"],
+            explanation=(f"`scan({cell})` names neither a program nor a morphism"),
         )
     if len(cell_domain) != 2:
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:cell:{cell}",
+            [f"scan:cell:{cell}"],
+            explanation=(
                 f"the cell {cell!r} of a scan takes an input and a state; its "
-                f"domain has {len(cell_domain)} factors",
-            ],
+                f"domain has {len(cell_domain)} factors"
+            ),
         )
     input_object: ObjectExpr | None = None
     if prefix:
@@ -1689,11 +1687,11 @@ def _scan_step_program(
     if input_object is None:
         raise StepResolutionError(
             "qvr-expand",
-            [
-                f"scan:input:{cell}",
+            [f"scan:input:{cell}"],
+            explanation=(
                 f"the input object of the scan over {cell!r} cannot be read off "
-                f"its chain",
-            ],
+                f"its chain"
+            ),
         )
     steps: list[ProgramStep] = []
     entry = f"{label}$x_t"
@@ -1972,13 +1970,13 @@ def _emit_parallel(
     if any(valued) and not paired:
         raise StepResolutionError(
             "qvr-expand",
-            [
-                "scan:outputs:fan",
+            ["scan:outputs:fan"],
+            explanation=(
                 f"the morphism {original.morphism!r} drawn at line "
                 f"{original.line} pairs branches of which some return every "
                 f"state of a scan (`outputs=all`) and others one value; pair "
-                f"sequences with sequences, position by position",
-            ],
+                f"sequences with sequences, position by position"
+            ),
         )
     for branch_idx, branch in enumerate(elem.branches):
         branch_head = head_args

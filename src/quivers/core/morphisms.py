@@ -37,13 +37,13 @@ from typing import cast
 import torch
 import torch.nn as nn
 from quivers.core.morphism_transformations import MorphismTransformation
-from quivers.core.objects import FinSet, FreeResiduated, SetObject, ProductSet
-from quivers.core.algebra_morphisms import AlgebraHomomorphism
+from quivers.core.objects import FinSet, SetObject, ProductSet
+from quivers.core.algebra_morphisms import CarrierMap
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.core.trans import TransSeq
 
 
-def _build_algebra_homomorphism_transform(phi):
+def _build_carrier_map_transform(phi):
     """Closure factory for the pointwise change-of-base transform.
 
     Splitting the closure construction into a free function avoids
@@ -175,7 +175,7 @@ class Morphism(ABC):
         """Transport this morphism along a change-of-base functor.
 
         ``phi`` may be either a
-        `quivers.core.algebra_morphisms.AlgebraHomomorphism`
+        `quivers.core.algebra_morphisms.CarrierMap`
         (pointwise: the action factors entry-by-entry through
         ``phi.apply``) or a
         `quivers.core.morphism_transformations.MorphismTransformation`
@@ -193,7 +193,7 @@ class Morphism(ABC):
 
         Parameters
         ----------
-        phi : AlgebraHomomorphism or MorphismTransformation
+        phi : CarrierMap or MorphismTransformation
             The change-of-base functor. Its ``source`` must match
             ``self.algebra``.
 
@@ -215,9 +215,9 @@ class Morphism(ABC):
             for step in phi.steps:
                 current = current.change_base(step)
             return cast(TransformedMorphism, current)
-        if not isinstance(phi, (AlgebraHomomorphism, MorphismTransformation)):
+        if not isinstance(phi, (CarrierMap, MorphismTransformation)):
             raise TypeError(
-                f"change_base: expected AlgebraHomomorphism, "
+                f"change_base: expected CarrierMap, "
                 f"MorphismTransformation, or TransSeq; got "
                 f"{type(phi).__name__}"
             )
@@ -227,8 +227,8 @@ class Morphism(ABC):
                 f"{phi.source.name!r} does not match this morphism's "
                 f"algebra {self._algebra.name!r}"
             )
-        if isinstance(phi, AlgebraHomomorphism):
-            transform = _build_algebra_homomorphism_transform(phi)
+        if isinstance(phi, CarrierMap):
+            transform = _build_carrier_map_transform(phi)
             new_domain = self._domain
             new_codomain = self._codomain
         else:
@@ -326,22 +326,18 @@ class Morphism(ABC):
 
     @property
     def dagger(self) -> "TransformedMorphism":
-        """Transpose / dagger of ``self : A → B``, producing a
-        morphism ``B → A`` whose tensor has the domain and codomain
-        axes swapped.
+        """Transpose (relational converse) of ``self : A → B``.
 
-        The compact-closed structure of V-Cat means every object is
-        self-dual (``A^* = A``), so the dagger is well-defined for
-        every algebra. The semantic interpretation depends on the
-        algebra: ProductFuzzyAlgebra gives the tensor transpose, Markov
-        the Bayes-uniform-prior inversion, Viterbi the max-plus
-        reversal, Boolean the relational converse.
-
-        Categorically:
-        ``f^† = (ε_B ⊗ id_A) ∘ (id_B ⊗ f^* ⊗ id_A) ∘ (id_B ⊗ η_A)``
-        — but for finite-set objects the unit / counit collapse to
-        the diagonal / co-diagonal, and the dagger reduces to a
-        tensor transpose along the domain/codomain axes.
+        Returns the morphism ``B → A`` whose tensor has the domain and
+        codomain axes swapped, ``f^†(b, a) = f(a, b)``, under every
+        algebra: for Boolean relations it is the converse relation, and
+        for a Markov kernel it is the transposed matrix, which is not a
+        Bayesian inversion and is not row-stochastic in general. When
+        the algebra is a commutative `Semiring`, V-matrices are compact
+        closed with every object self-dual, the transpose is the dagger
+        of that dagger-compact structure, and it equals
+        ``(ε_B ⊗ id_A) ∘ (id_B ⊗ f ⊗ id_A) ∘ (id_B ⊗ η_A)`` with the
+        identity matrices as cup and cap.
 
         Returns
         -------
@@ -926,43 +922,45 @@ class RepeatMorphism(Morphism):
 
 
 class CurriedMorphism(Morphism):
-    """Residuation-witness curried morphism.
+    """The curry of a morphism out of a product.
 
-    For an inner morphism ``f : X * Y -> Z`` whose codomain ``Z`` lives
-    in a residuated universe (a `FreeResiduated`), produces the
-    morphism corresponding to the relevant residuation isomorphism:
+    V-matrices form a compact closed category under the cartesian
+    product of sets, whose internal hom ``[Y, Z]`` is the product set
+    ``Y × Z``. Currying is the bijection
 
-    - ``direction='right'`` realises the right-residuation
-      ``X * Y -> Z  ≅  X -> Z/Y`` (counit of the right-residual
-      adjunction),
-    - ``direction='left'`` realises the left-residuation
-      ``X * Y -> Z  ≅  Y -> X\\Z``.
+        Hom(X × Y, Z) ≅ Hom(X, [Y, Z])          (``direction='right'``)
+        Hom(X × Y, Z) ≅ Hom(Y, [X, Z])          (``direction='left'``)
 
-    The underlying tensor data is reinterpreted, not recomputed: the
-    same V-relation is presented under a different domain/codomain
-    factoring in the residuated universe.
+    of the closed structure [Mac Lane (1998), §IV.6]: the curried
+    morphism has the same entries as ``f``, re-indexed so that
+    ``curry(f)[x, (y, z)] = f[(x, y), z]`` (right) or
+    ``curry(f)[y, (x, z)] = f[(x, y), z]`` (left). Its declared domain
+    and codomain match its tensor, and `UncurriedMorphism` inverts it.
 
     Parameters
     ----------
     inner : Morphism
-        The base morphism. Must have a domain that factors as a
-        non-trivial product (``ProductSet`` with at least two
-        components) and a codomain that inhabits a residuated universe.
+        The morphism ``f : X × Y → Z``. With more than two domain
+        factors, ``right`` moves the last factor into the codomain and
+        ``left`` the first.
     direction : Literal['right', 'left']
-        Which residuation to apply.
+        Which factor is kept as the domain.
 
     Raises
     ------
+    ValueError
+        If ``direction`` is neither ``'right'`` nor ``'left'``.
     TypeError
         If ``inner.domain`` does not factor as a product.
+
+    References
+    ----------
+    Mac Lane, S. (1998). *Categories for the Working Mathematician* (2nd
+    ed.). Springer.
+    [doi:10.1007/978-1-4757-4721-8](https://doi.org/10.1007/978-1-4757-4721-8)
     """
 
     def __init__(self, inner: Morphism, direction: str = "right") -> None:
-        from quivers.stochastic.categories import (
-            AtomicCategory,
-            SlashCategory,
-        )
-
         if direction not in ("right", "left"):
             raise ValueError(f"direction must be 'right' or 'left', got {direction!r}")
         if not isinstance(inner.domain, ProductSet) or len(inner.domain.components) < 2:
@@ -970,63 +968,132 @@ class CurriedMorphism(Morphism):
                 f"curry requires inner morphism with product domain, "
                 f"got {type(inner.domain).__name__}"
             )
-
-        # Split off the first or last factor of the domain product
-        # depending on direction; the residuation moves it into the
-        # codomain via the slash constructor.
         components = inner.domain.components
         if direction == "right":
-            new_domain_components = components[:-1]
+            kept = components[:-1]
             absorbed = components[-1]
         else:
-            new_domain_components = components[1:]
+            kept = components[1:]
             absorbed = components[0]
-
-        if len(new_domain_components) == 1:
-            new_domain = new_domain_components[0]
-        else:
-            new_domain = ProductSet(components=new_domain_components)
-
-        # Codomain is the residuation of inner.codomain by `absorbed`.
-        # When inner.codomain is a FreeResiduated universe, the new
-        # codomain is the same universe (closed under residuation).
-        # Otherwise, the construction is interpreted in the implicit
-        # residuated structure on the existing codomain.
-        if isinstance(inner.codomain, FreeResiduated):
-            new_codomain: SetObject = inner.codomain
-        else:
-            slash = "/" if direction == "right" else "\\"
-            cat = SlashCategory(
-                result=AtomicCategory(name=str(inner.codomain)),
-                argument=AtomicCategory(name=str(absorbed)),
-                direction=slash,  # type: ignore[arg-type]
-            )
-            new_codomain = inner.codomain  # underlying type unchanged
-            self._slash_category = cat
-
+        new_domain = kept[0] if len(kept) == 1 else ProductSet(components=kept)
+        new_codomain = ProductSet(components=(absorbed, inner.codomain))
         super().__init__(new_domain, new_codomain, algebra=inner._algebra)
         self._inner = inner
         self._direction = direction
+        # Axis permutation from the inner tensor (dom..., cod...) to
+        # (kept..., absorbed..., cod...).
+        n_absorbed = absorbed.ndim
+        n_dom = inner.domain.ndim
+        n_cod = inner.codomain.ndim
+        if direction == "right":
+            self._perm = list(range(n_dom + n_cod))
+        else:
+            self._perm = (
+                list(range(n_absorbed, n_dom))
+                + list(range(n_absorbed))
+                + list(range(n_dom, n_dom + n_cod))
+            )
 
     @property
     def inner(self) -> Morphism:
+        """The uncurried morphism ``f``."""
         return self._inner
 
     @property
     def direction(self) -> str:
+        """``'right'`` or ``'left'``."""
         return self._direction
 
     @property
     def tensor(self) -> torch.Tensor:
-        # The residuation isomorphism is the identity on tensor data:
-        # the same V-relation, viewed under a different factoring.
-        return self._inner.tensor
+        """The inner tensor re-indexed to ``(domain..., codomain...)``."""
+        return self._inner.tensor.permute(*self._perm)
 
     def module(self) -> nn.Module:
         return self._inner.module()
 
     def __repr__(self) -> str:
         return f"CurriedMorphism({self._inner!r}, direction={self._direction!r})"
+
+
+class UncurriedMorphism(Morphism):
+    """The uncurry of a morphism into a product, inverse to `CurriedMorphism`.
+
+    For ``g : X → [Y, Z] = Y × Z``, ``direction='right'`` gives
+    ``X × Y → Z`` with ``uncurry(g)[(x, y), z] = g[x, (y, z)]``, and
+    ``direction='left'`` gives ``Y × X → Z`` with
+    ``uncurry(g)[(y, x), z] = g[x, (y, z)]``. Hence
+    ``UncurriedMorphism(CurriedMorphism(f, d), d)`` has the domain,
+    codomain and tensor of ``f`` in both directions.
+
+    Parameters
+    ----------
+    inner : Morphism
+        The morphism ``g : X → Y × Z`` whose codomain is a binary
+        product.
+    direction : Literal['right', 'left']
+        Where the first codomain factor is placed in the new domain:
+        last (``right``) or first (``left``).
+
+    Raises
+    ------
+    ValueError
+        If ``direction`` is neither ``'right'`` nor ``'left'``.
+    TypeError
+        If ``inner.codomain`` is not a binary product.
+    """
+
+    def __init__(self, inner: Morphism, direction: str = "right") -> None:
+        if direction not in ("right", "left"):
+            raise ValueError(f"direction must be 'right' or 'left', got {direction!r}")
+        cod = inner.codomain
+        if not isinstance(cod, ProductSet) or len(cod.components) != 2:
+            raise TypeError(
+                "uncurry requires a morphism into a binary product [Y, Z], got "
+                f"{type(cod).__name__}"
+            )
+        absorbed, result = cod.components
+        dom = inner.domain
+        dom_parts = dom.components if isinstance(dom, ProductSet) else (dom,)
+        if direction == "right":
+            new_domain = ProductSet(components=(*dom_parts, absorbed))
+        else:
+            new_domain = ProductSet(components=(absorbed, *dom_parts))
+        super().__init__(new_domain, result, algebra=inner._algebra)
+        self._inner = inner
+        self._direction = direction
+        n_dom = dom.ndim
+        n_abs = absorbed.ndim
+        n_res = result.ndim
+        if direction == "right":
+            self._perm = list(range(n_dom + n_abs + n_res))
+        else:
+            self._perm = (
+                list(range(n_dom, n_dom + n_abs))
+                + list(range(n_dom))
+                + list(range(n_dom + n_abs, n_dom + n_abs + n_res))
+            )
+
+    @property
+    def inner(self) -> Morphism:
+        """The curried morphism ``g``."""
+        return self._inner
+
+    @property
+    def direction(self) -> str:
+        """``'right'`` or ``'left'``."""
+        return self._direction
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """The inner tensor re-indexed to ``(domain..., codomain...)``."""
+        return self._inner.tensor.permute(*self._perm)
+
+    def module(self) -> nn.Module:
+        return self._inner.module()
+
+    def __repr__(self) -> str:
+        return f"UncurriedMorphism({self._inner!r}, direction={self._direction!r})"
 
 
 def morphism(
@@ -1272,6 +1339,7 @@ __all__ = [
     "FunctorMorphism",
     "RepeatMorphism",
     "CurriedMorphism",
+    "UncurriedMorphism",
     "morphism",
     "observed",
     "identity",

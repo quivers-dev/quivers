@@ -1,11 +1,8 @@
 # Plan
 
-A [transpilation plan](../../semantics/transpile-architecture.md#4-lower-module-ir) collects the declarations and dependencies required by a target. It
-checks support before emitting source and identifies the operation responsible when
-translation is refused. Inspect the plan to determine which part of a model needs a
-different target or representation.
-
-Deriving a program's target plan from its checked kernel module, and the
-lowering entry point every target renders from.
+`Lower` derives a program's target plan from its checked [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) module, and every target renders from
+that plan ([lowering](../../semantics/transpile-architecture.md#4-lower-module-ir)). The plan collects
+the declarations and dependencies a target needs, checks support before any source is emitted, and
+names the operation responsible when a target refuses a model.
 
 ::: quivers.transpile.plan

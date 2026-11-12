@@ -1,0 +1,14 @@
+# A gate drawn once per row under one prior probability every row
+# shares, read through a scope let that holds a single number at each
+# atom: each row's count is a mixture of a point mass at zero, weight
+# 1 - p, and Poisson(3), weight p.
+object Row : FinSet 4
+object One : FinSet 1
+program gate_shared : Row -> One
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    let p = sigmoid(eta)
+    marginalize z : Row <- Bernoulli(probs=p)
+        let gated_rate = real(z) * 3.0
+        observe y : Row <- Poisson(rate=gated_rate)
+    return eta
+export gate_shared

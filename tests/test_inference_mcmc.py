@@ -1034,12 +1034,12 @@ def test_guide_initialisation_reads_trace_side_guide_samples() -> None:
             }
 
     model = _vector_and_scalar_program()
-    registry = LatentRegistry.from_model(model, set())
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
     position = driver._initial_position(
-        registry,
+        setup,
         _FixedGuide(),  # type: ignore[arg-type]
         torch.Generator().manual_seed(0),
     )
@@ -1053,13 +1053,13 @@ def test_guide_initialisation_rejects_a_guide_without_the_batch_axis() -> None:
             return {"v": torch.zeros(3), "s": torch.zeros(())}
 
     model = _vector_and_scalar_program()
-    registry = LatentRegistry.from_model(model, set())
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
     with pytest.raises(ValueError, match="expected the trace-side shape"):
         driver._initial_position(
-            registry,
+            setup,
             _UnbatchedGuide(),  # type: ignore[arg-type]
             torch.Generator().manual_seed(0),
         )
@@ -1259,6 +1259,37 @@ def test_parameter_outside_its_constraint_rejects_the_position() -> None:
         seed=0,
     ).run(model, torch.zeros(1, 1), data)
     assert (result.samples["b"] > -1.0).all()
+
+
+@pytest.mark.parametrize("ambient", range(12))
+def test_a_seeded_run_records_its_latents_whatever_the_global_rng_holds(
+    ambient: int,
+) -> None:
+    # The likelihood raises for a recorded `b` at or below -1, which a
+    # standard-normal prior draws about one time in six. A seeded run
+    # draws its recording from its own stream, so the ambient state
+    # cannot make it raise or move what it returns.
+    model = _score_program(_scale_likelihood, ("b", "y"))
+    data = {"y": torch.linspace(-1.0, 1.0, 6)}
+    torch.manual_seed(ambient)
+    before = torch.random.get_rng_state()
+    result = MCMC(
+        HMCKernel(step_size=0.1, num_steps=2),
+        num_warmup=2,
+        num_samples=3,
+        num_chains=1,
+        seed=0,
+    ).run(model, torch.zeros(1, 1), data)
+    assert torch.equal(torch.random.get_rng_state(), before)
+    torch.manual_seed(ambient + 1000)
+    again = MCMC(
+        HMCKernel(step_size=0.1, num_steps=2),
+        num_warmup=2,
+        num_samples=3,
+        num_chains=1,
+        seed=0,
+    ).run(model, torch.zeros(1, 1), data)
+    assert torch.equal(result.samples["b"], again.samples["b"])
 
 
 def _gamma_score(env: dict[str, torch.Tensor]) -> torch.Tensor:

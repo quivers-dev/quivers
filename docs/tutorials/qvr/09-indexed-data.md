@@ -1,26 +1,8 @@
-# Indexed data and total functions
+# 9. Indexed data and total functions
 
-This tutorial builds a length-indexed vector and uses its index to rule out
-invalid states. The statistical reason to care is familiar: [shape, missingness, and support assumptions](02-glms.md#common-mistakes) often begin as comments or runtime checks. An indexed
-family can make one of those assumptions part of the computation's type.
-
-We will build a summary function whose input type records the vector length
-and whose recursive branches preserve that information.
-
-An ordinary list says what its elements are; a length-indexed vector also
-states how many it contains. `Nil` constructs length zero. Adding a head to
-that vector with `Cons` constructs length one; adding another constructs
-length two. The length in the type is evidence supplied by the constructor,
-not a second, independently editable integer.
-
-When a function inspects a nonempty constructor, it learns that a tail exists
-and what its length is. The *case motive* states the result type expected
-from that inspection. This example always returns an integer or a real sum,
-so the result type does not itself need to vary with the learned length.
+An [inductive family](https://ncatlab.org/nlab/show/inductive+family) is a datatype indexed by values, whose constructors fix the index of the values they build [@dybjer1994inductive]. Generalized algebraic datatypes ([GADTs](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type)) are the same idea in functional programming [@xi2003guarded]. Declare vectors indexed by their length and write functions over them that need no length check at run time. A shape assumption that would otherwise be a comment or a runtime assertion becomes part of a type.
 
 ## 1. Declare the index
-
-`Nat` is a closed index sort. `Z` represents zero and `S(n)` its successor.
 
 <!-- compile: qiec -->
 ```qvr
@@ -39,17 +21,13 @@ define length[A : Type, n : Nat](xs : Vec[A](n)) : Int !{} =
             return 1 + rest
 ```
 
-The family has one uniform parameter `A` and one refinable index `n`. `Nil`
-constructs only `Vec[A](Z)`. `Cons[m]` accepts a tail of length `m` and
-constructs a vector of length `S(m)`.
+`index Nat = Z | S(Nat)` declares a finite enumerated index type whose values are the natural numbers in unary: `Z` is zero and `S(n)` is the successor of `n`. `Vec[A](n)` has a *parameter* `A`, the element type, which is the same in every constructor, and an *index* `n`, the length, which each constructor fixes: `Nil` builds only `Vec[A](Z)`, and `Cons[m]` takes a tail of length `m` and builds a vector of length `S(m)`. The length is thus established by the constructors and cannot disagree with the elements.
 
-The case motive says that every branch returns `Int`, regardless of the
-refined length. In the `Cons` branch, `tail` has type `Vec[A](k)`, so the
-recursive call must be specialized at `k`.
+`length` is a computation (`define`) whose effect row `!{}` is empty: it performs no effects ([chapter 10](10-effects-and-handlers.md) introduces effect rows). Its `case` analysis states a *motive*, the result type of the analysis as a function of the inspected value's index [@mcbride2002elimination]. Here the motive `(m : Nat) => Int` returns `Int` whatever the length. In the `Cons` branch the checker learns that the input has length `S(k)` for some `k`, so `tail` has type `Vec[A](k)` and the recursive call is made at `k`.
 
 ## 2. Fold without a shape check
 
-Add a real-valued fold:
+A sum over a real vector:
 
 <!-- compile: qiec -->
 ```qvr
@@ -68,12 +46,11 @@ define sum[n : Nat](xs : Vec[Real](n), acc : Real) : Real !{} =
             return rest
 ```
 
-No branch asks whether the tail is empty, and no runtime integer is decremented.
-The constructor proof selects the valid recursive argument.
+No branch tests whether the tail is empty, and no runtime counter is decremented. Matching `Cons[k]` gives the index `k` of the tail, which fixes the type of the recursive call.
 
-## 3. Build a closed vector
+## 3. Build a vector
 
-Constructor values state their family application explicitly:
+A constructor application names the family it builds:
 
 <!-- compile: qiec -->
 ```qvr
@@ -89,15 +66,11 @@ define triple(a : Real, b : Real, c : Real) : Vec[Real](S(S(S(Z)))) !{} =
     return construct Cons[Real, S(S(Z))](a, pair) as Vec[Real](S(S(S(Z))))
 ```
 
-The static arguments to `Cons` are the uniform element type followed by its
-local predecessor index. The `as` annotation closes the resulting family
-application.
+The bracketed arguments of `Cons` are the parameter (the element type) followed by the constructor's own index `m`, the length of the tail. The `as` annotation states the type of the result.
 
 ## 4. Run the summary
 
-The complete source is
-[`indexed-vectors.qvr`](source/indexed-vectors.qvr). Check it, list its entries,
-and invoke the pure `summarize` computation:
+The complete source is [`indexed-vectors.qvr`](source/indexed-vectors.qvr), whose computation `summarize` builds a vector of three elements and returns its sum and its length. Check the file, list its [entry points](../../reference/qvr/execution-and-tooling.md#list-entry-points) (the computations and programs a module exposes to `qvr run` and `Program.run`), and run `summarize`:
 
 ```bash
 qvr check docs/tutorials/qvr/source/indexed-vectors.qvr
@@ -105,7 +78,7 @@ qvr run docs/tutorials/qvr/source/indexed-vectors.qvr --list
 qvr run docs/tutorials/qvr/source/indexed-vectors.qvr summarize 1.5 2.0 3.5 --json
 ```
 
-The same entry boundary is available in Python:
+The same entry point from Python:
 
 ```python
 from quivers.dsl import load
@@ -116,24 +89,14 @@ assert run.value == (7.0, 3)
 print(run.value)
 ```
 
-`run.entry.kind` is `"computation"`, the runtime is `core`, and the trace
-contains the recursive calls as checked evaluator events.
+`run.entry.kind` is `"computation"`. The computation runs on the reference machine, the library's interpreter for the Quivers Indexed Effect Core ([QIEC](../../reference/qvr/index.md)), the typed core language that QVR declarations elaborate to. `run.result.runtime` is `"core"`, and `run.result.trace` records each step of the run, the recursive calls included, as an event.
 
 ## 5. Transfer the pattern to statistical data
 
-Length is only one useful index. Missingness can be made explicit with
-`Measurement(Observed)` and `Measurement(Missing)`; censoring can distinguish
-`Exact`, `Left`, `Right`, and `Interval`; a covariance factor can distinguish
-`Raw`, `Cholesky`, and `PositiveDefinite` states. The design test is whether a
-constructor establishes an invariant that later case analysis can use.
+Length is one useful index among several. An index can record whether a measurement is observed or missing (the [type reference](../../reference/qvr/types-and-indexed-families.md) uses a family `Measurement` indexed by `Observed` and `Missing`), whether a value is exact or censored on the left, on the right, or to an interval, or whether a covariance parameter is raw, a Cholesky factor, or positive definite. An index earns its place when a constructor establishes an invariant that later case analysis uses.
 
-A potential worry is that the index merely moves validation into more syntax.
-For data arriving from an untyped host, a boundary check is still necessary.
-But after that check constructs the indexed value, every downstream
-computation receives the refined type, so the invariant is checked once rather
-than rediscovered at each use.
+A potential worry is that the index only moves validation into more syntax. Data from an untyped source still needs a check where it enters. But once that check has built the indexed value, every later computation receives the refined type, so the invariant is checked once and not at each use.
 
-Next, [Effects and handlers](10-effects-and-handlers.md) adds an explicit
-interpretation to an operation while keeping the calling computation abstract.
-The [type reference](../../reference/qvr/types-and-indexed-families.md) gives
-the complete family and case rules.
+## Next
+
+[Chapter 10](10-effects-and-handlers.md) declares an effect and gives its operations an interpretation with a handler. The [type reference](../../reference/qvr/types-and-indexed-families.md) gives the complete rules for families and case analysis.

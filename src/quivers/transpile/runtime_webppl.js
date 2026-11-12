@@ -201,7 +201,7 @@ var _qvr_take_last = function(x, k) {
 var _qvr_gather_log = function(rows, idx) {
   // Gather one row of `rows` per entry of `idx` and take its
   // elementwise logarithm. A grouped `marginalize` reads its per-row
-  // prior through a fibration, so the weights are the grouping
+  // prior through an index map, so the weights are the grouping
   // plate's rows selected once per observation. JavaScript indexes an
   // array with one integer and yields `undefined` for an array of
   // them, so the gather is a map rather than a subscript.
@@ -209,7 +209,7 @@ var _qvr_gather_log = function(rows, idx) {
 };
 var _qvr_group_sums = function(rows, via, extent) {
   // Sum the per-row entries of `rows` within each of the `extent`
-  // groups the fibration `via` sends the rows to. A grouped
+  // groups the index map `via` sends the rows to. A grouped
   // `marginalize` keys its accumulator by group, so one atom's
   // per-row log-likelihoods are pooled per group before the
   // reduction over the atoms runs.

@@ -72,7 +72,7 @@ class EntryParameter(dx.Model):
         Its type, rendered in the surface spelling.
     role
         How a program parameter is supplied (its data, an observation, a
-        fibration, a scalar, or the program's domain); ``"value"`` for a
+        index map, a scalar, or the program's domain); ``"value"`` for a
         computation's parameter.
     """
 
@@ -333,7 +333,7 @@ def invoke_entry(
         name through ``data``.
     data : Mapping[str, HostValue] | None
         A program's parameters by name: its data, observations,
-        fibrations, and scalars. A name given both positionally and here
+        index maps, and scalars. A name given both positionally and here
         is an error.
     sites : Mapping[str, HostValue] | None
         The values a program run conditions its sample sites on, by

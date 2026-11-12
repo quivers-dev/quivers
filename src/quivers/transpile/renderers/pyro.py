@@ -28,7 +28,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -437,7 +437,7 @@ class PyroRenderer(RendererBase):
         if len(args) != 2 or not isinstance(args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-pyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = args[1]
         if kernel_arg.kernel != "rbf":
@@ -1033,17 +1033,10 @@ class PyroRenderer(RendererBase):
             "child_of",
         )
         # A grouped block keys its accumulator by group: the rows the
-        # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
-        )
-        if fibration is not None:
-            via, group = fibration
+        # index map sends to one group are summed before the reduction.
+        index_map = marginalize_index_map(node, raw.observe)
+        if index_map is not None:
+            via, group = index_map
             extent = (
                 str(group.size) if isinstance(group, DimStatic) else group.size_name
             )
@@ -1109,12 +1102,7 @@ class PyroRenderer(RendererBase):
         and ``logsigmoid(l)``, computed in log space.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._arg_to_vid(pctx, probs)
         family = atoms[0].weight_family
@@ -1616,7 +1604,7 @@ def _collect_integer_index_names(
         elif isinstance(node, (IRSample, IRObserve)):
             _walk_args_for_indices(node.args, host_ints, found)
             if isinstance(node, IRObserve) and node.via in host_ints:
-                # The fibration gathers the marginalize weights at the
+                # The index map gathers the marginalize weights at the
                 # observation's own row, so `via` reaches a subscript.
                 found.add(node.via)
         elif isinstance(node, IRMarginalize):

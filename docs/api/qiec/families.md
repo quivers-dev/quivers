@@ -1,10 +1,9 @@
 # Families
 
-The family registry describes a [distribution family and its required arguments](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families). Each
-runtime or transpiler provides implementations for the [parameterizations](../../semantics/transpile-correctness/index.md#4-distribution-parameterization) and event
-shapes it supports. Consult the target’s support information when translating a model
-that uses one of these families.
-
-The semantic registry of distribution families.
+The distribution family registry fixes, for each family, its
+[parameters](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families), its
+support, and its density, which every runtime and transpiler implements in its own
+[parameterization](../../semantics/transpile-correctness/index.md#4-distribution-parameterization).
+The [support table](../../transpile-support.md) lists which families each target accepts.
 
 ::: quivers.qiec.families

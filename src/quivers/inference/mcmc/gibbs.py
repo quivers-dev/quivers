@@ -187,7 +187,12 @@ class GibbsKernel(MCMCKernel):
         self._registry = registry
         self.is_adapting = False
         if self._update is None:
+            # The run that names the sites draws from a copy of the
+            # chain's stream, so a seeded chain reads the same run
+            # whatever the global RNG holds, without advancing its stream.
             with torch.random.fork_rng(devices=[]):
+                if self._generator is not None:
+                    torch.random.set_rng_state(self._generator.get_state())
                 recorded = trace(model, x, observations=observations)
             for name in self._sites:
                 record = recorded.sites.get(name)

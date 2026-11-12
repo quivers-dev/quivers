@@ -1,6 +1,9 @@
-"""Decoder runtime: Kleisli coalgebras Vec_D -> Kern(T_Σ).
+"""Decoder runtime: Markov kernels from code vectors to terms.
 
-A `Decoder` is a ``torch.nn.Module`` exposing two operations:
+A `Decoder` is a Markov kernel ``R^D -> T_Σ`` from code vectors to the
+terms of a signature Σ, that is, a morphism ``R^D -> T_Σ`` of the Kleisli
+category of the distribution monad. It is a ``torch.nn.Module`` exposing
+two operations:
 
 * `sample`: draws a single `Term` from the
   distribution induced by an input vector.
@@ -696,6 +699,32 @@ class Decoder(nn.Module):
                 f"variables"
             )
         return torch.log_softmax(logits, dim=-1)[choices.index(index)]
+
+
+def decoder_draw_message(name: str) -> str:
+    """The refusal of a program ``sample`` or ``observe`` from a decoder.
+
+    A decoder's values are structured terms, not the tensors a program's
+    sites hold, so no program step draws from one; a loss scores a term
+    under it instead.
+
+    Parameters
+    ----------
+    name : str
+        The decoder's name.
+
+    Returns
+    -------
+    str
+        The message.
+    """
+    return (
+        f"{name!r} is a decoder, whose values are terms of its signature, and "
+        "a program step draws only tensor values; score a term under it in a "
+        f"loss, as in `loss l [on=decoder({name})]` with body "
+        f"`-{name}.log_prob(term, code)`, or sample terms in Python with "
+        f"`{name}.sample(code)`"
+    )
 
 
 __all__ = [

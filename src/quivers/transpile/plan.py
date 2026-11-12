@@ -530,7 +530,7 @@ class _ProgramWalk:
             if not isinstance(index, Var):
                 raise UnsupportedConstruct(
                     f"qvr-{self.planner.target}",
-                    [f"qiec:fibration:{self.program.name}"],
+                    [f"qiec:index_map:{self.program.name}"],
                 )
             via = index.local.name
             density = density.value
@@ -1252,7 +1252,7 @@ class _ProgramWalk:
             Whether the site is a marginalized latent, whose plate
             keeps only the grouping axes.
         via : str | None
-            The fibration an observation reads its arguments through;
+            The index map an observation reads its arguments through;
             the plan states it on the observation rather than on the
             arguments, so a gather by it is stripped.
 
@@ -2067,13 +2067,13 @@ class _ProgramWalk:
         tuple[IRDataInput, ...]
             One input per entry-point parameter, grouped by role as
             the targets declare them: the program's domain, its
-            scalars, fibrations, observations, parameter maps, and
+            scalars, index maps, observations, parameter maps, and
             data.
         """
         groups: dict[str, list[IRDataInput]] = {
             "domain": [],
             "scalar": [],
-            "fibration": [],
+            "index_map": [],
             "observation": [],
             "map": [],
             "data": [],
@@ -2088,7 +2088,7 @@ class _ProgramWalk:
                 groups[parameter.role].append(node)
         return tuple(
             node
-            for role in ("domain", "scalar", "fibration", "observation", "map", "data")
+            for role in ("domain", "scalar", "index_map", "observation", "map", "data")
             for node in groups[role]
         )
 
@@ -2114,15 +2114,30 @@ class _ProgramWalk:
         if parameter.role == "observation" and name in self.observed:
             node = self.observed[name]
             return IRDataInput(name=name, constraint=node.constraint, plate=node.plate)
-        if parameter.role == "fibration":
+        if parameter.role == "index_map":
+            # The map sends each row of the observation's plate to a
+            # group of the enclosing block's grouping plate, so it is
+            # indexed by the rows and bounded by the groups.
             upper = None
             batch: tuple[Dim, ...] = ()
             for node in _walk(body):
-                if isinstance(node, IRObserve) and node.via == name:
-                    batch = node.plate.batch_dims
-                    first = batch[0] if batch else None
-                    upper = first.size if isinstance(first, DimStatic) else None
-                    break
+                if not isinstance(node, IRMarginalize):
+                    continue
+                observe = next(
+                    (
+                        inner
+                        for inner in node.scope
+                        if isinstance(inner, IRObserve) and inner.via == name
+                    ),
+                    None,
+                )
+                if observe is None:
+                    continue
+                batch = observe.plate.batch_dims
+                groups = node.plate.batch_dims
+                if len(groups) == 1 and isinstance(groups[0], DimStatic):
+                    upper = groups[0].size
+                break
             constraint: ConstraintSpec = (
                 CSNonnegativeInteger()
                 if upper is None
@@ -2883,11 +2898,19 @@ def _elaboration_kind(code: str, message: str) -> str:
     Returns
     -------
     str
-        The message itself when it leads with a structured kind, else
+        The message when it leads with a structured kind, with a
+        ``<kind>; <explanation>`` message read as
+        ``<kind>: <explanation>``; else
         ``program:elaboration:<code>: <message>``, whose explanation
         is the message.
     """
     if _STRUCTURED_LEAD.match(message):
+        # A step-resolution failure reads `<kind>; <explanation>`
+        # (`StepResolutionError.detail`); the refusal form is
+        # `<kind>: <explanation>`.
+        structured, separator, rest = message.partition("; ")
+        if separator and " " not in structured:
+            return f"{structured}: {rest}"
         return message
     return f"program:elaboration:{code}: {message}"
 

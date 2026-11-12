@@ -13,8 +13,7 @@ object A and a morphism γ: A → W(A) satisfying:
     δ_A ∘ γ = W(γ) ∘ γ       (coassociativity)
 
 The Eilenberg-Moore category of a monad T has T-algebras as objects
-and algebra homomorphisms as morphisms. The comparison functor
-K: Kl(T) → EM(T) relates the Kleisli and Eilenberg-Moore categories.
+and algebra homomorphisms as morphisms [Mac Lane (1998), §VI.2].
 
 This module provides:
 
@@ -27,6 +26,18 @@ This module provides:
     └── ObservedCoalgebra      — coalgebra from a concrete structure map
 
     EilenbergMooreCategory     — the category of algebras for a monad
+
+Monad algebras use the typeclass interface of
+[`quivers.monadic.typeclasses.Monad`][quivers.monadic.typeclasses.Monad]
+(``fmap_obj``, ``fmap``, ``pure``, ``join``), so they apply to every
+monad instance. `ObservedAlgebra` and `ObservedCoalgebra` check their
+laws when constructed and refuse a structure map that fails them.
+
+References
+----------
+Mac Lane, S. (1998). *Categories for the Working Mathematician* (2nd
+ed.). Springer.
+[doi:10.1007/978-1-4757-4721-8](https://doi.org/10.1007/978-1-4757-4721-8)
 """
 
 from __future__ import annotations
@@ -35,10 +46,31 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from quivers.core.algebras import Algebra as VAlgebra
+from quivers.core.morphisms import Morphism, identity, observed
 from quivers.core.objects import SetObject
-from quivers.core.morphisms import Morphism, observed, identity
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra as VAlgebra
+from quivers.monadic.comonads import Comonad
 from quivers.monadic.typeclasses import Monad
+
+
+def _close(left: torch.Tensor, right: torch.Tensor, atol: float) -> bool:
+    """Tensor approximate equality, false on a shape mismatch.
+
+    Parameters
+    ----------
+    left, right : torch.Tensor
+        The tensors to compare.
+    atol : float
+        Absolute tolerance.
+
+    Returns
+    -------
+    bool
+        True if the shapes agree and the entries agree within ``atol``.
+    """
+    if left.shape != right.shape:
+        return False
+    return bool(torch.allclose(left, right, atol=atol))
 
 
 class Algebra(ABC):
@@ -94,11 +126,10 @@ class Algebra(ABC):
             True if the unit law holds within tolerance.
         """
         alpha = self.structure_map()
-        eta = self._monad.unit(self._carrier)
+        eta = self._monad.pure(self._carrier)
         result = (eta >> alpha).tensor
-        expected = identity(self._carrier).tensor
-
-        return torch.allclose(result, expected, atol=atol)
+        expected = identity(self._carrier, algebra=alpha.algebra).tensor
+        return _close(result, expected, atol)
 
     def verify_associativity(self, atol: float = 1e-5) -> bool:
         """Verify α ∘ μ_A = α ∘ T(α).
@@ -114,27 +145,22 @@ class Algebra(ABC):
             True if associativity holds within tolerance.
         """
         alpha = self.structure_map()
-        mu = self._monad.multiply(self._carrier)
-
-        # left side: α ∘ μ_A
-        left = (mu >> alpha).tensor
-
-        # right side: α ∘ T(α)
-        t_alpha = self._monad.endofunctor.map_morphism(alpha)
+        t_carrier = self._monad.fmap_obj(self._carrier)
+        left = (self._monad.join(self._carrier) >> alpha).tensor
+        t_alpha = self._monad.fmap(t_carrier, self._carrier, alpha)
         right = (t_alpha >> alpha).tensor
-
-        return torch.allclose(left, right, atol=atol)
+        return _close(left, right, atol)
 
     def __repr__(self) -> str:
-        return f"Algebra({self._monad!r}, carrier={self._carrier!r})"
+        return f"{type(self).__name__}({self._monad!r}, carrier={self._carrier!r})"
 
 
 class FreeAlgebra(Algebra):
     """The free T-algebra on an object A.
 
     The carrier is T(A) and the structure map is μ_A: T(T(A)) → T(A).
-    This is the algebra that the comparison functor assigns to
-    each object in the Kleisli category.
+    Its laws are the monad's associativity and left unit law, so it is
+    an algebra whenever the monad is lawful.
 
     Parameters
     ----------
@@ -145,8 +171,7 @@ class FreeAlgebra(Algebra):
     """
 
     def __init__(self, monad: Monad, obj: SetObject) -> None:
-        carrier = monad.endofunctor.map_object(obj)
-        super().__init__(monad, carrier)
+        super().__init__(monad, monad.fmap_obj(obj))
         self._base = obj
 
     @property
@@ -156,7 +181,7 @@ class FreeAlgebra(Algebra):
 
     def structure_map(self) -> Morphism:
         """μ_A: T(T(A)) → T(A)."""
-        return self._monad.multiply(self._base)
+        return self._monad.join(self._base)
 
 
 class ObservedAlgebra(Algebra):
@@ -170,8 +195,16 @@ class ObservedAlgebra(Algebra):
         The carrier object A.
     structure_tensor : torch.Tensor
         The tensor for α: T(A) → A.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : quivers.core.algebras.Algebra
+        The enrichment algebra of the structure map, the one the
+        monad's morphisms are over.
+    atol : float
+        Absolute tolerance of the law checks.
+
+    Raises
+    ------
+    ValueError
+        If the structure map fails the unit law or associativity.
     """
 
     def __init__(
@@ -179,12 +212,21 @@ class ObservedAlgebra(Algebra):
         monad: Monad,
         carrier: SetObject,
         structure_tensor: torch.Tensor,
-        algebra: VAlgebra | None = None,
+        algebra: VAlgebra,
+        atol: float = 1e-5,
     ) -> None:
         super().__init__(monad, carrier)
-        q = algebra if algebra is not None else PRODUCT_FUZZY
-        ta = monad.endofunctor.map_object(carrier)
-        self._morphism = observed(ta, carrier, structure_tensor, algebra=q)
+        t_carrier = monad.fmap_obj(carrier)
+        self._morphism = observed(t_carrier, carrier, structure_tensor, algebra=algebra)
+        if not self.verify_unit_law(atol):
+            raise ValueError(
+                "ObservedAlgebra: the structure map fails the unit law α ∘ η = id"
+            )
+        if not self.verify_associativity(atol):
+            raise ValueError(
+                "ObservedAlgebra: the structure map fails associativity "
+                "α ∘ μ = α ∘ T(α)"
+            )
 
     def structure_map(self) -> Morphism:
         """The stored structure map α: T(A) → A."""
@@ -199,18 +241,18 @@ class Coalgebra(ABC):
 
     Parameters
     ----------
-    comonad : object
-        The comonad W (a Comonad instance).
+    comonad : Comonad
+        The comonad W.
     carrier : SetObject
         The carrier object A.
     """
 
-    def __init__(self, comonad: object, carrier: SetObject) -> None:
+    def __init__(self, comonad: Comonad, carrier: SetObject) -> None:
         self._comonad = comonad
         self._carrier = carrier
 
     @property
-    def comonad(self) -> object:
+    def comonad(self) -> Comonad:
         """The comonad W."""
         return self._comonad
 
@@ -243,13 +285,11 @@ class Coalgebra(ABC):
         bool
             True if the counit law holds within tolerance.
         """
-
         gamma = self.structure_map()
-        eps = self._comonad.counit(self._carrier)  # type: ignore[union-attr]
+        eps = self._comonad.counit(self._carrier)
         result = (gamma >> eps).tensor
-        expected = identity(self._carrier).tensor
-
-        return torch.allclose(result, expected, atol=atol)
+        expected = identity(self._carrier, algebra=gamma.algebra).tensor
+        return _close(result, expected, atol)
 
     def verify_coassociativity(self, atol: float = 1e-5) -> bool:
         """Verify δ_A ∘ γ = W(γ) ∘ γ.
@@ -264,39 +304,33 @@ class Coalgebra(ABC):
         bool
             True if coassociativity holds within tolerance.
         """
-
         gamma = self.structure_map()
-        delta = self._comonad.comultiply(self._carrier)  # type: ignore[union-attr]
-
-        # left side: δ_A ∘ γ
+        delta = self._comonad.comultiply(self._carrier)
         left = (gamma >> delta).tensor
-
-        # right side: W(γ) ∘ γ
-        w_gamma = self._comonad.endofunctor.map_morphism(gamma)  # type: ignore[union-attr]
+        w_gamma = self._comonad.endofunctor.map_morphism(gamma)
         right = (gamma >> w_gamma).tensor
-
-        return torch.allclose(left, right, atol=atol)
+        return _close(left, right, atol)
 
     def __repr__(self) -> str:
-        return f"Coalgebra({self._comonad!r}, carrier={self._carrier!r})"
+        return f"{type(self).__name__}({self._comonad!r}, carrier={self._carrier!r})"
 
 
 class CofreeCoalgebra(Coalgebra):
     """The cofree W-coalgebra on an object A.
 
     The carrier is W(A) and the structure map is δ_A: W(A) → W(W(A)).
+    Its laws are the comonad's coassociativity and left counit law.
 
     Parameters
     ----------
-    comonad : object
+    comonad : Comonad
         The comonad W.
     obj : SetObject
         The base object A (the carrier will be W(A)).
     """
 
-    def __init__(self, comonad: object, obj: SetObject) -> None:
-        carrier = comonad.endofunctor.map_object(obj)  # type: ignore[union-attr]
-        super().__init__(comonad, carrier)
+    def __init__(self, comonad: Comonad, obj: SetObject) -> None:
+        super().__init__(comonad, comonad.endofunctor.map_object(obj))
         self._base = obj
 
     @property
@@ -306,7 +340,7 @@ class CofreeCoalgebra(Coalgebra):
 
     def structure_map(self) -> Morphism:
         """δ_A: W(A) → W(W(A))."""
-        return self._comonad.comultiply(self._base)  # type: ignore[union-attr]
+        return self._comonad.comultiply(self._base)
 
 
 class ObservedCoalgebra(Coalgebra):
@@ -314,27 +348,44 @@ class ObservedCoalgebra(Coalgebra):
 
     Parameters
     ----------
-    comonad : object
+    comonad : Comonad
         The comonad W.
     carrier : SetObject
         The carrier object A.
     structure_tensor : torch.Tensor
         The tensor for γ: A → W(A).
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : quivers.core.algebras.Algebra
+        The enrichment algebra of the structure map, the one the
+        comonad's morphisms are over.
+    atol : float
+        Absolute tolerance of the law checks.
+
+    Raises
+    ------
+    ValueError
+        If the structure map fails the counit law or coassociativity.
     """
 
     def __init__(
         self,
-        comonad: object,
+        comonad: Comonad,
         carrier: SetObject,
         structure_tensor: torch.Tensor,
-        algebra: VAlgebra | None = None,
+        algebra: VAlgebra,
+        atol: float = 1e-5,
     ) -> None:
         super().__init__(comonad, carrier)
-        q = algebra if algebra is not None else PRODUCT_FUZZY
-        wa = comonad.endofunctor.map_object(carrier)  # type: ignore[union-attr]
-        self._morphism = observed(carrier, wa, structure_tensor, algebra=q)
+        w_carrier = comonad.endofunctor.map_object(carrier)
+        self._morphism = observed(carrier, w_carrier, structure_tensor, algebra=algebra)
+        if not self.verify_counit_law(atol):
+            raise ValueError(
+                "ObservedCoalgebra: the structure map fails the counit law ε ∘ γ = id"
+            )
+        if not self.verify_coassociativity(atol):
+            raise ValueError(
+                "ObservedCoalgebra: the structure map fails coassociativity "
+                "δ ∘ γ = W(γ) ∘ γ"
+            )
 
     def structure_map(self) -> Morphism:
         """The stored structure map γ: A → W(A)."""
@@ -380,8 +431,8 @@ class EilenbergMooreCategory:
     def is_homomorphism(
         self,
         f: Morphism,
-        source_alg: VAlgebra,
-        target_alg: VAlgebra,
+        source_alg: Algebra,
+        target_alg: Algebra,
         atol: float = 1e-5,
     ) -> bool:
         """Check if f: A → B is an algebra homomorphism.
@@ -406,15 +457,10 @@ class EilenbergMooreCategory:
         """
         alpha = source_alg.structure_map()
         beta = target_alg.structure_map()
-        tf = self._monad.endofunctor.map_morphism(f)
-
-        # left: β ∘ T(f)
+        tf = self._monad.fmap(source_alg.carrier, target_alg.carrier, f)
         left = (tf >> beta).tensor
-
-        # right: f ∘ α
         right = (alpha >> f).tensor
-
-        return torch.allclose(left, right, atol=atol)
+        return _close(left, right, atol)
 
     def __repr__(self) -> str:
         return f"EilenbergMooreCategory({self._monad!r})"

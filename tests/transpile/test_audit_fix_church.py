@@ -20,7 +20,7 @@ Covered defects:
 * `sample-event-dims`: a scalar family stamped with event axes wraps
   an inner `map` so each draw is the declared vector.
 * `marginalize-over-batch-axis`: the marginalized latent is integrated
-  out, its prior gathered through the via fibration and each atom's
+  out, its prior gathered through the via index map and each atom's
   observe indexed by the per-row loop variable.
 * `undefined-let-builtins`: `sigmoid` and `sum` are defined in the
   grafted runtime.
@@ -202,25 +202,24 @@ def test_intrinsic_vector_family_has_no_inner_event_map() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Marginalize over batch axis + via fibration.
+# Marginalize over batch axis + via index map.
 # ---------------------------------------------------------------------------
 
 
-def test_marginalize_latent_reads_its_prior_through_the_fibration() -> None:
-    """The marginalized categorical declares no site: its per-document
-    topic mixture is gathered one row per token through the ``via``
-    fibration and read as the log-weight of each atom."""
+def test_marginalize_latent_sums_each_document_through_the_index_map() -> None:
+    """The marginalized categorical declares no site: each document's
+    topic is one, so the words the ``via`` index map sends to it are
+    summed per atom (``group-sums``) and weighted by the document's own
+    row of ``theta``."""
     model = _nospace(_model(_church_file(_TOPIC_MIXTURE)))
     assert "(sample(categorical" not in model
-    assert (
-        "(define__marg_z_w(broadcast1log(map(lambda(i)(list-refthetai))word_idx)))"
-        in model
-    )
+    assert "(define__marg_z_w(broadcast1logtheta))" in model
+    assert "(group-sums__marg_z_0word_idx20)" in model
     assert "(define__marg_z_w_0(take-last__marg_z_w0))" in model
     assert "(factor(sum-leaves__marg_z))" in model
 
 
-def test_via_fibration_threads_through_group_plate() -> None:
+def test_via_index_map_threads_through_group_plate() -> None:
     """Each atom scores the observed word against the per-topic word
     distribution the atom pins: `phi[k]` for atom `k`.
 

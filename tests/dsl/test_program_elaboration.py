@@ -2,7 +2,7 @@
 
 A ``program`` becomes a named computation over the module's canonical
 ``random`` and ``score`` instances, with typed data, observation, and
-fibration parameters, and one helper computation per marginalization
+index map parameters, and one helper computation per marginalization
 block. Run on the reference machine with every site replayed, its log
 joint is the same number the torch runtime's trace accumulates.
 """
@@ -986,7 +986,7 @@ def test_a_reduction_on_a_continuous_latent_is_refused() -> None:
     assert "finite support" in captured.value.message
 
 
-def test_a_product_group_flattens_its_fibrations_row_major() -> None:
+def test_a_product_group_flattens_its_index_maps_row_major() -> None:
     module = _module(PRODUCT_GROUP)
     data = {
         "r": (0.1, 0.5, -0.3, 2.0, 1.0, -1.5),
@@ -1009,7 +1009,7 @@ def test_a_product_group_flattens_its_fibrations_row_major() -> None:
     assert run.log_joint == pytest.approx(classic, rel=1e-5)
 
 
-def test_a_product_fibration_must_match_the_group_arity() -> None:
+def test_a_product_index_map_must_match_the_group_arity() -> None:
     source = PRODUCT_GROUP.replace("[via=[item_idx, subj_idx]]", "[via=item_idx]")
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(source)

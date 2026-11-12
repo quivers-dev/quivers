@@ -162,13 +162,11 @@ def test_rule_attached_loss_fires_on_each_rule_application():
     prog = loads(textwrap.dedent(src))
     D = prog.deductions["D"]
     chart = D([(("atom", "NP"), torch.tensor(0.0))])
-    # The rule `app : NP, NP |- S` matches twice on the single-NP
-    # axiom: the agenda's semi-naive loop fires the rule once when
-    # the popped item is premise 0 and once when it's premise 1,
-    # each with the same single sibling; each firing accumulates
-    # 0.5.
+    # The rule `app : NP, NP |- S` has one application on the
+    # single-NP axiom (the NP fills both premises of one hyperedge),
+    # so the per-application loss accumulates 0.5 once.
     assert chart.attached_loss is not None
-    assert float(chart.attached_loss) == 1.0
+    assert float(chart.attached_loss) == 0.5
 
 
 def test_chart_attached_loss_fires_after_deduction_completes():
@@ -745,3 +743,27 @@ def test_with_produces_a_term_with_its_own_structural_hash():
 def test_term_rejects_arguments_outside_term_arg(args):
     with pytest.raises(dx.ValidationError, match="Term 'C'"):
         Term(op="C", args=args)
+
+
+def test_rule_attachment_needs_the_rule_and_its_deduction():
+    """``on=rule(R)`` without the deduction is refused with the accepted form."""
+    src = """
+    signature Items
+        sorts
+            Item : object [dim=4]
+        constructors
+            NP : -> Item
+            S : -> Item
+
+    encoder C : Items
+        dim Item = 4
+
+    deduction D : Item -> Item [semiring=LogProb, signature=Items, encoder=C]
+        atoms NP, S
+        rule app : NP, NP |- S
+
+    loss per_app [weight=1.0, on=rule(app)]
+        0.5
+    """
+    with pytest.raises(CompileError, match=r"on=rule\(RULE, DEDUCTION\)"):
+        loads(textwrap.dedent(src))

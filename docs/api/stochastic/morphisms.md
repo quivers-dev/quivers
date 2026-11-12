@@ -1,18 +1,19 @@
 # Stochastic Morphisms
 
-A [stochastic matrix](../../guides/stochastic.md#the-finstoch-category) contains one output distribution per input row: all entries are
-nonnegative and each row sums to one [@fritz2020synthetic]. [Composition averages the next transition](../../tutorials/python/02-stochastic-relations.md#composition-of-markov-kernels) over the
-possible intermediate values, producing the output distribution conditional on the
-initial input.
-
-Stochastic relations, kernels, and morphisms for probabilistic computation.
+A `StochasticMorphism` is a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel) between
+finite sets, stored as a [stochastic matrix](https://en.wikipedia.org/wiki/Stochastic_matrix) whose
+rows are output distributions: nonnegative entries, each row summing to one
+([FinStoch](../../guides/stochastic.md#the-finstoch-category)) [@fritz2020synthetic].
+[Composition](../../tutorials/python/02-stochastic-relations.md#composition-of-markov-kernels)
+averages the next transition over the intermediate values and gives the distribution of the output
+given the initial input. `stochastic(domain, codomain)` builds a learnable one whose rows are a softmax of free parameters.
 
 ::: quivers.stochastic.morphisms
 
-## The Markov algebra
+## The sum-product semiring {#the-markov-algebra}
 
-`quivers.stochastic` re-exports `MarkovAlgebra` and its singleton `MARKOV`, the algebra
-stochastic morphisms compose under, from `quivers.core.algebras`.
+`quivers.stochastic` re-exports `MarkovAlgebra` and its singleton `MARKOV`, the `Algebra` under
+which stochastic morphisms compose (the sum-product semiring), from `quivers.core.algebras`.
 
 ::: quivers.stochastic
     options:

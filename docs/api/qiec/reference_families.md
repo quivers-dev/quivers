@@ -1,10 +1,9 @@
 # Reference families
 
-The reference backend implements families beyond the simplest scalar distributions.
-These routines supply concrete sampling and density calculations for the [declared family
-semantics](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families). Consult [event-shape and support restrictions](../../semantics/transpile-correctness/index.md#4-distribution-parameterization) when translating a model whose
-family exists on several backends.
-
-The reference backend's samplers and densities beyond the scalar core.
+These samplers and densities implement the structured and compositional families of the reference
+backend, beyond its scalar core, for the
+[declared families](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families).
+A family that several backends implement may differ in its
+[event shapes and supports](../../semantics/transpile-correctness/index.md#4-distribution-parameterization).
 
 ::: quivers.qiec.reference_families

@@ -773,14 +773,12 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # zip_regression: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `jags` has no `ContinuousBernoulli` distribution and reaches the
-    # family through the zeros trick, but owes no lift for it. The
-    # trick's rate is lifted only where a site is emitted directly,
-    # and this one is enumerated by a `marginalize z : Resp` block,
-    # whose emitter writes the integrated density into `dpois` with no
+    # The gate is enumerated by a `marginalize z : Resp` block, whose
+    # emitter writes the integrated density into `dpois` with no
     # offset: the rendered source carries no lift constant on any of
     # the 400 rows. `bugs` is absent because its cell raises in
-    # transpile, its renderer carrying no path to the family at all.
+    # transpile, BUGS having no statement that adds an integrated
+    # log-density to the joint.
     ("numpyro", "zip_regression"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "zip_regression"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "zip_regression"): _derived(half_sites=0, dropped_sites=0),
@@ -931,7 +929,7 @@ def _flatten_steps(
     A folded-family site inside a marginalized scope still contributes
     its `log 2`. Under a `logsumexp` reduction the constant factor is
     common to every branch of the sum and so factors straight back out
-    of the reduction; under a fibred reduction it factors out of each
+    of the reduction; under a grouped reduction it factors out of each
     fibre alike. Either way the site counts exactly once per coordinate,
     as it would at the top level, so a flat walk of the nested steps is
     the right count.

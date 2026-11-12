@@ -1,32 +1,41 @@
-"""Traced monoidal categories: feedback and fixpoint.
+"""Traced monoidal categories and the canonical trace of V-relations.
 
 A traced monoidal category is a symmetric monoidal category (C, ⊗, I)
-equipped with a trace operator:
+equipped with a trace operator
 
     Tr^U_{A,B}: C(A ⊗ U, B ⊗ U) → C(A, B)
 
 satisfying naturality, dinaturality, vanishing, superposing, and
-yanking axioms.
+yanking [Joyal, Street and Verity (1996)].
 
-In the V-enriched fuzzy-relation setting, the trace corresponds to
-a fixpoint computation: given f: A × U → B × U, the trace
-"feeds back" the U component:
+V-valued matrices with the monoidal structure given by the cartesian
+product of sets form a compact closed category when V is a commutative
+semiring, and every compact closed category has a canonical trace,
 
-    Tr(f)(a, b) = ⋁_u f((a, u), (b, u))
+    Tr^U(f) = (id_B ⊗ ε_U) ∘ (f ⊗ id_U) ∘ (id_A ⊗ η_U),
 
-which is the join (existential) over the feedback variable.
+which for V-matrices is the sum over the feedback variable:
 
-For the tropical algebra, this computes shortest-cycle distances.
-For general algebras, it may require iteration to a fixpoint.
+    Tr^U(f)(a, b) = ⋁_u f((a, u), (b, u)).
+
+For Boolean relations this is the existential trace of Rel, and for
+real matrices the partial trace. The trace axioms need V to be a
+`Semiring`, so the classes and functions here require one.
 
 This module provides:
 
     TracedMonoidal (abstract)
-    ├── CartesianTrace   — trace on the cartesian monoidal structure
-    └── IterativeTrace   — trace via fixpoint iteration
+    └── CompactClosedTrace — the canonical trace of V-matrices
 
     trace()              — apply the trace operator
     partial_trace()      — trace over a subset of feedback wires
+
+References
+----------
+Joyal, A., Street, R., and Verity, D. (1996). Traced monoidal
+categories. *Mathematical Proceedings of the Cambridge Philosophical
+Society*, 119(3), 447-468.
+[doi:10.1017/S0305004100074338](https://doi.org/10.1017/S0305004100074338)
 """
 
 from __future__ import annotations
@@ -38,8 +47,35 @@ import torch
 
 from quivers.core.objects import SetObject, ProductSet
 from quivers.core.morphisms import Morphism, observed, identity
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
-from quivers.categorical.monoidal import MonoidalStructure, CartesianMonoidal
+from quivers.core.algebras import Algebra, CompositionRule, Semiring
+from quivers.core.tensor_ops import diagonal_reduce
+from quivers.categorical.monoidal import MonoidalStructure, CartesianProductMonoidal
+
+
+def _require_semiring(algebra: CompositionRule) -> Semiring:
+    """Return ``algebra`` as a `Semiring`, or raise.
+
+    Parameters
+    ----------
+    algebra : CompositionRule
+        The algebra a trace was asked to use.
+
+    Returns
+    -------
+    Semiring
+        ``algebra``.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not a `Semiring`.
+    """
+    if not isinstance(algebra, Semiring):
+        raise TypeError(
+            "the trace axioms need a Semiring algebra, under which V-matrices "
+            f"form a compact closed category; got {algebra!r}"
+        )
+    return algebra
 
 
 class TracedMonoidal(ABC):
@@ -51,17 +87,22 @@ class TracedMonoidal(ABC):
     ----------
     monoidal : MonoidalStructure
         The underlying monoidal structure.
-    algebra : Algebra or None
+    algebra : Semiring
         The enrichment algebra.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not a `Semiring`.
     """
 
     def __init__(
         self,
         monoidal: MonoidalStructure,
-        algebra: Algebra | None = None,
+        algebra: Semiring,
     ) -> None:
         self._monoidal = monoidal
-        self._algebra = algebra if algebra is not None else PRODUCT_FUZZY
+        self._algebra = _require_semiring(algebra)
 
     @property
     def monoidal(self) -> MonoidalStructure:
@@ -69,7 +110,7 @@ class TracedMonoidal(ABC):
         return self._monoidal
 
     @property
-    def algebra(self) -> Algebra:
+    def algebra(self) -> Semiring:
         """The enrichment algebra."""
         return self._algebra
 
@@ -125,7 +166,7 @@ class TracedMonoidal(ABC):
             True if yanking holds within tolerance.
         """
         # σ_{U,U}: U ⊗ U → U ⊗ U (swap)
-        if isinstance(self._monoidal, CartesianMonoidal):
+        if isinstance(self._monoidal, CartesianProductMonoidal):
             swap = self._monoidal.braiding(feedback, feedback)
             traced = self.trace(swap, feedback, feedback, feedback)
             expected = identity(feedback, algebra=self._algebra).tensor
@@ -139,26 +180,32 @@ class TracedMonoidal(ABC):
         return f"{cls}({self._monoidal!r})"
 
 
-class CartesianTrace(TracedMonoidal):
-    """Trace on the cartesian monoidal structure (FinSet, ×, 1).
+class CompactClosedTrace(TracedMonoidal):
+    """The canonical trace of V-matrices under the cartesian product of sets.
 
-    For a morphism f: A × U → B × U, the cartesian trace is:
+    For a morphism f: A × U → B × U,
 
-        Tr^U(f)(a, b) = ⋁_u f((a, u), (b, u))
+        Tr^U(f)(a, b) = ⋁_u f((a, u), (b, u)),
 
-    This is the join over the feedback dimensions of the
-    tensor's diagonal (where the U components of domain and
-    codomain agree).
+    the join over the feedback dimensions of the tensor's diagonal
+    (where the U components of domain and codomain agree). It is the
+    trace that compact closure induces, and it satisfies the trace
+    axioms when the algebra is a `Semiring`.
 
     Parameters
     ----------
-    algebra : Algebra or None
+    algebra : Semiring
         The enrichment algebra.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not a `Semiring`.
     """
 
-    def __init__(self, algebra: Algebra | None = None) -> None:
-        q = algebra if algebra is not None else PRODUCT_FUZZY
-        super().__init__(CartesianMonoidal(q), q)
+    def __init__(self, algebra: Semiring) -> None:
+        q = _require_semiring(algebra)
+        super().__init__(CartesianProductMonoidal(q), q)
 
     def trace(
         self,
@@ -214,103 +261,6 @@ class CartesianTrace(TracedMonoidal):
         return observed(domain, codomain, result, algebra=q)
 
 
-class IterativeTrace(TracedMonoidal):
-    """Trace via fixpoint iteration.
-
-    For algebras where the trace does not have a closed-form
-    expression, this computes the trace by iterating:
-
-        x_0 = ⊥
-        x_{n+1} = f(a, x_n)(b, x_n)  (schematically)
-
-    until convergence. This works for continuous algebras on
-    complete lattices (Kleene's fixpoint theorem).
-
-    Parameters
-    ----------
-    monoidal : MonoidalStructure
-        The monoidal structure.
-    algebra : Algebra or None
-        The enrichment algebra.
-    max_iter : int
-        Maximum number of iterations.
-    atol : float
-        Convergence tolerance.
-    """
-
-    def __init__(
-        self,
-        monoidal: MonoidalStructure,
-        algebra: Algebra | None = None,
-        max_iter: int = 100,
-        atol: float = 1e-6,
-    ) -> None:
-        super().__init__(monoidal, algebra)
-        self._max_iter = max_iter
-        self._atol = atol
-
-    @property
-    def max_iter(self) -> int:
-        """Maximum number of fixpoint iterations."""
-        return self._max_iter
-
-    def trace(
-        self,
-        morph: Morphism,
-        feedback: SetObject,
-        domain: SetObject,
-        codomain: SetObject,
-    ) -> Morphism:
-        """Compute the trace via fixpoint iteration.
-
-        Parameters
-        ----------
-        morph : Morphism
-            f: A ⊗ U → B ⊗ U.
-        feedback : SetObject
-            The feedback object U.
-        domain : SetObject
-            The external domain A.
-        codomain : SetObject
-            The external codomain B.
-
-        Returns
-        -------
-        ObservedMorphism
-            Tr^U(f): A → B.
-        """
-        q = self._algebra
-        t = morph.tensor
-
-        result_shape = (*domain.shape, *codomain.shape)
-
-        # initialize with zero (bottom)
-        prev = torch.full(result_shape, q.zero)
-        current = prev
-
-        for _ in range(self._max_iter):
-            current = torch.full(result_shape, q.zero)
-
-            for a_idx in itertools.product(*(range(s) for s in domain.shape)):
-                for b_idx in itertools.product(*(range(s) for s in codomain.shape)):
-                    vals: list[torch.Tensor] = []
-
-                    for u_idx in itertools.product(*(range(s) for s in feedback.shape)):
-                        src_idx = a_idx + u_idx + b_idx + u_idx
-                        vals.append(t[src_idx].unsqueeze(0))
-
-                    if vals:
-                        stacked = torch.cat(vals)
-                        current[a_idx + b_idx] = q.join(stacked, dim=0)
-
-            if torch.allclose(current, prev, atol=self._atol):
-                break
-
-            prev = current
-
-        return observed(domain, codomain, current, algebra=q)
-
-
 def trace(
     morph: Morphism,
     feedback: SetObject,
@@ -318,10 +268,10 @@ def trace(
     codomain: SetObject,
     algebra: Algebra | None = None,
 ) -> Morphism:
-    """Convenience function: apply cartesian trace.
+    """Apply the canonical trace `CompactClosedTrace`.
 
     Given f: A × U → B × U, compute Tr^U(f): A → B
-    using the CartesianTrace.
+    using the CompactClosedTrace.
 
     Parameters
     ----------
@@ -334,14 +284,22 @@ def trace(
     codomain : SetObject
         The external codomain B.
     algebra : Algebra or None
-        The enrichment algebra.
+        The enrichment algebra, a `Semiring`; the morphism's own when
+        omitted.
 
     Returns
     -------
     Morphism
         The traced morphism Tr^U(f): A → B.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not a `Semiring`.
     """
-    tracer = CartesianTrace(algebra=algebra)
+    tracer = CompactClosedTrace(
+        _require_semiring(algebra if algebra is not None else morph.algebra)
+    )
     return tracer.trace(morph, feedback, domain, codomain)
 
 
@@ -365,14 +323,24 @@ def partial_trace(
         These components must have matching shapes in domain
         and codomain.
     algebra : Algebra or None
-        The enrichment algebra.
+        The enrichment algebra, a `Semiring`; the morphism's own when
+        omitted.
 
     Returns
     -------
     ObservedMorphism
         The partially traced morphism.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not a `Semiring`, or the domain or codomain
+        is not a product.
+    ValueError
+        If the domain and codomain differ in their number of components
+        or in a traced component.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = _require_semiring(algebra if algebra is not None else morph.algebra)
     t = morph.tensor
     dom = morph.domain
     cod = morph.codomain
@@ -385,10 +353,10 @@ def partial_trace(
 
     # validate feedback components match
     for idx in feedback_indices:
-        if dom.components[idx].shape != cod.components[idx].shape:
+        if dom.components[idx] != cod.components[idx]:
             raise ValueError(
-                f"component {idx}: domain shape {dom.components[idx].shape} "
-                f"!= codomain shape {cod.components[idx].shape}"
+                f"component {idx}: domain component {dom.components[idx]!r} "
+                f"!= codomain component {cod.components[idx]!r}"
             )
 
     # build feedback and external objects
@@ -427,15 +395,7 @@ def partial_trace(
             contra_dims.append(dom_offsets[idx] + d)
             co_dims.append(cod_offsets[idx] + d)
 
-    # use diagonal extraction and join
-    from quivers.enriched.ends_coends import coend
-
-    result = coend(
-        t,
-        contra_dims=tuple(contra_dims),
-        co_dims=tuple(co_dims),
-        algebra=q,
-    )
+    result = diagonal_reduce(t, tuple(contra_dims), tuple(co_dims), q.join)
 
     # build result objects
     if len(external_dom_comps) == 0:
@@ -458,8 +418,7 @@ def partial_trace(
 
 __all__ = [
     "TracedMonoidal",
-    "CartesianTrace",
-    "IterativeTrace",
+    "CompactClosedTrace",
     "trace",
     "partial_trace",
 ]

@@ -1,11 +1,9 @@
 # Step resolution
 
-A [program step](../../reference/qvr/probabilistic-programs.md#step-reference) may refer to a previously declared distribution or supply an inline
-family call. [Resolution determines what distribution that reference denotes](../../semantics/typing.md#8-program-elaboration) and which
-inputs it needs. This stage links source names to executable sampling and scoring
-behavior.
-
-Resolving the distribution references of program steps.
+These functions resolve the distribution a
+[program step](../../reference/qvr/probabilistic-programs.md#step-reference) names, whether a
+declared morphism or an inline family call, and the inputs it needs
+([program elaboration](../../semantics/typing.md#8-program-elaboration)).
 
 !!! note "Internal module"
     This module is an implementation detail of the compiler and its

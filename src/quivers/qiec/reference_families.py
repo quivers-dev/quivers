@@ -2032,13 +2032,16 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` below zero, with ``probs`` the
         success probability of each of the ``total_count`` failures the
-        count is waited on, as the torch convention has it.
+        count is waited on, as the torch convention has it. A
+        ``total_count`` of zero is the point mass at zero.
     """
     count = int(finite_value(value, "NegativeBinomial"))
     total = real_parameter(a, "total_count", "NegativeBinomial")
     log_success, log_failure = log_probabilities(a, "NegativeBinomial")
     if count < 0:
         return -math.inf
+    if total == 0.0:
+        return 0.0 if count == 0 else -math.inf
     return (
         math.lgamma(total + count)
         - math.lgamma(count + 1)
@@ -3788,9 +3791,28 @@ def _poisson_log_mass(count: int, rate: float) -> float:
     Returns
     -------
     float
-        ``count log rate - rate - lgamma(count + 1)``.
+        ``count log rate - rate - lgamma(count + 1)``, with
+        ``0 log 0 = 0``: a rate of zero is the point mass at zero.
     """
+    if rate == 0.0:
+        return 0.0 if count == 0 else -math.inf
     return count * math.log(rate) - rate - math.lgamma(count + 1)
+
+
+def _log(value: float) -> float:
+    """The natural logarithm, ``-inf`` at zero.
+
+    Parameters
+    ----------
+    value : float
+        A nonnegative number.
+
+    Returns
+    -------
+    float
+        ``log value``.
+    """
+    return math.log(value) if value > 0.0 else -math.inf
 
 
 def _zip_density(a: Mapping[str, object], value: object) -> float:
@@ -3816,7 +3838,7 @@ def _zip_density(a: Mapping[str, object], value: object) -> float:
         return -math.inf
     if count == 0:
         return math.log(zero_prob + (1.0 - zero_prob) * math.exp(-rate))
-    return math.log1p(-zero_prob) + _poisson_log_mass(count, rate)
+    return _log(1.0 - zero_prob) + _poisson_log_mass(count, rate)
 
 
 def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -3871,9 +3893,9 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
     if count < 0:
         return -math.inf
     if count == 0:
-        return math.log(zero_prob)
+        return _log(zero_prob)
     return (
-        math.log1p(-zero_prob)
+        _log(1.0 - zero_prob)
         + _poisson_log_mass(count, rate)
         - math.log(-math.expm1(-rate))
     )

@@ -268,12 +268,12 @@ def test_dsl_dagger_chained_with_compose() -> None:
 def test_dagger_round_trip_via_change_base_preserves_shape() -> None:
     """``f.change_base(phi).dagger`` produces the right shape and
     algebra for the chained transformation."""
-    from quivers.core.algebra_morphisms import LOG_PROB_HOM
+    from quivers.core.algebra_morphisms import LOG_PROB_MAP
 
     A = FinSet(name="A", cardinality=3)
     B = FinSet(name="B", cardinality=4)
     f = LatentMorphism(A, B)
-    log_f = f.change_base(LOG_PROB_HOM)
+    log_f = f.change_base(LOG_PROB_MAP)
     log_f_dag = log_f.dagger
     assert log_f_dag.tensor.shape == (4, 3)
     assert log_f_dag.algebra.name == "LogProb"

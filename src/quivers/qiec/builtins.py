@@ -58,7 +58,6 @@ from quivers.qiec.identifiers import (
 from quivers.qiec.kinds import TypeBinder
 from quivers.qiec.terms import Perform
 from quivers.qiec.types import (
-    BOOL,
     STRING,
     UNIT,
     EffectRef,
@@ -930,8 +929,6 @@ def _support(sampleable: object) -> tuple[object, ...]:
     record = family(sampleable.family)
     if record.finite_support is not None:
         return tuple(record.finite_support)
-    if record.relaxes is not None:
-        return tuple(record.relaxes[1])
     if sampleable.family == "Categorical":
         weights = sampleable.arguments.get("probs", sampleable.arguments.get("logits"))
         classes = _weight_shape(weights)
@@ -943,63 +940,6 @@ def _support(sampleable: object) -> tuple[object, ...]:
     raise InvalidHandlerError(
         f"family {sampleable.family!r} has no finite support to enumerate"
     )
-
-
-def _hard_prior(distribution: RuntimeDistribution) -> RuntimeDistribution:
-    """The distribution a marginalization weighs its atoms by.
-
-    Parameters
-    ----------
-    distribution : RuntimeDistribution
-        The latent's construction.
-
-    Returns
-    -------
-    RuntimeDistribution
-        The construction itself, or, for a continuous relaxation, the
-        discrete family it stands in for at the same parameters, whose
-        masses weigh the hard atoms.
-    """
-    record = family(distribution.family)
-    if record.relaxes is None:
-        return distribution
-    hard = family(record.relaxes[0])
-    names = {parameter.name for parameter in hard.parameters}
-    return RuntimeDistribution(
-        hard.name,
-        {
-            name: value
-            for name, value in distribution.arguments.items()
-            if name in names
-        },
-        distribution.batch,
-        distribution.event,
-        distribution.ranks,
-        distribution.natural,
-    )
-
-
-def _hard_atom(distribution: RuntimeDistribution, value: object) -> object:
-    """A relaxation's atom as the discrete family's value.
-
-    Parameters
-    ----------
-    distribution : RuntimeDistribution
-        The discrete family's construction.
-    value : object
-        The atom, or a tensor of it over the plate.
-
-    Returns
-    -------
-    object
-        The atom as the discrete family samples it: a Boolean for a
-        Boolean family, else unchanged.
-    """
-    if family(distribution.family).element != BOOL:
-        return value
-    if isinstance(value, tuple):
-        return tuple(_hard_atom(distribution, item) for item in value)  # type: ignore[misc]
-    return bool(value)
 
 
 def enumerate_handler(
@@ -1104,13 +1044,12 @@ def enumerate_handler(
         _site, sampleable = _expect_arguments(request, 2, definition.name)
         support = _support(sampleable)
         distribution = cast(RuntimeDistribution, sampleable)
-        prior_of = _hard_prior(distribution)
         shape = (*distribution.batch, *distribution.event)
         totals: list[list[float]] = []
         shapes: list[tuple[int, ...]] = []
         for choice in support:
             value = _reshape([choice] * math.prod(shape), shape) if shape else choice  # type: ignore[list-item]
-            prior = prior_of.log_prob(_hard_atom(prior_of, value), keep_batch=True)
+            prior = distribution.log_prob(value, keep_batch=True)
             answer = resume(value)
             if not isinstance(answer, tuple) or len(answer) != 2:
                 raise InvalidHandlerError(

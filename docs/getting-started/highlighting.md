@@ -1,35 +1,28 @@
 # Editor support and syntax highlighting
 
-`.qvr` files are highlighted by two complementary systems, depending on what reads the file:
+Each tool that reads `.qvr` files highlights them with one of these engines:
 
 | Consumer | Engine | Comes from |
 |---|---|---|
 | Python tools: mkdocs, Sphinx, Jupyter, IPython, `pygmentize` | [Pygments](https://pygments.org/) | bundled with the `quivers` PyPI package |
-| Editors: Neovim, Helix, Emacs, Zed | [tree-sitter](https://tree-sitter.github.io/) | the grammar and editor assets shipped by `quivers` |
-| VS Code and Cursor | TextMate for initial colorization; QVR LSP for semantic tokens | the first-party `vscode-qvr` extension |
-| GitHub.com source view, GitHub gists | [Linguist](https://github.com/github-linguist/linguist) | language registration (not yet upstream) |
+| Editors: Neovim, Helix, Emacs, Zed | [tree-sitter](https://tree-sitter.github.io/) | the grammar and editor files in the quivers repository |
+| VS Code and Cursor | TextMate grammar for the first render, then semantic tokens from the QVR language server | the `vscode-qvr` extension in the repository |
+| GitHub.com source view, GitHub gists | [Linguist](https://github.com/github-linguist/linguist) | no QVR entry ([below](#github-source-view-linguist)) |
 
-This page documents how to wire each one up.
-
-Syntax highlighting identifies words and punctuation; semantic checking
-asks whether the declarations and computations fit together. A colorful
-`Normal(...)` call can still have an invalid argument or a missing runtime
-input. The language server adds type-aware feedback, while [`qvr check`](../tutorials/qvr/13-release-workflow.md#1-check-the-source-and-one-target) gives
-the corresponding explicit check from a terminal.
-
-Choose the setup for the editor or notebook you use. The parser provenance
-details below matter when those tools disagree about valid syntax; they are
-not additional mathematical prerequisites for writing a model.
+Highlighting colors tokens and does not check a program. The language server
+reports type errors in the editor, and
+[`qvr check`](../tutorials/qvr/13-release-workflow.md#1-check-the-source-and-one-target)
+reports them from a terminal.
 
 ## Pygments (Python doc and notebook tools)
 
-Quivers ships a Pygments lexer registered as an entry point. After
+quivers registers a Pygments lexer as an entry point. After
 
 ```bash
 pip install quivers
 ```
 
-every Pygments-based tool finds `.qvr` files automatically. No further configuration is needed for mkdocs, Sphinx, `pygmentize`, IPython / Jupyter cell magic (`%%highlight qvr`), or any other consumer that asks Pygments to choose a lexer by filename or by `name="qvr"`.
+every tool built on Pygments highlights `.qvr` files with no further configuration: mkdocs, Sphinx, `pygmentize`, the IPython and Jupyter cell magic `%%highlight qvr`, and any other tool that asks Pygments for a lexer by file name or by `name="qvr"`.
 
 To confirm the lexer is visible:
 
@@ -44,25 +37,16 @@ To highlight a file to a terminal:
 pygmentize -l qvr -O style=monokai docs/examples/source/bayesian_regression.qvr
 ```
 
-The lexer source lives at [`src/quivers/dsl/pygments_lexer.py`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/dsl/pygments_lexer.py); the highlight rules and keyword list are kept in sync with the [tree-sitter grammar](https://github.com/quivers-dev/quivers/tree/main/grammars/qvr) by `tests/test_dsl_extensions.py`.
+The lexer is [`quivers.dsl.pygments_lexer`](../api/dsl/pygments_lexer.md). It tokenizes with the QVR tree-sitter parser.
 
 ## Tree-sitter (editors)
 
-The authoritative tree-sitter grammar lives at
+The QVR tree-sitter grammar is in
 [`grammars/qvr/`](https://github.com/quivers-dev/quivers/tree/main/grammars/qvr)
-in the quivers repository. The Python package includes its generated source;
-platform wheels pair that source with a manifest-verified native parser. The
-Pygments lexer, CLI, REPL, and language server load this pair directly and fail
-closed if either component is absent or inconsistent. Editable checkouts may
-compile a content-addressed development parser after grammar changes.
-`panproto-grammars-all` remains a dependency for the eleven transpiler-target
-grammars, but it does not define QVR syntax.
-
-Editor integrations use the first-party extensions below or clone the quivers
-repository and build against `grammars/qvr/`. The grammar follows standard
-tree-sitter conventions; if an editor has a `:TSInstall qvr` or equivalent
-command and the grammar is not on its upstream list yet, the manual paths below
-also work.
+in the quivers repository, and the package includes its compiled parser
+([Installation](installation.md#from-source) says which parser an installation
+loads). Editors build the parser from that directory, either through the
+extensions in the repository or through the configurations below.
 
 ### Neovim
 
@@ -85,7 +69,7 @@ parsers.qvr = {
 vim.filetype.add({ extension = { qvr = "qvr" } })
 ```
 
-Then `:TSInstall qvr` from inside Neovim. The repository ships `queries/highlights.scm` at `grammars/qvr/queries/highlights.scm`; nvim-treesitter picks it up automatically once the parser is registered.
+Then run `:TSInstall qvr` inside Neovim. nvim-treesitter finds the highlight queries at `grammars/qvr/queries/highlights.scm` once the parser is registered.
 
 ### Helix
 
@@ -112,7 +96,7 @@ hx --grammar fetch
 hx --grammar build
 ```
 
-Place the highlight queries at `~/.config/helix/runtime/queries/qvr/highlights.scm`; copy the file from `grammars/qvr/queries/highlights.scm` in this repository, or symlink to a checkout.
+Place the highlight queries at `~/.config/helix/runtime/queries/qvr/highlights.scm`, as a copy of `grammars/qvr/queries/highlights.scm` or a symbolic link to it in a checkout.
 
 ### Emacs (tree-sitter-langs)
 
@@ -159,10 +143,9 @@ Run `M-x treesit-install-language-grammar RET qvr RET` once after Emacs starts t
 
 ### Zed
 
-The quivers repository ships a Zed extension at
+The quivers repository contains a Zed extension at
 [`editors/zed-extension-qvr/`](https://github.com/quivers-dev/quivers/tree/main/editors/zed-extension-qvr).
-Until the extension is published to Zed's public registry, install it
-locally from a checkout:
+Install it from a checkout:
 
 ```bash
 git clone https://github.com/quivers-dev/quivers
@@ -171,13 +154,12 @@ ln -s "$(pwd)/quivers/editors/zed-extension-qvr" ~/.config/zed/extensions/qvr
 ```
 
 Reload extensions (`zed: reload extensions` from the command palette).
-The extension's manifest pins the grammar against `grammars/qvr/` in the
-same repository, so a single checkout drives both the grammar source
-and the editor packaging.
+The extension's manifest points at `grammars/qvr/` in the same repository, so
+one checkout provides both the grammar and the extension.
 
 ### VS Code / Cursor
 
-The repository ships a first-party VS Code extension at
+The repository contains a VS Code extension at
 [`editors/vscode-qvr/`](https://github.com/quivers-dev/quivers/tree/main/editors/vscode-qvr).
 It provides:
 
@@ -198,38 +180,35 @@ code --install-extension vscode-qvr-*.vsix
 # or: cursor --install-extension vscode-qvr-*.vsix
 ```
 
-The extension auto-discovers `qvr-lsp` in (1) the `qvr.lsp.path`
+The extension looks for `qvr-lsp` in (1) the `qvr.lsp.path`
 setting (with `${workspaceFolder}` expansion), (2)
 `<workspace>/.venv/bin/qvr-lsp`, (3) `$VIRTUAL_ENV/bin/qvr-lsp`, or
 (4) plain `qvr-lsp` on `$PATH`. Install the LSP extra with
 `pip install 'quivers[lsp]'`.
 
-The full configuration options and launch resolution order are documented in
-the [Interactive guide](../guides/repl-and-lsp.md#vs-code-cursor).
+[Interactive tools](../guides/repl-and-lsp.md#vs-code-cursor) lists the
+extension's settings.
 
 ## GitHub source view (Linguist)
 
-GitHub's syntax highlighting on `.qvr` files in repository source view and gists is driven by [github-linguist](https://github.com/github-linguist/linguist). QVR is not yet upstream; until the language is registered, repositories can override locally with a `.gitattributes` entry pointing at the closest existing language for at least *some* color:
+GitHub highlights repository source and gists with
+[github-linguist](https://github.com/github-linguist/linguist), which has no
+QVR entry. A `.gitattributes` entry can map `.qvr` files to the closest
+language Linguist knows:
 
 ```gitattributes
 *.qvr linguist-language=R
 *.qvr linguist-detectable=true
 ```
 
-This repository uses R as the temporary stand-in, which highlights common
-declaration names, calls, numbers, strings, and comments. It is not a QVR
-grammar: effect rows, categorial slashes, the `~ Family` clause, and axis roles
-remain approximate until Linguist has a native QVR entry.
-
-Native GitHub highlighting requires a QVR language entry in
-[github-linguist](https://github.com/github-linguist/linguist/blob/main/CONTRIBUTING.md#adding-a-language).
-Panproto's separate refresh of its vendored QVR grammar is tracked in
-[panproto/panproto#321](https://github.com/panproto/panproto/issues/321); that
-vendor update does not register QVR with GitHub Linguist.
+R colors declaration names, calls, numbers, strings, and comments. Effect rows,
+categorial slashes, the `~ Family` clause, and axis options remain uncolored or
+miscolored. Native highlighting requires a QVR entry in Linguist
+([adding a language](https://github.com/github-linguist/linguist/blob/main/CONTRIBUTING.md#adding-a-language)).
 
 ## Verifying your setup
 
-A baseline probabilistic-program check is:
+Open a file containing this program:
 
 <!-- compile: false -->
 ```qvr
@@ -245,12 +224,12 @@ program regression : Item -> Item [effects=[Sample, Score]]
 export regression
 ```
 
-When the highlighting is wired up, keywords (`object`, `program`,
+With highlighting in place, keywords (`object`, `program`,
 `sample`, `let`, `observe`, `return`, `export`), the `effects` option,
-the `<-` bind punctuation, family identifiers (`HalfNormal`, `Normal`),
+the `<-` of a draw, family identifiers (`HalfNormal`, `Normal`),
 and comments carry distinct colors.
 
-Use this second block to verify the indexed-effect tokens:
+This second program uses indexed families, effects, and handlers:
 
 <!-- compile: qiec -->
 ```qvr
@@ -280,7 +259,7 @@ define robustify(x : Real) : Real !{} =
 The additional keywords (`index`, `family`, `constructor`, `effect`,
 `instance`, `handler`, `resumes`, `define`, `handle`, `perform`) and handler
 option keys should receive their semantic classes once the LSP attaches. The
-[QVR language reference](../reference/qvr/index.md) contains tested blocks for
-the remaining computation and program forms.
+[QVR language reference](../reference/qvr/index.md) shows the remaining
+computation and program forms.
 
-If a token is unhighlighted (rendered as default-foreground text), the corresponding rule in the editor's highlight query is the place to look; the canonical reference is [`grammars/qvr/queries/highlights.scm`](https://github.com/quivers-dev/quivers/blob/main/grammars/qvr/queries/highlights.scm).
+A token rendered in the default foreground color has no matching rule in the editor's highlight query. The reference query is [`grammars/qvr/queries/highlights.scm`](https://github.com/quivers-dev/quivers/blob/main/grammars/qvr/queries/highlights.scm).

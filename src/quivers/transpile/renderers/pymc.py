@@ -38,7 +38,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -343,8 +343,7 @@ class PyMCRenderer(RendererBase):
                 callee,
                 positional=(identifier(py, dim.size_name),),
             )
-        msg = f"unknown Dim kind: {type(dim).__name__}"
-        raise UnsupportedConstruct(self.target, [msg])
+        raise UnsupportedConstruct(self.target, [f"dim-kind:{type(dim).__name__}"])
 
     # ----- per-node dispatch (PyMC walks over with-body) ----
 
@@ -470,7 +469,7 @@ class PyMCRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 self.target,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -967,16 +966,9 @@ class PyMCRenderer(RendererBase):
             support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
-        if fibration is not None:
-            self._emit_grouped_marginalize(ctx, node, raw, atoms, fibration)
+        index_map = marginalize_index_map(node, raw.observe)
+        if index_map is not None:
+            self._emit_grouped_marginalize(ctx, node, raw, atoms, index_map)
             return
         component_names: list[str] = []
         for position, atom in enumerate(atoms):
@@ -1022,15 +1014,15 @@ class PyMCRenderer(RendererBase):
         node: IRMarginalize,
         raw: MarginalizeBody,
         atoms: tuple[IRMarginalAtom, ...],
-        fibration: tuple[str, Dim],
+        index_map: tuple[str, Dim],
     ) -> None:
         """Integrate a grouped block's latent out as a potential.
 
-        A block whose rows are fibred into fewer groups than rows, under
+        A block whose rows are grouped into fewer groups than rows, under
         a prior shared across the groups, keys its accumulator by group
         (`docs/semantics/programs.md` §2.7): each atom's per-row
         log-density is scattered into a ``(|G|, K)`` accumulator through
-        the fibration, the log prior is added, and the reduction over
+        the index map, the log prior is added, and the reduction over
         the atoms is summed over the groups into a
         [`pymc.Potential`][pymc.Potential]. A mixture is a per-row
         integral, which is a different measure here.
@@ -1045,8 +1037,8 @@ class PyMCRenderer(RendererBase):
             The block's scope, split into its bindings and its observe.
         atoms : tuple[IRMarginalAtom, ...]
             The block's atoms.
-        fibration : tuple[str, Dim]
-            The fibration's name and the grouping plate's axis.
+        index map : tuple[str, Dim]
+            The index map's name and the grouping plate's axis.
         """
         py = ctx.py
         prefix = f"__marg_{node.latent}"
@@ -1075,7 +1067,7 @@ class PyMCRenderer(RendererBase):
                 "child_of",
             )
             term_names.append(term)
-        via, group = fibration
+        via, group = index_map
         extent = str(group.size) if isinstance(group, DimStatic) else group.size_name
         py.e(
             ctx.with_body,
@@ -1167,12 +1159,7 @@ class PyMCRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
@@ -1250,12 +1237,7 @@ class PyMCRenderer(RendererBase):
                 positional=(self._marginal_weights(ctx, node, raw, atoms),),
             )
         logits = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         return self._stack_atoms(
             py,
@@ -1654,8 +1636,7 @@ def _dim_name(dim: Dim) -> str:
     type checker prove the slot is a `str`."""
     if isinstance(dim, (DimStatic, DimDynamic)):
         return dim.name
-    msg = f"unknown Dim kind: {type(dim).__name__}"
-    raise UnsupportedConstruct("qvr-pymc", [msg])
+    raise UnsupportedConstruct("qvr-pymc", [f"dim-kind:{type(dim).__name__}"])
 
 
 def _resolve_meta(family: str, target: str) -> FamilyMeta:
