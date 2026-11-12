@@ -2112,8 +2112,7 @@ class ScanCall(dx.Model):
         first.
     marginal : bool
         Whether the scan sums out a finite state its cell marginalizes
-        and returns (a marginalized chain, see
-        [`markov_cell`][quivers.dsl.markov_chains.markov_cell]); ``step``
+        and returns (a marginalized chain); ``step``
         then names the cell itself and ``init`` the distribution of the
         state before the first position.
     """
