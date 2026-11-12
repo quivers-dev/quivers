@@ -6,8 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- **`UnarySpanDeduction` takes no `iterations` argument.** It closes each chart cell under its unary rules by their Kleene star, which has no round count; `UnarySpanDeduction.closure` returns the star and `UnarySpanDeduction.rule_matrix` the rule matrix.
+- **A schema-backed `parser(...)` whose unary rules cycle has no reference-machine entry point.** The reference machine enumerates derivation trees, which a unary cycle makes unbounded; the module records the gap and the compiled parser still scores sentences.
+
 ### Fixed
 
+- **Chart parsers count each chain of unary rules once.** `InsideAlgorithm` (`chart_fold(..., unary=...)`) and `ChartParser` (`parser`, `ccg`, `lambek`) close each chart cell under the unary rules by the Kleene star `U* = I ⊕ U ⊕ U² ⊕ ...` of the rule matrix (for probabilities `(I - U)⁻¹`, Stolcke 1995), where they had iterated `cell ⊕ cell·U` a fixed number of times and computed `cell·(I + U)^k`: one rule `A -> B` of probability 1/2 under `A` now gives 1/2 where it gave 4. The star is computed in `LogProb`, `Counting`, `Viterbi`, and `Boolean`. A closure whose series diverges (a unary cycle of probability at least one, or of positive log weight under `Viterbi`) raises a `ValueError` instead of returning a truncated sum. The reference machine's elaboration of a schema-backed parser emits each unary rule once, where it had emitted three copies to match the old chart, and gives each derivation enough fuel to reach every tree.
 - **The deduction agenda counts each derivation once when one item fills several premises of a rule.** A rule `NP, NP |- S` over a single `NP` of weight `w` gives `S` the weight `w ⊗ w` (log 1 = 0 under `LogProb` for `w = 0`, one derivation under `Counting`), where every agenda had fired it once per premise position and doubled the weight. A later contribution to such an item reads the item's old weight at an earlier premise position it fills, following the weighted agenda algorithm of Eisner, Goldlust, and Smith (2005), so every item's chart weight is the semiring sum over its derivation trees under every agenda discipline. A rule-attached loss (`on=rule(R, D)`) and the `run_agenda` `rule_callback` fire once per rule application (a rule with one tuple of antecedent items) after the chart reaches its fixed point, with the antecedents' final weights. A rule's `weight_fn` is required to distribute over the semiring sum in each premise weight.
 
 ## [0.55.4] - 2026-11-12

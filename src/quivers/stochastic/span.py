@@ -15,7 +15,7 @@ LexicalAxiom
 BinarySpanDeduction
     Applies binary rules: chart[i,k,L] ⊗ chart[k,j,R] → chart[i,j,A].
 UnarySpanDeduction
-    Applies unary rules iteratively to convergence.
+    Closes a cell under the unary rules by their Kleene star.
 SpanGoal
     Extracts chart[start_cat, 0, seq_len].
 CKYSchedule
@@ -29,9 +29,10 @@ from typing import cast
 import torch
 import torch.nn as nn
 
+from quivers.stochastic._kleene import apply_star, kleene_star, semiring_sum
+from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.deduction import Axiom, Deduction, Goal, Schedule
 from quivers.stochastic.semiring import ChartSemiring
-from quivers.stochastic._rule_system import RuleSystem
 
 
 # ================================================================
@@ -308,7 +309,16 @@ class BinarySpanDeduction(Deduction):
 
 
 class UnarySpanDeduction(Deduction):
-    """Unary rule application, iterated to approximate fixpoint.
+    """Unary rules over one span, closed under their Kleene star.
+
+    A unary rule ``(a, b)`` with weight ``w`` derives category ``a``
+    over a span from category ``b`` over the same span. Chains of such
+    rules never consume input and may cycle, so a cell is closed once by
+    the closure ``U* = I ⊕ U ⊕ U² ⊕ ...`` of the rule matrix
+    ``U[b, a] = ⊕ w``, which sums every chain exactly once
+    [Stolcke (1995)](<https://aclanthology.org/J95-2002/>), section
+    4.5.2, generalized to a semiring as in
+    [Goodman (1999)](<https://aclanthology.org/J99-4004/>).
 
     Parameters
     ----------
@@ -316,15 +326,12 @@ class UnarySpanDeduction(Deduction):
         The structural rules.
     learnable : bool
         Whether rule weights are learnable.
-    iterations : int
-        Number of fixpoint iterations.
     """
 
     def __init__(
         self,
         rule_system: RuleSystem,
         learnable: bool = True,
-        iterations: int = 3,
     ) -> None:
         super().__init__()
 
@@ -345,7 +352,6 @@ class UnarySpanDeduction(Deduction):
             )
 
         self._n_rules = rule_system.n_unary
-        self._iterations = iterations
 
         weights = rule_system.unary_weight_tensor()
 
@@ -360,13 +366,69 @@ class UnarySpanDeduction(Deduction):
         """Whether this deduction has any unary rules."""
         return self._n_rules > 0
 
+    def rule_matrix(self, n_categories: int, semiring: ChartSemiring) -> torch.Tensor:
+        """The unary rules as a matrix over the semiring.
+
+        Parameters
+        ----------
+        n_categories : int
+            The number of categories ``C``.
+        semiring : ChartSemiring
+            The scoring semiring.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(C, C)``: entry ``[b, a]`` is the semiring sum of the
+            weights of the rules deriving ``a`` from ``b``, and the
+            semiring's zero where there is none.
+        """
+        _results = cast(torch.Tensor, self._results)
+        _inputs = cast(torch.Tensor, self._inputs)
+        weights = cast(torch.Tensor, self.weights)
+        flat = _inputs * n_categories + _results
+        one_hot = torch.full(
+            (self._n_rules, n_categories * n_categories),
+            float(semiring.zero),
+            dtype=weights.dtype,
+            device=weights.device,
+        )
+        placed = one_hot.scatter(1, flat.unsqueeze(1), weights.unsqueeze(1))
+        return semiring_sum(placed, dim=0, semiring=semiring).reshape(
+            n_categories, n_categories
+        )
+
+    def closure(self, n_categories: int, semiring: ChartSemiring) -> torch.Tensor:
+        """The Kleene star ``U*`` of the unary-rule matrix.
+
+        Parameters
+        ----------
+        n_categories : int
+            The number of categories ``C``.
+        semiring : ChartSemiring
+            The scoring semiring.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(C, C)``: entry ``[b, a]`` is the semiring sum, over the
+            chains of unary rules deriving ``a`` from ``b`` (the empty
+            chain included), of the product of their weights.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the closure's series diverges in the semiring.
+        """
+        return kleene_star(self.rule_matrix(n_categories, semiring), semiring)
+
     def forward(
         self,
         chart: torch.Tensor,
         semiring: ChartSemiring,
         **context,
     ) -> torch.Tensor:
-        """Apply unary rules to a cell tensor.
+        """Close a cell under the unary rules.
 
         Parameters
         ----------
@@ -375,44 +437,25 @@ class UnarySpanDeduction(Deduction):
         semiring : ChartSemiring
             The scoring semiring.
         **context
-            Unused.
+            ``closure``: a precomputed `closure` to reuse across the
+            cells of one parse; computed here when absent.
 
         Returns
         -------
         torch.Tensor
-            The updated ``(batch, C)`` cell after the configured
-            number of unary iterations.
+            The ``(batch, C)`` cell ``chart ⊗ U*``.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the closure's series diverges in the semiring.
         """
-        cell = chart
-
         if not self.has_rules:
-            return cell
-
-        _results = cast(torch.Tensor, self._results)
-        _inputs = cast(torch.Tensor, self._inputs)
-        n_categories = cell.shape[1]
-
-        for _ in range(self._iterations):
-            input_scores = cell[:, _inputs]
-
-            if self._n_rules > 0:
-                input_scores = semiring.times(
-                    input_scores,
-                    self.weights.unsqueeze(0),
-                )
-
-            additions = _scatter_semiring(
-                input_scores,
-                _results,
-                n_categories,
-                cell.shape[0],
-                device=cell.device,
-                semiring=semiring,
-            )
-
-            cell = semiring.plus_pair(cell, additions)
-
-        return cell
+            return chart
+        star = context.get("closure")
+        if not isinstance(star, torch.Tensor):
+            star = self.closure(chart.shape[1], semiring)
+        return apply_star(chart, star, semiring)
 
 
 # ================================================================
@@ -496,13 +539,20 @@ class CKYSchedule(Schedule):
         binary_deds = [d for d in deductions if isinstance(d, BinarySpanDeduction)]
         unary_deds = [d for d in deductions if isinstance(d, UnarySpanDeduction)]
 
+        # each unary deduction's closure is computed once per parse
+        closures = {
+            id(ud): ud.closure(n_categories, semiring)
+            for ud in unary_deds
+            if ud.has_rules
+        }
+
         # apply unary rules to lexical cells first
         for i in range(seq_len):
             cell = cells[(i, i + 1)]
 
             for ud in unary_deds:
                 if ud.has_rules:
-                    cell = ud(cell, semiring)
+                    cell = ud(cell, semiring, closure=closures[id(ud)])
 
             cells[(i, i + 1)] = cell
 
@@ -540,7 +590,7 @@ class CKYSchedule(Schedule):
                 # unary step
                 for ud in unary_deds:
                     if ud.has_rules:
-                        cell = ud(cell, semiring)
+                        cell = ud(cell, semiring, closure=closures[id(ud)])
 
                 cells[(i, j)] = cell
 
