@@ -283,19 +283,32 @@ program part(tau : Real) : Row -> Val
 )
 
 
-def test_instantiating_a_program_that_calls_a_computation_is_refused_at_the_call() -> (
-    None
-):
+def _part_oracle(effect: torch.Tensor, y: torch.Tensor, tau: float) -> float:
+    """The joint of ``part``: the effects' prior and ``y`` around the
+    first bumped effect."""
+    prior = torch.distributions.Normal(0.0, tau).log_prob(effect).sum()
+    first = effect[0] + 1.0
+    return float(prior + torch.distributions.Normal(first, 1.0).log_prob(y).sum())
+
+
+def test_instantiating_a_program_that_traverses_a_pure_computation() -> None:
+    """The traverse maps ``bump`` over the effects as a comprehension."""
     source = CALLING_TEMPLATE + "\nexport part\n"
-    with pytest.raises(CompileError) as raised:
-        loads(source).part(tau=TAU)
-    message = str(raised.value)
-    assert "program 'part' runs `let bumped <- traverse(...)`" in message
-    line = source.splitlines().index("    let bumped <- traverse(effect, e -> bump(e))")
-    assert message.startswith(f"line {line + 1}, col 4:")
+    program = loads(source).part(tau=TAU).morphism
+    effect = torch.tensor([0.3, -0.8])
+    y = torch.tensor([1.0, 1.5, 0.9, 1.2])
+    joint = program.log_joint(torch.zeros(1, 1), {"effect": effect, "y": y})
+    assert float(joint.sum()) == pytest.approx(_part_oracle(effect, y, TAU), rel=1e-5)
+    # Reading the effect itself rather than its bump moves the observation's
+    # mean by one, which the tolerance rejects.
+    wrong = float(
+        torch.distributions.Normal(0.0, TAU).log_prob(effect).sum()
+        + torch.distributions.Normal(effect[0], 1.0).log_prob(y).sum()
+    )
+    assert float(joint.sum()) != pytest.approx(wrong, rel=1e-3)
 
 
-def test_drawing_a_program_that_calls_a_computation_is_refused_at_the_call() -> None:
+def test_drawing_a_program_that_traverses_a_pure_computation() -> None:
     source = (
         CALLING_TEMPLATE.replace(
             "    observe y : Row <- Normal(loc=first, scale=1.0)\n    return y",
@@ -310,9 +323,8 @@ program caller : Row -> Val
 export caller
 """
     )
-    with pytest.raises(CompileError) as raised:
-        loads(source)
-    message = str(raised.value)
-    assert "program 'part' runs `let bumped <- traverse(...)`" in message
-    line = source.splitlines().index("    let bumped <- traverse(effect, e -> bump(e))")
-    assert message.startswith(f"line {line + 1}, col 4:")
+    program = loads(source).morphism
+    effect = torch.tensor([0.3, -0.8])
+    y = torch.tensor([1.0, 1.5, 0.9, 1.2])
+    joint = program.log_joint(torch.zeros(1, 1), {"a$effect": effect, "y": y})
+    assert float(joint.sum()) == pytest.approx(_part_oracle(effect, y, TAU), rel=1e-5)
