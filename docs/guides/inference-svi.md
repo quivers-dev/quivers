@@ -155,8 +155,8 @@ evaluations per particle.
 The `DoublyReparameterized` estimator rewrites the score of the density
 each particle was drawn from, and stratified draws come from the
 components rather than from $q_\phi$. It thus raises an error with a
-mixture guide; use `IWAEBound(num_particles=K, estimator=Reparameterized())`
-or `StickingTheLanding()` instead.
+mixture guide. `IWAEBound(num_particles=K, estimator=Reparameterized())` and
+`StickingTheLanding()` work with one.
 
 <!-- python: skip -->
 ```python
@@ -187,9 +187,9 @@ density, such as a declared morphism or deterministic layers followed by
 one stochastic kernel), and the datum it reads.
 
 The encoder is applied to every row of its datum. A site drawn once per
-run reads a datum with a leading run axis, so an input of `B` rows (`B`
+run reads a datum with a leading batch axis, so an input of `B` rows (`B`
 [independent runs](inference-foundations.md#input-rows-are-independent-runs))
-gives each run its own posterior; a plated local latent reads one datum
+gives each run its own posterior. A local latent in a plate reads one datum
 row per plate row. When the encoder's support is the site's support its
 draw is the site's value. When the encoder is real-valued and the site
 is not, the draw passes through the site's bijector $T$ and the density
@@ -203,8 +203,8 @@ reference path rather than a density.
 
 The data reach the guide through
 [`Guide.observe`](../api/inference/guide.md#quivers.inference.guides.Guide.observe),
-which every objective calls with the step's observations; call it
-directly to sample the posterior of held-out data. Sites without an
+which every objective calls with the step's observations. Calling it
+directly samples the posterior of held-out data. Sites without an
 encoder go to another guide in an `AutoGuideList`, and
 `uncovered_sites` lists them. Every objective and estimator applies,
 since the guide has a reparameterized sampler and a density at any
@@ -275,7 +275,7 @@ subclass. The objectives are:
 |---|---|---|
 | `ELBO(num_particles=K)` | $\mathbb{E}_q[\log p - \log q]$ | Default |
 | `IWAEBound(K, estimator=...)` | $\mathbb{E}[\log \tfrac{1}{K}\sum_k (p/q)_k]$ | Tighter than ELBO for $K > 1$ [@burda2016iwae] |
-| `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular; use `ELBO` directly) |
+| `RenyiBound(alpha, K)` | $\alpha$-divergence bound [@li2016renyi] | $\alpha = 0$ recovers IWAE; $\alpha \to 1$ recovers the ELBO in the limit (the constructor rejects `alpha == 1.0` as numerically singular, and `ELBO` computes that case) |
 | `VRIWAEBound(alpha, K)` | Variational Rényi-IWAE [@daudel2023vriwae] | Controls the tradeoff between computation and approximation |
 | `ChiVI(n, K)` | $\chi^n$ upper bound $\mathrm{CUBO}_n = \tfrac{1}{n}\log \mathbb{E}_q[(p/q)^n]$ [@dieng2017chi] | Over-covering approximation; minimizes $\exp(n\,\mathrm{CUBO}_n)$ with an unbiased gradient and reports the $K$-sample CUBO estimate for the sandwich $\mathrm{ELBO} \le \log p(y) \le \mathrm{CUBO}_n$ |
 | `RWS(K)` | Reweighted wake-sleep, wake phase [@bornschein2015rws] | Importance-weighted wake updates with the draws held fixed; not a bound, takes no estimator |
@@ -302,12 +302,12 @@ Dieng et al. [@dieng2017chi], `ChiVI` minimizes the exponentiated bound
 $L_n = \exp(n\,\mathrm{CUBO}_n) = \mathbb{E}_q[w^n]$, which has the same
 minimizers and the unbiased estimate $\tfrac{1}{K}\sum_k w_k^n$. To
 avoid overflow, particle $k$'s term is divided by $e^{m_{-k}}$, where
-$m_{-k}$ is the largest $n \log w_j$ among the *other* particles; that
+$m_{-k}$ is the largest $n \log w_j$ among the *other* particles. That
 scale is independent of particle $k$'s draws, so the expected update is
 a positive multiple of $\nabla L_n$ and the stationary points are
 unchanged. `ChiVI` thus needs `num_particles >= 2` and an order
 $n > 1$. The value it returns is the $K$-sample CUBO estimate, directly
-comparable with the negated `ELBO` loss; it is biased downward at finite
+comparable with the negated `ELBO` loss. It is biased downward at finite
 $K$, so for small $K$ it can fall below $\log p(y)$, and the bias
 vanishes as $K$ grows. Start `ChiVI` from a guide wider than the
 posterior: the gradient's variance is finite only when
@@ -316,7 +316,7 @@ $\mathbb{E}_q[w^{2n}]$ is.
 | Estimator | What it does |
 |---|---|
 | [`Reparameterized`](../api/inference/estimators.md#quivers.inference.estimators.Reparameterized) | Pathwise gradient of $B_a$ (default except for `IWAEBound`) |
-| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches the variational parameters in `log_q` [@roeder2017sticking]; variance to 0 as $q \to p^*$ |
+| [`StickingTheLanding`](../api/inference/estimators.md#quivers.inference.estimators.StickingTheLanding) | Detaches the variational parameters in `log_q` [@roeder2017sticking], whose variance goes to 0 as $q \to p^*$ |
 | [`DoublyReparameterized`](../api/inference/estimators.md#quivers.inference.estimators.DoublyReparameterized) | DReG [@tucker2019dreg; @daudel2023vriwae]: rewrites the score term with the reparameterization identity, weighting draw $k$ by $(1-a)\bar w_k + a \bar w_k^2$ with $\bar w = \mathrm{softmax}(a\ell)$; default for `IWAEBound` |
 | [`ScoreFunction`](../api/inference/estimators.md#quivers.inference.estimators.ScoreFunction) | REINFORCE [@ranganath2014bbvi]: the objective draws from the guide and holds the draws fixed, so the guide's `rsample` need not be differentiable |
 
@@ -346,7 +346,7 @@ Multi-particle objectives run a Python `for` loop over
 `model.log_joint` once per stratum, and stack the
 log-densities into a leading `(K * S, batch)` axis with a log-weight
 for each draw. An ordinary guide returns a single stratum ($S = 1$, equal
-weights $1/K$); an `AutoMixtureGuide` returns one stratum per component,
+weights $1/K$), and an `AutoMixtureGuide` returns one stratum per component,
 weighted by the mixture weights. `torch.distributions` and the model
 runtime are not vectorized over a Monte Carlo dimension, so the cost
 scales linearly in the number of draws.
@@ -511,7 +511,7 @@ whose density is constant, also admits it. A guide whose density couples
 the rows, such as
 [`AutoMultivariateNormalGuide`][quivers.inference.guides.AutoMultivariateNormalGuide],
 refuses a local latent in a subsampled plate rather than score a biased
-objective; it remains usable when the plate holds only observations.
+objective. It remains usable when the plate holds only observations.
 
 Only an objective linear in the log joint stays unbiased under
 subsampling: the ELBO, with any number of particles and any gradient

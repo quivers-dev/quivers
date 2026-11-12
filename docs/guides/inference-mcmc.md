@@ -558,7 +558,7 @@ the observations gives a [posterior predictive check](analysis-fitting-and-diagn
 [`Guide`](../api/inference/guide.md) or an
 [`MCMCResult`](../api/inference/mcmc.md). With an
 `MCMCResult`, it iterates over posterior samples instead of calling
-`guide.rsample`; each recorded draw is one value every run of the
+`guide.rsample`. Each recorded draw is one value that every run of the
 predictive input shares, so both posteriors yield predictive draws of
 shape `(num_samples, batch, ...)` for sites outside any plate.
 

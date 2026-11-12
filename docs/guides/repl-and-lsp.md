@@ -76,7 +76,7 @@ qvr repl --help                              # confirm the TUI is reachable
 | `qvr repl` | Textual TUI (or prompt_toolkit fallback if stdin is not a TTY) |
 | `qvr repl --plain` | Force the single-line prompt_toolkit frontend |
 | `qvr repl FILE.qvr` | Load FILE on startup, then drop to the prompt |
-| `qvr run FILE.qvr [NAME [JSON ...]]` | Execute one entry point, a `define` computation or a `program`; list them with no name |
+| `qvr run FILE.qvr [NAME [JSON ...]]` | Execute one entry point (a `define` computation or a `program`), or list them when no name is given |
 | `qvr lsp` / `qvr-lsp` | Run the language server over stdio, for an editor's configuration; add `--target TARGET` to report what that transpile target cannot express |
 | `qvr kernel install --user` / `qvr-kernel install --user` | Register a Jupyter kernelspec named `quivers` |
 | `qvr check FILE...` | Parse and compile files; add `--target TARGET` to report the features that target lacks; exits with a nonzero code on any error |
