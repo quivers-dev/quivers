@@ -15,7 +15,7 @@ registry of [Inference Foundations](inference-foundations.md), and
 
 A *guide* $q_\phi(z \mid x, y)$ is a distribution over the latent sites with
 adjustable parameters $\phi$, fitted to approximate the posterior, as in Pyro
-[@pyroSVI]. If `z` is an unknown mean, a simple guide learns a centre and a spread for
+[@pyroSVI]. If `z` is an unknown mean, a simple guide learns a center and a spread for
 `z`. The model still gives the prior and the likelihood, the guide gives candidate
 latent values and their density, and [observed sites](inference-foundations.md#trace-and-sample-sites)
 stay fixed to the data throughout fitting.
@@ -39,7 +39,7 @@ encoder.
 | [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) | Diagonal Normal (mean-field) | Default; an [identifiable](https://en.wikipedia.org/wiki/Identifiability) posterior with weak correlation |
 | [`AutoMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoMultivariateNormalGuide) | Full-rank Normal (Cholesky) | Strong posterior correlations; $D \lesssim 1000$ |
 | [`AutoLowRankMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoLowRankMultivariateNormalGuide) | Low-rank + diagonal | [Hierarchical models](programs-hierarchical.md#hierarchical-models-with-parametric-templates) with localized correlations |
-| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centred at the maximum a posteriori (MAP) point with covariance $-H^{-1}$, the negative inverse Hessian of the log joint density | [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) at a mode [@tierney1986laplace] |
+| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centered at the maximum a posteriori (MAP) point with covariance $-H^{-1}$, the negative inverse Hessian of the log joint density | [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) at a mode [@tierney1986laplace] |
 | [`AutoNormalizingFlow`](../api/inference/guide.md#quivers.inference.guides.AutoNormalizingFlow) | Composed bijectors over a normal base [@rezende2015flows] | Skewed or curved posterior densities |
 | [`AutoIAFGuide`](../api/inference/guide.md#quivers.inference.guides.AutoIAFGuide) | Inverse autoregressive flow [@kingma2016iaf] | Autoregressive transformed approximation |
 | [`AutoNeuralSplineGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNeuralSplineGuide) | Rational-quadratic spline coupling [@durkan2019splines] | Flexible spline transformations |

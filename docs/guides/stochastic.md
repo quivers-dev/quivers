@@ -102,7 +102,7 @@ assert len(params) == 1  # one weight matrix
 A discretized family approximates a continuous distribution on an interval by a
 categorical distribution over equal bins. The codomain's cardinality is the number of
 bins. `DiscretizedNormal` learns one mean and one log scale per element of its domain
-and scores the bin centres between `low` and `high`.
+and scores the bin centers between `low` and `high`.
 
 ```python
 from quivers.stochastic.families import (

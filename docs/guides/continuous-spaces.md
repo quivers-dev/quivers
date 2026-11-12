@@ -194,7 +194,7 @@ assert fg.codomain == f.codomain * g.codomain  # R^2 x [0,1]
 ### Embed: embed a discrete domain into a continuous codomain
 
 `Embed` maps each element $i$ of a finite set to a normal distribution
-$\mathcal N(\mu_i, \sigma_i)$ in a continuous space, with a learnable centre and scale
+$\mathcal N(\mu_i, \sigma_i)$ in a continuous space, with a learnable center and scale
 per element:
 
 ```python

@@ -1,6 +1,6 @@
 # Core Types & Algebras
 
-A finite model in quivers is a table of scores. Its rows and columns are labelled by
+A finite model in quivers is a table of scores. Its rows and columns are labeled by
 named finite sets, called *objects*. A [*morphism*](morphisms.md#what-is-a-morphism)
 from one object to another stores one score for every row and column, and an
 [`Algebra`](../api/core/algebras.md) fixes how scores combine when morphisms are
@@ -23,7 +23,7 @@ All four are subclasses of the abstract `SetObject`.
 
 ### FinSet
 
-`FinSet(name="phoneme", cardinality=40)` is a set of forty elements, and a tensor axis labelled by it
+`FinSet(name="phoneme", cardinality=40)` is a set of forty elements, and a tensor axis labeled by it
 has length 40. The one-element set is exported as `Unit`.
 
 ```python
