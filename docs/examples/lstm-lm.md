@@ -1,283 +1,210 @@
-# LSTM-shaped language model
+# LSTM Language Model
 
 ## Overview
 
-This stochastic recurrent cell borrows the gates of an [LSTM](https://doi.org/10.1162/neco.1997.9.8.1735), but it threads only `h_t`. Its local update uses `f_t * h_{t-1}` rather than a separately propagated `f_t * c_{t-1}`. The equations below specify the resulting stochastic recurrence. [@hochreiter1997lstm]
+A long short-term memory (LSTM) network [@hochreiter1997lstm] keeps two states, a hidden state $h_t$ and a cell state $c_t$, and controls them with three gates: the input gate decides how much of a new candidate enters the cell, the forget gate [@gers2000learning] how much of the old cell survives, and the output gate how much of the cell reaches the hidden state. This source states that recurrence exactly. The gates and the candidate are [learned deterministic functions](../guides/dsl-declarations.md#function), the two states travel together through the [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) packed into one vector with `concat` and split again with `slice`, and every position scores the next token. The weights are point-estimated, so fitting the log joint is maximum-likelihood training.
 
 ## QVR source
 
 ```qvr
-# LSTM-Shaped Stochastic Language Model
-#
-# A gated stochastic recurrence wrapped in scan and used as a
-# causal language model. It borrows three LSTM gates and a cell
-# candidate, but scan threads only h_t: the local update uses
-# h_{t-1} where a canonical LSTM carries a separate c_{t-1}.
-# The tanh readout is realized through sigmoid.
-#
-# Generative structure:
-#
-#   i_t      ~ LogitNormal(gate_i(x_t, h_{t-1}))  input gate
-#   f_t      ~ LogitNormal(gate_f(x_t, h_{t-1}))  forget gate
-#   o_t      ~ LogitNormal(gate_o(x_t, h_{t-1}))  output gate
-#   g_t      ~ Normal(cell_cand(x_t, h_{t-1}))    cell candidate
-#   h_t      = o_t * tanh(f_t * h_{t-1} + i_t * g_t) folded-state update
-#   next_t   ~ Categorical(logits=lm_head(h_t))   next-token target
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
-#
-# The intermediate c_new is local to one call and is not carried
-# to the next position. This is thus an LSTM-shaped example,
-# not an implementation of the canonical architecture.
-#
-# Reference: [Hochreiter and Schmidhuber 1997](https://doi.org/10.1162/neco.1997.9.8.1735).
+# A long short-term memory (LSTM) language model with learned weights. The
+# cell carries two states, the hidden state h_t and the cell state c_t,
+# packed into one State vector that the scan threads from position to
+# position. The gates and the cell candidate are learned functions of the
+# current token and h_{t-1}; each position scores the token after it.
+object Vocab : Real 6
+object Hidden : Real 8
+object State : Real 16
+object Logits : Real 6
 
-object Token : FinSet 256
-object Embedded : Real 64
-object Hidden : Real 128
+# i_t, f_t, o_t = sigmoid(W [x_t; h_{t-1}] + b), the input, forget and
+# output gates.
+morphism input_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+morphism forget_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+morphism output_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+# g_t = tanh(W_g [x_t; h_{t-1}] + b_g), the cell candidate.
+morphism candidate : Vocab * Hidden -> Hidden [role=function, output=tanh]
+morphism lm_head : Hidden -> Logits [role=function]
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism gate_i, gate_f, gate_o : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism cell_cand : Embedded * Hidden -> Hidden ~ Normal
-morphism lm_head : Hidden -> Token ~ Categorical
+program lstm_step(x_t, state) : Vocab * State -> State
+    let h_prev = slice(state, 0, 8)
+    let c_prev = slice(state, 8, 8)
+    let i = input_gate(x_t, h_prev)
+    let f = forget_gate(x_t, h_prev)
+    let o = output_gate(x_t, h_prev)
+    let g = candidate(x_t, h_prev)
+    let c = f * c_prev + i * g
+    let h = o * tanh(c)
+    let logits = lm_head(h)
+    observe next_token <- Categorical(logits=logits)
+    let state_new = concat(h, c)
+    return state_new
 
-program lstm_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample i_gate <- gate_i(x_t, h_prev)
-    sample f_gate <- gate_f(x_t, h_prev)
-    sample o_gate <- gate_o(x_t, h_prev)
-    sample g_cand <- cell_cand(x_t, h_prev)
+define run_all = scan(lstm_step)
 
-    let c_new = f_gate * h_prev + i_gate * g_cand
-    let two_c = 2.0 * c_new
-    let sig_2c = sigmoid(two_c)
-    let tanh_c = 2.0 * sig_2c - 1.0
-    let h_new = o_gate * tanh_c
-    return h_new
-
-define backbone = tok_embed >> scan(lstm_cell)
-
-program lstm_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token <- lm_head(h)
-    return next_token
+program lstm_lm : Vocab -> State
+    sample last <- run_all
+    return last
 
 export lstm_lm
 ```
 
 ## Understanding the model
 
-The input gate determines how much candidate information enters the local
-update; the forget gate weights the previous hidden state; the output gate
-weights the transformed update sent onward. Each gate lies between zero and
-one, so multiplication acts as a learned proportion. Here those proportions
-are sampled from LogitNormal kernels rather than fixed by a sigmoid alone.
+With $x_t$ the one-hot current token, $h_0 = c_0 = 0$ and $\sigma$ the logistic function, one step is
 
-A canonical LSTM carries both a [cell state and a hidden state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#the-core-idea-behind-lstms)
-through time [@olah2015lstm]. This source passes only the hidden state to the
-next step: `c_new` contributes to the current output and is then discarded.
-Its terminal hidden state predicts one next token.
+$$
+i_t = \sigma(W_i [x_t; h_{t-1}] + b_i), \quad f_t = \sigma(W_f [x_t; h_{t-1}] + b_f), \quad o_t = \sigma(W_o [x_t; h_{t-1}] + b_o),
+$$
+
+$$
+g_t = \tanh(W_g [x_t; h_{t-1}] + b_g), \quad c_t = f_t \odot c_{t-1} + i_t \odot g_t, \quad h_t = o_t \odot \tanh(c_t),
+$$
+
+and the token after position $t$ is scored under $\mathrm{softmax}(U h_t + d)$. A forget gate near one and an input gate near zero carry the cell state forward unchanged, which is how the network holds information across many positions. Each input row is one sequence, its one-hot tokens the input and its next tokens the observation `next_token`.
 
 ## Walkthrough
 
-### Cell equations
-
-The parametric program samples three gates and a candidate. `LogitNormal` constrains gate draws to $(0, 1)$, and the candidate is a Normal kernel. Inside the program body:
-
-| Step | DSL | Meaning |
-|---|---|---|
-| input gate | `i_gate <- gate_i(x_t, h_prev)` | $i_t \sim \mathrm{LogitNormal}(\mu_i(x_t,h_{t-1}), \sigma_i(x_t,h_{t-1}))$ |
-| forget gate | `f_gate <- gate_f(x_t, h_prev)` | $f_t = \sigma(W_f [x_t, h_{t-1}])$ |
-| output gate | `o_gate <- gate_o(x_t, h_prev)` | $o_t \sim \mathrm{LogitNormal}(\mu_o(x_t,h_{t-1}), \sigma_o(x_t,h_{t-1}))$ |
-| candidate | `g_cand <- cell_cand(x_t, h_prev)` | $g_t \sim \mathcal{N}(\mu_g(x_t,h_{t-1}), \sigma_g(x_t,h_{t-1}))$ |
-| cell update | `let c_new = f_gate * h_prev + i_gate * g_cand` | $c_t = f_t \odot h_{t-1} + i_t \odot g_t$ |
-| hidden | `let h_new = o_gate * tanh_c` | $h_t = o_t \odot \tanh(c_t)$ |
-
-`tanh` is realized from [`sigmoid`](../guides/dsl-programs-and-lets.md#indexed-gather-in-let) via the identity $\tanh(x) = 2\,\sigma(2x) - 1$.
-
-### State threading
-
-`scan(lstm_cell)` is an iterated Kleisli composition along the sequence: the threaded state is the per-step hidden output $h_t$, which the Categorical `lm_head` reads at the terminal position to score the next token. The cell-state vector $c_t$ is computed inside the cell at every step from the threaded $h_{t-1}$ and used immediately to form $h_t$ via the output-gate / $\tanh$ post-composition. Because `scan` threads a single codomain, this presentation folds the canonical LSTM's separate $c$-channel into the local cell body: the long-term cell-state memory channel that a two-state LSTM exposes is not propagated across time steps here, and the recurrence reduces to $h_t = o_t \odot \tanh(f_t \odot h_{t-1} + i_t \odot g_t)$.
-
-The program scores one context per run. Each input row is a prompt, and a corpus of prompts is a batch of independent runs that share the model's parameters, so every prompt draws its own trajectory and scores its own next-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
-
-```mermaid
-flowchart LR
-    x_t["x_t"] --> gate_i["gate_i"]
-    x_t["x_t"] --> gate_f["gate_f"]
-    x_t["x_t"] --> gate_o["gate_o"]
-    x_t["x_t"] --> cell_cand["cell_cand"]
-    h_prev["h_prev"] --> gate_i["gate_i"]
-    h_prev["h_prev"] --> gate_f["gate_f"]
-    h_prev["h_prev"] --> gate_o["gate_o"]
-    h_prev["h_prev"] --> cell_cand["cell_cand"]
-    gate_f["gate_f"] --> c_new["c_new"]
-    cell_cand["cell_cand"] --> c_new["c_new"]
-    gate_i["gate_i"] --> c_new["c_new"]
-    h_prev["h_prev"] --> c_new["c_new"]
-    gate_o["gate_o"] --> h_new["h_new"]
-    c_new["c_new"] --> h_new["h_new"]
-    h_new["h_new"] --> scan["scan"]
-    class x_t,h_prev qv-input
-    class gate_i,gate_f,gate_o,cell_cand qv-checked
-    class c_new,h_new qv-foundation
-    class scan qv-output
-```
+- `object State : Real 16` holds the pair $(h_t, c_t)$: `slice(state, 0, 8)` is the hidden state and `slice(state, 8, 8)` the cell state, and `concat(h, c)` packs the new pair for the next position.
+- `input_gate`, `forget_gate`, `output_gate` and `candidate` are `role=function` morphisms with `sigmoid` or `tanh` outputs, all reading the current token and $h_{t-1}$.
+- `let c = f * c_prev + i * g` and `let h = o * tanh(c)` are the cell and hidden updates; `tanh` is the checked elementwise builtin.
+- `observe next_token <- Categorical(logits=logits)` scores the next token at every position; `scan(lstm_step)` threads the packed state from zero.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+Both blocks use tolerances fixed before the first run.
 
-### Generating synthetic data
+### The log joint against a hand-written LSTM
 
-Trace the fixed LSTM-shaped recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 prompt of length `seq_len`, scored against one next-token label.
+The compiled runtime must match an independent float64 LSTM to a relative 1e-5 and the reference machine to 1e-9. An oracle without the forget gate ($c_t = c_{t-1} + i_t g_t$) must lie more than a relative 1e-3 from the runtime, so the first check can tell the two cells apart; it lies 9.2e-3 and 6.2e-3 away on the two runs.
 
 ```python
+import math
+
 import torch
+import torch.distributions as D
+
+from quivers.continuous import LearnedFunction, LinearSource
 from quivers.dsl import load
-from quivers.inference.trace import trace
+
+SOURCE = "docs/examples/source/lstm_lm.qvr"
+VOCAB, HIDDEN = 6, 8
+
+
+def weights_of(model):
+    found = {}
+    for path, module in model.named_modules():
+        tail = path.split(".")[-1]
+        if not tail.startswith("_function_"):
+            continue
+        assert isinstance(module, LearnedFunction)
+        assert isinstance(module.source, LinearSource)
+        name = tail.removeprefix("_function_")
+        found[f"{name}_param_weight"] = module.source.linear.weight.detach()
+        found[f"{name}_param_bias"] = module.source.linear.bias.detach()
+    return found
+
+
+def oracle(weights, tokens, targets, forget=True):
+    w = {k: v.double() for k, v in weights.items()}
+
+    def affine(name, value):
+        return w[f"{name}_param_weight"] @ value + w[f"{name}_param_bias"]
+
+    h = torch.zeros(HIDDEN, dtype=torch.float64)
+    c = torch.zeros(HIDDEN, dtype=torch.float64)
+    total = 0.0
+    for t in range(tokens.shape[0]):
+        x = torch.nn.functional.one_hot(tokens[t], VOCAB).double()
+        xh = torch.cat([x, h])
+        i = torch.sigmoid(affine("input_gate", xh))
+        f = torch.sigmoid(affine("forget_gate", xh)) if forget else torch.ones(HIDDEN, dtype=torch.float64)
+        o = torch.sigmoid(affine("output_gate", xh))
+        g = torch.tanh(affine("candidate", xh))
+        c = f * c + i * g
+        h = o * torch.tanh(c)
+        total += float(D.Categorical(logits=affine("lm_head", h)).log_prob(targets[t]))
+    return total
+
+
+def host(value):
+    return value.item() if value.dim() == 0 else tuple(host(row) for row in value)
+
 
 torch.manual_seed(0)
-prog = load("docs/examples/source/lstm_lm.qvr")
-model = prog.morphism
-
-# Fix the model's kernel parameters to chosen values, then run one
-# forward trace so the captured hidden state and the next-token target it
-# generated are jointly consistent under the same weights.
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-with torch.no_grad():
-    forward = trace(model, prompts)
-# Every position's embedding and cell draws, `h$x_in@t` and the cell's own
-# sites at `@t`, are the latent trajectory the terminal state is a
-# function of.
-trajectory = {
-    name: site.value.detach()
-    for name, site in forward.sites.items()
-    if "@" in name and not site.is_deterministic
-}
-next_token = forward.sites["next_token"].value.detach()
-
-x_in = prompts
-observations = {"next_token": next_token, **trajectory}
-print("prompts:", prompts.shape, prompts.dtype)
-print("trajectory sites:", len(trajectory))
-print("next_token:", next_token.shape, next_token.dtype)
+program = load(SOURCE)
+model = program.morphism
+tokens = torch.randint(0, VOCAB, (2, 7))
+targets = torch.randint(0, VOCAB, (2, 7))
+x = torch.nn.functional.one_hot(tokens, VOCAB).float()
+compiled = model.log_joint(x, {"next_token": targets})
+weights = weights_of(model)
+for row in range(2):
+    expected = oracle(weights, tokens[row], targets[row])
+    without_forget = oracle(weights, tokens[row], targets[row], forget=False)
+    got = float(compiled[row].detach())
+    run = program.run(
+        "lstm_lm",
+        data={"vocab": host(x[row].double()), "next_token": host(targets[row]),
+              **{k: host(v.double()) for k, v in weights.items()}},
+        sites={},
+        seed=0,
+    )
+    gap = abs(got - without_forget) / abs(without_forget)
+    print(f"run {row}: compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; "
+          f"forget-free oracle {without_forget:.6f} (relative gap {gap:.1e})")
+    assert math.isclose(got, expected, rel_tol=1e-5)
+    assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+    assert gap > 1e-3
 ```
 
-### SVI fit
+### Maximum-likelihood fitting
 
-Reinitialize `tok_embed`, the three gate morphisms, `cell_cand`, and `lm_head`, then fit a mean-field posterior over their parameters and the latent trajectory with an [`AutoNormalGuide`](../api/inference/guide.md) and [`SVI`](../api/inference/svi.md). The scan draws the embedding and the cell's sites at every position, so the trajectory is lifted beside the parameters with [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters), each label stacked over positions. The [`ELBO`](../api/inference/elbo.md) scores the Categorical `next_token` site for each prompt.
-
-```python
-import torch
-from quivers.dsl import load
-from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
-from quivers.inference.trace import trace
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/lstm_lm.qvr")
-model = prog.morphism
-
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(prompts)
-observations = {"next_token": targets}
-
-torch.manual_seed(1)
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-
-# The scan's draws at every position are latents too: collect each
-# label, stacked as (rows, seq_len, ...), and lift it beside the
-# kernel parameters so the guide covers the whole trajectory.
-forward = trace(model, prompts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-for name, site in forward.sites.items():
-    label, at, _ = name.partition("@")
-    if at and not site.is_deterministic and not site.is_observed:
-        per_position.setdefault(label, []).append(site.value)
-trajectory_shapes = {
-    label: tuple(torch.stack(values, dim=1).shape)
-    for label, values in per_position.items()
-}
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, prompts, observations,
-    prior_scale=1.0,
-    additional_latents=trajectory_shapes,
-)
-
-guide = AutoNormalGuide(lifted, observed_names=set(lobs))
-optim = torch.optim.Adam(guide.parameters(), lr=1e-2)
-svi = SVI(lifted, guide, optim, ELBO(num_particles=1))
-
-losses = [svi.step(lx, lobs)]
-for _ in range(30):
-    losses.append(svi.step(lx, lobs))
-
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-```
-
-### NUTS posterior
-
-The lifted Bayesian model treats both the parameters $\theta$ and the latent trajectory $z$ as latents: $p(\theta, z \mid x, y) \propto p(\theta) \, p(z \mid x, \theta) \, p(y \mid z, \theta)$, where $z$ collects every draw the scan makes at every position, the embedding `h$x_in@t` and the cell's own sites, and the terminal state is a function of $z$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts each per-position label, stacked over positions as `(rows, seq_len, ...)`, as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(z, y \mid x, \theta)$. Given the full $(\theta, z)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
+The same design as the [vanilla RNN](vanilla-rnn-lm.md#maximum-likelihood-fitting): 8 training runs of length 12 that advance by one token (mod 6), 400 Adam steps, and three checks fixed in advance: per-token NLL below 0.05 nats on the training runs and on 8 held-out runs, and above 1.0 on runs that advance by two.
 
 ```python
-import torch
-from quivers.dsl import load
-from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
-from quivers.inference.trace import trace
+def per_token_nll(model, sequence):
+    x = torch.nn.functional.one_hot(sequence[:, :-1], VOCAB).float()
+    with torch.no_grad():
+        joint = model.log_joint(x, {"next_token": sequence[:, 1:]}).sum()
+    return -float(joint) / sequence[:, 1:].numel()
 
-torch.manual_seed(0)
-prog = load("docs/examples/source/lstm_lm.qvr")
-model = prog.morphism
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(prompts)
-observations = {"next_token": targets}
 
-# The latent trajectory: each label the scan reaches per position,
-# stacked as (rows, seq_len, ...), the layout a scanned site's values
-# take under its bare label.
-forward = trace(model, prompts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-for name, site in forward.sites.items():
-    label, at, _ = name.partition("@")
-    if at and not site.is_deterministic and not site.is_observed:
-        per_position.setdefault(label, []).append(site.value)
-trajectory_shapes = {
-    label: tuple(torch.stack(values, dim=1).shape)
-    for label, values in per_position.items()
-}
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, prompts, observations,
-    prior_scale=1.0,
-    additional_latents=trajectory_shapes,
+def rule(starts, length, step):
+    return (starts + step * torch.arange(length + 1)) % VOCAB
+
+
+generator = torch.Generator().manual_seed(3)
+runs, length = 8, 12
+train = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 1)
+held_out = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 1)
+other = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 2)
+
+torch.manual_seed(4)
+model = load(SOURCE).morphism
+x = torch.nn.functional.one_hot(train[:, :-1], VOCAB).float()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
+for _ in range(400):
+    optimizer.zero_grad()
+    (-model.log_joint(x, {"next_token": train[:, 1:]}).sum()).backward()
+    optimizer.step()
+
+fitted, generalized, contrast = (
+    per_token_nll(model, train),
+    per_token_nll(model, held_out),
+    per_token_nll(model, other),
 )
-kernel = NUTSKernel(step_size=0.005, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
-result = mc.run(lifted, lx, lobs)
-
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
-print(f"divergences: {int(result.divergence_counts.sum())}")
+print(f"per-token NLL: training {fitted:.4f}, held out {generalized:.4f}, other rule {contrast:.4f}")
+assert fitted < 0.05 and generalized < 0.05
+assert contrast > 1.0
 ```
 
 ## Categorical perspective
 
-The cell program denotes a Kleisli morphism $\mathrm{Embedded} \times \mathrm{Hidden} \to \mathcal{G}(\mathrm{Hidden})$ in the Kleisli category of the [Giry monad](https://doi.org/10.1007/BFb0092872); `scan(lstm_cell)` is its iterated composition over the sequence. The Categorical head closes the composite with a finite-set codomain, and `observe next_token` accumulates per-batch categorical log-likelihood through a [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension). [@giry1982categorical]
+The gates and the candidate are deterministic morphisms, Dirac kernels in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. Packing $(h, c)$ with `concat` makes the step an endomorphism of one state space, so [`scan(lstm_step)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the left [fold](https://ncatlab.org/nlab/show/fold) of a single morphism along the sequence; the observations are the only factors that weight a run.
 
 ## Sources and further reading
 
+- *Long short-term memory* [@hochreiter1997lstm].
+- *Learning to forget: continual prediction with LSTM* [@gers2000learning].
 - *A categorical approach to probability theory* [@giry1982categorical].
-- *Long Short-Term Memory* [@hochreiter1997lstm].
