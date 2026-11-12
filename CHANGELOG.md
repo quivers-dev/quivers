@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A program step drawing through a `param_source=attention` kernel is refused where it is written.** An attention source pools a sequence of rows into one parameter vector, and a program step hands a kernel one row per draw, so `sample h <- layer` with `layer` reaching such a kernel (directly or through a `define` chain) is refused by `loads` with a `CompileError` at the step's line and column, and by the checked elaboration and `qvr check` with a `qiec-program` diagnostic at the step, where the compiled runtime had failed inside `torch` with an `AssertionError` and `qvr check` had reported an unlocated gap. The message points to a `param_source=self_attention` learned function for attention over a sequence. The kernel outside a program compiles as before.
+- **A program over a finite domain checks its input.** `trace`, `log_joint`, and every other run of a program whose domain is a finite set take one element index per run, a `(B,)` or `(B, 1)` tensor of indices in the set; any other input raises a `ValueError` naming the expected and received shapes (or the indices outside the set), where it had failed inside a network with a shape mismatch.
+
 ## [0.53.0] - 2026-11-11
 
 ### Added

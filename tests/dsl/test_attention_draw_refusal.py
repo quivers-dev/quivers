@@ -56,7 +56,11 @@ export attn
 _PLAIN = _LAYER.replace(" [param_source=attention]", "")
 
 
-@pytest.mark.parametrize(("source", "line", "col"), [(_LAYER, 9, 4), (_DIRECT, 5, 4)])
+@pytest.mark.parametrize(
+    ("source", "line", "col"),
+    [(_LAYER, 9, 4), (_DIRECT, 5, 4)],
+    ids=["through-a-define", "direct"],
+)
 def test_the_compiled_runtime_refuses_the_step(
     source: str, line: int, col: int
 ) -> None:
@@ -65,7 +69,9 @@ def test_the_compiled_runtime_refuses_the_step(
     assert (caught.value.line, caught.value.col) == (line, col)
 
 
-@pytest.mark.parametrize(("source", "line"), [(_LAYER, 9), (_DIRECT, 5)])
+@pytest.mark.parametrize(
+    ("source", "line"), [(_LAYER, 9), (_DIRECT, 5)], ids=["through-a-define", "direct"]
+)
 def test_the_checked_elaboration_refuses_the_step(source: str, line: int) -> None:
     with pytest.raises(QiecDiagnosticError, match="param_source=attention") as caught:
         lower_qvr_to_qiec(parse(source), module_name="m", file_path="m.qvr")
