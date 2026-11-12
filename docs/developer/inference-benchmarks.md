@@ -247,7 +247,7 @@ $$
 
 **Data.** Condition on $x_i = 0$ (inference target is $p(v \mid x = 0)$).
 
-**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$, so the conditional posterior is Gaussian with mean $-9 N / 2 = -40.5$ and variance $9$ at $N = 9$. The *joint* posterior over $(v, x)$ remains funnel-shaped; only the conditional given $x = 0$ is tractable.
+**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$, so the conditional posterior is Gaussian with mean $-9 N / 2 = -40.5$ and variance $9$ at $N = 9$. The *joint* posterior over $(v, x)$ remains funnel-shaped, and only the conditional given $x = 0$ is tractable.
 
 **Capture semantics.** All five algorithms underestimate the magnitude of $v$ [@neal2003slice]. The posterior mean lies forty units below the prior mean, where the scale $e^{v/2}$ of each $x_i$ is about $e^{-20}$. The compiled `Normal` family floors its scale at $10^{-7}$, which $e^{v/2}$ reaches at $v \approx -32.2$, so below that point the compiled log density stops increasing in $v$ and the target the samplers see has its mode near $-32.2$. PASS means the metric *exceeds* the tolerance, confirming the underfit.
 
@@ -320,7 +320,7 @@ $$
 y_i \mid \mu \sim \mathrm{TruncatedNormal}(\mu, 0.2, 0, 1), \quad i = 1, \dots, 60.
 $$
 
-**Reference.** Evaluate the truncated-Normal log-likelihood on a 4096-point $\mu$-grid in $(0, 1)$ with stable log-CDF differences for the truncation constant; normalize for the posterior moments.
+**Reference.** Evaluate the truncated-Normal log-likelihood on a 4096-point $\mu$-grid in $(0, 1)$ with stable log-CDF differences for the truncation constant, and normalize it for the posterior moments.
 
 **Metric.** `|E[mu]_q - E[mu]_true|`, tolerance `0.05`.
 
