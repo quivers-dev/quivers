@@ -191,8 +191,8 @@ The QVR language server (LSP) uses the compiler's typed source model. It provide
 - formatting through the QVR emitter.
 
 The VS Code, Cursor, and Zed extensions start `qvr-lsp`. Neovim and other clients launch it over
-stdio. Installation is covered in [Editor support](../../getting-started/highlighting.md), and the
-supported methods are listed in the [LSP capability table](../../guides/repl-and-lsp.md#capabilities).
+stdio. [Editor support](../../getting-started/highlighting.md) gives the installation, and the
+[LSP capability table](../../guides/repl-and-lsp.md#capabilities) lists the supported methods.
 
 ## Transpilation
 
