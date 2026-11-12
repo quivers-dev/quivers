@@ -1,10 +1,11 @@
-# Quivers Indexed Effect Core
+# `quivers.qiec`
 
-The Quivers Indexed Effect Core (QIEC) is the common typed representation used after
-source elaboration. It makes [value types, index constraints, and effect requests](../../semantics/typing.md#4-qiec-kinds-and-types)
-explicit so [execution and transpilation](../../reference/qvr/index.md#compilation-and-execution-map) inspect the same computation. Most model authors
-use QVR; these modules are for inspecting or extending the checked core.
-
-The stable kernel every QVR module checks against and every transpiler reads. The package re-exports the modules below.
+The Quivers Indexed Effect Core (QIEC) is the typed core language that every executable QVR
+declaration elaborates to. It makes
+[value types, index constraints, and effect requests](../../semantics/typing.md#4-qiec-kinds-and-types)
+explicit, so that [execution and transpilation](../../reference/qvr/index.md#compilation-and-execution-map)
+read the same checked computation. The package holds the data model, the checker, the
+serialization codec, and the [reference machine](../../developer/qiec.md#reference-evaluator), and
+re-exports the public names of its modules.
 
 ::: quivers.qiec
