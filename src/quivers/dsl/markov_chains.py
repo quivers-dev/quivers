@@ -216,7 +216,7 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
             or step.via is not None
         ):
             _refuse(
-                "observe",
+                "observation",
                 name,
                 f"the cell {name!r} observes one value per position; the "
                 f"observation at line {step.line} is plated, fibred, or "

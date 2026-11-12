@@ -703,7 +703,7 @@ BASE = _hmm(2, 3)
                 "observe symbol <- Categorical(probs=emission[z])",
                 "observe symbol : State <- Categorical(probs=emission[z])",
             ),
-            "scan:marginal:observe:hmm_step",
+            "scan:marginal:observation:hmm_step",
         ),
     ],
 )
