@@ -26,6 +26,7 @@ from quivers.continuous.morphisms import (
     AnySpace,
     ContinuousMorphism,
     MarginalizedFactor,
+    _event_dim,
 )
 from quivers.core.algebras import CompositionRule
 from quivers.core.morphisms import Morphism, ObservedMorphism
@@ -75,6 +76,7 @@ from quivers.dsl.ast_nodes import (
     DrawStep,
     Expr,
     ExprIdent,
+    ExprScan,
     ExprMorphismCall,
     ExprTransCompose,
     DefineDecl,
@@ -148,6 +150,7 @@ from quivers.dsl.let_expr_traversal import (
     substitute_let_expr,
     walk_let_expr,
 )
+from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
@@ -606,9 +609,98 @@ def _scanned_step_programs(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
             found.extend(_scanned_step_programs(step.scope))
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
-            if scan is not None:
+            if scan is not None and not scan.marginal:
                 found.append(scan.step)
     return tuple(found)
+
+
+def _marginal_chains(steps: tuple[ProgramStep, ...]) -> bool:
+    """Whether a body draws a marginalized chain.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        The expanded steps.
+
+    Returns
+    -------
+    bool
+        ``True`` when a ``let h = scan(cell, xs, p, "marginal")`` is
+        among them.
+    """
+    for step in steps:
+        if isinstance(step, LetStep):
+            scan = scan_let_call(step.value)
+            if scan is not None and scan.marginal:
+                return True
+    return False
+
+
+def _observation_parameter(
+    env: Mapping[str, torch.Tensor],
+    arguments: tuple[StepArgument, ...] | None,
+    shared_vector: bool,
+) -> torch.Tensor:
+    """The parameter an observation family is scored at, at one atom.
+
+    Parameters
+    ----------
+    env : Mapping[str, torch.Tensor]
+        The bindings at the atom.
+    arguments : tuple[StepArgument, ...] | None
+        The observation's arguments; ``None`` reads the program input.
+    shared_vector : bool
+        Whether the family takes one vector-valued parameter, which a
+        single shared value presents with a leading axis of one.
+
+    Returns
+    -------
+    torch.Tensor
+        The parameter: one argument as it is (a number as one column),
+        or several stacked along a last axis.
+    """
+    if arguments is None:
+        return env["_x_input"]
+    parts = [_lookup_arg(env, argument) for argument in arguments]
+    if len(parts) == 1:
+        theta = parts[0]
+        if theta.dim() == 0:
+            # One value at this atom, shared by every row: a single
+            # column, as the stacking of several parameters gives each.
+            theta = theta.reshape(1)
+        if shared_vector and theta.dim() == 1:
+            theta = theta.unsqueeze(0)
+        return theta
+    common = torch.broadcast_shapes(*(part.shape for part in parts))
+    theta = torch.stack([part.expand(common) for part in parts], dim=-1)
+    if theta.dim() == 1:
+        # Values shared by every row at this atom stack to one row of
+        # their columns.
+        theta = theta.unsqueeze(0)
+    return theta
+
+
+def _shared_vector_parameter(family: ContinuousMorphism | None) -> bool:
+    """Whether an observation family takes one vector-valued parameter.
+
+    Parameters
+    ----------
+    family : ContinuousMorphism | None
+        The family.
+
+    Returns
+    -------
+    bool
+        ``True`` when its single variable parameter slot is wider than
+        one, as a ``Categorical`` row is.
+    """
+    spec = getattr(family, "_param_spec", None)
+    widths = (
+        [1 if width is None else int(width) for kind, width in spec if kind == "var"]
+        if spec is not None
+        else []
+    )
+    return len(widths) == 1 and widths[0] > 1
 
 
 def _draw_bundle(
@@ -4090,6 +4182,11 @@ class _ProgramsMixin:
                         step.col,
                     )
                 scan = scan_let_call(step.value)
+                if scan is not None and scan.marginal:
+                    steps.append(
+                        self._compile_marginal_chain(step, scan, decl, bound_vars)
+                    )
+                    continue
                 if scan is not None and scan.step in self._scan_step_declarations:
                     steps.append(self._compile_scan(step, scan, decl, bound_vars))
                     continue
@@ -4495,6 +4592,10 @@ class _ProgramsMixin:
         effects: set[str] = set()
         for name in _scanned_step_programs(draws):
             effects |= self._scan_step(name).effect_set or set()
+        if _marginal_chains(draws):
+            # A marginalized chain scores its observations with its
+            # states summed out.
+            effects |= {"Score", "Marginal"}
         return decl.with_(draws=draws), effects
 
     def _scan_step(self, name: str) -> MonadicProgram:
@@ -4602,6 +4703,273 @@ class _ProgramsMixin:
             outputs=scan.outputs,
             reverse=scan.reverse,
         )
+
+    def _compile_marginal_chain(
+        self,
+        step: LetStep,
+        scan: ScanCall,
+        decl: ProgramDecl,
+        bound_vars: dict[str, AnySpace | None],
+    ) -> Score:
+        """Compile a marginalized chain to a score of its log marginal.
+
+        The chain's cell returns the latent its block marginalizes, so
+        every state of the chain is summed out. Within one run, the
+        score evaluates the cell at every position ``t`` and every pair
+        of a previous state ``i`` and a next state ``j``: the cell's lets
+        at the entry and ``i``, the transition's log probability of
+        ``j``, and the block's lets and observations at ``j``, giving
+        the weights ``W_t[i, j]``. The forward algorithm then runs in
+        log space from the first state's distribution ``p``::
+
+            log_filter = log p
+            table_t    = logsumexp_i(log_filter[i] + W_t[i, :])
+            evidence_t = logsumexp(table_t)
+            log_filter = table_t - evidence_t
+
+        and the score is the sum of the evidences, the log marginal
+        likelihood of the chain's observations.
+
+        Parameters
+        ----------
+        step : LetStep
+            The let binding the chain.
+        scan : ScanCall
+            The marginalized scan: the cell, the sequence, and the first
+            state's distribution.
+        decl : ProgramDecl
+            The program the let belongs to.
+        bound_vars : dict[str, AnySpace | None]
+            The names bound so far; gains the let's.
+
+        Returns
+        -------
+        Score
+            The score step.
+
+        Raises
+        ------
+        CompileError
+            If the cell is not a chain step the forward algorithm sums
+            out, its state is not a finite set, the sequence or the
+            first state's distribution is not bound, or the transition
+            does not name its parameterization.
+        """
+        cell_decl = next(
+            (
+                statement
+                for statement in self._module.statements
+                if isinstance(statement, ProgramDecl) and statement.name == scan.step
+            ),
+            None,
+        )
+        if cell_decl is None:
+            raise CompileError(
+                f"the marginalized chain runs {scan.step!r}, which is not a program",
+                step.line,
+                step.col,
+            )
+        try:
+            cell = markov_cell(cell_decl)
+        except StepResolutionError as error:
+            raise CompileError("; ".join(error.kinds), step.line, step.col) from error
+        state_space = self._resolve_any_space(cell.state_object)
+        if not isinstance(state_space, FinSet):
+            raise CompileError(
+                f"the marginalized chain over {cell.name!r} sums states of "
+                f"{state_space!r}, which is not a finite set",
+                step.line,
+                step.col,
+            )
+        count = int(state_space.cardinality)
+        entry_space = self._resolve_any_space(cell.entry_object)
+        source_key: str
+        if scan.sequence in bound_vars:
+            source_key = scan.sequence
+        elif decl.params is None and scan.sequence == _input_name(decl):
+            source_key = "_x_input"
+        else:
+            raise CompileError(
+                f"the marginalized chain runs over {scan.sequence!r}, which is "
+                f"neither bound nor the program's input",
+                step.line,
+                step.col,
+            )
+        if scan.init is None or scan.init not in bound_vars:
+            raise CompileError(
+                f"the marginalized chain over {cell.name!r} starts from "
+                f"{scan.init!r}, which the program does not bind before the scan",
+                step.line,
+                step.col,
+            )
+        entry_width = (
+            None if isinstance(entry_space, SetObject) else int(_event_dim(entry_space))
+        )
+        local_bv: dict[str, AnySpace | None] = dict(bound_vars)
+        local_bv[cell.entry] = entry_space
+        local_bv[cell.previous] = state_space
+        local_bv[cell.latent] = None
+        globals_ = self._let_globals()
+        extents = self._value_extents_stack[-1] if self._value_extents_stack else {}
+
+        def compile_lets(lets: Sequence[LetStep]) -> tuple[tuple[str, Callable], ...]:
+            compiled: list[tuple[str, Callable]] = []
+            for let in lets:
+                self._reject_unknown_let_calls(
+                    let.value, globals_, local_bv, "let", let.name, let.line, let.col
+                )
+                reads = self._let_reads(let.value)
+                compiled.append(
+                    (
+                        let.name,
+                        reading(
+                            _checked_layout(
+                                self._compile_let_expr(let.value, globals_=globals_),
+                                reads,
+                                extents,
+                                let.name,
+                            ),
+                            reads,
+                        ),
+                    )
+                )
+                local_bv[let.name] = None
+            return tuple(compiled)
+
+        prefix = compile_lets(cell.prefix)
+        transition = cell.block
+        parameterization = (
+            transition.args[0].parameter
+            if transition.args and isinstance(transition.args[0], DrawArgNamed)
+            else None
+        )
+        if transition.args is None or len(transition.args) != 1 or (
+            parameterization not in ("probs", "logits")
+        ):
+            raise CompileError(
+                f"the cell {cell.name!r} draws its next state {cell.latent!r} from "
+                f"a Categorical with one parameter, probs=... or logits=...",
+                transition.line,
+                transition.col,
+            )
+        _, transition_args = self._resolve_draw_morphism(
+            DrawStep(
+                vars=(cell.latent,),
+                morphism=transition.morphism,
+                args=list(transition.args),
+                is_observed=False,
+                line=transition.line,
+                col=transition.col,
+            ),
+            local_bv,
+            None,
+        )
+        assert transition_args is not None and len(transition_args) == 1
+        transition_arg = transition_args[0]
+        body: list[tuple[str, Callable] | tuple[ContinuousMorphism, tuple[StepArgument, ...] | None, str, bool]] = []
+        observed: list[str] = []
+        reads: set[str] = set(_arg_names(transition_args))
+        for name, fn in prefix:
+            declared = reads_of(fn)
+            assert declared is not None
+            reads |= declared
+        for inner in transition.scope:
+            if isinstance(inner, LetStep):
+                ((name, fn),) = compile_lets((inner,))
+                body.append((name, fn))
+                declared = reads_of(fn)
+                assert declared is not None
+                reads |= declared
+                continue
+            assert isinstance(inner, ObserveStep)
+            response = inner.vars[0]
+            if response != cell.entry and response in bound_vars:
+                raise CompileError(
+                    f"the cell {cell.name!r} observes {response!r} at every "
+                    f"position, so the program cannot also bind {response!r}",
+                    inner.line,
+                    inner.col,
+                )
+            family, arguments = self._resolve_draw_morphism(
+                DrawStep(
+                    vars=(response,),
+                    morphism=inner.morphism,
+                    args=inner.args,
+                    is_observed=True,
+                    line=inner.line,
+                    col=inner.col,
+                ),
+                local_bv,
+                None,
+            )
+            body.append(
+                (family, arguments, response, _shared_vector_parameter(family))
+            )
+            if arguments is not None:
+                reads |= set(_arg_names(arguments))
+            if response != cell.entry:
+                observed.append(response)
+        local_names = {cell.entry, cell.previous, cell.latent, "_x_input"}
+        local_names |= {name for name, _ in prefix}
+        local_names |= {item[0] for item in body if isinstance(item[0], str)}
+        chain_reads = (reads - local_names) | {source_key, scan.init, *observed}
+        states = tuple(torch.tensor(index) for index in range(count))
+        positions_reversed = scan.reverse
+        init_name = scan.init
+
+        def _chain_marginal(env: dict[str, torch.Tensor]) -> torch.Tensor:
+            sequence = env[source_key]
+            entries = (
+                sequence.reshape(-1)
+                if entry_width is None
+                else sequence.reshape(-1, entry_width)
+            )
+            length = int(entries.shape[0])
+            sequences = {name: env[name].reshape(length, -1) for name in observed}
+            start = env[init_name].reshape(count)
+            log_filter = torch.log(start) - torch.log(start.sum())
+            total = torch.zeros((), dtype=log_filter.dtype, device=log_filter.device)
+            order = range(length - 1, -1, -1) if positions_reversed else range(length)
+            for position in order:
+                here = dict(env)
+                here[cell.entry] = entries[position]
+                for name, values in sequences.items():
+                    here[name] = values[position].reshape(env[name].shape[1:])
+                rows: list[torch.Tensor] = []
+                for previous in states:
+                    row_env = dict(here)
+                    row_env[cell.previous] = previous
+                    for name, fn in prefix:
+                        row_env[name] = fn(row_env)
+                    weights = _lookup_arg(row_env, transition_arg).reshape(count)
+                    log_transition = (
+                        torch.log_softmax(weights, dim=-1)
+                        if parameterization == "logits"
+                        else torch.log(weights) - torch.log(weights.sum())
+                    )
+                    scores: list[torch.Tensor] = []
+                    for following in states:
+                        atom = dict(row_env)
+                        atom[cell.latent] = following
+                        score = torch.zeros_like(total)
+                        for item in body:
+                            if isinstance(item[0], str):
+                                name, fn = item
+                                atom[name] = fn(atom)
+                                continue
+                            family, arguments, response, shared = item
+                            theta = _observation_parameter(atom, arguments, shared)
+                            score = score + family.log_prob(theta, atom[response]).sum()
+                        scores.append(score)
+                    rows.append(log_transition + torch.stack(scores))
+                table = torch.logsumexp(log_filter.unsqueeze(-1) + torch.stack(rows), 0)
+                evidence = torch.logsumexp(table, dim=0)
+                total = total + evidence
+                log_filter = table - evidence
+            return total.reshape(1)
+
+        bound_vars[step.name] = None
+        return Score(name=step.name, score=reading(_chain_marginal, chain_reads))
 
     def _compile_call(
         self, step: CallStep, bound_vars: dict[str, AnySpace | None]
@@ -4879,13 +5247,7 @@ class _ProgramsMixin:
         # per-row scalar parameters (e.g. a Poisson rate of shape
         # ``(N,)``) need no such reshape. A vector-valued parameter is
         # the single ``var`` slot whose declared width exceeds one.
-        obs_param_spec = getattr(obs_family, "_param_spec", None)
-        obs_var_slots = (
-            [1 if v is None else int(v) for kind, v in obs_param_spec if kind == "var"]
-            if obs_param_spec is not None
-            else []
-        )
-        shared_vector_theta = len(obs_var_slots) == 1 and obs_var_slots[0] > 1
+        shared_vector_theta = _shared_vector_parameter(obs_family)
 
         _CATEGORICAL = prior_family == "Categorical"
         _BERNOULLI = prior_family in (
@@ -4949,28 +5311,7 @@ class _ProgramsMixin:
                     local[_latent] = value
                     for name, fn in _lets:
                         local[name] = fn(local)
-                    if _obs_args is None:
-                        theta = local["_x_input"]
-                    else:
-                        parts = [_lookup_arg(local, a) for a in _obs_args]
-                        if len(parts) == 1:
-                            theta = parts[0]
-                            if theta.dim() == 0:
-                                # One value at this atom, shared by every
-                                # row: a single column, as the stacking
-                                # of several parameters gives each.
-                                theta = theta.reshape(1)
-                            if _shared_vector and theta.dim() == 1:
-                                theta = theta.unsqueeze(0)
-                        else:
-                            common = torch.broadcast_shapes(*(t.shape for t in parts))
-                            theta = torch.stack(
-                                [t.expand(common) for t in parts], dim=-1
-                            )
-                            if theta.dim() == 1:
-                                # Values shared by every row at this atom
-                                # stack to one row of their columns.
-                                theta = theta.unsqueeze(0)
+                    theta = _observation_parameter(local, _obs_args, _shared_vector)
                     ll_cols.append(_obs_family.log_prob(theta, response))
                 per_class = torch.stack(ll_cols, dim=-1)
                 if log_prior.dim() < per_class.dim():
@@ -6822,6 +7163,10 @@ class _ProgramsMixin:
             where_names.append(where_decl.name)
         if decl.name in self._morphisms or decl.name in self._transformations:
             raise CompileError(f"name {decl.name!r} already bound", decl.line, decl.col)
+        if self._scans_marginalized_cell(decl.expr):
+            # A marginalized chain is a draw of the program that samples
+            # it, which compiles it; it has no morphism of its own.
+            return
         try:
             if self._is_trans_expr(decl.expr):
                 self._transformations[decl.name] = self._compile_trans_expr(decl.expr)
@@ -6831,6 +7176,30 @@ class _ProgramsMixin:
             for name in where_names:
                 self._morphisms.pop(name, None)
                 self._transformations.pop(name, None)
+
+    def _scans_marginalized_cell(self, expr: Expr) -> bool:
+        """Whether an expression scans the cell of a marginalized chain.
+
+        Parameters
+        ----------
+        expr : Expr
+            A ``define``'s right-hand side.
+
+        Returns
+        -------
+        bool
+            ``True`` for ``scan(cell, ...)`` with ``cell`` a program that
+            returns the latent it marginalizes.
+        """
+        if not isinstance(expr, ExprScan) or not isinstance(expr.expr, ExprIdent):
+            return False
+        name = expr.expr.name
+        return any(
+            isinstance(statement, ProgramDecl)
+            and statement.name == name
+            and returns_marginalized_latent(statement)
+            for statement in self._module.statements
+        )
 
     def _is_trans_expr(self, expr) -> bool:
         """Return True iff ``expr`` denotes a transformation value.
