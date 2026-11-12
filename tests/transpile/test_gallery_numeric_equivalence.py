@@ -139,9 +139,11 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     ("bugs", "lda"): "observe:class-code",
     # lda gathers each token's topic weights, `theta[doc_idx]`, as the
     # prior of a per-token marginalize. Turing and Gen read a marginalize
-    # head's weights only from a declared plate.
+    # head's weights only from a declared plate, and JAGS cannot write a
+    # grouped `via` block's per-group sum as one expression.
     ("gen", "lda"): "marginalize:weight-plate",
     ("turing", "lda"): "marginalize:weight-plate",
+    ("jags", "lda"): "let-expr:elementwise-axis-operator",
 }
 
 # A morphism that draws its mean from an `mlp` param source keeps its
@@ -443,10 +445,10 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
     "zip_regression": (
         -583.2901611328125,
         -580.0896606445312,
-        -725.8516235351562,
-        -756.9186401367188,
+        -725.9388427734375,
+        -756.9190063476562,
         -606.8170166015625,
-        -747.0103759765625,
+        -747.0105590820312,
     ),
     "vae": (
         -4664.140625,

@@ -658,9 +658,8 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs`, `turing`, and `gen` refuse the example; the refusals are
-    # pinned in `_EXPECTED_TRANSPILE_RAISES`.
-    ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
+    # `bugs`, `jags`, `turing`, and `gen` refuse the example; the
+    # refusals are pinned in `_EXPECTED_TRANSPILE_RAISES`.
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),

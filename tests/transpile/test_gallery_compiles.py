@@ -304,10 +304,15 @@ if "bugs" in _SYNTAX_CHECKS:
 
 # 1e. lda gathers each token's topic weights as the prior of a
 #    per-token marginalize; Turing and Gen read a marginalize head's
-#    weights only from a declared plate.
-for _syntax_backend in ("gen", "turing"):
+#    weights only from a declared plate, and JAGS cannot write a grouped
+#    `via` block's per-group sum as one expression.
+for _syntax_backend, _kind in (
+    ("gen", "marginalize:weight-plate"),
+    ("turing", "marginalize:weight-plate"),
+    ("jags", "let-expr:elementwise-axis-operator"),
+):
     if _syntax_backend in _SYNTAX_CHECKS:
-        _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = "marginalize:weight-plate"
+        _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = _kind
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)

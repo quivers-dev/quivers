@@ -30,12 +30,11 @@ This program implements zero-inflated Poisson (ZIP) regression [@lambert1992zip]
 #   p(y = 0) = pi + (1 - pi) * exp(-rate)
 #   p(y = k) = (1 - pi) * Poisson(k | rate),   k > 0
 #
-# At a marginalize head, a ContinuousBernoulli prior is scored on
-# the two atoms {0, 1} with the Bernoulli weights (pi, 1 - pi);
-# its value is real-valued, so the gate z * rate needs no
-# Bool-to-number conversion. The prior is given by its logit,
-# -eta_zero, so both weights are computed in log space and keep
-# their digits where the predictor saturates.
+# The marginalize block sums the Bernoulli gate z over its two atoms,
+# with weights (pi, 1 - pi); real(z) turns the gate into the number 0
+# or 1 that multiplies the rate. The prior is given by its logit,
+# -eta_zero, so both weights are computed in log space and keep their
+# digits where the predictor saturates.
 #
 # Reference: [Lambert 1992](https://doi.org/10.1080/00401706.1992.10485228).
 
@@ -57,8 +56,8 @@ program zip_regression : Resp -> Val
     let eta_poisson = -eta_zero
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- ContinuousBernoulli(logits=eta_poisson)
-        let gated_rate = z * rate
+    marginalize z : Resp <- Bernoulli(logits=eta_poisson)
+        let gated_rate = real(z) * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 
     return beta_rate
@@ -100,19 +99,11 @@ would lose its complement's digits in single precision once `|eta_zero|` passes
 about 10. For a positive count the first branch has
 log density `-inf`; log-sum-exp discards it and leaves
 `log(1 - pi_zero) + log Poisson(y | rate)`, with finite gradients. Writing the
-gate as `z * rate` rather than `(1 - s) * rate` with a structural-zero indicator
+gate as `real(z) * rate` rather than `(1 - s) * rate` with a structural-zero indicator
 `s` also lets a transpiler fold the off atom's rate to the literal `0`, so no
 target differentiates `0 * rate` at a positive count.
 
-The prior is written `ContinuousBernoulli` rather than `Bernoulli`. At a
-`marginalize` head both are scored on the atoms `{0, 1}` with the Bernoulli
-weights `(pi_zero, 1 - pi_zero)`, so the scored density is the same. The
-difference is the value type: a `Bernoulli` value is a `Bool`, and the checked
-expression language has no conversion from `Bool` to a number, so `z * rate`
-would not type-check. A `ContinuousBernoulli` value is real, and on the two
-atoms the gate is exactly `0` or `rate`. A forward draw outside a marginalize
-scope would sample the continuous relaxation, but nothing in this program draws
-the indicator forward.
+The gate is a `Bernoulli` indicator, whose value is a `Bool`. `real(z)` maps it to the number `0` or `1`, so on the two atoms the gated rate is exactly `0` or `rate`.
 
 The program returns `beta_rate`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the flattened response plate (200 rows for each of the two outputs) and appears in the signature only as the domain.
 
