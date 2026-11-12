@@ -156,10 +156,11 @@ once.
 
 The checked module is what every downstream tool reads. The reference
 machine runs a `define` or a `program` through one entry-point invocation
-([`invoke_entry`](../api/qiec/entries.md)); the torch runtime binds a program
-whose steps call a computation to a
-[`CheckedProgram`](../api/effects/checked_program.md) that scores the same
-joint; and the transpiler lowers a program's plan from its checked
+([`invoke_entry`](../api/qiec/entries.md)); the torch runtime lowers a
+program's calls of computations to its own steps where it can, and binds a
+program that keeps a call it cannot lower to a
+[`CheckedProgram`](../api/effects/checked_program.md), which scores the same
+joint but cannot be fit; and the transpiler lowers a program's plan from its checked
 computation and places the module's other computations beside it. Pyro,
 NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church execute the complete
 computation graph through generated host runtimes. Stan, BUGS, and JAGS accept

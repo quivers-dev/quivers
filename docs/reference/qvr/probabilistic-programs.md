@@ -192,18 +192,66 @@ The host datum `x` takes the type of the parameter it is passed to, so it
 is a column of eight covariates, one per `Row`, and `map` standardizes each.
 The callee's residual effects join the program's.
 
-A call of a pure computation, one that performs no effect, takes no static
-arguments, and binds pure values before returning one, is inlined: its body
-runs at the call's arguments as `let` steps, with the callee's bindings under
-fresh names. The program then compiles to a
-[`MonadicProgram`][quivers.continuous.MonadicProgram], so `trace`, `log_joint`
-and its gradients, SVI, and MCMC run on it, with the values the reference
-machine computes; the transpile planner inlines the same calls. A parametric
-template that calls a pure computation instantiates the same way. A call that
-cannot be inlined (an effectful callee, a conditional body, or a body that
-calls another computation) leaves the program a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram] that runs on
-the reference machine, and a template making one is refused at the call.
+### Which calls are fit
+
+The compiled runtime fits a program (`trace`, `log_joint` and its
+gradients, SVI, MCMC) by running a fixed chain of steps, so a call is fit
+exactly when the callee's body can be stated as such a chain at the call.
+The runtime compiler lowers these calls, and the program then compiles to a
+[`MonadicProgram`][quivers.continuous.MonadicProgram] whose values are the
+reference machine's:
+
+| Call | Lowered to |
+| --- | --- |
+| a pure callee: no effect, no static arguments, pure bindings ending in a return | `let` steps, the callee's bindings under fresh names |
+| a pure callee that calls other pure computations | the same, each nested call inlined in turn |
+| a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`; both branches are evaluated, so a branch undefined where it is not selected (a `log` of a negative) gives a NaN gradient |
+| a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a [draw from a program](#calling-computations-and-programs) runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score a score step |
+| `let ys <- traverse(xs, x -> f(x, ...))` with a pure `f` | a comprehension over the items of `xs` |
+| the same with an `f` that draws | one plated draw per site of `f`, named `ys$label`, over the object `xs` runs along |
+
+Each run of a traversed callee reads only its own item and names bound
+before the traverse, so its runs are independent and the plated draw is
+exact; a recurrence, in which a step reads the previous one, is written
+with `scan`.
+
+The transpile planner shares the analysis of pure calls, so every target
+inlines nested pure calls and states a conditional between pure branches as
+its spelling of `select`. A callee that draws is still called through each
+dynamic target's host runtime, where its site keeps its label, as on the
+reference machine: there a callee's site `noise` reached once is `noise`,
+and reached repeatedly (by a traverse, or two calls) is `noise@0`,
+`noise@1`, and so on in run order.
+
+Any other call leaves the program a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], which
+runs on the reference machine but cannot be fit: `trace`, MCMC, SVI, and
+every other fitting entry point raise a
+[`CompileError`][quivers.dsl.CompileError] located at the call, saying why.
+A parametric template that makes such a call is refused with the same
+error when it is instantiated. The refused calls are:
+
+- a call that reaches a recursive call, whose number of steps depends on
+  its arguments: write the repetition as a reduction (`sum`, `fold`) or
+  `map` over a tensor of fixed length, or as `scan` over a sequence;
+- an `if` whose branches draw or score, whose set of sites depends on the
+  branch taken: draw outside the conditional and choose between values
+  with `select`;
+- a callee that handles an effect inside its body (`with instance` and
+  `handle`), whose handler and resumptions the compiled runtime does not
+  run;
+- a `case` on a family value;
+- a call with static arguments (`identity[Int](4)`);
+- a call of a program as a computation (`let y <- sub(...)`): draw from it
+  with `sample y <- sub(...)` instead.
+
+A computation keeps the parameter types it declares: a call does not map a
+scalar-parameter computation over the entries of a tensor. A plated value
+passed to a scalar parameter is a located type error that says so, and a
+datum supplied with more axes than the parameter it fills is refused on
+both paths, located at the call that fixes its type. Declare the parameter
+as a tensor and `map` over it inside the computation, as `standardize`
+does above.
 
 Dynamic transpile targets
 emit reachable calls through the common runtime ABI. Stan accepts a closed,

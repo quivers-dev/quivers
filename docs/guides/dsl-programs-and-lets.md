@@ -123,6 +123,75 @@ program reaches remains valid on every target. The complete syntax appears in
 [QVR computation reference](../reference/qvr/computations.md) and
 [probabilistic-program reference](../reference/qvr/probabilistic-programs.md).
 
+### Fitting programs that call computations
+
+A program fitted with `trace`, SVI, or MCMC runs as a fixed chain of compiled
+steps, so the runtime compiler lowers each call of a computation to steps of
+the program where the callee's body allows it. The module below uses each
+lowered form: `leaky` branches between two pure values, `shifted` calls
+another pure computation, `jitter` draws a site of its own, and `traverse`
+runs `jitter` once per group.
+
+```qvr
+object Group : FinSet 4
+
+instance random : Random
+
+define leaky(x : Real) : Real !{} =
+    if x > 0.0 then
+        return x
+    else
+        return 0.1 * x
+
+define shifted(x : Real) : Real !{} =
+    let rectified <- leaky(x)
+    return rectified + 1.0
+
+define jitter(x : Real) : Real !{random} =
+    let z <- perform random.sample[Real](site("z"), Normal(x, 0.5))
+    return z
+
+program grouped : Group -> Group
+    sample a <- Normal(loc=0.0, scale=1.0)
+    let center <- shifted(a)
+    let base = factor k : Group in center
+    let effects <- traverse(base, t -> jitter(t))
+    observe y : Group <- Normal(loc=effects, scale=1.0)
+    return y
+
+export grouped
+```
+
+`shifted(a)` becomes `let` steps, with `leaky`'s conditional read as
+`select(a > 0.0, a, 0.1 * a)`. The traverse becomes one draw of the site
+`effects$z` over `Group`, the plated form of `jitter`'s site `z` named under
+the binder `effects`, as a [draw from a program](#parametric-programs) names
+the callee's sites under its binder. The compiled program is a
+[`MonadicProgram`][quivers.continuous.MonadicProgram], and its log joint and
+gradients are those the reference machine computes:
+
+<!-- python: skip -->
+```python
+import torch
+from quivers.dsl import load
+from quivers.inference import MCMC, NUTSKernel
+
+program = load("grouped.qvr").morphism
+result = MCMC(NUTSKernel(), num_warmup=300, num_samples=500, seed=0).run(
+    program, torch.zeros(1, 1), {"y": torch.tensor([2.0, 3.0, 2.5, 3.5])}
+)
+result.samples["effects$z"].shape  # (chains, draws, 4)
+```
+
+A call whose steps would depend on the values it is given cannot be fit:
+recursion, an `if` whose branches draw or score, a callee that handles an
+effect, `case`, and static arguments. Such a program still runs on the
+reference machine (`Program.run`), and every fitting entry point raises a
+[`CompileError`][quivers.dsl.CompileError] at the call that says why and
+what to write instead; the
+[probabilistic-program reference](../reference/qvr/probabilistic-programs.md#which-calls-are-fit)
+lists each form.
+
 ### Kleisli bind syntax
 
 The `sample` keyword introduces a draw, and `<-` separates its
