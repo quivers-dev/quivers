@@ -626,6 +626,9 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # irt_2pl: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("edward2", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
+    ("gen", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
+    ("jags", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
+    ("webppl", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
@@ -655,8 +658,9 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs`, `jags`, `turing`, and `gen` refuse the example; the
-    # refusals are pinned in `_EXPECTED_TRANSPILE_RAISES`.
+    # `bugs`, `turing`, and `gen` refuse the example; the refusals are
+    # pinned in `_EXPECTED_TRANSPILE_RAISES`.
+    ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),

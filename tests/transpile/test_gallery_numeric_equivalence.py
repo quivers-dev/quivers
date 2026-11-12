@@ -139,11 +139,9 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     ("bugs", "lda"): "observe:class-code",
     # lda gathers each token's topic weights, `theta[doc_idx]`, as the
     # prior of a per-token marginalize. Turing and Gen read a marginalize
-    # head's weights only from a declared plate, and JAGS has no
-    # expression form for the elementwise operator the gather lowers to.
+    # head's weights only from a declared plate.
     ("gen", "lda"): "marginalize:weight-plate",
     ("turing", "lda"): "marginalize:weight-plate",
-    ("jags", "lda"): "let-expr:elementwise-axis-operator",
 }
 
 # A morphism that draws its mean from an `mlp` param source keeps its
@@ -177,11 +175,10 @@ for _ungrouped_backend in (
             "marginalize:ungrouped-over-plate"
         )
 
-# irt_2pl scores its responses with `Bernoulli(logits=...)`. These
-# targets have no Bernoulli given by its logits and refuse it by name
-# rather than rebuild the probability with a sigmoid.
-for _logit_backend in ("bugs", "gen", "jags", "webppl"):
-    _EXPECTED_TRANSPILE_RAISES[(_logit_backend, "irt_2pl")] = "family:Bernoulli:logits"
+# irt_2pl scores its responses with `Bernoulli(logits=...)`. BUGS has
+# no Bernoulli given by its logits and refuses it by name rather than
+# rebuild the probability with a sigmoid.
+_EXPECTED_TRANSPILE_RAISES[("bugs", "irt_2pl")] = "family:Bernoulli:logits"
 
 # BUGS has no data block to shift tree_categorical's zero-based class
 # codes to the one-based codes `dcat` reads, and no free log-density

@@ -298,22 +298,16 @@ for _syntax_backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
         )
 
 # 1d. irt_2pl scores its responses with `Bernoulli(logits=...)`, which
-#    these targets have no distribution for; they refuse it by name.
-for _syntax_backend in ("bugs", "church", "gen", "jags", "webppl"):
-    if _syntax_backend in _SYNTAX_CHECKS:
-        _EXPECTED_UNSUPPORTED[(_syntax_backend, "irt_2pl")] = "family:Bernoulli:logits"
+#    BUGS has no distribution for; it refuses it by name.
+if "bugs" in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[("bugs", "irt_2pl")] = "family:Bernoulli:logits"
 
 # 1e. lda gathers each token's topic weights as the prior of a
 #    per-token marginalize; Turing and Gen read a marginalize head's
-#    weights only from a declared plate, and JAGS has no expression
-#    form for the elementwise operator the gather lowers to.
-for _syntax_backend, _kind in (
-    ("gen", "marginalize:weight-plate"),
-    ("turing", "marginalize:weight-plate"),
-    ("jags", "let-expr:elementwise-axis-operator"),
-):
+#    weights only from a declared plate.
+for _syntax_backend in ("gen", "turing"):
     if _syntax_backend in _SYNTAX_CHECKS:
-        _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = _kind
+        _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = "marginalize:weight-plate"
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)
