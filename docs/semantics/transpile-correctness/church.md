@@ -1,75 +1,52 @@
 # Church
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{Church}$.
+Church is a probabilistic programming language based on Scheme, in which a program is an expression whose
+random choices pass values to the rest of the computation, and in which observations and factors change the
+weight of an execution [@goodman2008church]. Church's semantics is given by sampling: running a program
+produces an execution, a sequence of random choices with their addresses and values, and the joint log
+density of an execution is the sum of the log densities of its choices [@goodman2014design]. The probabilistic
+choice operator on which such languages rest was given a semantics in a probability monad by Ramsey and
+Pfeffer [@ramsey2002stochastic]. The renderer writes programs whose execution under this reading gives the
+QVR density ([Transpilation correctness](index.md)).
 
-Church expresses a generative computation using Scheme-style functions.
-A random choice supplies a value to the remaining computation, and an
-observation or factor changes its weight. The source can be read through
-those operations directly; the equations below describe their contributions
-to the joint density.
+No external Church implementation is fixed for the tests, and there is no Church image in the shared Docker
+matrix, so separate tests check selected emitted programs.
 
-## Semantics
+## Change of variables
 
-Church's denotational semantics is the stochastic lambda calculus
-of Goodman, Mansinghka, Roy, Bonawitz, and Tenenbaum
-[@goodman2008church]. A program is a Scheme
-expression whose [`sample` invocations introduce randomness](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation) [@goodman2014design]; the
-trace is a sequence of (address, distribution, value) triples. The
-joint log-density is the sum of the per-site log-density contributions.
-
-The renderer is currently unpinned to an external Church implementation.
-Its tests audit selected emitted programs; the shared Docker numeric matrix
-covers the other targets.
-
-## Unconstrained-space change of variables
-
-Identity. Church's distributions are operationally defined and do
-not carry an automatic reparameterization layer.
+Church's distributions are defined by their samplers and densities, with no automatic change of variables, so
+$\Psi_{\mathsf{Church}} = \mathrm{id}$.
 
 ## Family parameterizations
 
-Church uses standard distribution names (`gaussian`, `dirichlet`,
-`categorical`, `bernoulli`, `beta`, ...). The QVR ↔ Church mapping
-is identity for every family that has a Church counterpart;
+Church uses the usual names of distributions (`gaussian`, `dirichlet`, `categorical`, `bernoulli`, `beta`, and
+others). The map is the identity for every family with a Church counterpart, and
 $c_{F, \mathsf{Church}} = 0$.
 
-## Per-construct emit
+## Emitted constructs
 
-**Sample / observe.** `(define <name> (sample (<family>
-<args>)))` for latents; `(observe (<family> <args>) <obs>)` for
-observations.
+**`sample` and `observe`.** `(define <name> (sample (<family> <args>)))` for a latent variable and
+`(observe (<family> <args>) <obs>)` for an observation.
 
-**Plate.** `(map (lambda (m) (sample (<family> <args>))) (iota
-B))` produces a length-$B$ list of i.i.d. samples; observed plates
-use `(for-each (lambda (n) (observe ...)) (iota N))`. By
-the evaluation-history interpretation [@goodman2008church], `map` over `iota` denotes the product
-measure of $B$ independent samples.
+**Plates.** `(map (lambda (m) (sample (<family> <args>))) (iota B))` makes a list of $B$ independent draws,
+and an observed plate is `(for-each (lambda (n) (observe ...)) (iota N))`. The density of the $B$ independent
+draws is the product of their densities.
 
-**Marginalize.** The renderer emits one scored scope per finite support value,
-combines the weighted alternatives with `log-sum-exp`, and contributes the
-result through `factor`. Grouped scopes sum rows within a group before that
-reduction, eliminating the hidden coordinate.
+**`marginalize`.** The renderer scores the scope once for each value of the latent variable, combines the
+weighted alternatives with `log-sum-exp`, and adds the result with `factor`. A grouped block sums the rows of
+each group before the reduction, so the latent variable is summed out.
 
-**Score / let / return.** `(factor <expr>)` for score (per
-[@goodman2014design]); `(define <name> <expr>)` for let;
-the trailing expression in the `(define (model ...) ...)` body
-is the return value.
+**`score`, `let`, `return`.** `(factor <expr>)` for a score [@goodman2014design], `(define <name> <expr>)` for a
+`let`, and the last expression of the `(define (model ...) ...)` body as the returned value.
 
-**Limitations.** Church's renderer raises
-`UnsupportedConstruct(["arg:matrix-literal"])` on matrix-literal
-arguments (no canonical Scheme matrix form). Wrapper families
-that need access to an inner morphism's `init_family` (Truncated
-via rejection sampling) are also not supported.
+**Refusals.** The renderer refuses a matrix literal with `arg:matrix-literal`, since Scheme has no standard
+matrix form, and wrapper families that need the inner morphism's `~ Family(...)` clause, such as `Truncated`
+by rejection sampling.
 
-## Acceptance
+## Evidence
 
-* **Tier 1 structural.** Every emit has `(define (model ...) ...)`
-  with `sample` / `observe` invocations.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** No canonical external Church compiler
-  is exercised by the shared syntax suite. Its parenthesis-balance check
-  catches unmatched delimiters; validating forms and primitive names
-  requires a chosen Church implementation.
-* **Tier 3 numeric equivalence.** Not part of the shared Docker matrix;
-  Church-specific audit tests cover selected emitted programs.
+- **Level 1.** Every emitted model is a `(define (model ...) ...)` with `sample` and `observe` calls, and
+  calling the stages directly or composed gives the same output.
+- **Level 2.** No external Church parser is used. A check that the parentheses balance catches unmatched
+  delimiters, and checking forms and primitive names would need a chosen Church implementation.
+- **Level 3.** Church is not in the shared Docker matrix. Tests for Church check selected emitted programs.

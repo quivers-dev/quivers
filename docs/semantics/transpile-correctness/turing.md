@@ -1,93 +1,65 @@
 # Turing.jl
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{Turing.jl}$.
+Turing.jl is a probabilistic programming language embedded in Julia [@ge2018turing]. Its `@model` macro
+rewrites the statements `x ~ D` of a model function into updates of an accumulated log joint density: a
+variable given as data adds its likelihood, and a variable not given is a latent variable. The test probe
+evaluates the log joint density at the values the QVR density uses
+([Transpilation correctness](index.md)).
 
-Turing turns a Julia model function into a record of random choices and
-log-density contributions. A variable supplied as observed data contributes
-its likelihood; an unknown variable is a latent choice. Evaluating
-`logjoint` fixes the choices and scores the model, while running an inference
-algorithm explores choices. The density tests call `logjoint` at the
-same fixed values used by the QVR reference.
+## How Turing evaluates a log density
 
-## Semantics
+The probe is [`Turing.logjoint(model, θ)`](https://turinglang.org/Turing.jl/dev/api/Inference/#Turing.logjoint),
+which runs the model with the latent variables fixed to $\theta$ and returns the accumulated log joint
+density.
 
-Turing.jl's denotational semantics is the trace semantics of Ge,
-Xu, and Ghahramani
-[@ge2018turing] implemented
-via the `@model` macro that rewrites `~`-statements into joint
-log-density accumulator updates. The log-density probe is
-[`Turing.logjoint(model, θ)`](https://turinglang.org/Turing.jl/dev/api/Inference/#Turing.logjoint),
-returning the joint log-density at a parameter point.
+## Change of variables
 
-## Unconstrained-space change of variables
-
-Turing applies per-distribution
-[Bijectors.jl](https://github.com/TuringLang/Bijectors.jl)
-transformations during inference; `logjoint` returns the
-constrained-space density. $\Psi_{\mathsf{Turing}} = \mathrm{id}$
-at the renderer level.
+Turing changes coordinates with [Bijectors.jl](https://github.com/TuringLang/Bijectors.jl) during
+inference, and `logjoint` returns the density in constrained coordinates, so
+$\Psi_{\mathsf{Turing}} = \mathrm{id}$.
 
 ## Family parameterizations
 
-Turing consumes
-[Distributions.jl](https://juliastats.org/Distributions.jl/) which
-uses the canonical parameterizations of
-[Wikipedia: List of probability distributions](https://en.wikipedia.org/wiki/List_of_probability_distributions).
-Some families use the same parameters, but the renderer also translates
-conventions: Exponential and Gamma rates become scales by inversion,
-NegativeBinomial probabilities are complemented, and Weibull arguments are
-reordered. These [parameter substitutions](index.md#4-distribution-parameterization)
-preserve densities on the supported domains. The half-family mappings
-also use [truncation normalization](https://juliastats.org/Distributions.jl/stable/truncate/#Truncated-Distributions):
-restricting a distribution to positive values requires dividing its density
-by the probability of that region.
+Turing's families are those of [Distributions.jl](https://juliastats.org/Distributions.jl/), parameterized
+as its documentation states. Some families take the same parameters as QVR's, and the renderer converts the
+others: the rates of `Exponential` and `Gamma` become scales by inversion, the probability of
+`NegativeBinomial` is complemented, and the arguments of `Weibull` are reordered. These
+[substitutions of parameters](index.md#4-distribution-parameterization) keep the densities on the supported
+domains.
 
-The Turing renderer composes `HalfNormal` / `HalfCauchy` (which
-have no Distributions.jl primitive) as `truncated(Normal(0,
-sigma), 0, Inf)` via the documented
-[`truncated`](https://juliastats.org/Distributions.jl/stable/truncate/)
-wrapper. The [truncated-distribution definition](https://juliastats.org/Distributions.jl/stable/truncate/)
-divides by the retained probability mass. Thus the half-Normal's factor of
-two is already included, and normalized half-Normal densities agree without
-an additional $\log 2$ discrepancy.
+Distributions.jl has no `HalfNormal` or `HalfCauchy`, and the renderer writes them as
+`truncated(Normal(0, sigma), 0, Inf)` with the
+[`truncated`](https://juliastats.org/Distributions.jl/stable/truncate/) wrapper, which divides by the
+probability of the retained region. The factor $2$ of the half density is thus included, and the densities
+agree without a constant.
 
-QVR codes a Categorical value from zero and Distributions.jl's
-`Categorical` counts from one. The renderer draws and scores a class
-through `qvr_categorical(p)`, the same distribution over the support
-`0:K-1` (`DiscreteNonParametric(0:K-1, p)`, grafted from the runtime
-helper), so an observed code and a drawn class are QVR codes and a
-subscript reads them one higher. Index covariates arrive zero-based
-too and are read one higher where they subscript.
+QVR codes a categorical value from zero, and Distributions.jl's `Categorical` counts from one. The renderer
+draws and scores a class through `qvr_categorical(p)`, the same distribution on the support `0:K-1`
+(`DiscreteNonParametric(0:K-1, p)`, added from the runtime helper), so observed codes and drawn classes are
+QVR codes, and a subscript reads them one higher. Index inputs also arrive counting from zero and are read one
+higher where they subscript.
 
-## Per-construct emit
+## Emitted constructs
 
-**Sample / observe.** `<name> ~ <Family>(<args>)` inside the
-`@model function model(...)` body; observations appear as function
-parameters that bind to specific values when `logjoint` is called.
+**`sample` and `observe`.** `<name> ~ <Family>(<args>)` in the body of `@model function model(...)`. An
+observation is a parameter of the function, bound to its value when `logjoint` is called.
 
-**Plate.** [`filldist(D, B)`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Distributions.filldist)
-for index-independent batches; [`arraydist([D_i for i in 1:B])`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Distributions.arraydist)
-for index-dependent batches. Both denote the documented product
-measure (Turing.jl documentation, "Composing distributions").
+**Plates.** [`filldist(D, B)`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Distributions.filldist)
+for $B$ copies of one distribution, and
+[`arraydist([D_i for i in 1:B])`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Distributions.arraydist)
+for copies whose parameters depend on the index. Both are products of independent distributions.
 
-**Marginalize.** The renderer enumerates the finite support, computes a
-numerically stable log-sum-exp of the weighted atom scores, and adds the
-result with `Turing.@addlogprob!`. Grouped scopes first accumulate row scores
-by group. The hidden discrete coordinate has been summed out, leaving
-the sampler to update the remaining latents.
+**`marginalize`.** The renderer enumerates the values of the latent variable, computes a stable log-sum-exp of
+their weighted scores, and adds it with `Turing.@addlogprob!`. A grouped block sums the scores of the rows of
+each group first. The latent variable is summed out, and the sampler updates the others.
 
-**Score / let / return.** [`Turing.@addlogprob!(expr)`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Turing.@addlogprob!)
-for score; native `<name> = <expr>` for let; native `return` for
-return.
+**`score`, `let`, `return`.** [`Turing.@addlogprob!(expr)`](https://turinglang.org/Turing.jl/dev/api/Distributions/#Turing.@addlogprob!)
+for a score, `<name> = <expr>` for a `let`, and Julia's `return`.
 
-## Acceptance
+## Evidence
 
-* **Tier 1 structural.** Every emit has `@model function model(...)
-  ... end` with `~` statements wrapping `filldist` / `arraydist`
-  per plate axis.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** `julia --eval "Meta.parse(read(stdin, String); raise=true)"`
-  accepts every emit.
-* **Tier 3 numeric equivalence.** The Turing probe evaluates the
-  selected fixture grids under the shared constant-spread tolerance.
+- **Level 1.** Every emitted model is an `@model function model(...) ... end` with `~` statements over
+  `filldist` or `arraydist` for each plate axis, and calling the stages directly or composed gives the same
+  output.
+- **Level 2.** `julia --eval "Meta.parse(read(stdin, String); raise=true)"` accepts every emitted model.
+- **Level 3.** The Turing probe evaluates the selected fixture grids under the shared tolerance.

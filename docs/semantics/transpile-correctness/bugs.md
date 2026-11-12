@@ -1,127 +1,93 @@
 # BUGS
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{BUGS}$.
+A BUGS model declares a directed graphical model: stochastic nodes, written `x ~ d<family>(args)`, and
+deterministic nodes, written `x <- expr`, over which the joint distribution factors as a product of each
+node's density given its parents [@lunn2009bugs; @lunn2012bugs]. Whether a node is observed depends on the
+data given with the model, so the same `~` statement introduces a latent variable or scores an observed one.
+BUGS is a first-order language in the sense of van de Meent and coauthors, with a fixed finite graph of
+random variables [@vandemeent2018introduction]. The shared test probe compiles and evaluates the emitted
+BUGS syntax with JAGS through `pyjags`, so it tests the subset of BUGS that JAGS also accepts
+([Transpilation correctness](index.md)).
 
-A BUGS model states relationships among variables. Whether a variable is
-observed depends on the supplied data, so the same `~` syntax can introduce
-an unknown quantity or score a known one. Parameter conventions need care:
-a Normal standard deviation of 2 corresponds to precision $1/4$.
-The sections below track such conversions before considering test evidence.
+## Change of variables
 
-## Semantics
-
-BUGS's denotational semantics is the directed graphical model
-semantics of Lunn, Spiegelhalter, Thomas, and Best
-[@lunn2009bugs]. A `model { ... }`
-block declares a set of stochastic nodes (`~`) and deterministic
-nodes (`<-`) over which the joint distribution factors. The
-shared repository probe compiles and evaluates BUGS-syntax output
-through JAGS and `pyjags`, testing the subset shared by the renderer and JAGS.
-
-## Unconstrained-space change of variables
-
-BUGS works on the constrained parameter space directly; no
-automatic reparameterization. $\Psi_{\mathsf{BUGS}} = \mathrm{id}$.
+BUGS works on the constrained parameters directly, with no change of coordinates, so
+$\Psi_{\mathsf{BUGS}} = \mathrm{id}$.
 
 ## Family parameterizations
 
-The [shared parameterization discussion](index.md#4-distribution-parameterization) separates changing a constructor’s scale argument from transforming its random variable. The [JAGS mapping table](jags.md#family-parameterizations) identifies the closely related target’s naming differences.
+The [parameterization discussion](index.md#4-distribution-parameterization) separates a change of a family's
+argument from a change of its variable, and the [JAGS table](jags.md#family-parameterizations) gives the
+names that differ in JAGS.
 
-BUGS uses precision-parameterized normal-family distributions:
-`dnorm(μ, τ)` where $\tau = 1/\sigma^2$. This is the canonical
-**parameterization substitution** worked through in
-[the parameterization contract](index.md#4-distribution-parameterization): the
-algebraic equivalence
+The Normal family of BUGS takes a precision: `dnorm(μ, τ)` with $\tau = 1/\sigma^2$. Since
 
 $$
-\sqrt{\tau/(2\pi)} \exp\!\left(-\tau(v-\mu)^2/2\right)
-\;=\;
-(2\pi\sigma^2)^{-1/2} \exp\!\left(-(v-\mu)^2/(2\sigma^2)\right)
+\sqrt{\tau/(2\pi)}\, \exp\!\left(-\tau(v-\mu)^2/2\right) = (2\pi\sigma^2)^{-1/2} \exp\!\left(-(v-\mu)^2/(2\sigma^2)\right)
 $$
 
-under $\tau = 1/\sigma^2$ certifies $c_{\mathrm{Normal},
-\mathrm{BUGS}} = 0$. The same calculation applies to `dlnorm` (log-
-normal), `dt` (Student-t), and `dmnorm` (multivariate normal with
-precision matrix $\Omega = \Sigma^{-1}$). The renderer applies
-the substitution via the
-`FAMILY_META` argument aliases
-table (`{"scale": "tau"}`) plus a per-alias arithmetic transform
-that wraps the scale arg in `1/(<scale>*<scale>)`. Cf.
-[Architecture §5.1](../transpile-architecture.md#51-backend-idioms).
+when $\tau = 1/\sigma^2$, the substitution changes no density, and $c_{\mathrm{Normal}, \mathsf{BUGS}} = 0$. The
+same calculation applies to `dlnorm`, `dt`, and `dmnorm`, whose last takes a precision matrix
+$\Omega = \Sigma^{-1}$. The renderer applies the substitution through the alias `{"scale": "tau"}` of
+`FAMILY_META` and a conversion that writes the scale argument as `1/(<scale>*<scale>)`
+([Architecture §5.1](../transpile-architecture.md#51-kinds-of-target)).
 
-Other parameterization differences:
-
-| QVR family | BUGS call | $\pi_{F, \mathsf{BUGS}}$ |
+| QVR family | BUGS | $\pi_{F, \mathsf{BUGS}}$ |
 |---|---|---|
 | `Normal(μ, σ)` | `dnorm(μ, τ)` | $\sigma \mapsto 1/\sigma^2$ |
-| `Cauchy(μ, γ)` | `dt(μ, 1/γ², 1)` | StudentT-with-1df with precision |
-| `Laplace(μ, b)` | `ddexp(μ, 1/b)` | rate = $1/b$ |
+| `Cauchy(μ, γ)` | `dt(μ, 1/γ², 1)` | Student t with one degree of freedom and a precision |
+| `Laplace(μ, b)` | `ddexp(μ, 1/b)` | rate $1/b$ |
 | `MultivariateNormal(μ, Σ)` | `dmnorm(μ, Σ⁻¹)` | precision matrix |
 | `Dirichlet(α)` | `ddirch(α)` | identity |
-| `Categorical(probs=p)` | `dcat(p)` on a drawn class, read back as `code - 1`; an observed code is refused | $y \mapsto y + 1$ |
+| `Categorical(probs=p)` | `dcat(p)` for a drawn class, read back as `code - 1`; an observed code is refused | $y \mapsto y + 1$ |
 | `Bernoulli(p)` | `dbern(p)` | identity |
-| `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log-odds |
+| `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log odds |
 | `LogNormal(μ, σ)` | `dlnorm(μ, 1/σ²)` | precision |
 | `StudentT(ν, μ, σ)` | `dt(μ, 1/σ², ν)` | precision |
 | `Exponential(λ)` | `dexp(λ)` | identity |
 | `Gamma(α, β)` | `dgamma(α, β)` | identity |
 | `Beta(α, β)` | `dbeta(α, β)` | identity |
 | `Pareto(α, x_m)` | `dpar(α, x_m)` | identity |
-| `Weibull(k, λ)` | `dweib(k, 1/λ^k)` | scale to its $k$-th power |
+| `Weibull(k, λ)` | `dweib(k, λ^{-k})` | the scale to the power $-k$ |
 | `Uniform(a, b)` | `dunif(a, b)` | identity |
-| `InverseGamma(α, β)` | inverse-transform of `dgamma(α, β)` (composed) | identity on shape, $1/x$ on rate |
 
-Every entry has $c_{F, \mathsf{BUGS}} = 0$ after substitution.
+The half families are the base distribution truncated to positive values, `dnorm(0, τ) T(0,)` and
+`dt(0, τ, 1) T(0,)`, and the truncation is normalized, so they too have $c = 0$. `InverseGamma` has no BUGS
+mapping and is refused. Every entry of the table has $c_{F, \mathsf{BUGS}} = 0$ after the substitution.
 
-## Per-construct emit
+## Emitted constructs {#per-construct-emit}
 
-**Sample / observe.** `<name> ~ d<family>(<args>)` inside the
-`model { ... }` block. Latent vs observed is inferred from
-whether `<name>` appears on the data side: BUGS programs ship
-their data as a separate `list(...)` block, and variables not in
-the data block are stochastic latents.
+**`sample` and `observe`.** `<name> ~ d<family>(<args>)` in `model { ... }`. Whether `<name>` is latent
+depends on the data: the data are given separately, as an R `list(...)`, and a node they do not name is a
+latent variable.
 
-**Plate.** `for (m_<axis> in 1:N_<axis>) { <name>[m_<axis>] ~
-d<family>(<args>) }`. Under BUGS’s graphical-model interpretation [@lunn2009bugs], the for-loop's
-contribution to the joint is the product of per-iteration
-factors. Each row's args may index into other plate-shaped nodes
-(LDA's `theta[doc[n], 1:K]` form).
+**Plates.** `for (m_<axis> in 1:N_<axis>) { <name>[m_<axis>] ~ d<family>(<args>) }`. The loop's nodes are
+factors of the joint distribution [@lunn2009bugs], so it contributes the product of their densities. The
+arguments of a row may index other plated nodes, as in `theta[doc[n], 1:K]`.
 
-**Class codes.** QVR codes a Categorical value from zero and `dcat` counts
-from one. A drawn class is drawn as `z_code ~ dcat(p)` and read back as the
-QVR code `z <- z_code - 1`, and a subscript reads a code one higher. An
-observed code cannot be shifted: BUGS has no `data` block to bind
-`y + 1` from the data, a logical node cannot also carry a distribution, and
-the zeros trick that would score `log p[y + 1]` needs a data-bound carrier.
-An observed class code is therefore refused with `observe:class-code:<name>`,
-outside a marginalize block and inside one.
+**Class codes.** QVR codes a categorical value from zero, and `dcat` counts from one. A drawn class is
+`z_code ~ dcat(p)`, read back as the QVR code `z <- z_code - 1`, and a subscript reads a code one higher. An
+observed code cannot be shifted: BUGS has no block that transforms the data before the model, so `y + 1`
+cannot be bound from the data, a deterministic node cannot also have a distribution, and the zeros trick that
+would score `log p[y + 1]` needs a carrier bound to the data. An observed class code is thus refused with
+`observe:class-code:<name>`, inside and outside a `marginalize` block.
 
-**Marginalize.** A categorical-mixture scope can be collapsed into a `dcat`
-distribution whose probabilities already sum over the hidden class. Other
-marginalization blocks are refused. The collapsed probabilities represent
-$\sum_z p(z)p(y\mid z)$; a model retaining $z$ instead evaluates the joint
-$p(z)p(y\mid z)$ at one value of that coordinate.
+**`marginalize`.** A block whose scope is a categorical mixture is written as one `dcat` whose probabilities
+already sum over the hidden class, $\sum_z p(z) p(y \mid z)$. Other blocks are refused. A model that kept $z$
+would instead evaluate the joint $p(z) p(y \mid z)$ at one value of $z$.
 
-**Score / let / return.** BUGS has no native `factor` primitive.
-The renderer uses the
-zero trick:
-with host-supplied `zero_name = 0`, the relation
-`zero_name ~ dpois(C - expr)` contributes `expr - C` because
-`log P(0 | λ) = -λ`. The positive carrier constant $C$ is
-parameter-independent. Deterministic bindings emit with `<-`;
-return is a QVR-level selection rather than a BUGS statement.
+**`score`.** BUGS has no factor primitive, and the renderer uses the zeros trick [@lunn2012bugs]: with a
+node `zero_s` given the value $0$, the statements `C_s <- C - (expr)` and `zero_s ~ dpois(C_s)` add
+$\log P(0 \mid C - \mathrm{expr}) = \mathrm{expr} - C$, since a Poisson distribution with rate $\lambda$ gives
+$0$ the probability $e^{-\lambda}$. The constant $C$ ($10^6$ in the emitted code) does not depend on the
+parameters, and the rate $C - \mathrm{expr}$ must stay nonnegative on the parameters of interest.
 
-## Acceptance
+**`let`, `return`.** A deterministic node `<-` for a `let`. A returned value is recorded as a node
+`<name>_value <- <name>`.
 
-* **Tier 1 structural.** Every emit has `model { ... }` with `~`
-  and `<-` statements wrapped in `for` loops per plate axis.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** JAGS compiles the emitted common-subset syntax.
-* **Tier 3 numeric equivalence.** The JAGS/`pyjags` probe evaluates
-  emitted BUGS-syntax densities on the selected fixture grids.
+## Evidence
 
-### References
-
-
-For the BUGS project and its modeling language, see [@lunn2009bugs]. For the related JAGS system, see [@plummer2003jags]. The zero trick used above follows directly from the Poisson probability at zero.
+- **Level 1.** Every emitted model is a `model { ... }` with `~` and `<-` statements in a `for` loop for each
+  plate axis, and calling the stages directly or composed gives the same output.
+- **Level 2.** JAGS compiles the emitted syntax of the common subset.
+- **Level 3.** The `pyjags` probe evaluates the emitted densities on the selected fixture grids.
