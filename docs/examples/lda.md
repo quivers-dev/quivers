@@ -58,7 +58,7 @@ Each word picks its own topic. A document about two subjects can thus draw some 
 - `sample theta : Doc <- Dirichlet(...) [over=Topic, iid_over=Doc]` draws one row of topic weights per document, and `sample phi : Topic <- Dirichlet(...) [over=Vocab, iid_over=Topic]` one vocabulary distribution per topic.
 - `let theta_tok = theta[doc_idx]` gathers, for each token, its document's row of topic weights; `doc_idx` is host data holding one document index per token.
 - `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]` gives every token its own topic and sums it out by log-sum-exp; `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]` scores each token's word under its topic, with `token_idx` mapping each observation to its own token row.
-- Stan, Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church render the program. Turing and Gen refuse the gathered weights (`marginalize:weight-plate`), JAGS refuses an elementwise operator it is lowered to (`let-expr:elementwise-axis-operator`), and BUGS refuses the zero-based word codes (`observe:class-code`).
+- Stan, Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church render the program. Of the rendered programs, Stan's scores the same joint as the reference; Pyro, NumPyro, PyMC, Edward2, and WebPPL currently ignore the `via` map and pair each word with the topic weights of its own row rather than of its token ([#240](https://github.com/quivers-dev/quivers/issues/240)), which agrees only when `token_idx` is the identity. Turing and Gen refuse the gathered weights (`marginalize:weight-plate`), JAGS refuses an elementwise operator it is lowered to (`let-expr:elementwise-axis-operator`), and BUGS refuses the zero-based word codes (`observe:class-code`).
 
 ## Try it
 

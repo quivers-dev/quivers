@@ -315,10 +315,6 @@ for _syntax_backend, _kind in (
     if _syntax_backend in _SYNTAX_CHECKS:
         _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = _kind
 
-# 7. `tree_categorical` builds its leaf table with a `factor` over the
-#    `Class` axis, which no plate of the program carries; the Gen
-#    helper reads factor extents from plate cardinalities and refuses.
-_EXPECTED_UNSUPPORTED[("gen", "tree_categorical")] = "let-expr:LetExprFactor:gen"
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)

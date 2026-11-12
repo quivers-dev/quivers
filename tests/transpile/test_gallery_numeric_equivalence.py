@@ -183,11 +183,6 @@ for _ungrouped_backend in (
 for _logit_backend in ("bugs", "gen", "jags", "webppl"):
     _EXPECTED_TRANSPILE_RAISES[(_logit_backend, "irt_2pl")] = "family:Bernoulli:logits"
 
-# tree_categorical builds its leaf table with a `factor` over the
-# `Class` axis, which no plate of the program carries; the Gen helper
-# reads factor extents from plate cardinalities and refuses.
-_EXPECTED_TRANSPILE_RAISES[("gen", "tree_categorical")] = "let-expr:LetExprFactor:gen"
-
 # BUGS has no data block to shift tree_categorical's zero-based class
 # codes to the one-based codes `dcat` reads, and no free log-density
 # statement to score them otherwise.
