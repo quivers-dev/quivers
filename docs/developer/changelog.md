@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.50.0] - 2026-11-11
+
+### Added
+
+- **Stan, NumPyro, Pyro, and PyMC render a multivariate normal or a Wishart whose Cholesky factor is known only at run time,** a host datum or a factor the program builds, such as an LKJ correlation factor scaled by sampled standard deviations. A multivariate normal takes the factor in each library's Cholesky parameterization (Stan `multi_normal_cholesky`, `scale_tril=` in NumPyro and Pyro, `chol=` in PyMC); a Wishart takes it as `scale_tril=` in NumPyro and Pyro and multiplied out where the library takes only the scale (Stan `multiply_lower_tri_self_transpose(L)`, PyMC `V=L @ L.T`). Every other target refuses such a factor by name, as `family:<Family>:scale_tril`.
+
+### Fixed
+
+- **Stan reads an array over a multivariate draw's event axis as the vector it is,** so a sampled mean drawn per event coordinate reaches `multi_normal` as `to_vector(mu)` rather than a broadcast of one entry.
+- **A family whose argument constraints exist only on a built instance, such as `Wishart`, is sized from the family registry's parameter ranks** when a target's plan probes its support, so a named matrix argument reaches the plan as a matrix.
+
 ## [0.49.0] - 2026-11-11
 
 ### Added
