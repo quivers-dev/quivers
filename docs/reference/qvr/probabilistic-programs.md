@@ -1,19 +1,14 @@
 # Probabilistic programs
 
-A `program` is domain-specific notation for a checked computation over the
-module's canonical `random : Random` and `score : Score` instances. Data,
-observations, fibrations, and scalar parameters become value parameters;
-sample sites and score terms become effect requests. The checked representation makes these requests explicit.
+A `program` declares a probabilistic model as a sequence of steps, and elaborates to one QIEC
+computation that performs through the module's two built-in
+[effect instances](effects-and-handlers.md#prelude-interfaces), `random : Random` and
+`score : Score`. Each draw becomes a `Random.sample` request at a named *sample site*, and each
+observation or score term becomes a `Score.add` request that adds a log density to the run's
+weight [@wingate2011lightweight]. The program's data, observations, index maps, and scalar
+parameters become value parameters of the computation.
 
 ## Program declaration
-
-In the regression below, `intercept`, `slope`, and `sigma` are unknown
-random quantities. Their distributions before observing data are their
-**priors**. For each known predictor `x`, the Normal response distribution
-supplies the **likelihood** of `y`. [Conditioning](../../guides/inference-foundations.md#conditioning-on-observations) combines prior and
-likelihood into a **posterior** over the unknowns; an inference algorithm
-is needed to approximate or sample that posterior. Merely executing
-`observe` scores data under current latent values. [@gelman2013bayesian]
 
 <!-- compile: qiec -->
 ```qvr
@@ -30,124 +25,127 @@ program regression : Row -> Row [effects=[Sample, Score]]
 export regression
 ```
 
-The declared domain and codomain describe the program's categorical boundary.
-The elaborated computation additionally records every runtime input and its
-role. `[effects=[...]]` is a source-level summary checked against the body; it
-does not replace the QIEC row.
+The declared domain and codomain (`Row -> Row`) type the program as a morphism, and the elaborated
+computation also records each runtime input and its role. The option `[effects=[...]]` is a
+summary checked against the body, in a vocabulary of its own: `Sample` for draws, `Score` for
+observations, `Marginal` for `marginalize` blocks, and `Pure` for none of these. The body's effects
+must be among those declared, and the summary does not replace the QIEC row. Running the program
+draws the latent sites from their priors and scores the observations under the drawn values. A
+posterior is computed by an [inference driver](../../guides/inference-foundations.md#conditioning-on-observations)
+[@gelman2013bayesian].
 
 ## Step reference
 
 | Step | Checked meaning |
 | --- | --- |
 | `sample x <- FAMILY(...)` | `Random.sample` at site `x` |
-| `sample x : Plate <- FAMILY(...)` | plated draw with one value per object |
+| `sample x : Plate <- FAMILY(...)` | one draw per element of the object `Plate`, as a [plate](https://en.wikipedia.org/wiki/Plate_notation) of conditionally independent draws [@koller2009probabilistic] |
 | `observe y <- FAMILY(...)` | `Score.add(log_prob(FAMILY(...), y))` |
-| `score name = expression` | add an explicit `LogWeight` |
+| `score name = expression` | add the `LogWeight` `expression` |
 | `let x = expression` | pure binding |
-| `let x <- computation(args)` | bind a named computation or program call |
+| `let x <- computation(args)` | bind the result of a computation call or a program call |
 | `let xs <- traverse(values, x -> computation(x))` | call a computation once per value, in order |
-| `marginalize z : K <- FAMILY(...)` | enumerate a finite latent and reduce the scope |
-| `return expression` | answer the program's value |
+| `marginalize z : K <- FAMILY(...)` | sum the finite latent `z` out of the weight of the block it scopes |
+| `return expression` | the program's value |
 
-A program body is sequential. A name becomes available to later steps after
-its binding, and host data may supply free names used by expressions. The
-compiler records those names as input parameters rather than treating them as
-globals.
+A program body is sequential, and a name is available to the steps after its binding. A name that
+an expression reads but no step binds is a data input of the program, not a global.
 
-## Host data
+## Data inputs {#host-data}
 
-Each free name is a program input with one checked type, which
-`qvr check` and `entry_points()` list and every transpile target declares. The
+A *data input* is a name the program reads but does not bind, given at run time with the
+observations, as a variable of Stan's `data` block is [@carpenter2017stan]. Each data input has one
+checked type, which `qvr check` and `entry_points()` list and every transpile target declares. The
 type is inferred from the name's uses:
 
-| Use of the free name `x` | Checked type of `x` |
+| Use of the data input `x` | Checked type of `x` |
 | --- | --- |
-| filling a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
-| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table of one open extent per index, plus one per axis of a row when the gathered rows fill a vector-valued parameter; several index vectors in one subscript select one entry per position, `x[i[n], j[n]]` |
-| combined elementwise with a value of known shape, as in `x * resid` | that value's shape |
-| read by a let that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
-| used as an index, or gathered from in an index position as in `E[tokens[q], k]` | its elements are `Int` |
+| fills a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
+| subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter; several index vectors in one subscript select one entry per position, `x[i[n], j[n]]` |
+| combined entry by entry with a value of known shape, as in `x * resid` | that value's shape |
+| read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
+| used as an index, or gathered from in an index position as in `E[tokens[q], k]` | a tensor of `Int` |
 | none of the above | a scalar `Real`, or `Int` for an index |
 
-The rule applies to `let` and `score` expressions alike. A free name that a
-reduction or a rowwise operation consumes, but that no use fixes the shape of,
-as in `score s = sum(weight)`, is reported at the step that reads it: nothing
-says how many entries it has. State its extent by combining it elementwise with
-a value over the intended object, or by reading it entrywise in a factor, as in
-`sum(factor i : Item in weight[i] * resid[i])`. Uses that fix two different
-shapes for one name are refused the same way.
+An *open extent* is an axis length that no declared object fixes and that is read from the data at
+run time ([open input extents](#open-input-extents)). The *batch axes* of a draw index its
+independent copies, and its *event axes* belong to one joint value [@pyroTensorShapes].
 
-A free name that fills a family parameter of a plated draw directly may also be
-supplied without the plate axis: a scalar `sigma` for `scale=sigma`, or one
-cutpoint vector of shape `(cuts_extent,)` for `cutpoints=cuts`, is one value
-every row shares. Each path broadcasts it across the plate: the compiled runtime
-reads it as it is, and the reference machine spreads it before validating
-([`broadcast_shared_data`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.broadcast_shared_data)). Transpile targets declare the per-row
-shape, so data for them are spread the same way before they are handed over. A
-target whose library cannot read one parameter vector per row refuses the
-program under `data:per-row-vector-parameter` rather than score a different
-model; NumPyro, Pyro, and Edward2 render it.
+The rule applies to `let` and `score` expressions alike. A data input that a reduction or a rowwise
+operation consumes, but whose shape no use fixes, as in `score s = sum(weight)`, is refused at the
+step that reads it, since nothing gives its number of entries. Its extent is fixed by combining it
+entry by entry with a value over the intended object, or by reading it entrywise in a factor, as in
+`sum(factor i : Item in weight[i] * resid[i])`. A name whose uses fix two different shapes is
+refused the same way.
 
-A run supplies each input at its checked type. The reference machine validates
-every argument, and the compiled runtime (`log_joint`, `trace`, `rsample`, and
-the inference built on them) refuses a host datum whose shape or element type
-contradicts its checked type, naming the datum and every admissible shape: a
-vector for a scalar input, a `(rows, units)` index for a vector over `Row`, a
-cutpoint table of neither the per-row nor the shared shape, or a floating-point
-tensor for an `Int` index. An open extent takes the length of the
-first datum it shapes. The check is what keeps the compiled runtime scoring the
-model the checked module and every transpiled program describe.
+A data input that fills a family parameter of a plated draw directly may also be given without the
+plate axis: a scalar `sigma` for `scale=sigma`, or one cutpoint vector of shape `(cuts_extent,)` for
+`cutpoints=cuts`, is one value that every row shares. The compiled runtime reads such a value as it
+is, and the reference machine broadcasts it across the plate before validating
+([`broadcast_shared_data`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.broadcast_shared_data)).
+Transpile targets declare the shape with one value per row, so the data given to them are broadcast
+the same way. A target whose library cannot read one parameter vector per row refuses the program
+with `data:per-row-vector-parameter`, and NumPyro, Pyro, and Edward2 render it.
 
-Pure collection expressions such as `map` stay on the right of `=`. An
-effect-aware `traverse` is computation syntax and stays on the right of `<-`;
-the called computation's effects join the program row. See
-[Finite collection expressions](collection-expressions.md) for the fixed-shape
-contract.
+Each data input is given at its checked type. The reference machine validates every argument. The
+*compiled runtime*, the PyTorch implementation of a program used for gradients, SVI, and MCMC
+(`log_joint`, `trace`, `rsample`, and the inference built on them), refuses a datum whose shape or
+element type contradicts its checked type, and names the datum and every admissible shape. Examples
+are a vector for a scalar input, an index of shape `(rows, units)` for a vector over `Row`, a
+cutpoint table of neither the per-row nor the shared shape, and a floating-point tensor for an `Int`
+index. An open extent takes the length of the first datum it shapes. Both runtimes thus score the
+model that the checked module and every transpiled program describe.
+
+An *index map* is a function from observation rows to groups, given as an integer array, whose
+fiber over a group is the set of rows in that group. The `via=` option of a grouped step names one
+([exact marginalization](#exact-marginalization)), and the API gives it the parameter role
+`fibration`.
+
+Pure collection expressions such as `map` stay on the right of `=`. An effectful `traverse` is
+computation syntax, stays on the right of `<-`, and joins the called computation's effects to the
+program's row ([finite collection expressions](collection-expressions.md)).
 
 ## Fixed and conditional families
 
-A morphism with literal family arguments is input-independent:
+A morphism whose family arguments are all literals does not depend on its input:
 
 <!-- compile: false -->
 ```qvr
 morphism prior : A -> R ~ Normal(loc=0.0, scale=1.0)
 ```
 
-It has no learned lookup table. By contrast, a bare `~ Normal` requests a
-parameter source conditional on the morphism's input. A declaration's family
-arguments are literals (numbers, vectors, or matrices) that fill one complete
-schema, or absent; an argument that reads a name, as in `~ Normal(scale=q)`,
-is refused at that argument on every path, since a declaration binds no value
-for it to read. Inline distribution
-applications in `sample` and `observe` steps may mix literal and variable
-arguments, but every argument is named. A call must match one complete schema;
-for instance, `Normal(loc=mean, scale=sigma)` may reverse its source order
-without changing its meaning. Computation and morphism calls remain positional.
+It has no learned lookup table. A bare `~ Normal`, in contrast, requests a
+[parameter source](../../api/continuous/param_source.md), the rule that turns the morphism's input
+into the family's parameters. A declaration's family arguments are literals (numbers, vectors, or
+matrices) that fill one complete parameterization, or they are absent. An argument that reads a
+name, as in `~ Normal(scale=q)`, is refused at that argument on every path, since a declaration
+binds no value for it to read.
 
-When a family exposes alternative parameterizations, the call selects one by
-name. Categorical calls require either `Categorical(probs=weights)` or
-`Categorical(logits=scores)`:
+A distribution application in a `sample` or `observe` step may mix literal and variable arguments,
+and every argument is named. A call matches one complete parameterization, so
+`Normal(loc=mean, scale=sigma)` and `Normal(scale=sigma, loc=mean)` mean the same. Calls of
+computations and morphisms stay positional.
+
+A family with several parameterizations is called with the names of one. `Categorical` takes
+either `Categorical(probs=weights)` or `Categorical(logits=scores)`, never both:
 
 <!-- compile: false -->
 ```qvr
 observe choice : Trial <- Categorical(logits=choice_logits)
 ```
 
-A call cannot supply both `probs` and `logits`. Positional family construction
-is rejected uniformly, including calls whose parameterization would otherwise
-appear unambiguous. Transpile targets with native logits support preserve the
-named parameter; probability-only targets require an explicit `softmax`
-followed by `Categorical(probs=softmax(scores))`.
+A positional family argument in a program step is refused, even where only one parameterization
+could match. A transpile target with native support for logits keeps the named parameter, and a
+target that takes only probabilities requires `Categorical(probs=softmax(scores))`.
 
-Vector-family values occupy one named parameter:
-`Dirichlet(concentration=[1.0, 2.0, 3.0])` supplies an explicit vector. A
-single literal, `Dirichlet(concentration=1.0)`, is a symmetric concentration
-under a fixed output extent.
+A family whose value is a vector takes it in one named parameter.
+`Dirichlet(concentration=[1.0, 2.0, 3.0])` gives an explicit vector, and a single literal,
+`Dirichlet(concentration=1.0)`, is a symmetric concentration over a fixed output extent.
 
 ## Open input extents
 
-When no declared object fixes the length of a tensor input, elaboration adds a
-static `Nat` binder. The invocation reads the extent from data when possible:
+When no declared object fixes the length of a tensor input, elaboration adds a static `Nat` binder,
+and an invocation reads the extent from the data:
 
 <!-- compile: qiec -->
 ```qvr
@@ -160,15 +158,14 @@ program simplex : Draw -> Draw
 export simplex
 ```
 
-Here `alpha` is an input tensor and its leading extent becomes a static
-parameter of the entry. A program call passes an extent it can infer from the
-argument. A direct computation call may state one with an integer static
-argument, as in `simplex[3](alpha)` when the elaborated entry exposes that
-binder.
+Here `alpha` is a tensor input, and its leading extent becomes a static parameter of the entry. A
+program call passes an extent it can infer from the argument. A direct computation call may state
+one with an integer static argument, as in `simplex[3](alpha)`, when the elaborated entry exposes
+that binder.
 
 ## Calling computations and programs
 
-A program binds a `define` computation with effectful binding:
+A program binds the result of a `define` computation with `<-`:
 
 <!-- compile: qiec -->
 ```qvr
@@ -188,96 +185,70 @@ program standardized : Row -> Row
 export standardized
 ```
 
-The host datum `x` takes the type of the parameter it is passed to, so it
-is a column of eight covariates, one per `Row`, and `map` standardizes each.
-The callee's residual effects join the program's.
+The data input `x` takes the type of the parameter it is passed to, a column of eight covariates,
+one per `Row`, and `map` standardizes each. The callee's residual effects join the program's row.
+
+A computation keeps the parameter types it declares, and a call does not map a computation with a
+scalar parameter over the entries of a tensor. A plated value passed to a scalar parameter is a type
+error located at the call. A datum with more axes than the parameter it fills is refused on both
+runtimes, located at the call that fixes its type. Declare the parameter as a tensor and `map` over
+it inside the computation, as `standardize` does.
+
+A program may also draw from another program with `sample x <- sub(...)`, or destructure a pair
+with `sample (a, b) <- sub(...)`. The callee's sites are prefixed by the caller's binding: `x$z` on
+the reference machine and `x__z` in rendered targets. A call that passes only the callee's declared
+domain arguments carries the callee's remaining inputs into the caller as parameters.
 
 ### Which calls are fit
 
-The compiled runtime fits a program (`trace`, `log_joint` and its
-gradients, SVI, MCMC) by running a fixed chain of steps, so a call is fit
-exactly when the callee's body can be stated as such a chain at the call.
-The runtime compiler lowers these calls, and the program then compiles to a
-[`MonadicProgram`][quivers.continuous.MonadicProgram] whose values are the
-reference machine's:
+The compiled runtime fits a program (`trace`, `log_joint` and its gradients, SVI, MCMC) by running
+a fixed chain of steps, so it fits a call exactly when the callee's body can be stated as such a
+chain at the call. These calls are lowered, and the program then compiles to a
+[`MonadicProgram`][quivers.continuous.MonadicProgram] whose values agree with the reference
+machine's:
 
 | Call | Lowered to |
 | --- | --- |
 | a pure callee: no effect, no static arguments, pure bindings ending in a return | `let` steps, the callee's bindings under fresh names |
-| a pure callee that calls other pure computations | the same, each nested call inlined in turn |
-| a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`; both branches are evaluated, so a branch undefined where it is not selected (a `log` of a negative) gives a NaN gradient |
-| a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a [draw from a program](#calling-computations-and-programs) runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score a score step |
+| a pure callee that calls other pure computations | the same, with each nested call inlined in turn |
+| a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`; both branches are evaluated, so a branch undefined where it is not selected (a `log` of a negative number) gives a NaN gradient |
+| a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a draw from a program runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score becomes a score step |
 | `let ys <- traverse(xs, x -> f(x, ...))` with a pure `f` | a comprehension over the items of `xs` |
-| the same with an `f` that draws | one plated draw per site of `f`, named `ys$label`, over the object `xs` runs along |
+| the same with an `f` that draws | one plated draw per site of `f`, named `ys$label`, over the object that `xs` runs along |
 
-Each run of a traversed callee reads only its own item and names bound
-before the traverse, so its runs are independent and the plated draw is
-exact; a recurrence, in which a step reads the previous one, is written
-with `scan`.
+Each run of a traversed callee reads only its own item and names bound before the `traverse`, so
+the runs are independent and the plated draw is exact. A recurrence, in which a step reads the
+previous one, is written with [`scan`](#scans).
 
-The transpile planner shares the analysis of pure calls, so every target
-inlines nested pure calls and states a conditional between pure branches as
-its spelling of `select`. A callee that draws is still called through each
-dynamic target's host runtime, where its site keeps its label, as on the
-reference machine: there a callee's site `noise` reached once is `noise`,
-and reached repeatedly (by a traverse, or two calls) is `noise@0`,
-`noise@1`, and so on in run order.
+The transpile planner shares this analysis of pure calls, so every target inlines nested pure calls
+and states a conditional between pure branches in its own form of `select`. A callee that draws is
+still called through each dynamic target's runtime, where its site keeps its label as on the
+reference machine: a site `noise` reached once is `noise`, and reached repeatedly, by a `traverse`
+or by two calls, is `noise@0`, `noise@1`, and so on in run order.
 
 Any other call leaves the program a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], which
-runs on the reference machine but cannot be fit: `trace`, MCMC, SVI, and
-every other fitting entry point raise a
-[`CompileError`][quivers.dsl.CompileError] located at the call, saying why.
-A parametric template that makes such a call is refused with the same
-error when it is instantiated. The refused calls are:
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], which runs on the reference
+machine but cannot be fit. `trace`, MCMC, SVI, and every other fitting entry point raise a
+[`CompileError`][quivers.dsl.CompileError] located at the call, and a parametric template that makes
+such a call is refused with the same error when it is instantiated:
 
-- a call that reaches a recursive call, whose number of steps depends on
-  its arguments: write the repetition as a reduction (`sum`, `fold`) or
-  `map` over a tensor of fixed length, or as `scan` over a sequence;
-- an `if` whose branches draw or score, whose set of sites depends on the
-  branch taken: draw outside the conditional and choose between values
-  with `select`;
-- a callee that handles an effect inside its body (`with instance` and
-  `handle`), whose handler and resumptions the compiled runtime does not
-  run;
-- a `case` on a family value;
-- a call with static arguments (`identity[Int](4)`);
-- a call of a program as a computation (`let y <- sub(...)`): draw from it
-  with `sample y <- sub(...)` instead.
+| Call | Why it cannot be fit | Instead |
+| --- | --- | --- |
+| a call that reaches a recursive call | its number of steps depends on its arguments | a reduction (`sum`, `fold`) or `map` over a tensor of fixed length, or `scan` over a sequence |
+| an `if` whose branches draw or score | its set of sites depends on the branch taken | draw outside the conditional and choose between values with `select` |
+| a callee that handles an effect in its body (`with instance`, `handle`) | the compiled runtime does not run handlers or resumptions | a callee with no handler |
+| a `case` on a family value | the compiled runtime does not run case analysis | a callee with no `case` |
+| a call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize | a callee with no static binders |
+| a program called as a computation, `let y <- sub(...)` | a program is drawn from, not called | `sample y <- sub(...)` |
 
-A computation keeps the parameter types it declares: a call does not map a
-scalar-parameter computation over the entries of a tensor. A plated value
-passed to a scalar parameter is a located type error that says so, and a
-datum supplied with more axes than the parameter it fills is refused on
-both paths, located at the call that fixes its type. Declare the parameter
-as a tensor and `map` over it inside the computation, as `standardize`
-does above.
-
-Dynamic transpile targets
-emit reachable calls through the common runtime ABI. Stan accepts a closed,
-monomorphic, effect-free scalar callee as a user-defined function. BUGS and
-JAGS refuse program-to-computation calls. Use `qvr check --target TARGET` to
-analyze the QIEC call graph, then run the transpiler to exercise the selected
-renderer and toolchain.
-
-A program may also draw from another program with `sample x <- sub(...)` or
-destructure a pair as `sample (a, b) <- sub(...)`. The callee's local sites are
-prefixed by the caller's binding (`x$z` on the reference machine and `x__z` in
-rendered targets). Passing only the callee's declared domain arguments carries
-its remaining inputs into the caller as parameters.
+Dynamic transpile targets emit every reachable call, Stan accepts a callee that is a closed,
+monomorphic scalar computation with no effects as a user-defined function, and BUGS and JAGS refuse
+calls from a program to a computation ([transpilation](execution-and-tooling.md#transpilation)).
 
 ## Exact marginalization
 
-For a two-component mixture, evaluate the observations under each
-component and weight by its prior probability. [Adding these terms](https://pyro.ai/examples/enumeration.html#Mechanics-of-enumeration) [@pyroEnumeration]
-accounts for both possible assignments without selecting one. The
-`logsumexp` reduction evaluates that sum in log space, where products
-of many small likelihoods are more stable. [Grouped observations](../../guides/programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) share
-one assignment, so their likelihoods combine within a component before
-the sum over components.
-
-`marginalize` enumerates a finite latent and adds the reduced scope weight to
-the enclosing program:
+`marginalize` sums a finite latent variable out of the weight of the steps it scopes, by evaluating
+each of its values [@pyroEnumeration; @stanFiniteMixtures]:
 
 <!-- compile: qiec -->
 ```qvr
@@ -295,146 +266,143 @@ program mixture : Row -> Row
 export mixture
 ```
 
-The latent's atoms are the elements of its declared index object, here the
-two elements of `Component`, numbered from zero; every target enumerates
-exactly those atoms, whatever form the probability argument takes (a sampled
-simplex, a literal, or a `let`). A latent declared without an index object
-takes its atom count from the width of its probability argument, and a
-target refuses the block with `marginalize:unknown-cardinality:<family>` when
-neither fixes the count. Inside the scope the latent is a number in that
-zero-based range, so `real(z + 1)` is 1 at the first atom on every target.
+`over=Item` requests one latent assignment per item, and `via=item_idx` is the index map from the
+observation rows to items. For an item $g$ with rows $\iota^{-1}(g)$, the block adds
 
-`over=Item` requests one latent mixture assignment per item. `via=item_idx`
-maps observation rows into those groups. For product groups write
-`[over=[School, Subject]]` and `[via=[school_idx, subject_idx]]`; the product is
-flattened row-major, with the last factor varying fastest.
+$$
+\log \sum_{k} \pi_k \prod_{n \in \iota^{-1}(g)} \mathcal{N}(y_n; \mu_k, 1)
+$$
+
+to the log joint, where $\iota$ is the index map, $\pi$ is `probs`, $\mu$ is `mean`, and
+$\mathcal{N}(y; m, s)$ is the Normal density at $y$ with mean $m$ and standard deviation $s$. The
+rows of one item thus share one assignment, and their likelihoods are multiplied before the sum over
+components ([grouped marginalization](../../guides/programs-hierarchical.md)). For product groups,
+write `[over=[School, Subject]]` and `[via=[school_idx, subject_idx]]`. The product is flattened in
+row-major order, the last factor varying fastest.
+
+The values of the latent are the elements of its declared index object, here the two elements of
+`Component`, numbered from zero. Every target enumerates exactly those values, whatever form the
+probability argument takes (a sampled simplex, a literal, or a `let`). A latent declared without an
+index object takes its number of values from the width of its probability argument, and a target
+refuses the block with `marginalize:unknown-cardinality:<family>` when neither fixes the number.
+Inside the block the latent is an integer in that range, so `real(z + 1)` is 1 at the first value on
+every target.
 
 The reductions are:
 
-| Reduction | Aggregate over enumerated atoms |
+| Reduction | Aggregate over the latent's values |
 | --- | --- |
-| `logsumexp` | log marginal, the default |
-| `sum` | arithmetic sum of scope weights |
-| `mean` | arithmetic mean of scope weights |
+| `logsumexp` | the log marginal likelihood, the default |
+| `sum` | the arithmetic sum of the block's weights |
+| `mean` | the arithmetic mean of the block's weights |
 
-Nested grouped blocks return one aggregate per group position to the enclosing
-block. The inner group must coincide with the enclosing group or refine it by
-a product projection. A sample inside a marginal block that reads nothing
-bound by the block is hoisted and drawn once; a draw that depends on the
-enumerated latent is refused because it would change the stated finite sum.
+A nested grouped block returns one aggregate per group to the enclosing block. The inner grouping
+must coincide with the enclosing one or refine it by a projection of a product. A `sample` inside a
+block that reads nothing the block binds is hoisted and drawn once. A draw that depends on the
+summed latent is refused, because it would change the finite sum the block states.
 
 ## Scans
 
-`scan(cell)` in a morphism chain expands to a one-position step program and a
-recursive helper over the open sequence extent:
+`scan(cell)` in a morphism chain threads a state along a sequence and records one state per
+position. It expands to a step program for one position and a recursive helper over the sequence's
+open extent:
 
 <!-- compile: false -->
 ```qvr
 sample hidden <- token_embedding >> scan(cell)
 ```
 
-The step program takes one position's entry and the previous state, draws the
-chain's elements before the scan at the entry, and applies the cell. The
-binding, here `hidden`, is the final state, a value the run computes rather
-than a site. The default initial state is zero; `init=learned` adds a learned
-initial-state input; and `init=h0`, with `h0` any binding the scanning program
-makes before the scan, starts the scan from that value. A binding of the state's
-type is read as it is, and a scalar binding is the one entry of a one-wide
-state; a name the program does not bind before the scan, or a binding of
-another type, is refused where the scan is written. Gradients reach the binding
-through the first position. Every scan, whatever its cell, runs its step as
-steps of the scanning program, once per position, and the compiled runtime and
-the reference machine apply the same rules to it.
+The step program takes one position's entry and the previous state, draws the elements of the chain
+before the scan at that entry, and applies the cell. The binding, here `hidden`, is the final
+state, a value the run computes, not a site. Every scan runs its step as steps of the scanning
+program, once per position, and the compiled runtime and the reference machine apply the same
+rules to it.
 
-A scan takes its options in any order, each at most once:
-`scan(cell, init=h0, outputs=all, reverse=true)`.
+A scan takes its options in any order, each at most once, as in
+`scan(cell, init=h0, outputs=all, reverse=true)`:
 
-- `outputs=last`, the default, makes the binding the final state.
-  `outputs=all` makes it every state, one per position of the sequence: the
-  checked elaboration types it `Tensor[H]([<input>_extent])` for a state of
-  type `H` (a state `Tensor[Real]([d])` gives `Tensor[Real]([<input>_extent,
-  d])`), and the compiled runtime lays it out `(batch, seq_len, d)`. Like the
-  final state, it is a value the run computes, not a site.
-- `reverse=true` visits the positions from the last to the first: the state
-  after position `t` is drawn given the entry at `t` and the state after
-  position `t + 1`, the initial state stands before the last position, and
-  the final state is the one after position 0. Its every-state sequence is
-  still laid out in input order, entry `t` being the state after reading
-  position `t`, so a forward and a reversed sequence over one input pair
-  position by position without reindexing.
+| Option | Meaning |
+| --- | --- |
+| `init` | the initial state: zero by default; `init=learned` adds a learned input for it; `init=h0` starts from `h0`, a binding the scanning program makes before the scan |
+| `outputs` | `last`, the default, binds the final state; `all` binds the sequence of every state, one per position |
+| `reverse` | `true` visits the positions from the last to the first |
+
+With `init=h0`, a binding of the state's type is read as it is, and a scalar binding is the one
+entry of a state of width one. A name not bound before the scan, or a binding of another type, is
+refused where the scan is written. Gradients reach the binding through the first position.
+
+With `outputs=all`, the checked elaboration types the binding `Tensor[H]([<input>_extent])` for a
+state of type `H`, so a state `Tensor[Real]([d])` gives `Tensor[Real]([<input>_extent, d])`. Like the
+final state, the sequence is a value, not a site.
+
+With `reverse=true`, the state after position $t$ is computed from the entry at $t$ and the state
+after position $t + 1$, the initial state stands before the last position, and the final state is
+the one after position 0. The sequence of states is still laid out in input order, entry $t$ being
+the state after reading position $t$, so a forward and a reversed sequence over one input pair up
+position by position.
 
 A sequence of states is what a later scan in the same chain runs over, so
-`scan(lower, outputs=all) >> scan(upper)` stacks two recurrences, and an element
-between them, `scan(lower, outputs=all) >> proj >> scan(upper)`, runs at every
-position inside the second scan's step. `fan` and `@` of branches that each end
-in a scan with `outputs=all` pair the sequences position by position: the entry
-at a position lays the branches' entries there end to end, as `fan` lays two
-vectors, and both sequences must run over the same positions. Three chains are
-refused where the draw is written: a scan over another scan's final state
-(`scan(a) >> scan(b)`), a morphism applied to a whole sequence of states outside
-a scan (`scan(a, outputs=all) >> head`), and a `fan` pairing a sequence with
-one value.
+`scan(lower, outputs=all) >> scan(upper)` stacks two recurrences. An element between them, as in
+`scan(lower, outputs=all) >> proj >> scan(upper)`, runs at every position inside the second scan's
+step. `fan` and `@` of branches that each end in a scan with `outputs=all` pair the sequences
+position by position: the entry at a position joins the branches' entries end to end, as `fan` joins
+two vectors, and both sequences must run over the same positions. Three chains are refused where the
+draw is written: a scan over another scan's final state (`scan(a) >> scan(b)`), a morphism applied to
+a whole sequence of states outside a scan (`scan(a, outputs=all) >> head`), and a `fan` that pairs a
+sequence with one value.
 
-A cell that is a stochastic morphism, `morphism cell : A * H -> H ~ Normal`,
-draws the next state at every position, at a site named by the scan's
-binding: `hidden@0`, `hidden@1`, and so on. The log joint is the density of
-the whole trajectory, `sum_t log p(hidden_t | x_t, hidden_{t-1})`. A cell that
-is a deterministic morphism contributes no site. A cell may also be a program,
-whose own steps run once per position under the three rules below.
+### Cells
 
-1. **Scope.** A name a program cell reads without binding it is the scanning
-   program's binding of that name *before* the scan: a sampled site, a `let`,
-   or a program input, read at that binding's type: a scalar, a plated vector,
-   or a matrix-valued draw. A name the scanning program does not bind before
-   the scan is host data of the scanning program, supplied under that name and
-   typed by the cell's uses, as for any free name (a table read as `M[i, j]`
-   keeps its open extents); the scanning program cannot bind it afterwards. A
-   name the cell binds itself shadows the scanning program's binding inside the
-   cell and is not visible after the scan. Gradients flow through the bindings
-   the cell reads.
-2. **Sites.** Every site the step reaches is reached once per position. The
-   `n`-th occurrence of a site labelled `s` has the address `"s@n"`, counted
-   from zero over the run, so for a single scan `n` is the `n`-th position the
-   scan visits: position `n` left to right, and position `T - 1 - n` for a
-   reversed scan over `T` positions. A trace
-   records `s@0`, `s@1`, and so on; a replay, a clamp, or a joint density
-   addresses them by these keys. A `let` or `score` in a program cell appears in
-   a trace as `name@n`, and each position's `score` joins the log joint. The
-   labels the expansion makes derive from the binding the source writes: a
-   morphism cell's draw is the binding itself, the chain's elements before the
-   scan draw at `"<binding>$x_in"` (and `"<binding>$x_in_chain_<k>"` for a
-   longer prefix), and a scan inside a longer chain or a branch of `fan` or `@`
-   is named `"<binding>$<intermediate>"`. A source cannot write `$`, so these
-   labels never meet a source label. A program cell's own labels are the
-   source's; two sites of one program that would share a label, a program
-   cell's site and the scanning program's or another scan's, are refused on
-   both paths with one diagnostic at the scan.
-3. **Observations.** An `observe y` in the cell observes one value per
-   position. The scanning program takes the whole sequence as its observation
-   input `y`, with the position axis first: the checked elaboration types it
-   `Tensor[A]([<input>_extent, ...])` when one position's value is `A[...]`.
-   The compiled runtime takes a batch of sequences with the position axis
-   after the batch axis, `(batch, seq_len, ...)`; entry `[:, t]` is the
-   observation at position `t`, scored at site `y@t`, or at `y@(T - 1 - t)`
-   in a reversed scan, which reaches position `t` that many visits after its
-   first. A single occurrence may be given instead as `y@n`, shaped
-   `(batch, ...)`. Giving a position twice, a
-   value past the sequence's end, or a value for the scan's final state is
-   refused. The scanning program cannot also bind `y`.
+A cell that is a stochastic morphism, `morphism cell : A * H -> H ~ Normal`, draws the next state at
+every position, at a site named by the scan's binding: `hidden@0`, `hidden@1`, and so on. The log
+joint is the log density of the whole trajectory,
+$\sum_t \log p(h_t \mid x_t, h_{t-1})$. A cell that is a deterministic morphism contributes no site.
+A cell may also be a program, whose steps run once per position under three rules.
 
-The same two layouts address every per-position site: a latent `s` takes
-`s@t` for one position or `s` for the whole sequence, `(batch, seq_len,
-...)`, which is the shape a lift's `additional_latents` entry declares. A value
-under the bare label with any other shape, such as a single final state, is
-refused rather than split across positions. On the reference machine, which
-replays one sequence at a time, a value under the bare label of a site reached
-more than once is refused rather than replayed at every position; give each
-occurrence under `s@n`.
+1. **Scope.** A name that a program cell reads without binding it is the scanning program's binding
+   of that name before the scan: a sampled site, a `let`, or a program input, read at that
+   binding's type (a scalar, a plated vector, or a draw with a matrix value). A name the scanning
+   program does not bind before the scan is a data input of the scanning program, given under that
+   name and typed by the cell's uses (a table read as `M[i, j]` keeps its open extents), and the
+   scanning program cannot bind it afterwards. A name the cell binds itself shadows the scanning
+   program's binding inside the cell and is not visible after the scan. Gradients flow through the
+   bindings the cell reads.
+2. **Sites.** Every site the step reaches is reached once per position. The $n$-th occurrence of a
+   site labelled `s` has the address `"s@n"`, counted from zero over the run, so for a single scan
+   $n$ is the $n$-th position the scan visits: position $n$ from the left, and position $T - 1 - n$
+   for a reversed scan over $T$ positions. A trace records `s@0`, `s@1`, and so on, and a replay, a
+   clamp, or a joint density addresses the sites by these keys. A `let` or `score` in a program cell
+   appears in a trace as `name@n`, and each position's `score` joins the log joint. The labels the
+   expansion makes derive from the binding the source writes. A morphism cell's draw is the binding
+   itself, the chain's elements before the scan draw at `"<binding>$x_in"` (and
+   `"<binding>$x_in_chain_<k>"` for a longer prefix), and a scan inside a longer chain or a branch
+   of `fan` or `@` is named `"<binding>$<intermediate>"`. These labels can be read in a trace and
+   given as keys, but no source binding can be spelled with `$`, so they never collide with a source
+   label. A program cell's own labels are the source's. Two sites of one program that would share a
+   label, such as a program cell's site and the scanning program's or another scan's, are refused on
+   both runtimes with one diagnostic at the scan.
+3. **Observations.** An `observe y` in the cell observes one value per position. The scanning
+   program takes the whole sequence as its observation input `y`, with the position axis first: the
+   checked elaboration types it `Tensor[A]([<input>_extent, ...])` when one position's value is
+   `A[...]`. The compiled runtime takes a batch of sequences with the position axis after the batch
+   axis, `(batch, seq_len, ...)`. Entry `[:, t]` is the observation at position $t$, scored at site
+   `y@t`, or at `y@(T - 1 - t)` in a reversed scan, which reaches position $t$ that many visits
+   after its first. A single occurrence may instead be given as `y@n`, of shape `(batch, ...)`.
+   Giving a position twice, a value past the end of the sequence, or a value for the scan's final
+   state is refused, and the scanning program cannot also bind `y`.
 
-The log joint is the sum over positions of every site's density, every
-observation's likelihood, and every score. For a state-space model whose cell
-draws `s` and observes `o`, it is
-`sum_t log p(s_t | u_t, s_{t-1}) + log p(o_t | s_t)`.
+The same two layouts address every site reached once per position: a latent `s` takes `s@t` for one
+position or `s` for the whole sequence, of shape `(batch, seq_len, ...)`, which is the shape an
+`additional_latents` entry of
+[`bayesian_lift_parameters`][quivers.inference.lifts.bayesian_lift_parameters] declares. A value
+under the bare label with any other shape, such as a single final state, is refused rather than
+split across positions. The reference machine replays one sequence at a time, and on it a value
+under the bare label of a site reached more than once is refused rather than replayed at every
+position, so each occurrence is given as `s@n`.
+
+The log joint is the sum over positions of every site's log density, every observation's log
+likelihood, and every score. For a state space model whose cell draws $s$ and observes $o$, it is
+$\sum_t \bigl[\log p(s_t \mid u_t, s_{t-1}) + \log p(o_t \mid s_t)\bigr]$:
 
 <!-- compile: qiec -->
 ```qvr
@@ -459,17 +427,16 @@ program ssm : Driver -> State
 export ssm
 ```
 
-Here `ssm.log_joint(u, {"s@0": ..., "s@1": ..., "o": o})` scores a driver
-sequence `u` of shape `(batch, T, 2)` with `T` latent states and the
-observations `o` of shape `(batch, T, 2)`.
+`ssm.log_joint(u, {"s@0": ..., "s@1": ..., "o": o})` scores a driver sequence `u` of shape
+`(batch, T, 2)` with $T$ latent states and the observations `o` of shape `(batch, T, 2)`.
 
-A program composes with another through `sample y <- p(x)`, or runs at every
-position as the cell of `scan(p)`. A program used in `>>`, `repeat`, `stack`,
-`fan`, or `@` is refused on both paths, since the chain would treat it as a
-host function of its input.
+A program composes with another through `sample y <- p(x)`, or runs at every position as the cell
+of `scan(p)`. A program used in `>>`, `repeat`, `stack`, `fan`, or `@` is refused on both runtimes,
+since the chain would treat it as a deterministic function of its input.
 
-A stationary AR(1) log-volatility starts its trajectory from the chain's
-stationary distribution rather than from zero:
+A stationary [autoregressive model](https://en.wikipedia.org/wiki/Autoregressive_model) of order
+one, AR(1), for log volatility starts its trajectory from the chain's stationary distribution,
+$\mathcal{N}\bigl(\mu, \sigma_h / \sqrt{1 - \phi^2}\bigr)$ for $|\phi| < 1$, rather than from zero:
 
 <!-- compile: qiec -->
 ```qvr
@@ -496,9 +463,8 @@ program volatility : Val -> Val
 export volatility
 ```
 
-A bidirectional tagger reads, at every position, the state of a forward scan
-and the state of a reversed scan over the same input, then scores one tag per
-position with a third scan:
+A bidirectional tagger reads, at every position, the state of a forward scan and the state of a
+reversed scan over the same input, then scores one tag per position with a third scan:
 
 <!-- compile: qiec -->
 ```qvr
@@ -532,24 +498,31 @@ program bidirectional : In -> State
 export bidirectional
 ```
 
-Its log joint over `T` positions is
-`sum_t log p(f_t | x_t, f_{t-1}) + sum_t log p(g_t | x_t, g_{t+1})
-+ sum_t [log p(s_t | f_t - g_t + 0.3 s_{t-1}) + log p(y_t | s_t)]`, with `f@t`
-the forward state at position `t`, `g@n` the backward state at position
-`T - 1 - n`, and `s@t` the tag state at position `t`; the program returns the
-tag states in input order.
+With $\mathcal{N}(y; m, s)$ the Normal density at $y$ with mean $m$ and standard deviation $s$, and
+with the initial states $f_{-1} = g_T = s_{-1} = 0$, its log joint over $T$ positions is
 
-Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
-the open sequence extent is not a declared categorical object. A scan with
-`outputs=all` or `reverse=true` is refused under the same kind.
+$$
+\sum_{t=0}^{T-1} \Bigl[
+\log \mathcal{N}(f_t; 0.8 f_{t-1} + x_t, 0.5)
++ \log \mathcal{N}(g_t; 0.6 g_{t+1} - x_t, 0.7)
++ \log \mathcal{N}(s_t; f_t - g_t + 0.3 s_{t-1}, 0.6)
++ \log \mathcal{N}(y_t; s_t, 0.3)
+\Bigr],
+$$
+
+where $f_t$ is the forward state at site `f@t`, $g_t$ the backward state at site `g@(T-1-t)`, and
+$s_t$ the tag state at site `s@t`. The program returns the tag states in input order.
+
+Every transpile target refuses a scan with `scan:no-lowering:<cell>`, because the open extent of the
+sequence is not a declared object. A scan with `outputs=all` or `reverse=true` is refused under the
+same code.
 
 ### Marginalized chains
 
-A scan's state may be a finite latent that the cell marginalizes and returns.
-Returning the latent of a `marginalize` block carries it to the next position,
-so its sum extends over the rest of the chain: the scan sums every path of
-states out, which is the likelihood of a hidden Markov model
-[@rabiner1989hmm].
+A scan's state may be a finite latent that the cell marginalizes and returns. Returning the latent of
+a `marginalize` block carries it to the next position, so its sum extends over the rest of the chain:
+the scan sums out every path of states, which is the likelihood of a
+[hidden Markov model](https://en.wikipedia.org/wiki/Hidden_Markov_model) [@rabiner1989hmm].
 
 <!-- compile: qiec -->
 ```qvr
@@ -574,88 +547,86 @@ program hmm : Symbol -> StartProbs
 export hmm
 ```
 
-The chain is `z_0 ~ start`, `z_t ~ Categorical(transition[z_{t-1}])` at every
-position `t` the scan visits, with the block's observations scored at `z_t`.
-Its log marginal likelihood is computed by the forward algorithm in log space,
-in `O(T K^2)` for `T` positions and `K` states:
+Write $z_0$ for the state before the first position, $z_t$ for the state at position $t$ of
+$t = 1, \dots, T$, and $o_t$ for the observations of the block at position $t$. The chain is
+$z_0 \sim \mathrm{Categorical}(\pi)$ with $\pi$ the `init` vector (`start`), and
+$z_t \mid z_{t-1} \sim \mathrm{Categorical}(A_{z_{t-1}})$ with $A$ the `transition` table. Its log
+marginal likelihood is computed by the
+[forward algorithm](https://en.wikipedia.org/wiki/Forward_algorithm) in log space, in
+$O(T K^2)$ time for $K$ states:
 
-```
-log_filter_0 = log start
-table_t[j]   = logsumexp_i(log_filter_{t-1}[i] + log p(z_t = j | z_{t-1} = i) + log p(obs_t | z_t = j))
-evidence_t   = logsumexp_j(table_t[j])
-log_filter_t = table_t - evidence_t
-```
+$$
+\begin{aligned}
+\tilde\alpha_0(i) &= \log \pi_i, \\
+\ell_t(j) &= \log \sum_i \exp\bigl(\tilde\alpha_{t-1}(i) + \log A_{ij}\bigr) + \log p(o_t \mid z_t = j), \\
+e_t &= \log \sum_j \exp \ell_t(j), \\
+\tilde\alpha_t(j) &= \ell_t(j) - e_t,
+\end{aligned}
+$$
 
-and the chain contributes `sum_t evidence_t` to the joint, under the name its
-`sample` step binds (`path` above). Both execution paths compute it: the
-compiled runtime as one score per run, the reference machine through the
-cell's row, the program the cell elaborates to with its block enumerated under
-a handler that keeps one weight per state. Gradients reach every parameter the
-cell reads.
+and the chain adds $\sum_{t=1}^{T} e_t = \log p(o_1, \dots, o_T)$ to the joint, under the name its
+`sample` step binds (`path` above). Both runtimes compute it: the compiled runtime as one score per
+run, and the reference machine by running the cell's elaborated program with its block enumerated
+under a handler that keeps one weight per state. Gradients reach every parameter the cell reads.
 
-1. **The cell.** `program cell(x_t, z_prev) : X * S -> S` with `S` a declared
-   `FinSet`: lets (which may read the entry, the previous state, and the
-   scanning program's bindings), then one `marginalize z : S <- Categorical(...)`
-   with `probs=` or `logits=` and the default `reduction=logsumexp`, then
-   `return z`. The block holds lets and observations of one value per
-   position. An observation named after the entry, as `observe symbol` above,
-   scores the entry itself; any other name `y` is one observation per
-   position, which the scanning program takes as the sequence `y`, laid out as
-   for any scan.
-2. **The first state.** `init=p` names a probability vector over `S` bound
-   before the scan; it is the distribution of the state before the first
-   position, which emits nothing. A vector with zeros starts the chain among
-   the other states. Without `init=` the chain is refused
-   (`scan:marginal:init:<cell>`).
-3. **Order.** `reverse=true` visits the positions from the last to the first,
-   so the chain runs right to left; observations are still read in input
-   order.
-4. **The binding.** The states are summed out, so the name the `sample` step
-   binds holds no state: reading it later or returning it is refused
-   (`scan:marginal:read:<name>`). A trace records it as the chain's log
-   marginal likelihood, one value per run, and records no per-position site.
+1. **The cell.** `program cell(x_t, z_prev) : X * S -> S`, with `S` a declared `FinSet`, consists of
+   `let` steps (which may read the entry, the previous state, and the scanning program's bindings),
+   then one `marginalize z : S <- Categorical(...)` with `probs=` or `logits=` and the default
+   `reduction=logsumexp`, then `return z`. The block holds `let` steps and observations of one value
+   per position. An observation named after the entry, as `observe symbol` above, scores the entry
+   itself. Any other name `y` is one observation per position, which the scanning program takes as
+   the sequence `y`, laid out as for any scan.
+2. **The first state.** `init=p` names a probability vector over `S` bound before the scan. It is
+   the distribution of $z_0$, which emits nothing, and a vector with zeros starts the chain among
+   the other states. A chain without `init=` is refused with `scan:marginal:init:<cell>`.
+3. **Order.** `reverse=true` visits the positions from the last to the first, so the chain runs
+   right to left, and the observations are still read in input order.
+4. **The binding.** The states are summed out, so the name the `sample` step binds holds no state,
+   and reading it later or returning it is refused with `scan:marginal:read:<name>`. A trace records
+   it as the chain's log marginal likelihood, one value per run, and records no site per position.
 
-Forms outside the forward algorithm are refused where they are written, on both
-paths, under `scan:marginal:<reason>:<cell>`: a cell of another type
-(`state`), a step other than a let before the block or other than a let or an
-observation inside it, or a step after it (`step`), a transition family other
-than `Categorical` (`family`), a grouped block (`grouped`), another reduction
-(`reduction`), a plated, fibred, or destructured observation (`observation`), a
-chain composed with other elements (`chain`), observed rather than sampled
-(`observe`), inside a `marginalize` block (`scope`), asked for every state with
-`outputs=all` (`outputs`), and a draw or call of the cell other than as a
-scan's cell (`entry`). Every transpile target refuses a marginalized chain with
-`scan:marginal:no-lowering:<cell>`.
+Forms outside the forward algorithm are refused where they are written, on both runtimes, with
+`scan:marginal:<reason>:<cell>`:
+
+| `<reason>` | Refused form |
+| --- | --- |
+| `state` | a cell of another type |
+| `step` | a step other than a `let` before the block, other than a `let` or an observation inside it, or any step after it |
+| `family` | a transition family other than `Categorical` |
+| `grouped` | a grouped block |
+| `reduction` | a reduction other than `logsumexp` |
+| `observation` | an observation in a plate, grouped by an index map, or destructured |
+| `chain` | a chain composed with other elements |
+| `observe` | a chain observed rather than sampled |
+| `scope` | a chain inside a `marginalize` block |
+| `outputs` | a chain asked for every state with `outputs=all` |
+| `entry` | a draw or call of the cell other than as a scan's cell |
+
+Every transpile target refuses a marginalized chain with `scan:marginal:no-lowering:<cell>`.
 
 ## Network kernels
 
-A morphism with `[param_source=mlp(...)]` elaborates its affine layers and
-biases as typed program inputs and applies them under `tanh` before it
-constructs the distribution family. An embedding morphism with `[role=embed]`
-uses a table of centers and log scales. Plates map these kernels row by row,
-and composite morphisms expand to one checked site per stochastic factor.
+A morphism with `[param_source=mlp(...)]` elaborates the weights and biases of its affine layers as
+typed program inputs, applies them under `tanh`, and then builds the distribution family. An
+embedding morphism with `[role=embed]` uses a table of centers and log scales. Plates apply these
+kernels row by row, and a composite morphism expands to one checked site per stochastic factor.
 
-The reference machine can execute these kernels with the compiled PyTorch
-attachments. Host-language transpilers currently refuse model-internal MLP
-parameter sources because those weights are neither explicit model sites nor
-portable data. The measured [support matrix](../../transpile-support.md)
-reports this as `param-source:mlp`.
+The reference machine runs these kernels with the compiled PyTorch attachments. Every transpile
+target refuses an MLP parameter source inside a model, because its weights are neither model sites
+nor data, and the [support matrix](../../transpile-support.md) reports it as `param-source:mlp`.
 
 ## Learned functions
 
-A morphism declared `[role=function]` is a learned deterministic map between
-continuous spaces. A program calls it in a `let` or `score` expression, with
-one argument per factor of its domain, each a `Real` for a one-wide factor or
-a `Tensor[Real]([width])`; a free name passed straight to it is a host datum of
-the factor's type. The call elaborates to its network: for each hidden layer
-`k`, an affine map with weight `f_param_layer<k>_weight` and bias
-`f_param_layer<k>_bias` under the declared activation, then the output layer
-`f_param_weight` and `f_param_bias` under the declared output nonlinearity.
-The weights and biases are typed program inputs with roles `weight` and
-`bias`, as a network kernel's are, so the reference machine runs the call with
-the compiled program's weights supplied as data. The value is `Real` for a
-one-wide codomain and `Tensor[Real]([width])` otherwise, and it is bound before
-the expression that reads it.
+A morphism declared `[role=function]` is a learned deterministic map between continuous spaces. A
+program calls it in a `let` or `score` expression with one argument per factor of its domain, each
+a `Real` for a factor of width one or a `Tensor[Real]([width])`. A data input passed straight to it
+has the factor's type. The call elaborates to the function's network: for each hidden layer $k$, an
+affine map with weight `f_param_layer<k>_weight` and bias `f_param_layer<k>_bias` under the declared
+activation, then the output layer `f_param_weight` and `f_param_bias` under the declared output
+nonlinearity. The weights and biases are typed program inputs with the roles `weight` and `bias`,
+as a network kernel's are, so the reference machine runs the call with the compiled program's
+weights given as data. The value is `Real` for a codomain of width one and
+`Tensor[Real]([width])` otherwise, and it is bound before the expression that reads it.
 
 <!-- compile: false -->
 ```qvr
@@ -669,25 +640,23 @@ program p : Feature -> Score
     return z
 ```
 
-A function contributes no site. A `sample` or `observe` that draws from one is
-refused, as is a call inside a `factor` or lambda body (bind it in a `let` of
-its own) and a call whose arguments miss its domain's factors. As a scan's cell,
-or as a link of a chain, it is applied rather than drawn.
+A function contributes no site. A `sample` or `observe` that draws from one is refused, as are a
+call inside a `factor` or lambda body (bind the call in a `let` of its own) and a call whose
+arguments miss a factor of its domain. As a scan's cell, or as a link of a chain, a function is
+applied, not drawn from.
 
-Every transpile target refuses a function with weights under
-`param-source:linear` or `param-source:mlp`, because the weights are neither
-sites nor data a target is given. A `param_source=identity` function has no
-weights: it is its output nonlinearity applied to its argument, and every
-target renders it.
+Every transpile target refuses a function with weights under `param-source:linear` or
+`param-source:mlp`, because the weights are neither sites nor data a target is given. A function
+with `param_source=identity` has no weights, being its output nonlinearity applied to its argument,
+and every target renders it.
 
 ## Sequence functions
 
-A learned function declared with `param_source=self_attention` or
-`param_source=positions(N)` reads a whole sequence. A program calls it in a
-`let` with one argument, a table `Tensor[Real]([T, d])` with `d` the width
-of its domain and `T` any extent, open or fixed; a free name passed straight
-to it is a host table `Tensor[Real]([<name>_extent, d])`. The value is the
-table `Tensor[Real]([T, m])` for a codomain of width `m`.
+A learned function declared with `param_source=self_attention` or `param_source=positions(N)` reads
+a whole sequence. A program calls it in a `let` with one argument, a table `Tensor[Real]([T, d])`
+whose row width $d$ is the width of its domain and whose length $T$ is any extent, open or fixed. A
+data input passed straight to it is a table `Tensor[Real]([<name>_extent, d])`. The value is the
+table `Tensor[Real]([T, m])` for a codomain of width $m$.
 
 <!-- compile: false -->
 ```qvr
@@ -695,51 +664,48 @@ morphism attn : Model -> Model [role=function, param_source=self_attention, head
 morphism positions : Model -> Model [role=function, param_source=positions(32)]
 ```
 
-Self-attention with `h` heads of width `e = m / h` elaborates to comprehensions
-over `T`:
+Self-attention [@vaswani2017attention] with $h$ heads, each of width $e = m / h$, elaborates to
+comprehensions over the $T$ positions. For an input table $x$ with rows $x_i \in \mathbb{R}^d$:
 
-1. the query, key, and value tables, one affine map per row,
-   `q[i] = Wq x[i] + bq` and likewise `k` and `v`, with weights
-   `attn_param_query_weight` `(m, d)` and bias `attn_param_query_bias` `(m)`
-   (and `key`, `value`);
-2. per head `g` and position `i`, the scores
-   `s[j] = sum_u q[i, g e + u] k[j, g e + u] / sqrt(e)` and the weights
-   `softmax(s)`; under `causal=true`, the weights
-   `w[j] = [j <= i] exp(s[j] - max_{j' <= i} s[j'])` normalized to sum to
-   one, which are the softmax over the positions `j <= i` and zero after `i`;
-3. the context `c[i, col] = sum_j a[col div e, i, j] v[j, col]`, the heads'
-   weighted values laid end to end;
-4. the output projection `attn_param_weight c[i] + attn_param_bias` at every
-   position, with weight `(m, m)`.
+1. The query, key, and value tables apply one affine map to each row, $q_i = W_q x_i + b_q$, and
+   likewise $k_i$ and $v_i$, with weights `attn_param_query_weight` of shape $(m, d)$ and bias
+   `attn_param_query_bias` of shape $(m)$, and the same for `key` and `value`.
+2. For head $g$ and positions $i$ and $j$, the score is
+   $s^{(g)}_{ij} = \frac{1}{\sqrt{e}} \sum_{u=0}^{e-1} q_{i, ge+u}\, k_{j, ge+u}$, and the weights
+   $a^{(g)}_{ij}$ are the softmax of $s^{(g)}_{i \cdot}$ over $j$. Under `causal=true`, the softmax
+   runs over $j \le i$ only, and $a^{(g)}_{ij} = 0$ for $j > i$. It is computed as
+   $\exp\bigl(s^{(g)}_{ij} - \max_{j' \le i} s^{(g)}_{ij'}\bigr)$ for $j \le i$, normalized to sum
+   to one.
+3. The context joins the heads' weighted values end to end,
+   $c_{i, c'} = \sum_j a^{(\lfloor c'/e \rfloor)}_{ij}\, v_{j, c'}$ for each column $c'$.
+4. The output is the projection $W_o c_i + b_o$ at every position, with $W_o$ the weight
+   `attn_param_weight` of shape $(m, m)$ and $b_o$ the bias `attn_param_bias`.
 
-A position table elaborates to `x[i, k] + positions_param_positions[i, k]`,
-with the table `(N, d)` a program input of role `weight`; a sequence longer
-than `N` is refused when it is read. The weights are typed program inputs, so
-the reference machine runs a call with the compiled program's weights
-supplied as data, and the compiled runtime holds the network as submodule
-`_function_<f>` (parameters `source.query`, `source.key`, `source.value`,
-`source.output`, or `source.table`). Each call is bound as `<f>__call<n>`.
+A position table elaborates to $x_{ik} + P_{ik}$, with $P$ the table
+`positions_param_positions` of shape $(N, d)$, a program input of role `weight`. A sequence longer
+than $N$ is refused when it is read. The weights are typed program inputs, so the reference machine
+runs a call with the compiled program's weights given as data, and the compiled runtime holds the
+network as the submodule `_function_<f>` (with parameters `source.query`, `source.key`,
+`source.value`, `source.output`, or `source.table`). Each call is bound as `<f>__call<n>`.
 
-A sequence function contributes no site. Drawing from one is refused, as is
-a call whose argument is not one table of `d`-wide rows (a single vector, for
-instance), a call inside a `factor` or lambda body, and a sequence function
-composed in a chain or used as a scan's cell, which apply their morphisms
-one position at a time (`chain:sequence-function:<f>`, where the chain is
-drawn). The options `heads`, a positive divisor of `m`, and `causal`, `true`
-or `false` and required, belong to `self_attention`; `output`, `activation`,
-and `weights=latent` are refused for both networks.
+A sequence function contributes no site. These uses are refused: drawing from one, a call whose
+argument is not one table of rows of width $d$ (a single vector, for instance), a call inside a
+`factor` or lambda body, and a sequence function composed in a chain or used as a scan's cell, which
+would apply its morphism one position at a time (`chain:sequence-function:<f>`, where the chain is
+drawn). The options `heads`, a positive divisor of $m$, and `causal`, `true` or `false` and
+required, belong to `self_attention`. The options `output`, `activation`, and `weights=latent` are
+refused for both kinds of network.
 
-Every transpile target refuses a sequence function under
-`param-source:self_attention` or `param-source:positions`, because its
-weights are neither sites nor data a target is given.
+Every transpile target refuses a sequence function with `param-source:self_attention` or
+`param-source:positions`, because its weights are neither sites nor data a target is given.
 
 ## Latent network weights
 
-A network kernel or a learned function declared `[weights=latent,
-prior_scale=s]` draws its network's weights as sites. Before elaboration,
-each program without value parameters that reaches the morphism (through a
-draw, a let call, a `define` with a scan, a scan's cell, or a called program)
-gains, at the head of its body, one draw per layer:
+A network kernel or a learned function declared `[weights=latent, prior_scale=s]` draws its
+network's weights as sites, which places a prior on every weight, as in a Bayesian neural network
+[@mackay1992bayesian]. Before elaboration, each program without value parameters that reaches the
+morphism (through a draw, a `let` call, a `define` with a scan, a scan's cell, or a called program)
+gains one draw per layer at the head of its body:
 
 <!-- compile: false -->
 ```qvr
@@ -747,30 +713,24 @@ sample net_param_layer0_weight : net__w0_rows <- Normal(loc=0.0, scale=s) [over=
 sample net_param_layer0_bias <- Normal(loc=0.0, scale=s) [over=net__w0_rows]
 ```
 
-with `net__w<k>_rows` and `net__w<k>_cols` finite objects of the layer's
-height and width. The network's elaboration then reads these bindings where
-it would otherwise declare `weight` and `bias` program inputs, so the checked
-computation has no such inputs and the reference machine draws or replays the
-weights as sites. The compiled runtime applies the network at the run's drawn
-weights. A latent-weight kernel is drawn from with its inputs named, and a
-latent-weight morphism composed in a `define` without a scan, or in a
-morphism's `~ <expression>`, is refused. Every transpile target refuses the
-network as `param-source:linear:latent` or `param-source:mlp:latent`.
+Here `net__w<k>_rows` and `net__w<k>_cols` are finite objects of the layer's height and width. The
+network's elaboration then reads these bindings where it would otherwise declare `weight` and `bias`
+program inputs, so the checked computation has no such inputs, and the reference machine draws or
+replays the weights as sites. The compiled runtime applies the network at the weights drawn in the
+run. A kernel with latent weights is drawn from with its inputs named. A morphism with latent weights
+composed in a `define` without a scan, or in a morphism's `~ <expression>`, is refused. Every
+transpile target refuses the network as `param-source:linear:latent` or `param-source:mlp:latent`.
 
 ## Running and scoring
 
-Replay fixes named random choices so a particular execution can be
-scored or reproduced. The runtime [handler](effects-and-handlers.md#handler-declarations) draws unspecified choices from
-their model distributions. To estimate their distribution given observed
-data, pass the model and observations to an
-[inference driver](../../guides/inference-foundations.md).
-
-An invocation installs a draw-and-score handler for `random` and an
-accumulator for `score`. Given `--site name=value`, that site is replayed and
-scored; every unspecified site is drawn and scored. The result includes the
-program value, log joint, and [trace](../../guides/inference-foundations.md#trace-and-sample-sites). `run_program` is the stricter replay form
-used when every site must be supplied.
-
-See [Execution and tooling](execution-and-tooling.md#run-an-entry) for CLI and
-Python forms, and [Transpilation support](../../transpile-support.md) for the
-measured backend boundary.
+An invocation installs a handler for `random` that draws or replays each site and scores it, and an
+accumulator for `score`. Given `--site name=value`, that site is replayed at the value and scored,
+and every site not given is drawn from its distribution in the model and scored. The result holds
+the program's value, its log joint, and its
+[execution trace](../../guides/inference-foundations.md#trace-and-sample-sites).
+[`run_program`][quivers.qiec.program_runtime.run_program] is the stricter replay that requires a
+value for every site. A posterior given observed data is computed by an
+[inference driver](../../guides/inference-foundations.md), not by an invocation. The command line
+and Python forms are under [run an entry](execution-and-tooling.md#run-an-entry), and the support
+of each target under [transpilation](execution-and-tooling.md#transpilation) and in the
+[transpilation support matrix](../../transpile-support.md).
