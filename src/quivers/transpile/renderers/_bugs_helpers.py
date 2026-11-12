@@ -396,6 +396,68 @@ def continuous_bernoulli_log_pdf(
     )
 
 
+def bernoulli_logit_log_pmf(
+    backend: str,
+    *,
+    variate: str,
+    args: tuple[IRArg, ...],
+    arg_names: tuple[str, ...],
+) -> LetExprNode:
+    """Build the log mass of a Bernoulli given by its log-odds.
+
+    For log-odds ``l`` and outcome ``x`` in ``{0, 1}``,
+    ``log p(x) = x * l - softplus(l)`` with
+    ``softplus(l) = (l + |l|) / 2 + log(1 + exp(-|l|))``. The
+    exponential's argument is never positive, so the form neither
+    overflows nor loses the complement's digits where the probability
+    is within an ulp of zero or one, as ``log(1 - ilogit(l))`` would.
+    The expression needs only ``abs``, ``exp``, and ``log`` from the
+    BUGS and JAGS base libraries.
+
+    Parameters
+    ----------
+    backend : str
+        The target, for the refusal's kind.
+    variate : str
+        The outcome's name.
+    args : tuple[IRArg, ...]
+        The call's arguments.
+    arg_names : tuple[str, ...]
+        The parameter each argument fills.
+
+    Returns
+    -------
+    LetExprNode
+        The log mass of one outcome.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the call supplies no logits.
+    """
+    by_name = dict(zip(arg_names, args, strict=False))
+    if "logits" not in by_name:
+        raise UnsupportedConstruct(
+            f"qvr-{backend}",
+            [
+                f"family:Bernoulli:missing-arg:logits: the closed-form mass "
+                f"reads the log-odds; the site supplies {list(arg_names)}"
+            ],
+        )
+    logit = _scalar_arg_expr(backend, "Bernoulli", "logits", by_name["logits"])
+    magnitude = LetExprCall(func="abs", args=(logit,))
+    softplus = _let_add(
+        _let_mul(LetExprLiteral(value=0.5), _let_add(logit, magnitude)),
+        _let_log(
+            _let_add(
+                LetExprLiteral(value=1.0),
+                LetExprCall(func="exp", args=(LetExprUnaryOp(operand=magnitude),)),
+            )
+        ),
+    )
+    return _let_sub(_let_mul(LetExprVar(name=variate), logit), softplus)
+
+
 def reorder_half_studentt_dt(
     args: tuple[IRArg, ...], arg_names: tuple[str, ...]
 ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
@@ -2050,19 +2112,76 @@ def index_letexpr_refs(
     loop does not iterate are also left bare so the emitter can flag
     the shape mismatch downstream rather than silently picking the
     wrong loop variable.
+
+    A loop axis that no name the expression reads declares is the axis
+    of a gathered row: `theta_tok[n, k] <- theta[doc_idx[n], k]` loops
+    over the token and over an axis the gather leaves, which `theta`
+    declares as its event. Such free axes read the event axes a gather
+    leaves, in order and extent by extent, so the relation binds one
+    entry per iteration instead of a whole row.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+    decl_plates : dict[str, Plate]
+        Every bound name's declared plate.
+    enclosing_plate : Plate
+        The plate the relation loops over.
+    loop_names : tuple[str, ...]
+        One loop variable per batch axis of `enclosing_plate`.
+
+    Returns
+    -------
+    LetExprNode
+        The expression read at the loop's position.
     """
     if not loop_names:
         return expr
     axis_to_loop: dict[str, str] = {}
     for dim, lname in zip(enclosing_plate.batch_dims, loop_names, strict=True):
         axis_to_loop[dim.name] = lname
-    return _index_letexpr_refs_inner(expr, decl_plates, axis_to_loop)
+    owned = {
+        str(dim.name)
+        for name in collect_letexpr_vars(expr)
+        if (plate := decl_plates.get(name)) is not None
+        for dim in (*plate.batch_dims, *plate.event_dims)
+    }
+    free = [
+        (lname, dim)
+        for dim, lname in zip(enclosing_plate.batch_dims, loop_names, strict=True)
+        if str(dim.name) not in owned
+    ]
+    return _index_letexpr_refs_inner(expr, decl_plates, axis_to_loop, free)
+
+
+def _same_extent(left: Dim, right: Dim) -> bool:
+    """Whether two axes have one extent.
+
+    Parameters
+    ----------
+    left : Dim
+        One axis.
+    right : Dim
+        The other.
+
+    Returns
+    -------
+    bool
+        Both static with one size, or both dynamic over one size name.
+    """
+    if isinstance(left, DimStatic) and isinstance(right, DimStatic):
+        return int(left.size) == int(right.size)
+    if isinstance(left, DimDynamic) and isinstance(right, DimDynamic):
+        return left.size_name == right.size_name
+    return False
 
 
 def _index_letexpr_refs_inner(
     expr: LetExprNode,
     decl_plates: dict[str, Plate],
     axis_to_loop: dict[str, str],
+    free: list[tuple[str, Dim]] | None = None,
 ) -> LetExprNode:
     if isinstance(expr, LetExprVar):
         plate = decl_plates.get(expr.name)
@@ -2088,24 +2207,28 @@ def _index_letexpr_refs_inner(
     if isinstance(expr, LetExprBinOp):
         return LetExprBinOp(
             op=expr.op,
-            left=_index_letexpr_refs_inner(expr.left, decl_plates, axis_to_loop),
-            right=_index_letexpr_refs_inner(expr.right, decl_plates, axis_to_loop),
+            left=_index_letexpr_refs_inner(expr.left, decl_plates, axis_to_loop, free),
+            right=_index_letexpr_refs_inner(
+                expr.right, decl_plates, axis_to_loop, free
+            ),
         )
     if isinstance(expr, LetExprUnaryOp):
         return LetExprUnaryOp(
-            operand=_index_letexpr_refs_inner(expr.operand, decl_plates, axis_to_loop),
+            operand=_index_letexpr_refs_inner(
+                expr.operand, decl_plates, axis_to_loop, free
+            ),
         )
     if isinstance(expr, LetExprCall):
         return LetExprCall(
             func=expr.func,
             args=tuple(
-                _index_letexpr_refs_inner(a, decl_plates, axis_to_loop)
+                _index_letexpr_refs_inner(a, decl_plates, axis_to_loop, free)
                 for a in expr.args
             ),
         )
     if isinstance(expr, LetExprIndex):
         subscripts = tuple(
-            _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop)
+            _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop, free)
             for ix in expr.indices
         )
         # The subscripts select the array's leading axes; an axis left
@@ -2113,6 +2236,7 @@ def _index_letexpr_refs_inner(
         # loop's row too, as a gathered table's class axis is in
         # `row_table[n, k] <- table[group_idx[n], k]`.
         trailing: tuple[LetExprNode, ...] = ()
+        events: tuple[LetExprNode, ...] = ()
         if isinstance(expr.array, LetExprVar):
             plate = decl_plates.get(expr.array.name)
             if plate is not None:
@@ -2121,15 +2245,37 @@ def _index_letexpr_refs_inner(
                     for dim in plate.batch_dims[len(subscripts) :]
                     if str(dim.name) in axis_to_loop
                 )
-        return LetExprIndex(array=expr.array, indices=(*subscripts, *trailing))
+                # A gather that selects a whole event block reads it at
+                # the loop's free axes, one per event axis of the same
+                # extent.
+                if (
+                    free
+                    and plate.event_dims
+                    and len(subscripts) + len(trailing) == len(plate.batch_dims)
+                    and len(free) >= len(plate.event_dims)
+                    and all(
+                        _same_extent(dim, free_dim)
+                        for dim, (_, free_dim) in zip(
+                            plate.event_dims, free, strict=False
+                        )
+                    )
+                ):
+                    events = tuple(
+                        LetExprVar(name=lname)
+                        for lname, _ in free[: len(plate.event_dims)]
+                    )
+                    del free[: len(plate.event_dims)]
+        return LetExprIndex(array=expr.array, indices=(*subscripts, *trailing, *events))
     if isinstance(expr, LetExprAffineMap):
         return LetExprAffineMap(
-            weight=_index_letexpr_refs_inner(expr.weight, decl_plates, axis_to_loop),
-            bias=_index_letexpr_refs_inner(expr.bias, decl_plates, axis_to_loop),
+            weight=_index_letexpr_refs_inner(
+                expr.weight, decl_plates, axis_to_loop, free
+            ),
+            bias=_index_letexpr_refs_inner(expr.bias, decl_plates, axis_to_loop, free),
             sources=tuple(
                 LetAffineSource(
                     value=_index_letexpr_refs_inner(
-                        source.value, decl_plates, axis_to_loop
+                        source.value, decl_plates, axis_to_loop, free
                     ),
                     width=source.width,
                 )

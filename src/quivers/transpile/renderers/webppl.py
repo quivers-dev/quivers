@@ -305,6 +305,7 @@ class WebPPLRenderer(RendererBase):
             # although the family itself is scored through `.score`
             # rather than through the helper path.
             or _ir_uses_family(ir.body, "Categorical")
+            or _ir_uses_logit_constructor(ir.body)
             or qiec_helper_families_used(ir, self.target)
         ):
             _graft_runtime_webppl_helper(ctx.sb, self, "prog")
@@ -439,7 +440,9 @@ class WebPPLRenderer(RendererBase):
                 "qvr-webppl",
                 [f"family:unknown:{family}"],
             )
-        webppl_name = meta.target_names.get("webppl")
+        webppl_name = _LOGIT_CONSTRUCTORS.get(
+            (family, tuple(arg_names)), meta.target_names.get("webppl")
+        )
         if webppl_name is None:
             raise UnsupportedConstruct(
                 "qvr-webppl",
@@ -1082,7 +1085,10 @@ class WebPPLRenderer(RendererBase):
             raise UnsupportedConstruct(
                 "qvr-webppl", [f"family:unknown:{observe.family}"]
             )
-        webppl_name = meta.target_names.get("webppl")
+        webppl_name = _LOGIT_CONSTRUCTORS.get(
+            (observe.family, tuple(observe.arg_names)),
+            meta.target_names.get("webppl"),
+        )
         if webppl_name is None:
             raise UnsupportedConstruct(
                 "qvr-webppl",
@@ -3189,6 +3195,38 @@ _WEBPPL_TENSOR_ARGS: dict[str, frozenset[str]] = {
 _WEBPPL_MATRIX_ARGS: dict[str, frozenset[str]] = {
     "MultivariateNormal": frozenset({"covariance_matrix"}),
 }
+
+
+#: The runtime constructor of each family call written through an
+#: alternative parameterization: a Bernoulli given by its logits scores
+#: each outcome by the log-sigmoid of the signed logits.
+_LOGIT_CONSTRUCTORS: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "BernoulliLogit",
+}
+
+
+def _ir_uses_logit_constructor(body: tuple[IRNode, ...]) -> bool:
+    """Whether a site draws or scores through a runtime logit constructor.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe calls a family under a
+        parameterization `_LOGIT_CONSTRUCTORS` spells.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and (
+            (node.family, tuple(node.arg_names)) in _LOGIT_CONSTRUCTORS
+        ):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_uses_logit_constructor(node.scope):
+            return True
+    return False
 
 
 def _inject_webppl_specific_args(

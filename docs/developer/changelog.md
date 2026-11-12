@@ -47,6 +47,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The dual algebras compose matrices.** `DualAlgebra.compose`, and so composition under `REICHENBACH`, `BOOLEAN_DUAL`, `DUAL_LUKASIEWICZ` and `DUAL_GODEL`, broadcasts its operands, where it raised a stack-size error for every pair of matrices.
 - **The noisy-OR join treats zero as zero.** `ProductFuzzyAlgebra.join`, `ProductFuzzyAlgebra.compose` and `noisy_or_contract` keep terms below `1 - EPS` but no longer raise zeros to `EPS`, so a reduction of zeros is exactly zero and the identity tensor is an identity for composition at every object size, where `n` zero terms had added about `n * 1e-7`.
 
+## [0.56.0] - 2026-11-12
+
+### Added
+
+- **`Bernoulli(logits=...)` on Gen, WebPPL, JAGS, and Church.** Each target scores a Bernoulli given by its log-odds `l` from the log-odds themselves, `log p(1) = log sigmoid(l)` and `log p(0) = log sigmoid(-l)` in the form `min(v, 0) - log1p(exp(-|v|))` (JAGS: `x * l - ((l + |l|) / 2 + log(1 + exp(-|l|)))`), which keeps its digits at log-odds of ±30 where the probability is within an ulp of zero or one. Gen draws through a grafted `qvr_bernoulli_logit` distribution, WebPPL through a runtime `BernoulliLogit`, Church through `flip-logit`, and JAGS scores the mass with the zeros trick, a drawn outcome declared by a uniform `dbern(0.5)` carrier. BUGS still refuses the parameterization under `family:Bernoulli:logits`: its `dbern` takes a probability, whose complement loses its digits near ±30, and it has no data block to bind the zeros-trick carrier.
+
+### Fixed
+
+- **PyMC scores `Bernoulli(logits=...)` exactly at saturated log-odds.** The site is a grafted `BernoulliLogit` `CustomDist` whose mass is `value * l - softplus(l)`, where `pymc.Bernoulli(logit_p=...)` had lost about `1e-3` of the log density at log-odds 30.
+- **Stan refuses every discrete latent draw.** A `sample` from a family with integer support (a `Bernoulli`, a `Poisson`, ...) is refused under `sample:discrete-latent`, as a class code already was, where Stan had been handed an integer parameter it does not compile.
+
+## [0.55.4] - 2026-11-12
+
+### Fixed
+
+- **A grouped marginalization batched over its observation plate reads the observe's `via` map on every target.** In `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]` with `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]`, the Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church renderings weigh word `n` by `theta_tok[token_idx[n]]`, as Stan, the compiled runtime, and the reference machine do, where they had paired it with row `n`'s weights whenever the map was not the identity. A prior whose leading axis is the grouping plate counts as allocated per group whatever axes follow it, and a prior shared by every group sums the rows a group collects before the reduction over the class, as on a coarser grouping plate.
+- **JAGS renders a per-token topic model whose prior gathers each token's document row.** A `let theta_tok = theta[doc_idx]` lowers to `theta_tok[n, k] <- theta[doc_idx[n] + 1, k]`, reading the gathered row one entry per loop iteration, where JAGS had refused the model.
+
 ## [0.55.3] - 2026-11-12
 
 ### Fixed

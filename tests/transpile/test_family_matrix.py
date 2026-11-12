@@ -107,6 +107,10 @@ _ORTHOGONAL_REFUSALS: dict[tuple[str, str], str] = {
     # data block to shift them in and no free log-density statement to
     # score them otherwise.
     ("bugs", "categorical"): "observe:class-code",
+    # `bernoulli.qvr` draws its outcome as a latent, and Stan's samplers
+    # carry no discrete parameter; Stan scores the family at an observed
+    # site.
+    ("stan", "bernoulli"): "sample:discrete-latent",
 }
 
 
