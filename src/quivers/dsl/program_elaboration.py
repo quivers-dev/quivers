@@ -212,6 +212,10 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.markov_chains import chain_cells, markov_cell
+from quivers.dsl.sequence_functions import (
+    _SequenceFunctionElaboration,
+    sequence_source_kind,
+)
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
@@ -2195,7 +2199,7 @@ def _element_of(parameter: FamilyParameter | _ScalarParameter) -> TypeApplicatio
     return REAL
 
 
-class _ProgramElaboration:
+class _ProgramElaboration(_SequenceFunctionElaboration):
     """Program elaboration, mixed into the QIEC elaborator.
 
     The methods read and extend the elaborator's declaration tables, so
@@ -5095,6 +5099,18 @@ class _ProgramElaboration:
                 f"{len(call.args)}",
                 code="qiec-program",
             )
+        sequence_kind = sequence_source_kind(morphism)
+        if sequence_kind is not None:
+            return self._sequence_function_call(
+                morphism,
+                sequence_kind,
+                call,
+                widths[0],
+                out_width,
+                scope,
+                state,
+                node,
+            )
         sources: list[Value] = []
         for position, (argument, width) in enumerate(
             zip(call.args, widths, strict=True)
@@ -5559,9 +5575,9 @@ class _ProgramElaboration:
         """Fix the open extents of a returned value to the program's codomain.
 
         A program declared ``p : A -> D`` with ``D`` a ``Real N`` object
-        returns a value of ``D``: each axis of a returned real tensor
-        whose extent only the data would fix, such as a draw whose mean
-        is a host vector, has ``N`` entries.
+        returns a value of ``D``: each axis of a returned real vector, or
+        of a returned square matrix, whose extent only the data would fix,
+        such as a draw whose mean is a host vector, has ``N`` entries.
 
         Parameters
         ----------
@@ -5580,6 +5596,11 @@ class _ProgramElaboration:
             return
         shape = tensor_shape(local.type)
         if shape is None or shape[0] != REAL:
+            return
+        own = [self._resolved_extent(item, state) for item in shape[1]]
+        if len(own) > 2 or (len(own) == 2 and own[0] != own[1]):
+            # A ``Real N`` codomain sizes a vector, or a square matrix over
+            # it; it says nothing of a matrix of two shapes.
             return
         width = _extent(info.real_width)
         open_sizes = [
@@ -7262,8 +7283,8 @@ class _ProgramElaboration:
             family ties the parameter's axes to its sample's, and the
             draw reads the name as a tensor over those axes: with no
             plate, one value per row of a plate with no event axes, or
-            beside event axes a matrix whose structure no scalar
-            broadcast fills. ``None`` otherwise.
+            beside event axes a matrix, which no scalar broadcast stands
+            in for. ``None`` otherwise.
         """
         if not parameter.event_dims:
             return None
@@ -7281,7 +7302,11 @@ class _ProgramElaboration:
             return None
         if scope.lookup(name) is not None or name in self._program_morphisms:
             return None
-        if plate.event and parameter.constraint not in _MATRIX_CONSTRAINTS:
+        if (
+            plate.event
+            and parameter.constraint not in _MATRIX_CONSTRAINTS
+            and parameter.rank < 2
+        ):
             return None
         return name
 

@@ -61,6 +61,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.joint_plan import JointPlans
 from quivers.inference.guides.base import Guide, GuideDraw
 from quivers.inference.registry import _require_one_run
 
@@ -142,6 +143,8 @@ class AutoDAIS(Guide):
         self._observations = observations
         self._x = x if x is not None else torch.zeros(1, 1)
         _require_one_run(self._x, "AutoDAIS")
+        # The model's log joint prepared per layout of the bridge's values.
+        self._plans = JointPlans(model, self._x)
         self._num_steps = num_steps
         self._leapfrog_steps = leapfrog_steps
         self._D = self._registry.total_unconstrained_dim
@@ -226,9 +229,7 @@ class AutoDAIS(Guide):
         """
         trace_side, log_det = self._trace_side_with_log_det(z_flat)
         log_q0 = self.base.log_prob(self._x[:1], trace_side).sum()
-        log_p = self._model.log_joint(
-            self._x, {**trace_side, **self._observations}
-        ).sum()
+        log_p = self._plans.log_joint({**trace_side, **self._observations}).sum()
         return (1.0 - beta) * log_q0 + beta * log_p + log_det
 
     def _grad_bridge(

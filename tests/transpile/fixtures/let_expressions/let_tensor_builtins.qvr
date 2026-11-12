@@ -1,0 +1,19 @@
+# Exercises `matmul`, which sums the last axis of its first argument
+# against the first axis of its second, and `layer_norm` and `rms_norm`,
+# which normalize a vector along its last axis.
+object In : FinSet 3
+object Out : FinSet 2
+object Step : FinSet 2
+
+program p : Step -> Step
+    sample W : Out <- Normal(loc=0.0, scale=1.0) [over=In]
+    sample x : In <- Normal(loc=0.0, scale=1.0)
+    let z = matmul(W, x)
+    let d = matmul(x, x)
+    let ln = layer_norm(x)
+    let rn = rms_norm(z, 0.001)
+    observe y : Step <- Normal(loc=d, scale=1.0)
+    score w = sum(z) + sum(ln * x) + sum(rn)
+    return y
+
+export p

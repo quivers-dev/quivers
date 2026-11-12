@@ -865,6 +865,24 @@ class _RunAxis:
                     self._flags[(id(body), name)] = True
                 self._index(body, entry=False)
 
+    def copy(self) -> _RunAxis:
+        """An independent copy, as a fresh classification of the same run.
+
+        A run records the flags of the bindings it computes; the copy
+        starts from this classification's flags and records into its own.
+
+        Returns
+        -------
+        _RunAxis
+            The copy.
+        """
+        duplicate = _RunAxis.__new__(_RunAxis)
+        duplicate._flags = dict(self._flags)
+        duplicate._aliases = self._aliases
+        duplicate._parents = self._parents
+        duplicate._sites = dict(self._sites)
+        return duplicate
+
     def given(self, program: MonadicProgram, label: str, flag: bool) -> None:
         """Record whether a site's given value carries the run axis.
 
@@ -1053,6 +1071,10 @@ class _HostSteps:
     def function(self, step: HostStep) -> Callable[[object, ClauseContext], object]:
         """The host function of a step.
 
+        A draw reads its morphism's parameters by performing ``param``
+        requests through the clause context; every other kind is a
+        function of the environment tuple alone, `pure`.
+
         Parameters
         ----------
         step : HostStep
@@ -1069,45 +1091,73 @@ class _HostSteps:
         ValueError
             If the step is of an unknown kind.
         """
+        if step.kind == "draw":
+            return lambda argument, context: self.draw(
+                step,
+                argument,
+                lambda site, morphism: self._parameters(site, morphism, context),
+            )
+        pure = self.pure(step)
+        return lambda argument, _context: pure(argument)
+
+    def pure(self, step: HostStep) -> Callable[[object], object]:
+        """The host function of a step that performs no effect.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step, of any kind but ``"draw"``.
+
+        Returns
+        -------
+        Callable[[object], object]
+            The function of the environment tuple.
+
+        Raises
+        ------
+        ValueError
+            If the step is a draw, whose parameters are read through
+            effects, or of an unknown kind.
+        """
         if step.kind == "input":
             return self._split_input
         if step.kind == "draw":
-            return lambda argument, context: self._draw(step, argument, context)
+            raise ValueError(
+                "a draw step reads its parameters through effects; serve it with `draw`"
+            )
         if step.kind == "apply":
-            return lambda argument, _context: self._apply(step, argument)
+            return lambda argument: self._apply(step, argument)
         if step.kind == "bind":
-            return lambda argument, _context: self._bind(step, argument)
+            return lambda argument: self._bind(step, argument)
         if step.kind == "let":
-            return lambda argument, _context: self._let(step, argument)
+            return lambda argument: self._let(step, argument)
         if step.kind == "score":
-            return lambda argument, _context: self._score(step, argument)
+            return lambda argument: self._score(step, argument)
         if step.kind == "pack":
-            return lambda argument, _context: self._pack(step, _host(argument))
+            return lambda argument: self._pack(step, _host(argument))
         if step.kind == "site":
-            return lambda _argument, _context: self._site(step)
+            return lambda _argument: self._site(step)
         if step.kind == "scan_length":
-            return lambda argument, _context: self._scan_length(step, _host(argument))
+            return lambda argument: self._scan_length(step, _host(argument))
         if step.kind == "scan_initial":
-            return lambda argument, _context: self._scan_initial(step, _host(argument))
+            return lambda argument: self._scan_initial(step, _host(argument))
         if step.kind == "scan_entry":
-            return lambda argument, _context: self._scan_entry(step, _host(argument))
+            return lambda argument: self._scan_entry(step, _host(argument))
         if step.kind == "scan_state":
-            return lambda argument, _context: self._scan_state(step, _host(argument))
+            return lambda argument: self._scan_state(step, _host(argument))
         if step.kind == "scan_states":
-            return lambda argument, _context: self._scan_states(step, _host(argument))
+            return lambda argument: self._scan_states(step, _host(argument))
         if step.kind == "scan_collect":
-            return lambda argument, _context: self._scan_collect(step, _host(argument))
+            return lambda argument: self._scan_collect(step, _host(argument))
         raise ValueError(f"unknown host step kind {step.kind!r}")
 
-    def _split_input(self, argument: object, _context: ClauseContext) -> object:
+    def _split_input(self, argument: object) -> object:
         """Split the program input into its named parameters.
 
         Parameters
         ----------
         argument : object
             The environment tuple, holding the input first.
-        _context : ClauseContext
-            Unused.
 
         Returns
         -------
@@ -1150,7 +1200,12 @@ class _HostSteps:
         """
         return env[INPUT_NAME] if spec.args is None else self.x
 
-    def _draw(self, step: HostStep, argument: object, context: ClauseContext) -> object:
+    def draw(
+        self,
+        step: HostStep,
+        argument: object,
+        parameters: Callable[[str, ContinuousMorphism], dict[str, torch.Tensor]],
+    ) -> object:
         """Build the sampleable of a draw step.
 
         Parameters
@@ -1159,9 +1214,10 @@ class _HostSteps:
             The step.
         argument : object
             The environment tuple.
-        context : ClauseContext
-            The clause context, through which the morphism's parameters
-            are read from the ``param`` instance.
+        parameters : Callable[[str, ContinuousMorphism], dict[str, torch.Tensor]]
+            Reads the parameters of the morphism drawing at a site, by
+            the morphism's own names: on the reference machine, through
+            the ``param`` instance.
 
         Returns
         -------
@@ -1181,7 +1237,7 @@ class _HostSteps:
             lambda name: self.axis.carries(step.program, name),
         )
         assert step.site is not None
-        values = self._parameters(step.site, morphism, context)
+        values = parameters(step.site, morphism)
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
         )
@@ -2761,7 +2817,11 @@ class _ReferenceEvaluator:
         return log_joint(program, x, intermediates)
 
 
-install_evaluator(_ReferenceEvaluator())
+#: The reference machine as installed: the evaluator a prepared joint
+#: (`quivers.effects.joint_plan`) reproduces.
+REFERENCE_EVALUATOR = _ReferenceEvaluator()
+
+install_evaluator(REFERENCE_EVALUATOR)
 
 __all__ = [
     "run_program",

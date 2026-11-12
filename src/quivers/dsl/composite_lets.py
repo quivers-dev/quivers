@@ -49,6 +49,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprVar,
 )
 from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
+from quivers.dsl.sequence_functions import sequence_source_kind
 from quivers.dsl.step_resolution import StepResolutionError, _step_value_names
 from quivers.dsl.ast_nodes import atom_to_draw_arg
 
@@ -910,6 +911,56 @@ def _refuse_program_leaves(
             )
 
 
+def _refuse_sequence_function_leaves(
+    chain: tuple[_ChainElem, ...],
+    program: _Program,
+    step: SampleStep | ObserveStep,
+) -> None:
+    """Refuse a chain that composes a sequence function.
+
+    A learned function over whole sequences (``param_source`` of
+    ``self_attention`` or ``positions``) reads every position of a
+    sequence at once. A chain applies its links one value at a time, a
+    scan's cell and the links before it at every position, so neither
+    can apply it; a program applies it in a ``let`` to the sequence a
+    scan with ``outputs=all`` binds.
+
+    Parameters
+    ----------
+    chain : tuple[_ChainElem, ...]
+        The chain, searched through parallel branches.
+    program : _Program
+        The enclosing program's expansion.
+    step : SampleStep | ObserveStep
+        The step being expanded.
+
+    Raises
+    ------
+    StepResolutionError
+        If a link or a scan's cell names a sequence function.
+    """
+    for elem in chain:
+        if isinstance(elem, _ParallelLeaf):
+            for branch in elem.branches:
+                _refuse_sequence_function_leaves(branch, program, step)
+            continue
+        name = getattr(elem, "name", None)
+        decl = program.morphisms.get(name) if isinstance(name, str) else None
+        if decl is None or sequence_source_kind(decl) is None:
+            continue
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"chain:sequence-function:{name}",
+                f"the morphism {step.morphism!r} drawn at line {step.line} "
+                f"composes {name!r}, which reads a whole sequence at once, in "
+                f"a chain or a scan that applies it one position at a time; "
+                f"bind the sequence and apply it in a let, as in "
+                f"`sample xs <- states` then `let ys = {name}(xs)`",
+            ],
+        )
+
+
 def _expand_step(
     step: SampleStep | ObserveStep,
     chain: tuple[_ChainElem, ...],
@@ -953,6 +1004,8 @@ def _expand_step(
     if len(chain) < 1:
         return [step]
     _refuse_program_leaves(chain, program, step)
+    if len(chain) > 1 or not isinstance(chain[0], _DeterministicLeaf):
+        _refuse_sequence_function_leaves(chain, program, step)
     base_name = step.vars[0] if step.vars else "tmp"
     if len(chain) == 1 and isinstance(chain[0], _StochasticLeaf):
         elem = chain[0]

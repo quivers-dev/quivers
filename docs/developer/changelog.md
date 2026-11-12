@@ -4,16 +4,61 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.52.0] - 2026-11-11
 
 ### Added
 
-- **Marginalized chains: the forward algorithm for a scan over a finite state.** A program cell `cell(x_t, z_prev) : X * S -> S`, with `S` a finite set, that binds lets, marginalizes its next state `z` from a `Categorical` reading `z_prev`, observes what `z` emits inside the block, and returns `z` is a step of a discrete Markov chain, and `sample path <- scan(cell, init=p)` sums every path of states out: `z_0 ~ p`, each position's transition and observations are weighed at every pair of states, and the chain's log marginal likelihood, computed in log space in `O(T K^2)`, is added to the joint under `path`. A long chain whose path probabilities underflow keeps a finite marginal. The compiled runtime and the reference machine both compute it, with gradients to every parameter the cell reads; an observation named after the cell's entry scores the scanned value itself, so a hidden Markov model scans its observed symbols, and the cell's lets may read the entry, so transitions can depend on a covariate. `reverse=true` runs the chain right to left. No grammar change: the form parses today. Forms the forward algorithm does not cover are refused where they are written, on both paths, under `scan:marginal:<reason>:<cell>`: another cell type, steps other than lets before the block or lets and single observations inside it, a family other than `Categorical`, a grouped block or another reduction, a chain without `init=`, with `outputs=all`, composed with other elements, observed, or inside a `marginalize` block, a later read of the chain's binding, and a draw or call of the cell outside a scan. Every transpile target refuses a marginalized chain with `scan:marginal:no-lowering:<cell>`.
+- **Learned causal self-attention and position tables over open-length sequences.** A `[role=function]` morphism declared `param_source=self_attention, heads=h, causal=true|false` is multi-head scaled dot-product self-attention, and one declared `param_source=positions(N)` adds a learned vector to each of up to `N` positions. A program calls either in a `let` on a table `Tensor[Real]([T, d])` (the every-state binding of a scan with `outputs=all`, a `let` over one, or a host table) and reads back a table of the same length, `T` open, so a residual block is `let h = u + attn(layer_norm(u))`. Under `causal=true` position `i` attends to positions `j <= i` only. The checked elaboration builds the map from comprehensions over the open extent, with the query, key, value, and output projections (`<f>_param_query_weight`, ..., `<f>_param_weight`) and the position table (`<f>_param_positions`) as typed program inputs, so the reference machine and the compiled runtime agree on it. The runtime realization is the new `SequenceFunction` over a `SelfAttentionSource` or a `PositionSource` (`quivers.continuous`). `heads` must divide the codomain's width and `causal` must be stated; `output`, `activation`, and `weights=latent` are refused for both networks, a sequence function composed in a chain or used as a scan's cell is refused (`chain:sequence-function:<f>`), and every transpile target refuses it as `param-source:self_attention` or `param-source:positions`.
+
+## [0.51.0] - 2026-11-11
+
+### Changed
+
+- **An MCMC potential scores its program without running the reference machine at every position.** `PotentialFn`, the tempered potential `SMC` moves under, and `AutoDAIS` prepare the program's scoring run once per layout of the values (the shape, dtype, and device of each latent, datum, and conditioned value): the kernel's bind chain is compiled to a straight-line sequence of the program's host steps and site densities, which every later evaluation at that layout replays with the same tensor operations in the same order. Values, gradients, draws, and evaluation counts are those of `MonadicProgram.log_joint` bit for bit, and a potential `condition` derives shares the preparation, so a Gibbs component's new values reuse it. On a small hierarchical model with plates a gradient evaluation runs two to five times faster, the time saved being the machine's handler construction and dispatch. A program with a scan, and any evaluation made while an effect handler is in scope, under another installed evaluator, or of a program whose `log_joint` is overridden, is scored by `log_joint` at every evaluation, as before.
+- **A plated step reads its morphism's argument widths once** rather than decoding the morphism's domain at every run.
+
+## [0.50.0] - 2026-11-11
+
+### Added
+
+- **Stan, NumPyro, Pyro, and PyMC render a multivariate normal or a Wishart whose Cholesky factor is known only at run time,** a host datum or a factor the program builds, such as an LKJ correlation factor scaled by sampled standard deviations. A multivariate normal takes the factor in each library's Cholesky parameterization (Stan `multi_normal_cholesky`, `scale_tril=` in NumPyro and Pyro, `chol=` in PyMC); a Wishart takes it as `scale_tril=` in NumPyro and Pyro and multiplied out where the library takes only the scale (Stan `multiply_lower_tri_self_transpose(L)`, PyMC `V=L @ L.T`). Every other target refuses such a factor by name, as `family:<Family>:scale_tril`.
 
 ### Fixed
 
-- **The reference machine enumerates a `Categorical` given by its logits.** `marginalize c <- Categorical(logits=w)` sums over the classes of `w` on the checked path, where it had stopped with "Categorical enumeration needs its probabilities".
-- **A class-valued program parameter indexes host data in a draw's arguments.** In `program pick(k, u) : Kind * Val -> Val` the checked elaboration reads the alphabet of `k` off `Kind`, so `Normal(loc=means[k], ...)` types the host table `means` over `Kind` rather than refusing it as indexed by an unknown alphabet.
+- **Stan reads an array over a multivariate draw's event axis as the vector it is,** so a sampled mean drawn per event coordinate reaches `multi_normal` as `to_vector(mu)` rather than a broadcast of one entry.
+- **A family whose argument constraints exist only on a built instance, such as `Wishart`, is sized from the family registry's parameter ranks** when a target's plan probes its support, so a named matrix argument reaches the plan as a matrix.
+
+## [0.49.0] - 2026-11-11
+
+### Added
+
+- **`OrderedProbit`, `InverseWishart`, and `MatrixNormal` are drawn and observed inline.** `observe y : Row <- OrderedProbit(eta=eta, cutpoints=cuts)`, `sample S : K <- InverseWishart(df=nu, scale_tril=L)`, and `sample B <- MatrixNormal(loc=M, row_covariance=U, col_covariance=V) [over=[Rows, Cols]]` sample and score on the compiled runtime as on the reference machine: an ordered probit scores each category in log space from the normal distribution function, accurate far into either tail; an inverse Wishart is the inverse of a `Wishart(df, scale_tril=L)` draw, the conventional `IW(df, Psi)` with `Psi = (L L^T)^-1`; a matrix normal's row-major entries have covariance `U (x) V`. Stan, NumPyro, Pyro, and PyMC render the ordered probit (Pyro through a grafted class), Stan, NumPyro, Pyro, and Turing render the inverse Wishart from a literal factor, converted to each library's scale, and every target with a matrix normal renders it; every other target refuses by name.
+- **MCMC and SVI move a positive-definite latent site through an unconstrained space.** An inverse Wishart's or a Wishart's site is `d (d + 1) / 2` real coordinates filling its Cholesky factor, the diagonal through the exponential, with the log-Jacobian `d log 2 + sum_i (d - i + 2) x_ii` of that map in the latent registry.
+
+### Changed
+
+- **A matrix parameter filled by a free name beside `[over=...]` event axes is a matrix,** a matrix normal's mean as much as a covariance; vector parameters beside event axes stay one broadcast value. `FamilyParameter.event_dims` ties both axes of a `Wishart` or `InverseWishart` scale to the sample's first axis, `(0, 0)`, so a datum filling one is square, and a `Real N` codomain sizes a returned vector or square matrix only.
+
+### Fixed
+
+- **`ConditionalMatrixNormal` scores and draws with covariance `U (x) V` over the matrix's row-major entries,** through the density the inline family uses, where it had read the column-major Kronecker factor against row-major entries; `ConditionalInverseWishart` likewise shares the inline inverse Wishart.
+- **A compiled program whose matrix parameter only the data size is refused at the draw** with a located diagnostic, where `qvr check` had stopped on an uncaught error.
+
+## [0.48.0] - 2026-11-11
+
+### Added
+
+- **Alternative parameterizations in source.** `MultivariateNormal` and `Wishart` take `covariance_matrix` or `precision_matrix` in place of `scale_tril`, and `Bernoulli`, `Binomial`, `Geometric`, and `NegativeBinomial` take `logits` in place of `probs`; the keywords a draw writes select the parameterization, and a draw naming two is refused at the draw. Both execution paths score each as `torch.distributions` does with the same keywords, logits in log space so an observation stays finite where its probability rounds to zero or one. Each transpile target receives the parameterization under its own spelling where its library has it (Stan `bernoulli_logit`, `binomial_logit`, `multi_normal_prec`; PyMC `logit_p` and `tau`; Turing `BernoulliLogit` and `BinomialLogit`; the `logits=` and `precision_matrix=` keywords of Pyro, NumPyro, and Edward2), a literal precision matrix inverted into its covariance where it has not, and refuses any other under `family:<Family>:<keyword>`.
+
+## [0.47.0] - 2026-11-11
+
+### Added
+
+- **Checked `matmul`, `layer_norm`, and `rms_norm` in let expressions.** `matmul(a, b)` sums the last axis of `a` against the first axis of a vector or matrix `b` (extents checked to agree), row by row for `a` of any rank; `layer_norm(v)` and `rms_norm(v)` normalize each row along the last axis with an optional real `eps` (`1e-5` and `1e-6` by default). They are checked, run on the reference machine and the compiled runtime, and transpile to every target, where they had been available only to native eager execution (`layer_norm`, `rms_norm`) or not at all (`matmul`).
+
+### Fixed
+
+- **Julia, WebPPL, and Church reduce a vector inside a let.** A Julia binding whose expression reduces a vector (a list literal included) is no longer wrapped in `@.`, which had applied the reduction to each entry; WebPPL and Church define `mean`, which a let reading a vector's mean had called unbound.
 
 ## [0.46.0] - 2026-11-11
 

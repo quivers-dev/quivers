@@ -422,6 +422,111 @@ program ssm : Driver -> State
 export ssm
 ```
 
+### Sequence functions: self-attention and position tables
+
+Two networks read a whole sequence at once instead of one row at a time.
+A function declared with `param_source=self_attention` is multi-head
+scaled dot-product self-attention [@vaswani2017attention]: it maps a
+sequence of `T` rows to a sequence of `T` rows, and the row at position `i`
+is a weighted sum of value projections of every row it attends to. A
+function declared with `param_source=positions(N)` adds a learned vector to
+each row, the `t`-th row of an `N`-row table to position `t`, which is how
+a model that attends tells positions apart.
+
+```qvr
+object Model : Real 16
+
+# Two heads of width 8; position i attends to positions 0 through i.
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+# One learned vector per position, for sequences of up to 64 positions.
+morphism positions : Model -> Model [role=function, param_source=positions(64)]
+```
+
+- **Options.** `heads` (one by default) must divide the codomain's width,
+  the model width `m`; each head reads `m / heads` coordinates of the query,
+  key, and value projections. `causal` is required, since the mask decides
+  what the model may read: `causal=true` lets position `i` attend to
+  positions `j <= i` only, which a language model scoring the next token
+  needs, and `causal=false` lets every position attend to every position.
+  The domain is one space, not a product; a position table's codomain is
+  its domain. Neither network takes `activation` or `output`, and
+  `weights=latent` is refused for both: their weights are point estimates.
+- **Sequences, not rows.** A program calls a sequence function in a `let`
+  on a table `Tensor[Real]([T, d])`, the every-state binding of a scan with
+  `outputs=all`, a `let` over one, or a host table, and the value is a
+  table of the same length. `T` is open: one program reads sequences of
+  any length, up to `N` for a position table. A sequence function is not a
+  link of a chain or the cell of a scan, which apply their morphisms one
+  position at a time; such a chain is refused where it is drawn.
+- **Composition by `let`.** A residual connection is an addition of
+  tables, `let h = u + attn(layer_norm(u))`, and
+  [`layer_norm`](../reference/qvr/types-and-indexed-families.md#pure-expressions)
+  normalizes each row.
+
+A scan whose cell ignores its state runs a morphism at every position, so a
+decoder-only language model embeds each token in one scan, attends across
+the sequence in a `let`, and scores each next token in a second scan:
+
+```qvr
+object Vocab : Real 8
+object Model : Real 16
+object Logits : Real 8
+
+morphism embed : Vocab -> Model [role=function]
+morphism positions : Model -> Model [role=function, param_source=positions(32)]
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+morphism ff : Model -> Model [role=function, param_source=mlp(32), activation=relu]
+morphism lm_head : Model -> Logits [role=function]
+
+program embed_step(x_t, s_prev) : Vocab * Model -> Model
+    let e = embed(x_t)
+    return e
+
+program head_step(h_t, s_prev) : Model * Model -> Model
+    let z = h_t + ff(layer_norm(h_t))
+    let logits = lm_head(layer_norm(z))
+    observe next_token <- Categorical(logits=logits)
+    return z
+
+define embedded = scan(embed_step, outputs=all)
+define scored = scan(head_step, outputs=all)
+
+program transformer_lm : Vocab -> Model
+    sample e <- embedded
+    let u = positions(e)
+    let h = u + attn(layer_norm(u))
+    sample out <- scored(h)
+    return out
+
+export transformer_lm
+```
+
+Each input row is one sequence of one-hot tokens, shape `(batch, T, 8)`,
+and the observation `next_token`, shape `(batch, T)`, holds the token after
+each position. With the source above saved as `transformer_lm.qvr`:
+
+```python
+import torch
+from quivers.dsl import load
+
+model = load("transformer_lm.qvr").morphism
+tokens = torch.randint(0, 8, (4, 9))
+x = torch.nn.functional.one_hot(tokens, 8).float()
+next_token = torch.randint(0, 8, (4, 9))
+log_joint = model.log_joint(x, {"next_token": next_token})  # shape (4,)
+```
+
+The runtime realization is
+[`SequenceFunction`](../api/continuous/deterministic.md#quivers.continuous.deterministic.SequenceFunction)
+over a
+[`SelfAttentionSource`](../api/continuous/param_source.md#quivers.continuous.param_source.SelfAttentionSource)
+or a
+[`PositionSource`](../api/continuous/param_source.md#quivers.continuous.param_source.PositionSource).
+The checked elaboration builds the same map from comprehensions over the
+open extent, with the weights as typed program inputs, as the
+[sequence functions reference](../reference/qvr/probabilistic-programs.md#sequence-functions)
+states.
+
 ## Deduction
 
 A `deduction NAME : Domain -> Codomain [options]` declaration with

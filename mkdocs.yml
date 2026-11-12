@@ -379,6 +379,7 @@ nav:
       - Composite lets: api/dsl/composite_lets.md
       - Step resolution: api/dsl/step_resolution.md
       - Draw arguments: api/dsl/draw_args.md
+      - Sequence functions: api/dsl/sequence_functions.md
       - Pure builtins: api/dsl/pure_builtins.md
       - QIEC lowering: api/dsl/qiec_lowering.md
       - Program elaboration: api/dsl/program_elaboration.md

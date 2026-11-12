@@ -1,7 +1,9 @@
 """Vector and matrix family parameters score one joint on every path.
 
 Each fixture fills a multivariate family's vector or matrix parameter from
-host data or from the program's own values. It is scored on the compiled
+host data or from the program's own values, a Cholesky factor among them:
+a host factor, and one the program builds from a sampled LKJ correlation
+factor scaled by sampled standard deviations. It is scored on the compiled
 runtime and the reference machine, both pinned to an independent
 `torch.distributions` joint computed in double precision, and on every
 target that renders it, against the same joint. A target with no spelling
@@ -35,6 +37,7 @@ _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 _HOST_LOC = "steps/sample_mvn_host_loc"
 _HOST_FACTOR = "steps/observe_mvn_host_factor"
 _WISHART_HOST = "steps/sample_wishart_host_factor"
+_LKJ_FACTOR = "steps/observe_mvn_lkj_factor"
 
 _L_PRIOR = [[1.0, 0.0], [0.5, 1.0]]
 _L_OBS = [[1.5, 0.0], [-0.3, 0.8]]
@@ -72,6 +75,34 @@ def _host_factor(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _lkj_factor(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    correlation, scales, mu = _t(v["L"]), _t(v["sigma"]), _t(v["mu"])
+    factor = scales.unsqueeze(-1) * correlation
+    return (
+        D.LKJCholesky(3, _t(2.0)).log_prob(correlation)
+        + D.HalfNormal(_t(1.0)).log_prob(scales).sum()
+        + D.Normal(_t(0.0), _t(1.0)).log_prob(mu).sum()
+        + D.MultivariateNormal(mu, scale_tril=factor).log_prob(_t(v["y"])).sum()
+    )
+
+
+def _correlation_factor(raw: list[list[float]]) -> list[list[float]]:
+    """The Cholesky factor of the correlation matrix a lower triangle scales.
+
+    Parameters
+    ----------
+    raw : list[list[float]]
+        A lower-triangular matrix with a positive diagonal.
+
+    Returns
+    -------
+    list[list[float]]
+        Its rows normalized to unit length, a correlation Cholesky factor.
+    """
+    factor = torch.tensor(raw, dtype=torch.float64)
+    return (factor / factor.norm(dim=-1, keepdim=True)).tolist()
+
+
 def _wishart_host(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     return D.Wishart(df=_t(4.0), scale_tril=_t(v["L"])).log_prob(_t(v["W"]))
 
@@ -93,6 +124,34 @@ _CASES: dict[str, tuple[str, dict[str, Host], list[dict[str, Host]], Oracle]] = 
         },
         [{"mu": [0.2, 0.1]}, {"mu": [-1.0, 0.7]}, {"mu": [1.5, -0.2]}],
         _host_factor,
+    ),
+    "lkj-factor": (
+        _LKJ_FACTOR,
+        {"y": [[0.9, -0.6, 0.2], [0.1, 0.4, -1.1], [-1.3, 0.2, 0.5], [0.0, 1.0, 0.3]]},
+        [
+            {
+                "L": _correlation_factor(
+                    [[1.0, 0.0, 0.0], [0.4, 0.9, 0.0], [-0.3, 0.2, 1.0]]
+                ),
+                "sigma": [0.8, 1.3, 0.6],
+                "mu": [0.1, -0.2, 0.3],
+            },
+            {
+                "L": _correlation_factor(
+                    [[1.0, 0.0, 0.0], [-0.6, 0.7, 0.0], [0.1, 0.5, 0.8]]
+                ),
+                "sigma": [1.1, 0.5, 0.9],
+                "mu": [-0.4, 0.6, 0.0],
+            },
+            {
+                "L": _correlation_factor(
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                ),
+                "sigma": [1.0, 1.0, 1.0],
+                "mu": [0.0, 0.0, 0.0],
+            },
+        ],
+        _lkj_factor,
     ),
     "wishart-host": (
         _WISHART_HOST,
@@ -120,17 +179,27 @@ _EVERY_TARGET: tuple[str, ...] = (
     "webppl",
 )
 
+#: The targets whose libraries take a Cholesky factor known only at run
+#: time: Stan's `multi_normal_cholesky`, NumPyro's and Pyro's
+#: `scale_tril=`, and PyMC's `chol=`, with a Wishart scale multiplied out
+#: where the library takes only the scale.
+_CHOLESKY_TARGETS: frozenset[str] = frozenset({"numpyro", "pymc", "pyro", "stan"})
+
 #: The refusals each target states for a fixture it cannot render.
 _REFUSED: dict[tuple[str, str], str] = {
     (_HOST_LOC, "bugs"): "arg:matrix-literal",
     (_HOST_LOC, "church"): "arg:matrix-literal",
     (_HOST_LOC, "jags"): "family:MultivariateNormal:non-ref-covariance",
     **{
-        (_HOST_FACTOR, target): "family:MultivariateNormal:scale_tril"
+        (fixture, target): "family:MultivariateNormal:scale_tril"
+        for fixture in (_HOST_FACTOR, _LKJ_FACTOR)
         for target in _EVERY_TARGET
+        if target not in _CHOLESKY_TARGETS
     },
     **{
-        (_WISHART_HOST, target): "family:Wishart:scale_tril" for target in _EVERY_TARGET
+        (_WISHART_HOST, target): "family:Wishart:scale_tril"
+        for target in _EVERY_TARGET
+        if target not in _CHOLESKY_TARGETS
     },
 }
 
@@ -194,13 +263,15 @@ def _reference(case: str) -> list[float]:
             name: torch.as_tensor(value, dtype=torch.float32)
             for name, value in {**data, **point}.items()
         }
-        expected = float(oracle(values))
+        expected = float(
+            oracle({name: _t(value) for name, value in {**data, **point}.items()})
+        )
         joint = float(program.morphism.log_joint(torch.zeros(1, 1), values).sum())
         assert joint == pytest.approx(expected, rel=1e-5)
         run = program.run(
             entry.name,
-            data={name: _nested(values[name].double()) for name in data},
-            sites={name: _nested(values[name].double()) for name in point},
+            data={name: _nested(_t(value)) for name, value in data.items()},
+            sites={name: _nested(_t(value)) for name, value in point.items()},
         )
         assert run.log_joint == pytest.approx(expected, rel=1e-9)
         densities.append(run.log_joint)
@@ -282,7 +353,16 @@ def test_target_scores_the_reference_joint(
         ],
         scratch=scratch / case / backend,
         shapes=shapes,
-        dtypes={name: "float" for name in shapes},
+        # A matrix is typed `float32` so Pyro scores it in the dtype of the
+        # model's own tensors; every other probe reads `float32` as a float.
+        # A matrix site beside matrix data takes the data's double
+        # precision instead.
+        dtypes={
+            name: "float32"
+            if len(shape) == 2 and not any(len(shapes[datum]) == 2 for datum in data)
+            else "float"
+            for name, shape in shapes.items()
+        },
     )
     _equivalence.assert_log_density_match(
         _reference(case),
@@ -309,3 +389,27 @@ def test_every_target_renders_or_refuses_every_fixture() -> None:
                 continue
             assert target in _TARGETS, (fixture, target)
             transpile(parse(_source(fixture)), target=target)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "target", "fragments"),
+    [
+        (_LKJ_FACTOR, "stan", ("multi_normal_cholesky_lpdf",)),
+        (_HOST_FACTOR, "numpyro", ("scale_tril=L",)),
+        (_HOST_FACTOR, "pyro", ("scale_tril=L",)),
+        (_HOST_FACTOR, "pymc", ("chol=L",)),
+        (_WISHART_HOST, "stan", ("multiply_lower_tri_self_transpose(L)",)),
+        (_WISHART_HOST, "pymc", ("V=L@L.T",)),
+        (_WISHART_HOST, "pyro", ("scale_tril=L",)),
+    ],
+)
+def test_a_run_time_factor_reaches_each_target_as_a_factor(
+    fixture: str, target: str, fragments: tuple[str, ...]
+) -> None:
+    rendered = transpile(parse(_source(fixture)), target=target).decode()
+    compact = "".join(rendered.split())
+    for fragment in fragments:
+        assert fragment in compact, rendered
+    # The factor is never handed over as the covariance it is the factor of.
+    assert "covariance_matrix=L" not in compact
+    assert "cov=L" not in compact

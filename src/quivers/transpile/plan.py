@@ -1166,6 +1166,7 @@ class _ProgramWalk:
                     "pass the result as probs"
                 ],
             )
+        args, arg_names = self._parameterization(family, args, arg_names)
         constraint = _apply_declared_bounds(
             from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
             plate,
@@ -1215,6 +1216,8 @@ class _ProgramWalk:
             self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
+        if distribution.name == "InverseWishart" and "scale_tril" in names:
+            self._inverse_wishart_scale(pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
         if set(ordered) >= set(names) and len(ordered) >= len(names):
             order = {name: index for index, name in enumerate(ordered)}
@@ -1236,6 +1239,71 @@ class _ProgramWalk:
             for arg, name in zip(pre, names, strict=True)
         )
         return out, tuple(names)
+
+    def _parameterization(
+        self, family: str, args: tuple[IRArg, ...], arg_names: tuple[str, ...]
+    ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
+        """Hand an alternative parameterization to the target as it reads it.
+
+        A target whose library has the parameterization the source wrote
+        receives it unchanged, under the keyword the renderer spells it
+        with. A literal precision matrix reaches a target without a
+        precision parameterization inverted, as the covariance it is the
+        inverse of. Any other alternative a target has no spelling for is
+        refused by name.
+
+        Parameters
+        ----------
+        family : str
+            The family.
+        args : tuple[IRArg, ...]
+            The call's wire arguments.
+        arg_names : tuple[str, ...]
+            The parameter each argument fills.
+
+        Returns
+        -------
+        tuple[tuple[IRArg, ...], tuple[str, ...]]
+            The arguments and names the target receives.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the target has no spelling for the parameterization.
+        """
+        target = self.planner.target
+        for position, name in enumerate(arg_names):
+            natives = _NATIVE_ALTERNATIVES.get((family, name))
+            if natives is None or target in natives:
+                continue
+            argument = args[position]
+            if name == "precision_matrix" and isinstance(argument, IRArgMatrix):
+                inverse = _literal_inverse(argument)
+                if inverse is not None:
+                    return (
+                        tuple(
+                            inverse if index == position else item
+                            for index, item in enumerate(args)
+                        ),
+                        tuple(
+                            "covariance_matrix" if index == position else item
+                            for index, item in enumerate(arg_names)
+                        ),
+                    )
+            raise UnsupportedConstruct(
+                f"qvr-{target}",
+                [
+                    f"family:{family}:{name}: {target} has no {family} "
+                    f"parameterized by its {name}"
+                    + (
+                        "; write the matrix as a literal, which is inverted "
+                        "into the covariance"
+                        if name == "precision_matrix"
+                        else "; write the probability the logits name as probs"
+                    )
+                ],
+            )
+        return args, arg_names
 
     def _tensor_parameter_input(
         self, family: str, parameter: str, value: Value
@@ -1273,6 +1341,69 @@ class _ProgramWalk:
         self.structured_inputs.setdefault(
             datum.name, (CSReal(), Plate(event_dims=dims, batch_dims=()))
         )
+
+    def _inverse_wishart_scale(self, pre: list[IRArg], names: list[str]) -> None:
+        """Hand an inverse Wishart's scale to the target as it reads it.
+
+        A source's ``InverseWishart(df, scale_tril=L)`` draws the inverse
+        of a ``Wishart(df, scale_tril=L)`` draw: in the conventional
+        ``IW(df, Psi)`` the scale is ``Psi = (L L^T)^-1``. Stan, NumPyro,
+        and Turing take ``Psi`` itself, under ``scale_matrix``; Pyro's
+        grafted class takes the Cholesky factor of ``Psi``, under
+        ``scale_tril``. A literal factor is converted here, in place.
+
+        Parameters
+        ----------
+        pre : list[IRArg]
+            The call's wire arguments, rewritten in place.
+        names : list[str]
+            The parameter each argument fills, rewritten in place.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the factor is not a literal, or is singular.
+        """
+        position = names.index("scale_tril")
+        factor = pre[position]
+        scale = None
+        if isinstance(factor, IRArgMatrix) and all(
+            isinstance(entry, IRArgNumber)
+            for row in factor.rows
+            for entry in row.elements
+        ):
+            rows = [
+                [cast(IRArgNumber, entry).value for entry in row.elements]
+                for row in factor.rows
+            ]
+            product = [
+                [sum(a * b for a, b in zip(left, right, strict=True)) for right in rows]
+                for left in rows
+            ]
+            scale = _literal_inverse(_matrix_literal(product))
+        if scale is None:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [
+                    "family:InverseWishart:scale_tril: the InverseWishart's "
+                    "scale_tril is a Cholesky factor known only at run time; "
+                    "write it as a matrix literal"
+                ],
+            )
+        if self.planner.target == "pyro":
+            cholesky = _literal_cholesky(scale)
+            if cholesky is None:
+                raise UnsupportedConstruct(
+                    "qvr-pyro",
+                    [
+                        "family:InverseWishart:scale_tril: the scale the factor "
+                        "names is not positive definite"
+                    ],
+                )
+            pre[position] = cholesky
+            return
+        pre[position] = scale
+        names[position] = "scale_matrix"
 
     def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
         """Hand a Cholesky factor to the target as it reads it.
@@ -1321,12 +1452,16 @@ class _ProgramWalk:
             )
             names[position] = "covariance_matrix"
             return
+        if self.planner.target in _RUNTIME_FACTOR_TARGETS:
+            # The target's library takes the factor itself.
+            return
         raise UnsupportedConstruct(
             f"qvr-{self.planner.target}",
             [
                 f"family:{family}:scale_tril: the {family}'s scale_tril is a "
-                "Cholesky factor known only at run time; write it as a matrix "
-                "literal"
+                f"Cholesky factor known only at run time, which "
+                f"{self.planner.target} has no Cholesky parameterization of "
+                f"{family} to take; write it as a matrix literal"
             ],
         )
 
@@ -2082,6 +2217,161 @@ def _element_type(type_: TypeExpr) -> TypeExpr:
 #: The families whose ``scale_tril`` factor a target receives multiplied
 #: out, as the matrix it names the factor of.
 _FACTOR_FAMILIES: frozenset[str] = frozenset({"MultivariateNormal", "Wishart"})
+
+#: The targets whose libraries take a multivariate normal's and a
+#: Wishart's Cholesky factor itself, so a factor known only at run time
+#: reaches them as written: Stan's `multi_normal_cholesky` and a Wishart
+#: scale `multiply_lower_tri_self_transpose(L)`, the `scale_tril=` of
+#: NumPyro and Pyro, and PyMC's `chol=` with a Wishart scale `L @ L.T`.
+_RUNTIME_FACTOR_TARGETS: frozenset[str] = frozenset(
+    {"ir", "numpyro", "pymc", "pyro", "stan"}
+)
+
+_EVERY_TARGET: frozenset[str] = frozenset(
+    {
+        "ir",
+        "bugs",
+        "church",
+        "edward2",
+        "gen",
+        "jags",
+        "numpyro",
+        "pymc",
+        "pyro",
+        "stan",
+        "turing",
+        "webppl",
+    }
+)
+
+#: The targets whose library takes each alternative parameterization as
+#: written, keyed by family and parameter. Every other target receives a
+#: literal precision matrix inverted and refuses anything else.
+_NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
+    ("Bernoulli", "logits"): frozenset(
+        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+    ),
+    ("Binomial", "logits"): frozenset(
+        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+    ),
+    ("Geometric", "logits"): frozenset({"ir", "edward2", "numpyro", "pyro"}),
+    ("NegativeBinomial", "logits"): frozenset({"ir", "edward2", "pyro"}),
+    ("MultivariateNormal", "covariance_matrix"): _EVERY_TARGET,
+    ("MultivariateNormal", "precision_matrix"): frozenset(
+        {"ir", "bugs", "jags", "numpyro", "pymc", "pyro", "stan"}
+    ),
+    ("Wishart", "covariance_matrix"): _EVERY_TARGET,
+    ("Wishart", "precision_matrix"): frozenset({"ir", "numpyro", "pyro"}),
+}
+
+
+def _matrix_literal(rows: list[list[float]]) -> IRArgMatrix:
+    """A literal matrix argument from its rows of numbers.
+
+    Parameters
+    ----------
+    rows : list[list[float]]
+        The rows.
+
+    Returns
+    -------
+    IRArgMatrix
+        The literal.
+    """
+    return IRArgMatrix(
+        rows=tuple(
+            IRArgList(elements=tuple(IRArgNumber(value=value) for value in row))
+            for row in rows
+        )
+    )
+
+
+def _literal_cholesky(matrix: IRArgMatrix) -> IRArgMatrix | None:
+    """The lower Cholesky factor of a literal positive-definite matrix.
+
+    Parameters
+    ----------
+    matrix : IRArgMatrix
+        The matrix, square and symmetric with numeric entries.
+
+    Returns
+    -------
+    IRArgMatrix | None
+        Its lower Cholesky factor in double precision, or ``None`` when
+        an entry is not a number or the matrix is not positive definite.
+    """
+    if not all(
+        isinstance(entry, IRArgNumber) for row in matrix.rows for entry in row.elements
+    ):
+        return None
+    rows = [
+        [cast(IRArgNumber, entry).value for entry in row.elements]
+        for row in matrix.rows
+    ]
+    size = len(rows)
+    factor = [[0.0] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(i + 1):
+            partial = rows[i][j] - sum(factor[i][k] * factor[j][k] for k in range(j))
+            if i == j:
+                if partial <= 0.0:
+                    return None
+                factor[i][j] = partial**0.5
+            else:
+                factor[i][j] = partial / factor[j][j]
+    return _matrix_literal(factor)
+
+
+def _literal_inverse(matrix: IRArgMatrix) -> IRArgMatrix | None:
+    """The inverse of a literal matrix, by Gauss-Jordan elimination.
+
+    Parameters
+    ----------
+    matrix : IRArgMatrix
+        The matrix, square with numeric entries.
+
+    Returns
+    -------
+    IRArgMatrix | None
+        Its inverse in double precision, or ``None`` when an entry is not
+        a number, the matrix is not square, or it is singular.
+    """
+    if not all(
+        isinstance(entry, IRArgNumber) for row in matrix.rows for entry in row.elements
+    ):
+        return None
+    rows = [
+        [cast(IRArgNumber, entry).value for entry in row.elements]
+        for row in matrix.rows
+    ]
+    size = len(rows)
+    if any(len(row) != size for row in rows):
+        return None
+    work = [
+        [*row, *(1.0 if column == index else 0.0 for column in range(size))]
+        for index, row in enumerate(rows)
+    ]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(work[row][column]))
+        if work[pivot][column] == 0.0:
+            return None
+        work[column], work[pivot] = work[pivot], work[column]
+        lead = work[column][column]
+        work[column] = [value / lead for value in work[column]]
+        for row in range(size):
+            if row != column and work[row][column] != 0.0:
+                factor = work[row][column]
+                work[row] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(work[row], work[column], strict=True)
+                ]
+    return IRArgMatrix(
+        rows=tuple(
+            IRArgList(elements=tuple(IRArgNumber(value=value) for value in row[size:]))
+            for row in work
+        )
+    )
+
 
 #: The families an unplated construction of which is planned over its
 #: sample's own event axes, as an ``[over=...]`` clause would name them.
