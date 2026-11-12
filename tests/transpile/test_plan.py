@@ -212,7 +212,7 @@ def test_categorical_logits_are_refused_by_probability_only_targets(
         transpile(parse(CATEGORICAL_LOGITS), target=target)
 
 
-def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> None:
+def test_a_grouped_marginalization_states_its_index_map_on_the_observation() -> None:
     ir = Lower().forward(parse(GROUPED))
     probs, marginal, _ = ir.body
     assert isinstance(probs, IRSample)
@@ -227,8 +227,8 @@ def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> 
     (observe,) = marginal.scope
     assert isinstance(observe, IRObserve)
     assert observe.via == "idx"
-    fibration = next(item for item in ir.inputs if item.name == "idx")
-    assert fibration.constraint == CSIntegerInterval(lower=0, upper=7)
+    index_map = next(item for item in ir.inputs if item.name == "idx")
+    assert index_map.constraint == CSIntegerInterval(lower=0, upper=7)
 
 
 def test_a_gate_marginalizes_one_atom_pair_per_element() -> None:
@@ -353,13 +353,13 @@ def test_a_pure_call_is_inlined_and_an_effectful_call_is_a_call() -> None:
     assert observe.args[0] == IRArgRef(name="c", indices=())
 
 
-def test_a_fibration_is_bounded_by_the_groups_not_the_rows() -> None:
+def test_an_index_map_is_bounded_by_the_groups_not_the_rows() -> None:
     # Twelve observation rows map into eight groups: the map's values run
     # over the groups, so its range is 0..7, not 0..11.
     source = GROUPED.replace(
         "object Comp : FinSet 4\n", "object Comp : FinSet 4\nobject Resp : FinSet 12\n"
     ).replace("observe r : Item <-", "observe r : Resp <-")
     ir = Lower().forward(parse(source))
-    fibration = next(item for item in ir.inputs if item.name == "idx")
-    assert fibration.constraint == CSIntegerInterval(lower=0, upper=7)
-    assert fibration.plate.batch_dims == (DimStatic(size=12, name="Resp"),)
+    index_map = next(item for item in ir.inputs if item.name == "idx")
+    assert index_map.constraint == CSIntegerInterval(lower=0, upper=7)
+    assert index_map.plate.batch_dims == (DimStatic(size=12, name="Resp"),)

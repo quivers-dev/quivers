@@ -105,7 +105,7 @@ PROBE_MODULES = frozenset(
         "test_tensor_parameter_numeric",
         "test_vector_location_numeric",
         "test_vector_parameter_numeric",
-        "test_via_fibration_numeric",
+        "test_via_index_map_numeric",
     }
 )
 

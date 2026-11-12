@@ -1,9 +1,10 @@
-"""Categorical objects: finite sets, products, coproducts, and free monoids.
+"""Objects of the category of finite sets: finite sets, products, coproducts, and more.
 
-The set-object family is a sum type with four variants — `FinSet`,
-`ProductSet`, `CoproductSet`, `FreeMonoid` — discriminated
-by ``kind``. ``SetObject`` is the `dx.TaggedUnion` root that gathers
-them; ``X * Y`` and ``X + Y`` work on any pair of variants.
+The set-object family is a sum type with six variants, discriminated by
+``kind``: `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`,
+`EnumSet` and `FreeResiduated`. ``SetObject`` is the `dx.TaggedUnion`
+root that gathers them; ``X * Y`` and ``X + Y`` work on any pair of
+variants.
 """
 
 from math import prod
@@ -12,10 +13,13 @@ import didactic.api as dx
 
 
 class SetObject(dx.TaggedUnion, discriminator="kind"):
-    """The category of finite sets, product sets, and coproduct sets.
+    """A finite set, the type of objects of the category of finite sets.
 
-    Variants share two derived properties (`size`, `shape`) and
-    the ``*`` / ``+`` operators for product and coproduct construction.
+    A ``SetObject`` is one object, not the category: one of the six
+    variants `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`,
+    `EnumSet` and `FreeResiduated`. Variants share two derived
+    properties (`size`, `shape`) and the ``*`` / ``+`` operators for
+    product and coproduct construction.
     """
 
     @property
@@ -337,11 +341,14 @@ class EnumSet(SetObject):
 
 
 class FreeResiduated(SetObject):
-    """The residuated category universe over a generator set.
+    """The finite set of Lambek-calculus types over a generator set.
 
-    Closes the generator atoms under the residuated monoidal connectives
-    (``/``, ``\\``, ``*``, optional ``◇`` / ``□``) up to a bounded
-    nesting depth. The runtime carrier is a finite enumeration of all
+    The elements are the formulas built from the generator atoms with
+    the residuated connectives (``/``, ``\\``, ``*``, optional
+    ``◇`` / ``□``) up to a bounded nesting depth, the types of the
+    Lambek calculus [Lambek (1958)]. The set is a finite set of
+    formulas, not a category, and it is not closed under the
+    connectives. The runtime carrier is a finite enumeration of all
     admissible category strings produced by
     [`quivers.stochastic.categories.CategorySystem.from_generators`][quivers.stochastic.categories.CategorySystem.from_generators].
 
@@ -351,13 +358,19 @@ class FreeResiduated(SetObject):
         The atom generators (e.g. ``EnumSet(name='Atoms', elements=('NP', 'S', 'VP'))``).
     depth : int
         Maximum nesting depth of category constructors. ``depth=0``
-        gives only atoms; each increment doubles (slash) or grows
-        polynomially (product).
+        gives only atoms; each increment adds the formulas whose
+        outermost connective joins two formulas of smaller depth.
     ops : tuple of str
         The connectives to close under. Allowed names:
         ``"slash"`` (both ``/`` and ``\\``), ``"product"`` (``*``),
         ``"unit"`` (the monoidal unit), ``"diamond"`` (``◇``),
         ``"box"`` (``□``).
+
+    References
+    ----------
+    Lambek, J. (1958). The mathematics of sentence structure. *The
+    American Mathematical Monthly*, 65(3), 154-170.
+    [doi:10.1080/00029890.1958.11989160](https://doi.org/10.1080/00029890.1958.11989160)
     """
 
     generators: EnumSet

@@ -1,11 +1,10 @@
-"""Functorial change-of-base for non-pointwise morphism transformations.
+"""Change of base by shape-aware morphism transformations.
 
-A `quivers.core.algebra_morphisms.AlgebraHomomorphism`
+A `quivers.core.algebra_morphisms.CarrierMap`
 acts pointwise on tensor entries (``log``, ``threshold``, ``max-plus
 lift``). That handles a useful but narrow class of change-of-base
-moves. The broader class — functors ``V-Cat -> W-Cat`` whose
-action on a morphism's tensor is **shape-aware** rather than
-strictly pointwise — covers softmax-style normalizations,
+moves. A transformation whose action on a morphism's tensor is
+**shape-aware** rather than strictly pointwise covers softmax-style normalizations,
 Bayes-inversion under a prior, L1 / L2 / spectral row
 normalizations, top-k truncation, and Sinkhorn balancing.
 
@@ -13,14 +12,14 @@ This module ships the abstract base
 `MorphismTransformation` and four concrete subclasses
 (Softmax, L1Normalize, L2Normalize, BayesInvert) that cover the
 common practical needs. ``Morphism.change_base`` accepts either a
-``AlgebraHomomorphism`` (pointwise) or a ``MorphismTransformation``
+``CarrierMap`` (pointwise) or a ``MorphismTransformation``
 (shape-aware) and dispatches accordingly.
 
-Categorically, a ``MorphismTransformation`` is a (possibly lax)
-2-functor between V-Cat and W-Cat that need not factor through a
-algebra homomorphism on tensor entries — the action operates on
-whole rows / columns / matrices, and may carry parameter data
-(``BayesInvert`` carries a prior).
+A ``MorphismTransformation`` is a map from morphisms over ``V`` to
+morphisms over ``W`` that acts on whole rows, columns or matrices and
+may carry parameter data (``BayesInvert`` carries a prior). It promises
+no functoriality: normalizing a composite is in general not the
+composite of the normalized morphisms.
 """
 
 from __future__ import annotations

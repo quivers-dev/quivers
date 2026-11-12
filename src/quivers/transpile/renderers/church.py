@@ -112,7 +112,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
 )
 from quivers.transpile.renderers._qiec import (
     graft_scheme_forms,
@@ -355,9 +355,9 @@ class ChurchRenderer(RendererBase):
         # The active marginalize group plate's batch axes (empty
         # outside a marginalize scope). Refs bound on this plate that
         # are read from an observe on a different plate thread through
-        # the observe's `via` fibration.
+        # the observe's `via` index map.
         self._group_plate_axes: tuple[str, ...] = ()
-        # The active observe's `via` fibration name (None otherwise).
+        # The active observe's `via` index map name (None otherwise).
         self._current_via: str | None = None
         self._module = ir.module
         # Whether the model body has bound its native operation table.
@@ -836,7 +836,7 @@ class ChurchRenderer(RendererBase):
         Each atom's deterministic bindings live inside that atom's own
         thunk, which gives them a scope: a Scheme body admits one
         definition per name. A grouped block keys its accumulator by
-        group, so the rows the fibration sends to one group are
+        group, so the rows the index map sends to one group are
         summed before the reduction; an ungrouped block shares one
         latent across the body's rows, so their log-likelihoods are
         summed to a scalar first. No site is declared for the latent:
@@ -877,15 +877,15 @@ class ChurchRenderer(RendererBase):
             out.extend(weight_forms)
         finally:
             self._group_plate_axes = prev_group
-        fibration = marginalize_fibration(node, raw.observe)
+        index_map = marginalize_index_map(node, raw.observe)
         accumulate_rows = marginalize_row_rank(node) > 0
         shifted: list[str] = []
         for position, (weight, term) in enumerate(
             zip(weight_names, term_names, strict=True)
         ):
             term_form: SchemaFragment = _sym(ctx, term)
-            if fibration is not None:
-                via, group = fibration
+            if index_map is not None:
+                via, group = index_map
                 term_form = _list(
                     ctx,
                     (
@@ -1000,7 +1000,7 @@ class ChurchRenderer(RendererBase):
         `log(1 - p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, which `take-last` slices however many
-        grouping axes sit above it; a prior read through a fibration
+        grouping axes sit above it; a prior read through an index map
         is gathered one row per observation first.
 
         Parameters
@@ -1246,7 +1246,7 @@ class ChurchRenderer(RendererBase):
         observed
             Whether the site is conditioned on data.
         via
-            The fibration an observe gathers its rows through, or ``None``.
+            The index map an observe gathers its rows through, or ``None``.
 
         Returns
         -------
@@ -1319,7 +1319,7 @@ class ChurchRenderer(RendererBase):
         plate : Plate
             The site's plate.
         via : str | None
-            The fibration an observe gathers group-plate values through.
+            The index map an observe gathers group-plate values through.
 
         Returns
         -------
@@ -1365,7 +1365,7 @@ class ChurchRenderer(RendererBase):
     ) -> IRArg:
         """Thread the surrounding plate's row index into any ref whose
         binding plate aligns with `plate`, or through the active
-        observe's `via` fibration when the ref is bound on the group
+        observe's `via` index map when the ref is bound on the group
         plate.
 
         Returns a rewritten IR-arg tree; the rewrite prepends a loop

@@ -16,16 +16,22 @@ Each semiring defines:
 - ``zero``: additive identity (0): score for impossible derivations
 - ``one``: multiplicative identity (1): score for trivial derivations
 
-Categorical perspective
------------------------
-Semirings are the decategorification of rig categories (bimonoidal
-categories). The ``times`` operation corresponds to the tensor
-product, ``plus`` to the coproduct. Chart parsing is a functor
-from the free monoidal category (grammar) to the semiring.
+Relation to the enrichment algebras
+-----------------------------------
+A semiring is the structure that makes the chart's sum over
+derivations of products of rule weights well defined and independent
+of evaluation order (Goodman 1999). ``LogProbSemiring`` is the log
+semiring ``([-∞, ∞), logsumexp, +, -∞, 0)``, isomorphic to the
+probability semiring ``([0, ∞), +, ·)`` through ``exp``. Its addition
+is not idempotent (``logsumexp(a, a) = a + log 2``), so it is not a
+lattice join and the log semiring is not a quantale; ``ViterbiSemiring``
+and ``BooleanSemiring`` are idempotent. The corresponding enrichment
+algebras are the `quivers.core.algebras.Semiring` instances.
 
-The connection to algebras: an algebra is a complete lattice with
-an associative binary operation distributing over arbitrary joins.
-The log-probability semiring is the algebra ([-∞, 0], logsumexp, +).
+References
+----------
+Goodman, J. (1999). Semiring parsing. *Computational Linguistics*,
+25(4), 573-606. [ACL Anthology J99-4004](https://aclanthology.org/J99-4004/)
 """
 
 from __future__ import annotations

@@ -12,13 +12,11 @@ from quivers.categorical.natural_transformations import (
     ComponentwiseNT,
 )
 from quivers.categorical.adjunctions import (
-    ForgetfulFunctor,
     Adjunction,
-    FreeForgetfulAdjunction,
 )
 from quivers.categorical.monoidal import (
     MonoidalStructure,
-    CartesianMonoidal,
+    CartesianProductMonoidal,
     CoproductMonoidal,
     EmptySet,
     EMPTY,
@@ -26,12 +24,10 @@ from quivers.categorical.monoidal import (
 from quivers.categorical.base_change import (
     BaseChange,
     BoolToFuzzy,
-    FuzzyToBool,
 )
 from quivers.categorical.traced import (
     TracedMonoidal,
-    CartesianTrace,
-    IterativeTrace,
+    CompactClosedTrace,
     trace,
     partial_trace,
 )
@@ -47,23 +43,19 @@ __all__ = [
     "NaturalTransformation",
     "ComponentwiseNT",
     # adjunctions
-    "ForgetfulFunctor",
     "Adjunction",
-    "FreeForgetfulAdjunction",
     # monoidal
     "MonoidalStructure",
-    "CartesianMonoidal",
+    "CartesianProductMonoidal",
     "CoproductMonoidal",
     "EmptySet",
     "EMPTY",
     # base_change
     "BaseChange",
     "BoolToFuzzy",
-    "FuzzyToBool",
     # traced
     "TracedMonoidal",
-    "CartesianTrace",
-    "IterativeTrace",
+    "CompactClosedTrace",
     "trace",
     "partial_trace",
 ]

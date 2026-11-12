@@ -60,7 +60,7 @@ _FLOAT64_TOLERANCE = 1e-12
 
 #: The refusal each target states for the fixture.
 _REFUSED: dict[str, str] = {
-    "bugs": "marginalize:grouped-fibration",
+    "bugs": "marginalize:grouped-index-map",
     "jags": "let-expr:elementwise-axis-operator",
 }
 

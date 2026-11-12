@@ -5,7 +5,7 @@ generators into a monoid determines a unique monoid homomorphism from the [free 
 those generators. The [unit and counit](../../guides/categorical.md#adjunctions) express this correspondence; an equivalence
 additionally requires both to be isomorphisms.
 
-The `Adjunction` interface, the `FreeForgetfulAdjunction` implementation,
-and their unit and counit operations.
+The `Adjunction` interface, with its unit and counit operations and the
+checks of the triangle identities.
 
 ::: quivers.categorical.adjunctions

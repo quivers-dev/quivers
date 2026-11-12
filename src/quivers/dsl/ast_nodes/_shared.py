@@ -54,9 +54,10 @@ The four levels correspond to the
 * ``"algebra"`` requires a full `Algebra` (unit, zero,
   meet, negate, identity, dagger, cup/cap).
 * ``"semigroupoid"`` requires a `Semigroupoid`
-  (associative `tensor_op`, no identity required).
-* ``"bilinear_form"`` requires a `BilinearForm`
-  (no associativity promise).
+  (associative composition, no identity required); every `Semiring`
+  algebra qualifies.
+* ``"bilinear_form"`` requires a `Magmoid`, a rule declared to satisfy
+  no composition law.
 * ``"composition_rule"`` is permissive: any
   `CompositionRule` is accepted.
 """

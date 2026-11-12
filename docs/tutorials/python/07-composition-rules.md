@@ -56,9 +56,9 @@ Every level supplies `tensor_op : (Tensor, Tensor) -> Tensor` and `join : (Tenso
 
 ```python
 from quivers.core.algebras import (
-    CompositionRule, Semigroupoid, BilinearForm, Algebra,
+    CompositionRule, Semigroupoid, Magmoid, Algebra,
     PRODUCT_FUZZY, REAL,
-    material_implication, semigroupoid, bilinear_form,
+    material_implication, semigroupoid, magmoid,
 )
 ```
 
@@ -73,7 +73,7 @@ import torch
 from quivers.core.algebras import material_implication
 
 mi = material_implication()
-print(type(mi).__mro__)        # (CustomSemigroupoid, Semigroupoid, CompositionRule, ABC, object)
+print(type(mi).__mro__)        # (CustomMagmoid, Magmoid, CompositionRule, ABC, object)
 
 f = torch.tensor([[0.3, 0.5, 0.2]])
 g = torch.tensor([
@@ -111,7 +111,7 @@ The factory runs an associativity smoke check at construction time on a fixed ps
 A `BilinearForm` is a `CompositionRule` that *opts out* of the associativity promise: the type system records the absence. Use it for compositions like signed-dot, attention-style rules, or top-k truncating contractions whose composition order matters.
 
 ```python
-from quivers.core.algebras import bilinear_form
+from quivers.core.algebras import magmoid
 
 def signed_dot(a, b):
     return 0.5 * (a + b)            # not associative
@@ -121,7 +121,7 @@ def sum_reduce(t, dim):
         dim = (dim,)
     return t.sum(dim=dim)
 
-bf = bilinear_form("SignedDot", signed_dot, sum_reduce)
+bf = magmoid("SignedDot", signed_dot, sum_reduce)
 
 # Three-way composition order matters:
 a, b, c = torch.tensor(0.3), torch.tensor(0.5), torch.tensor(0.7)

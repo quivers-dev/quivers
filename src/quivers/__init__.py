@@ -77,12 +77,9 @@ from quivers.monadic.monads import (
     Monad,
     KleisliCategory,
     FuzzyPowersetMonad,
-    FreeMonoidMonad,
 )
 from quivers.categorical.adjunctions import (
     Adjunction,
-    ForgetfulFunctor,
-    FreeForgetfulAdjunction,
 )
 from quivers.enriched.kan_extensions import (
     ObjectMap,
@@ -94,7 +91,7 @@ from quivers.enriched.kan_extensions import (
 from quivers.enriched.profunctors import Profunctor
 from quivers.categorical.monoidal import (
     MonoidalStructure,
-    CartesianMonoidal,
+    CartesianProductMonoidal,
     CoproductMonoidal,
     EmptySet,
     EMPTY,
@@ -102,11 +99,9 @@ from quivers.categorical.monoidal import (
 from quivers.categorical.base_change import (
     BaseChange,
     BoolToFuzzy,
-    FuzzyToBool,
 )
 from quivers.monadic.distributive_laws import (
     DistributiveLaw,
-    FreeMonoidPowersetLaw,
 )
 
 # -- new extensions --
@@ -114,7 +109,6 @@ from quivers.monadic.distributive_laws import (
 from quivers.monadic.comonads import (
     Comonad,
     CoKleisliCategory,
-    DiagonalComonad,
     CofreeComonad,
 )
 from quivers.monadic.algebras import (
@@ -128,22 +122,19 @@ from quivers.monadic.algebras import (
 )
 from quivers.enriched.weighted_limits import (
     Weight,
-    Diagram,
-    weighted_limit,
-    weighted_colimit,
     weighted_limit_morphisms,
     weighted_colimit_morphisms,
     representable_weight,
     terminal_weight,
 )
 from quivers.core.algebras import (
-    LukasiewiczAlgebra,
+    StandardMVAlgebra,
     GodelAlgebra,
     TropicalAlgebra,
     MaxPlusAlgebra,
     LogProbAlgebra,
     RealAlgebra,
-    ProbabilityAlgebra,
+    BoundedSumProductAlgebra,
     CountingAlgebra,
     LUKASIEWICZ,
     GODEL,
@@ -155,22 +146,22 @@ from quivers.core.algebras import (
     COUNTING,
 )
 from quivers.core.algebra_morphisms import (
-    AlgebraHomomorphism,
+    CarrierMap,
     IdentityHom,
     Embedding,
-    Expectation,
+    MarkovToProductFuzzy,
     LogProb as LogProbHom,
     MaxPlus as MaxPlusHom,
     Threshold,
-    MaterialImplication,
-    EXPECTATION,
-    LOG_PROB_HOM,
-    MAX_PLUS_HOM,
-    MATERIAL_IMPLICATION,
+    ProductFuzzyToGodel,
+    MARKOV_TO_PRODUCT_FUZZY,
+    LOG_PROB_MAP,
+    MAX_PLUS_MAP,
+    PRODUCT_FUZZY_TO_GODEL,
     threshold,
     embedding,
-    HOMOMORPHISM_REGISTRY,
-    lookup_homomorphism,
+    CARRIER_MAP_REGISTRY,
+    lookup_carrier_map,
 )
 from quivers.enriched.yoneda import (
     Presheaf,
@@ -179,7 +170,7 @@ from quivers.enriched.yoneda import (
     yoneda_embedding,
     yoneda_lemma,
     yoneda_density,
-    verify_yoneda_fully_faithful,
+    verify_yoneda_preserves_composition,
 )
 from quivers.enriched.day_convolution import (
     day_convolution,
@@ -192,12 +183,12 @@ from quivers.enriched.optics import (
     Prism,
     Adapter,
     Grate,
+    ComposedOptic,
     compose_optics,
 )
 from quivers.categorical.traced import (
     TracedMonoidal,
-    CartesianTrace,
-    IterativeTrace,
+    CompactClosedTrace,
     trace,
     partial_trace,
 )
@@ -344,7 +335,7 @@ __all__ = [
     "PRODUCT_FUZZY",
     "BOOLEAN",
     # extra algebras
-    "LukasiewiczAlgebra",
+    "StandardMVAlgebra",
     "GodelAlgebra",
     "TropicalAlgebra",
     "LUKASIEWICZ",
@@ -353,29 +344,29 @@ __all__ = [
     "MaxPlusAlgebra",
     "LogProbAlgebra",
     "RealAlgebra",
-    "ProbabilityAlgebra",
+    "BoundedSumProductAlgebra",
     "CountingAlgebra",
     "MAX_PLUS",
     "LOG_PROB",
     "REAL",
     "PROBABILITY",
     "COUNTING",
-    "AlgebraHomomorphism",
+    "CarrierMap",
     "IdentityHom",
     "Embedding",
-    "Expectation",
+    "MarkovToProductFuzzy",
     "LogProbHom",
     "MaxPlusHom",
     "Threshold",
-    "MaterialImplication",
-    "EXPECTATION",
-    "LOG_PROB_HOM",
-    "MAX_PLUS_HOM",
-    "MATERIAL_IMPLICATION",
+    "ProductFuzzyToGodel",
+    "MARKOV_TO_PRODUCT_FUZZY",
+    "LOG_PROB_MAP",
+    "MAX_PLUS_MAP",
+    "PRODUCT_FUZZY_TO_GODEL",
     "threshold",
     "embedding",
-    "HOMOMORPHISM_REGISTRY",
-    "lookup_homomorphism",
+    "CARRIER_MAP_REGISTRY",
+    "lookup_carrier_map",
     # morphisms
     "Morphism",
     "ObservedMorphism",
@@ -410,11 +401,9 @@ __all__ = [
     "Monad",
     "KleisliCategory",
     "FuzzyPowersetMonad",
-    "FreeMonoidMonad",
     # comonads
     "Comonad",
     "CoKleisliCategory",
-    "DiagonalComonad",
     "CofreeComonad",
     # algebras and coalgebras
     "MonadAlgebra",
@@ -426,8 +415,6 @@ __all__ = [
     "EilenbergMooreCategory",
     # adjunctions
     "Adjunction",
-    "ForgetfulFunctor",
-    "FreeForgetfulAdjunction",
     # kan extensions
     "ObjectMap",
     "Projection",
@@ -438,20 +425,15 @@ __all__ = [
     "Profunctor",
     # monoidal
     "MonoidalStructure",
-    "CartesianMonoidal",
+    "CartesianProductMonoidal",
     "CoproductMonoidal",
     # base change
     "BaseChange",
     "BoolToFuzzy",
-    "FuzzyToBool",
     # distributive laws
     "DistributiveLaw",
-    "FreeMonoidPowersetLaw",
     # weighted limits
     "Weight",
-    "Diagram",
-    "weighted_limit",
-    "weighted_colimit",
     "weighted_limit_morphisms",
     "weighted_colimit_morphisms",
     "representable_weight",
@@ -463,7 +445,7 @@ __all__ = [
     "yoneda_embedding",
     "yoneda_lemma",
     "yoneda_density",
-    "verify_yoneda_fully_faithful",
+    "verify_yoneda_preserves_composition",
     # day convolution
     "day_convolution",
     "day_unit",
@@ -474,11 +456,11 @@ __all__ = [
     "Prism",
     "Adapter",
     "Grate",
+    "ComposedOptic",
     "compose_optics",
     # traced monoidal
     "TracedMonoidal",
-    "CartesianTrace",
-    "IterativeTrace",
+    "CompactClosedTrace",
     "trace",
     "partial_trace",
     # stochastic

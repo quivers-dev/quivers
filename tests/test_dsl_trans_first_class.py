@@ -1,6 +1,6 @@
 """First-class transformations in the DSL.
 
-A transformation (a :class:`AlgebraHomomorphism` or
+A transformation (a :class:`CarrierMap` or
 :class:`MorphismTransformation`) is a value in the DSL: it can be
 let-bound, composed with ``>>>``, and passed to ``change_base``.
 This file exercises:

@@ -2479,7 +2479,7 @@ class StanRenderer(RendererBase):
         """Map the outer marginalize plate's batch dims to indexing
         expressions usable inside this observe's loop body.
 
-        When the observe's `via` fibration names a per-row indexer
+        When the observe's `via` index map names a per-row indexer
         into a group axis, the group index is `<via>[<row-loop>]`.
         Otherwise each group dim is one of the observe's own plate
         dims, and the observe's loop variable over that dim indexes
@@ -2988,7 +2988,7 @@ class StanRenderer(RendererBase):
         (`bernoulli_logit_lpmf`), which Stan computes in log space.
         `prior_index_args` selects the prior row each accumulator
         entry reads: the accumulator's own loop variables under the
-        grouped reading, the observe's `via` fibration applied to the
+        grouped reading, the observe's `via` index map applied to the
         row loop variable under the per-row reading.
         """
         current = self._wrap_in_for_loops(ctx, scope_block, batch_dims, group_idx_names)

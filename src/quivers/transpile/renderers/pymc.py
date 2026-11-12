@@ -38,7 +38,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -966,9 +966,9 @@ class PyMCRenderer(RendererBase):
             support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
-        fibration = marginalize_fibration(node, raw.observe)
-        if fibration is not None:
-            self._emit_grouped_marginalize(ctx, node, raw, atoms, fibration)
+        index_map = marginalize_index_map(node, raw.observe)
+        if index_map is not None:
+            self._emit_grouped_marginalize(ctx, node, raw, atoms, index_map)
             return
         component_names: list[str] = []
         for position, atom in enumerate(atoms):
@@ -1014,15 +1014,15 @@ class PyMCRenderer(RendererBase):
         node: IRMarginalize,
         raw: MarginalizeBody,
         atoms: tuple[IRMarginalAtom, ...],
-        fibration: tuple[str, Dim],
+        index_map: tuple[str, Dim],
     ) -> None:
         """Integrate a grouped block's latent out as a potential.
 
-        A block whose rows are fibred into fewer groups than rows, under
+        A block whose rows are grouped into fewer groups than rows, under
         a prior shared across the groups, keys its accumulator by group
         (`docs/semantics/programs.md` §2.7): each atom's per-row
         log-density is scattered into a ``(|G|, K)`` accumulator through
-        the fibration, the log prior is added, and the reduction over
+        the index map, the log prior is added, and the reduction over
         the atoms is summed over the groups into a
         [`pymc.Potential`][pymc.Potential]. A mixture is a per-row
         integral, which is a different measure here.
@@ -1037,8 +1037,8 @@ class PyMCRenderer(RendererBase):
             The block's scope, split into its bindings and its observe.
         atoms : tuple[IRMarginalAtom, ...]
             The block's atoms.
-        fibration : tuple[str, Dim]
-            The fibration's name and the grouping plate's axis.
+        index map : tuple[str, Dim]
+            The index map's name and the grouping plate's axis.
         """
         py = ctx.py
         prefix = f"__marg_{node.latent}"
@@ -1067,7 +1067,7 @@ class PyMCRenderer(RendererBase):
                 "child_of",
             )
             term_names.append(term)
-        via, group = fibration
+        via, group = index_map
         extent = str(group.size) if isinstance(group, DimStatic) else group.size_name
         py.e(
             ctx.with_body,

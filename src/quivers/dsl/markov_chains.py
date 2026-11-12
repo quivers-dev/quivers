@@ -282,7 +282,7 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
                 "observation",
                 name,
                 f"the cell {name!r} observes one value per position; the "
-                f"observation at line {step.line} is plated, fibred, or "
+                f"observation at line {step.line} is plated, grouped, or "
                 f"destructured",
             )
     entry, previous = declaration.params

@@ -627,9 +627,9 @@ class _ArgCtx:
     """Per-call rendering context for the args of one distribution call.
 
     Carries the per-step batch-loop bindings (axis name → loop
-    variable identifier), the current step's `via` fibration (if
+    variable identifier), the current step's `via` index map (if
     any), and a flag indicating whether the inner observe sees the
-    fibration semantics so reference threading routes through it.
+    index map semantics so reference threading routes through it.
     """
 
     batch_loops: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -676,7 +676,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
     batch axis when the user did not supply explicit indices for
     that reference. The bracket is filled from `arg_ctx.batch_loops`
     when the declaration's axis has a live loop variable, or via the
-    `via=` fibration when no direct loop variable matches.
+    `via=` index map when no direct loop variable matches.
 
     If the user supplied explicit indices, the renderer treats them
     as the full bracket expression and skips automatic axis
@@ -724,7 +724,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
         if loop_var is not None:
             leading.append(_ident(gx, loop_var))
             continue
-        # No direct loop variable: route through the via fibration
+        # No direct loop variable: route through the via index map
         # if one is active; otherwise leave the axis unindexed.
         if arg_ctx.via_indexer is not None and arg_ctx.via_loop_var is not None:
             via_idx = _index_into(
@@ -732,7 +732,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
                 _ident(gx, arg_ctx.via_indexer),
                 (_ident(gx, arg_ctx.via_loop_var),),
             )
-            # The fibration holds zero-based QVR group codes.
+            # The index map holds zero-based QVR group codes.
             leading.append(_gen_binary_expr(gx, via_idx, ".+", _integer(gx, 1)))
             continue
 

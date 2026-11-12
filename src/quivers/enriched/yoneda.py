@@ -5,9 +5,12 @@ object A in C:
 
     ∫_X [C(X, A), F(X)] ≅ F(A)
 
-The routines below implement finite tensor analogues of this end.
-The theorem requires lawful category and presheaf data; arbitrary input
-tensors and an ``Algebra`` instance do not establish those hypotheses.
+The routines below compute this end over a finite V-category whose
+objects are the elements of the given finite sets. The end is a meet of
+internal homs, so V must be a complete lattice with a residuum (an
+`IdempotentSemiring`); the isomorphism then holds whenever the hom
+tensors form a V-category and F is a V-presheaf on it, which the test
+suite checks on small examples.
 
 The Yoneda embedding y: C → Prof(C) sends each object A to the
 representable profunctor C(-, A): C^op → V. The embedding is
@@ -35,7 +38,8 @@ import torch
 
 from quivers.core.objects import SetObject
 from quivers.core.morphisms import Morphism
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import IdempotentSemiring
+from quivers.enriched._lattice import require_lattice
 from quivers.enriched.profunctors import Profunctor
 
 
@@ -58,17 +62,21 @@ class Presheaf:
         Maps object index → V-tensor. The tensor at index i
         represents F(objects[i]), a V-valued "set" of shape
         (*objects[i].shape,).
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
     """
 
     objects: Sequence[SetObject]
     values: dict[int, torch.Tensor]
-    algebra: Algebra | None = None
+    algebra: IdempotentSemiring
 
     def __post_init__(self) -> None:
-        if self.algebra is None:
-            self.algebra = PRODUCT_FUZZY
+        self.algebra = require_lattice(self.algebra, "a V-presheaf")
 
     def evaluate(self, index: int) -> torch.Tensor:
         """Evaluate the presheaf at object index.
@@ -93,7 +101,7 @@ class Presheaf:
 
 def representable_profunctor(
     obj: SetObject,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> Profunctor:
     """The representable profunctor C(-, A) as a self-profunctor.
 
@@ -107,15 +115,20 @@ def representable_profunctor(
     ----------
     obj : SetObject
         The representing object A.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     Profunctor
         The representable profunctor y(A) = C(-, A).
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "the Yoneda construction")
     id_tensor = q.identity_tensor(obj.shape)
 
     return Profunctor(contra=obj, co=obj, tensor=id_tensor, algebra=q)
@@ -123,7 +136,7 @@ def representable_profunctor(
 
 def corepresentable_profunctor(
     obj: SetObject,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> Profunctor:
     """The corepresentable profunctor C(A, -) as a self-profunctor.
 
@@ -133,15 +146,20 @@ def corepresentable_profunctor(
     ----------
     obj : SetObject
         The corepresenting object A.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     Profunctor
         The corepresentable profunctor C(A, -).
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "the Yoneda construction")
     id_tensor = q.identity_tensor(obj.shape)
 
     return Profunctor(contra=obj, co=obj, tensor=id_tensor, algebra=q)
@@ -176,7 +194,7 @@ def yoneda_lemma(
     presheaf: Presheaf,
     obj_index: int,
     hom_tensors: Sequence[torch.Tensor],
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Compute the Yoneda lemma: ∫_X [C(X, A), F(X)] ≅ F(A).
 
@@ -197,15 +215,20 @@ def yoneda_lemma(
     hom_tensors : Sequence[torch.Tensor]
         For each object X_i in the presheaf, the hom tensor
         C(X_i, A) of shape (*X_i.shape, *A.shape).
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         The finite internal-hom reduction described above.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "the Yoneda construction")
 
     if len(hom_tensors) != presheaf.size:
         raise ValueError(
@@ -226,21 +249,20 @@ def yoneda_lemma(
         # compute [hom, f] via internal hom
         # for each a in A: [C(X, A)](a) = ⋀_x [C(x, a), F(x)]
         result_shape = obj_a.shape
-        component = torch.full(result_shape, q.unit)
+        component = torch.full(result_shape, q.top)
 
         for a_idx in itertools.product(*(range(s) for s in obj_a.shape)):
             # extract hom(-, a): shape (*x_i.shape,)
             hom_slice = hom[(..., *a_idx)]
 
             # [hom(x, a), F(x)] for each x, then meet
-            from quivers.enriched.weighted_limits import _internal_hom_scalar
 
             vals: list[torch.Tensor] = []
 
             for x_idx in itertools.product(*(range(s) for s in x_i.shape)):
                 h_val = hom_slice[x_idx]
                 f_val = f_xi[x_idx]
-                ih = _internal_hom_scalar(h_val, f_val, q)
+                ih = q.residuum(h_val, f_val)
                 vals.append(ih)
 
             if vals:
@@ -251,7 +273,7 @@ def yoneda_lemma(
 
     # meet over all objects (the end)
     if not components:
-        return torch.tensor(q.unit)
+        return torch.tensor(q.top)
 
     stacked = torch.stack(components, dim=0)
     return q.meet(stacked, dim=0)
@@ -259,7 +281,7 @@ def yoneda_lemma(
 
 def yoneda_density(
     morph: Morphism,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Verify Yoneda density: f ≅ ∫^X C(A, X) ⊗ f(X, -).
 
@@ -275,22 +297,27 @@ def yoneda_density(
     ----------
     morph : Morphism
         The morphism f: A → B.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         The coend result, which should equal morph.tensor.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "the Yoneda construction")
     id_a = q.identity_tensor(morph.domain.shape)
 
     # coend is just composition with identity = f itself
     return q.compose(id_a, morph.tensor, morph.domain.ndim)
 
 
-def verify_yoneda_fully_faithful(
+def verify_yoneda_preserves_composition(
     f: Morphism,
     g: Morphism,
     atol: float = 1e-5,
@@ -298,8 +325,8 @@ def verify_yoneda_fully_faithful(
     """Check preservation of one supplied composite numerically.
 
     Check that the profunctor morphism y(f) composed with y(g)
-    equals y(f >> g). Despite the historical function name, this
-    tests one composition equation, not fullness or faithfulness.
+    equals y(f >> g), one instance of the functoriality of the Yoneda
+    embedding.
 
     Parameters
     ----------
@@ -334,5 +361,5 @@ __all__ = [
     "yoneda_embedding",
     "yoneda_lemma",
     "yoneda_density",
-    "verify_yoneda_fully_faithful",
+    "verify_yoneda_preserves_composition",
 ]

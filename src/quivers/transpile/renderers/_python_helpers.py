@@ -1728,14 +1728,14 @@ def marginal_weight_probs(
     )
 
 
-def marginalize_fibration(
+def marginalize_index_map(
     node: IRMarginalize, observe: IRObserve
 ) -> tuple[str, Dim] | None:
-    """The fibration a grouped block gathers its rows through, if any.
+    """The index map a grouped block gathers its rows through, if any.
 
     `docs/semantics/programs.md` §2.7 keys a grouped block's accumulator
     by group: the block's latent is one class per group, and the rows
-    an observe's ``via`` fibration sends to one group are scored under
+    an observe's ``via`` index map sends to one group are scored under
     that group's class, so their per-class log-likelihoods are summed
     into a ``(|G|, K)`` accumulator before the reduction over the
     latent. This holds whatever the prior: a prior allocated per group
@@ -1753,7 +1753,7 @@ def marginalize_fibration(
     Returns
     -------
     tuple[str, Dim] | None
-        The fibration's name and the grouping plate's leading axis when
+        The index map's name and the grouping plate's leading axis when
         the rows must be scattered; ``None`` when each row reduces on
         its own.
     """

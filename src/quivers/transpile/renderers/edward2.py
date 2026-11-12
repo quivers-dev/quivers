@@ -5,7 +5,7 @@ Edward2's idiom is a plain ``def model(<inputs>=None, ...): ...`` whose
 body constructs random variables via
 ``edward2.<Family>(args, sample_shape=[B0, B1, ...], name="<name>")``.
 There is no separate data block; every exogenous identifier (program
-parameters, observed values, fibrations) becomes a function parameter
+parameters, observed values, index maps) becomes a function parameter
 with a ``=None`` default. Discrete-latent integration scopes lower to
 explicit ``IRSample(latent)`` plus the inlined scope body (Edward2
 samples discrete latents natively; ``log_sum_exp`` enumeration is the
@@ -48,7 +48,7 @@ from quivers.transpile.renderers._python_helpers import (
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
-    marginalize_fibration,
+    marginalize_index_map,
     name_event_rank_map,
     name_plate_map,
     number_literal,
@@ -817,10 +817,10 @@ class Edward2Renderer(RendererBase):
             Plate(event_dims=observe.plate.event_dims, batch_dims=())
         )
         prefix = f"__marg_{node.latent}"
-        fibration = marginalize_fibration(node, observe)
-        if fibration is not None:
+        index_map = marginalize_index_map(node, observe)
+        if index_map is not None:
             self._emit_grouped_marginalize(
-                py, body_vid, node, raw, atoms, fibration, input_specs, bindings
+                py, body_vid, node, raw, atoms, index_map, input_specs, bindings
             )
             return
         per_arg: list[list[str]] = [[] for _ in observe.arg_names]
@@ -1009,7 +1009,7 @@ class Edward2Renderer(RendererBase):
     def _weight_ref_expr(self, py: PyCtx, probs: IRArg) -> str:
         """Render the atom-weight probability tensor.
 
-        A weight gathered through an observe's `via` fibration carries
+        A weight gathered through an observe's `via` index map carries
         a whole plate vector as its index, which TensorFlow's
         ``__getitem__`` rejects, so the gather routes through
         ``tf.gather`` the way every other plate-vector lookup does.
@@ -1090,17 +1090,17 @@ class Edward2Renderer(RendererBase):
         node: IRMarginalize,
         raw: MarginalizeBody,
         atoms: tuple[IRMarginalAtom, ...],
-        fibration: tuple[str, Dim],
+        index_map: tuple[str, Dim],
         input_specs: dict[str, ConstraintSpec],
         bindings: dict[str, _Binding],
     ) -> None:
         """Integrate a grouped block's latent out as a traced factor.
 
-        A block whose rows are fibred into fewer groups than rows, under
+        A block whose rows are grouped into fewer groups than rows, under
         a prior shared across the groups, keys its accumulator by group
         (`docs/semantics/programs.md` §2.7): each atom's per-row
         log-density is scattered into a ``(|G|, K)`` accumulator through
-        the fibration with ``tf.math.unsorted_segment_sum``, the log
+        the index map with ``tf.math.unsorted_segment_sum``, the log
         prior is added, and the reduction over the atoms summed over the
         groups is traced as a factor variable. A mixture is a per-row
         integral, which is a different measure here.
@@ -1117,8 +1117,8 @@ class Edward2Renderer(RendererBase):
             The block's scope, split into its bindings and its observe.
         atoms : tuple[IRMarginalAtom, ...]
             The block's atoms.
-        fibration : tuple[str, Dim]
-            The fibration's name and the grouping plate's axis.
+        index map : tuple[str, Dim]
+            The index map's name and the grouping plate's axis.
         input_specs : dict[str, ConstraintSpec]
             The declared inputs.
         bindings : dict[str, _Binding]
@@ -1189,7 +1189,7 @@ class Edward2Renderer(RendererBase):
             ),
             "child_of",
         )
-        via, group = fibration
+        via, group = index_map
         extent = str(group.size) if isinstance(group, DimStatic) else group.size_name
         stacked = ", ".join(term_names)
         graft_python_statements(
@@ -2322,7 +2322,7 @@ def _ir_has_factor(body: tuple[IRNode, ...]) -> bool:
 
 
 def _marginalize_is_grouped(node: IRMarginalize) -> bool:
-    """Whether a block scatters its rows through a fibration.
+    """Whether a block scatters its rows through an index map.
 
     Parameters
     ----------
@@ -2333,12 +2333,12 @@ def _marginalize_is_grouped(node: IRMarginalize) -> bool:
     -------
     bool
         ``True`` when the block carries a grouping plate and an
-        observe with a ``via`` fibration into it, whose rows
-        `marginalize_fibration` scatters into the groups and the
+        observe with a ``via`` index map into it, whose rows
+        `marginalize_index_map` scatters into the groups and the
         renderer traces as a factor.
     """
     return any(
-        isinstance(inner, IRObserve) and marginalize_fibration(node, inner) is not None
+        isinstance(inner, IRObserve) and marginalize_index_map(node, inner) is not None
         for inner in node.scope
     )
 

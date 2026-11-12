@@ -1,7 +1,7 @@
 """Typed entry-point metadata for programs elaborated into computations.
 
 A ``program`` declaration elaborates to an ordinary named computation whose
-parameters are the program's data, observations, and fibrations, and whose
+parameters are the program's data, observations, and index maps, and whose
 body performs the canonical ``Random.sample`` and ``Score.add`` requests.
 What the computation alone does not say is which parameter plays which
 role, which locals are the program's sites, and what the return tuple's
@@ -25,7 +25,7 @@ type ParameterRole = Literal[
     "scalar",
     "data",
     "observation",
-    "fibration",
+    "index_map",
     "weight",
     "bias",
     "table",
@@ -36,7 +36,7 @@ type ParameterRole = Literal[
 ``domain`` parameters carry the value the program is applied to, one per
 real factor of its domain; ``scalar`` ones are its declared parameters;
 ``data`` ones are free names its steps read; ``observation`` ones are the
-values ``observe`` steps score; ``fibration`` ones map observation rows to
+values ``observe`` steps score; ``index_map`` ones map observation rows to
 groups; ``weight`` and ``bias`` are the numbers of a declared morphism's
 affine parameter map and ``table`` those of a morphism over a finite
 domain, one row per element; ``kernel-input`` holds a kernel's input

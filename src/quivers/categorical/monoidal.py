@@ -6,8 +6,14 @@ object I, and coherence isomorphisms (associator, unitors, braiding).
 This module provides:
 
     MonoidalStructure (abstract)
-    ├── CartesianMonoidal  — (FinSet, ×, 1)
+    ├── CartesianProductMonoidal  — (FinSet, ×, 1)
     └── CoproductMonoidal  — (FinSet, +, ∅)
+
+On finite sets and functions the cartesian product is a categorical
+product, but the morphisms here are V-valued matrices, on which ``×``
+is a symmetric tensor product and not a product: V-matrices have no
+natural diagonals. The disjoint union ``+`` is a biproduct of
+V-matrices over a semiring.
 """
 
 from __future__ import annotations
@@ -116,11 +122,14 @@ class MonoidalStructure(ABC):
         ...
 
 
-class CartesianMonoidal(MonoidalStructure):
-    """Cartesian monoidal structure: (FinSet, ×, 1).
+class CartesianProductMonoidal(MonoidalStructure):
+    """The symmetric monoidal structure given by the cartesian product of sets.
 
-    The product is the cartesian product (ProductSet), the unit is
-    the terminal object (Unit = FinSet(name="1", cardinality=1)).
+    The tensor of objects is their cartesian product (ProductSet) and
+    the unit is the one-element set (Unit = FinSet(name="1",
+    cardinality=1)). On V-matrices this is a symmetric tensor product
+    and not a cartesian one: a relation cannot be copied naturally, so
+    ``×`` is not the categorical product of V-matrices.
 
     Since ProductSet auto-flattens, the associator (A×B)×C → A×(B×C)
     is the identity (both sides flatten to ProductSet(A,B,C)). The
@@ -199,7 +208,7 @@ class CartesianMonoidal(MonoidalStructure):
         return observed(source, target, data, algebra=self._algebra)
 
     def __repr__(self) -> str:
-        return "CartesianMonoidal()"
+        return "CartesianProductMonoidal()"
 
 
 class EmptySet(SetObject):
@@ -312,7 +321,7 @@ class CoproductMonoidal(MonoidalStructure):
 
 __all__ = [
     "MonoidalStructure",
-    "CartesianMonoidal",
+    "CartesianProductMonoidal",
     "CoproductMonoidal",
     "EmptySet",
     "EMPTY",
