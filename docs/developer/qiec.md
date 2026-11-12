@@ -1,12 +1,18 @@
 # Quivers Indexed Effect Core
 
 The Quivers Indexed Effect Core (QIEC) is the typed core language that every executable QVR
-declaration elaborates to. It has indexed families, [effect rows](https://en.wikipedia.org/wiki/Row_polymorphism), and
-[effect handlers](https://en.wikipedia.org/wiki/Effect_system) [@plotkin2009handlers], and both
-the reference machine and the transpilers read it. *Elaboration* is the compiler step that rewrites a source declaration
-into explicit QIEC terms. Indexed families, effect interfaces, instances, handlers, and typed
+declaration elaborates to. It has indexed families of types, in the manner of
+[generalized algebraic data types](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type)
+(GADTs) [@xi2003guarded], [effect rows](https://en.wikipedia.org/wiki/Row_polymorphism), and
+[effect handlers](https://en.wikipedia.org/wiki/Effect_system) [@plotkin2009handlers]. Both the
+[reference machine](#reference-evaluator), the library's interpreter for QIEC, and the transpilers
+read it.
+
+*Elaboration* is the compiler step that rewrites a source declaration into explicit QIEC terms.
+Indexed families, effect interfaces, instances, handlers, and typed
 computations are written in QIEC directly. A probabilistic `program` is notation for a named
-computation over the two effect instances `random` and `score` that every module has built in.
+computation over the two *effect instances* `random` and `score` that every module has built in,
+where an effect instance is one named occurrence of an effect interface.
 The source syntax, typing rules, and diagnostics of each form are specified in the
 [QVR language reference](../reference/qvr/index.md).
 
@@ -15,9 +21,23 @@ grammar parses the whole surface into one source AST. Quivers then projects the 
 declarations through the public `GADT` API of [didactic](https://github.com/panproto/didactic),
 the library whose `Model` types hold the data values of quivers, and didactic checks that
 projection against its compiled first-order theory. The module finally lowers along the route
-from the source protocol `QVR_SOURCE_VERSION` (in `quivers.dsl.qiec_lowering`) to the core ABI
-identifier `qiec-core/v1alpha1`, and the result is held to the deterministic serialization
-contract of the Python core.
+from the source protocol `QVR_SOURCE_VERSION` (in `quivers.dsl.qiec_lowering`) to
+`qiec-core/v1alpha1`, the identifier of the core's
+[application binary interface](https://en.wikipedia.org/wiki/Application_binary_interface) (ABI),
+and the result is held to the deterministic serialization contract of the Python core.
+
+## Terms
+
+| Term | Meaning |
+|---|---|
+| Kind | The type of a static argument, such as a type or an index. |
+| [Telescope](https://ncatlab.org/nlab/show/telescope) | An ordered list of typed binders in which later types may mention earlier binders [@debruijn1991telescopic]. |
+| Parameter and index | The arguments of an [inductive family](https://ncatlab.org/nlab/show/inductive+family) that stay fixed across constructors (parameters) and those a constructor may refine, such as a vector length (indices) [@dybjer1994inductive]. |
+| Equality evidence | A checked justification for treating two index expressions as equal within a scope. |
+| Effect row | The effect instances a computation may still request [@leijen2014koka]. |
+| [Continuation](https://en.wikipedia.org/wiki/Continuation) | The rest of the computation after an operation request. |
+| Resumption grade | How many times a handler clause may resume its continuation: never (`0`), at most once (`aff`), exactly once (`1`), or any number of times (`omega`). These are the zero, affine, linear, and unrestricted multiplicities of [substructural typing](https://en.wikipedia.org/wiki/Substructural_type_system) [@atkey2018syntax]. |
+| Stable identifier | A persistent identity used for dispatch, independent of the name shown to a user. |
 
 ## Two boundaries
 
@@ -40,18 +60,6 @@ add a log weight, and returns the value. A sampling runtime, a replaying runtime
 language can each interpret those requests in their own way while the checked structure stays
 the same. Serializing the term keeps each operation's identity and argument types. A process
 that loads the module must obtain the implementations from a matching provider.
-
-The checks below use the following terms.
-
-| Term | Meaning |
-|---|---|
-| [Telescope](https://ncatlab.org/nlab/show/telescope) | An ordered list of typed binders in which later types may mention earlier binders [@debruijn1991telescopic]. |
-| Parameter and index | The arguments of an [inductive family](https://ncatlab.org/nlab/show/inductive+family) that stay fixed across constructors (parameters) and those a constructor may refine, such as a vector length (indices) [@dybjer1994inductive]. |
-| Equality evidence | A checked justification for treating two index expressions as equal within a scope. |
-| Effect row | The effect instances a computation may still request [@leijen2014koka]. |
-| [Continuation](https://en.wikipedia.org/wiki/Continuation) | The rest of the computation after an operation request. |
-| Resumption grade | How many times a handler clause may resume its continuation: never (`0`), at most once (`aff`), exactly once (`1`), or any number of times (`omega`). These are the zero, affine, linear, and unrestricted multiplicities of [substructural typing](https://en.wikipedia.org/wiki/Substructural_type_system) [@atkey2018syntax]. |
-| Stable identifier | A persistent identity used for dispatch, independent of the name shown to a user. |
 
 ## The static checker {#static-kernel}
 
@@ -698,8 +706,7 @@ feature, such as search or neural attachments, that a transpile target must supp
 program, and a target that lacks one reports a `qiec:capability:*` diagnostic. Pyro, NumPyro,
 PyMC, Edward2, Turing, Gen, WebPPL, and Church lower the whole computation graph through their own
 implementations of the QIEC runtime ABI, the
-[application binary interface](https://en.wikipedia.org/wiki/Application_binary_interface)
-described below. That lowering keeps stable operation and instance identifiers, dynamic addresses,
+ABI described below. That lowering keeps stable operation and instance identifiers, dynamic addresses,
 lexical handler scope, indexed constructors, equality transport, and the four resumption grades.
 
 ### Calls on dynamic targets
