@@ -267,6 +267,7 @@ nav:
     - Changepoint Model: examples/changepoint.md
     - Weibull Survival: examples/survival-weibull.md
     - Vanilla RNN LM: examples/vanilla-rnn-lm.md
+    - Stacked RNN LM: examples/stacked-rnn-lm.md
     - LSTM LM: examples/lstm-lm.md
     - GRU LM: examples/gru-lm.md
     - Bidirectional RNN LM: examples/bidirectional-rnn-lm.md
