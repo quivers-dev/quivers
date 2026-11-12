@@ -10,6 +10,9 @@ do_complete / do_inspect surface against a directly-instantiated
 
 from __future__ import annotations
 
+import gc
+import warnings
+
 from quivers.kernel.quivers_kernel import (
     _prefix_at,
     _split_cell,
@@ -159,3 +162,28 @@ def test_do_inspect_unknown_name_not_found() -> None:
     k.do_execute(SOURCE, silent=True)
     out = k.do_inspect("nope_unknown", 12)
     assert out["found"] is False
+
+
+# ----- :quit --------------------------------------------------------
+
+
+def test_quit_ends_the_cell_and_leaves_no_unawaited_coroutine() -> None:
+    k = _kernel()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = k.do_execute(":quit\n\n" + SOURCE, silent=False)
+        gc.collect()
+    assert out["status"] == "ok"
+    assert not [w for w in caught if "never awaited" in str(w.message)]
+    # The chunks after `:quit` are not dispatched: `f` is not declared.
+    assert k.do_inspect("f", 1)["found"] is False
+    streams = [c for kind, c in k._captured if kind == "stream"]  # type: ignore[attr-defined]
+    assert [c["name"] for c in streams] == ["stderr"]
+    assert "shut the kernel down from the front end" in streams[0]["text"]
+
+
+def test_quit_in_a_silent_cell_writes_nothing() -> None:
+    k = _kernel()
+    out = k.do_execute(":quit", silent=True)
+    assert out["status"] == "ok"
+    assert k._captured == []  # type: ignore[attr-defined]

@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.53.2] - 2026-11-11
+
+### Fixed
+
+- **`MCMC.run` samples a program whose data include a corpus of tokens.** The run fingerprint a checkpoint is checked against renders every observation and host datum by content: tensors, numbers, and arrays by dtype, shape, and bytes (a rectangular list of numbers renders as the tensor the program reads), and strings and every other sequence or mapping item by item, so `{"corpus": [["the", "cat", "runs"], ...]}` runs, and resuming with a corpus that differs in one token, in sentence order, or in sentence boundaries is refused as different data. A datum of any other kind is refused with a `TypeError` naming it, rather than left out of the fingerprint. NUTS thus runs on a Bayesian PCFG whose `parse(...)` reads its corpus as host data, where it had stopped before its first draw with `ValueError: too many dimensions 'str'`.
+- **`:quit` in the Jupyter kernel ends the cell and leaves the kernel up.** The chunks after `:quit` are not run, and unless the cell is silent a note on standard error says to shut the kernel down from the front end. The kernel calls no shutdown hook, so under an ipykernel whose `do_shutdown` is a coroutine, `:quit` leaves no unawaited coroutine and raises no `RuntimeWarning`.
+
 ## [0.53.1] - 2026-11-11
 
 ### Fixed

@@ -61,12 +61,51 @@ class QuiversKernel(Kernel):
         *,
         cell_id: str | None = None,
     ) -> dict[str, Any]:
+        """Dispatch each chunk of a cell to the session.
+
+        A ``:quit`` chunk ends the cell: the chunks after it are not
+        dispatched, and the kernel stays up, since a kernel is shut down
+        by its front end. Unless ``silent``, a note on standard error
+        says so.
+
+        Parameters
+        ----------
+        code : str
+            The cell.
+        silent : bool
+            Whether to suppress the cell's output streams.
+        store_history : bool
+            Unused; part of the ipykernel signature.
+        user_expressions : dict[str, Any] | None
+            Unused; part of the ipykernel signature.
+        allow_stdin : bool
+            Unused; part of the ipykernel signature.
+        cell_id : str | None
+            Unused; part of the ipykernel signature.
+
+        Returns
+        -------
+        dict[str, Any]
+            The execute reply: ``"error"`` status if any chunk reported
+            an error diagnostic, ``"ok"`` otherwise.
+        """
         del store_history, user_expressions, allow_stdin, cell_id
         had_error = False
         for raw_line in _split_cell(code):
             response = self.repl.dispatch(raw_line)
             if response.body == "__quit__":
-                self.do_shutdown(False)
+                if not silent:
+                    self.send_response(
+                        self.iopub_socket,
+                        "stream",
+                        {
+                            "name": "stderr",
+                            "text": (
+                                ":quit ends this cell; shut the kernel down "
+                                "from the front end\n"
+                            ),
+                        },
+                    )
                 break
             if not silent:
                 if response.body:
