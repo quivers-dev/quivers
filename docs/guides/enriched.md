@@ -12,7 +12,7 @@ These constructions are joins, meets, and internal homs in a
 [complete lattice](https://en.wikipedia.org/wiki/Complete_lattice), and they have their
 universal properties only when the `Algebra`'s $\bigoplus$ is the lattice join, its
 $\bigwedge$ (`meet`) the infimum, and its internal hom the residuum. Every function here
-therefore takes an [`IdempotentSemiring`](../api/core/algebras.md) (`BOOLEAN`, `GODEL`,
+thus takes an [`IdempotentSemiring`](../api/core/algebras.md) (`BOOLEAN`, `GODEL`,
 `TROPICAL`, `MAX_PLUS`, or the duals of `BOOLEAN` and `GODEL`) and raises `TypeError` for any
 other `Algebra`. On such a semiring the *residuum* $[w, x]$ is the greatest $v$ with
 $v \otimes w \le x$, the internal hom of the lattice (`IdempotentSemiring.residuum`), and
