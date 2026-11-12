@@ -149,7 +149,7 @@ from quivers.dsl.let_expr_traversal import (
     substitute_let_expr,
     walk_let_expr,
 )
-from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
+from quivers.dsl.markov_chains import chain_cells, markov_cell
 from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
@@ -7257,13 +7257,7 @@ class _ProgramsMixin:
             the latent it marginalizes, which only a scan drawn by a
             program runs; the expansion of that draw checks the form.
         """
-        names = _expr_ident_names(expr)
-        return any(
-            isinstance(statement, ProgramDecl)
-            and statement.name in names
-            and returns_marginalized_latent(statement)
-            for statement in self._module.statements
-        )
+        return bool(_expr_ident_names(expr) & chain_cells(self._module))
 
     def _is_trans_expr(self, expr) -> bool:
         """Return True iff ``expr`` denotes a transformation value.

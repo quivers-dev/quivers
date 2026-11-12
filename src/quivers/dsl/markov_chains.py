@@ -22,7 +22,11 @@ from typing import NoReturn
 import didactic.api as dx
 
 from quivers.dsl.ast_nodes import (
+    DefineDecl,
+    Expr,
+    ExprScan,
     LetStep,
+    Module,
     MarginalizeStep,
     ObjectExpr,
     ObjectProduct,
@@ -31,7 +35,7 @@ from quivers.dsl.ast_nodes import (
     ProgramStep,
     TypeName,
 )
-from quivers.dsl.step_resolution import StepResolutionError
+from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
 
 #: The family a chain's transition draws its next state from.
 TRANSITION_FAMILY = "Categorical"
@@ -96,6 +100,65 @@ def returns_marginalized_latent(declaration: ProgramDecl) -> bool:
         isinstance(step, MarginalizeStep) and step.var == returned
         for step in declaration.draws
     )
+
+
+def chain_cells(module: Module) -> frozenset[str]:
+    """The programs a module scans as the cells of marginalized chains.
+
+    Parameters
+    ----------
+    module : Module
+        The parsed module.
+
+    Returns
+    -------
+    frozenset[str]
+        Every program that returns the latent it marginalizes and is the
+        cell of a ``scan`` in some ``define``. Such a program has no value
+        of its own and is compiled only as the chain that scans it; any
+        other program, one that returns a marginalized latent included,
+        compiles as written.
+    """
+    programs = {
+        statement.name: statement
+        for statement in module.statements
+        if isinstance(statement, ProgramDecl)
+    }
+    scanned: set[str] = set()
+    for statement in module.statements:
+        if isinstance(statement, DefineDecl):
+            scanned |= _scanned_names(statement.expr)
+    return frozenset(
+        name
+        for name in scanned
+        if name in programs and returns_marginalized_latent(programs[name])
+    )
+
+
+def _scanned_names(expr: Expr) -> set[str]:
+    """The names a ``scan`` inside an expression runs as its cell.
+
+    Parameters
+    ----------
+    expr : Expr
+        A ``define``'s right-hand side.
+
+    Returns
+    -------
+    set[str]
+        The names under every ``scan(...)`` in the expression.
+    """
+    if isinstance(expr, ExprScan):
+        return set(_expr_ident_names(expr.expr))
+    found: set[str] = set()
+    for field in ("left", "right", "inner", "expr", "phi"):
+        child = getattr(expr, field, None)
+        if isinstance(child, Expr):
+            found |= _scanned_names(child)
+    for child in getattr(expr, "exprs", ()) or ():
+        if isinstance(child, Expr):
+            found |= _scanned_names(child)
+    return found
 
 
 def markov_cell(declaration: ProgramDecl) -> MarkovCell:

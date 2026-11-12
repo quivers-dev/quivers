@@ -211,7 +211,7 @@ from quivers.dsl.pure_builtins import (
     SHAPE_BUILTINS,
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
+from quivers.dsl.markov_chains import chain_cells, markov_cell
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
@@ -2245,8 +2245,16 @@ class _ProgramElaboration:
             if isinstance(declaration, ProgramDecl)
         }
         computations: list[NamedComputation] = []
+        # The cell of a marginalized chain returns the latent it
+        # marginalizes; it elaborates only as the row of the scan that
+        # runs it.
+        cells = chain_cells(self.source.syntax)
         for declaration in expanded.statements:
-            if isinstance(declaration, ProgramDecl) and _is_entry_point(declaration):
+            if (
+                isinstance(declaration, ProgramDecl)
+                and _is_entry_point(declaration)
+                and declaration.name not in cells
+            ):
                 try:
                     computations.extend(self._elaborate_program(declaration))
                 except QiecDiagnosticError as error:
@@ -9787,14 +9795,10 @@ def _is_entry_point(declaration: ProgramDecl) -> bool:
     -------
     bool
         ``True`` unless the program is a template over morphisms, which
-        only its call sites instantiate, or the cell of a marginalized
-        chain, which returns the latent it marginalizes and elaborates
-        only as the row of a scan that runs it; scalar parameters make an
+        only its call sites instantiate; scalar parameters make an
         ordinary computation with real or natural parameters, and object
         parameters bind the computation's telescope.
     """
-    if returns_marginalized_latent(declaration):
-        return False
     return declaration.type_params is None or not any(
         isinstance(parameter, MorphismParam) for parameter in declaration.type_params
     )

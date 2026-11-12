@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import torch.nn as nn
-from quivers.dsl.markov_chains import returns_marginalized_latent
+from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.continuous.morphisms import AnySpace
@@ -608,7 +608,7 @@ class Compiler(
             self._compile_morphism(stmt)
         elif isinstance(stmt, ProgramDecl):
             self._program_decls[stmt.name] = stmt
-            if returns_marginalized_latent(stmt):
+            if stmt.name in chain_cells(self._module):
                 # The cell of a marginalized chain has no value of its
                 # own; the scan that runs it compiles it.
                 return
