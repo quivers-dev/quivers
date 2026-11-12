@@ -1,9 +1,8 @@
 # Reference support
 
-These helpers implement shared numerical operations for reference distributions,
-including [parameter validation and conversion](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families). Inspect them when investigating a
-discrepancy in a [family’s sampling or density calculation](../../semantics/transpile-correctness/index.md#4-distribution-parameterization).
-
-Shared helpers of the reference distribution backend.
+These helpers implement the numerical operations that the reference distributions share, including
+[parameter validation and conversion](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families).
+A discrepancy in a [family's sampling or density](../../semantics/transpile-correctness/index.md#4-distribution-parameterization)
+may trace back to them.
 
 ::: quivers.qiec.reference_support
