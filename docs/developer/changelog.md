@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **API docstrings state the mathematics correctly.** `quivers.stochastic.semiring` describes the log semiring on `[-∞, ∞)` as a non-idempotent semiring rather than a lattice or quantale; `quivers.core.objects` lists its six set-object variants and documents `SetObject` as an object type and `FreeResiduated` as a finite set of Lambek-calculus formulas; `quivers.continuous.programs` shows the current `sample x <- f` syntax.
+
 - **`transformer_encoder` is a transformer encoder.** The element embeddings, with sinusoidal position encodings added, pass through multi-head self-attention layers (`torch.nn.TransformerEncoder`, post-norm, GELU feed-forward of width `4 * dim`) and are mean-pooled; the factory takes `heads` (default 4, dividing `dim`) and `layers` (default 1). It had been a head/tail MLP fold with no attention.
 
 - **`Writer.join` exists at every object, and `Writer` checks its monoid.** The multiplication is reshaped to the carrier's shape, so `join` at `Writer(A)` (needed for associativity) no longer raises a shape error, and an operation that is not associative or whose `unit_index` is not a two-sided unit raises `ValueError` when used.
