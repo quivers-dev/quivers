@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.55.2] - 2026-11-12
+
+### Fixed
+
+- **The compiled runtime scores a Poisson rate of zero and a Geometric success probability of one where they stand.** A positive count under `Poisson(rate=0)` and a positive failure count under `Geometric(probs=1)` have log probability `-inf` on the compiled runtime, as on the reference machine and every rendering target, where the inline clamp had floored the rate at `1e-7` and held the probability at `1 - 1e-7`, scoring such counts as finite. Inside a zero-inflated Poisson's `marginalize` block the structural-zero branch, whose gated rate is zero, thus puts no mass on a positive count. A rate below `1e-7` is likewise scored at its own value. Each family parameter's inline clamp may declare the closed interval it projects onto (`ParamSpec.inline_bounds`); every other parameter keeps its floor, and densities at interior values are unchanged.
+
 ## [0.55.1] - 2026-11-12
 
 ### Fixed

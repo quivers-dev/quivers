@@ -195,6 +195,41 @@ every faithful rendering of the same program.
 """
 
 
+def closed_interval_clamp(low: float, high: float) -> Bijector:
+    """Return the inline clamp projecting onto the closed interval
+    ``[low, high]``.
+
+    A parameter whose family admits a boundary value takes this clamp
+    in place of its transform's default, which holds every parameter
+    strictly inside the boundary: a Poisson ``rate`` of zero is the
+    point mass at zero, and a Geometric ``probs`` of one is the point
+    mass at zero failures, so neither may be moved.
+
+    Parameters
+    ----------
+    low : float
+        The least value the clamp leaves in place; ``-inf`` for none.
+    high : float
+        The greatest value the clamp leaves in place; ``inf`` for none.
+
+    Returns
+    -------
+    Bijector
+        The clamp, whose `forward_log_det_jacobian` is zero.
+
+    Raises
+    ------
+    ValueError
+        If ``low`` exceeds ``high``.
+    """
+    if low > high:
+        raise ValueError(
+            f"closed_interval_clamp: the lower bound {low} exceeds the upper "
+            f"bound {high}"
+        )
+    return _ClampInterval(low, high)
+
+
 def resolve_transform(transform: str | Bijector) -> Bijector:
     """Return the bijector for a string key or pass through a bijector.
 
