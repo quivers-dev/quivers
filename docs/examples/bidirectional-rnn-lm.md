@@ -147,7 +147,7 @@ observations = {"next_token": nxt, "prev_token": prv}
 
 ### The compiled runtime
 
-At a traced draw of the weights, for three windows: the log joint matches the oracle to a relative 1e-5, the returned context matches to 1e-5 absolute, and each wrong oracle is more than a relative 1e-3 away, so the first check can see both the direction and the target of the backward recurrence.
+At a traced draw of the weights, for three windows: the log joint matches the oracle to a relative 1e-5, the returned context matches to 1e-5 absolute, and each wrong oracle is more than a relative 1e-3 away, so the first check can see both the direction and the target of the backward recurrence. The separation depends on the draw: at this page's seeded draw the smallest gap is 1.4e-3, but a draw of the same weights made with float64 as the default dtype puts the left-to-right oracle 7.8e-4 from the runtime at window 2, under the margin. The page claims the margin at its own draw only.
 
 ```python
 # 1, 2, 4: compiled runtime at a traced draw.
