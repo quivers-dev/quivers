@@ -2071,8 +2071,7 @@ class StanRenderer(RendererBase):
         """Emit a marginalized latent.
 
         Families with declared finite marginal support are enumerated with a
-        `log_sum_exp` reduction. This includes relaxation families whose
-        marginal heads declare discrete atoms. Families without finite support
+        `log_sum_exp` reduction. Families without finite support
         become constrained Stan parameters: the renderer adds their prior
         density and emits the scope with that parameter in context. Stan then
         samples the resulting joint model.
@@ -3107,12 +3106,10 @@ class StanRenderer(RendererBase):
         ctx.sb.edge(asn, op, "child_of")
         # RHS: <stan_name>_lpmf(<atom> | latent_args with z-><atom>)
         #
-        # A relaxation family weights its two atoms by the discrete
-        # family it relaxes, which is what it declares in its
-        # marginalize support: `ContinuousBernoulli` carries the
-        # Bernoulli's `[log(1 - p), log p]`, not its own continuous
-        # density, and its atoms are 0 and 1 rather than the loop's 1
-        # and 2.
+        # A two-atom family weights its atoms by the family its
+        # marginalize support names, the Bernoulli's
+        # `[log(1 - p), log p]`, and its atoms are 0 and 1 rather than
+        # the loop's 1 and 2.
         declared = marginalize_support(latent_meta)
         binary_atoms = declared is not None and declared.atoms == "binary"
         if declared is not None and binary_atoms and declared.weight_family is not None:

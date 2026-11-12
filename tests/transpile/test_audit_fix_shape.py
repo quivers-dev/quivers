@@ -200,10 +200,11 @@ def test_lda_stan_enumerates_topics_per_word() -> None:
 
 
 def test_zip_marginalize_latent_is_per_response() -> None:
-    """A non-enumerable marginalize latent replicates over its index.
+    """A two-atom marginalize latent replicates over its index.
 
-    `ContinuousBernoulli` has no finite support to sum over, so
-    `marginalize z : Resp` means one latent value per response.
+    A `Bernoulli`'s support has two atoms, not one per response, so
+    `marginalize z : Resp` means one latent per response, each summed
+    out over its two atoms.
     """
     marginalize = _find_marginalize(_lower("zip_regression"))
     batch = marginalize.plate.batch_dims
@@ -212,7 +213,7 @@ def test_zip_marginalize_latent_is_per_response() -> None:
 
 
 def test_zip_scope_let_inherits_the_latent_plate() -> None:
-    """`let gated_rate = z * rate` inside the scope is per-response."""
+    """`let gated_rate = real(z) * rate` inside the scope is per-response."""
     marginalize = _find_marginalize(_lower("zip_regression"))
     gated = _find_let(marginalize.scope, "gated_rate")
     assert [d.name for d in gated.plate.batch_dims] == ["Resp"]
@@ -247,9 +248,8 @@ def test_zip_stan_declares_the_rate_as_a_response_array() -> None:
 def test_zip_stan_indexes_the_rate_inside_the_response_loop() -> None:
     """The Poisson likelihood reads the per-response rate at each atom.
 
-    The block enumerates the two atoms of the Bernoulli its
-    `ContinuousBernoulli` relaxes, and the scope is unrolled so each
-    atom is a literal. That is what lets the off atom's rate fold to a
+    The block enumerates the two atoms of its `Bernoulli` gate, and the
+    scope is unrolled so each atom is a literal. That is what lets the off atom's rate fold to a
     constant zero: written as `(k - 1) * rate[n]` the rate is one the
     parameters still reach, so its derivative where the count is
     positive is `0 * inf` and Stan rejects every initial value it

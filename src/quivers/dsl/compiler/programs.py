@@ -5265,10 +5265,11 @@ class _ProgramsMixin:
 
         Supported priors are the finite-support discrete families the
         surface admits at a marginalize head: `Categorical` (support
-        ``0 .. K-1`` with per-class prior ``probs[..., k]``) and the
-        Bernoulli relaxation family (hard support ``{0, 1}`` with prior
-        ``[1 - p, p]``). Any other family raises, since its support is
-        not enumerable in closed form here.
+        ``0 .. K-1`` with per-class prior ``probs[..., k]``) and
+        `Bernoulli` (support ``{0, 1}`` with prior ``[1 - p, p]``). Any
+        other family raises: a continuous family, a relaxation of a
+        discrete one included, has no finite support, and its marginal
+        is an integral rather than a sum.
         """
         latent_name, prior_family, prior_args, body_steps = pending
 
@@ -5418,17 +5419,16 @@ class _ProgramsMixin:
         shared_vector_theta = _shared_vector_parameter(obs_family)
 
         _CATEGORICAL = prior_family == "Categorical"
-        _BERNOULLI = prior_family in (
-            "Bernoulli",
-            "ContinuousBernoulli",
-            "RelaxedBernoulli",
-        )
+        _BERNOULLI = prior_family == "Bernoulli"
         if not (_CATEGORICAL or _BERNOULLI):
             raise CompileError(
                 f"marginalize {latent_name!r}: prior family {prior_family!r} "
-                "has no closed-form finite support for the ungrouped "
-                "marginalize path; supported priors are Categorical and the "
-                "Bernoulli relaxation family",
+                "has no finite support to sum over; a marginalize block sums "
+                "its latent out over the atoms of a Categorical or a "
+                "Bernoulli. A continuous latent's marginal is an integral "
+                "over its support, which no finite sum computes: draw it with "
+                "`sample` and let inference integrate it out, or draw a "
+                "two-point latent from `Bernoulli`",
                 step.line,
                 step.col,
             )

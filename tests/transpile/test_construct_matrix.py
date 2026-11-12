@@ -380,9 +380,9 @@ for _backend in (
     _EXPECTED_ORTHOGONAL_RAISES[
         (_backend, "steps", "observe_continuous_bernoulli_logits")
     ] = "family:ContinuousBernoulli:logits"
-_EXPECTED_ORTHOGONAL_RAISES[
-    ("bugs", "steps", "marginalize_continuous_bernoulli_logits")
-] = "marginalize:no-collapse"
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "marginalize_bernoulli_logits")] = (
+    "marginalize:no-collapse"
+)
 
 # The ordered probit, inverse Wishart, and matrix normal are refused by
 # name where a target has no class or literal form for them.

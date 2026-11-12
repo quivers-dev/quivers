@@ -202,14 +202,11 @@ class IRMarginalAtom(dx.Model):
     scope's own plates carry. No latent variable is declared: the
     atoms replace it.
 
-    `weight_family` is not always the latent's own family. The
-    Bernoulli relaxations are integrated over the atoms 0 and 1 with
-    *discrete* Bernoulli weights, matching what the QVR compiler
-    enumerates, so `weight_family` reads `"Bernoulli"` and
-    `weight_args` carries only the probability argument, or the
-    logits when the call site names them (`weight_arg_names` reads
-    ``("logits",)``), which a renderer weights by ``log sigmoid(-l)``
-    and ``log sigmoid(l)`` in log space.
+    `weight_family` is the family the latent's marginalize support
+    names. For a `Bernoulli`, `weight_args` carries the probability
+    argument, or the logits when the call site names them
+    (`weight_arg_names` reads ``("logits",)``), which a renderer
+    weights by ``log sigmoid(-l)`` and ``log sigmoid(l)`` in log space.
 
     `IRMarginalAtom` is a renderer-side IR extension. `Lower`
     never constructs it.

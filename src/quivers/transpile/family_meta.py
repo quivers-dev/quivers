@@ -1596,9 +1596,7 @@ def finite_enumerable_at_call_site(
     [`IRArgNumber`][quivers.transpile.ir.IRArgNumber]; False when it
     is a reference.
 
-    A False answer does not mean the latent cannot be integrated out.
-    The Bernoulli relaxations replicate along their index and are
-    still integrable over the two atoms 0 and 1; ask
+    A False answer does not mean the latent cannot be summed out; ask
     [`marginalize_support`][quivers.transpile.family_meta.marginalize_support]
     for that.
 
@@ -1699,11 +1697,8 @@ class MarginalizeSupport(dx.Model):
 
     `atoms` names the enumeration:
 
-    * `"binary"`: the two atoms 0 and 1, `size` 2. The Bernoulli
-      relaxations share this support with `Bernoulli`, and share its
-      weights too: the atoms are weighted by the *discrete* Bernoulli
-      log-pmf ``[log1p(-p), log(p)]``, never by the relaxation's own
-      density at 0 and 1.
+    * `"binary"`: the two atoms 0 and 1 of a `Bernoulli`, `size` 2,
+      weighted by its log-pmf ``[log1p(-p), log(p)]``.
     * `"class_index"`: the atoms ``0, ..., K - 1``. The width ``K`` is
       the trailing extent of the family's probability argument, a
       call-site fact rather than a family fact, so `size` is `None`
@@ -1726,12 +1721,13 @@ class MarginalizeSupport(dx.Model):
     logit_arg: str | None = None
 
 
-# The prior families a `marginalize` block integrates, mirroring the
+# The prior families a `marginalize` block sums out, mirroring the
 # atom sets the QVR compiler enumerates: `Categorical` over its class
-# axis, and the Bernoulli relaxation family over {0, 1} weighted by
-# the discrete Bernoulli pmf. A family absent from this table has no
-# agreed marginal, so a renderer must raise `marginalize:` rather than
-# emit a live draw in its place.
+# axis and `Bernoulli` over {0, 1}. A continuous family, a relaxation
+# of a discrete one included, has no atoms to sum: its marginal is an
+# integral. A family absent from this table has no finite marginal, so
+# a renderer must raise `marginalize:` rather than emit a live draw in
+# its place.
 _MARGINALIZE_SUPPORT: dict[str, MarginalizeSupport] = {
     "Bernoulli": MarginalizeSupport(
         atoms="binary",
@@ -1739,19 +1735,6 @@ _MARGINALIZE_SUPPORT: dict[str, MarginalizeSupport] = {
         weight_arg="probs",
         size=2,
         logit_arg="logits",
-    ),
-    "ContinuousBernoulli": MarginalizeSupport(
-        atoms="binary",
-        weight_family="Bernoulli",
-        weight_arg="probs",
-        size=2,
-        logit_arg="logits",
-    ),
-    "RelaxedBernoulli": MarginalizeSupport(
-        atoms="binary",
-        weight_family="Bernoulli",
-        weight_arg="probs",
-        size=2,
     ),
     "Categorical": MarginalizeSupport(
         atoms="class_index",

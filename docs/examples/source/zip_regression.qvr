@@ -16,12 +16,9 @@
 #   z_{n, d}                   in {0, 1}, weights (1-pi, pi)
 #   y_{n, d}                   ~ Poisson(z_{n, d} * rate_{n, d})
 #
-# At an ungrouped marginalize head, the QVR reference compiler
-# interprets Bernoulli-family priors, including
-# ContinuousBernoulli, on the finite endpoints {0, 1}. It scores
-# both gated Poisson branches and combines them by logsumexp.
-# Thus the block denotes the exact ZIP likelihood even though a
-# forward trace may draw a continuous relaxation value for z.
+# The marginalize block sums the Bernoulli gate z out over its two
+# atoms: it scores both gated Poisson branches and combines them by
+# logsumexp, which is the exact ZIP likelihood.
 #
 # Reference: [Lambert 1992](https://doi.org/10.2307/1269547).
 
@@ -43,8 +40,8 @@ program zip_regression : Resp -> Val
     let pi_z = sigmoid(az + bz * x)
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- ContinuousBernoulli(probs=pi_z)
-        let gated_rate = z * rate
+    marginalize z : Resp <- Bernoulli(probs=pi_z)
+        let gated_rate = real(z) * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 
     return beta_rate

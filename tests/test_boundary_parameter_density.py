@@ -61,8 +61,8 @@ program zip : Resp -> Val
     sample a <- Normal(loc=0.0, scale=1.0)
     let pi_z = sigmoid(a + x)
     let rate = exp(0.5 * x - 2.0)
-    marginalize z : Resp <- ContinuousBernoulli(probs=pi_z)
-        let gated_rate = z * rate
+    marginalize z : Resp <- Bernoulli(probs=pi_z)
+        let gated_rate = real(z) * rate
         observe y : Resp <- Poisson(rate=gated_rate)
     return a
 

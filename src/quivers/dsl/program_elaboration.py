@@ -749,15 +749,11 @@ def _enumerable(record: DistributionFamily) -> bool:
     Returns
     -------
     bool
-        ``True`` for a family with a finite support, a class-index
-        family, or a continuous relaxation of a discrete family, whose
-        hard atoms the marginalization enumerates.
+        ``True`` for a family with a finite support or a class-index
+        family. A continuous family, a relaxation of a discrete one
+        included, has no atoms to sum: its marginal is an integral.
     """
-    return (
-        record.finite_support is not None
-        or record.name in _CLASS_INDEX_FAMILIES
-        or record.relaxes is not None
-    )
+    return record.finite_support is not None or record.name in _CLASS_INDEX_FAMILIES
 
 
 def _bare_init_family(morphism: MorphismDecl) -> str | None:

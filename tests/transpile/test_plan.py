@@ -51,14 +51,14 @@ program prog : Item -> Item
 export prog
 """
 
-RELAXED = """\
+GATED = """\
 object Resp : FinSet 6
 object Out : Real 1
 program prog : Out -> Out
     sample p <- Beta(concentration1=2.0, concentration0=2.0)
     sample rate <- Gamma(concentration=2.0, rate=1.0)
-    marginalize z : Resp <- ContinuousBernoulli(probs=p)
-        let gated = z * rate
+    marginalize z : Resp <- Bernoulli(probs=p)
+        let gated = real(z) * rate
         observe y : Resp <- Poisson(rate=gated)
     return rate
 export prog
@@ -231,10 +231,10 @@ def test_a_grouped_marginalization_states_its_fibration_on_the_observation() -> 
     assert fibration.constraint == CSIntegerInterval(lower=0, upper=7)
 
 
-def test_a_relaxed_latent_marginalizes_one_atom_pair_per_element() -> None:
-    ir = Lower().forward(parse(RELAXED))
+def test_a_gate_marginalizes_one_atom_pair_per_element() -> None:
+    ir = Lower().forward(parse(GATED))
     marginal = next(node for node in ir.body if isinstance(node, IRMarginalize))
-    assert marginal.family == "ContinuousBernoulli"
+    assert marginal.family == "Bernoulli"
     assert marginal.plate.batch_dims == (DimStatic(size=6, name="Resp"),)
     gated, observe = marginal.scope
     assert isinstance(gated, IRDeterministic)
