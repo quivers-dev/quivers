@@ -172,14 +172,10 @@ for _backend in ("bugs", "church", "gen", "jags", "webppl"):
         (_backend, "steps", "observe_bernoulli_logits_rows")
     ] = "family:Bernoulli:logits"
 # A per-token LDA: BUGS cannot shift the observed word codes to `dcat`'s
-# one-based codes, JAGS cannot lift the gather's elementwise operator over
-# an axis in an expression, and Gen and Turing read a marginalization's
-# weights only from a name with a declared plate.
+# one-based codes, and Gen and Turing read a marginalization's weights
+# only from a name with a declared plate.
 _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "marginalize_gathered_prior_data")] = (
     "observe:class-code"
-)
-_EXPECTED_ORTHOGONAL_RAISES[("jags", "steps", "marginalize_gathered_prior_data")] = (
-    "let-expr:elementwise-axis-operator"
 )
 for _backend in ("gen", "turing"):
     _EXPECTED_ORTHOGONAL_RAISES[
