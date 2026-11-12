@@ -981,6 +981,13 @@ class PriorityQueueAgenda(Agenda):
 # ---------------------------------------------------------------------------
 
 
+type RuleCallback = Callable[
+    [str, list[tuple[Item, torch.Tensor]], Item, torch.Tensor], None
+]
+"""A hook called once per rule application with its name, antecedents
+(each with its chart weight), conclusion, and contribution."""
+
+
 @dataclass
 class AgendaResult:
     """The chart produced by an agenda-driven deduction.
@@ -1017,46 +1024,61 @@ def run_agenda(
     goal: Callable[[Item], bool] | None = None,
     max_iterations: int = 100_000,
     chart: Chart | None = None,
-    rule_callback: (
-        Callable[
-            [str, list[tuple[Item, torch.Tensor]], Item, torch.Tensor],
-            None,
-        ]
-        | None
-    ) = None,
+    rule_callback: RuleCallback | None = None,
 ) -> AgendaResult:
     """Run the agenda-driven deduction engine to fixed point.
 
-    The intended result is the closure of the input axioms under the
-    weighted rules. A least fixed-point interpretation requires an ordered
-    setting in which the rule operator and its iteration are well defined.
-    The iteration bound may raise before closure is reached; idempotence
-    alone does not guarantee convergence or independence from scheduling.
+    The value of an item is the semiring sum, over its derivations, of
+    the semiring product of the weights in the derivation
+    [Goodman (1999)](<https://aclanthology.org/J99-4004/>): an axiom's
+    weight, and for each rule application the product of its
+    antecedents' values (combined by the rule's ``weight_fn`` when it
+    has one). Equivalently, the chart solves the equations
+    ``value(c) = axiom(c) ⊕ ⨁_{applications e → c} ⊗_j value(a_j)``;
+    on a finite acyclic system the solution is unique and equals the
+    sum over derivations, each derivation counted exactly once.
 
-    The algorithm follows the parsing-as-deduction pattern
-    [Shieber et al. (1995)](<https://www.sciencedirect.com/science/article/pii/074310669500035I>), with semiring aggregation
-    [Goodman (1999)](<https://aclanthology.org/J99-4004/>):
+    The engine is the weighted agenda algorithm of
+    [Eisner, Goldlust, and Smith (2005)](<https://doi.org/10.3115/1220575.1220611>),
+    figure 3:
 
     1. Push every axiom onto the agenda.
     2. While the agenda is non-empty:
-       a. Pop an item.
-       b. Insert-or-aggregate into the chart.
-       c. If the chart's weight changed, fire every rule for which
-          the popped item is a premise: scan the chart for matching
-          siblings, compute the conclusion's weight via the rule's
-          ``weight_fn``, and push the conclusion onto the agenda.
+       a. Pop an item ``a`` with its pending update ``Δ``.
+       b. Record ``old = chart[a]`` and aggregate ``chart[a] := old ⊕ Δ``.
+       c. If the chart's weight changed, then for every rule and every
+          premise position ``i`` that ``a`` matches, and every way of
+          matching the other premises against the chart, push onto
+          the conclusion the product whose ``j``-th factor is ``old``
+          when ``j < i`` and premise ``j`` is ``a`` itself, ``Δ`` when
+          ``j = i``, and ``chart[a_j]`` otherwise.
     3. Return the chart with all items that match ``goal``.
+
+    The case split in 2c is what keeps an item that fills several
+    premises of one rule from being counted once per premise: when
+    ``a`` fills the premise positions ``S``, the increments over
+    ``i ∈ S`` sum, by distributivity, to exactly the terms of
+    ``⊗_{j ∈ S} (old ⊕ Δ)`` that contain at least one ``Δ``. A rule
+    ``NP, NP ⊢ S`` with one ``NP`` axiom of weight ``w`` thus gives
+    ``S`` the weight ``w ⊗ w``, not ``(w ⊗ w) ⊕ (w ⊗ w)``.
+
+    A least fixed-point reading of a cyclic system requires an ordered
+    setting in which the iteration converges; the iteration bound may
+    raise before closure is reached.
 
     Parameters
     ----------
     axioms : iterable of (Item, weight)
         Initial items with their input-derived weights.
     rules : iterable of InferenceRule
-        The deduction system's hyperedges.
+        The deduction system's hyperedges. A rule's ``weight_fn`` must
+        distribute over ``⊕`` in each premise weight (for instance, a
+        rule weight times the product of the premise weights), as the
+        algorithm propagates increments rather than totals.
     semiring : ChartSemiring, optional
         Weight aggregation. Defaults to log-prob.
     agenda : Agenda, optional
-        Evaluation strategy. Defaults to FIFO (semi-naïve).
+        Evaluation strategy. Defaults to FIFO (semi-naive).
     goal : callable, optional
         Predicate selecting result items. Defaults to "every item".
     max_iterations : int, optional
@@ -1064,8 +1086,12 @@ def run_agenda(
     chart : Chart, optional
         Initial chart (defaults to empty `HashChart`).
     rule_callback : callable, optional
-        Called as ``(rule_name, antecedents, conclusion, weight)``
-        after each rule firing.
+        Called as ``(rule_name, antecedents, conclusion, weight)`` once
+        per rule application (a rule together with one tuple of
+        antecedent items), after the chart reaches its fixed point.
+        ``antecedents`` carries each antecedent's final chart weight
+        and ``weight`` is the application's contribution to the
+        conclusion computed from those weights.
 
     Returns
     -------
@@ -1082,6 +1108,9 @@ def run_agenda(
     agenda.bind_semiring(semiring)
     chart = chart or HashChart()
     rules = tuple(rules)
+    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None = (
+        {} if rule_callback is not None else None
+    )
 
     for item, w in axioms:
         agenda.push(item, w)
@@ -1094,29 +1123,44 @@ def run_agenda(
                 f"likely a non-terminating deduction"
             )
         iterations += 1
-        item, weight = agenda.pop()
-        changed = chart.insert_or_aggregate(item, weight, semiring)
+        item, delta = agenda.pop()
+        old = chart.get(item)
+        changed = chart.insert_or_aggregate(item, delta, semiring)
         if not changed:
             continue
+        update = _Update(item=item, delta=delta, old=old)
         # Fire every rule for which this item could be a premise.
-        for rule in rules:
+        for rule_index, rule in enumerate(rules):
             for premise_idx, premise_pattern in enumerate(rule.premises):
                 bindings = match(premise_pattern, item)
                 if bindings is None:
                     continue
-                # Collect all sibling premises by matching the
-                # remaining premise patterns against the chart.
-                _fire_rule_with_premise(
-                    rule,
-                    premise_idx,
-                    item,
-                    weight,
-                    bindings,
-                    chart,
-                    semiring,
-                    agenda,
-                    rule_callback,
+                _fire_remaining_premises(
+                    rule=rule,
+                    rule_index=rule_index,
+                    bindings=bindings,
+                    chart=chart,
+                    semiring=semiring,
+                    agenda=agenda,
+                    remaining_indices=[
+                        i for i in range(len(rule.premises)) if i != premise_idx
+                    ],
+                    fixed_idx=premise_idx,
+                    update=update,
+                    applications=applications,
                 )
+
+    if rule_callback is not None and applications is not None:
+        for application in applications.values():
+            weights = tuple(_chart_weight(chart, a) for a in application.antecedents)
+            rule_callback(
+                application.rule.name,
+                list(zip(application.antecedents, weights)),
+                application.conclusion,
+                _conclusion_weight(
+                    application.rule, application.bindings, weights, semiring
+                ),
+            )
 
     goal_items: list[tuple[Item, torch.Tensor]] = []
     if goal is not None:
@@ -1134,176 +1178,280 @@ def run_agenda(
     )
 
 
-def _fire_rule_with_premise(
-    rule: InferenceRule,
-    fixed_idx: int,
-    fixed_item: Item,
-    fixed_weight: torch.Tensor,
-    bindings: Bindings,
-    chart: Chart,
-    semiring: ChartSemiring,
-    agenda: Agenda,
-    rule_callback: (
-        Callable[
-            [str, list[tuple[Item, torch.Tensor]], Item, torch.Tensor],
-            None,
-        ]
-        | None
-    ) = None,
-) -> None:
-    """Fire a rule where one premise is the popped item.
+def _chart_weight(chart: Chart, item: Item) -> torch.Tensor:
+    """The chart weight of an item the run has derived.
 
-    Recursively scans the chart for matches to the remaining
-    premise patterns under the running bindings. When all
-    premises are matched, instantiates the conclusion, computes
-    its weight via the rule's ``weight_fn`` (or the semiring
-    product of premise weights if no ``weight_fn`` is given),
-    checks the side condition, and pushes onto the agenda.
+    Parameters
+    ----------
+    chart : Chart
+        The completed chart.
+    item : Item
+        An antecedent of a recorded rule application.
+
+    Returns
+    -------
+    torch.Tensor
+        The item's weight.
+
+    Raises
+    ------
+    RuntimeError
+        If the item is not in the chart; every recorded antecedent was
+        matched against the chart, and a chart never drops an item.
     """
-    _fire_remaining_premises(
-        rule=rule,
-        accumulated=[(fixed_item, fixed_weight)],
-        bindings=bindings,
-        chart=chart,
-        semiring=semiring,
-        agenda=agenda,
-        remaining_indices=[i for i in range(len(rule.premises)) if i != fixed_idx],
-        fixed_idx=fixed_idx,
-        fixed_pair=(fixed_item, fixed_weight),
-        rule_callback=rule_callback,
-    )
+    w = chart.get(item)
+    if w is None:
+        raise RuntimeError(f"recorded antecedent {item!r} is not in the chart")
+    return w
+
+
+class _Update:
+    """The chart update being propagated: an item, its increment, its old value.
+
+    Parameters
+    ----------
+    item : Item
+        The popped item.
+    delta : torch.Tensor
+        The increment aggregated into the item's chart weight.
+    old : torch.Tensor or None
+        The item's chart weight before the increment, or ``None`` if
+        the item was absent (the semiring's zero).
+    """
+
+    __slots__ = ("item", "delta", "old")
+
+    def __init__(self, *, item: Item, delta: torch.Tensor, old: torch.Tensor | None):
+        self.item = item
+        self.delta = delta
+        self.old = old
+
+
+class _Application:
+    """One rule application: a rule with one tuple of antecedent items.
+
+    Parameters
+    ----------
+    rule : InferenceRule
+        The rule applied.
+    bindings : Bindings
+        The pattern variables the antecedents bind.
+    antecedents : tuple of Item
+        The antecedent items in premise order.
+    conclusion : Item
+        The item the application derives.
+    """
+
+    __slots__ = ("rule", "bindings", "antecedents", "conclusion")
+
+    def __init__(
+        self,
+        *,
+        rule: InferenceRule,
+        bindings: Bindings,
+        antecedents: tuple[Item, ...],
+        conclusion: Item,
+    ) -> None:
+        self.rule = rule
+        self.bindings = bindings
+        self.antecedents = antecedents
+        self.conclusion = conclusion
 
 
 def _fire_remaining_premises(
     *,
     rule: InferenceRule,
-    accumulated: list,
+    rule_index: int,
     bindings: Bindings,
     chart: Chart,
     semiring: ChartSemiring,
     agenda: Agenda,
     remaining_indices: list[int],
     fixed_idx: int,
-    fixed_pair,
-    rule_callback: (
-        Callable[
-            [str, list[tuple[Item, torch.Tensor]], Item, torch.Tensor],
-            None,
-        ]
-        | None
-    ) = None,
+    update: _Update,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None,
 ) -> None:
-    """Recursively match remaining premise patterns.
+    """Match the remaining premise patterns against the chart, then fire.
 
-    On each call, picks the next remaining premise and scans the
-    chart for matching items consistent with the running
-    bindings. Recurses until all premises are matched, then
-    fires.
+    Picks the next remaining premise, scans the chart for items
+    consistent with the running bindings, and recurses until every
+    premise is matched.
+
+    Parameters
+    ----------
+    rule : InferenceRule
+        The rule being fired.
+    rule_index : int
+        The rule's position in the system, which identifies its
+        applications.
+    bindings : Bindings
+        The pattern variables bound so far.
+    chart : Chart
+        The chart, already holding the popped item's new weight.
+    semiring : ChartSemiring
+        The semiring of the run.
+    agenda : Agenda
+        The agenda that receives the conclusion's increment.
+    remaining_indices : list of int
+        The premise positions still to match.
+    fixed_idx : int
+        The premise position the popped item fills.
+    update : _Update
+        The popped item, its increment, and its old weight.
+    applications : dict or None
+        The rule applications seen so far, recorded for the rule
+        callback; ``None`` when no callback is set.
     """
     if not remaining_indices:
         _fire(
-            rule,
-            bindings,
-            fixed_idx,
-            fixed_pair,
-            chart,
-            semiring,
-            agenda,
-            rule_callback,
+            rule=rule,
+            rule_index=rule_index,
+            bindings=bindings,
+            fixed_idx=fixed_idx,
+            update=update,
+            chart=chart,
+            semiring=semiring,
+            agenda=agenda,
+            applications=applications,
         )
         return
     next_idx = remaining_indices[0]
     next_pattern = rule.premises[next_idx]
-    for sibling, sib_w in chart.lookup(next_pattern):
+    for sibling, _ in chart.lookup(next_pattern):
         sub_bindings = match(next_pattern, sibling, bindings)
         if sub_bindings is None:
             continue
         _fire_remaining_premises(
             rule=rule,
-            accumulated=accumulated + [(sibling, sib_w)],
+            rule_index=rule_index,
             bindings=sub_bindings,
             chart=chart,
             semiring=semiring,
             agenda=agenda,
             remaining_indices=remaining_indices[1:],
             fixed_idx=fixed_idx,
-            fixed_pair=fixed_pair,
-            rule_callback=rule_callback,
+            update=update,
+            applications=applications,
         )
 
 
-def _fire(
+def _conclusion_weight(
     rule: InferenceRule,
     bindings: Bindings,
-    fixed_idx: int,
-    fixed_pair,
-    chart: Chart,
+    premise_weights: tuple[torch.Tensor, ...],
     semiring: ChartSemiring,
-    agenda: Agenda,
-    rule_callback: (
-        Callable[
-            [str, list[tuple[Item, torch.Tensor]], Item, torch.Tensor],
-            None,
-        ]
-        | None
-    ) = None,
-) -> None:
-    """All premises matched; instantiate and push the conclusion.
+) -> torch.Tensor:
+    """The weight a rule application contributes to its conclusion.
 
-    Collects every premise's weight from the chart at the matched
-    items, computes the conclusion's weight via the rule's
-    ``weight_fn`` (defaulting to the semiring product), and
-    pushes the new item onto the agenda. The pushed item will
-    only update the chart if its aggregated weight increases the
-    chart's value (the idempotent-merge property).
+    Parameters
+    ----------
+    rule : InferenceRule
+        The rule applied.
+    bindings : Bindings
+        The pattern variables the antecedents bind.
+    premise_weights : tuple of torch.Tensor
+        One weight per premise, in premise order.
+    semiring : ChartSemiring
+        The semiring of the run.
+
+    Returns
+    -------
+    torch.Tensor
+        The rule's ``weight_fn`` applied to the premise weights, or the
+        semiring product of the premise weights when it has none.
     """
-    if rule.side_condition is not None and not rule.side_condition(bindings):
-        return
-    # Gather premise (item, weight) pairs in declaration order.
-    antecedents: list[tuple[Item, torch.Tensor]] = []
-    for i, premise_pattern in enumerate(rule.premises):
-        if i == fixed_idx:
-            antecedents.append(fixed_pair)
-            continue
-        try:
-            premise_item = instantiate(premise_pattern, bindings)
-        except KeyError:
-            return  # premise has unresolved wildcards, so it can't fire
-        w = chart.get(premise_item)
-        if w is None:
-            return
-        antecedents.append((premise_item, w))
-
-    premise_weights = tuple(w for _, w in antecedents)
-    # Compute the conclusion's weight.
     if rule.weight_fn is not None:
-        conclusion_weight = rule.weight_fn(
-            bindings,
-            premise_weights,
-            semiring,
-        )
-    elif not premise_weights:
-        conclusion_weight = torch.tensor(
+        return rule.weight_fn(bindings, premise_weights, semiring)
+    if not premise_weights:
+        return torch.tensor(
             float(semiring.one) if hasattr(semiring.one, "__float__") else 0.0,
             dtype=torch.get_default_dtype(),
         )
-    else:
-        acc = premise_weights[0]
-        for w in premise_weights[1:]:
-            acc = semiring.times(acc, w)
-        conclusion_weight = acc
-    try:
-        conclusion_item = instantiate(rule.conclusion, bindings)
-    except KeyError:
+    acc = premise_weights[0]
+    for w in premise_weights[1:]:
+        acc = semiring.times(acc, w)
+    return acc
+
+
+def _fire(
+    *,
+    rule: InferenceRule,
+    rule_index: int,
+    bindings: Bindings,
+    fixed_idx: int,
+    update: _Update,
+    chart: Chart,
+    semiring: ChartSemiring,
+    agenda: Agenda,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None,
+) -> None:
+    """Push one rule application's increment onto the agenda.
+
+    Premise ``fixed_idx`` contributes the popped increment; an earlier
+    premise filled by the popped item itself contributes the item's old
+    weight; every other premise contributes its current chart weight
+    (Eisner, Goldlust, and Smith 2005, figure 3, line 12). A factor
+    whose weight is the semiring's zero (an absent item) makes the
+    increment zero, and nothing is pushed.
+
+    Parameters
+    ----------
+    rule : InferenceRule
+        The rule being fired.
+    rule_index : int
+        The rule's position in the system.
+    bindings : Bindings
+        The bindings of every premise pattern.
+    fixed_idx : int
+        The premise position the popped item fills.
+    update : _Update
+        The popped item, its increment, and its old weight.
+    chart : Chart
+        The chart, already holding the popped item's new weight.
+    semiring : ChartSemiring
+        The semiring of the run.
+    agenda : Agenda
+        The agenda that receives the conclusion's increment.
+    applications : dict or None
+        The rule applications seen so far, extended with this one;
+        ``None`` when no callback is set.
+    """
+    if rule.side_condition is not None and not rule.side_condition(bindings):
         return
-    agenda.push(conclusion_item, conclusion_weight)
-    if rule_callback is not None:
-        rule_callback(
-            rule.name,
-            antecedents,
-            conclusion_item,
-            conclusion_weight,
-        )
+    antecedents: list[Item] = []
+    factors: list[torch.Tensor] = []
+    complete = True
+    for i, premise_pattern in enumerate(rule.premises):
+        if i == fixed_idx:
+            antecedents.append(update.item)
+            factors.append(update.delta)
+            continue
+        premise_item = instantiate(premise_pattern, bindings)
+        antecedents.append(premise_item)
+        if i < fixed_idx and premise_item == update.item:
+            w = update.old
+        else:
+            w = chart.get(premise_item)
+        if w is None:
+            complete = False
+            continue
+        factors.append(w)
+    conclusion_item = instantiate(rule.conclusion, bindings)
+    if applications is not None:
+        key = (rule_index, tuple(antecedents))
+        if key not in applications:
+            applications[key] = _Application(
+                rule=rule,
+                bindings=bindings,
+                antecedents=tuple(antecedents),
+                conclusion=conclusion_item,
+            )
+    if not complete:
+        return
+    agenda.push(
+        conclusion_item,
+        _conclusion_weight(rule, bindings, tuple(factors), semiring),
+    )
 
 
 # ---------------------------------------------------------------------------

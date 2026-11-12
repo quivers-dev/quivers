@@ -162,13 +162,11 @@ def test_rule_attached_loss_fires_on_each_rule_application():
     prog = loads(textwrap.dedent(src))
     D = prog.deductions["D"]
     chart = D([(("atom", "NP"), torch.tensor(0.0))])
-    # The rule `app : NP, NP |- S` matches twice on the single-NP
-    # axiom: the agenda's semi-naive loop fires the rule once when
-    # the popped item is premise 0 and once when it's premise 1,
-    # each with the same single sibling; each firing accumulates
-    # 0.5.
+    # The rule `app : NP, NP |- S` has one application on the
+    # single-NP axiom (the NP fills both premises of one hyperedge),
+    # so the per-application loss accumulates 0.5 once.
     assert chart.attached_loss is not None
-    assert float(chart.attached_loss) == 1.0
+    assert float(chart.attached_loss) == 0.5
 
 
 def test_chart_attached_loss_fires_after_deduction_completes():

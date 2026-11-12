@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The deduction agenda counts each derivation once when one item fills several premises of a rule.** A rule `NP, NP |- S` over a single `NP` of weight `w` gives `S` the weight `w ⊗ w` (log 1 = 0 under `LogProb` for `w = 0`, one derivation under `Counting`), where every agenda had fired it once per premise position and doubled the weight. A later contribution to such an item reads the item's old weight at an earlier premise position it fills, following the weighted agenda algorithm of Eisner, Goldlust, and Smith (2005), so every item's chart weight is the semiring sum over its derivation trees under every agenda discipline. A rule-attached loss (`on=rule(R, D)`) and the `run_agenda` `rule_callback` fire once per rule application (a rule with one tuple of antecedent items) after the chart reaches its fixed point, with the antecedents' final weights. A rule's `weight_fn` is required to distribute over the semiring sum in each premise weight.
+
 ## [0.55.4] - 2026-11-12
 
 ### Fixed
