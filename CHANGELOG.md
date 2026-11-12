@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.53.4] - 2026-11-11
+
+### Fixed
+
+- **Transpiling a deeply nested expression is linear in its depth.** quivers requires `didactic>=0.18.2`, whose models keep a nested child as built rather than re-encoding it at every level, so a let that sums twelve builtin calls transpiles in a fraction of a second where it had taken most of a minute. The floor brings `panproto` and `panproto-grammars-all` to `0.77.0`, which that `didactic` requires.
+
 ## [0.53.3] - 2026-11-11
 
 ### Fixed
