@@ -330,6 +330,6 @@ transforms, such as inverse autoregressive and spline flows.
 
 - [Continuous Families](continuous-families.md): the registered distribution families
   and their numbers of event dimensions.
-- [Monadic Programs](programs.md): how continuous morphisms compose into probabilistic
+- [Probabilistic Programs](programs.md): how continuous morphisms compose into probabilistic
   programs.
 - [Stochastic Morphisms](stochastic.md): the finite counterpart and the Giry monad.

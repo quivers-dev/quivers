@@ -7,7 +7,7 @@ higher-level ones, so that groups inform one another (partial pooling)
 [parametric programs](dsl-programs-and-lets.md#parametric-programs), which reuse one
 template for several grouping factors, and with grouped
 [marginalization](dsl-programs-and-lets.md#scoped-marginalize), which sums a discrete
-class out once per group. [Monadic Programs](programs.md) describes the runtime of a
+class out once per group. [Probabilistic Programs](programs.md) describes the runtime of a
 compiled program.
 
 ## Hierarchical models with parametric templates
@@ -172,7 +172,7 @@ for _ in range(2000):
 
 ## See also
 
-- [Monadic Programs](programs.md): running and scoring a compiled program.
+- [Probabilistic Programs](programs.md): running and scoring a compiled program.
 - [DSL Programs and Let-Expressions](dsl-programs-and-lets.md#parametric-programs): the
   syntax of templates and of the `over` clause.
 - [Analysis: Data and Formulas](analysis-data-and-formulas.md): formulas in the style

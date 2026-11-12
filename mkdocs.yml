@@ -175,7 +175,7 @@ nav:
       - DSL Declarations: guides/dsl-declarations.md
       - DSL Programs and Let-Expressions: guides/dsl-programs-and-lets.md
       - DSL Contractions: guides/dsl-contractions.md
-      - Monadic Programs: guides/programs.md
+      - Probabilistic Programs: guides/programs.md
       - Hierarchical Programs: guides/programs-hierarchical.md
       - Continuous Spaces and Morphisms: guides/continuous-spaces.md
       - Continuous Families: guides/continuous-families.md

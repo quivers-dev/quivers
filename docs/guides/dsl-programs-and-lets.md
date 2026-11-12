@@ -44,7 +44,7 @@ states this precisely.
 
 The compiled program is a
 [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram)
-([Monadic Programs](programs.md) describes `rsample`, `log_joint`, and the
+([Probabilistic Programs](programs.md) describes `rsample`, `log_joint`, and the
 `observations` dict).
 
 ### Effect signatures

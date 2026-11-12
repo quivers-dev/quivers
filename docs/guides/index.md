@@ -29,7 +29,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 ## Probabilistic programming
 
-8. [Monadic Programs](programs.md): running, sampling, and scoring a compiled program,
+8. [Probabilistic Programs](programs.md): running, sampling, and scoring a compiled program,
    and building one in Python.
 9. [Hierarchical Programs](programs-hierarchical.md): templates for crossed random
    effects, and marginalizing a discrete latent once per group.

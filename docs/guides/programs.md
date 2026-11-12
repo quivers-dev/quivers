@@ -1,6 +1,6 @@
-# Monadic Programs
+# Probabilistic Programs
 
-## What is a MonadicProgram?
+## What is a `MonadicProgram`? {#what-is-a-monadicprogram}
 
 A probabilistic program describes a procedure for generating data: draw a latent mean
 `mu`, draw a response around it, and return the response. The same description scores
@@ -13,8 +13,9 @@ is such a program, a sequence of draws, observations, and deterministic steps, a
 is the class that compiling a QVR `program` produces. It is a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
 from its domain to its codomain: a Markov kernel built by composing its steps in the
-[Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of a probability
-[monad](https://ncatlab.org/nlab/show/monad) [@moggi1991notions], each step drawing
+[Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the
+[Giry monad](https://ncatlab.org/nlab/show/Giry+monad), which sends a space to the probability
+distributions on it [@giry1982categorical; @moggi1991notions], each step drawing
 from a distribution that may depend on the values drawn before it. Pyro and NumPyro
 write programs in the same sequential style [@bingham2019pyro; @phan2019numpyro]:
 
