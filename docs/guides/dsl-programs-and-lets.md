@@ -196,7 +196,7 @@ the same `<-`.
 A [plate](https://en.wikipedia.org/wiki/Plate_notation) repeats a draw over an index
 set [@koller2009probabilistic]. `sample v : A <- F(args)` draws one value of `F` for
 each element of `A`, independently given the arguments, so the joint distribution of
-`v` is the product of the per-element distributions. If `Subject` has four elements,
+`v` is the product of the distributions of its elements. If `Subject` has four elements,
 `sample by_subject : Subject <- Normal(loc=0.0, scale=sigma)` draws four subject
 effects. They are independent given the shared scale `sigma` and become dependent once
 uncertainty about `sigma` is taken into account: one unusually large effect raises the

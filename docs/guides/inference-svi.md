@@ -343,7 +343,7 @@ loss = iwae(model, guide, x, observations)
 
 Multi-particle objectives run a Python `for` loop over
 `num_particles`, calling `guide.rsample_strata` once per particle and
-`model.log_joint` once per stratum, and stack the per-draw
+`model.log_joint` once per stratum, and stack the
 log-densities into a leading `(K * S, batch)` axis with a log-weight
 for each draw. An ordinary guide returns a single stratum ($S = 1$, equal
 weights $1/K$); an `AutoMixtureGuide` returns one stratum per component,
@@ -440,7 +440,7 @@ for step in range(100):
 `step` computes the loss, backpropagates, and steps the optimizer. Each input row is
 an [independent run](inference-foundations.md#input-rows-are-independent-runs) with its
 own guide draws, so a minibatch of input rows is a minibatch of runs, and a program
-whose observations live in a plate takes a one-row input.
+whose observations live in a plate takes an input with one row.
 
 ## Minibatches: subsampled plates
 
@@ -520,7 +520,7 @@ exponentiate or self-normalize the log weights and refuse a subsampled
 plate, and so do the consumers of the exact posterior, MCMC and
 `PotentialFn`, the Laplace approximation, `AutoDAIS`, and
 `lift_to_bayesian_program`. A site in the plate that is neither a plate draw nor a plated
-observation (a grouped marginalization, for instance) has no per-row
+observation (a grouped marginalization, for instance) has no density for each row,
 density and is refused, as is a plate whose extent the program leaves to
 its data.
 

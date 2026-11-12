@@ -132,7 +132,7 @@ fills the ArviZ groups (`posterior`, `sample_stats`,
 `constant_data`) from the `(num_chains, num_samples, *site_shape)`
 tensors that
 [`MCMCResult`](../api/inference/mcmc.md) already produces, with its
-per-draw sampler statistics under ArviZ's names (`diverging`,
+sampler statistics of each draw under ArviZ's names (`diverging`,
 `tree_depth`, `n_steps`, `energy`, `step_size`, `acceptance_rate`).
 [`compare`](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.compare)
 delegates to
@@ -247,7 +247,7 @@ Ranks piled at both ends mean posteriors that are too narrow, ranks piled in
 the middle mean posteriors that are too wide, and ranks tilted to one side mean bias.
 
 [`sbc`](../api/diagnostics/calibration.md#quivers.diagnostics.calibration.sbc)
-runs the loop for a program, a one-row input, and a fit
+runs the loop for a program, an input with one row, and a fit
 `fit(observations, seed)` that returns an
 [`MCMCResult`](../api/inference/mcmc.md), a fitted
 [`Guide`](../api/inference/guide.md), or a mapping of site names to

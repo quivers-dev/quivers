@@ -95,7 +95,7 @@ $$
 $$
 
 to the log joint density, computed with log-sum-exp for numerical stability. This is
-Stan's per-item `target += log_mix(probs, ...)` accumulation [@stanFiniteMixtures].
+Stan's `target += log_mix(probs, ...)` accumulation, once per item [@stanFiniteMixtures].
 
 ### Special cases
 

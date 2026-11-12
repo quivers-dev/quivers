@@ -73,7 +73,7 @@ The schema gives two things:
   in the sorted order of the distinct non-null values, so the indices are the same on
   every run.
 - [`observations_dict()`](../api/data/schema.md#quivers.data.schema.DatasetSchema.observations_dict)
-  returns the per-row tensors that inference reads (responses, index arrays, numeric
+  returns the tensors, one entry per row, that inference reads (responses, index arrays, numeric
   covariates), ready for [`SVI.step`](../api/inference/svi.md) or
   [`MCMC.run`](../api/inference/mcmc.md).
 
@@ -171,7 +171,7 @@ value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
 
 For binomial data, `binomial_trials` is either one common positive
-integer or the name of a per-row data column:
+integer or the name of a data column with one count per row:
 
 <!-- python: skip -->
 ```python
@@ -211,7 +211,7 @@ The categorical family infers `K` from contiguous integer labels
 `0, ..., K-1` and uses category zero as the reference. Every fixed-effect
 coefficient and random effect is thus a vector of `K - 1` logits.
 The compiler prepends the reference logit of zero and applies softmax to
-the resulting per-row `K`-vector. This parameterization removes the
+the resulting `K`-vector of each row. This parameterization removes the
 unidentified common shift in an unconstrained set of `K` logits.
 
 <!-- python: skip -->

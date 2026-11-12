@@ -108,7 +108,7 @@ The list monad has lists of every finite length, and a finite implementation has
 bound them. `FreeMonoidMonad(max_length)` takes `fmap_obj(X)` to the
 [`FreeMonoid`](core.md#freemonoid) of words of length at most `max_length`. Its
 `pure` makes a word of length one, and its `join` concatenates a word of words. A
-concatenation longer than `max_length` is dropped, as an all-zero row, rather than
+concatenation longer than `max_length` is dropped, as a row of zeros, rather than
 cut to a prefix: with `max_length=2`, flattening `[[a, b], [c]]` gives nothing. The
 monad equations thus hold as for lists only on inputs whose flattenings fit within
 the bound.

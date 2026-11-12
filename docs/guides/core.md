@@ -43,7 +43,7 @@ print(Unit.size)  # 1
 
 The operators `*` and `+` build products and coproducts, and both flatten nested
 operands. If `X` has three colors and `Y` four shapes, `X * Y` has twelve
-color-shape pairs and keeps one axis per component. `X + Y` has seven elements on
+pairs of a color and a shape and keeps one axis per component. `X + Y` has seven elements on
 one flat axis, and `CoproductSet` records the offset at which each component starts,
 so a color and a shape with the same index are never confused.
 

@@ -217,7 +217,7 @@ in full or with the short form in the second column.
 | `:graph PROGRAM` | `:g` | Vertical step-flow view of PROGRAM (one row per sample / observe / let / marginalize / return step with its dependency parents). Same `--mermaid` / `--dot` / `--open` flags as `:plate`. |
 | `:where NAME` |  | List every scope path whose final segment is NAME (top-level and nested). Useful for finding every site a binding is referenced. |
 | `:effects PROGRAM` |  | Compare PROGRAM's declared `[effects=[...]]` set against the effect set the compiler infers from the body. |
-| `:shape PROGRAM` |  | Pretty-print PROGRAM's `ChainShape`: per-step depth, kind, intermediate axis size, source location. |
+| `:shape PROGRAM` |  | Pretty-print PROGRAM's `ChainShape`: each step's depth, kind, intermediate axis size, and source location. |
 | `:dump NAME [--json]` |  | Pretty-print NAME's AST node (`--json` for didactic's `model_dump_json`) |
 | `:edit NAME` |  | Open `$EDITOR` on NAME's source, splice the edited text back into the module, recompile |
 | `:trace EXPR` |  | Step through elaboration of a morphism expression, surfacing each intermediate domain/codomain |
@@ -608,7 +608,7 @@ random.sample[a : Type] : Site[a] * Sampleable[a] -> a
 
 #### `:shape PROGRAM`
 
-Pretty-print PROGRAM's `ChainShape`: per-step depth, kind,
+Pretty-print PROGRAM's `ChainShape`: each step's depth, kind,
 intermediate axis size, source location. Useful for auditing
 chain depth before fitting.
 
@@ -794,7 +794,7 @@ structure:
 * `:effects PROGRAM`, declared `[effects=[...]]` set vs the set
   the compiler infers from the body. Catches `[effects=[Pure]]`
   programs that accidentally contain a sample.
-* `:shape PROGRAM`, per-step `ChainShape`: step kind, chain
+* `:shape PROGRAM`, the program's `ChainShape`: step kind, chain
   depth, intermediate axis size, source location. Useful for
   auditing chain depth before fitting.
 

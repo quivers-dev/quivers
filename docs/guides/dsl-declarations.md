@@ -435,7 +435,7 @@ morphism positions : Model -> Model [role=function, param_source=positions(64)]
   codomain is its domain. Neither network takes `activation` or `output`, and both
   refuse `weights=latent`, so their weights are point estimates.
 - **Sequences, not rows.** A program calls a sequence function in a `let` on a table
-  `Tensor[Real]([T, d])`: the every-state output of a scan with `outputs=all`, a `let`
+  `Tensor[Real]([T, d])`: the output of a scan with `outputs=all`, a `let`
   computed from one, or a table given as data. The value is a table of the same length.
   `T` is read from the data, so one program handles sequences of any length, up to `N`
   for a position table. A sequence function cannot be a link of a chain or the cell of

@@ -116,13 +116,13 @@ letters as words of length one, and the counit $\varepsilon_M : M^* \to M$ multi
 out a word of elements of $M$.
 
 [`FreeForgetfulAdjunction`](../api/categorical/adjunctions.md) implements this
-adjunction on words of bounded length. Its `unit_component(A)` is the length-one
-embedding. Its `counit_component` at a free monoid $A^*$ is concatenation
+adjunction on words of bounded length. Its `unit_component(A)` is the embedding
+as words of length one. Its `counit_component` at a free monoid $A^*$ is concatenation
 $(A^*)^* \to A^*$, which is $\varepsilon$ at the free monoid and the multiplication of
 the monad $GF$. A plain `FinSet` carries no monoid operation, so
 `counit_component(A)` at a `FinSet` cannot be a counit. The class returns there the
-partial map that sends each length-one word to its letter and every other word to an
-all-zero row. Concatenations longer than `max_length` also go to an all-zero row, so
+partial map that sends each word of length one to its letter and every other word to an
+row of zeros. Concatenations longer than `max_length` also go to a row of zeros, so
 the bounded construction agrees with the adjunction only on words that fit. The
 methods `verify_triangle_left(A)` and `verify_triangle_right(A)` compare the two
 triangle composites with the identity at one object.
@@ -273,7 +273,7 @@ tensors, the trace of $f : Y \times X \to Z \times X$ fixes an input $y$ and out
 $z$, matches the two $X$ indices, and reduces $f[(y, x), (z, x)]$ over $x$ with the
 `Algebra`'s $\bigoplus$, as a matrix trace sums the diagonal. The function
 [`trace`](../api/categorical/traced.md) wraps a
-[`CartesianTrace`](../api/categorical/traced.md). It takes the fed-back object last
+[`CartesianTrace`](../api/categorical/traced.md). It takes the object fed back last
 in the domain and codomain, while the method `Morphism.trace` takes it first
 ([Morphisms](morphisms.md#transpose-trace-cup-and-cap)).
 

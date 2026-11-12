@@ -29,8 +29,8 @@ from
 They move continuous coordinates only. A discrete latent site is updated by a
 [Gibbs block](#composing-kernels) composed with them or summed out in the model.
 
-MCMC targets the posterior of one run of the program, so `MCMC.run` takes a one-row
-input such as `x = torch.zeros(1, 1)` and refuses more rows
+MCMC targets the posterior of one run of the program, so `MCMC.run` takes an input
+with one row, such as `x = torch.zeros(1, 1)` and refuses more rows
 ([Input rows are independent runs](inference-foundations.md#input-rows-are-independent-runs)).
 Its latents are the sites one run at `(x, observations)` reaches, every position of a
 scanned program cell included.
@@ -337,7 +337,7 @@ and potential evaluations in one call. They are checked between
 transitions, so a chain stops at a transition boundary, possibly one
 transition past the budget. `MCMCResult.stopped_by` records why each chain
 stopped, `num_draws` how many draws each made, and `truncated` whether a
-budget cut any short. The per-draw arrays then keep the first
+budget cut any short. The arrays with one entry per draw then keep the first
 `min(num_draws)` draws of every chain. A `callback(chain, iteration,
 state, phase)` sees every transition as it happens.
 
@@ -436,7 +436,7 @@ The product of the mean incremental weights is an unbiased estimate of
 $p(y)$, and `SMCResult.log_evidence` is its logarithm (so it tends to
 underestimate $\log p(y)$ by about half the estimate's variance).
 Agreement between independent runs, and with MCMC, is a check on both.
-Like `MCMC.run`, `SMC.run` takes a one-row input.
+Like `MCMC.run`, `SMC.run` takes an input with one row.
 
 <!-- python: skip -->
 ```python

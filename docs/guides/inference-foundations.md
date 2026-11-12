@@ -118,7 +118,7 @@ A `SampleSite` records:
 An input of `B` rows is `B` independent runs of the whole program. Each run draws its
 own value of every site and observes the program's data through its own plates. The
 rows a program observes come from its data and its plates, never from the input's rows,
-so a program whose observations live in a plate takes a one-row input such as
+so a program whose observations live in a plate takes an input with one row, such as
 `torch.zeros(1, 1)`.
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint)
 returns one joint per run, shape `(B,)`, and the joint of all the runs is its sum. A
@@ -135,8 +135,8 @@ to pass one. They are [MCMC](inference-mcmc.md#mcmc-hmc-and-nuts), the
 which places a prior on every parameter of a deterministic model [@mackay1992bayesian],
 applied to a program with a plate. The variational objectives sum their terms over
 runs. Each run draws its own latents from the guide, so the loss for `B` runs is a
-`B`-sample estimate of `B` copies of the one-run objective, and its optimum is the
-one-run posterior.
+`B`-sample estimate of `B` copies of the objective of one run, and its optimum is the
+posterior of one run.
 
 The latents of a program are the sites a run reaches.
 [`LatentRegistry.from_trace`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.from_trace)
