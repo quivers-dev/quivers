@@ -23,4 +23,14 @@ weights are then read from the sites
 names, passed to each evaluation, as a `[weights=latent]` declaration draws
 them.
 
+[`SequenceFunction`][quivers.continuous.deterministic.SequenceFunction] is the
+learned case over whole sequences, what a `[role=function]` declaration with
+`param_source=self_attention` or `param_source=positions(N)` compiles to. Its
+input keeps a position axis before the coordinate axis, shape
+`(..., T, d)`, and its network reads every position at once: a
+[`SelfAttentionSource`][quivers.continuous.param_source.SelfAttentionSource]
+mixes the positions, and a
+[`PositionSource`][quivers.continuous.param_source.PositionSource] adds a
+learned vector to each. A program's `let h = attn(u)` passes it one sequence.
+
 ::: quivers.continuous.deterministic

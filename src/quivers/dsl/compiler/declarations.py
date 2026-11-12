@@ -36,11 +36,19 @@ from quivers.continuous.deterministic import (
     FUNCTION_OUTPUTS,
     FunctionOutput,
     LearnedFunction,
+    SequenceFunction,
 )
 from quivers.continuous.flows import ConditionalFlow
 from quivers.continuous.inline import make_inline_distribution
 from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous.param_source import FunctionActivation, function_source
+from quivers.continuous.param_source import (
+    FUNCTION_ACTIVATIONS,
+    SEQUENCE_SOURCE_KINDS,
+    FunctionActivation,
+    PositionSource,
+    SelfAttentionSource,
+    function_source,
+)
 from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.core.morphisms import (
     ObservedMorphism,
@@ -199,6 +207,8 @@ _MORPHISM_OPTION_KEYS: frozenset[str] = frozenset(
         "output",
         "weights",
         "prior_scale",
+        "heads",
+        "causal",
     }
 )
 
@@ -237,9 +247,64 @@ _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
     "let": frozenset({"over", "iid"}),
     # `_compile_function_role` builds the network and its output map.
     "function": frozenset(
-        {"param_source", "activation", "output", "weights", "prior_scale"}
+        {
+            "param_source",
+            "activation",
+            "output",
+            "weights",
+            "prior_scale",
+            "heads",
+            "causal",
+        }
     ),
 }
+
+
+def _function_option_at_fault(
+    kind: str,
+    source_text: str | None,
+    *,
+    activation: str | None,
+    heads: int | None,
+    causal: bool | None,
+) -> str:
+    """The option a refused learned-function network is reported at.
+
+    Parameters
+    ----------
+    kind : str
+        The network kind ``param_source`` names.
+    source_text : str | None
+        The ``param_source`` text, with any arguments.
+    activation : str | None
+        The ``activation`` option, when given.
+    heads : int | None
+        The ``heads`` option, when given.
+    causal : bool | None
+        The ``causal`` option, when given.
+
+    Returns
+    -------
+    str
+        ``activation`` when it is given to a source other than ``mlp`` or
+        names no activation; ``heads`` or ``causal`` when given to a
+        source other than ``self_attention``; ``heads`` when a
+        self-attention network with an argument-free source refuses its
+        head count; otherwise ``param_source``.
+    """
+    if activation is not None and (
+        kind != "mlp" or activation not in FUNCTION_ACTIVATIONS
+    ):
+        return "activation"
+    if kind != "self_attention":
+        if heads is not None:
+            return "heads"
+        if causal is not None:
+            return "causal"
+        return "param_source"
+    if heads is not None and causal is not None and "(" not in (source_text or ""):
+        return "heads"
+    return "param_source"
 
 
 def _draw_arg_location(arg: DrawArg, decl: MorphismDecl) -> tuple[int, int]:
@@ -1444,6 +1509,35 @@ class _DeclarationsMixin:
                 entry.col if entry is not None and entry.line else decl.col,
             )
         width = _shape_size(codomain)
+        heads = get_option_int(decl.options, "heads", line=decl.line, col=decl.col)
+        causal_text = get_option_name(
+            decl.options, "causal", line=decl.line, col=decl.col
+        )
+        if causal_text is not None and causal_text not in ("true", "false"):
+            entry = find_option(decl.options, "causal")
+            raise CompileError(
+                f"function morphism {name!r}: causal={causal_text} is neither "
+                f"``true`` nor ``false``",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        causal = None if causal_text is None else causal_text == "true"
+        kind = network_kind(decl)
+        if kind in SEQUENCE_SOURCE_KINDS and isinstance(domain, ProductSpace):
+            raise CompileError(
+                f"function morphism {name!r}: a {kind} function reads one "
+                f"sequence, but its domain {domain!s} is a product",
+                decl.line,
+                decl.col,
+            )
+        if kind in SEQUENCE_SOURCE_KINDS and find_option(decl.options, "output"):
+            entry = find_option(decl.options, "output")
+            raise CompileError(
+                f"function morphism {name!r}: a {kind} function applies no "
+                f"output nonlinearity; apply one in the let that reads it",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
         for member in names:
             try:
                 source = function_source(
@@ -1451,15 +1545,28 @@ class _DeclarationsMixin:
                     width,
                     source_text,
                     activation=cast(FunctionActivation | None, activation),
+                    heads=heads,
+                    causal=causal,
                 )
             except ValueError as error:
-                key = "activation" if activation is not None else "param_source"
-                entry = find_option(decl.options, key)
+                entry = find_option(
+                    decl.options,
+                    _function_option_at_fault(
+                        kind,
+                        source_text,
+                        activation=activation,
+                        heads=heads,
+                        causal=causal,
+                    ),
+                )
                 raise CompileError(
                     f"function morphism {name!r}: {error}",
                     entry.line if entry is not None and entry.line else decl.line,
                     entry.col if entry is not None and entry.line else decl.col,
                 ) from error
+            if isinstance(source, SelfAttentionSource | PositionSource):
+                self._morphisms[member] = SequenceFunction(domain, codomain, source)
+                continue
             latent = (
                 member
                 if get_option_name(decl.options, "weights", default="point") == "latent"
