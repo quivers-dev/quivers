@@ -9,7 +9,7 @@ program.
 
 ::: quivers.inference.trace
 
-## Package-level exports
+## Exports of the package {#package-level-exports}
 
 `quivers.inference` also re-exports the variational guides of
 `quivers.inference.guides` and the kernels and runner of

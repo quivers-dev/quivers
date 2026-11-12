@@ -46,7 +46,7 @@ Diagnostic codes:
   `lacks` constraint.
 - `qiec-coverage`: indexed case branches are incomplete, duplicated, or not
   justified by refinement.
-- `qiec-skolem-escape`: branch-local static evidence escapes its scope.
+- `qiec-skolem-escape`: static evidence local to a branch escapes its scope.
 - `qiec-handler`: a handler signature violates coverage, forwarding, or
   resumption requirements.
 - `qiec-unhandled-effect`: a computation performs an instance absent from its

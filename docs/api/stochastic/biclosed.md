@@ -5,7 +5,7 @@ with [inference rules](../../semantics/schemas.md#6-schema-declarations) [@shieb
 on its right combines with a noun phrase to give a sentence [@lambek1958mathematics]. The
 interfaces below separate the initial facts, the inference steps, the goals, and the schedule, and
 the semiring fixes what is accumulated across derivations. The page covers the abstract deductive
-system, the rule schemas and their bundles and presets, and the components of span-based CKY
+system, the rule schemas and their bundles and presets, and the components of CKY over spans
 parsing.
 
 ## Deductive Systems
@@ -76,14 +76,14 @@ grammar presets `CCG`, `LAMBEK`, `NL`, and `LP`.
       show_root_heading: false
       show_root_toc_entry: false
 
-## Span-Based CKY Components
+## CKY Components over Spans {#span-based-cky-components}
 
-Span-based instantiation of the abstract deductive framework for CKY chart parsing:
+Instantiation over spans of the abstract deductive framework for CKY chart parsing:
 
 - **`LexicalAxiom`:** Populates length-1 spans from a learnable lexicon.
 - **`BinarySpanDeduction`:** Applies binary structural rules with learnable weights.
 - **`UnarySpanDeduction`:** Applies unary rules to convergence.
-- **`SpanGoal`:** Extracts the start-symbol score for the full span.
+- **`SpanGoal`:** Extracts the score of the start symbol over the full span.
 - **`CKYSchedule`:** Bottom-up evaluation by span length.
 
 ::: quivers.stochastic.span

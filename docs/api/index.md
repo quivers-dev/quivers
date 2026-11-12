@@ -131,7 +131,7 @@ The `inference` package contains variational inference, MCMC, and posterior pred
 
 These packages connect model definitions to tabular data and Bayesian analysis.
 
-- **[Data](data/index.md)**: data-frame schemas and column encoders
+- **[Data](data/index.md)**: schemas for data frames and column encoders
 - **[Diagnostics](diagnostics/index.md)**: conversion of traces for ArviZ, model comparison, and posterior predictive checks
 - **[Formulas](formulas/index.md)**: R-style formula parsing, QVR generation, and the `fit` entry point
 

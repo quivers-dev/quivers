@@ -1,4 +1,4 @@
-# Plate-graph renderers
+# Plate diagram renderers
 
 These renderers draw the sites, repeated axes, and dependencies of a program's
 [plate graph](../../guides/repl-and-lsp.md#program-exploration), showing which draws
