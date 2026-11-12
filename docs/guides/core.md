@@ -132,7 +132,9 @@ monotone operation on $[0, 1]$ with unit $1$, used as fuzzy conjunction, and its
 t-conorm is the matching fuzzy disjunction [@klement2000triangular]. The class names
 in code are `ProductFuzzyAlgebra`, `BooleanAlgebra`, `StandardMVAlgebra`,
 `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`,
-`MarkovAlgebra`, `RealAlgebra`, `BoundedSumProductAlgebra`, and `CountingAlgebra`. In QVR
+`MarkovAlgebra`, `RealAlgebra`, `BoundedSumProductAlgebra`, and `CountingAlgebra`. The
+eight semirings are subclasses of `Semiring`, the four idempotent ones (`BOOLEAN`, `GODEL`,
+`TROPICAL`, and `MAX_PLUS`) of `IdempotentSemiring`, and the other three of `Algebra` only. In QVR
 the same instances are named `product_fuzzy`, `boolean`, `lukasiewicz`, `godel`,
 `tropical`, `max_plus`, `log_prob`, `markov`, `real`, `probability`, and `counting`
 ([`composition`](dsl-declarations.md#algebra)).
@@ -175,13 +177,14 @@ The Boolean semiring on $\{0, 1\}$ composes crisp relations: $\otimes$ is AND,
 $\bigoplus$ is OR (maximum), $\bigwedge$ is AND over a set (minimum), and
 $\neg a = 1 - a$. Its morphisms are the ordinary relations between finite sets.
 
-### StandardMVAlgebra
+### StandardMVAlgebra {#lukasiewiczalgebra}
 
 The [Łukasiewicz t-norm](https://en.wikipedia.org/wiki/T-norm) is
 $a \otimes b = \max(a + b - 1, 0)$, so two weak premises can combine to a score of
 zero. The reduction is the bounded sum $\min(1, \sum_i x_i)$, $\bigwedge$ is the
-minimum, and $\neg a = 1 - a$. The t-norm does not distribute over the bounded sum,
-so composition under this instance is not associative in general.
+minimum, and $\neg a = 1 - a$. With these operations $[0, 1]$ is the standard
+[MV-algebra](https://en.wikipedia.org/wiki/MV-algebra), which names the class. The t-norm does not
+distribute over the bounded sum, so composition under this instance is not associative in general.
 
 ### GodelAlgebra
 
