@@ -11,6 +11,6 @@ makes it available to programs. A specification separates
 [batch and event shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape)
 [@pyroTensorShapes]: batch axes index independent distributions, and event axes belong to one
 jointly scored outcome. QVR states these roles with the
-[`over` and `iid over` clauses](../../guides/continuous-families.md#event-rank-and-axis-role-syntax).
+`over` and `iid_over` options of a draw ([event and batch axes](../../guides/continuous-families.md#event-rank-and-axis-role-syntax)).
 
 ::: quivers.continuous.family_spec
