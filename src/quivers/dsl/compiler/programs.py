@@ -4866,20 +4866,26 @@ class _ProgramsMixin:
         )
         assert transition_args is not None and len(transition_args) == 1
         transition_arg = transition_args[0]
-        body: list[tuple[str, Callable] | tuple[ContinuousMorphism, tuple[StepArgument, ...] | None, str, bool]] = []
+        body_lets: list[tuple[str, Callable]] = []
+        emissions: list[
+            tuple[ContinuousMorphism, tuple[StepArgument, ...] | None, str, bool]
+        ] = []
         observed: list[str] = []
         reads: set[str] = set(_arg_names(transition_args))
+        prefix_reads: dict[str, frozenset[str]] = {}
         for name, fn in prefix:
             declared = reads_of(fn)
             assert declared is not None
+            prefix_reads[name] = declared
             reads |= declared
+        body_reads: set[str] = set()
         for inner in transition.scope:
             if isinstance(inner, LetStep):
                 ((name, fn),) = compile_lets((inner,))
-                body.append((name, fn))
+                body_lets.append((name, fn))
                 declared = reads_of(fn)
                 assert declared is not None
-                reads |= declared
+                body_reads |= declared
                 continue
             assert isinstance(inner, ObserveStep)
             response = inner.vars[0]
@@ -4902,20 +4908,47 @@ class _ProgramsMixin:
                 local_bv,
                 None,
             )
-            body.append(
+            emissions.append(
                 (family, arguments, response, _shared_vector_parameter(family))
             )
             if arguments is not None:
-                reads |= set(_arg_names(arguments))
+                body_reads |= set(_arg_names(arguments))
             if response != cell.entry:
                 observed.append(response)
+        reads |= body_reads
+        # Which of the cell's values vary with the position (they read
+        # the entry or an observation) and which with the previous state.
+        by_position: set[str] = {cell.entry, *observed}
+        by_previous: set[str] = {cell.previous}
+        for name, _ in prefix:
+            if prefix_reads[name] & by_position:
+                by_position.add(name)
+            if prefix_reads[name] & by_previous:
+                by_previous.add(name)
+        transition_varies = bool(set(_arg_names(transition_args)) & by_position)
+        emission_reads_previous = bool(body_reads & by_previous)
         local_names = {cell.entry, cell.previous, cell.latent, "_x_input"}
         local_names |= {name for name, _ in prefix}
-        local_names |= {item[0] for item in body if isinstance(item[0], str)}
+        local_names |= {name for name, _ in body_lets}
         chain_reads = (reads - local_names) | {source_key, scan.init, *observed}
         states = tuple(torch.tensor(index) for index in range(count))
         positions_reversed = scan.reverse
         init_name = scan.init
+
+        def _log_emissions(env: dict[str, torch.Tensor]) -> torch.Tensor:
+            """The block's log weight at each next state, ``(K,)``."""
+            scores: list[torch.Tensor] = []
+            for following in states:
+                atom = dict(env)
+                atom[cell.latent] = following
+                for name, fn in body_lets:
+                    atom[name] = fn(atom)
+                score = torch.zeros(())
+                for family, arguments, response, shared in emissions:
+                    theta = _observation_parameter(atom, arguments, shared)
+                    score = score + family.log_prob(theta, atom[response]).sum()
+                scores.append(score)
+            return torch.stack(scores)
 
         def _chain_marginal(env: dict[str, torch.Tensor]) -> torch.Tensor:
             sequence = env[source_key]
@@ -4943,39 +4976,42 @@ class _ProgramsMixin:
             log_filter = torch.log(start) - torch.log(start.sum())
             total = torch.zeros((), dtype=log_filter.dtype, device=log_filter.device)
             order = range(length - 1, -1, -1) if positions_reversed else range(length)
+            fixed_transition: torch.Tensor | None = None
             for position in order:
                 here = dict(env)
                 here[cell.entry] = entries[position]
                 for name, values in sequences.items():
                     here[name] = values[position]
-                rows: list[torch.Tensor] = []
+                previous_envs: list[dict[str, torch.Tensor]] = []
+                log_rows: list[torch.Tensor] = []
                 for previous in states:
                     row_env = dict(here)
                     row_env[cell.previous] = previous
                     for name, fn in prefix:
                         row_env[name] = fn(row_env)
-                    weights = _lookup_arg(row_env, transition_arg).reshape(count)
-                    log_transition = (
-                        torch.log_softmax(weights, dim=-1)
-                        if parameterization == "logits"
-                        else torch.log(weights) - torch.log(weights.sum())
+                    previous_envs.append(row_env)
+                    if fixed_transition is None:
+                        weights = _lookup_arg(row_env, transition_arg).reshape(count)
+                        log_rows.append(
+                            torch.log_softmax(weights, dim=-1)
+                            if parameterization == "logits"
+                            else torch.log(weights) - torch.log(weights.sum())
+                        )
+                if fixed_transition is None:
+                    log_transition = torch.stack(log_rows)
+                    if not transition_varies:
+                        fixed_transition = log_transition
+                else:
+                    log_transition = fixed_transition
+                if emission_reads_previous:
+                    weights_at = torch.stack(
+                        [_log_emissions(row_env) for row_env in previous_envs]
                     )
-                    scores: list[torch.Tensor] = []
-                    for following in states:
-                        atom = dict(row_env)
-                        atom[cell.latent] = following
-                        score = torch.zeros_like(total)
-                        for item in body:
-                            if isinstance(item[0], str):
-                                name, fn = item
-                                atom[name] = fn(atom)
-                                continue
-                            family, arguments, response, shared = item
-                            theta = _observation_parameter(atom, arguments, shared)
-                            score = score + family.log_prob(theta, atom[response]).sum()
-                        scores.append(score)
-                    rows.append(log_transition + torch.stack(scores))
-                table = torch.logsumexp(log_filter.unsqueeze(-1) + torch.stack(rows), 0)
+                else:
+                    weights_at = _log_emissions(previous_envs[0]).unsqueeze(0)
+                table = torch.logsumexp(
+                    log_filter.unsqueeze(-1) + log_transition + weights_at, dim=0
+                )
                 evidence = torch.logsumexp(table, dim=0)
                 total = total + evidence
                 log_filter = table - evidence
