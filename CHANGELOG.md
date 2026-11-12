@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.55.1] - 2026-11-12
+
+### Fixed
+
+- **The release wheel check expects the dependency versions the package requires.** `tools/release_wheel_smoke.py` checks the installed wheel against `didactic` 0.18.2 and `panproto` and `panproto-grammars-all` 0.77.0, the floors in `pyproject.toml`, and the installation guide states the same floors.
+
 ## [0.55.0] - 2026-11-11
 
 ### Added
