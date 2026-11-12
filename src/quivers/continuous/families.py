@@ -315,9 +315,7 @@ def _make_family(
             name=dsl_name,
             dist_class=dist_class,
             params=tuple(
-                ParamSpec(
-                    name=pname, transform=tname, inline_bounds=bounds.get(pname)
-                )
+                ParamSpec(name=pname, transform=tname, inline_bounds=bounds.get(pname))
                 for pname, tname in param_specs
             ),
             support=out_support,
