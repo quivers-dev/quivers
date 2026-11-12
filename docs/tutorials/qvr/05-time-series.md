@@ -6,7 +6,7 @@ QVR has three constructs for sequences:
 - **`scan`** for recurrences: a cell that maps an input and the previous state to the next state is applied along the sequence axis, as Haskell's `mapAccumL` applies a function and threads an accumulator.
 - **Weighted deduction** for chart parsing, where the computation is not a left-to-right pass, as in the [CKY algorithm](https://en.wikipedia.org/wiki/CYK_algorithm). [Chapter 11](11-parsing-and-search.md) covers it.
 
-This chapter writes recurrent networks, [hidden Markov models](https://en.wikipedia.org/wiki/Hidden_Markov_model) (HMMs) [@rabiner1989hmm], and linear Gaussian [state space models](https://en.wikipedia.org/wiki/State-space_representation) with the first two. A plate repeats a distribution across positions given its parameters, whereas a recurrence passes the state at one position into the transition at the next.
+The first two express recurrent networks, [hidden Markov models](https://en.wikipedia.org/wiki/Hidden_Markov_model) (HMMs) [@rabiner1989hmm], and linear Gaussian [state space models](https://en.wikipedia.org/wiki/State-space_representation). A plate repeats a distribution across positions given its parameters, whereas a recurrence passes the state at one position into the transition at the next.
 
 ## Plates revisited
 

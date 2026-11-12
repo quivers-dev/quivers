@@ -1,6 +1,6 @@
 # 9. Indexed data and total functions
 
-An [inductive family](https://ncatlab.org/nlab/show/inductive+family) is a datatype indexed by values, whose constructors fix the index of the values they build [@dybjer1994inductive]. Generalized algebraic datatypes ([GADTs](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type)) are the same idea in functional programming [@xi2003guarded]. This chapter declares vectors indexed by their length and writes functions over them that need no length check at run time. A shape assumption that would otherwise be a comment or a runtime assertion becomes part of a type.
+An [inductive family](https://ncatlab.org/nlab/show/inductive+family) is a datatype indexed by values, whose constructors fix the index of the values they build [@dybjer1994inductive]. Generalized algebraic datatypes ([GADTs](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type)) are the same idea in functional programming [@xi2003guarded]. Declare vectors indexed by their length and write functions over them that need no length check at run time. A shape assumption that would otherwise be a comment or a runtime assertion becomes part of a type.
 
 ## 1. Declare the index
 

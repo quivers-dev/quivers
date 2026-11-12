@@ -1,6 +1,6 @@
 # 7. Categorical foundations
 
-QVR types its declarations by objects and morphisms, composes morphisms under a chosen pair of operations, and converts a morphism from one pair of operations to another with `change_base`. This chapter states that structure in the terms of [category theory](https://ncatlab.org/nlab/show/category), explains the errors it produces, such as `incompatible algebras: ProductFuzzyAlgebra() and MarkovAlgebra()`, and gives the reading of a probabilistic program as a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel). The other chapters do not depend on it.
+QVR types its declarations by objects and morphisms, composes morphisms under a chosen pair of operations, and converts a morphism from one pair of operations to another with `change_base`. In the terms of [category theory](https://ncatlab.org/nlab/show/category), morphisms are matrices over a set of weights, errors such as `incompatible algebras: ProductFuzzyAlgebra() and MarkovAlgebra()` come from composing matrices under different operations, and a probabilistic program denotes a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel). The other chapters do not depend on it.
 
 ## Morphisms as matrices
 

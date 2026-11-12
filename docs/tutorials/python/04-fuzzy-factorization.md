@@ -1,6 +1,6 @@
 # 4. Fuzzy logic factorization
 
-Matrix factorization approximates an observed matrix $R$ by a product $F G$ of two smaller matrices. Boolean matrix factorization replaces sum and product by OR and AND [@miettinen2008discrete]. This chapter factorizes a relation with entries in $[0, 1]$ under the `PRODUCT_FUZZY` operations of [chapter 1](01-first-quiver.md#composition), which interpolate between the two: the product [t-norm](https://en.wikipedia.org/wiki/T-norm) $a \otimes b = ab$ as fuzzy AND, and the probabilistic sum (noisy-OR) as fuzzy OR [@klement2000triangular].
+Matrix factorization approximates an observed matrix $R$ by a product $F G$ of two smaller matrices. Boolean matrix factorization replaces sum and product by OR and AND [@miettinen2008discrete]. Factorize a relation with entries in $[0, 1]$ under the `PRODUCT_FUZZY` operations of [chapter 1](01-first-quiver.md#composition), which interpolate between the two: the product [t-norm](https://en.wikipedia.org/wiki/T-norm) $a \otimes b = ab$ as fuzzy AND, and the probabilistic sum (noisy-OR) as fuzzy OR [@klement2000triangular].
 
 ## Background
 

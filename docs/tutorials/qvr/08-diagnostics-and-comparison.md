@@ -1,6 +1,6 @@
 # 8. Diagnostics and model comparison
 
-Three checks follow a fit: whether the MCMC chains converged, whether data replicated from the fitted model resemble the observed data (a posterior predictive check), and how the model's predictive accuracy compares with another model's (leave-one-out cross-validation). [`quivers.diagnostics`](../../api/diagnostics/index.md) runs all three through [ArviZ](https://python.arviz.org/). This chapter applies them to the regression of [chapter 1](01-first-model.md), fitted with NUTS.
+Three checks follow a fit: whether the MCMC chains converged, whether data replicated from the fitted model resemble the observed data (a posterior predictive check), and how the model's predictive accuracy compares with another model's (leave-one-out cross-validation). [`quivers.diagnostics`](../../api/diagnostics/index.md) runs all three through [ArviZ](https://python.arviz.org/). Apply them to the regression of [chapter 1](01-first-model.md), fitted with NUTS.
 
 ## The DataTree bridge
 

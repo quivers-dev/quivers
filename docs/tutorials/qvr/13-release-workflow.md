@@ -1,6 +1,6 @@
 # 13. Check, inspect, and transpile a module
 
-Before releasing a QVR module, check that every public entry point runs on the reference machine and that every promised transpile target supports what the module reaches. This chapter uses the authored handler of [chapter 10](10-effects-and-handlers.md), which has an effect, a handler, a resumption, an open row, and one entry point with an empty row.
+Before releasing a QVR module, check that every public entry point runs on the reference machine and that every promised transpile target supports what the module reaches. The example is the authored handler of [chapter 10](10-effects-and-handlers.md), which has an effect, a handler, a resumption, an open row, and one entry point with an empty row.
 
 Each check answers a separate question. A source check says that the module is well formed and well typed. A target check says that each feature the module reaches is one the target supports (the target's *capabilities*). Transpiling produces source in the target language, whose own parser and runtime check it further. Whether the target computes the same scores as the original needs a separate numerical comparison.
 

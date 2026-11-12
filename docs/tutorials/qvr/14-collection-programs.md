@@ -1,6 +1,6 @@
 # 14. Exact Bayes with finite collection expressions
 
-When a parameter takes finitely many values, its posterior can be computed exactly by enumeration: weight each value by its prior and the likelihood of the data, and normalize. This chapter computes the posterior of a mean $\theta \in \{-1, 0, 1\}$, under a uniform prior, from four Normal observations with known scale. It writes the computation with QVR's collection expressions: `traverse`, which applies a computation to every element of a collection, `map`, which applies a pure function, and `logsumexp_over`, which reduces in log space. The set of three points is the whole parameter space of this model, so the result is exact. Using the same points to approximate a continuous parameter would be a different claim.
+When a parameter takes finitely many values, its posterior can be computed exactly by enumeration: weight each value by its prior and the likelihood of the data, and normalize. Compute the posterior of a mean $\theta \in \{-1, 0, 1\}$, under a uniform prior, from four Normal observations with known scale. Write the computation with QVR's collection expressions: `traverse`, which applies a computation to every element of a collection, `map`, which applies a pure function, and `logsumexp_over`, which reduces in log space. The set of three points is the whole parameter space of this model, so the result is exact. Using the same points to approximate a continuous parameter would be a different claim.
 
 ## 1. Score one observation
 

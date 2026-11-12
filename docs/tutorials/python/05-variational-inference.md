@@ -1,6 +1,6 @@
 # 5. Variational inference
 
-[Variational inference](https://en.wikipedia.org/wiki/Variational_Bayesian_methods) approximates a posterior by the member of a tractable family, the *guide*, that maximizes the evidence lower bound (ELBO) [@blei2017variational]. Stochastic variational inference (SVI) maximizes it by stochastic gradient steps [@hoffman2013svi]. This chapter builds a `MonadicProgram` by hand, records an execution trace, conditions on observations, fits a guide by SVI, and draws from the fitted approximation with `Predictive`. The interfaces follow Pyro's ([Pyro's SVI](https://pyro.ai/examples/svi_part_i.html)) [@pyroSVI].
+[Variational inference](https://en.wikipedia.org/wiki/Variational_Bayesian_methods) approximates a posterior by the member of a tractable family, the *guide*, that maximizes the evidence lower bound (ELBO) [@blei2017variational]. Stochastic variational inference (SVI) maximizes it by stochastic gradient steps [@hoffman2013svi]. Build a `MonadicProgram` by hand, record an execution trace, condition on observations, fit a guide by SVI, and draw from the fitted approximation with `Predictive`. The interfaces follow Pyro's ([Pyro's SVI](https://pyro.ai/examples/svi_part_i.html)) [@pyroSVI].
 
 ```mermaid
 sequenceDiagram

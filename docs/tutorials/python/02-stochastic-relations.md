@@ -6,7 +6,7 @@ $$
 (\kappa_1 \mathbin{>\!\!>} \kappa_2)(x, z) = \sum_{y} \kappa_1(x, y)\, \kappa_2(y, z).
 $$
 
-Finite sets with Markov kernels form the category [FinStoch](https://ncatlab.org/nlab/show/FinStoch) [@fritz2020synthetic]. This chapter builds kernels with the `MARKOV` algebra, which is the sum-product semiring on row-stochastic matrices, composes them, discretizes continuous families onto a grid, conditions a kernel on evidence about its output, and queries probabilities and expectations [@bishop2006pattern].
+Finite sets with Markov kernels form the category [FinStoch](https://ncatlab.org/nlab/show/FinStoch) [@fritz2020synthetic]. Build kernels with the `MARKOV` algebra, which is the sum-product semiring on row-stochastic matrices, compose them, discretize continuous families onto a grid, condition a kernel on evidence about its output, and query probabilities and expectations [@bishop2006pattern].
 
 ## Setup
 

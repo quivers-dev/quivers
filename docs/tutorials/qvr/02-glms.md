@@ -6,7 +6,7 @@ $$
 \theta_i = g^{-1}(\beta^\top x_i), \qquad y_i \sim \mathcal{F}(\theta_i).
 $$
 
-Linear regression ([chapter 1](01-first-model.md)) is the case with identity link and Normal family. This chapter fits logistic regression (logit link, Bernoulli family) and Poisson regression (log link, Poisson family) in QVR [@stanRegression].
+Linear regression ([chapter 1](01-first-model.md)) is the case with identity link and Normal family. Logistic regression (logit link, Bernoulli family) and Poisson regression (log link, Poisson family) follow [@stanRegression].
 
 ## Logistic regression
 
