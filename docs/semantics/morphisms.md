@@ -206,9 +206,11 @@ $$
 (g_1 ; g_2)(s, C) = \int g_2(t, C)\, g_1(s, \mathrm{d}t).
 $$
 
-The runtime does not compute this integral in closed form. It samples the intermediate value and
-estimates the composite's density by Monte Carlo
-([Implementation correspondence §3](adequacy.md#3-probabilistic-composition)).
+The runtime samples from the composite exactly, by drawing the intermediate value and then the
+output. Its density is another matter: for a finite intermediate set the runtime sums over it
+exactly, but for a continuous intermediate space it does not compute the integral. It returns the
+density of one fixed path through the intermediate values instead, which is not the density of the
+composite ([Implementation correspondence §3](adequacy.md#3-probabilistic-composition)).
 
 Normal kernels with affine parameter maps are closed under composition. For
 $g_1(s, -) = \mathcal{N}(As + a, \Sigma_1)$ and $g_2(t, -) = \mathcal{N}(Bt + b, \Sigma_2)$,
