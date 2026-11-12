@@ -257,7 +257,7 @@ morphism flow : R3 -> R3 [n_layers=6, hidden_dim=32] ~ Flow()
 export s
 ```
 
-More than forty families are registered ([Continuous Families](continuous-families.md)).
+More than fifty families are registered ([Continuous Families](continuous-families.md)).
 `Flow` is not one of them: it builds a conditional
 [normalizing flow](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 [@rezende2015flows] with `n_layers` coupling layers (4 by default) and hidden width
