@@ -226,7 +226,7 @@ export regression
 
 With highlighting in place, keywords (`object`, `program`,
 `sample`, `let`, `observe`, `return`, `export`), the `effects` option,
-the `<-` bind punctuation, family identifiers (`HalfNormal`, `Normal`),
+the `<-` of a draw, family identifiers (`HalfNormal`, `Normal`),
 and comments carry distinct colors.
 
 This second program uses indexed families, effects, and handlers:
@@ -259,7 +259,7 @@ define robustify(x : Real) : Real !{} =
 The additional keywords (`index`, `family`, `constructor`, `effect`,
 `instance`, `handler`, `resumes`, `define`, `handle`, `perform`) and handler
 option keys should receive their semantic classes once the LSP attaches. The
-[QVR language reference](../reference/qvr/index.md) contains tested blocks for
-the remaining computation and program forms.
+[QVR language reference](../reference/qvr/index.md) shows the remaining
+computation and program forms.
 
 A token rendered in the default foreground color has no matching rule in the editor's highlight query. The reference query is [`grammars/qvr/queries/highlights.scm`](https://github.com/quivers-dev/quivers/blob/main/grammars/qvr/queries/highlights.scm).
