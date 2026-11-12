@@ -361,6 +361,29 @@ def _select(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _call_lowered_pure(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Nested pure calls and conditionals, written out by `where` and `clamp`.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    a, b = v["a"], v["b"]
+    shifted = torch.where(a > 0.0, a, 0.1 * a) + 0.5
+    clamped = torch.clamp(b, -0.5, 0.5)
+    return (
+        D.Normal(0.0, 1.0).log_prob(a)
+        + D.Normal(0.0, 1.0).log_prob(b)
+        + D.Normal(shifted + clamped, 1.0).log_prob(v["y"]).sum()
+    )
+
+
 def _concat_slice(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """A packed state of two vectors and a number, split by windows.
 
@@ -609,6 +632,7 @@ _DATA: dict[str, dict[str, Host]] = {
     },
     "let_expressions/let_concat_slice": {"y": [0.3, -1.1]},
     "let_expressions/let_select": {"y": [0.2, -0.6]},
+    "steps/call_lowered_pure": {"y": [0.7, -0.4]},
     "let_expressions/let_tensor_builtins": {"y": [0.9, 1.6]},
     "let_expressions/let_concat_slice_matrix": {"y": [0.6, -0.4]},
     "let_expressions/let_pairwise_gather": {
@@ -697,6 +721,12 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"W": [-0.7, 0.5, 0.2, 0.1, -0.3, 0.9], "x": [1.1, 0.3, -0.5]},
         {"W": [0.6, 0.6, -1.4, -0.2, 1.0, 0.3], "x": [-0.4, 0.9, 1.3]},
     ],
+    "steps/call_lowered_pure": [
+        {"a": 0.6, "b": -0.9},
+        {"a": -1.1, "b": 0.2},
+        {"a": 0.3, "b": 1.4},
+        {"a": -0.2, "b": -0.3},
+    ],
     "let_expressions/let_select": [
         {"v": [0.4, -1.2, 0.1], "s": 0.3},
         {"v": [-0.5, 0.9, 0.25], "s": 0.8},
@@ -744,6 +774,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
     "let_expressions/let_concat_slice": {"h": [3], "c": [3], "s": [], "y": [2]},
     "let_expressions/let_concat_slice_matrix": {"h": [3], "y": [2]},
     "let_expressions/let_select": {"v": [3], "s": [], "y": [2]},
+    "steps/call_lowered_pure": {"a": [], "b": [], "y": [2]},
     "let_expressions/let_tensor_builtins": {"W": [2, 3], "x": [3], "y": [2]},
     "let_expressions/let_pairwise_gather": {
         "a": [3],
@@ -807,6 +838,7 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_pairwise_gather": _pairwise_gather,
     "let_expressions/let_concat_slice": _concat_slice,
     "let_expressions/let_select": _select,
+    "steps/call_lowered_pure": _call_lowered_pure,
     "let_expressions/let_tensor_builtins": _tensor_builtins,
     "let_expressions/let_concat_slice_matrix": _concat_slice_matrix,
     "let_expressions/let_plated_list_operand": _plated_list_operand,
