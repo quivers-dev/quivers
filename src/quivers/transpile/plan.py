@@ -1503,11 +1503,12 @@ class _ProgramWalk:
                 [
                     f"family:{family}:{name}: {target} has no {family} "
                     f"parameterized by its {name}"
-                    + (
+                    + _ALTERNATIVE_REFUSAL_REASONS.get(
+                        (family, name, target),
                         "; write the matrix as a literal, which is inverted "
                         "into the covariance"
                         if name == "precision_matrix"
-                        else "; write the probability the logits name as probs"
+                        else "; write the probability the logits name as probs",
                     )
                 ],
             )
@@ -2505,9 +2506,33 @@ _EVERY_TARGET: frozenset[str] = frozenset(
 #: The targets whose library takes each alternative parameterization as
 #: written, keyed by family and parameter. Every other target receives a
 #: literal precision matrix inverted and refuses anything else.
+#: Why a target refuses an alternative parameterization, where the
+#: general advice does not apply.
+_ALTERNATIVE_REFUSAL_REASONS: dict[tuple[str, str, str], str] = {
+    ("Bernoulli", "logits", "bugs"): (
+        "; its `dbern` takes a probability, whose complement "
+        "`1 - ilogit(l)` keeps none of its digits once the probability "
+        "rounds to within an ulp of one, and the mass written from the "
+        "logits needs a zeros-trick carrier BUGS has no data block to "
+        "bind, so no stable spelling exists"
+    ),
+}
+
 _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
     ("Bernoulli", "logits"): frozenset(
-        {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
+        {
+            "ir",
+            "church",
+            "edward2",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "pyro",
+            "stan",
+            "turing",
+            "webppl",
+        }
     ),
     ("Binomial", "logits"): frozenset(
         {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}

@@ -303,6 +303,36 @@ Gen.is_discrete(::QvrFactorDist) = true
 
 (::QvrFactorDist)(weight) = Gen.random(QvrFactorDist(), weight)
 
+# A Bernoulli given by its log-odds `l`. Each outcome scores by the
+# log-sigmoid of the signed log-odds, `log p(1) = log sigmoid(l)` and
+# `log p(0) = log sigmoid(-l)`, written `min(v, 0) - log1p(exp(-|v|))`
+# so it stays exact where the probability is within an ulp of zero or
+# one. A draw is a Boolean, as Gen's `bernoulli` draws, and an observed
+# outcome is either a Boolean or a QVR code, 0 or 1.
+struct QvrBernoulliLogitDist <: Gen.Distribution{Bool} end
+
+const qvr_bernoulli_logit = QvrBernoulliLogitDist()
+
+_qvr_log_sigmoid(v::Real) = min(v, 0.0) - log1p(exp(-abs(v)))
+
+function Gen.random(::QvrBernoulliLogitDist, logit::Real)
+    return rand() < 1.0 / (1.0 + exp(-logit))
+end
+
+function Gen.logpdf(::QvrBernoulliLogitDist, x::Real, logit::Real)
+    return x > 0.5 ? _qvr_log_sigmoid(logit) : _qvr_log_sigmoid(-logit)
+end
+
+function Gen.logpdf_grad(::QvrBernoulliLogitDist, x::Real, logit::Real)
+    return (nothing, nothing)
+end
+
+Gen.has_output_grad(::QvrBernoulliLogitDist) = false
+Gen.has_argument_grads(::QvrBernoulliLogitDist) = (false,)
+Gen.is_discrete(::QvrBernoulliLogitDist) = true
+
+(::QvrBernoulliLogitDist)(logit) = Gen.random(QvrBernoulliLogitDist(), logit)
+
 # A QVR Categorical draws class codes counting from zero, and Gen's
 # built-in `categorical` counts from one. This family is the same
 # distribution over the support `0:K-1`, so an observed code and a
