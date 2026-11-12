@@ -1,61 +1,61 @@
 # Variational Inference: Guides, Objectives, and SVI
 
-This page covers the variational layer: the `Auto*Guide` family,
-seven objectives and four gradient estimators, the SVI training
-loop, and predictive sampling from a trained guide. The MCMC layer
-([HMC](inference-mcmc.md#mcmc-hmc-and-nuts), NUTS, hybrid samplers) lives in [the MCMC
-guide](inference-mcmc.md); the [trace](inference-foundations.md#trace-and-sample-sites) / [conditioning](inference-foundations.md#conditioning-on-observations) / registry
-primitives that every guide consumes live in
-[Inference Foundations](inference-foundations.md).
+[Variational inference](https://en.wikipedia.org/wiki/Variational_Bayesian_methods)
+approximates the posterior by the closest member of a tractable family of
+distributions [@blei2017variational]. In quivers the family is a *guide*, the closeness
+is measured by an *objective* whose gradient an *estimator* computes, and
+[`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) optimizes the guide by
+stochastic gradient steps. Every guide reads the
+[trace](inference-foundations.md#trace-and-sample-sites),
+[conditioning](inference-foundations.md#conditioning-on-observations), and latent
+registry of [Inference Foundations](inference-foundations.md), and
+[MCMC and Hybrid Samplers](inference-mcmc.md) covers sampling instead.
 
 ## Guides: variational families
 
-A **guide** is a [distribution with adjustable parameters](https://pyro.ai/examples/svi_part_i.html#Guide) used to
-approximate the posterior [@pyroSVI]. If `z` is an unknown mean, a simple guide
-might learn a center and spread for `z`. The model still supplies the
-prior and likelihood; the guide supplies candidate latent values and
-their density under the approximation. [Observed sites](inference-foundations.md#trace-and-sample-sites) remain fixed to the
-supplied data throughout fitting.
+A *guide* $q_\phi(z \mid x, y)$ is a distribution over the latent sites with
+adjustable parameters $\phi$, fitted to approximate the posterior, as in Pyro
+[@pyroSVI]. If `z` is an unknown mean, a simple guide learns a centre and a spread for
+`z`. The model still gives the prior and the likelihood, the guide gives candidate
+latent values and their density, and [observed sites](inference-foundations.md#trace-and-sample-sites)
+stay fixed to the data throughout fitting.
 
-A diagonal, or *mean-field*, Normal treats latent coordinates as
-independent in its unconstrained representation. A full-covariance Normal
-can represent linear correlations but costs more parameters. Flows can bend the density, and mixtures can place mass around several
-separated modes. To compare these families, fit each from several
-initializations and compare their ELBOs and posterior predictive draws.
+A diagonal, or *mean-field*, normal guide treats the latent coordinates as independent
+in their unconstrained representation. A full-covariance normal represents linear
+correlations at the cost of more parameters, a flow can bend the density, and a mixture
+can put mass near several separated modes. Comparing families means fitting each from
+several initializations and comparing their ELBOs and posterior predictive draws.
 
-A guide $q_\phi(z \mid x, y)$ is a variational family approximating
-the posterior. Eleven concrete `Auto*` guide classes cover the
-available families, all documented under [Variational
-Guides](../api/inference/guide.md); each is constructed from the
-model and a set of observed site names. The nine single-family
-guides are summarized in the table below; two combinators,
+The `Auto*` guides are built from a model and a set of observed site names
+([Variational Guides](../api/inference/guide.md)). The single-family guides are below.
 [`AutoGuideList`](../api/inference/guide.md#quivers.inference.guides.AutoGuideList)
-and
-[`AutoStructured`](../api/inference/guide.md#quivers.inference.guides.AutoStructured),
-compose per-site guides into a joint variational family.
+and [`AutoStructured`](../api/inference/guide.md#quivers.inference.guides.AutoStructured)
+combine guides for different sites into one family, and
+[`AmortizedGuide`](#amortizedguide) computes each datum's approximation with an
+encoder.
 
 | Guide | Posterior structure | When to use |
 |---|---|---|
-| [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) | Diagonal Normal (mean-field) | Default; identifiable posterior, weak correlation |
+| [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) | Diagonal Normal (mean-field) | Default; an [identifiable](https://en.wikipedia.org/wiki/Identifiability) posterior with weak correlation |
 | [`AutoMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoMultivariateNormalGuide) | Full-rank Normal (Cholesky) | Strong posterior correlations; $D \lesssim 1000$ |
 | [`AutoLowRankMultivariateNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoLowRankMultivariateNormalGuide) | Low-rank + diagonal | [Hierarchical models](programs-hierarchical.md#hierarchical-models-with-parametric-templates) with localized correlations |
-| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centered at MAP with covariance $-H^{-1}$ (negative inverse Hessian of the log-joint) | Local Gaussian approximation after finding a mode |
-| [`AutoNormalizingFlow`](../api/inference/guide.md#quivers.inference.guides.AutoNormalizingFlow) | Composed bijector over Normal base | Skewed or curved posterior densities |
+| [`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) | Gaussian centred at the maximum a posteriori (MAP) point with covariance $-H^{-1}$, the negative inverse Hessian of the log joint density | [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) at a mode [@tierney1986laplace] |
+| [`AutoNormalizingFlow`](../api/inference/guide.md#quivers.inference.guides.AutoNormalizingFlow) | Composed bijectors over a normal base [@rezende2015flows] | Skewed or curved posterior densities |
 | [`AutoIAFGuide`](../api/inference/guide.md#quivers.inference.guides.AutoIAFGuide) | Inverse autoregressive flow [@kingma2016iaf] | Autoregressive transformed approximation |
 | [`AutoNeuralSplineGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNeuralSplineGuide) | Rational-quadratic spline coupling [@durkan2019splines] | Flexible spline transformations |
 | [`AutoMixtureGuide`](../api/inference/guide.md#quivers.inference.guides.AutoMixtureGuide) | K-component mixture of guides | Multimodal posteriors |
 | [`AutoDeltaGuide`](../api/inference/guide.md#quivers.inference.guides.AutoDeltaGuide) | Dirac at MAP | Quick MAP; no uncertainty |
 
-Every guide uses `biject_to(support)` per site, so samples always
-lie inside the prior's constrained support; `log_prob` carries the
-corresponding [log-det
-Jacobian](https://en.wikipedia.org/wiki/Jacobian_matrix_and_determinant).
+Every guide maps each site through the bijector `biject_to(support)` of its prior's
+support ([Inference Foundations](inference-foundations.md#the-variational-pipeline)),
+so its samples lie inside that support, and its `log_prob` includes the log absolute
+determinant of the
+[Jacobian](https://en.wikipedia.org/wiki/Jacobian_matrix_and_determinant).
 
 ### AutoNormalGuide
 
-A diagonal Gaussian approximation to the posterior, with a per-site
-bijector that maps unconstrained Normal samples to the prior's
-constrained support:
+A diagonal Gaussian approximation with one bijector per site, which maps
+unconstrained normal draws into the prior's support:
 
 $$q_\phi(z_i \mid x, y) = T_i\bigl(\,\mathcal{N}(\mu_i, \sigma_i)\,\bigr)$$
 
@@ -66,11 +66,9 @@ line for `Normal`, $\exp$ for `HalfNormal` / `Gamma` /
 / `LogitNormal`, an affine-shifted sigmoid for arbitrary
 `Uniform(low, high)` / `TruncatedNormal`, and
 [`StickBreakingTransform`](https://docs.pytorch.org/docs/stable/distributions.html#torch.distributions.transforms.StickBreakingTransform)
-for `Dirichlet`. The learnable parameters $(\mu_i, \sigma_i)$ live
-in the unconstrained space; the constrained sample $v_i = T_i(z_i)$
-is always inside the prior's support, so `prior.log_prob(v_i)`
-evaluates without raising `Expected value to be within the support
-of ...`.
+for `Dirichlet`. The learnable parameters $(\mu_i, \sigma_i)$ live in the
+unconstrained space, and the constrained draw $v_i = T_i(z_i)$ is always inside the
+prior's support, so `prior.log_prob(v_i)` never raises a support error.
 
 <!-- python: skip -->
 ```python
@@ -90,20 +88,18 @@ log_q = guide.log_prob(x, latents)
 
 ### AutoDeltaGuide
 
-A delta guide puts all its mass at one fitted value, so repeated draws
-return that value. Its scoring convention optimizes a MAP estimate.
-The ELBO/KL identity below assumes a density with respect to the model
-measure; a point mass in a continuous space violates that assumption.
-
-A delta (point mass) approximation, i.e. a single best estimate.
-The point lives in the unconstrained space and is pushed through
-`biject_to(support)` at evaluation time, so it always lies inside
+A delta guide puts all its mass on one fitted value, a
+[Dirac measure](https://en.wikipedia.org/wiki/Dirac_measure), so repeated draws return
+that value, and fitting it gives a MAP estimate. The point lives in the unconstrained
+space and passes through `biject_to(support)` when it is evaluated, so it lies inside
 the prior's support:
 
 $$q_\phi(z_i \mid x, y) = \delta_{T_i(\zeta_i)}(z_i)$$
 
 where $\zeta_i$ is the learnable unconstrained point and $T_i$ the
-same per-site bijector as `AutoNormalGuide`.
+same bijector as for `AutoNormalGuide`. A point mass has no density with respect to
+Lebesgue measure, so the identity between the ELBO and the KL divergence in
+[ELBO](#elbo-evidence-lower-bound) does not apply to it.
 
 <!-- python: skip -->
 ```python
@@ -128,7 +124,7 @@ $$q_\phi(z) = \sum_{k=1}^{K} \pi_k\, q_k(z).$$
 Each component may be any guide, so a mixture of `AutoNormalGuide`
 instances can place one component on each of several separated modes.
 `log_prob` evaluates the mixture density with a log-sum-exp over the
-components. `rsample` draws from that same density: it picks a component
+components. `rsample` draws from that density: it picks a component
 index $k \sim \mathrm{Categorical}(\pi)$ and returns component $k$'s
 draw, so predictive sampling from a fitted mixture guide reproduces the
 distribution that `log_prob` scores. Its draws carry gradient to the
@@ -158,7 +154,7 @@ evaluations per particle.
 
 The `DoublyReparameterized` estimator rewrites the score of the density
 each particle was drawn from, and stratified draws come from the
-components rather than from $q_\phi$. It therefore raises an error with a
+components rather than from $q_\phi$. It thus raises an error with a
 mixture guide; use `IWAEBound(num_particles=K, estimator=Reparameterized())`
 or `StickingTheLanding()` instead.
 
@@ -261,23 +257,19 @@ print(z_new.shape)             # (10, 2)
 
 ## Objectives and gradient estimators
 
-The **objective** says what numerical quantity the fit optimizes. The
-**gradient estimator** says how to estimate its derivatives using random
-draws. These are separate choices: two estimators can target the same
-objective but differ in variance and applicability. A *particle* is one
-set of latent draws used in a Monte Carlo estimate; increasing particles
-reduces some sampling noise at additional computational cost.
+The *objective* is the quantity the fit optimizes, and the *gradient estimator* is how
+its derivatives are estimated from random draws. They are separate choices: two
+estimators can target one objective with different variance and applicability. A
+*particle* is one set of latent draws in a Monte Carlo estimate, and more particles
+reduce sampling noise at more cost. The
+[reparameterization (pathwise) estimator](https://en.wikipedia.org/wiki/Reparameterization_trick)
+differentiates through a draw written as `mu + sigma * epsilon`
+[@kingma2014autoencoding], and the score-function estimator uses the derivative of the
+sampling log density, which also works when the draw is not differentiable
+[@ranganath2014bbvi]. The ELBO with its default estimator is the usual starting point.
 
-The pathwise estimator differentiates through a sample such as
-`mu + sigma * epsilon`. A score-function estimator instead uses
-derivatives of the sampling log probability, which is useful when the
-sample itself is not differentiable. The table records the advanced
-choices; ordinary ELBO with a supported estimator is a simpler starting
-point for understanding the loop.
-
-[`SVI`](../api/inference/svi.md) accepts any
-[`Objective`](../api/inference/elbo.md) subclass. The seven shipped
-objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO):
+[`SVI`](../api/inference/svi.md) accepts any [`Objective`](../api/inference/elbo.md)
+subclass. The objectives are:
 
 | Objective | Bound | Use case |
 |---|---|---|
@@ -289,8 +281,10 @@ objectives include [`ELBO`](../api/inference/elbo.md#quivers.inference.objective
 | `RWS(K)` | Reweighted wake-sleep, wake phase [@bornschein2015rws] | Importance-weighted wake updates with the draws held fixed; not a bound, takes no estimator |
 | `DReGsBound(K)` | IWAE bound with a doubly reparameterized gradient [@tucker2019dreg] | Switch the IWAE bound and DReG estimator together |
 
-`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, and `DReGsBound` are
-Monte Carlo *power-mean bounds* of the per-draw log importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$,
+`ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, and `DReGsBound` are Monte Carlo
+estimates of the variational Rényi bound family [@li2016renyi], computed as a power
+mean of the log importance ratios $\ell_k = \log p(z_k, y) - \log q_\phi(z_k)$ of the
+draws:
 
 $$B_a = \frac{1}{a}\log \frac{1}{K}\sum_{k=1}^{K} e^{a \ell_k},$$
 
@@ -311,7 +305,7 @@ avoid overflow, particle $k$'s term is divided by $e^{m_{-k}}$, where
 $m_{-k}$ is the largest $n \log w_j$ among the *other* particles; that
 scale is independent of particle $k$'s draws, so the expected update is
 a positive multiple of $\nabla L_n$ and the stationary points are
-unchanged. `ChiVI` therefore needs `num_particles >= 2` and an order
+unchanged. `ChiVI` thus needs `num_particles >= 2` and an order
 $n > 1$. The value it returns is the $K$-sample CUBO estimate, directly
 comparable with the negated `ELBO` loss; it is biased downward at finite
 $K$, so for small $K$ it can fall below $\log p(y)$, and the bias
@@ -359,39 +353,29 @@ scales linearly in the number of draws.
 
 ## ELBO: evidence lower bound
 
-The **[evidence lower bound (ELBO)](https://pyro.ai/examples/svi_part_i.html#ELBO)** balances two terms [@pyroSVI]. `log p` rewards
-latent values that the prior and observed data support. The expected
-negative `log q` is the guide’s entropy, which rewards spreading mass
-across the values supported by the model. For a fixed model and an
-absolutely continuous guide with the required finite expectations,
+The [evidence lower bound](https://en.wikipedia.org/wiki/Evidence_lower_bound) is
+
+$$\mathcal{L}(\phi) = \mathbb{E}_{q_\phi(z \mid x, y)} [\log p(y, z \mid x) - \log q_\phi(z \mid x, y)].$$
+
+Its first term rewards latent values that the prior and the data support, and the
+second, the guide's entropy, rewards spreading mass over them [@pyroSVI]. For a guide
+with a density and the required finite expectations,
 
 $$
 \log p(y\mid x)-\mathcal L(\phi)
-=\mathrm{KL}\bigl(q_\phi(z\mid x,y)\,\|\,p(z\mid x,y)\bigr)\ge 0.
+=\mathrm{KL}\bigl(q_\phi(z\mid x,y)\,\|\,p(z\mid x,y)\bigr)\ge 0,
 $$
 
-Thus maximizing the ELBO minimizes this divergence to the posterior.
-The optimizer below minimizes the *negative* ELBO. A diagonal guide, for
-instance, can reach its best ELBO while missing a correlation between two
-latent variables. Fit a full-covariance guide to assess that correlation,
-and compare replicated observations with the data to assess predictive fit.
-
-The [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) is
-the variational objective:
-
-$$\mathcal{L}(\phi) = \mathbb{E}_{q_\phi(z \mid x, y)} [\log p(y, z \mid x) - \log q_\phi(z \mid x, y)]$$
-
-It lower bounds the log marginal likelihood $\log p(y \mid x)$ and
-equals it when $q_\phi = p(\cdot \mid x, y)$.
-
-Indexed-observe steps (`observe r : N <- F(args)`) read their
-response tensors from a runtime
-`observations: dict[str, torch.Tensor]` keyed by the
-observed-variable name. The dict is threaded through
-[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO)
-and
-[`SVI.step`](../api/inference/svi.md#quivers.inference.svi.SVI.step)
-via the `observations` kwarg, alongside the domain input.
+so $\mathcal L$ is a lower bound on the log marginal likelihood, equal to it when $q_\phi$
+is the posterior, and maximizing it minimizes the
+[KL divergence](https://en.wikipedia.org/wiki/Kullback%E2%80%93Leibler_divergence) to the
+posterior. The optimizer minimizes the *negative* ELBO. A diagonal guide can reach its
+best ELBO while missing a correlation between two latent variables, which a
+full-covariance guide would show, and replicated observations compared with the data
+show predictive fit. The observed values reach the objective in the
+[`observations` dict](programs.md#the-observations-dict), passed to
+[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) and
+[`SVI.step`](../api/inference/svi.md#quivers.inference.svi.SVI.step) with the input.
 
 The `ELBO` class computes:
 
@@ -405,7 +389,7 @@ guide = ...  # variational q
 elbo = ELBO(num_particles=10)
 
 # Compute loss
-x = torch.randn(5)
+x = torch.zeros(1, 1)
 observations = {"y": y_obs}
 loss = elbo(model, guide, x, observations)  # negative ELBO (for minimization)
 
@@ -426,14 +410,10 @@ Internally, the ELBO:
 
 ## SVI: stochastic variational inference
 
-Variational inference chooses a tractable family of distributions and
-optimizes its parameters to approximate the posterior. Stochastic
-optimization estimates the objective or its gradient from samples
-[@blei2017variational; @hoffman2013svi].
-
-The
-[`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) training
-loop optimizes both model and guide parameters:
+Stochastic variational inference optimizes the objective with gradients estimated from
+draws [@hoffman2013svi]. The
+[`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) loop updates the model's and
+the guide's parameters together:
 
 <!-- python: skip -->
 ```python
@@ -452,21 +432,15 @@ optimizer = optim.Adam(
 svi = SVI(model, guide, optimizer, elbo)
 
 # Training loop
-for epoch in range(100):
+for step in range(100):
     loss = svi.step(x, observations)
-    print(f"Epoch {epoch}: loss={loss:.4f}")
+    print(f"Step {step}: loss={loss:.4f}")
 ```
 
-The `step` method computes the ELBO loss, backpropagates gradients,
-and steps the optimizer.
-
-Each row of the input is an independent run of the model, with its own
-latent draws from the guide, and every objective sums its per-run terms;
-a minibatch of rows is therefore a minibatch of runs. A program whose
-observations live in a plate, with its rows given in `observations`,
-takes a one-row input instead: its rows come from its data and its
-plates, and repeating the input row would only add copies of the same
-run.
+`step` computes the loss, backpropagates, and steps the optimizer. Each input row is
+an [independent run](inference-foundations.md#input-rows-are-independent-runs) with its
+own guide draws, so a minibatch of input rows is a minibatch of runs, and a program
+whose observations live in a plate takes a one-row input.
 
 ## Minibatches: subsampled plates
 
@@ -504,8 +478,12 @@ export mean_model
 <!-- python: skip -->
 ```python
 import torch
+from quivers.dsl import load
 from quivers.effects import subsample
 from quivers.inference import ELBO, SVI, AutoNormalGuide
+
+model = load("mean_model.qvr").morphism   # the program above
+y = torch.randn(40) + 1.0                 # one observation per Item
 
 guide = AutoNormalGuide(model, {"y"})
 svi = SVI(model, guide, torch.optim.Adam(guide.parameters(), lr=0.02), ELBO())
@@ -538,25 +516,24 @@ objective; it remains usable when the plate holds only observations.
 Only an objective linear in the log joint stays unbiased under
 subsampling: the ELBO, with any number of particles and any gradient
 estimator. The importance-weighted and Rényi bounds, `ChiVI`, and `RWS`
-exponentiate or self-normalise the log weights and refuse a subsampled
+exponentiate or self-normalize the log weights and refuse a subsampled
 plate, and so do the consumers of the exact posterior, MCMC and
-`PotentialFn`, the Laplace approximation, `AutoDAIS`, and the Bayesian
-lift. A site in the plate that is neither a plate draw nor a plated
+`PotentialFn`, the Laplace approximation, `AutoDAIS`, and
+`lift_to_bayesian_program`. A site in the plate that is neither a plate draw nor a plated
 observation (a grouped marginalization, for instance) has no per-row
 density and is refused, as is a plate whose extent the program leaves to
 its data.
 
 ## Predictive sampling
 
-The posterior predictive has two sources of variation: uncertainty about
-`z`, and response noise conditional on `z`. Drawing from both produces
-replicated or future observations. With a guide, replace the exact
-posterior in the integral below by the fitted approximation `q`; the
-result inherits that approximation's limitations.
-
-After training, sample from the posterior predictive:
+The posterior predictive distribution has two sources of variation, uncertainty about
+`z` and response noise given `z`, and drawing from both gives replicated or future
+observations:
 
 $$p(y_\text{new} \mid x_\text{new}, \text{observations}) = \int p(y_\text{new} \mid z, x_\text{new}) \, p(z \mid x, y_\text{obs}) \, dz$$
+
+With a guide, the fitted $q$ replaces the exact posterior in this integral, and the
+result inherits the guide's limitations.
 
 <!-- python: skip -->
 ```python
@@ -569,7 +546,7 @@ predictive = Predictive(
 )
 
 # Sample from posterior predictive
-x_new = torch.randn(5)
+x_new = torch.zeros(1, 1)
 samples = predictive(x_new)              # dict[str, torch.Tensor]
 y_new_samples = samples["y"]             # shape (num_samples, batch, ...)
 
@@ -587,10 +564,10 @@ The [`Predictive`](../api/inference/predictive.md) driver:
 
 ## Full example: Bayesian linear regression
 
-The slope is a global random variable. Each response uses that same slope
-and its own known predictor: $y_n \sim \mathcal N(w x_n, 0.1^2)$.
-The QVR binding `let mu = w * predictor` computes the mean for every
-response before the observation is scored.
+The slope $w$ is one random variable shared by all responses, and each response has its
+own known predictor: $y_n \sim \mathcal N(w x_n, 0.1^2)$. The binding
+`let mu = w * predictor` computes every response's mean before the observation is
+scored, and the input is one row, since the 100 responses come from the plate `Row`.
 
 <!-- python: skip -->
 ```python
@@ -612,7 +589,7 @@ export regression
 x_obs = torch.linspace(-1.0, 1.0, 100)
 y_obs = 2.0 * x_obs + 0.1 * torch.randn(100)
 observations = {"predictor": x_obs, "y": y_obs}
-domain_input = torch.arange(100)
+domain_input = torch.zeros(1, 1)   # one run; its 100 rows come from Row
 guide = AutoNormalGuide(program, observed_names={"y"})
 optimizer = torch.optim.Adam(
     list(program.parameters()) + list(guide.parameters()), lr=1e-2
@@ -626,40 +603,47 @@ w_draws = torch.stack([guide.rsample(domain_input)["w"] for _ in range(500)])
 print(w_draws.mean(), w_draws.quantile(0.025), w_draws.quantile(0.975))
 ```
 
-`predictor` supplies known inputs; `y` supplies observed responses. Only `w`
-is an unobserved sample site here. The intervals summarize the fitted guide,
+`predictor` is a data input and `y` the observed responses, so `w` is the only latent
+site. The intervals summarize the fitted guide,
 so inspect fit quality before interpreting them as posterior uncertainty.
 
 ## Custom guides
 
-Implement a custom guide by subclassing
-[`Guide`](../api/inference/guide.md#quivers.inference.guides.Guide):
+A custom guide subclasses
+[`Guide`](../api/inference/guide.md#quivers.inference.guides.Guide) and gives
+`latent_names`, `rsample`, which returns one draw per input row of every latent site it
+covers, and `log_prob`, which returns one log density per row. A normal guide for the
+slope of the regression above:
 
 <!-- python: skip -->
 ```python
+import torch
+from torch.distributions import Normal
 from quivers.inference.guides import Guide
 
-class MyGuide(Guide):
-    def __init__(self, model, latent_names: list[str]):
+class SlopeGuide(Guide):
+    def __init__(self, site: str):
         super().__init__()
-        self._latent_names = list(latent_names)
-        self.mu_net = torch.nn.Linear(5, 10)
-        self.sigma_net = torch.nn.Linear(5, 10)
+        self._site = site
+        self.loc = torch.nn.Parameter(torch.zeros(1))
+        self.log_scale = torch.nn.Parameter(torch.zeros(1))
 
     @property
     def latent_names(self) -> list[str]:
-        """Names of latent sites this guide covers."""
-        return self._latent_names
+        return [self._site]
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Sample latent sites z ~ q(. | x). Returns {site_name: tensor}."""
-        raise NotImplementedError()
+        q = Normal(self.loc, self.log_scale.exp())
+        return {self._site: q.rsample((x.shape[0],))}   # (batch, 1)
 
-    def log_prob(
-        self, x: torch.Tensor, sites: dict[str, torch.Tensor]
-    ) -> torch.Tensor:
-        """Compute log q(sites | x), summed across latent sites."""
-        raise NotImplementedError()
+    def log_prob(self, x: torch.Tensor, sites: dict[str, torch.Tensor]) -> torch.Tensor:
+        q = Normal(self.loc, self.log_scale.exp())
+        return q.log_prob(sites[self._site]).sum(-1)     # (batch,)
+
+guide = SlopeGuide("w")
+svi = SVI(program, guide, torch.optim.Adam(guide.parameters(), lr=2e-2), ELBO(num_particles=5))
+for _ in range(800):
+    svi.step(domain_input, observations)
 ```
 
 The objectives draw through `Guide.rsample_strata`, which returns
@@ -669,18 +653,6 @@ them, and a stratum log-weight. Its default returns one draw from
 `rsample`, scored by `log_prob`, with weight one. A guide whose sampler
 makes a discrete choice that `rsample` cannot reparameterize overrides
 it to return weighted strata whose weighted average estimates
-expectations under the guide, as `AutoMixtureGuide` does; a guide
-whose density exists only along the path that produced a draw returns
-that density with the draw, as `AutoDAIS` does.
-
-## Further reading
-
-- [@durkan2019splines]
-- [@roeder2017sticking]
-- [@tucker2019dreg]
-- [@daudel2023vriwae]
-- [@dieng2017chi]
-- [@bornschein2015rws]
-- [@li2016renyi]
-- [@burda2016iwae]
-- [@morningstar2021mixtures]
+expectations under the guide, as `AutoMixtureGuide` does. A guide whose density
+exists only along the path that produced a draw returns that density with the draw,
+as `AutoDAIS` does.
