@@ -7,7 +7,7 @@
 | Posterior shape | First choice |
 |---|---|
 | Smooth, roughly unimodal, fewer than 1000 latents | VI. |
-| Strongly correlated or curved | NUTS, with diagnostics; a reparameterization may still be needed. |
+| Strongly correlated or curved | NUTS, with diagnostics. A reparameterization may still be needed. |
 | Well-separated modes | Several initializations, comparing the regions reached. Separate modes may need a mixture guide or a sampler designed to move between modes. |
 | Hierarchical with a funnel | NUTS, or VI on the non-centered parameterization. |
 | More than 1000 continuous latents | VI, unless the compute budget is large. |
@@ -57,7 +57,7 @@ The [inference benchmarks](../../developer/inference-benchmarks.md) report how t
 | Objective | Bound | When |
 |---|---|---|
 | `ELBO(num_particles=1)` | Evidence lower bound (ELBO) | Default. |
-| `ELBO(num_particles=K)` | ELBO averaged over $K$ draws | Lower gradient variance; the bound itself is unchanged. |
+| `ELBO(num_particles=K)` | ELBO averaged over $K$ draws | Lower gradient variance, with the bound itself unchanged. |
 | `IWAEBound(num_particles=K)` | Importance weighted bound [@burda2016iwae] | Tighter than the ELBO for $K > 1$. |
 | `RenyiBound(alpha, num_particles=K)` | Variational Rényi bound [@li2016renyi] | Equals the ELBO at $\alpha = 1$ and the importance weighted bound at $\alpha = 0$. |
 | `VRIWAEBound(alpha, num_particles=K)` | Variational Rényi importance weighted bound [@daudel2023vriwae] | $\alpha$ moves the fit between covering the posterior's mass ($\alpha$ near 0) and seeking one mode ($\alpha$ near 1). $K$ tightens it. |

@@ -57,7 +57,7 @@ An [`Algebra`](../../api/core/algebras.md) gives $\otimes$, $\oplus$ (the method
 | `Boolean` | AND | OR | true | Boolean semiring; its matrices are relations. |
 | `ProductFuzzy` | $a b$ | $1 - \prod_i (1 - x_i)$ | 1 | [Product t-norm](https://en.wikipedia.org/wiki/T-norm) with the probabilistic sum (noisy-OR) [@klement2000triangular; @pearl1988probabilistic]. Not a semiring. |
 | `Lukasiewicz` | $\max(0, a + b - 1)$ | $\min(1, \sum_i x_i)$ | 1 | Łukasiewicz t-norm with the bounded sum [@klement2000triangular]. Not a semiring. |
-| `Godel` | $\min(a, b)$ | $\max_i x_i$ | 1 | Minimum (Gödel) t-norm with the maximum; a semiring on $[0, 1]$. |
+| `Godel` | $\min(a, b)$ | $\max_i x_i$ | 1 | Minimum (Gödel) t-norm with the maximum, a semiring on $[0, 1]$. |
 | `Tropical` | $a + b$ | $\min_i x_i$ | 0 | [Tropical (min-plus) semiring](https://en.wikipedia.org/wiki/Tropical_semiring) on $[0, \infty]$: cheapest paths [@mohri2002semiring]. |
 | `MaxPlus` | $a + b$ | $\max_i x_i$ | 0 | Max-plus semiring: the best path, as in the Viterbi algorithm [@goodman1999semiring]. |
 | `LogProb` | $a + b$ | $\mathrm{logsumexp}_i\, x_i$ | 0 | [Log semiring](https://en.wikipedia.org/wiki/Log_semiring): sum and product of probabilities in log space [@mohri2002semiring]. |
