@@ -1,179 +1,188 @@
-# Structural Compression: Decoders and Losses
+# Tree and Graph Autoencoders: Decoders and Losses
 
-This page covers the decoder dual to the [encoder](structural-compression-signatures-and-encoders.md#encoder-blocks) (the [Kleisli arrow](monadic.md#kleisli-category) back from
-vectors to terms), loss declarations, and integration with chart parsers and
-Bayesian programs. The signature and encoder side lives
-in
-[Signatures and Encoders](structural-compression-signatures-and-encoders.md).
+A decoder is the second half of the autoencoders of
+[Signatures and Encoders](structural-compression-signatures-and-encoders.md): given a
+vector, it defines a probability distribution over the terms of a signature. It is
+thus a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel)
+$\mathrm{Vec}_D \to \mathcal G(T_\Sigma)$ from vectors to terms, an arrow of the
+[Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the
+[Giry monad](stochastic.md#the-giry-monad-and-finstoch) $\mathcal G$.
 
 ## Decoder blocks
 
-Decoding grows a structure from the top down. Given a vector, first choose
-a constructor, such as a leaf or an application; then produce the values
-or child vectors that constructor needs; finally decode recursive
-children in the same way. Scoring an observed term follows its known
-constructor choices and adds their log probabilities. *Corecursion*
-names this repeated expansion of a structure.
+A decoder grows a term from the top down. At a position of sort $s$ it scores the
+choices available there: every constructor and binder that builds an $s$, and, when
+a variable of sort $s$ is in scope, `BoundVar`. For the chosen constructor it splits
+the parent vector into one vector per child and decodes each child in the same way.
+This repeated expansion is [corecursion](https://en.wikipedia.org/wiki/Corecursion),
+the dual of the encoder's fold. Scoring an observed term follows that term's
+constructor choices and adds their log probabilities, as `log_joint` does for a
+[probabilistic program](programs.md#rsample-and-log_joint).
 
-The same sampling and scoring distinction appears in [probabilistic programs](programs.md#rsample-and-log_joint). The [generated computation reference](../reference/qvr/generated-computations.md#structural-signatures-and-autoencoders) shows how a decoder becomes a callable entry.
+Each step uses one of four learned functions, which the library builds by default as
+small neural networks:
 
-Several terms can have similar codes. The decoder represents this
-ambiguity by assigning probabilities to alternative reconstructions;
-repeated calls to `sample(vec)` can return different terms. The Kleisli
-arrow below has this distribution as its result.
+- the `structure` head gives the logits over the constructors of a sort;
+- the `factor` function splits a parent vector into its children's vectors, one
+  function for each sort and number of children;
+- the `primitive` head gives the logits over a data sort's vocabulary;
+- the `binder_select` head gives the logits over the variables in scope, for an
+  index-sorted child.
 
-
-A decoder declares a [Kleisli
-arrow](https://ncatlab.org/nlab/show/Kleisli+category) $\mathrm{Vec}_D
-\to \mathrm{Kern}(T_\Sigma)$. Per-sort `structure` / `primitive` /
-`factor` / `binder_select` heads are scaffolded as learnable neural
-networks; the corecursion (op choice, factor split, recursive
-descent, `BoundVar` fallback to in-scope variables) is supplied by
-the framework.
-
-<!-- compile: false -->
 ```qvr
+signature LF
+    sorts
+        Term : object [dim=64]
+        Type : object [dim=32]
+        Name : data [dim=32, vocab=["dog", "cat", "every", "some"]]
+    constructors
+        Const : Name -> Term
+        App : Term, Term -> Term
+        Base : Name -> Type
+    binders
+        Lam : binds (x : Term : ty : Type) in (body : Term) -> Term
+
+encoder C : LF
+    dim Term = 64
+    dim Type = 32
+    op App(f, x) |-> gelu(f + x)
+
 decoder D : LF [depth=8]
     body |-> recursive
+
+loss reconstruction [weight=1.0, on=decoder(D)]
+    -D.log_prob(term, C(term))
 ```
 
-The two runtime operations:
+The body `body |-> recursive` selects this default corecursion. A decoder has two
+operations:
 
-- `sample(vec) -> Term`: draw a single term.
-- `log_prob(term, vec) -> Tensor`: score an observed term.
+- `sample(vec)` draws one term;
+- `log_prob(term, vec)` scores an observed term.
 
-**Depth-bounded termination.** At the depth limit the choice set is
-restricted to ops whose every child sort is `data` or `index`
-(never `object`); if no such op exists at a sort, the decoder
-raises with a precise diagnostic.
+Different terms can have similar codes, and the decoder expresses this by spreading
+probability over them, so repeated calls to `sample(vec)` can return different terms.
+
+The option `depth` bounds the depth of decoded terms. At the bound, only
+constructors whose children are all of data or index sort remain available, and if
+a sort has no such constructor the decoder raises an error. The bound is part of the
+model: a term that needs nine nested expansions has probability zero under
+`depth=8` and positive probability under a larger bound.
+[Generated computations](../reference/qvr/generated-computations.md#structural-signatures-and-autoencoders)
+shows how a decoder becomes an entry point that programs can call.
 
 ## Loss declarations
 
-A reconstruction loss asks the decoder to give the input term high
-probability after encoding it. If its probability is `0.2`, the negative
-log likelihood is about `1.609`; raising it to `0.8` lowers the loss
-to about `0.223`. At probability `0.8`, repeated decoding still assigns
-`0.2` probability to other terms. A loss weight sets the reconstruction
-term’s contribution relative to the other training criteria.
+A `loss` declaration is a named expression added to a training objective, attached
+to a part of the module with the `on` option. The reconstruction loss above is the
+negative log probability that the decoder gives the input term after encoding it:
+probability `0.2` gives a loss of about `1.609`, and probability `0.8` about `0.223`.
+`weight` scales a loss relative to the others.
 
+The attachment points are:
 
-Losses are first-class declarations attachable at any site in the
-training graph:
+| `on=` | Where the loss applies |
+|---|---|
+| omitted | globally |
+| `program(P)`, `deduction(D)`, `encoder(E)`, `decoder(D)` | the named declaration |
+| `rule(R, D)` | every application of rule `R` while deduction `D` builds its chart |
+| `chart(D)` | once, on the completed chart of deduction `D` |
 
-<!-- compile: false -->
-```qvr
-loss reconstruction [weight=1.0, on="encoder C"]
-    -D(C(input)).log_prob(input)
-
-loss type_coherence [weight=0.1, on="rule combine in Parse"]
-    cross_entropy(parent_type_dist, combined_children_type_dist)
-
-loss completed [weight=0.01, on="chart of Parse"]
-    -chart.goal_weight()
-
-loss nli [weight=1.0, on="program nli_predict"]
-    bce_with_logits(predicted_logit, true_label)
-```
-
-Attachment kinds: `global` (no `on` clause), `program <name>`,
-`deduction <name>`, `encoder <name>`, `decoder <name>`,
-`rule <name> in <D>` (fires on every application of that rule
-during chart construction), and `chart of <D>` (fires once on the
-completed chart).
-
-`prog.losses.evaluate(env)` sums every loss;
-`evaluate_on(kind, target, env)` filters by attachment. Inside a
-[deduction](deduction.md#the-framework), the runtime accumulates rule-attached and chart-attached
-losses into `ChartView.attached_loss` for the training driver to
-read.
+`prog.losses.evaluate(env)` sums every loss, and `evaluate_on(kind, target, env)` sums
+those with one attachment. Inside a [deduction](deduction.md#the-framework), the
+engine adds the losses attached to its rules and its chart to
+`ChartView.attached_loss`.
 
 ## Deduction integration
 
-A chart item can carry both a symbolic identity and a learned vector.
-The symbolic part determines which rules apply and how derivation
-weights combine; the encoder computes features of that item for
-learnable scoring or prediction. For instance, an encoder can turn a
-partial parse into a vector used to score its next rule application; the
-chart then aggregates the resulting derivation weights with its semiring.
+A chart item can carry a learned vector as well as its symbolic form. The symbolic
+part decides which rules apply and how derivation weights combine, and an attached
+encoder computes a vector for the item, for instance to score the next rule
+application. A `deduction` takes a signature for its items and an encoder with the
+options `signature=` and `encoder=`, and its chart's `embedding(item)` then returns
+the encoder's vector for that item, with gradients.
 
-
-A `deduction` block may attach an item signature and an encoder;
-the chart's `embedding(item)` operation then returns a
-differentiable vector computed by the attached encoder's
-algebra-homomorphism recursion over the chart-item term.
-
-<!-- compile: false -->
 ```qvr
+object Sentence : FinSet 4
+object Tree : FinSet 4
+
 signature ChartItem
     sorts
         Item : object [dim=128]
         Idx : data [dim=8]
-        Type : object [dim=32]
+        Cat : object [dim=32]
     constructors
-        span : Idx, Idx, Type -> Item
+        span : Idx, Idx, Cat -> Item
 
-deduction Parse : Sentence -> Tree [semiring=LogProb, signature=ChartItem, encoder=InsideC]
-    atoms S, NP, span
-    rule combine : span(i, k, Fwd(X, Y)), span(k, j, X) |- span(i, j, Y)
+encoder InsideC : ChartItem
+    dim Item = 128
+    dim Cat = 32
+
+deduction Parse : Sentence -> Tree [semiring=LogProb, start=S, signature=ChartItem, encoder=InsideC]
+    atoms S, NP, Fwd, span
+    rule combine : span(I, K, Fwd(X, Y)), span(K, J, Y) |- span(I, J, X)
+
+loss completed [weight=0.01, on=chart(Parse)]
+    -chart.goal_weight()
 ```
 
-The attention-weighted aggregation that distinguishes the
-vector-inside-outside parser from semiring parsing lives entirely
-inside the encoder's per-op function, outside the chart's role, so
-the semiring abstraction is not broken.
+`combine` is forward application in Steedman notation: `Fwd(X, Y)` is `X/Y`, which
+takes a `Y` on its right and gives an `X` ([Weighted Deduction Systems](deduction.md#qvr-syntax)).
+Any weighting of items by their vectors, as in the vector inside-outside parsers of
+Le and Zuidema [@le2014inside] and Drozdov et al. [@drozdov2019diora], happens inside
+the encoder's functions, and the chart still combines derivation weights with its
+semiring.
 
 ## Bayesian integration
 
-A decoder is a Kleisli arrow into a structured type: a distribution
-over terms. This gives the same sampling/scoring interface as other distributions,
-though actual inference and target support depend on the operations
-implemented for structured values. The intended modeling patterns are:
+A decoder has the interface of a distribution, `sample` and `log_prob`. A program
+can thus add a decoder's log probability of a term to its log joint density with
+`score`:
 
-- **Structured latents.** `latent_term <- D(prior_vec)` inside a
-  program body draws a random term from the decoder.
-- **Observations of structured data.**
-  `observe known_term <- D(some_vec)` scores under the decoder's
-  log-prob.
-- **[Marginalization](dsl-programs-and-lets.md#scoped-marginalize) over structured latents.**
-  `marginalize t : Term <- D(v)` with an indented body
-  `observe y <- ...`   expresses a sum over terms when a finite enumeration is available.
-  This requires an execution route that enumerates the finite term set;
-  a route exposing only `sample` and `log_prob` needs a sampling approximation.
-- **Variational decoders.**
-  `program q : Sentence -> Term`
-  defines a variational decoder over LFs given a sentence.
+```qvr
+signature LF2
+    sorts
+        Term : object [dim=8]
+        Name : data [dim=8, vocab=["dog", "cat"]]
+    constructors
+        Const : Name -> Term
+        App : Term, Term -> Term
+
+decoder D2 : LF2 [depth=3]
+    body |-> recursive
+
+object Code : Real 8
+object Out : Real 1
+
+program score_term : Code -> Out
+    score s = D2.log_prob(t, x)
+    return s
+```
+
+Here `x` is the program's input vector and `t` a term given with the observations.
+A decoder cannot appear on the right of `sample`, `observe`, or `marginalize` in a
+program, so a program cannot draw a latent term from it or sum over its terms.
 
 ## Stdlib decoders
 
-The depth bound is part of the represented model. At the limit, only
-constructors that can finish without another object-valued child are
-eligible. Increasing the bound admits more structures and changes the
-support. For instance, a term requiring nine recursive expansions is
-excluded by a bound of eight and can become eligible with a larger bound.
+`quivers.structural.shapes` provides decoders to match its encoders:
 
+- `ar_decoder(sig, dim, vocab, depth)`: an autoregressive decoder for sequence
+  signatures, with `depth` bounding the length;
+- `tree_decoder(sig, dim, leaf_vocab, label_vocab, depth)`: a top-down decoder for
+  tree signatures.
 
-The same `quivers.structural.shapes` registry that ships the
-canonical encoders also ships matching decoders:
-
-- `ar_decoder(sig, dim, vocab, depth)`: autoregressive decoder for
-  sequence signatures; `depth` caps the unfolded structure size.
-- `tree_decoder(sig, dim, leaf_vocab, label_vocab, depth)`:
-  top-down structural decoder for tree signatures.
-
-Both are realized on top of the generic
-[`Decoder`](../api/structural/decoder.md) runtime, the same Kleisli
-coalgebra pattern, no special-casing.
+Both are instances of the same [`Decoder`](../api/structural/decoder.md) class as a
+declared decoder.
 
 ## See also
 
-- [Signatures and Encoders](structural-compression-signatures-and-encoders.md):
-  the encoder side of the autoencoder pair.
-- [Weighted Deduction Systems](deduction.md): the chart representation to
-  which decoders attach.
-- [Compositional Effects](effects.md): the algebraic-effects
-  framework over which the decoder's stochasticity is realized.
+- [Signatures and Encoders](structural-compression-signatures-and-encoders.md): the
+  encoder half of the autoencoder.
+- [Weighted Deduction Systems](deduction.md): the chart parser to which an encoder
+  attaches.
 - [Structural autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
-  invoking a reconstruction loss through `Program.run`, preserving autograd,
-  and inspecting registered checkpoint parameters.
-- [Generated computation graphs](../reference/qvr/generated-computations.md):
-  the typed `Compute` attachment and target-capability contract.
+  running a reconstruction loss through `Program.run`, gradients, and checkpointed
+  parameters.
+- [Generated computation graphs](../reference/qvr/generated-computations.md): the
+  entry points a signature, encoder, and decoder add.
