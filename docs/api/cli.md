@@ -95,7 +95,7 @@ Execute one entry point of a checked module: a `define` computation or a
 `program`. With no entry name, or with `--list`, the command prints every
 entry point with its signature. A computation's signature gives its value
 parameters, static parameters, performed effects, and result type. A program's
-gives its data parameters, its result type, and the sample sites a run may
+gives its [data inputs](../reference/qvr/probabilistic-programs.md#host-data), its result type, and the sample sites a run may
 condition on.
 
 Each positional argument is a JSON literal and corresponds to one value
@@ -118,7 +118,8 @@ Flags:
 - `--static NAME=TERM`: specialize one static telescope binder with a closed
   type, index, or effect term. Repeat the flag once for every binder.
 - `--data NAME=JSON`: give one program parameter by name (a data input, an
-  observation, an index map, or a scalar). Repeatable.
+  observation, an [index map](../reference/qvr/probabilistic-programs.md#host-data) from rows to
+  groups, or a scalar). Repeatable.
 - `--site NAME=JSON`: condition one sample site of a program on a value,
   drawing every other site. Repeatable. A site the run never reaches is an
   error.
