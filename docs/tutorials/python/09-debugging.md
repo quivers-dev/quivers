@@ -143,7 +143,7 @@ An `MCMCResult` has three diagnostic fields:
 - `result.ess[site]`: the bulk effective sample size of each site.
 - `result.total_divergences`: the number of divergent transitions over all chains.
 
-Their thresholds and remedies are in the [diagnostics table of QVR chapter 8](../qvr/08-diagnostics-and-comparison.md#convergence-diagnostics). One further symptom: when every chain stays at its starting point, change `init_strategy` (`"prior"`, `"zero"`, or `"guide"` with a fitted guide passed to `MCMC.run`, as in [QVR chapter 3](../qvr/03-hierarchical.md#initialization-and-mass-matrix)).
+Their thresholds and remedies are in the [diagnostics table of QVR chapter 8](../qvr/08-diagnostics-and-comparison.md#convergence-diagnostics). One further symptom: when every chain stays at its starting point, change `init_strategy` (`"jitter"`, `"prior"`, `"zero"`, or `"guide"` with a fitted guide passed to `MCMC.run`, as in [QVR chapter 3](../qvr/03-hierarchical.md#initialization-and-mass-matrix)).
 
 ## A debugging recipe
 

@@ -136,7 +136,7 @@ The better [parameterization](https://mc-stan.org/docs/stan-users-guide/efficien
 
 ### Initialization and mass matrix
 
-`init_strategy` takes three values. `"prior"` (the default) starts each chain at a small random point near the origin of the unconstrained space, that is, $0.1\,z$ with $z$ standard Normal. `"zero"` starts at the origin, and `"guide"` draws the starting point from a fitted guide passed to `MCMC.run`.
+`init_strategy` takes four values. `"jitter"` (the default) starts each chain at a small random point near the origin of the unconstrained space, that is, $0.1\,z$ with $z$ standard Normal. `"prior"`, used above, draws every latent variable from its prior, running the model forward with the observed sites held at their values, and maps the draw into the unconstrained space. `"zero"` starts at the origin, and `"guide"` draws the starting point from a fitted guide passed to `MCMC.run`.
 
 The mass matrix is the metric that HMC adapts during warmup to rescale the latent coordinates [@neal2011mcmc]. `NUTSKernel(mass_matrix="diagonal")`, the default, adapts one variance for each coordinate. `"dense"` adapts a full covariance, which can help when latent variables are strongly correlated, at memory quadratic in their number. `"identity"` does not adapt.
 
