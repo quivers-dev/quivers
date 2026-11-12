@@ -35,7 +35,7 @@ structures.
 - **[Natural Transformations](categorical/natural_transformations.md)**: [natural transformations](https://ncatlab.org/nlab/show/natural+transformation) between functors
 - **[Adjunctions](categorical/adjunctions.md)**: [adjoint](https://ncatlab.org/nlab/show/adjunction) pairs of functors
 - **[Monoidal](categorical/monoidal.md)**: [monoidal](https://ncatlab.org/nlab/show/monoidal+category) structures on morphisms
-- **[Base Change](categorical/base_change.md)**: change of base between Boolean and fuzzy weights
+- **[Change of Base](categorical/base_change.md)**: change of base between Boolean and fuzzy weights
 - **[Traced](categorical/traced.md)**: [traced monoidal](https://ncatlab.org/nlab/show/traced+monoidal+category) structure
 
 ## Monadic Package

@@ -1,4 +1,4 @@
-# Base Change
+# Change of Base
 
 [Change of base](../../guides/categorical.md#base-change) reinterprets each weight in another
 `Algebra` and keeps the finite input and output objects. `BoolToFuzzy` includes Boolean weights

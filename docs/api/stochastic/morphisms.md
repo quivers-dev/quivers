@@ -10,10 +10,10 @@ given the initial input. `stochastic(domain, codomain)` builds a learnable one w
 
 ::: quivers.stochastic.morphisms
 
-## The Markov algebra
+## The sum-product semiring {#the-markov-algebra}
 
-`quivers.stochastic` re-exports `MarkovAlgebra` and its singleton `MARKOV`, the algebra
-stochastic morphisms compose under, from `quivers.core.algebras`.
+`quivers.stochastic` re-exports `MarkovAlgebra` and its singleton `MARKOV`, the `Algebra` under
+which stochastic morphisms compose (the sum-product semiring), from `quivers.core.algebras`.
 
 ::: quivers.stochastic
     options:
