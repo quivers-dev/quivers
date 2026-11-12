@@ -133,7 +133,7 @@ of the responses.
 ## Next
 
 - [Your first model](../tutorials/qvr/01-first-model.md): the same regression, compared line by line with PyMC and NumPyro
-- [Choosing an inference algorithm](../tutorials/qvr/06-inference-zoo.md): other guides and objectives, and sampling with NUTS
+- [Choosing an inference algorithm](../tutorials/qvr/06-inference-zoo.md): other guides and objectives, and sampling with the No-U-Turn Sampler (NUTS)
 - [Concepts](concepts.md): composition of weighted relations, the choice of `Algebra`, and the steps of a program
 - [Your first quiver](../tutorials/python/01-first-quiver.md): building and composing morphisms in Python
 - [Stochastic relations](../tutorials/python/02-stochastic-relations.md): Markov kernels between finite sets and conditioning

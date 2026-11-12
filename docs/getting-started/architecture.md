@@ -100,7 +100,7 @@ The [arrow](https://en.wikipedia.org/wiki/Arrow_(computer_science)) type classes
 
 Markov kernels between finite sets and weighted deduction.
 
-- **`morphisms.py`, `giry.py`:** `StochasticMorphism` (learnable row-stochastic matrices, factory `stochastic()`), the Giry monad on finite sets (`GiryMonad`), and the category `FinStoch`.
+- **`morphisms.py`, `giry.py`:** `StochasticMorphism` (learnable row-stochastic matrices, factory `stochastic()`), the distribution monad on finite sets, represented by its stochastic matrices (`GiryMonad`), and its Kleisli category `FinStoch`.
 - **`families.py`:** discretized families such as `DiscretizedNormal` and `DiscretizedBeta`.
 - **`transforms.py`, `queries.py`:** `condition()`, `mix()`, `factor()`, `normalize()`, and the queries `prob()`, `marginal_prob()`, and `expectation()`.
 - **`agenda.py`, `inside.py`, `semiring.py`, `span.py`, `categories.py`, `schema.py`, `rules.py`, `ccg.py`, `lambek.py`, `parsers.py`, `productions.py`, `effect_lifts.py`:** [weighted deduction](../guides/deduction.md) [@shieber1995principles; @goodman1999semiring]: syntactic categories, rule schemata, CCG and Lambek rule sets, the agenda algorithm, the inside algorithm, and the `ChartParser`, `CCGParser`, and `LambekParser` drivers.
@@ -154,7 +154,7 @@ Inference for probabilistic programs.
 - **`guides/`:** variational families: `AutoNormalGuide`, `AutoMultivariateNormalGuide`, `AutoLowRankMultivariateNormalGuide`, `AutoDeltaGuide`, `AutoLaplaceApproximation`, `AutoNormalizingFlow`, `AutoIAFGuide`, `AutoNeuralSplineGuide`, `AutoMixtureGuide`, `AutoGuideList`, `AutoStructured`, and `AmortizedGuide`.
 - **`estimators.py`, `objectives.py`, `svi.py`:** gradient estimators, the objectives `ELBO`, `IWAEBound`, `RenyiBound`, `VRIWAEBound`, `ChiVI`, `RWS`, and `DReGsBound`, and the `SVI` driver.
 - **`mcmc/`:** `HMCKernel`, `NUTSKernel`, `MetropolisKernel`, and `GibbsKernel`, kernels that combine them, step size and mass matrix adaptation, checkpoints, and the `MCMC` driver.
-- **`smc.py`, `dais.py`, `warmup.py`:** sequential Monte Carlo, differentiable annealed importance sampling (`AutoDAIS`), and warmup followed by HMC.
+- **`smc.py`, `dais.py`, `warmup.py`:** sequential Monte Carlo, differentiable annealed importance sampling (`AutoDAIS`), and warmup followed by Hamiltonian Monte Carlo (HMC).
 - **`predictive.py`:** `Predictive`, draws from a fitted guide or an MCMC result.
 - **`lifts.py`:** `lift_to_bayesian_program`, which places a prior on every parameter of a deterministic model, and `monte_carlo_log_joint`, which estimates a likelihood by drawing named latent variables from their priors.
 - **`transforms.py`:** the invertible transforms of the normalizing flow guides.
@@ -173,7 +173,7 @@ Static analysis of programs: scope traversal, shape inference for chain rules, p
 
 ### `formulas/`
 
-R-style formulas. `formula.py` parses a formula against a data frame, `compile.py` turns it into a QVR module, `family.py` declares response families and links, and `fit()` fits the result by SVI or MCMC.
+R-style formulas. `formula.py` parses a formula against a data frame, `compile.py` turns it into a QVR module, `family.py` declares response families and links, and `fit()` fits the result by stochastic variational inference (SVI) or MCMC.
 
 ### `transpile/`
 
