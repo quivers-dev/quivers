@@ -51,6 +51,7 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.joint_plan import JointPlan
 from quivers.effects.trace_types import Trace
 from quivers.inference.mcmc.driver import (
     MCMC,
@@ -269,25 +270,48 @@ class TemperedPotential(PotentialFn):
         trace_side, log_det_total = self._trace_side(z)
         minus_inf = torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
         try:
-            recorded = trace(
-                self._model, self._x, observations={**trace_side, **self._observations}
-            )
+            densities, log_joint = self._densities({**trace_side, **self._observations})
         except (ValueError, torch.linalg.LinAlgError) as error:
             if not _rejects_position(error):
                 raise
             return minus_inf, minus_inf
         latent = set(self._registry.names) | set(self._conditioned)
         log_prior = log_det_total
-        for label, site in recorded.sites.items():
+        for label, density in densities.items():
             if any(name in latent for name in label.split(",")):
-                log_prior = log_prior + site.log_prob.sum()
-        assert recorded.log_joint is not None
-        log_likelihood = recorded.log_joint.sum() + log_det_total - log_prior
+                log_prior = log_prior + density.sum()
+        log_likelihood = log_joint.sum() + log_det_total - log_prior
         if not torch.isfinite(log_prior):
             return minus_inf, minus_inf
         if torch.isnan(log_likelihood):
             return log_prior, minus_inf
         return log_prior, log_likelihood
+
+    def _densities(
+        self, values: dict[str, torch.Tensor]
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Each binding's density and the joint, as a trace records them.
+
+        Values of a layout the potential has a prepared joint for are
+        scored by it; any other values by tracing the program.
+
+        Parameters
+        ----------
+        values : dict[str, torch.Tensor]
+            The latent values and the data.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], torch.Tensor]
+            The density of each site and binding by label, and the joint.
+        """
+        plan = self._plans.plan(values)
+        if isinstance(plan, JointPlan):
+            return plan.evaluate(self._x, values)
+        recorded = trace(self._model, self._x, observations=values)
+        assert recorded.log_joint is not None
+        densities = {label: site.log_prob for label, site in recorded.sites.items()}
+        return densities, recorded.log_joint
 
     def log_density(self, z: torch.Tensor) -> torch.Tensor:
         """The tempered log-density :math:`\\log p(z) + \\beta \\log L(z)`.

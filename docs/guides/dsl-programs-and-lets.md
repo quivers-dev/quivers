@@ -748,7 +748,8 @@ full set is documented in
 | `Dirichlet` | `concentration` | `Simplex K` |
 | `TruncatedNormal` | `mu`, `sigma`, `low`, `high` | `Real N [low=..., high=...]` |
 | `MultivariateNormal` | `loc`, `scale_tril` | `Real N` (event_rank 1) |
-| `MatrixNormal` | `loc`, `row_scale`, `col_scale` | `Real R C` (event_rank 2) |
+| `MatrixNormal` | `loc`, `row_covariance`, `col_covariance` | `R x C` matrix (event_rank 2) |
+| `OrderedProbit`, `OrderedLogistic` | `eta` (`predictor`), `cutpoints` | ordered categories |
 | `LKJCholesky` | `concentration` | `CholeskyFactor K` |
 | `Wishart`, `InverseWishart` | `df`, `scale_tril` | `Covariance K` |
 | `Horseshoe` | `scale` | `Real N` (sparse-shrinkage prior) |
@@ -813,11 +814,139 @@ the size the checked program reads it at; one datum read at two sizes,
 or a tied argument whose size differs from the event axis it spans, is
 refused at the draw. A free name filling a vector parameter of a draw
 whose plate names event axes is instead one value the plate broadcasts,
-as in `Dirichlet(concentration=alpha) [over=K]`; a Cholesky factor or a
-covariance is never a broadcast scalar, so it stays a matrix there. The
+as in `Dirichlet(concentration=alpha) [over=K]`; a matrix parameter,
+a Cholesky factor, a covariance, or a matrix normal's mean, is never a
+broadcast scalar, so it stays a matrix there. The
 compiled runtime sizes every parameter when it builds the program, so it
 refuses a multivariate draw whose event size nothing in the program
 fixes, and the message lists the ways to fix it.
+
+### Ordinal, inverse-Wishart, and matrix-normal draws
+
+An ordinal response under a probit link, a covariance drawn from an
+inverse Wishart, and a matrix drawn from a matrix normal are written
+inline like their logistic and Wishart siblings:
+
+```qvr
+object Row : FinSet 6
+object One : FinSet 1
+object Dim : FinSet 2
+object Rows : FinSet 2
+object Cols : FinSet 3
+
+program ordinal : One -> One
+    sample eta <- Normal(loc=0.0, scale=1.0)
+    observe y : Row <- OrderedProbit(eta=eta, cutpoints=[-1.0, 0.0, 1.5])
+    return eta
+
+program covariance : One -> One
+    sample sigma : Dim <- InverseWishart(df=5.0, scale_tril=[[1.0, 0.0], [0.3, 0.8]])
+    observe x : Row <- MultivariateNormal(loc=[0.0, 0.0], covariance_matrix=sigma) [over=Dim]
+    return sigma
+
+program regression : One -> One
+    sample B <- MatrixNormal(loc=B0, row_covariance=U, col_covariance=V) [over=[Rows, Cols]]
+    return B
+
+export ordinal
+export covariance
+export regression
+```
+
+`OrderedProbit` puts category `k` at `Phi(c_k - eta) - Phi(c_{k-1} -
+eta)` for the standard normal distribution function `Phi`, scored in log
+space so a category far from the predictor keeps its probability.
+`InverseWishart(df, scale_tril=L)` is the law of the inverse of a
+`Wishart(df, scale_tril=L)` draw, the conventional
+[inverse Wishart](https://en.wikipedia.org/wiki/Inverse-Wishart_distribution)
+`IW(df, Psi)` with `Psi = (L L^T)^-1`; a transpile target that takes
+`Psi` receives the literal factor converted. `MatrixNormal(loc, U, V)`
+draws an `R x C` matrix whose row-major entries have covariance `U (x)
+V`, the [matrix normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution)
+with row covariance `U` and column covariance `V`. An inverse-Wishart
+covariance is a positive-definite latent site, which MCMC and SVI move
+through the unconstrained coordinates of its Cholesky factor.
+
+### A Cholesky factor built in the program
+
+The standard hierarchical covariance prior draws an LKJ correlation
+factor [@lewandowski2009lkj],
+scales its rows by per-coordinate standard deviations, and hands the
+product to a multivariate normal as its Cholesky factor:
+
+```qvr
+object Dk : FinSet 3
+object Row : FinSet 4
+object One : FinSet 1
+
+program correlated : One -> One
+    sample L : Dk <- LKJCholesky(concentration=2.0)
+    sample sigma : Dk <- HalfNormal(scale=1.0)
+    sample mu : Dk <- Normal(loc=0.0, scale=1.0)
+    let Ls = factor i : Dk, j : Dk in sigma[i] * L[i, j]
+    observe y : Row <- MultivariateNormal(loc=mu, scale_tril=Ls) [over=Dk]
+    return mu
+
+export correlated
+```
+
+Both execution paths score it, and so do the transpile targets whose
+libraries take a Cholesky factor known only at run time: Stan through
+`multi_normal_cholesky`, NumPyro and Pyro through `scale_tril=`, and
+PyMC through `chol=`. A `Wishart` whose `scale_tril` is such a factor
+reaches NumPyro and Pyro as `scale_tril=`, and Stan and PyMC multiplied
+out into the scale they take. The other targets refuse the factor under
+`family:<Family>:scale_tril`; a literal factor renders everywhere,
+multiplied out into a covariance.
+
+### Alternative parameterizations
+
+Several families accept more than one complete set of keywords, and the
+keywords a draw writes select the parameterization; a draw naming two
+of them, such as `Bernoulli(probs=p, logits=l)`, is refused at the draw.
+
+| Family | Keyword sets |
+|---|---|
+| `MultivariateNormal` | `(loc, scale_tril)`, `(loc, covariance_matrix)`, `(loc, precision_matrix)` |
+| `Wishart` | `(df, scale_tril)`, `(df, covariance_matrix)`, `(df, precision_matrix)` |
+| `Bernoulli`, `Geometric`, `Categorical` | `(probs)`, `(logits)` |
+| `Binomial`, `NegativeBinomial` | `(total_count, probs)`, `(total_count, logits)` |
+
+```qvr
+object Row : FinSet 6
+object One : FinSet 1
+object Dim : FinSet 2
+
+program logistic : One -> One
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    # The log-odds go straight to the family: no sigmoid in a let.
+    observe y : Row <- Bernoulli(logits=eta)
+    return eta
+
+program gaussian_precision : One -> One
+    sample v <- MultivariateNormal(loc=[0.0, 0.0], precision_matrix=[[2.0, -0.5], [-0.5, 1.0]]) [over=Dim]
+    return v
+
+export logistic
+export gaussian_precision
+```
+
+The compiled runtime and the reference machine score each
+parameterization as `torch.distributions` does when built with the same
+keywords. Logits are scored in log space, `log p = -softplus(-l)` and
+`log (1 - p) = -softplus(l)`, so an observation stays finite where the
+probability itself rounds to zero or one: the tests check logits up to
+`|l| = 30`, where the probability form scores `-inf` in single precision.
+
+A transpile target receives the parameterization its library has under
+its own spelling (Stan's `bernoulli_logit`, `binomial_logit`, and
+`multi_normal_prec`, PyMC's `logit_p` and `tau`, Turing's
+`BernoulliLogit` and `BinomialLogit`, the `logits=` and
+`precision_matrix=` keywords of Pyro, NumPyro, and Edward2). A literal
+precision matrix reaches a target without a precision parameterization
+inverted into the covariance it is the inverse of; any other alternative
+a target has no spelling for is refused under `family:<Family>:<keyword>`.
+The [support page](../transpile-support.md) lists every outcome.
 
 For conditional distributions (input-conditional, learned-parameter
 form), use a [`morphism f : A -> B ~ Family`](dsl-declarations.md#kernel)

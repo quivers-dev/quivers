@@ -34,6 +34,7 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._ordered import OrderedLogistic
 from quivers.core.objects import SetObject
 from quivers.continuous._zip_hurdle import (
@@ -1469,7 +1470,20 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
         return L
 
-    def _get_dist(self, x: torch.Tensor) -> D.MultivariateNormal:
+    def _get_dist(self, x: torch.Tensor) -> MatrixNormal:
+        """The matrix normal the parameter source gives at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+
+        Returns
+        -------
+        MatrixNormal
+            The distribution, with row and column covariances built from
+            the source's lower-triangular factors.
+        """
         raw = self.param_source(x)
         n, p = self._rows, self._cols
         offset = 0
@@ -1478,20 +1492,32 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         row_raw = raw[..., offset : offset + self._n_row_tril]
         offset += self._n_row_tril
         col_raw = raw[..., offset : offset + self._n_col_tril]
-
         U_chol = self._build_tril(row_raw, n, self._n_row_tril)
         V_chol = self._build_tril(col_raw, p, self._n_col_tril)
-        # Cholesky of the Kronecker covariance Sigma = V (X) U is
-        # L_Sigma = V_chol (X) U_chol so vec(X) ~ N(vec(M), L L^T).
-        L_kron = torch.einsum("...ij,...kl->...ikjl", V_chol, U_chol).reshape(
-            *loc_flat.shape[:-1], n * p, n * p
+        return MatrixNormal(
+            loc_flat.reshape(*loc_flat.shape[:-1], n, p),
+            U_chol @ U_chol.transpose(-1, -2),
+            V_chol @ V_chol.transpose(-1, -2),
         )
-        return D.MultivariateNormal(loc_flat, scale_tril=L_kron)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        # y has shape (..., n*p) or (..., n, p); flatten if matrix.
-        if y.dim() >= 2 and y.shape[-2:] == (self._rows, self._cols):
-            y = y.reshape(*y.shape[:-2], self._rows * self._cols)
+        """The log density of a matrix at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The matrix, ``(..., n, p)`` or flattened row-major
+            ``(..., n * p)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The log densities.
+        """
+        if y.dim() < 2 or y.shape[-2:] != (self._rows, self._cols):
+            y = y.reshape(*y.shape[:-1], self._rows, self._cols)
         return self._get_dist(x).log_prob(y)
 
     def rsample(
@@ -1499,8 +1525,21 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         x: torch.Tensor,
         sample_shape: torch.Size = torch.Size(),
     ) -> torch.Tensor:
-        sample_flat = self._get_dist(x).rsample(sample_shape)
-        return sample_flat.reshape(*sample_flat.shape[:-1], self._rows, self._cols)
+        """Draw a matrix at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        sample_shape : torch.Size
+            Leading sample axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The draws, ``(*sample_shape, ..., n, p)``.
+        """
+        return self._get_dist(x).rsample(sample_shape)
 
 
 # ============================================================================
@@ -1555,7 +1594,19 @@ class ConditionalInverseWishart(ContinuousMorphism):
     def support(self) -> _constraints.Constraint:
         return _constraints.positive_definite
 
-    def _get_wishart(self, x: torch.Tensor) -> D.Wishart:
+    def _get_dist(self, x: torch.Tensor) -> InverseWishart:
+        """The inverse Wishart the parameter source gives at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+
+        Returns
+        -------
+        InverseWishart
+            The distribution, with degrees of freedom above ``d - 1``.
+        """
         raw = self.param_source(x)
         d = self._d
         # df must exceed d - 1.
@@ -1569,37 +1620,49 @@ class ConditionalInverseWishart(ContinuousMorphism):
         L[..., idx[0], idx[1]] = tril_raw
         diag_idx = torch.arange(d)
         L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
-        # IW(nu, V) is the inverse of W(nu, V^-1); we parameterise
-        # the wishart with scale_tril L and invert the sample.
-        return D.Wishart(df=df, scale_tril=L)
+        # The draw is the inverse of a Wishart draw with scale factor L.
+        return InverseWishart(df, L)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        # y is positive-definite matrix Sigma; the wishart variate
-        # is Sigma^{-1}.  log p_IW(Sigma) = log p_W(Sigma^{-1}) +
-        # log |d Sigma^{-1} / d Sigma| where the Jacobian of matrix
-        # inversion at a d x d positive-definite matrix is
-        # (-1)^d det(Sigma)^{-(d+1)} so the log absolute Jacobian
-        # is -(d + 1) log det(Sigma).
+        """The log density of a matrix at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The matrix, ``(..., d, d)`` or flattened ``(..., d * d)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The log densities.
+        """
         d = self._d
-        y_mat = (
-            y.reshape(*y.shape[:-1], d, d)
-            if y.dim() < 2 or y.shape[-2:] != (d, d)
-            else y
-        )
-        if y_mat.shape[-2:] != (d, d):
-            y_mat = y.reshape(*y.shape[:-1], d, d)
-        y_inv = torch.linalg.inv(y_mat)
-        log_det = torch.logdet(y_mat)
-        wishart = self._get_wishart(x)
-        return wishart.log_prob(y_inv) - (d + 1) * log_det
+        if y.dim() < 2 or y.shape[-2:] != (d, d):
+            y = y.reshape(*y.shape[:-1], d, d)
+        return self._get_dist(x).log_prob(y)
 
     def rsample(
         self,
         x: torch.Tensor,
         sample_shape: torch.Size = torch.Size(),
     ) -> torch.Tensor:
-        w = self._get_wishart(x).rsample(sample_shape)
-        sigma = torch.linalg.inv(w)
+        """Draw a matrix at an input.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        sample_shape : torch.Size
+            Leading sample axes.
+
+        Returns
+        -------
+        torch.Tensor
+            The draws, flattened row-major to ``(..., d * d)``.
+        """
+        sigma = self._get_dist(x).rsample(sample_shape)
         return sigma.reshape(*sigma.shape[:-2], self._d * self._d)
 
 

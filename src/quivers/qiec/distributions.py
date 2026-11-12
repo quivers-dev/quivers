@@ -30,6 +30,7 @@ from quivers.qiec.reference_support import (
     finite_value as _finite_value,
     log_choose as _log_choose,
     normal_log_prob as _normal_log_prob,
+    log_probabilities as _log_probabilities,
     probability as _probabilities,
     real_parameter as _real,
     simplex as _simplex,
@@ -613,10 +614,8 @@ def _bernoulli_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    probability = _probabilities(a, "Bernoulli")
-    hit = bool(_finite_value(value, "Bernoulli"))
-    chance = probability if hit else 1.0 - probability
-    return math.log(chance) if chance > 0 else -math.inf
+    log_success, log_failure = _log_probabilities(a, "Bernoulli")
+    return log_success if bool(_finite_value(value, "Bernoulli")) else log_failure
 
 
 def _categorical_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -928,13 +927,13 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     """
     count = int(_finite_value(value, "Binomial"))
     trials = int(_real(a, "total_count", "Binomial"))
-    probability = _probabilities(a, "Binomial")
+    log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
         return -math.inf
     return (
         _log_choose(trials, count)
-        + count * math.log(probability)
-        + (trials - count) * math.log1p(-probability)
+        + _times(count, log_success)
+        + _times(trials - count, log_failure)
     )
 
 
@@ -976,10 +975,29 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     failures = int(_finite_value(value, "Geometric"))
-    probability = _probabilities(a, "Geometric")
+    log_success, log_failure = _log_probabilities(a, "Geometric")
     if failures < 0:
         return -math.inf
-    return failures * math.log1p(-probability) + math.log(probability)
+    return _times(failures, log_failure) + log_success
+
+
+def _times(count: int, log_mass: float) -> float:
+    """``count`` times a log mass, zero when the count is.
+
+    Parameters
+    ----------
+    count : int
+        How many times the outcome occurs.
+    log_mass : float
+        Its log probability, possibly ``-inf``.
+
+    Returns
+    -------
+    float
+        The product, with ``0 * -inf`` read as zero: an outcome that
+        never occurs contributes nothing, whatever its mass.
+    """
+    return 0.0 if count == 0 else count * log_mass
 
 
 def _laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:

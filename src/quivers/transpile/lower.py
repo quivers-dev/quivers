@@ -77,6 +77,7 @@ from quivers.dsl.ast_nodes.objects import (
     ObjectProduct,
     TypeName,
 )
+from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.dsl.draw_args import (
     encode_index,
@@ -1580,10 +1581,24 @@ def _expected_arg_shapes(
 ) -> tuple[tuple[int, ...], ...]:
     """Per-arg expected shape derived from class-level
     `arg_constraints`. Used to size placeholder tensors for the
-    sentinel."""
+    sentinel.
+
+    A class whose `arg_constraints` is a property, such as
+    `torch.distributions.Wishart`, states no shapes before it is built;
+    each named argument then takes the rank the semantic family registry
+    records for the parameter, a matrix parameter a square placeholder.
+    """
     cls_attr = meta.distribution_class.arg_constraints
     if not isinstance(cls_attr, dict):
-        return tuple(() for _ in range(n_args))
+        record = FAMILIES.get(meta.qvr_name)
+        # Positional arguments fill the constructor's parameters in order.
+        names = arg_names or _ctor_param_names(meta.distribution_class)[:n_args]
+        if record is None or len(names) != n_args:
+            return tuple(() for _ in range(n_args))
+        return tuple(
+            (2,) * record.parameter(name).rank if name in record.parameter_names else ()
+            for name in names
+        )
     if arg_names:
         return tuple(
             _constraint_default_shape(cls_attr[name]) if name in cls_attr else ()

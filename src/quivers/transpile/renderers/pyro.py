@@ -1877,6 +1877,17 @@ _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
     "Categorical": {
         "logits": "logits",
     },
+    **{
+        family: {"logits": "logits"}
+        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+    },
+    **{
+        family: {
+            "precision_matrix": "precision_matrix",
+            "scale_tril": "scale_tril",
+        }
+        for family in ("MultivariateNormal", "Wishart")
+    },
     "BetaBinomial": {
         "total_count": "total_count",
         "concentration1": "concentration1",
