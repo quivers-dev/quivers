@@ -768,16 +768,8 @@ class _DeductionsMixin:
             line=decl.line,
             col=decl.col,
         )
-        if semiring_name is not None and semiring_name not in semiring_registry:
-            raise CompileError(
-                f"deduction {decl.name!r}: unknown semiring {semiring_name!r}; "
-                f"the semirings a deduction runs in are "
-                f"{', '.join(sorted(semiring_registry))}",
-                decl.line,
-                decl.col,
-            )
         semiring = (
-            semiring_registry[semiring_name]
+            semiring_registry.get(semiring_name, SEMIRING_LOG_PROB)
             if semiring_name is not None
             else SEMIRING_LOG_PROB
         )
