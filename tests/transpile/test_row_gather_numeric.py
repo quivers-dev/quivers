@@ -53,7 +53,9 @@ def _host_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
 def _drawn_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     a, y, group = v["a"], v["y"].long(), v["group"].long()
     k = torch.arange(2, dtype=torch.float64)
-    table = k * torch.sigmoid(a)[:, None] + (1.0 - k) * (1.0 - torch.sigmoid(a)[:, None])
+    table = k * torch.sigmoid(a)[:, None] + (1.0 - k) * (
+        1.0 - torch.sigmoid(a)[:, None]
+    )
     prior = D.Normal(0.0, 1.0).log_prob(a).sum()
     weights = torch.tensor([0.25, 0.75], dtype=torch.float64)
     return (
