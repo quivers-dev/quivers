@@ -624,14 +624,7 @@ class JAGSRenderer(RendererBase):
             node,
             support_size=marginal_support_size(node),
         )
-        fibration = marginalize_fibration(
-            node,
-            observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=ctx.decl_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, observe)
         if fibration is not None:
             via, group = fibration
             self._emit_grouped_marginal_reduction(
@@ -926,12 +919,7 @@ class JAGSRenderer(RendererBase):
         probs = irarg_letexpr(
             _BACKEND,
             marginal_weight_probs(
-                node,
-                observe,
-                atom.weight_args,
-                atom.weight_arg_names,
-                name_plates=ctx.decl_plates,
-                target=self.target,
+                node, atom.weight_args, atom.weight_arg_names, target=self.target
             ),
             {},
         )

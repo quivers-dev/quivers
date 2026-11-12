@@ -1107,9 +1107,19 @@ def _render_marginalize_kind(backend: str, tail: str, explained: bool) -> str:
         return (
             f"`marginalize` over a `{family}` latent asks for a sum "
             f"over a support that is not finite, so {backend} cannot "
-            f"integrate it out at compile time. Reparameterise the "
-            f"latent as a continuous relaxation, or do the "
-            f"marginalisation in the host-side inference loop."
+            f"integrate it out at compile time. Draw the latent with "
+            f"`sample` and let inference integrate it out, or give it a "
+            f"family with finite support (`Bernoulli`, `Categorical`)."
+        )
+    if tail.startswith("group-unmapped:"):
+        latent, _, observed = tail.removeprefix("group-unmapped:").partition(":")
+        return (
+            f"the observation `{observed}` inside the `marginalize` over "
+            f"`{latent}` names no group of `{latent}` for each of its rows: "
+            f"it has no `via` map onto the group axis and is not plated over "
+            f"it, so {_language(backend)} has no group to add each row's "
+            f"log-density to. Plate the observation over the latent's axis, "
+            f"or map its rows onto that axis with `via`."
         )
     if tail.startswith("unknown-cardinality"):
         family = tail.partition(":")[2]

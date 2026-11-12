@@ -869,14 +869,7 @@ class ChurchRenderer(RendererBase):
             out.extend(weight_forms)
         finally:
             self._group_plate_axes = prev_group
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         accumulate_rows = marginalize_row_rank(node) > 0
         shifted: list[str] = []
         for position, (weight, term) in enumerate(
@@ -1023,12 +1016,7 @@ class ChurchRenderer(RendererBase):
             If the atom set's weight family has no log-weight form.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         family = atoms[0].weight_family
         log_form = _sym(ctx, "log")

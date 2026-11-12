@@ -4157,45 +4157,14 @@ class _ProgramsMixin:
                             if _parameterization == "logits"
                             else torch.log(probs.clamp_min(1e-38))
                         )
-                        # A per-group prior (the categorical parameter tensor
-                        # is indexed by the grouping plate, shape
-                        # ``(|G|, K)``) denotes a per-row latent: each
-                        # response row draws its own class from its
-                        # group's prior ``theta[g(row)]``, so the row's
-                        # marginal is ``rho_k(log theta[g(row)][k] +
-                        # ll[row, k])`` and the block contributes the
-                        # sum over rows. A global ``(K,)`` prior instead
-                        # denotes one class shared across each group's
-                        # rows, scored by scatter-summing the rows'
-                        # log-likelihoods into the group before the
-                        # reduction.
-                        per_group_prior = (
-                            not _product
-                            and log_prior.dim() == 2
-                            and log_prior.shape[0] == _sizes[0]
-                        )
-                        if per_group_prior:
-                            per_group = log_prior.new_zeros((_sizes[0],))
-                            total = log_prior.new_zeros(())
-                            for ll, idx in zip(ll_list, idx_list):
-                                assert isinstance(idx, torch.Tensor)
-                                gathered = log_prior[idx]
-                                weighted = gathered + ll
-                                if _reduction == "logsumexp":
-                                    per_row = torch.logsumexp(weighted, dim=-1)
-                                elif _reduction == "sum":
-                                    per_row = weighted.sum(dim=-1)
-                                else:
-                                    per_row = weighted.mean(dim=-1)
-                                per_group = per_group.index_add(0, idx, per_row)
-                                total = total + per_row.sum()
-                            if _per_group:
-                                return per_group
-                            # The block's total is the rows' own sum: the
-                            # per-group scatter is what an enclosing block
-                            # reads, and summing the rows directly keeps the
-                            # float32 accumulation in row order.
-                            return total.reshape(1)
+                        # The block's latent is indexed by its grouping
+                        # plate: one class per group, drawn from that
+                        # group's prior row when the prior is a
+                        # ``(|G|, K)`` tensor and from the one ``(K,)``
+                        # prior otherwise. Every row a fibration sends to
+                        # the group is scored under that one class, so the
+                        # rows' log-likelihoods are scatter-summed into the
+                        # group before the reduction over the class.
                         result = marginalize_grouped(
                             ll_list,
                             idx_list,

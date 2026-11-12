@@ -817,14 +817,7 @@ class Edward2Renderer(RendererBase):
             Plate(event_dims=observe.plate.event_dims, batch_dims=())
         )
         prefix = f"__marg_{node.latent}"
-        fibration = marginalize_fibration(
-            node,
-            observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, observe)
         if fibration is not None:
             self._emit_grouped_marginalize(
                 py, body_vid, node, raw, atoms, fibration, input_specs, bindings
@@ -939,12 +932,7 @@ class Edward2Renderer(RendererBase):
         ``1 - p`` and ``p``, which stack into a fresh trailing axis.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._weight_ref_expr(py, probs)
         family = atoms[0].weight_family
@@ -997,12 +985,7 @@ class Edward2Renderer(RendererBase):
             The stacked log weights.
         """
         logits = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         return _tf_stack(
             py,
@@ -2349,16 +2332,13 @@ def _marginalize_is_grouped(node: IRMarginalize) -> bool:
     Returns
     -------
     bool
-        ``True`` when the block carries a grouping plate finer than
-        its observe's plate and an observe with a ``via`` fibration,
-        which the renderer traces as a factor.
+        ``True`` when the block carries a grouping plate and an
+        observe with a ``via`` fibration into it, whose rows
+        `marginalize_fibration` scatters into the groups and the
+        renderer traces as a factor.
     """
-    if not node.plate.batch_dims:
-        return False
     return any(
-        isinstance(inner, IRObserve)
-        and inner.via is not None
-        and inner.plate.batch_dims != node.plate.batch_dims
+        isinstance(inner, IRObserve) and marginalize_fibration(node, inner) is not None
         for inner in node.scope
     )
 

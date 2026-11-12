@@ -958,14 +958,7 @@ class PyMCRenderer(RendererBase):
             support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         if fibration is not None:
             self._emit_grouped_marginalize(ctx, node, raw, atoms, fibration)
             return
@@ -1156,12 +1149,7 @@ class PyMCRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
@@ -1239,12 +1227,7 @@ class PyMCRenderer(RendererBase):
                 positional=(self._marginal_weights(ctx, node, raw, atoms),),
             )
         logits = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         return self._stack_atoms(
             py,

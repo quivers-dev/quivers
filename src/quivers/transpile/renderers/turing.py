@@ -1357,14 +1357,7 @@ class TuringRenderer(RendererBase):
             term_names.append(term)
         # A grouped block keys its accumulator by group: the rows the
         # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         if fibration is not None:
             via, group = fibration
             for term in term_names:
@@ -1600,12 +1593,7 @@ class TuringRenderer(RendererBase):
         """
         sb, counter = ctx.sb, ctx.counter
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         family = atoms[0].weight_family
         if logit_weighted(atoms[0]):

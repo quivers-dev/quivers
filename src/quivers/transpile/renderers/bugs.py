@@ -1140,18 +1140,13 @@ class BUGSRenderer(RendererBase):
             if isinstance(inner, IRObserve):
                 _refuse_observed_class_code(self.target, inner)
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
-        atoms = self.marginal_atoms(
+        # Building the atoms checks the latent's support has a size
+        # the block can enumerate before the scope is inspected.
+        self.marginal_atoms(
             node,
             support_size=marginal_support_size(node),
         )
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=ctx.decl_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         if fibration is not None:
             via, group = fibration
             raise UnsupportedConstruct(

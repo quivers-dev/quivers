@@ -477,14 +477,7 @@ class NumPyroRenderer(RendererBase):
         py.required_imports.add(_MARGINALIZE_IMPORT)
         # A grouped block keys its accumulator by group: the rows the
         # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         if fibration is not None:
             via, group = fibration
             extent = (
@@ -558,12 +551,7 @@ class NumPyroRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family

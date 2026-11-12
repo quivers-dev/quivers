@@ -947,14 +947,7 @@ class WebPPLRenderer(RendererBase):
             self._group_plate_axes = prev_group
         # A grouped block keys its accumulator by group: the rows the
         # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         # An ungrouped block shares one latent across the body's rows,
         # so each class's per-row log-likelihoods are accumulated to a
         # scalar before the weight is added and the reduction runs
@@ -1218,12 +1211,7 @@ class WebPPLRenderer(RendererBase):
         which computes them in log space.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         family = atoms[0].weight_family
         if logit_weighted(atoms[0]):
@@ -1590,7 +1578,15 @@ class WebPPLRenderer(RendererBase):
         if not by_row:
             rhs = render_let_expr_javascript(js, emitted)
             self._emit_var_decl(ctx, self._body_vid, node.name, rhs)
-            self._binding_plates[node.name] = node.plate
+            # A binding whose expression has no axis is one value, shared
+            # by every row of its plate (a scope let at a marginalized
+            # atom, where the latent is a literal), so a read of it at a
+            # row is the value itself, not an index into it.
+            self._binding_plates[node.name] = (
+                Plate(batch_dims=(), event_dims=())
+                if let_expr_rank(emitted, self._name_rank) == 0
+                else node.plate
+            )
             self._binding_supports[node.name] = node.constraint
             return
         body_block = self._fresh(ctx, "lbody")

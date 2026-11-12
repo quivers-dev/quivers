@@ -1026,6 +1026,21 @@ def _substitute_latent_expr(expr: IRExpr, latent: str, value: IRArgNumber) -> IR
             operand=_substitute_latent_expr(expr.operand, latent, value)
         )
     if isinstance(expr, LetExprCall):
+        if (
+            expr.func == "select"
+            and len(expr.args) == 3
+            and isinstance(expr.args[0], LetExprVar)
+            and expr.args[0].name == latent
+        ):
+            # A choice conditioned on a Boolean latent (`real(z)` is
+            # `select(z, 1.0, 0.0)`) is decided at each atom: the atom 1
+            # is `true` and selects the first branch, the atom 0 is
+            # `false` and selects the second. Substituting the number
+            # into the condition would hand a target a numeric
+            # condition, which a vectorized `where` rejects or reads as
+            # truthy.
+            chosen = expr.args[1] if value.value != 0.0 else expr.args[2]
+            return _substitute_latent_expr(chosen, latent, value)
         return LetExprCall(
             func=expr.func,
             args=_substitute_latent_exprs(expr.args, latent, value),

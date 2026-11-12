@@ -1034,14 +1034,7 @@ class PyroRenderer(RendererBase):
         )
         # A grouped block keys its accumulator by group: the rows the
         # fibration sends to one group are summed before the reduction.
-        fibration = marginalize_fibration(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
-        )
+        fibration = marginalize_fibration(node, raw.observe)
         if fibration is not None:
             via, group = fibration
             extent = (
@@ -1109,12 +1102,7 @@ class PyroRenderer(RendererBase):
         and ``logsigmoid(l)``, computed in log space.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._arg_to_vid(pctx, probs)
         family = atoms[0].weight_family

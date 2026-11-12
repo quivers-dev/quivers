@@ -1,0 +1,13 @@
+# A grouped mixture whose prior is allocated per group: each group's
+# class is drawn from that group's row of `pi`, and the `via` map sends
+# two rows to group 0, so those two rows are scored under one class.
+object Grp : FinSet 2
+object K : FinSet 2
+object Row : FinSet 3
+program grouped : Row -> Row
+    sample pi : Grp <- Dirichlet(concentration=1.0) [over=K, iid_over=Grp]
+    sample mu : K <- Normal(loc=0.0, scale=5.0)
+    marginalize c : K <- Categorical(probs=pi) [over=Grp, reduction=logsumexp]
+        observe y : Row <- Normal(loc=mu[c], scale=1.0) [via=idx]
+    return y
+export grouped

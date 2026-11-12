@@ -46,7 +46,6 @@ from quivers.transpile.ir import (
     LetAffineSource,
     LetExprAffineMap,
     IRArg,
-    IRArgRef,
     IRDeterministic,
     IRMarginalize,
     IRNode,
@@ -1673,23 +1672,40 @@ def marginal_support_size(node: IRMarginalize) -> int | None:
 
 def marginal_weight_probs(
     node: IRMarginalize,
-    observe: IRObserve,
     weight_args: tuple[IRArg, ...],
     weight_arg_names: tuple[str, ...],
     *,
-    name_plates: dict[str, Plate],
     target: str,
 ) -> IRArg:
-    """The probability tensor weighting the atoms, aligned to the axis
-    the observed site is fibred over: the logits instead when the call
-    site names them.
+    """The probability tensor weighting the atoms, or the logits when
+    the call site names them.
 
-    A weight tensor allocated per grouping row (LDA's per-document
-    `theta`) has to be gathered through the observe's `via` fibration
-    before it can be added to a per-observation log-density; a weight
-    tensor shared across the whole grouping plate (a single simplex
-    over the latent's classes) broadcasts as it stands and must not be
-    gathered, since its only axis is the class axis.
+    The tensor is the prior as the block declares it: one row per
+    group of the grouping plate when it is allocated per group, or one
+    row of class weights every group shares. A grouped block scores
+    each group under one class, so the weights are added to the
+    group's accumulated log-likelihoods, never gathered row by row.
+
+    Parameters
+    ----------
+    node : IRMarginalize
+        The block.
+    weight_args : tuple[IRArg, ...]
+        The prior's arguments.
+    weight_arg_names : tuple[str, ...]
+        The prior's argument names.
+    target : str
+        The transpile target, for diagnostics.
+
+    Returns
+    -------
+    IRArg
+        The weights.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the latent's family is unknown or has no finite support.
     """
     meta = FAMILY_META.get(node.family)
     if meta is None:
@@ -1703,57 +1719,29 @@ def marginal_weight_probs(
             f"qvr-{target}",
             [f"marginalize:non-finite-support:{node.family}"],
         )
-    probs = _named_arg(
+    return _named_arg(
         weight_args,
         weight_arg_names,
         support.logit_arg
         if support.logit_arg is not None and support.logit_arg in weight_arg_names
         else support.weight_arg,
     )
-    if observe.via is None:
-        return probs
-    if not node.plate.batch_dims:
-        return probs
-    if observe.plate.batch_dims == node.plate.batch_dims:
-        return probs
-    if not isinstance(probs, IRArgRef):
-        raise UnsupportedConstruct(
-            f"qvr-{target}",
-            [
-                f"marginalize:via-weight:{node.latent}: the atom "
-                f"weights are a computed expression, so the "
-                f"{observe.via!r} fibration has no index position to "
-                f"gather them through"
-            ],
-        )
-    weight_plate = name_plates.get(probs.name)
-    if weight_plate is None or weight_plate.batch_dims != node.plate.batch_dims:
-        return probs
-    return IRArgRef(
-        name=probs.name,
-        indices=(IRArgRef(name=observe.via), *probs.indices),
-    )
 
 
 def marginalize_fibration(
-    node: IRMarginalize,
-    observe: IRObserve,
-    weight_args: tuple[IRArg, ...],
-    weight_arg_names: tuple[str, ...],
-    *,
-    name_plates: dict[str, Plate],
-    target: str,
+    node: IRMarginalize, observe: IRObserve
 ) -> tuple[str, Dim] | None:
     """The fibration a grouped block gathers its rows through, if any.
 
     `docs/semantics/programs.md` §2.7 keys a grouped block's accumulator
-    by group: the rows an observe fibres into one group are summed
-    before the reduction over the latent. A renderer that reduces each
-    row on its own scores that measure only when the rows and the
-    groups coincide, or when the prior is allocated per group, which
-    denotes one latent per row. Otherwise the per-row per-class
-    log-likelihoods have to be scattered into a ``(|G|, K)`` accumulator
-    through the observe's ``via`` fibration first.
+    by group: the block's latent is one class per group, and the rows
+    an observe's ``via`` fibration sends to one group are scored under
+    that group's class, so their per-class log-likelihoods are summed
+    into a ``(|G|, K)`` accumulator before the reduction over the
+    latent. This holds whatever the prior: a prior allocated per group
+    weighs each group's class by that group's row. Without a ``via``
+    the observe's rows are the groups themselves and each reduces on
+    its own.
 
     Parameters
     ----------
@@ -1761,14 +1749,6 @@ def marginalize_fibration(
         The block.
     observe : IRObserve
         The scope's observe.
-    weight_args : tuple[IRArg, ...]
-        The prior's arguments.
-    weight_arg_names : tuple[str, ...]
-        The prior's argument names.
-    name_plates : dict[str, Plate]
-        The plate of every named tensor.
-    target : str
-        The transpile target, for diagnostics.
 
     Returns
     -------
@@ -1778,20 +1758,6 @@ def marginalize_fibration(
         its own.
     """
     if observe.via is None or not node.plate.batch_dims:
-        return None
-    if observe.plate.batch_dims == node.plate.batch_dims:
-        return None
-    probs = marginal_weight_probs(
-        node,
-        observe,
-        weight_args,
-        weight_arg_names,
-        name_plates=name_plates,
-        target=target,
-    )
-    if isinstance(probs, IRArgRef) and probs.indices:
-        # A per-group prior gathered through the fibration: one latent
-        # per row, each reducing on its own.
         return None
     return observe.via, node.plate.batch_dims[0]
 

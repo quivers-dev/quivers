@@ -86,6 +86,8 @@ PROBE_MODULES = frozenset(
         "test_gallery_numeric_equivalence",
         "test_log_space_family_numeric",
         "test_marginal_logit_weights_numeric",
+        "test_marginalize_shared_prior_numeric",
+        "test_grouped_per_group_prior_numeric",
         "test_marginalize_numeric",
         "test_matrix_family_numeric",
         "test_numeric_equivalence",
