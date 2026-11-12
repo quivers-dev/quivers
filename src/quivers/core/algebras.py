@@ -1101,21 +1101,41 @@ class BooleanAlgebra(IdempotentSemiring):
 
 
 # ============================================================================
-# Łukasiewicz / Gödel t-norm pair on [0, 1]
+# Standard MV-algebra and Gödel algebra on [0, 1]
 # ============================================================================
 
 
-class LukasiewiczAlgebra(Algebra):
-    """[0,1] with Łukasiewicz t-norm and bounded sum.
+class StandardMVAlgebra(Algebra):
+    """The standard MV-algebra on [0, 1].
 
-    The Łukasiewicz t-norm is the strongest continuous t-norm:
+    The standard MV-algebra is ``[0, 1]`` with ``x ⊕ y = min(1, x + y)``
+    and ``¬x = 1 - x``, the real-valued semantics of Łukasiewicz logic
+    [Chang (1958); Cignoli, D'Ottaviano and Mundici (2000)]. Its derived
+    product is the Łukasiewicz t-norm and its lattice meet is ``min``:
 
-        ⊗ = Łukasiewicz:   a ⊗ b = max(a + b - 1, 0)
-        ⋁ = bounded sum:   ⋁_i x_i = min(1, ∑_i x_i)
-        ⋀ = min:           ⋀_i x_i = min_i x_i
-        ¬ = strong neg:    ¬a = 1 - a
+        ⊗ = Łukasiewicz t-norm:  a ⊗ b = max(a + b - 1, 0)
+        ⋁ = bounded sum:         ⋁_i x_i = min(1, ∑_i x_i)
+        ⋀ = min:                 ⋀_i x_i = min_i x_i
+        ¬ = strong negation:     ¬a = 1 - a
         I = 1.0
         ⊥ = 0.0
+
+    The Łukasiewicz t-norm does not distribute over the bounded sum
+    (``0.5 ⊗ (0.5 ⊕ 0.5) = 0.5`` while ``(0.5 ⊗ 0.5) ⊕ (0.5 ⊗ 0.5) = 0``),
+    so this algebra is not a semiring and composition depends on its
+    bracketing. The name follows the standard terminology: a
+    "Łukasiewicz algebra" in the literature is Moisil's distinct
+    Łukasiewicz-Moisil algebra.
+
+    References
+    ----------
+    Chang, C. C. (1958). Algebraic analysis of many valued logics.
+    *Transactions of the American Mathematical Society*, 88(2), 467-490.
+    [doi:10.1090/S0002-9947-1958-0094302-9](https://doi.org/10.1090/S0002-9947-1958-0094302-9)
+
+    Cignoli, R. L. O., D'Ottaviano, I. M. L., and Mundici, D. (2000).
+    *Algebraic Foundations of Many-Valued Reasoning*. Springer.
+    [doi:10.1007/978-94-015-9480-6](https://doi.org/10.1007/978-94-015-9480-6)
     """
 
     @property
@@ -1476,11 +1496,24 @@ class RealAlgebra(Semiring):
         return result
 
 
-class ProbabilityAlgebra(Algebra):
-    """Sum-product semiring on [0, 1] with explicit clamp.
+class BoundedSumProductAlgebra(Algebra):
+    """[0, 1] with the product t-norm and the bounded sum.
 
-    Same operations as `RealAlgebra` but restricted to the
-    unit interval.
+    The tensor is the product t-norm ``a · b`` and the join is the
+    bounded sum ``min(1, ∑_i x_i)``, the Łukasiewicz t-conorm
+    [Klement, Mesiar and Pap (2000)]. Truncating the sum at 1 breaks
+    distributivity (``0.5 · min(1, 1 + 1) = 0.5`` while
+    ``min(1, 0.5 + 0.5)`` over the products is ``1``), so this algebra is
+    not a semiring and composition depends on its bracketing. The
+    probability semiring ``([0, ∞), +, ·)`` is `MarkovAlgebra`; this class
+    is not a probability algebra in the measure-theoretic sense (a
+    Boolean algebra carrying a measure) either.
+
+    References
+    ----------
+    Klement, E. P., Mesiar, R., and Pap, E. (2000). *Triangular Norms*.
+    Springer.
+    [doi:10.1007/978-94-015-9540-7](https://doi.org/10.1007/978-94-015-9540-7)
     """
 
     @property
@@ -1599,8 +1632,8 @@ PRODUCT_FUZZY = ProductFuzzyAlgebra()
 """The `ProductFuzzyAlgebra` singleton, the default algebra of every morphism."""
 BOOLEAN = BooleanAlgebra()
 """The `BooleanAlgebra` singleton, enriching crisp binary relations."""
-LUKASIEWICZ = LukasiewiczAlgebra()
-"""The `LukasiewiczAlgebra` singleton."""
+LUKASIEWICZ = StandardMVAlgebra()
+"""The `StandardMVAlgebra` singleton."""
 GODEL = GodelAlgebra()
 """The `GodelAlgebra` singleton."""
 TROPICAL = TropicalAlgebra()
@@ -1611,8 +1644,8 @@ LOG_PROB = LogProbAlgebra()
 """The `LogProbAlgebra` singleton, the log-space sum-product semiring."""
 REAL = RealAlgebra()
 """The `RealAlgebra` singleton."""
-PROBABILITY = ProbabilityAlgebra()
-"""The `ProbabilityAlgebra` singleton."""
+PROBABILITY = BoundedSumProductAlgebra()
+"""The `BoundedSumProductAlgebra` singleton."""
 COUNTING = CountingAlgebra()
 """The `CountingAlgebra` singleton."""
 
@@ -1711,13 +1744,13 @@ __all__ = [
     "material_implication",
     "ProductFuzzyAlgebra",
     "BooleanAlgebra",
-    "LukasiewiczAlgebra",
+    "StandardMVAlgebra",
     "GodelAlgebra",
     "TropicalAlgebra",
     "MaxPlusAlgebra",
     "LogProbAlgebra",
     "RealAlgebra",
-    "ProbabilityAlgebra",
+    "BoundedSumProductAlgebra",
     "CountingAlgebra",
     "MarkovAlgebra",
     "PRODUCT_FUZZY",

@@ -137,13 +137,13 @@ from quivers.enriched.weighted_limits import (
     terminal_weight,
 )
 from quivers.core.algebras import (
-    LukasiewiczAlgebra,
+    StandardMVAlgebra,
     GodelAlgebra,
     TropicalAlgebra,
     MaxPlusAlgebra,
     LogProbAlgebra,
     RealAlgebra,
-    ProbabilityAlgebra,
+    BoundedSumProductAlgebra,
     CountingAlgebra,
     LUKASIEWICZ,
     GODEL,
@@ -344,7 +344,7 @@ __all__ = [
     "PRODUCT_FUZZY",
     "BOOLEAN",
     # extra algebras
-    "LukasiewiczAlgebra",
+    "StandardMVAlgebra",
     "GodelAlgebra",
     "TropicalAlgebra",
     "LUKASIEWICZ",
@@ -353,7 +353,7 @@ __all__ = [
     "MaxPlusAlgebra",
     "LogProbAlgebra",
     "RealAlgebra",
-    "ProbabilityAlgebra",
+    "BoundedSumProductAlgebra",
     "CountingAlgebra",
     "MAX_PLUS",
     "LOG_PROB",

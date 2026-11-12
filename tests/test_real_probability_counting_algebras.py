@@ -6,7 +6,7 @@ underlying lattice and clamping behavior:
 
 * :class:`RealAlgebra`: entries in :math:`\\mathbb{R}` with no
   clamping. The canonical numeric semiring.
-* :class:`ProbabilityAlgebra`: entries in ``[0, 1]`` with clamp
+* :class:`BoundedSumProductAlgebra`: entries in ``[0, 1]`` with clamp
   on every op so the unit-interval invariant is preserved.
 * :class:`CountingAlgebra`: entries in the non-negative
   integers (held as float for autograd compatibility) with
@@ -134,7 +134,7 @@ class TestRealAlgebra:
 
 
 # ---------------------------------------------------------------------------
-# Algebraic contract for ProbabilityAlgebra
+# Algebraic contract for BoundedSumProductAlgebra
 # ---------------------------------------------------------------------------
 
 

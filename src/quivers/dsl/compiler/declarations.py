@@ -26,8 +26,8 @@ from quivers.core.algebras import (
     CustomMagmoid,
     CustomSemigroupoid,
     GodelAlgebra,
-    LukasiewiczAlgebra,
-    ProbabilityAlgebra,
+    StandardMVAlgebra,
+    BoundedSumProductAlgebra,
     ProductFuzzyAlgebra,
     Semigroupoid,
 )
@@ -372,8 +372,8 @@ def _apply_auto_init(morph, domain, codomain, algebra) -> None:
             ProductFuzzyAlgebra,
             BooleanAlgebra,
             GodelAlgebra,
-            LukasiewiczAlgebra,
-            ProbabilityAlgebra,
+            StandardMVAlgebra,
+            BoundedSumProductAlgebra,
         ),
     )
 
