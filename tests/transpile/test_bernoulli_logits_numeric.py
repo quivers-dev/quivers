@@ -139,7 +139,12 @@ _INTEGERS: dict[str, frozenset[str]] = {
 #: BUGS's `dbern` takes a probability, and BUGS has no data block for
 #: the zeros-trick carrier the mass written from the logits needs.
 _REFUSED: dict[tuple[str, str], str] = {
-    (fixture, "bugs"): "family:Bernoulli:logits" for fixture in (_SHARED, _ROWS, _DRAWN)
+    **{
+        (fixture, "bugs"): "family:Bernoulli:logits"
+        for fixture in (_SHARED, _ROWS, _DRAWN)
+    },
+    # Stan's samplers carry no discrete parameter.
+    (_DRAWN, "stan"): "sample:discrete-latent:z",
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
