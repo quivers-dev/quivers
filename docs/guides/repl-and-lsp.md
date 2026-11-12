@@ -1,32 +1,22 @@
 # Interactive tools: REPL, kernel, and language server
 
-The **read-eval-print loop (REPL)** lets you inspect and execute QVR
-without starting a new process for each command. The **terminal user
-interface (TUI)** adds panes around that session. The **Language Server
-Protocol (LSP)** connects the same language checks to an editor, and
-the Jupyter kernel provides a notebook interface. Choose the interface
-that suits how you work; the model syntax remains the same.
-
-
-quivers ships an interactive type-explorer and a matching language
-server. Both share the same bundled QVR tree-sitter parser, installed into
-[Panproto](https://github.com/panproto/panproto)'s registry, the same elaborator
-([`quivers.dsl.Compiler`](../api/dsl/compiler.md)), and the same highlight
-table, so the color you see in the TUI matches the color your
-editor shows over LSP, which matches what gets emitted as Jupyter
-output. The REPL, plain prompt, kernel, and language server use these
-shared components.
-
-This page is the full interactive-command reference. For a one-paragraph
-overview see [Quickstart](../getting-started/quickstart.md); for the shorter
-entry, provider, LSP, and grammar-ownership contract, see [QVR execution and
-tooling](../reference/qvr/execution-and-tooling.md).
+quivers has four interactive frontends for QVR. The read-eval-print loop (REPL),
+`qvr repl`, inspects and runs QVR in one long-lived session, and its terminal user
+interface (TUI) adds panes around that session. A Jupyter kernel gives the same session
+in notebooks, and a server for the
+[Language Server Protocol](https://microsoft.github.io/language-server-protocol/) (LSP)
+gives the same checks in an editor. All four use one bundled
+[tree-sitter](https://tree-sitter.github.io/) parser for QVR, the same compiler
+([`quivers.dsl.Compiler`](../api/dsl/compiler.md)), and one highlighting table, so a
+name has the same color in the TUI, the editor, and notebook output.
+[QVR execution and tooling](../reference/qvr/execution-and-tooling.md) gives the
+shorter reference for entry points, providers, and the LSP.
 
 ## Installation
 
-quivers requires **Python 3.14 or newer**. The Textual TUI and the
-language server are optional extras; the base install gives you the
-library plus the `qvr check` subcommand.
+quivers requires Python 3.14 or newer. The TUI and the language server are optional
+dependency groups, and the base install has the library and the `qvr check`
+subcommand.
 
 ### With `pip`
 
@@ -40,9 +30,8 @@ pip install 'quivers[repl,lsp]'
 uv tool install --python 3.14 'quivers[repl,lsp]'
 ```
 
-`uv tool install` puts the `qvr`, `qvr-lsp`, and `qvr-kernel`
-console scripts on your PATH in a managed virtual environment so
-the install does not collide with any project venv.
+`uv tool install` puts the `qvr`, `qvr-lsp`, and `qvr-kernel` commands on the `PATH` in
+a virtual environment of their own, apart from any project's environment.
 
 ### From a local checkout (editable)
 
@@ -51,9 +40,8 @@ uv tool install --reinstall --python 3.14 --editable \
     /path/to/quivers --with 'quivers[repl,lsp]'
 ```
 
-The `--editable` flag points the install at the working tree so
-local changes take effect immediately. The trailing `--with`
-re-adds the optional extras (uv strips them otherwise).
+`--editable` installs from the working tree, so local changes take effect at once, and
+the trailing `--with` adds the optional groups again, which uv otherwise drops.
 
 ### What the extras bring in
 
@@ -62,18 +50,15 @@ re-adds the optional extras (uv strips them otherwise).
 | `[repl]` | [Textual](https://textual.textualize.io/), [prompt_toolkit](https://python-prompt-toolkit.readthedocs.io/), [rich](https://rich.readthedocs.io/), [ipykernel](https://ipykernel.readthedocs.io/), [jupyter_client](https://jupyter-client.readthedocs.io/) |
 | `[lsp]` | [pygls](https://github.com/openlawlibrary/pygls), `lsprotocol` |
 
-Optional renderers that ``:plate --open`` will pick up if they are
-on PATH but are not installed automatically:
+Renderers that `:plate --open` uses when they are installed, which no group installs:
 
 | Optional dependency | What it does for the REPL |
 | --- | --- |
-| [`daft`](https://docs.daft-pgm.org/) (via `pip install daft`) | Renders ``:plate PROGRAM --open`` to a publication-quality PNG via matplotlib |
-| [Graphviz](https://graphviz.org/) (the ``dot`` binary) | Renders ``:plate`` / ``:graph`` ``--open`` to PNG via ``dot -Tpng`` |
-| LaTeX with ``tikz-network`` / ``bayesnet`` | Compiles the ``--tikz`` output |
+| [`daft`](https://docs.daft-pgm.org/) (via `pip install daft`) | Renders `:plate PROGRAM --open` to a PNG through matplotlib |
+| [Graphviz](https://graphviz.org/) (the `dot` binary) | Renders `:plate` and `:graph` with `--open` to a PNG through `dot -Tpng` |
+| LaTeX with `tikz-network` and `bayesnet` | Compiles the `--tikz` output |
 
-If neither `daft` nor `dot` is available, `:plate --open` falls
-back to printing Mermaid source with a note suggesting
-mermaid.live.
+Without `daft` or `dot`, `:plate --open` prints Mermaid source instead.
 
 ### Verifying the install
 
@@ -92,22 +77,19 @@ qvr repl --help                              # confirm the TUI is reachable
 | `qvr repl --plain` | Force the single-line prompt_toolkit frontend |
 | `qvr repl FILE.qvr` | Load FILE on startup, then drop to the prompt |
 | `qvr run FILE.qvr [NAME [JSON ...]]` | Execute one entry point, a `define` computation or a `program`; list them with no name |
-| `qvr lsp` / `qvr-lsp` | Run the Language Server over stdio (use this in editor config); add `--target TARGET` for live backend-capability diagnostics |
+| `qvr lsp` / `qvr-lsp` | Run the language server over stdio, for an editor's configuration; add `--target TARGET` to report what that transpile target cannot express |
 | `qvr kernel install --user` / `qvr-kernel install --user` | Register a Jupyter kernelspec named `quivers` |
-| `qvr check FILE...` | Batch parse + compile; add `--target TARGET` to report the features that target lacks; non-zero exit code on any error |
+| `qvr check FILE...` | Parse and compile files; add `--target TARGET` to report the features that target lacks; exits with a nonzero code on any error |
 
 ## The REPL
 
-For a first session, load a small model, use `:run` to list executable
-entries, and use `:info NAME` to read an entry's declaration. `:graph NAME`
-shows its step dependencies and `:plate NAME` shows repeated random
-variables. Then invoke it with explicit data as described under `:run`.
-These commands load the model, show its [entry points](../reference/qvr/execution-and-tooling.md#list-entry-points), and run one entry.
-
-Executing a program draws its random values or replays supplied ones
-and scores them. To fit a posterior, pass the program and observations
-to an [inference driver](inference-foundations.md). `:trace EXPR` displays
-type elaboration; use execution tracing to inspect sampled and observed sites.
+A first session loads a small model, lists its
+[entry points](../reference/qvr/execution-and-tooling.md#list-entry-points) with
+`:run`, reads one with `:info NAME`, shows its step dependencies with `:graph NAME` and
+its plates with `:plate NAME`, and runs it with explicit data as described under
+`:run`. Running a program draws its random values, or uses given ones, and scores them,
+while fitting a posterior is the job of an [inference driver](inference-foundations.md).
+`:trace EXPR` shows how a morphism expression's types are inferred.
 
 
 ### Starting it
@@ -119,8 +101,8 @@ qvr repl --plain                                      # single-line prompt_toolk
 qvr repl --plain < commands.txt                       # non-TTY scripted mode
 ```
 
-When stdin is a TTY and Textual is importable, the four-pane TUI
-launches. `--plain` forces the prompt_toolkit single-line frontend.
+When standard input is a terminal and Textual is installed, the TUI starts, and
+`--plain` selects the single-line prompt_toolkit frontend.
 
 ### Layout (TUI)
 
@@ -145,21 +127,19 @@ launches. `--plain` forces the prompt_toolkit single-line frontend.
 |  Footer: visible key bindings                           |
 ```
 
-The watches and diagnostics strips collapse when there is nothing to
-show, so unused panels never cost screen real estate.
+The watches and diagnostics strips are hidden when empty.
 
 ### Status bar
 
 The top bar shows, separated by `·`:
 
 - the loaded file path (or `<no file>`),
-- the active algebra (`ProductFuzzyAlgebra`, `LogProbAlgebra`, …),
+- the module's `Algebra` (`ProductFuzzyAlgebra`, `LogProbAlgebra`, …),
 - counts such as `N obj · M space · K morph · J rule · L qiec`, and
-- the active runtime as `runtime:LABEL`, and the transpile target whose
-  capability diagnostics `:load` reports as `target:NAME` when `:set target=`
-  names one. After a successful `:run`, the same fragment names the entry
+- the active runtime as `runtime:LABEL`, and, when `:set target=` names one, the
+  transpile target whose limits `:load` reports, as `target:NAME`. After a successful `:run`, the same fragment names the entry
   point and its kind, `entry:NAME(program)` or `entry:NAME(computation)`,
-  its value as `last:NAME=VALUE:TYPE`, and a program's `log_joint=`; after a
+  its value as `last:NAME=VALUE:TYPE`, and a program's `log_joint=`, and after a
   failed one it shows `failed:NAME[CODE]`, so a run out of fuel reads
   `failed:spin[qiec-run-fuel]`. A detached runtime is shown in yellow.
 
@@ -169,15 +149,15 @@ It refreshes after every evaluation, reload, runtime change, or watch update.
 
 The right-hand `Tree` widget groups bindings by namespace:
 
-- `objects`, every `object` and `alias` declaration
-- `spaces`, every `space` and `type` declaration
-- `morphisms`, `latent`, `observed`, `kernel`, `embed`, `program`, `let`
-- `rules`, `rule` declarations
+- `objects`, every `object` declaration of a finite type;
+- `spaces`, every `object` declaration of a continuous type;
+- `morphisms` and `programs`, every `morphism`, `program`, and `define`;
+- `rules`, the `rule` declarations;
 - `indices`, `families`, `constructors`, `effects`, `operations`, `instances`,
-  `handlers`, and `computations`, including compact QIEC signatures
+  `handlers`, and `computations`, the declarations of the Quivers Indexed Effect Core
+  (QIEC), the typed core language of QVR, with compact signatures.
 
-The root node auto-expands on every refresh; each namespace expands
-its leaves. Click a leaf (or arrow-key to it and press Enter) to fire
+The root and each namespace expand on every refresh. Click a leaf (or arrow-key to it and press Enter) to fire
 `:info NAME` in the output log.
 
 Above the tree is a one-line **filter input**. Type any substring
@@ -192,20 +172,18 @@ are passed through the shared
 [`tokenize`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py)
 pipeline and rendered with the
 [`STYLE_TABLE`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py)
-colors. Identifiers known to the env are upgraded to their semantic
-color even when the surrounding line wasn't a parseable QVR
-declaration; the same identifier always reads the same way.
+colors. A name the session knows gets its semantic color even when the surrounding
+line is not a QVR declaration, so one name always reads the same way.
 
 Identifiers rendered as type / function / namespace are also
 **clickable links**. Clicking any name fires `:info NAME`. The
 `-- declared at PATH:LINE:COL` footer underneath each `:info` body
-is also clickable; it opens that file at that line in `$EDITOR`
+is also clickable and opens that file at that line in `$EDITOR`
 (falling back to `$VISUAL`, then `vi`).
 
 ### Input editor
 
-The input pane is a multi-line `TextArea` with three quality-of-life
-behaviors layered on:
+The input pane is a multi-line `TextArea` with three additions:
 
 1. **Bracket pairing.** Typing `(`, `[`, or `{` inserts the matching
    closer and parks the cursor between them.
@@ -214,14 +192,13 @@ behaviors layered on:
    `program` / `deduction` blocks stay aligned without effort.
 3. **Tab completion** (described below).
 
-Press the eval key (next section) to evaluate the buffer; the input
-is cleared on success.
+The evaluation key ([Key bindings](#key-bindings)) evaluates the buffer and clears it
+on success.
 
 ### Meta-commands
 
-GHCi-style, with a leading `:`. The dispatcher is exact-match: use one of
-the full names below or the explicit short alias in the second
-column.
+Meta-commands start with `:`, as in GHCi, the Haskell REPL. A command must be written
+in full or with the short form in the second column.
 
 | Command | Short | What it does |
 | --- | --- | --- |
@@ -251,15 +228,14 @@ column.
 | `:help [CMD]` | `:h` | Without arg: full command list. With one: detailed help for CMD |
 | `:quit` | `:q` / `:exit` | Exit the REPL |
 
-A bare line (no leading `:`) is evaluated as **either** appended
-statements (parsed, compiled into the live module, env updated)
-**or**, if parsing as statements fails, treated as an expression and
-piped through `:type`.
+A line without a leading `:` is parsed as statements, compiled into the live module,
+and added to the session. If it does not parse as statements, it is read as an
+expression and passed to `:type`.
 
 ### Command reference
 
-Every meta-command in full, with concrete usage examples on the
-[LDA gallery example](../examples/lda.md). Load it first:
+The examples below use the [LDA gallery model](../examples/lda.md), a latent Dirichlet
+allocation topic model [@blei2003lda]:
 
 ```
 qvr repl docs/examples/source/lda.qvr
@@ -268,25 +244,21 @@ qvr repl docs/examples/source/lda.qvr
 #### `:load FILE` / `:l FILE`
 
 Parse and elaborate `FILE`, rebinding the session environment to
-the result. Replaces any previously loaded module. Diagnostics
+the result. It replaces the loaded module. Diagnostics
 (parse errors, constraint violations, compile errors) populate
 the bottom strip and move the cursor selection to the first error
 location.
 
 ```
-> :load docs/examples/source/hmm.qvr
-loaded hmm.qvr (3 obj  1 prog)
-> :l docs/examples/source/lda.qvr
-loaded lda.qvr (3 obj  1 prog)
+> :load docs/examples/source/lda.qvr
+loaded docs/examples/source/lda.qvr: 6 binding(s)
 ```
 
 #### `:reload` / `:r`
 
-Re-execute `:load` against the file that was loaded most recently,
-then print the diff (added / removed / changed bindings). Triggers
-automatically every second when the source file's mtime advances,
-so saving in `$EDITOR` updates the live env without leaving the
-REPL.
+Load the most recently loaded file again and print the added, removed, and changed
+bindings. It also runs by itself when the file's modification time changes (checked
+every second), so saving in an editor updates the session.
 
 ```
 > :reload
@@ -297,14 +269,14 @@ reloaded lda.qvr
 
 #### `:type EXPR` / `:t EXPR`
 
-Print a value-level expression's resolved type as a GHCi-style
-`name :: type` line. The command accepts a bare identifier, a `::`
-scope path, or a general expression that the parser can elaborate.
-Use `:kind` for objects, spaces, and other type-level names.
+Print an expression's type as a `name :: type` line. The argument is a name, a `::`
+scope path, or an expression. Types of parameters come before `=>`, so `lda` below
+takes two `Real` parameters and is a program from `Token` to `Mix`. `:kind` handles
+objects, spaces, and other type-level names.
 
 ```
 > :type lda
-lda :: (Real, Real) => Word -> Word
+lda :: (Real, Real) => Token -> Mix
 
 > :type lda::theta
 theta :: Doc -> Topic
@@ -313,7 +285,7 @@ theta :: Doc -> Topic
 #### `:kind T` / `:k T`
 
 Resolve a type-level name or expression. Named objects and spaces
-print as declarations; standalone type expressions print as
+print as declarations, and standalone type expressions print as
 `expression :: resolved-type`.
 
 ```
@@ -335,7 +307,7 @@ signatures for effect instances,
 
 #### `:transpile TARGET`
 
-Emit the currently loaded module for one registered backend without
+Emit the loaded module for one registered backend without
 changing session state. Targets are `stan`, `numpyro`, `pyro`, `pymc`,
 `edward2`, `turing`, `gen`, `church`, `webppl`, `bugs`, and `jags`.
 
@@ -346,18 +318,8 @@ data {
 }
 ```
 
-All eleven targets accept QIEC declaration-only modules. Pyro, NumPyro, PyMC,
-Edward2, Turing, Gen, WebPPL, and Church also accept executable QIEC-only
-modules and emit named `qiec_*` functions through their corresponding
-target-language ABI implementations. They accept mixed modules when the
-probabilistic portion is already supported by that target. Stan, BUGS, and JAGS
-accept executable QIEC-only or mixed modules only when the same probabilistic
-condition holds and every computation is in their static subset: its [effect row](../reference/qvr/effects-and-handlers.md#effect-rows)
-is closed and empty, its static telescope is empty, its result is scalar, and
-its body contains only scalar `Return` and `Bind` forms. Stan additionally
-permits named `Bool`, `Int`, and `Real` value parameters; BUGS and JAGS require
-parameterless computations. Each unsupported feature produces a source-located
-`qiec:capability:*` diagnostic.
+[Transpiler support](../transpile-support.md) lists which features each target
+accepts. An unsupported feature is reported at its source location.
 
 #### `:runtime [PROVIDER|FILE.json]`
 
@@ -383,7 +345,7 @@ configuration accepted by `qvr run --runtime`:
 
 Provider names are resolved only when explicitly selected. The source handler
 declaration continues to determine its types, coverage, forwarding policy, and
-[resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) grades; the runtime configuration supplies process-local behavior.
+[resumption](../reference/qvr/effects-and-handlers.md#resumption-grades) grades, and the runtime configuration gives the behavior held in the running Python process.
 
 #### `:run [NAME [JSON ...] [--data NAME=JSON] [--site NAME=JSON] [--static NAME=TERM] [--fuel STEPS] [--seed N]]`
 
@@ -391,13 +353,13 @@ Execute an entry point of the checked module: a `define` computation or a
 `program`. `:run` alone lists the entry points with their signatures.
 Positional values must be JSON literals and appear in declaration order. A
 polymorphic computation requires one `--static NAME=TERM` assignment for every
-static binder; static terms are written as in source: closed types such as
+static binder, written as in source: closed types such as
 `Int` or `Vec[Int](S(Z))`, index terms such as `3`, `S(Z)`, or the shape
 `[2, 3]`, and effect applications such as `State[Int]`, all declared in the
 module.
 
-A program runs forward on the reference machine: `--data NAME=JSON` supplies a
-parameter by name as an alternative to the positional form, `--site NAME=JSON`
+A program runs forward on the reference machine, the library's interpreter for QIEC:
+`--data NAME=JSON` gives a parameter by name as an alternative to the positional form, `--site NAME=JSON`
 conditions one of its sample sites and leaves every other site drawn, and
 `--seed N` seeds the reference generator the draws use. The response carries
 the program's value and the log joint of the drawn and given sites together
@@ -441,17 +403,20 @@ prints the didactic AST `repr()` instead.
 
 ```
 > :info lda
-program lda(alpha : Real, beta : Real) : Word -> Word
-    sample theta : Doc <- Dirichlet(alpha) [over=Topic, iid_over=Doc]
-    sample phi : Topic <- Dirichlet(beta) [over=Word, iid_over=Topic]
+program lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+    sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+
     marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-        observe w : Word <- Categorical(probs=phi[z]) [via=word_idx]
+        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+
     return theta
--- declared at docs/examples/source/lda.qvr:32:0
+
+-- declared at docs/examples/source/lda.qvr:24:0
 
 > :info lda::theta
-sample theta : Doc <- Dirichlet(alpha) [over=Topic, iid_over=Doc]
--- sample-site inside lda at docs/examples/source/lda.qvr:33:4
+sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
+-- sample-site inside lda at docs/examples/source/lda.qvr:25:4
 ```
 
 #### `:doc NAME`
@@ -462,7 +427,7 @@ with scoped paths as well.
 
 ```
 > :doc lda
-(no doc comment)
+lda: (no doc comment)
 ```
 
 #### `:browse [PATH]` / `:b [PATH]`
@@ -478,23 +443,31 @@ inner scope.
 > :browse
 objects:
   Doc : FinSet 20
+  Token : FinSet 200
   Topic : FinSet 3
-  Word : FinSet 200
+  Vocab : FinSet 50
+spaces:
+  Mix : Real 3
 programs:
-  lda(alpha : Real, beta : Real) : Word -> Word
+  lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha)
+    sample phi : Topic <- Dirichlet(concentration=beta)
+    marginalize z : Topic <- Categorical(probs=theta)
+      observe w : Token <- Categorical(probs=phi)
+    return theta
 
 > :browse lda
-program lda(alpha : Real, beta : Real) : Word -> Word
+program lda(alpha : Real, beta : Real) : Token -> Mix
   param alpha : Real
   param beta : Real
-  sample theta : Doc <- Dirichlet(alpha) [over=Topic, iid_over=Doc]
-  sample phi : Topic <- Dirichlet(beta) [over=Word, iid_over=Topic]
-  marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+  sample theta : Doc <- Dirichlet(concentration=alpha)
+  sample phi : Topic <- Dirichlet(concentration=beta)
+  marginalize z : Topic <- Categorical(probs=theta)
   return theta
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-  observe w : Word <- Categorical(probs=phi[z]) [via=word_idx]
+marginalize z : Topic <- Categorical(probs=theta)
+  observe w : Token <- Categorical(probs=phi)
 ```
 
 #### `:plate PROGRAM [--mermaid|--dot|--tikz|--daft|--open]` / `:p PROGRAM`
@@ -506,19 +479,19 @@ rendered image.
 
 ```
 > :plate lda
-plate graph of lda  (Word -> Word)
+plate graph of lda  (Token -> Mix)
 
-#  kind            variable  family       plates      parents
--  --------------  --------  -----------  ----------  -------
-1  ○ latent        theta     Dirichlet    Doc         alpha
-2  ○ latent        phi       Dirichlet    Topic       beta
-3  ⊘ marginalized  z         Categorical  Topic       theta
-4  ● observed      w         Categorical  Doc x Word  phi, z
+#  kind            variable  family       plates       parents
+-  --------------  --------  -----------  -----------  -------
+1  ○ latent        theta     Dirichlet    Doc          alpha
+2  ○ latent        phi       Dirichlet    Topic        beta
+3  ⊘ marginalized  z         Categorical  Topic        theta
+4  ● observed      w         Categorical  Doc x Token  phi, z
 
 plates:
   Doc [20]
   Topic [3]
-  Word [200] parent=Doc
+  Token [200] parent=Doc
 ```
 
 | Flag | Output |
@@ -549,14 +522,14 @@ the rows are *steps* (program-source order) rather than
 
 ```
 > :graph lda
-program lda: Word -> Word
+program lda: Token -> Mix
 
-#  kind          step                                           parents
--  ------------  ---------------------------------------------  -------
-1  latent        sample theta : Doc <- Dirichlet(alpha)         alpha
-2  latent        sample phi : Topic <- Dirichlet(beta)          beta
-3  marginalized  marginalize z : Topic <- Categorical(probs=theta)    theta
-4  observed      observe w : Doc x Word <- Categorical(probs=phi[z])  phi, z
+#  kind          step                                                  parents
+-  ------------  ----------------------------------------------------  -------
+1  latent        sample theta : Doc <- Dirichlet(concentration=alpha)  alpha
+2  latent        sample phi : Topic <- Dirichlet(concentration=beta)   beta
+3  marginalized  marginalize z : Topic <- Categorical(probs=theta)     theta
+4  observed      observe w : Token <- Categorical(probs=phi)           phi, z
 ```
 
 Same `--mermaid` / `--dot` / `--open` flags as `:plate`.
@@ -589,6 +562,7 @@ from marginalize blocks, `Pure` otherwise).
 program lda:
   declared : {(none)}
   inferred : {Marginal, Sample, Score}
+  checked  : !{random : Random, score : Score}
   (no [effects=[...]] declared)
 ```
 
@@ -598,8 +572,8 @@ a sample site, the output flags a `! leak` line. If it declares
 output flags an `! unused` line.
 
 For a checked declaration, the same command reports the corresponding stable
-contract: an effect's operations (a prelude interface is marked as such); a
-handler's coverage, forwarding policy, and clause grades; or a computation's
+contract: an effect's operations (a prelude interface is marked as such), a
+handler's coverage, forwarding policy, and clause grades, or a computation's
 declared row entries, tail, and `lacks` constraints together with the row the
 checker infers for its body once every call in it is expanded to its callee's
 signature, rendered with the instances' source names. A program's report adds
@@ -651,13 +625,13 @@ chain shape (log_prob):
 
 #### `:dump NAME [--json]`
 
-Print NAME's AST node. Default is Python `repr()`; `--json` emits
+Print NAME's AST node. The default is Python `repr()`, and `--json` emits
 the didactic `model_dump_json(indent=2)` so the structure is
 machine-readable.
 
 ```
-> :dump lda::theta
-SampleStep(vars=('theta',), morphism='Dirichlet', args=('alpha',), …)
+> :dump lda
+ProgramDecl(name='lda', params=None, type_params=(ScalarParam(name='alpha', …), …), …)
 ```
 
 #### `:edit NAME`
@@ -665,7 +639,7 @@ SampleStep(vars=('theta',), morphism='Dirichlet', args=('alpha',), …)
 Open `$EDITOR` on NAME's source slice, then splice the edited
 text back into the module and recompile. Saves the resulting
 source via [`module_to_source`](../api/dsl/emit.md). When the
-edit doesn't parse, the original declaration is retained and the
+edit does not parse, the original declaration is retained and the
 parse error appears in the diagnostics strip.
 
 ```
@@ -763,7 +737,7 @@ Exit the REPL. The Textual binding `Ctrl-Q` does the same. In the
 
 Every meta-command that takes a binding name accepts a
 `::`-separated scope path. The leftmost segment is a top-level
-declaration; each subsequent segment looks up a named child in
+declaration, and each later segment looks up a named child in
 that declaration's scope. Examples on the LDA gallery example:
 
 ```
@@ -771,8 +745,8 @@ that declaration's scope. Examples on the LDA gallery example:
 theta :: Doc -> Topic
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-  observe w : Word <- Categorical(probs=phi[z]) [via=word_idx]
+marginalize z : Topic <- Categorical(probs=theta)
+  observe w : Token <- Categorical(probs=phi)
 
 > :where theta
 references to 'theta':
@@ -791,15 +765,15 @@ What each container kind exposes as named children:
 | `decoder` | per-constructor heads |
 | `bundle` | member rule names |
 | `contraction` | declared input parameter names |
-| `object` / `space` / `morphism` / `rule` / `loss` / `category` | none (leaf) |
+| `object` / `morphism` / `rule` / `loss` / `category` | none (leaf) |
 
 The env tree on the right side of the TUI carries each binding's
-full `::` path on its node data; clicking any node, top-level or
+full `::` path on its node data, and clicking any node, top-level or
 nested, fires `:info PATH` against that exact binding. Tab
 completion completes `lda::` to the program's children, `lda::z::`
 to the inner marginalize's children, and so on. A bare-name
-prefix like `thet` also includes scoped descendants (`lda::theta`)
-so users discover nested bindings without typing the prefix.
+prefix like `thet` also offers nested names (`lda::theta`) without the enclosing
+prefix.
 
 ### Program exploration
 
@@ -807,7 +781,7 @@ Five commands work together for understanding a program's
 structure:
 
 * `:graph PROGRAM`, vertical step-flow view (one row per program
-  step with its dependency parents). The TUI default; pair with
+  step with its dependency parents). The TUI default, with
   `--mermaid` / `--dot` / `--open` for external formats.
 * `:plate PROGRAM`, plate-notation diagram of the program's
   random variables. Default is a Rich table with one row per
@@ -826,9 +800,8 @@ structure:
 
 ### Key bindings
 
-Selected for cross-platform reliability, every binding here reaches
-the application on macOS, Linux, and Windows without per-terminal
-configuration.
+Every binding below reaches the application on macOS, Linux, and Windows without
+configuring the terminal.
 
 | Key | Action |
 | --- | --- |
@@ -854,7 +827,7 @@ otherwise a TextArea action.
 
 > **macOS Fn-row note.** `F5` is reserved by macOS Dictation, `F3`
 > and `F4` by Mission Control and Launchpad, `F11` by Show Desktop.
-> `F8` is the only function key macOS doesn't already claim by
+> `F8` is the only function key macOS does not already claim by
 > default. Enable "Use F1, F2, etc. keys as standard function keys"
 > in System Settings → Keyboard if you want to use F-keys without
 > holding Fn.
@@ -862,9 +835,9 @@ otherwise a TextArea action.
 > **Ctrl-Enter, Alt-Enter, Cmd-Enter.** These never reach the
 > application on macOS Terminal.app or the default iTerm2 profile.
 > The terminal emulator drops them at the wire layer. To make them
-> work you have to configure your emulator to send them; for iTerm2
+> work the emulator must be configured to send them: in iTerm2
 > map them to `\x1b[13;5u` (the CSI-u "modifyOtherKeys" encoding),
-> for Windows Terminal use the same string. Wezterm, Kitty, and
+> and in Windows Terminal use the same string. Wezterm, Kitty, and
 > Alacritty forward them by default.
 
 ### Tab completion
@@ -873,48 +846,45 @@ otherwise a TextArea action.
 
 1. Builds a candidate list from four sources:
    - Meta-command names (`:load`, `:type`, …) when the prefix starts with `:`.
-   - Env names: every probabilistic declaration plus each QIEC declaration and nested
-     constructor or operation, tagged with its namespace. After a lexical
-     instance and `.`, completion offers that interface's operations.
-   - QVR grammar keywords (`latent`, `observed`, `program`, `over`, `iid`, `via`, …) and builtins (`Normal`, `Euclidean`, `softmax`, …).
+   - Names in the session: every declaration, and each nested constructor or
+     operation, tagged with its namespace. After an effect instance and `.`, completion
+     offers that interface's operations.
+   - QVR keywords (`program`, `sample`, `observe`, `marginalize`, `object`, …), option
+     keys (`over`, `iid_over`, `via`, …), and primitives and families (`Normal`,
+     `softmax`, …).
    - File-system paths after `:load`.
 2. Inserts the first candidate, replacing the prefix under the cursor.
 3. Subsequent `Tab` presses cycle through the remaining candidates without rebuilding the list.
 
-The completer is the exact one the LSP and the Jupyter kernel call;
-the frontends never disagree about what's available.
+The LSP and the Jupyter kernel call the same completer.
 
 ### Command palette
 
 `Ctrl-P` opens Textual's command palette pre-populated with every
-meta-command. Type any substring to fuzzy-filter; Enter selects.
+meta-command. Type any substring to filter, and Enter selects.
 Selecting a meta-command inserts it into the input pane with a
-trailing space, ready for the argument. This is the discoverable
-substitute for memorising shortcuts.
+trailing space, ready for the argument.
 
 ### Input history
 
 Every evaluated line is appended to `~/.config/quivers/history`
 (`$XDG_CONFIG_HOME/quivers/history` if set). The file is plain
-newline-separated entries; the same history is loaded the next time
-you start `qvr repl`.
+newline-separated entries, and the next `qvr repl` loads it.
 
 - `Ctrl-Up` walks backwards from the most recent entry.
-- `Ctrl-Down` walks forward; at the end you return to an empty
+- `Ctrl-Down` walks forward, and past the end returns to an empty
   buffer.
-- The current input is replaced wholesale; the TextArea is not
-  modal, so just keep typing to continue editing.
+- The recalled entry replaces the current input, and it can be edited directly.
 
 The prompt_toolkit fallback (`qvr repl --plain`) uses the same file
 through `prompt_toolkit.history.FileHistory`.
 
 ### File watcher / auto-reload
 
-When a file is loaded, the TUI polls its mtime once per second. If
-the mtime advances (your editor saved it), the session re-runs
-`:reload` automatically and logs `auto-reload` in the eval log. Any
+While a file is loaded, the TUI checks its modification time once per second. When it
+changes, the session runs `:reload` and logs `auto-reload`. Any
 diagnostics from the new parse show up immediately in the
-Diagnostics strip; any pinned `:watch` expressions re-evaluate
+Diagnostics strip, and any pinned `:watch` expressions re-evaluate
 against the new env.
 
 The option is on by default and controlled by
@@ -922,8 +892,8 @@ The option is on by default and controlled by
 
 ### Watches
 
-`:watch EXPR` pins EXPR for re-evaluation after every recompile ,
-every `:load`, `:reload`, bare-line statement, or autoreload. The
+`:watch EXPR` pins EXPR for re-evaluation after every recompile: every `:load`,
+`:reload`, statement line, or automatic reload. The
 result appears in a dedicated **Watches** strip (auto-hidden when
 empty) above the diagnostics strip. Format: `watch EXPR => result`,
 syntax-highlighted.
@@ -934,16 +904,16 @@ watch f => morphism f : Alpha -> Beta [role=latent]
 qvr> object Gamma : FinSet 7
 qvr> morphism g : Alpha -> Gamma [role=latent]
 qvr> :watch g
-# both f and g are now pinned; modifying Alpha or Beta updates both
+# both f and g are pinned; changing Alpha updates both
 ```
 
-`:unwatch EXPR` removes one; `:unwatch` alone clears every watch.
+`:unwatch EXPR` removes one, and `:unwatch` alone clears every watch.
 
 ### Inline diagnostic markers
 
 Every error diagnostic with a known location (parse errors, compile
 errors, constraint violations) selects the offending span in the
-input pane so you see where the failure originated. The Diagnostics
+input pane to show where the failure originated. The Diagnostics
 strip shows the same message in human-readable form:
 
 ```
@@ -963,7 +933,7 @@ Two frontends are click-aware:
   built-in functions, algebras.
 - **`PATH:LINE:COL` footers.** The `-- declared at ...` line under
   every `:info` body is a clickable link that launches
-  `$EDITOR +LINE PATH` (e.g. `vi +5 model.qvr`,
+  `$EDITOR +LINE PATH` (for instance `vi +5 model.qvr`,
   `code --goto model.qvr:5`).
 
 ### Themes
@@ -976,7 +946,7 @@ are rendered through `rich.syntax.Syntax`. Useful values:
 - `nord`, `gruvbox-dark`, `github-dark`
 - any other [Pygments style](https://pygments.org/styles/) shipped with your install
 
-The Textual app itself follows your terminal's color scheme; the
+The Textual app itself follows your terminal's color scheme, and the
 theme option only affects fenced QVR / JSON blocks in `:info` and
 `:dump` output.
 
@@ -984,21 +954,20 @@ theme option only affects fenced QVR / JSON blocks in `:info` and
 
 In the input TextArea:
 
-- `(`, `[`, `{` → insert the matching closer, leave cursor between.
-- Enter after `(`, `[`, `{`, `:`, `->`, `=`, `<-` → add one indent
-  level (four spaces by default) on the new line.
-- Indentation is otherwise preserved verbatim.
+- typing `(`, `[`, or `{` inserts the matching closer and leaves the cursor between;
+- Enter after `(`, `[`, `{`, `:`, `->`, `=`, or `<-` adds one level of indentation (four
+  spaces by default) on the new line;
+- indentation is otherwise kept as typed.
 
-These rules are heuristic; they cover the common shape of QVR
-`program` and `deduction` blocks without needing a full grammar
-configuration.
+These rules follow the usual shape of `program` and `deduction` blocks and do not
+consult the grammar.
 
 ### Plain mode
 
 `qvr repl --plain` (or any non-TTY invocation) uses
 [prompt_toolkit](https://python-prompt-toolkit.readthedocs.io/)
-instead of Textual. The same `ReplSession` drives the prompt, so
-every meta-command works identically; the only differences are:
+instead of Textual. The same `ReplSession` drives the prompt, so every meta-command
+works the same way, with these differences:
 
 - Single-line input, with prompt_toolkit's built-in history
   navigation (Up/Down) instead of `Ctrl-Up`/`Ctrl-Down`.
@@ -1007,8 +976,8 @@ every meta-command works identically; the only differences are:
 - No env tree, no watches panel, no command palette, no click
   handlers.
 
-This is the mode CI uses for scripted runs: pipe a plain text file
-of meta-commands and bare statements (one per line) on stdin.
+Plain mode also runs scripts: a text file of meta-commands and statements, one per
+line, on standard input.
 
 ## The Jupyter kernel
 
@@ -1037,8 +1006,8 @@ Cell semantics:
 
 - Leading-`:` lines are dispatched as meta-commands.
 - Other lines are appended to the live module and compiled.
-- Blank lines separate independent chunks within a cell, so you can
-  mix meta-commands and declarations freely.
+- Blank lines separate independent chunks within a cell, so a cell can mix
+  meta-commands and declarations.
 - `:quit` ends the cell: the chunks after it are not run, and the
   kernel stays up. Shut the kernel down from the front end.
 
@@ -1053,11 +1022,10 @@ Notebook features:
 
 ## The Language Server
 
-`qvr-lsp` speaks LSP 3.17 over stdio. Start it as `qvr lsp --target stan`
-or `qvr-lsp --target stan` to publish capability diagnostics for a selected
-backend from the first document analysis. With no target, it reports the
-target-independent parser, constraint, compiler, and QIEC diagnostics. Pointed
-at any LSP-aware editor, it provides hover, go-to-definition, references, document
+`qvr-lsp` speaks the Language Server Protocol over stdio. Started as
+`qvr lsp --target stan` or `qvr-lsp --target stan`, it also reports what the selected
+transpile target cannot express. Without a target it reports the parser, constraint,
+compiler, and QIEC diagnostics. In any editor with LSP support it provides hover, go-to-definition, references, document
 symbols, semantic highlighting, completion, formatting, and live
 diagnostics. Hover and go-to-definition also read a
 [scope path](#scope-paths) such as `lda::theta` written anywhere in the
@@ -1092,9 +1060,9 @@ Settings:
 | `qvr.lsp.enabled` | `true` | Master toggle |
 | `qvr.lsp.path` | `qvr-lsp` | Override the executable path |
 | `qvr.lsp.args` | `[]` | Extra CLI arguments |
-| `qvr.transpileTarget` | `""` | Select one of the eleven transpile targets for live `qiec:capability:*` diagnostics; an empty string disables them |
+| `qvr.transpileTarget` | `""` | A transpile target whose limits the server reports as diagnostics; an empty string turns them off |
 
-Install the packaged `.vsix` directly:
+To build the extension from source and install it:
 
 ```bash
 cd editors/vscode-qvr
@@ -1139,7 +1107,7 @@ Every capability advertised by `qvr-lsp`:
 
 | LSP method | What it returns |
 | --- | --- |
-| `textDocument/publishDiagnostics` | Parser, constraint-solver, probabilistic-compiler, stable QIEC, and selected-target `qiec:capability:*` diagnostics with source ranges |
+| `textDocument/publishDiagnostics` | Parser, constraint-solver, compiler, and QIEC diagnostics, and the selected target's limits, with source ranges |
 | `textDocument/hover` | The declaration and inferred kind or type as fenced `qvr` blocks, with the didactic AST `repr()` beneath a collapsed `<details>`; nested constructors and operations are addressable symbols. At a call site, a **Call** pane first shows the signature the call instantiates its callee at (`identity[Int](value : Int) : Int !{}` for `identity[Int](7)`); a computation adds an **Inferred row** pane with the row its body performs once every call is expanded to its callee's signature; the operation of a `perform instance.op(...)` request shows an **Operation** pane with the instance's instantiated signature above the interface's own |
 | `textDocument/definition` | Jump to the originating declaration |
 | `textDocument/references` | Every occurrence that resolves to the selected declaration: a computation's call sites, an operation's requests and clauses, a binder's uses inside its scope |
@@ -1147,13 +1115,13 @@ Every capability advertised by `qvr-lsp`:
 | `textDocument/documentSymbol` | All top-level declarations plus their nested symbols: a computation's parameters, locals, scoped instances, branch binders, and call sites (a recursive call marked as such); a handler's clauses, each with its binders and calls; a program's steps, a call step detailed by its callee, a marginalize block's scope nested beneath it |
 | `textDocument/completion` | Env names, members and qualified instance operations (the prelude's `random.sample` included), grammar keywords, builtins, and paths, from the same source as the REPL completer |
 | `textDocument/semanticTokens/full` | Env-aware semantic token stream classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key color the same everywhere |
-| `textDocument/formatting` | Canonical re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md); a document whose checked module fails to lower is left unformatted |
+| `textDocument/formatting` | Re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md); a document whose checked module fails to lower is left unformatted |
 | `textDocument/didOpen` / `didChange` / `didSave` / `didClose` | Incremental sync, full re-analysis per change |
 | `workspace/didChangeConfiguration` | Update the selected transpile target and republish diagnostics for every open document, re-running only the capability pass over the already checked module |
 
 ### Hover format
 
-A hover always shows two visually-separated panes:
+A hover shows two panes:
 
 ````markdown
 Optional doc comment lines if the decl had `#!` doc-comment lines above it.
@@ -1179,43 +1147,38 @@ MorphismDecl(morphism_kind='latent', name='f', domain=TypeName(...), ...)
 </details>
 ````
 
-- The QVR block is sliced from the original source so user formatting
-  and comments survive verbatim.
-- A horizontal rule draws the divider between the panes.
-- The Python AST is the didactic `repr()`, hidden by default in the
-  collapsed `<details>` element so it only takes vertical space when
-  you click "click to expand".
+- The QVR block is cut from the original source, so its formatting and comments are
+  kept.
+- A horizontal rule separates the panes.
+- The Python AST is the didactic `repr()`, in a collapsed `<details>` element.
 
 ## Architecture
 
-All four frontends share the same session and language services:
+The three session frontends drive one `ReplSession`, and the language server keeps its
+own state for each document while sharing the highlighter and the completer:
 
-```
-                    ┌─────────────────────┐
-                    │   ReplSession       │  pure Python state +
-                    │  (state + dispatch) │  meta-command dispatch
-                    └────────┬────────────┘
-                             │
-        ┌────────────────────┼─────────────────────┐
-        │                    │                     │
-   ┌────▼─────┐         ┌────▼─────┐          ┌────▼─────┐
-   │ Textual  │         │ prompt_  │          │ Jupyter  │
-   │ TUI      │         │ toolkit  │          │ kernel   │
-   └──────────┘         └──────────┘          └──────────┘
-
-                       ┌────────────────────┐
-                       │  qvr-lsp           │  builds its own
-                       │  (pygls)           │  per-document state
-                       └────────────────────┘  but shares the
-                                               highlighter +
-                                               completer
+```mermaid
+flowchart TB
+    S["ReplSession<br/><small>state and meta-command dispatch</small>"]
+    T["Textual TUI"]
+    P["prompt_toolkit prompt"]
+    K["Jupyter kernel"]
+    L["qvr-lsp (pygls)<br/><small>state per document</small>"]
+    H["highlighter and completer"]
+    S --> T
+    S --> P
+    S --> K
+    H --> T
+    H --> P
+    H --> K
+    H --> L
 ```
 
 Components shared across all frontends:
 
 - [`quivers.cli.repl_session`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_session.py), `ReplSession`, the meta-command dispatcher, the live env, the watch list.
-- [`quivers.cli.repl_complete`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_complete.py), `all_completions(session, prefix)`; combines completions from the environment, grammar, and file paths.
-- [`quivers.cli.repl_highlight`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py), `tokenize`, `STYLE_TABLE`, `to_rich_text`, `to_semantic_token_data`; one classifier feeds every renderer.
+- [`quivers.cli.repl_complete`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_complete.py), `all_completions(session, prefix)`, which combines completions from the environment, grammar, and file paths.
+- [`quivers.cli.repl_highlight`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_highlight.py), `tokenize`, `STYLE_TABLE`, `to_rich_text`, `to_semantic_token_data`, one classifier for every renderer.
 
 Each frontend is a thin adapter:
 
@@ -1224,5 +1187,5 @@ Each frontend is a thin adapter:
 - [`quivers.kernel.quivers_kernel`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/kernel/quivers_kernel.py), ipykernel adapter.
 - [`quivers.lsp.server`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/lsp/server.py), pygls server.
 
-The shared classifier keeps the four frontends consistent: `Source` receives
-the same category and color regardless of which frontend renders it.
+The shared classifier gives a name such as `Source` the same category and color in
+every frontend.
