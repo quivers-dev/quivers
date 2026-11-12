@@ -1,109 +1,105 @@
 # 7. Categorical foundations
 
-Four categorical constructs appear directly in QVR's type system: *objects*, *morphisms*, *algebras*, and *change-of-base*. They determine why a composition may raise `Source algebra 'ProductFuzzyAlgebra' does not match this morphism's algebra 'Real'` and what a call to `change_base` changes. This chapter gives their categorical interpretation.
+QVR types its declarations by objects and morphisms, composes morphisms under a chosen pair of operations, and converts a morphism from one pair of operations to another with `change_base`. This chapter states that structure in the terms of [category theory](https://ncatlab.org/nlab/show/category), explains the errors it produces, such as `incompatible algebras: ProductFuzzyAlgebra() and MarkovAlgebra()`, and gives the reading of a probabilistic program as a [Markov kernel](https://en.wikipedia.org/wiki/Markov_kernel). The other chapters do not depend on it.
 
-This is optional reading. Skip it if the DSL is doing what you need.
+## Morphisms as matrices
 
-## Begin with composable tables
+A *category* has objects, morphisms between them, an associative composition of morphisms, and an identity morphism on each object [@maclane1998categories]. In QVR an object `A : FinSet n` is a finite set of size $n$, and a morphism `f : A -> B` is a tensor of shape `(|A|, |B|)` whose entries lie in a set $V$ of weights. Composition is the matrix product over two operations on $V$, a product $\otimes$ and a sum $\oplus$:
 
-Consider a table from people to activities and a table from activities to
-outcomes. To find how a person relates to an outcome, inspect all routes
-through an intermediate activity. The common activity set tells us which
-entries connect. In `A -> B -> C`, both tables must use that same activity
-set `B`; matching the number of rows and columns alone would also permit
-accidentally connecting activities to an unrelated set of the same size.
+$$
+(f \mathbin{>\!\!>} g)[a, c] = \bigoplus_{b \in B} f[a, b] \otimes g[b, c].
+$$
 
-The arithmetic determines the question being asked. [Boolean AND/OR](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) asks
-whether any route exists. Multiply/sum combines probabilities over mutually
-exclusive intermediate choices. Add/min finds the cheapest route from costs.
-The shared pattern is composition through an intermediate object; the algebra
-supplies its interpretation. A category additionally requires identity and
-associativity laws. Check those laws for the chosen operations before using
-identity insertion or reassociation to simplify a computation.
+In the Python API the codomain of `f` must equal the domain of `g`, and two [`FinSet`](../../api/core/objects.md) objects are equal only when their names and sizes agree. The QVR compiler compares finite sets by size, so in a `.qvr` file `f : A -> B` and `g : C -> D` compose whenever `B` and `C` have the same size.
 
-## Why have types and algebras at all?
+The choice of $(\otimes, \oplus)$ fixes what composition computes. With AND and OR it says whether a path exists, with product and sum it adds the probabilities of mutually exclusive routes, and with $+$ and $\min$ it finds the cheapest route. When $(V, \oplus, \otimes)$ is a [semiring](https://en.wikipedia.org/wiki/Semiring), the $V$-valued matrices form a category, often written $\mathbf{Mat}(V)$, because distributivity makes the matrix product associative and the identity matrix is a unit [@mohri2002semiring; @hofmann2014monoidal]. When $V$ is a [quantale](https://ncatlab.org/nlab/show/quantale), a complete lattice with an associative product that distributes over arbitrary joins, the matrices form a [quantaloid](https://ncatlab.org/nlab/show/quantaloid) [@rosenthal1996quantaloids]. Without these laws, rebracketing a composite or inserting an identity may change the result, so check the laws of the chosen operations before simplifying a computation. The [semantics](../../semantics/setting.md#2-v-enriched-relations) states the construction in full.
 
-A typed signature like `program f : A -> B` exists so the compiler can reject programs that don't make sense before they hit a tensor. Two examples:
+A $\mathcal V$-[enriched category](https://ncatlab.org/nlab/show/enriched+category) in Kelly's sense has a hom-object in a monoidal category $\mathcal V$ in place of each hom-set [@kelly1982basic]. The category of $V$-matrices is not enriched over $V$ in that sense: each of its hom-sets is a set of matrices. For a quantale $V$, each hom-set is itself a complete lattice and composition preserves joins in each argument, which is what makes the category a quantaloid, that is, a category enriched over complete lattices.
+
+## Typed errors
+
+Types and composition rules let the compiler reject two kinds of mistake before any tensor is evaluated. A program declared `Pure` whose body observes:
 
 <!-- compile: false -->
 ```qvr
-# A program declared with effects=[Pure], but the body contains `observe`:
+object Item : FinSet 3
 program p : Item -> Item [effects=[Pure]]
-    observe y : Item <- Normal(loc=0, scale=1)
+    observe y : Item <- Normal(loc=0.0, scale=1.0)
     return y
-# CompileError: line 2, col 4: program declared effects=[Pure]
-#               but uses Score effect on `observe y`
+export p
+# CompileError: line 2, col 0: program 'p' is declared as Pure but body uses effects ['Score']
 ```
+
+A composite of morphisms with different weights:
 
 <!-- compile: false -->
 ```qvr
-# An algebra mismatch under composition:
 composition product_fuzzy [level=algebra]
-define pipeline = f >> g    # f is ProductFuzzy, g was change_based to Markov
-# CompileError: incompatible algebras under `>>`: the left operand
-#               is ProductFuzzyAlgebra, the right is Markov
+object A : FinSet 3
+object B : FinSet 4
+object C : FinSet 2
+morphism f : A -> B [role=latent]
+morphism h : B -> C [role=latent]
+define g = h.change_base(softmax(C))
+define pipeline = f >> g
+export pipeline
+# CompileError: line 8, col 18: incompatible algebras: ProductFuzzyAlgebra() and MarkovAlgebra()
 ```
 
-Without the effect and algebra tags, the same programs would either run and silently produce nonsense, or fail somewhere deep in a tensor evaluation with a stack trace pointing at the wrong place. The category-theoretic reading below is *why* those tags compose cleanly; the practical payoff is the error messages.
+`f` has entries in $[0, 1]$ composed by noisy-OR, while `g` is a row-stochastic matrix composed by sum and product. Without the check, `f >> g` would run and mix the two readings.
 
-## The setting in one paragraph
+## Composition rules and their laws
 
-A QVR program denotes a morphism in a [$\mathcal{V}$-enriched category](https://ncatlab.org/nlab/show/enriched+category) in the sense developed by Kelly [@kelly1982basic]. *Enriched* means the hom-sets aren't sets, they're objects of a fixed algebra $\mathcal{V}$ called the *enrichment* or *base*. For QVR's category $\mathcal{V}\text{-}\mathbf{Rel}$ of $\mathcal{V}$-valued relations on finite sets, a morphism `f : A -> B` is concretely a tensor of shape `(|A|, |B|)` whose entries live in $\mathcal{V}$. The choice of $\mathcal{V}$ determines what those entries mean: probabilities, log-probabilities, real numbers, fuzzy truth values, Booleans, etc. Composition `f >> g` is parameterized by $\mathcal{V}$ via two operations: a binary tensor product (`a ⊗ b`) that combines entries pointwise, and a join (`⋁_i x_i`) that aggregates over the shared dimension. Different choices of $(\otimes, \bigvee)$ give different composition semantics.
+An [`Algebra`](../../api/core/algebras.md) gives $\otimes$, $\oplus$ (the method `join`), the unit of $\otimes$, a zero, a meet, and a negation. The library checks none of the laws, so each instance below is named by the structure it is:
 
-## Algebras: the enrichment algebra
-
-Quivers' [`Algebra`](../../api/core/algebras.md) interface supplies tensor, reduction, unit, zero, meet, and negation operations. The entries below provide different subsets of the lattice or quantale laws; consult the stated assumptions when choosing an interpretation.
-
-| Name | $\otimes$ | $\bigvee$ | Identity | Reading |
+| Name | $\otimes$ | $\oplus$ | Unit | Structure |
 |---|---|---|---|---|
-| `Boolean` | AND | OR | true | Classical relations. |
-| `ProductFuzzyAlgebra` | $a \cdot b$ | $1 - \prod(1-x_i)$ | 1 | Fuzzy "probabilistic AND / noisy-OR". |
-| `Lukasiewicz` | $\max(0, a+b-1)$ | $\min(1, \sum x_i)$ | 1 | Probabilistic-sum t-conorm. |
-| `Godel` | $\min(a, b)$ | $\max_i x_i$ | 1 | Min-max fuzzy logic. |
-| `Tropical` | $a + b$ | $\min_i x_i$ | 0 | Shortest-path cost algebra. |
-| `MaxPlus` | $a + b$ | $\max_i x_i$ | 0 | Viterbi / best-path cost algebra. |
-| `LogProb` | $a + b$ | $\mathrm{logsumexp}_i$ | 0 | Numerically stable probability. |
-| `Markov` | $a \cdot b$ | $\sum_i x_i$ | 1 | Markov-kernel composition (with row-stochasticity). |
-| `Real` | $a \cdot b$ | $\sum_i x_i$ | 1 | Real sum-product. |
-| `Probability` | $a \cdot b$ | $\sum_i x_i$ (clamped to [0,1]) | 1 | Bounded sum-product. |
-| `Counting` | $a \cdot b$ | $\sum_i x_i$ | 1 | Nonnegative-integer counting. |
+| `Boolean` | AND | OR | true | Boolean semiring; its matrices are relations. |
+| `ProductFuzzy` | $a b$ | $1 - \prod_i (1 - x_i)$ | 1 | [Product t-norm](https://en.wikipedia.org/wiki/T-norm) with the probabilistic sum (noisy-OR) [@klement2000triangular; @pearl1988probabilistic]. Not a semiring. |
+| `Lukasiewicz` | $\max(0, a + b - 1)$ | $\min(1, \sum_i x_i)$ | 1 | Łukasiewicz t-norm with the bounded sum [@klement2000triangular]. Not a semiring. |
+| `Godel` | $\min(a, b)$ | $\max_i x_i$ | 1 | Minimum (Gödel) t-norm with the maximum; a semiring on $[0, 1]$. |
+| `Tropical` | $a + b$ | $\min_i x_i$ | 0 | [Tropical (min-plus) semiring](https://en.wikipedia.org/wiki/Tropical_semiring) on $[0, \infty]$: cheapest paths [@mohri2002semiring]. |
+| `MaxPlus` | $a + b$ | $\max_i x_i$ | 0 | Max-plus semiring: the best path, as in the Viterbi algorithm [@goodman1999semiring]. |
+| `LogProb` | $a + b$ | $\mathrm{logsumexp}_i\, x_i$ | 0 | [Log semiring](https://en.wikipedia.org/wiki/Log_semiring): sum and product of probabilities in log space [@mohri2002semiring]. |
+| `Markov` | $a b$ | $\sum_i x_i$ | 1 | Sum-product semiring, used for row-stochastic matrices. |
+| `Real` | $a b$ | $\sum_i x_i$ | 1 | The ring $(\mathbb R, +, \times)$. |
+| `Probability` | $a b$ | $\min(1, \sum_i x_i)$ | 1 | Product with a capped sum on $[0, 1]$. Not a semiring. |
+| `Counting` | $a b$ | $\sum_i x_i$ | 1 | Counting semiring on $\mathbb N$: the number of paths [@goodman1999semiring]. |
 
-`composition product_fuzzy [level=algebra]` at the top of a `.qvr` file sets the enrichment for the module. Every `f >> g` composition uses the corresponding $(\otimes, \bigvee)$.
-
-The hierarchy in `quivers.core.algebras` is:
+`composition product_fuzzy [level=algebra]` at the top of a `.qvr` file sets the operations for every `>>` in the module. The `level` states which laws the rule claims, unchecked:
 
 ```
 CompositionRule
-    ├── BilinearForm     (no associativity promise)
-    └── Semigroupoid     (associative ⊗, no identity)
-            └── Algebra  (associative ⊗ with identity, plus meet/negate)
+    ├── BilinearForm     (level bilinear_form: no associativity or identity)
+    └── Semigroupoid     (level semigroupoid: associative, no identity)
+            └── Algebra  (level algebra: associative, with identity, meet, and negation)
 ```
 
-Operations like `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` live on `Algebra`. If your module declares `composition material_impl [level=semigroupoid]`, the compiler rejects `identity(A)` with a typed error pointing at the rule's level. Note that the shipped Reichenbach operation is not associative; its constructor skips the usual semigroupoid associativity check, so its composites must not be reassociated.
+Under a rule declared `semigroupoid` the morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory), a category without identities [@tilson1987categories]. Under `bilinear_form` composition has no laws at all (the structure is a [magmoid](https://ncatlab.org/nlab/show/magmoid)). The class name `BilinearForm` does not mean a bilinear form in the linear algebra sense. `identity(A)` and the operations `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)`, which bend, transpose, and loop the wires of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category), need an `Algebra`. Under `composition material_impl [level=semigroupoid]`, `identity(A)` fails with
 
-## Composition carries the enrichment
+```text
+CompileError: line 3, col 11: identity: requires a Algebra composition rule (needs identity / unit / zero); the module declares semigroupoid 'MaterialImplication', which does not have those. ...
+```
 
-The two composition operators both defer to the operands' own algebra, fixed by the module-level `composition NAME [level=...]` declaration:
+The rule `material_impl` uses the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] as $\otimes$ and the product as $\oplus$. That $\otimes$ is not associative, and the constructor skips the associativity check, so composites under this rule must not be rebracketed. [Chapter 7 of the Python track](../python/07-composition-rules.md) covers the hierarchy in detail.
+
+## Composition operators
 
 | Operator | Meaning |
 |---|---|
-| `>>` | Enriched relation composition in the operands' shared algebra |
-| `<<` | The same composite written right to left: `g << f` is `f >> g` |
+| `>>` | Composition in the operands' shared composition rule. |
+| `<<` | The same composite written right to left: `g << f` is `f >> g`. |
 
-So `f >> g` composes in whatever enrichment both operands carry, and errors on a mismatch. There is no operator that silently pins a different enrichment; to cross enrichments, you [`change_base`](../../api/core/morphisms.md) one operand into the other's algebra before composing.
-
-For the probability reading, let the two intermediate choices have weights
-`0.25` and `0.75`, with onward probabilities `0.8` and `0.6`. The composite
-entry is `0.25 * 0.8 + 0.75 * 0.6 = 0.65`. A fuzzy interpretation would use
-its own reduction on the route contributions `0.2` and `0.45`; noisy-OR gives
-`1 - (1 - 0.2) * (1 - 0.45) = 0.56`. The type checker prevents silently
-mixing these two interpretations in one composition.
+`f >> g` fails when the operands' rules differ. No operator changes the rule silently. To compose across rules, apply [`change_base`](../../api/core/morphisms.md) to one operand first.
 
 ## Change of base
 
-An `AlgebraHomomorphism` records a source algebra, a target algebra, and an entrywise map. `f.change_base(phi)` applies that map and updates the morphism's algebra tag. Particular instances may support a stronger categorical reading, but the runtime contract is the typed transformation just described.
+`f.change_base(phi)` applies a map `phi` to the tensor of `f` and retags the result with the target rule. `phi` is one of two kinds:
 
-The DSL provides a catalog of named homomorphisms (`expectation`, `log_prob`, `max_plus`, `material_implication`, `threshold`, `boolean_embedding`, ...) and a small set of *constructors* parameterized by an object or morphism (`softmax(B)`, `l1_normalize(B)`, `l2_normalize(B)`, `bayes_invert(prior)`). Each is a first-class transformation value: you can let-bind it, compose it with `>>>`, and pass it through `change_base`. Python API chapter 6 covers the complete interface; here is the short version:
+- An *entrywise map* (class `AlgebraHomomorphism`) applies a function $\varphi : V \to W$ to each entry. When $\varphi$ is monotone and lax for $\otimes$, $\oplus$, and the unit, it induces [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category) in Kelly's sense [@kelly1982basic]. The named maps include `expectation` (from `Markov` to `ProductFuzzy`, reading each probability as a degree of membership), `log_prob`, `max_plus`, `threshold`, and `boolean_embedding`.
+- A [`MorphismTransformation`](../../api/core/transformations.md) rewrites the whole tensor, for instance normalizing each row. The constructors `softmax(B)`, `l1_normalize(B)`, and `l2_normalize(B)` normalize along the axis of `B`, and `bayes_invert(prior)` computes a Bayesian inversion [@cho2019disintegration]. A row normalization is not a change of base.
+
+Both kinds are values: a `define` can bind them, `>>>` composes them, and `change_base` applies them:
 
 ```qvr
 composition product_fuzzy [level=algebra]
@@ -116,59 +112,21 @@ define pipeline = s >>> expectation
 define g = f.change_base(pipeline)
 ```
 
-`softmax(B)` builds a `MorphismTransformation` with `source = ProductFuzzyAlgebra, target = Markov`; `expectation` is a `AlgebraHomomorphism` with `source = Markov, target = ProductFuzzyAlgebra`. The composition `s >>> expectation` round-trips back to ProductFuzzyAlgebra and gives you a morphism whose rows are normalized on the way out.
+`softmax(B)` maps `ProductFuzzy` to `Markov`, normalizing each row, and `expectation` maps `Markov` back to `ProductFuzzy`. `g` thus has the rule of `f`, with each row normalized to sum to one. [Chapter 6 of the Python track](../python/06-first-class-trans.md) gives the full interface.
 
-## Probabilistic programs
+## Probabilistic programs as kernels
 
-An unscored `program` has the usual [Giry
-monad](https://ncatlab.org/nlab/show/Giry+monad) interpretation as a Markov
-kernel. `observe` and `score` extend this to an unnormalized nonnegative
-measure because a density or explicit factor may exceed one. The operational
-forms are:
+A *Markov kernel* from $X$ to $Y$ assigns to each $x$ a probability distribution on $Y$. Markov kernels are the morphisms of the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad), which sends a space to the space of probability distributions on it [@giry1982categorical]. A `program` without `observe` or `score` denotes such a kernel. `observe` and `score` multiply the result by a density or by $\exp(w)$, which may exceed one, so a program that uses them denotes a kernel into unnormalized measures (an [s-finite kernel](../../semantics/setting.md#4-finite-and-s-finite-kernels)) [@staton2017commutative]. Each step acts on the running set of bindings and its log weight:
 
-- `sample v <- F(args)` draws from `F(args)` and extends the trace;
-- `observe v <- F(args)` preserves the trace and adds the observed value's log
-  density;
-- `score v = expr` adds an explicit scalar log weight;
-- `let v = expr` is a deterministic trace extension;
-- finite-support `marginalize v : A <- F(args)` enumerates `v` within its
-  indented scope and reduces the resulting weights; a non-enumerable family is
-  sampled once rather than integrated continuously; and
-- `return v` projects the weighted trace onto `v`.
+- `sample v <- F(args)` draws `v` from `F(args)`.
+- `observe v <- F(args)` keeps the observed value of `v` and adds its log density to the log weight.
+- `score w = expr` adds `expr` to the log weight.
+- `let v = expr` binds `v` to a deterministic value.
+- `marginalize v : A <- F(args)` runs its indented body once for each element of the finite set `A` and combines the resulting log weights ([chapter 4](04-marginalize.md)).
+- `return v` keeps `v` and discards the other bindings.
 
-The effect summaries `Sample`, `Score`, `Marginal`, and `Pure` are checked
-against the body. The elaborated QIEC computation carries the more precise row
-of lexical `Random` and `Score` instances.
+For the regression of [chapter 1](01-first-model.md), the kernel draws `sigma`, `beta_0`, and `beta_1`, and its weight is the Normal density of the observed `y`. SVI fits a guide to the normalized posterior, and NUTS samples it through the log joint density. Neither changes the program that defines the model. The compiler checks the effect summary (`Sample`, `Score`, `Marginal`, `Pure`) against the body, and [chapter 10](10-effects-and-handlers.md) introduces the finer effect rows of the core language.
 
-## A worked example: regression as enriched morphism
+## Next
 
-The chapter-1 regression compiles to a weighted kernel whose trace contains
-`beta_0`, `beta_1`, and `sigma`, and whose weight includes the observation
-density. SVI optimizes a variational objective for its normalized posterior;
-NUTS samples that posterior through the program's log joint. Neither algorithm
-changes the checked program that defines the model.
-
-## Further reading
-
-The denotational [semantics](../../semantics/index.md) section gives a rigorous treatment of everything in this chapter and considerably more: the formal grammar, the categorical setting, the compositional semantics of every DSL construct, the adequacy theorem connecting compiler implementation to denotation. It assumes Kelly-level enriched category theory.
-
-The Python API tutorials (chapters 6 and 7) go further on first-class transformations and the composition-rule hierarchy.
-
-The guides under `guides/` cover individual feature areas at the level of "what's the API and how do I use it" (categorical, monadic, enriched, deduction, structural-compression).
-
-## You're done
-
-At this point, you can write models in QVR, fit them with the shipped inference
-algorithms, marginalize discrete latents, build hierarchical and
-sequence-shaped models, and read the categorical structure underneath when you
-need to. Chapters 8–13 continue with diagnostics, indexed data, effects,
-generated computation graphs, and release checks. Suggested next stops:
-
-- The [examples gallery](../../examples/index.md) for end-to-end model code (Bayesian regression, mixture models, VAE, transformer, vanilla RNN).
-- The [QVR language reference](../../reference/qvr/index.md) for the current syntax and execution behavior.
-- The [inference benchmark report](../../developer/inference-benchmarks.md) for the empirical truth-table of which algorithm fits which problem.
-
-
-## Sources and further reading
-
-- *A categorical approach to probability theory* [@giry1982categorical].
+[Chapter 8](08-diagnostics-and-comparison.md) checks convergence, compares the data with posterior predictive draws, and compares models by leave-one-out cross-validation. The [semantics](../../semantics/index.md) gives the denotation of every construct, and the [examples gallery](../../examples/index.md) gives complete models.
