@@ -23,7 +23,7 @@ All four are subclasses of the abstract `SetObject`.
 
 ### FinSet
 
-`FinSet("phoneme", 40)` is a set of forty elements, and a tensor axis labelled by it
+`FinSet(name="phoneme", cardinality=40)` is a set of forty elements, and a tensor axis labelled by it
 has length 40. The one-element set is exported as `Unit`.
 
 ```python
