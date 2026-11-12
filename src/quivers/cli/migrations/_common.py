@@ -42,12 +42,15 @@ roots so per-hop code never touches the envelope directly.
 
 from __future__ import annotations
 
+import sys
+
 import json
 from typing import Callable
 
 import panproto
 
 from quivers.cli.migrations._grammar import registry_for
+from quivers.cli.migrations._vcs import blame_kind
 
 
 _SOURCE_FILE_VID = "parse_emit_lens"
@@ -540,8 +543,6 @@ def _blame_unknown_kind(kind: str) -> str:
     last present. Returns a human-readable diagnostic, or the empty
     string if the lookup fails (e.g. VCS unavailable)."""
     try:
-        from quivers.cli.migrations._vcs import blame_kind
-
         report = blame_kind(kind)
     except Exception:
         return ""
@@ -683,13 +684,12 @@ def migrate_source(
         if converter is None:
             # Unknown decl kind for this hop. Look up the VCS for
             # when the rule was introduced or removed and surface
-            # that information; the migrator otherwise passes the
-            # source bytes through verbatim, which may produce
-            # invalid target source.
+            # that information. The source bytes are then checked
+            # against the target grammar like any converted
+            # declaration, so a declaration the target does not admit
+            # stops the migration with that diagnostic.
             blame_msg = _blame_unknown_kind(kind)
             if blame_msg:
-                import sys
-
                 print(
                     f"qvr migrate [{source_rev} -> {target_rev}]: "
                     f"no converter for {kind!r}. {blame_msg}",
