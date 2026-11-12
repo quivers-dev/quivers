@@ -1,27 +1,6 @@
 # Installation
 
-For a first model, install the base package from PyPI and verify the import.
-The additional packages listed below are installed automatically; you do not
-need to learn their APIs. Add `formulas` for dataframe regressions,
-`diagnostics` for posterior assessment, or `repl,lsp` for interactive editing.
-A development checkout is needed only when changing Quivers itself or running
-its repository tests.
-
-## Prerequisites
-
-- **Python** >= 3.14
-- **PyTorch** >= 2.0
-- **didactic** >= 0.18.2
-- **panproto** >= 0.77.0 (provides schema and lens operations plus historical-object validation)
-- **panproto-grammars-all** >= 0.77.0 (provides the eleven transpiler-target grammars)
-- **Pygments** >= 2.10, **tree-sitter** >= 0.21
-
-The didactic, panproto, panproto-grammars-all, Pygments, and
-tree-sitter packages are pulled in automatically by
-`pip install quivers`. Release wheels for CPython 3.14 on manylinux x86-64,
-macOS ARM64, and Windows AMD64 include the native QVR parsers and do not
-require a C compiler at installation time or first parse. Other platforms
-install from the source distribution and need a C compiler.
+quivers requires Python 3.14 or later.
 
 ## From PyPI
 
@@ -29,9 +8,54 @@ install from the source distribution and need a C compiler.
 pip install quivers
 ```
 
-## From Source
+This installs PyTorch, [didactic](https://pypi.org/project/didactic/),
+[panproto](https://pypi.org/project/panproto/), `panproto-grammars-all`,
+Pygments, and the tree-sitter bindings as dependencies, along with the `qvr`
+command. To run on a GPU, install the [PyTorch build](https://pytorch.org/get-started/locally/)
+for your platform before installing quivers.
 
-To install directly from source:
+Wheels for Linux on x86-64, macOS on ARM64, and Windows on AMD64 include the
+compiled QVR parser. On other platforms pip builds the package from the source
+distribution, which needs a C compiler (`cc`, Clang, GCC, or MSVC).
+
+Check the installation:
+
+```python
+import quivers
+print(quivers.__version__)
+```
+
+## Optional features
+
+Each extra installs the dependencies of one feature that the base package does
+not need. Extras combine, as in `pip install 'quivers[repl,lsp]'`.
+
+| Extra | Feature | Packages it adds |
+| --- | --- | --- |
+| `repl` | `qvr repl` and the Jupyter kernel | [Textual](https://textual.textualize.io/), [prompt_toolkit](https://python-prompt-toolkit.readthedocs.io/), [rich](https://rich.readthedocs.io/), [ipykernel](https://ipykernel.readthedocs.io/), [jupyter_client](https://jupyter-client.readthedocs.io/) |
+| `lsp` | the `qvr-lsp` language server | [pygls](https://github.com/openlawlibrary/pygls), `lsprotocol` |
+| `data` | data frame adapters | [narwhals](https://narwhals-dev.github.io/narwhals/), [scikit-learn](https://scikit-learn.org/) |
+| `diagnostics` | posterior diagnostics and trace files | NumPy, [ArviZ](https://python.arviz.org/), [xarray](https://docs.xarray.dev/), [netCDF4](https://unidata.github.io/netcdf4-python/) |
+| `formulas` | R-style formulas | everything in `data` and `diagnostics`, plus [formulae](https://bambinos.github.io/formulae/) |
+| `targets` | running programs transpiled to Pyro or PyMC | [Pyro](https://pyro.ai/), [PyMC](https://www.pymc.io/), SciPy |
+
+For instance:
+
+```bash
+pip install 'quivers[formulas]'
+```
+
+The `repl` and `lsp` extras enable these commands:
+
+| Command | Extra | What it does |
+| --- | --- | --- |
+| `qvr repl` | `repl` | Starts the REPL: a terminal interface built on Textual, or a single-line prompt_toolkit prompt when Textual is not installed |
+| `qvr-kernel install`, `qvr kernel install` | `repl` | Registers the `quivers` Jupyter kernel |
+| `qvr-lsp`, `qvr lsp` | `lsp` | Runs the language server over standard input and output |
+
+[Interactive tools](../guides/repl-and-lsp.md) describes each one.
+
+## From source
 
 ```bash
 git clone https://github.com/quivers-dev/quivers
@@ -39,112 +63,21 @@ cd quivers
 pip install -e .
 ```
 
-A source or editable build requires a C compiler (`cc`, Clang, GCC, or MSVC).
-The build compiles the generated current parser; editable checkouts may also
-rebuild it into a content-addressed development cache after grammar changes.
+A source build compiles the QVR parser and needs a C compiler. An editable
+checkout parses with the grammar in `grammars/qvr/src` and rebuilds its parser
+after that grammar changes. An installed wheel loads only the parser packaged
+with it, for parsing, highlighting, and `qvr migrate` alike. If those files are
+missing or do not match one another, quivers raises an error instead of using
+the QVR grammar in `panproto-grammars-all`, which provides only the grammars of
+the transpilation targets.
 
-## Development Installation
-
-If you intend to run tests and contribute:
+The `dev` extra adds the test and lint tools, and the `docs` extra adds what is
+needed to build the documentation site:
 
 ```bash
 pip install -e ".[dev]"
-```
-
-This adds:
-
-- `pytest >= 7.0`: test runner
-- `pytest-cov`: coverage reporting
-- `ruff`: linter and formatter
-- `pyright`: static type checker
-- `numpy`, `pandas`, `polars`, `pyarrow`: data-frame fixtures used by the data-encoding tests
-
-The `[docs]` extra (MkDocs, Material for MkDocs, mkdocstrings[python],
-PyMdown Extensions, and Pygments) is needed to build the documentation
-site locally. Material provides navigation and search; the Quivers styles in
-`docs/css/custom.css` define the visual system.
-
-## Optional feature groups
-
-These extras install dependencies for features that the core package does not
-require:
-
-```bash
-pip install 'quivers[repl]'         # qvr repl + Jupyter kernel
-pip install 'quivers[lsp]'          # qvr-lsp language server
-pip install 'quivers[data]'         # narwhals + scikit-learn data adapters
-pip install 'quivers[diagnostics]'  # ArviZ / xarray / netCDF4 trace I/O
-pip install 'quivers[formulas]'     # data + diagnostics + formulae DSL
-pip install 'quivers[repl,lsp]'     # any combination is fine
-```
-
-`[repl]` pulls in [Textual](https://textual.textualize.io/),
-[prompt_toolkit](https://python-prompt-toolkit.readthedocs.io/),
-[rich](https://rich.readthedocs.io/),
-[ipykernel](https://ipykernel.readthedocs.io/), and
-[jupyter_client](https://jupyter-client.readthedocs.io/).
-
-`[lsp]` pulls in [pygls](https://github.com/openlawlibrary/pygls) and
-`lsprotocol`.
-
-`[data]` pulls in [narwhals](https://narwhals-dev.github.io/narwhals/)
-and [scikit-learn](https://scikit-learn.org/); `[diagnostics]` adds
-[ArviZ](https://python.arviz.org/), [xarray](https://docs.xarray.dev/),
-and [netCDF4](https://unidata.github.io/netcdf4-python/). `[formulas]`
-is a superset that also brings in
-[formulae](https://bambinos.github.io/formulae/) for the R-style
-formula DSL.
-
-After installing the extras you have these new console scripts:
-
-| Command | Provided by | What it does |
-| --- | --- | --- |
-| `qvr repl` | `[repl]` | Four-pane Textual TUI (or prompt_toolkit fallback) |
-| `qvr-lsp` | `[lsp]` | LSP 3.17 server over stdio |
-| `qvr lsp` | `[lsp]` | The same, as a `qvr` subcommand |
-| `qvr-kernel install` | `[repl]` | Register the Jupyter kernelspec |
-| `qvr kernel install` | `[repl]` | Same, as a subcommand |
-
-The [interactive tools](../guides/repl-and-lsp.md) support program inspection,
-entry execution, and editor diagnostics after installation.
-
-## Verify Installation
-
-Check that the import works:
-
-```python
-import quivers
-print(quivers.__version__)
-```
-
-Run the test suite:
-
-```bash
 pytest tests/
 ```
 
-## Dependencies
-
-Quivers depends on:
-
-- **torch** (>= 2.0): differentiable tensors and [automatic differentiation](../tutorials/python/01-first-quiver.md#working-as-a-differentiable-module)
-- **didactic** (>= 0.18.2): typed-data, indexed-family checking, and exact extension-lowering boundary used by QVR-to-QIEC checking
-- **panproto** (>= 0.77.0): schema and theory operations used to check indexed declarations and extract a `Schema` from each `.qvr` program for diff/migrate workflows
-- **panproto-grammars-all** (>= 0.77.0): supplies the eleven target-language grammars used by the transpiler pipeline; it does not define QVR syntax
-- **Pygments** (>= 2.10): in-tree `qvr` lexer for documentation and notebooks
-- **tree-sitter** (>= 0.21): runtime bindings for the QVR grammar
-
-Quivers' platform wheels ship the generated QVR parser source together with a
-native library whose manifest binds it to that source and its tree-sitter
-metadata. The same source-bound pairing is included for every parser snapshot
-used by `qvr migrate`. Installed wheels load these verified libraries directly,
-so neither parsing, highlighting, nor migration launches a compiler. An
-editable checkout instead prefers its current `grammars/qvr/src` and may build a
-content-addressed library for development. Quivers refuses to load a parser if
-the wheel's source, library, or manifest is absent or inconsistent; it does not
-substitute the QVR parser from `panproto-grammars-all`.
-
-The optional capability
-extras (`[repl]`, `[lsp]`, `[data]`, `[diagnostics]`, `[formulas]`)
-install the interactive tools and data or diagnostics integrations
-described above.
+[Contributing](../developer/contributing.md) describes the test tiers and the
+documentation build.
