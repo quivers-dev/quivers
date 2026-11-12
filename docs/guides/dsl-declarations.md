@@ -30,9 +30,9 @@ the rule must belong to, and the compiler checks the registered rule against it:
 
 | Level | Class | Laws the rule claims |
 |---|---|---|
-| `algebra` | `Algebra` | associativity and an identity |
-| `semigroupoid` | `Semigroupoid` | associativity, no identity |
-| `bilinear_form` | `BilinearForm` | neither |
+| `algebra` | `Algebra` | an identity (a `Semiring` also claims associativity) |
+| `semigroupoid` | `Semigroupoid` | associativity (a `Semiring` also has an identity) |
+| `bilinear_form` | `Magmoid` | neither |
 | `rule` | any `CompositionRule` | none required |
 
 No law is checked ([The hierarchy of composition rules](transformations.md#the-composition-rule-hierarchy)).

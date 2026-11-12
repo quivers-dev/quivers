@@ -77,7 +77,7 @@ in general.
 ```python
 import torch
 from quivers.enriched.yoneda import (
-    yoneda_lemma, yoneda_embedding, verify_yoneda_fully_faithful, Presheaf,
+    yoneda_lemma, yoneda_embedding, verify_yoneda_preserves_composition, Presheaf,
 )
 from quivers.core.objects import FinSet
 
@@ -106,7 +106,7 @@ $A \to B$. In the library, [`yoneda_embedding(f)`](../api/enriched/yoneda.md) re
 $f$'s tensor as a [`Profunctor`](../api/enriched/profunctors.md), the same value as
 `Profunctor.from_morphism(f)`.
 
-[`verify_yoneda_fully_faithful(f, g)`](../api/enriched/yoneda.md) compares
+[`verify_yoneda_preserves_composition(f, g)`](../api/enriched/yoneda.md) compares
 `yoneda_embedding(f >> g)` with the profunctor composite of `yoneda_embedding(f)` and
 `yoneda_embedding(g)`. This tests one instance of functoriality, preservation of
 composition. Despite its name, it tests neither fullness nor faithfulness, which are
@@ -115,7 +115,7 @@ statements about bijectivity on hom-sets.
 <!-- python: skip -->
 ```python
 y_f = yoneda_embedding(f)                          # f : Morphism
-preserves = verify_yoneda_fully_faithful(f, g, atol=1e-5)
+preserves = verify_yoneda_preserves_composition(f, g, atol=1e-5)
 ```
 
 ## Kan extensions
@@ -255,12 +255,12 @@ and the result is `0.6 * 0.7 = 0.42` at that index and zero elsewhere.
 import torch
 from quivers.enriched.day_convolution import day_convolution, day_unit
 from quivers.core.objects import FinSet
-from quivers.categorical.monoidal import CartesianMonoidal
+from quivers.categorical.monoidal import CartesianProductMonoidal
 
 A = FinSet(name="A", cardinality=2)
 B = FinSet(name="B", cardinality=3)
 objects = (A, B, A * B)
-monoidal = CartesianMonoidal()
+monoidal = CartesianProductMonoidal()
 
 # F and G are presheaves indexed by `objects`, one value per object.
 f_values = torch.tensor([0.6, 0.4, 0.1])

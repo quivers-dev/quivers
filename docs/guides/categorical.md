@@ -163,7 +163,7 @@ symmetric monoidal category also has a braiding $X \otimes Y \cong Y \otimes X$.
 
 ### Cartesian Monoidal
 
-[`CartesianMonoidal`](../api/categorical/monoidal.md) uses the Cartesian product of
+[`CartesianProductMonoidal`](../api/categorical/monoidal.md) uses the Cartesian product of
 finite sets, with the one-element set `Unit` as $I$, and gives the `associator`, the
 `left_unitor` and `right_unitor`, and the `braiding`. On functions this product is
 the categorical product. On relations and Markov kernels it is only a monoidal
@@ -174,10 +174,10 @@ copying and discarding, form a
 
 <!-- python: skip -->
 ```python
-from quivers.categorical.monoidal import CartesianMonoidal
+from quivers.categorical.monoidal import CartesianProductMonoidal
 from quivers.core.objects import FinSet, Unit
 
-monoidal = CartesianMonoidal()
+monoidal = CartesianProductMonoidal()
 
 X = FinSet(name="X", cardinality=3)
 Y = FinSet(name="Y", cardinality=4)
@@ -273,7 +273,7 @@ tensors, the trace of $f : Y \times X \to Z \times X$ fixes an input $y$ and out
 $z$, matches the two $X$ indices, and reduces $f[(y, x), (z, x)]$ over $x$ with the
 `Algebra`'s $\bigoplus$, as a matrix trace sums the diagonal. The function
 [`trace`](../api/categorical/traced.md) wraps a
-[`CartesianTrace`](../api/categorical/traced.md). It takes the object fed back last
+[`CompactClosedTrace`](../api/categorical/traced.md). It takes the object fed back last
 in the domain and codomain, while the method `Morphism.trace` takes it first
 ([Morphisms](morphisms.md#transpose-trace-cup-and-cap)).
 
@@ -303,6 +303,6 @@ assert traced_f.codomain == Z
 | Functor | maps of objects and morphisms | `Functor`, `F.map_morphism(f)` |
 | Natural transformation | one morphism per object, commuting with every $F(f)$ | `ComponentwiseNT(F, G, component)` |
 | Adjunction | $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$ | `FreeForgetfulAdjunction(max_length)` |
-| Monoidal product | parallel composition with coherent regrouping | `CartesianMonoidal`, `f @ g` |
+| Monoidal product | parallel composition with coherent regrouping | `CartesianProductMonoidal`, `f @ g` |
 | Change of base | entrywise map between `Algebra`s | `FuzzyToBool().apply_to_morphism(f)` |
 | Trace | feedback of one wire | `trace(f, feedback=X, domain=Y, codomain=Z)` |

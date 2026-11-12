@@ -13,7 +13,7 @@ The library has two kinds of transformation, and in QVR both are values of the s
 `Trans`:
 
 - An *entrywise map* $\varphi : \mathcal V \to \mathcal W$ (class
-  [`AlgebraHomomorphism`](../api/core/transformations.md)) sends each score to a
+  [`CarrierMap`](../api/core/transformations.md)) sends each score to a
   score in the target `Algebra`, one entry at a time. When $\varphi$ is monotone and
   preserves $\otimes$, $\bigoplus$, and the unit up to inequality, applying it to
   every morphism is a [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
@@ -107,9 +107,9 @@ constructor call, or a `>>>` chain.
 ```python
 from quivers.core.trans import compose_trans
 from quivers.core.morphism_transformations import softmax
-from quivers.core.algebra_morphisms import EXPECTATION
+from quivers.core.algebra_morphisms import MARKOV_TO_PRODUCT_FUZZY
 
-pipe = compose_trans(softmax(B), EXPECTATION)
+pipe = compose_trans(softmax(B), MARKOV_TO_PRODUCT_FUZZY)
 g    = f.change_base(pipe)
 ```
 
@@ -122,40 +122,46 @@ $$
 (f \gg g)[i, k] = \bigoplus_j f[i, j] \otimes g[j, k].
 $$
 
-Its *level* records which laws the rule claims. Associativity would let
-`(f >> g) >> h` be regrouped as `f >> (g >> h)`, and an identity would let a
+Its *level* records which laws the rule claims. Associativity lets
+`(f >> g) >> h` be regrouped as `f >> (g >> h)`, and an identity lets a
 morphism that changes nothing be inserted. For this matrix product both follow when $\otimes$
 and $\bigoplus$ form a [semiring](https://en.wikipedia.org/wiki/Semiring)
 [@goodman1999semiring], and product with noisy-OR is not one
-([Core Types](core.md#productfuzzyalgebra)). No level's laws are checked by the
-library. The classes are:
+([Core Types](core.md#productfuzzyalgebra)). The classes are:
 
 ```mermaid
 flowchart TD
     CR["CompositionRule: ⊗ and ⊕, no promise"]
-    BF["BilinearForm: no associativity or identity promise"]
-    SG["Semigroupoid: declared associative, no identity"]
-    AL["Algebra: adds unit, zero, meet, negation"]
-    CR --> BF
+    MG["Magmoid: no associativity or identity promise"]
+    SG["Semigroupoid: associative, no identity"]
+    AL["Algebra: unit, zero, meet, negation, so identities"]
+    SR["Semiring: associative with identities"]
+    IS["IdempotentSemiring: ⊕ idempotent, a lattice"]
+    CR --> MG
     CR --> SG
-    SG --> AL
+    CR --> AL
+    SG --> SR
+    AL --> SR
+    SR --> IS
 ```
 
 A rule declared at the `Semigroupoid` level makes its morphisms a
 [semicategory](https://ncatlab.org/nlab/show/semicategory), composition that is
 associative but may lack identities [@tilson1987categories], provided the rule really
-is associative. `BilinearForm` is the class for a composition rule with no
-associativity or identity guarantee. Despite its name, it is not a bilinear form in
-the sense of linear algebra. Its morphisms form a
-[magmoid](https://ncatlab.org/nlab/show/magmoid), a composition with neither law.
+is associative. An `Algebra` gives identities but does not claim associativity. A
+`Semiring` claims both, and the eight built-in semirings are of that class
+([Core Types](core.md#algebras-enrichment-algebras)). `Magmoid` is the class for a
+composition rule with no associativity or identity guarantee, whose morphisms form a
+[magmoid](https://ncatlab.org/nlab/show/magmoid). The library checks no level's laws
+when it runs.
 
 Each module declares its rule with `composition` and a level:
 
 | Declaration | Required class | Operations the compiler accepts |
 |---|---|---|
-| `composition X [level=algebra]` | `Algebra` | `>>`, `@`, `identity(A)`, `f.dagger`, `f.trace(A)`, `cup(A)`, `cap(A)` |
-| `composition X [level=semigroupoid]` | `Semigroupoid` | `>>`, `@` |
-| `composition X [level=bilinear_form]` | `BilinearForm` | `>>`, `@` |
+| `composition X [level=algebra]` | `Algebra` (a `Semiring` qualifies) | `>>`, `@`, `identity(A)`, `f.dagger`, `f.trace(A)`, `cup(A)`, `cap(A)` |
+| `composition X [level=semigroupoid]` | `Semigroupoid` (a `Semiring` qualifies) | `>>`, `@` |
+| `composition X [level=bilinear_form]` | `Magmoid` | `>>`, `@` |
 | `composition X [level=rule]` | any `CompositionRule` | whatever the resolved rule's class allows |
 
 Using `identity`, `dagger`, `trace`, `cup`, or `cap` in a module whose rule is not an
@@ -204,7 +210,7 @@ The compiler builds inline rules without checking any law. The Python constructo
 check a little. `CustomAlgebra` tests that the unit is a left and right identity for
 $\otimes$ and that the zero absorbs on the left, on five sample values.
 `CustomSemigroupoid` tests that the scalar $\otimes$ is associative on a fixed random
-sample, unless `verify_associative=False` is passed. `CustomBilinearForm` checks
+sample, unless `verify_associative=False` is passed. `CustomMagmoid` checks
 nothing. A passing test does not establish a law, since it covers finitely many
 inputs, and associativity of the scalar $\otimes$ does not by itself make composition
 associative.
@@ -217,7 +223,7 @@ $a \otimes b = 1 - a + a b$ [@baczynski2008fuzzy] with the product as its reduct
 $\bigoplus_j x_j = \prod_j x_j$:
 
 ```qvr
-composition material_impl [level=semigroupoid]
+composition material_impl [level=bilinear_form]
 object A : FinSet 3
 object B : FinSet 3
 morphism f : A -> B [role=latent]
@@ -226,8 +232,8 @@ define composed = f >> g
 export composed
 ```
 
-The library registers it at the `Semigroupoid` level, but neither its $\otimes$ nor
-its composition is associative. For one-element objects composition is $\otimes$
+The library registers it as a `Magmoid`, since neither its $\otimes$ nor its
+composition is associative, so a module declares it at the `bilinear_form` level. For one-element objects composition is $\otimes$
 itself, and with every score $0$ the two groupings give $(0 \otimes 0) \otimes 0 = 0$
 and $0 \otimes (0 \otimes 0) = 1$. Parenthesize chains under this rule explicitly. The transformation
 `material_implication` in the table above is a different object, an entrywise map

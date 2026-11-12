@@ -130,9 +130,9 @@ The built-in instances, with the standard name of each structure:
 A [t-norm](https://en.wikipedia.org/wiki/T-norm) is an associative, commutative,
 monotone operation on $[0, 1]$ with unit $1$, used as fuzzy conjunction, and its dual
 t-conorm is the matching fuzzy disjunction [@klement2000triangular]. The class names
-in code are `ProductFuzzyAlgebra`, `BooleanAlgebra`, `LukasiewiczAlgebra`,
+in code are `ProductFuzzyAlgebra`, `BooleanAlgebra`, `StandardMVAlgebra`,
 `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`,
-`MarkovAlgebra`, `RealAlgebra`, `ProbabilityAlgebra`, and `CountingAlgebra`. In QVR
+`MarkovAlgebra`, `RealAlgebra`, `BoundedSumProductAlgebra`, and `CountingAlgebra`. In QVR
 the same instances are named `product_fuzzy`, `boolean`, `lukasiewicz`, `godel`,
 `tropical`, `max_plus`, `log_prob`, `markov`, `real`, `probability`, and `counting`
 ([`composition`](dsl-declarations.md#algebra)).
@@ -175,7 +175,7 @@ The Boolean semiring on $\{0, 1\}$ composes crisp relations: $\otimes$ is AND,
 $\bigoplus$ is OR (maximum), $\bigwedge$ is AND over a set (minimum), and
 $\neg a = 1 - a$. Its morphisms are the ordinary relations between finite sets.
 
-### LukasiewiczAlgebra
+### StandardMVAlgebra
 
 The [Łukasiewicz t-norm](https://en.wikipedia.org/wiki/T-norm) is
 $a \otimes b = \max(a + b - 1, 0)$, so two weak premises can combine to a score of
@@ -209,14 +209,14 @@ categories [@lawvere1973metric].
 ```python
 from quivers.core.algebras import (
     PRODUCT_FUZZY, BOOLEAN,
-    LukasiewiczAlgebra, GodelAlgebra, TropicalAlgebra
+    StandardMVAlgebra, GodelAlgebra, TropicalAlgebra
 )
 
 # Use singletons
 qnt = PRODUCT_FUZZY
 
 # Or instantiate custom algebras
-luka = LukasiewiczAlgebra()
+luka = StandardMVAlgebra()
 godel = GodelAlgebra()
 tropical = TropicalAlgebra()
 ```
