@@ -4,6 +4,18 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Only algebras that satisfy the semiring laws claim associative composition.** `Algebra` no longer subclasses `Semigroupoid`. The new `Semiring` class (an `Algebra` and a `Semigroupoid`) holds the algebras whose operations form a commutative semiring, so that composition is associative and unital: `BOOLEAN`, `GODEL`, `TROPICAL`, `MAX_PLUS`, `LOG_PROB`, `REAL`, `COUNTING`, `MARKOV`, `BOOLEAN_DUAL` and `DUAL_GODEL`. `IdempotentSemiring` marks those whose join is idempotent (all but `LOG_PROB`, `REAL`, `COUNTING` and `MARKOV`), and `BOOLEAN.dual()` and `GODEL.dual()` return a `DualIdempotentSemiring`. `PRODUCT_FUZZY`, `LUKASIEWICZ`, `PROBABILITY`, `REICHENBACH` and `DUAL_LUKASIEWICZ` fail distributivity: they remain `Algebra` instances, compose with identities, and are no longer `Semigroupoid` instances, so `composition product_fuzzy [level=semigroupoid]` is a level mismatch. `material_implication()` returns a `CustomMagmoid`, since its composition is not associative; declare it with `[level=bilinear_form]`.
+- **`BilinearForm` is renamed `Magmoid`.** A rule at this level is declared to satisfy no composition law, which is a magmoid, not a bilinear form. `CustomBilinearForm` is `CustomMagmoid` and `bilinear_form` is `magmoid`. The DSL level keyword `bilinear_form` is unchanged and selects a `Magmoid`.
+
+### Fixed
+
+- **The dual algebras compose matrices.** `DualAlgebra.compose`, and so composition under `REICHENBACH`, `BOOLEAN_DUAL`, `DUAL_LUKASIEWICZ` and `DUAL_GODEL`, broadcasts its operands, where it raised a stack-size error for every pair of matrices.
+- **The noisy-OR join treats zero as zero.** `ProductFuzzyAlgebra.join`, `ProductFuzzyAlgebra.compose` and `noisy_or_contract` keep terms below `1 - EPS` but no longer raise zeros to `EPS`, so a reduction of zeros is exactly zero and the identity tensor is an identity for composition at every object size, where `n` zero terms had added about `n * 1e-7`.
+
 ## [0.55.3] - 2026-11-12
 
 ### Fixed

@@ -81,7 +81,7 @@ from quivers.dsl.ast_nodes import (
 # ``algebra X``, ``semigroupoid X``, ``bilinear_form X``,
 # ``composition_rule X``) to its concrete rule instance.  The
 # type is widened to ``CompositionRule`` (the common parent of
-# ``Algebra``, ``Semigroupoid``, and ``BilinearForm``) so
+# ``Algebra``, ``Semigroupoid``, and ``Magmoid``) so
 # user-defined non-algebra composition rules can be registered
 # alongside the shipped ones.
 _ALGEBRA_REGISTRY: dict[str, "CompositionRule"] = {

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import torch
 
-from quivers.core._util import clamp_probs
+from quivers.core._util import EPS
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 
 
@@ -82,7 +82,7 @@ def noisy_or_contract(
 
     # noisy-OR over shared dimensions in log-space:
     # log(1 - product), sum over shared dims, then 1 - exp(sum)
-    product_clamped = clamp_probs(product)
+    product_clamped = product.clamp(min=0.0, max=1.0 - EPS)
     log_complement = torch.log1p(-product_clamped)
 
     # shared dims are at positions [n_domain, n_domain + n_shared)
@@ -119,7 +119,7 @@ def noisy_or_reduce(
     if isinstance(dim, int):
         dim = (dim,)
 
-    t_clamped = clamp_probs(t)
+    t_clamped = t.clamp(min=0.0, max=1.0 - EPS)
     log_complement = torch.log1p(-t_clamped)
     sum_log = log_complement.sum(dim=dim)
 

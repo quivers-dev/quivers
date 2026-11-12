@@ -1,4 +1,4 @@
-"""Tests for :class:`BilinearForm` (non-associative composition) and
+"""Tests for :class:`Magmoid` (non-associative composition) and
 :class:`WiringRule` / :class:`EinsumWiring` (operadic n-ary
 contractions).
 
@@ -17,12 +17,12 @@ from quivers.core.algebras import (
     BOOLEAN,
     PRODUCT_FUZZY,
     REAL,
-    BilinearForm,
+    Magmoid,
     CompositionRule,
-    CustomBilinearForm,
+    CustomMagmoid,
     Algebra,
     Semigroupoid,
-    bilinear_form,
+    magmoid,
 )
 from quivers.core.wiring import (
     EinsumWiring,
@@ -32,14 +32,14 @@ from quivers.core.wiring import (
 
 
 # ---------------------------------------------------------------------------
-# BilinearForm hierarchy
+# Magmoid hierarchy
 # ---------------------------------------------------------------------------
 
 
-def test_bilinear_form_is_composition_rule_not_semigroupoid() -> None:
-    assert issubclass(BilinearForm, CompositionRule)
-    assert not issubclass(BilinearForm, Semigroupoid)
-    assert not issubclass(BilinearForm, Algebra)
+def test_magmoid_is_composition_rule_not_semigroupoid() -> None:
+    assert issubclass(Magmoid, CompositionRule)
+    assert not issubclass(Magmoid, Semigroupoid)
+    assert not issubclass(Magmoid, Algebra)
 
 
 def _signed_dot(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -57,48 +57,48 @@ def _sum_reduce(t: torch.Tensor, dim) -> torch.Tensor:
     return t.sum(dim=dim)
 
 
-def test_bilinear_form_factory_builds_instance() -> None:
-    bf = bilinear_form("SignedDot", _signed_dot, _sum_reduce)
-    assert isinstance(bf, BilinearForm)
-    assert isinstance(bf, CompositionRule)
-    assert not isinstance(bf, Semigroupoid)
-    assert not isinstance(bf, Algebra)
-    assert bf.name == "SignedDot"
+def test_magmoid_factory_builds_instance() -> None:
+    mg = magmoid("SignedDot", _signed_dot, _sum_reduce)
+    assert isinstance(mg, Magmoid)
+    assert isinstance(mg, CompositionRule)
+    assert not isinstance(mg, Semigroupoid)
+    assert not isinstance(mg, Algebra)
+    assert mg.name == "SignedDot"
 
 
-def test_bilinear_form_compose_works() -> None:
-    bf = bilinear_form("SignedDot", _signed_dot, _sum_reduce)
+def test_magmoid_compose_works() -> None:
+    mg = magmoid("SignedDot", _signed_dot, _sum_reduce)
     a = torch.tensor([[0.3, 0.5], [0.7, 0.2]])
     b = torch.tensor([[0.6, 0.1], [0.4, 0.8]])
-    out = bf.compose(a, b, n_contract=1)
+    out = mg.compose(a, b, n_contract=1)
     assert tuple(out.shape) == (2, 2)
 
 
-def test_bilinear_form_non_associative_in_practice() -> None:
+def test_magmoid_non_associative_in_practice() -> None:
     """Confirm that the example op really isn't associative —
-    documents *why* BilinearForm exists."""
-    bf = bilinear_form("SignedDot", _signed_dot, _sum_reduce)
+    documents *why* Magmoid exists."""
+    mg = magmoid("SignedDot", _signed_dot, _sum_reduce)
     a, b, c = torch.tensor(0.3), torch.tensor(0.5), torch.tensor(0.7)
-    left = bf.tensor_op(bf.tensor_op(a, b), c)
-    right = bf.tensor_op(a, bf.tensor_op(b, c))
+    left = mg.tensor_op(mg.tensor_op(a, b), c)
+    right = mg.tensor_op(a, mg.tensor_op(b, c))
     assert not torch.allclose(left, right)
 
 
-def test_bilinear_form_skips_associativity_check() -> None:
-    """A non-associative op constructs because BilinearForm makes no
+def test_magmoid_skips_associativity_check() -> None:
+    """A non-associative op constructs because Magmoid makes no
     associativity promise."""
-    bf = CustomBilinearForm("SignedDot", _signed_dot, _sum_reduce)
-    assert bf.name == "SignedDot"
+    mg = CustomMagmoid("SignedDot", _signed_dot, _sum_reduce)
+    assert mg.name == "SignedDot"
 
 
-def test_bilinear_form_lacks_algebra_operations() -> None:
-    bf = bilinear_form("SignedDot", _signed_dot, _sum_reduce)
+def test_magmoid_lacks_algebra_operations() -> None:
+    mg = magmoid("SignedDot", _signed_dot, _sum_reduce)
     with pytest.raises(AttributeError):
-        _ = bf.unit
+        _ = mg.unit
     with pytest.raises(AttributeError):
-        _ = bf.zero
+        _ = mg.zero
     with pytest.raises(AttributeError):
-        bf.identity_tensor((3,))
+        mg.identity_tensor((3,))
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +249,12 @@ def test_einsum_wiring_with_semigroupoid() -> None:
     assert torch.allclose(out, via_compose, atol=1e-6)
 
 
-def test_einsum_wiring_with_bilinear_form() -> None:
-    """An ``EinsumWiring`` works with a BilinearForm rule too."""
-    bf = bilinear_form("SignedDot", _signed_dot, _sum_reduce)
-    wiring = einsum_wiring(bf, "ij, jk -> ik")
+def test_einsum_wiring_with_magmoid() -> None:
+    """An ``EinsumWiring`` works with a Magmoid rule too."""
+    mg = magmoid("SignedDot", _signed_dot, _sum_reduce)
+    wiring = einsum_wiring(mg, "ij, jk -> ik")
     a = torch.tensor([[0.3, 0.5], [0.7, 0.2]])
     b = torch.tensor([[0.6, 0.4], [0.1, 0.9]])
     out = wiring.apply(a, b)
-    via_compose = bf.compose(a, b, n_contract=1)
+    via_compose = mg.compose(a, b, n_contract=1)
     assert torch.allclose(out, via_compose, atol=1e-6)

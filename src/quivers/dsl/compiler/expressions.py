@@ -10,7 +10,7 @@ from quivers.core.morphisms import identity as make_identity
 from quivers.core.morphisms import cap as _make_cap, cup as _make_cup
 from quivers.core.algebras import (
     Algebra,
-    BilinearForm,
+    Magmoid,
     CompositionRule,
     Semigroupoid,
 )
@@ -121,7 +121,7 @@ class _ExpressionsMixin:
             if isinstance(rule, Semigroupoid)
             else (
                 "bilinear_form"
-                if isinstance(rule, BilinearForm)
+                if isinstance(rule, Magmoid)
                 else "composition_rule"
             )
         )

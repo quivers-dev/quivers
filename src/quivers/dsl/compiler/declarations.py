@@ -19,11 +19,11 @@ import torch
 from quivers.analysis.init_spec import _algebra_init_spec
 from quivers.core.algebras import (
     Algebra,
-    BilinearForm,
+    Magmoid,
     BooleanAlgebra,
     CompositionRule,
     CustomAlgebra,
-    CustomBilinearForm,
+    CustomMagmoid,
     CustomSemigroupoid,
     GodelAlgebra,
     LukasiewiczAlgebra,
@@ -441,7 +441,7 @@ class _DeclarationsMixin:
           declared level.
         * non-empty body: ``decl.body`` defines the rule's operations
           inline; the compiler synthesises a ``CustomAlgebra`` /
-          ``CustomSemigroupoid`` / ``CustomBilinearForm`` of the
+          ``CustomSemigroupoid`` / ``CustomMagmoid`` of the
           declared level.
 
         The declaration's only option key is ``level``; the parser
@@ -474,7 +474,7 @@ class _DeclarationsMixin:
         required = {
             "algebra": Algebra,
             "semigroupoid": Semigroupoid,
-            "bilinear_form": BilinearForm,
+            "bilinear_form": Magmoid,
             "rule": CompositionRule,
         }
         required_class = required.get(level, CompositionRule)
@@ -484,8 +484,8 @@ class _DeclarationsMixin:
                 if isinstance(rule, Algebra)
                 else "Semigroupoid"
                 if isinstance(rule, Semigroupoid)
-                else "BilinearForm"
-                if isinstance(rule, BilinearForm)
+                else "Magmoid"
+                if isinstance(rule, Magmoid)
                 else "CompositionRule"
             )
             raise CompileError(
@@ -579,7 +579,7 @@ class _DeclarationsMixin:
                 join=join_wrapped,
                 verify_associative=False,
             )
-        return CustomBilinearForm(
+        return CustomMagmoid(
             name=decl.name,
             tensor_op=tensor_op,
             join=join_wrapped,

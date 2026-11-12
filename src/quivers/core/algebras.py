@@ -1,22 +1,23 @@
-"""Algebras: enrichment algebras for V-enriched categories.
+"""Algebras: the operations that parameterize tensor composition.
 
-A commutative algebra Q = (L, ⊗, ⋁, ⋀, ¬, I, ⊥) provides the algebraic
-structure that parameterizes composition in a V-enriched category:
+A commutative algebra Q = (L, ⊗, ⋁, ⋀, ¬, I, ⊥) defines the composition
+of L-valued matrices
 
     (g ∘ f)(a, c) = ⋁_b f(a, b) ⊗ g(b, c)
 
-Different operation pairs give different finite weighted contractions:
+and the identity matrix (I on the diagonal, ⊥ elsewhere). Composition
+is associative exactly when the operations satisfy the commutative-
+semiring laws; those algebras are instances of `Semiring`, and for them
+finite sets and L-valued matrices form a category (for instance Rel
+under `BooleanAlgebra`, or finite stochastic matrices under
+`MarkovAlgebra`). The remaining algebras, such as the default
+`ProductFuzzyAlgebra` (product with noisy-OR), fail distributivity, so
+their composition is unital but depends on bracketing. ``join`` names
+the implemented reduction and is a lattice supremum only for an
+`IdempotentSemiring`.
 
-    - BooleanAlgebra:  {0,1} with ∧, ∨         → Rel (crisp relations)
-    - ProductFuzzyAlgebra: [0,1] with ×, noisy-OR → fuzzy weighted contraction
-
-The interface does not establish categorical laws. Associative matrix
-composition requires appropriate distributivity and reduction laws;
-the product/noisy-OR pair fails distributivity. ``join`` names the
-implemented reduction and need not be a lattice supremum.
-
-The enrichment determines composition, identity, marginalization, and
-quantification, all derived from the algebra's operations.
+The algebra also supplies marginalization and quantification, derived
+from its operations.
 """
 
 from __future__ import annotations
@@ -27,30 +28,33 @@ from collections.abc import Callable
 
 import torch
 
-from quivers.core._util import clamp_probs
+from quivers.core._util import EPS
 
 
 class CompositionRule(ABC):
-    """An associative-or-loose binary tensor contraction.
+    """A binary tensor contraction that promises no algebraic law.
 
     Defines the V-enriched composition kernel
     ``(f >> g)[i, k] = ⋁_j f[i, j] ⊗ g[j, k]`` from the two
     primitive operations ``tensor_op`` (binary ⊗) and ``join``
     (reduction ⋁). No identity element is required at this level.
 
-    The hierarchy below this class is:
+    The hierarchy below this class records which laws composition
+    satisfies:
 
-    * `CompositionRule` — the bare composition surface.
-    * `Semigroupoid` — marks an intended associativity contract.
-      Associativity of scalar ``tensor_op`` alone does not establish
-      associativity of matrix composition; compatible reduction and
-      distributivity laws are also needed.
-    * `Algebra` — supplies ``unit`` / ``zero``, meet, and negation,
-      enabling the runtime's identity and compact-style operations.
-      Membership does not prove the mathematical laws of those operations.
+    * `Magmoid`: composition is declared to satisfy no law, so the
+      caller fixes every association order.
+    * `Semigroupoid`: composition is associative.
+    * `Algebra`: supplies ``unit`` and ``zero`` (and meet and negation),
+      so composition has two-sided identities. Associativity is not
+      implied.
+    * `Semiring`: an `Algebra` whose operations satisfy the
+      commutative-semiring laws, which makes composition associative
+      and unital, so finite sets and tensors form a category.
+    * `IdempotentSemiring`: a `Semiring` whose ``join`` is idempotent.
 
     Operations that need identity check at runtime that the
-    composition rule is at least a `Algebra`; a clear
+    composition rule is at least an `Algebra`; a clear
     error is raised if a non-algebra rule is fed in.
     """
 
@@ -111,48 +115,63 @@ class CompositionRule(ABC):
 
 
 class Semigroupoid(CompositionRule):
-    """A marker interface intended for associative composition rules.
+    """A composition rule whose composition is associative.
 
-    Semantically a `CompositionRule` with the marker
-    promise of associativity. No identity, no compact-closed
-    structure, no negation — those need `Algebra`.
+    A semigroupoid is a category without the requirement of identity
+    morphisms: composition is defined for composable pairs and is
+    associative [Tilson (1987)]. A `CompositionRule` belongs here
+    when ``(f >> g) >> h == f >> (g >> h)`` for all composable
+    tensors. Associativity of the scalar ``tensor_op`` alone does not
+    suffice: matrix composition also needs ``join`` to be associative
+    and commutative and ``tensor_op`` to distribute over it.
 
-    The marker does not check the contract. In particular, the
-    material-implication operation ``1 - a + a*b`` is not associative,
-    and associative scalar multiplication alone would not suffice
-    without the required reduction and distributivity laws.
+    References
+    ----------
+    Tilson, B. (1987). Categories as algebra: an essential ingredient
+    in the theory of monoids. *Journal of Pure and Applied Algebra*,
+    48(1-2), 83-198.
+    [doi:10.1016/0022-4049(87)90108-3](https://doi.org/10.1016/0022-4049(87)90108-3)
     """
 
     pass
 
 
-class BilinearForm(CompositionRule):
-    """A composition rule with **no** associativity guarantee.
+class Magmoid(CompositionRule):
+    """A composition rule declared to satisfy no law.
 
-    ``(f >> g)`` is still well-defined as a binary tensor
-    contraction, but ``(f >> g) >> h`` may differ from
-    ``f >> (g >> h)``. Callers fix an association order
-    explicitly — the type system records that the operation
-    isn't associative so downstream optimizations can't reorder
-    composition chains.
+    A magmoid is a quiver with a binary composition operation and no
+    further axioms: neither associativity nor identities are required
+    [Arnold and Dauchet (1978)]. It is to a category what a magma is to
+    a monoid. ``(f >> g) >> h`` may differ from ``f >> (g >> h)``, so
+    callers fix an association order explicitly, and the type records
+    that composition chains may not be reordered.
 
-    Examples include signed-dot-product compositions (sign
-    flipping breaks associativity), top-k truncating compositions
-    (early truncation isn't commutative with later contractions),
-    and attention-style softmax-then-multiply rules.
+    Examples include signed-dot-product compositions, top-k
+    truncating compositions, and the material-implication rule of
+    `material_implication`. A rule that is associative should be
+    declared as a `Semigroupoid` instead.
 
-    Sibling of `Semigroupoid` under
-    `CompositionRule`: ``BilinearForm`` *opts out* of the
-    associativity promise that ``Semigroupoid`` carries; a rule
-    that's actually associative should be declared as
-    ``Semigroupoid`` instead.
+    References
+    ----------
+    Arnold, A., and Dauchet, M. (1978). Théorie des magmoïdes (I).
+    *RAIRO Informatique théorique*, 12(3), 235-257.
+    [doi:10.1051/ita/1978120302351](https://doi.org/10.1051/ita/1978120302351)
     """
 
     pass
 
 
-class Algebra(Semigroupoid):
-    """Abstract commutative algebra for V-enriched categories.
+class Algebra(CompositionRule):
+    """Abstract commutative algebra for V-enriched composition.
+
+    An algebra supplies the operations ``(⊗, ⋁, ⋀, ¬)`` and the
+    elements ``I`` (``unit``) and ``⊥`` (``zero``). Every shipped
+    algebra satisfies ``I ⊗ a = a``, ``⊥ ⊗ a = ⊥`` and ``⋁(a, ⊥) = a``,
+    so the identity tensor is a two-sided identity for composition.
+    Associativity of composition is a further property, held exactly
+    by the `Semiring` subclasses; an `Algebra` that is not a
+    `Semiring` (``PRODUCT_FUZZY``, ``LUKASIEWICZ``, ``PROBABILITY`` and
+    their duals) composes with identities but not associatively.
 
     Subclasses must implement the six primitive operations.
     Composition and identity are derived but overridable.
@@ -357,26 +376,30 @@ class Algebra(Semigroupoid):
         return getattr(self, "name", None) == getattr(other, "name", None)
 
     def dual(self) -> Algebra:
-        """The dual algebra under de Morgan negation.
+        """The role-swapped dual algebra.
 
-        For a commutative algebra with involution ``N`` (``negate``),
-        the dual carries
+        The dual uses the base ``join`` (as a binary operation) for its
+        ``tensor_op``, the base ``tensor_op`` (folded as a reduction)
+        for its ``join``, and swaps ``unit`` and ``zero``:
 
-            tensor_op^op(a, b) = N(N(a) ⋁ N(b))
-            join^op(a_i)       = N(⋀_i N(a_i)) = N(⊗_i N(a_i))   (finite I)
-
-        Unit and zero swap:
-
+            tensor_op^op(a, b) = a ⋁ b
+            join^op(a_1, ..., a_n) = a_1 ⊗ ... ⊗ a_n
             1^op = 0,    0^op = 1.
 
-        For ProductFuzzyAlgebra this yields the role-swapped pair
-        ``(⊗ = noisy-OR, ⋁ = product reduction)``, which is the
-        canonical Reichenbach-flavour probabilistic-implication
-        composition rule.
+        When ``⊗`` is a t-norm ``T`` and ``⋁`` is its De Morgan dual
+        t-conorm ``S(a, b) = N(T(N(a), N(b)))`` under the strong negation
+        ``N(a) = 1 - a``, the swap exchanges a t-norm with its dual
+        t-conorm. For ``ProductFuzzyAlgebra`` this yields the pair
+        ``(⊗ = probabilistic sum, ⋁ = product reduction)``.
 
-        The default implementation requires `negate` to be a
-        true involution; subclasses with non-involutive lattices
-        should override.
+        Returns
+        -------
+        Algebra
+            The dual. `BooleanAlgebra` and `GodelAlgebra` return a
+            `DualIdempotentSemiring`, since swapping a distributive
+            lattice's join and meet gives a distributive lattice again;
+            every other base returns a `DualAlgebra`, which need not be
+            a semiring even when the base is one.
         """
         return DualAlgebra(self)
 
@@ -384,33 +407,75 @@ class Algebra(Semigroupoid):
         return f"{type(self).__name__}()"
 
 
+class Semiring(Algebra, Semigroupoid):
+    """An algebra whose operations form a commutative semiring.
+
+    A commutative semiring ``(L, ⊕, ⊗, 0, 1)`` has ``(L, ⊕, 0)`` and
+    ``(L, ⊗, 1)`` commutative monoids, ``⊗`` distributing over ``⊕``
+    on both sides, and ``0`` annihilating ``⊗`` [Golan (1999)]. Here
+    ``⊕`` is the binary form of ``join``, ``0`` is ``zero`` and ``1`` is
+    ``unit``. These laws make the composition
+    ``(f >> g)[i, k] = ⊕_j f[i, j] ⊗ g[j, k]`` associative and unital,
+    so finite sets with tensors over ``L`` form a category (the
+    category of ``L``-valued matrices). Membership in this class is a
+    claim that the laws hold; the test suite checks every shipped
+    instance against them.
+
+    References
+    ----------
+    Golan, J. S. (1999). *Semirings and their Applications*. Springer.
+    [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
+    """
+
+    pass
+
+
+class IdempotentSemiring(Semiring):
+    """A commutative semiring whose addition is idempotent.
+
+    Additive idempotence, ``a ⊕ a = a`` for every ``a``, makes ``⊕`` the
+    join of the partial order ``a ≤ b ⟺ a ⊕ b = b`` [Golan (1999)].
+    On finite carriers of composition this is the structure that a
+    quantale restricts to, and it is what the fuzzy powerset monad
+    needs (see `quivers.monadic.monads.FuzzyPowersetMonad`).
+
+    References
+    ----------
+    Golan, J. S. (1999). *Semirings and their Applications*. Springer.
+    [doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
+    """
+
+    pass
+
+
 class DualAlgebra(Algebra):
-    """The de-Morgan dual of an involutive commutative algebra.
+    """The role-swapped dual of a commutative algebra.
 
     For a t-norm / t-conorm pair ``(T, S)`` related by the strong
     negation ``N`` (``S(a, b) = N(T(N(a), N(b)))``), the dual
     algebra carries the role-swapped pair:
 
-        tensor_op^op = base.join         (reducing as a binary op)
-        join^op      = base.tensor_op    (reducing as a fold)
-        meet^op      = base.join         (along whatever axis)
+        tensor_op^op = base.join         (as a binary operation)
+        join^op      = base.tensor_op    (folded as a reduction)
+        meet^op      = base.join
         unit^op      = base.zero
         zero^op      = base.unit
-        negate^op    = base.negate       (involution self-dualizes)
+        negate^op    = base.negate
 
     Concretely for the built-in pairs:
 
-    * ``ProductFuzzyAlgebra.dual``: ⊗ = noisy-OR (``a + b - ab``),
-      ⋁ = product (``∏ a_i``).
-    * ``Lukasiewicz.dual``: ⊗ = bounded sum (``min(1, a + b)``),
-      ⋁ = bounded difference / repeated Łukasiewicz t-norm.
-    * ``Godel.dual``: ⊗ = max, ⋁ = min.
-    * ``Boolean.dual``: ⊗ = OR, ⋁ = AND.
+    * ``PRODUCT_FUZZY.dual()``: ⊗ = probabilistic sum (``a + b - ab``),
+      ⋁ = product reduction (``∏ a_i``).
+    * ``LUKASIEWICZ.dual()``: ⊗ = bounded sum (``min(1, a + b)``),
+      ⋁ = folded Łukasiewicz t-norm.
+    * ``GODEL.dual()``: ⊗ = max, ⋁ = min.
+    * ``BOOLEAN.dual()``: ⊗ = OR, ⋁ = AND.
 
-    Returned by `Algebra.dual`. Subclasses with
-    non-involutive negation (CountingAlgebra, …) should override
-    ``Algebra.dual`` to raise rather than allow dual construction
-    that breaks the de-Morgan equations.
+    The dual of a semiring need not be a semiring: the dual of
+    ``PRODUCT_FUZZY`` composes with identities but not associatively.
+    The Boolean and Gödel duals are distributive lattices with the
+    roles of join and meet exchanged, and are returned as the
+    `DualIdempotentSemiring` subclass.
     """
 
     def __init__(self, base: Algebra) -> None:
@@ -427,7 +492,10 @@ class DualAlgebra(Algebra):
         return self._name
 
     def tensor_op(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Dual ⊗ = base ⋁ (as a binary reduction).
+        # Dual ⊗ = base ⋁ (as a binary reduction). The operands are
+        # broadcast first so that composition's outer-product layout
+        # stacks equal shapes.
+        a, b = torch.broadcast_tensors(a, b)
         stacked = torch.stack([a, b], dim=-1)
         return self._base.join(stacked, dim=-1)
 
@@ -466,6 +534,18 @@ class DualAlgebra(Algebra):
         """Fold ``op`` along ``dim`` of ``t``. Used to lift the
         base's binary tensor_op into a reduction for the dual join."""
         return _fold_along_dim(op, t, dim)
+
+
+class DualIdempotentSemiring(DualAlgebra, IdempotentSemiring):
+    """The dual of a distributive-lattice algebra.
+
+    Returned by `BooleanAlgebra.dual` and `GodelAlgebra.dual`. Swapping
+    the join and meet of a distributive lattice yields a distributive
+    lattice, so the dual is again an idempotent commutative semiring:
+    ``max`` (or OR) distributes over ``min`` (or AND), the unit of
+    ``max`` is the bottom and the bottom of the reversed order, the old
+    top, annihilates ``max``.
+    """
 
 
 def _fold_along_dim(
@@ -625,10 +705,10 @@ class CustomSemigroupoid(Semigroupoid):
     """User-defined `Semigroupoid` built from callable
     operations.
 
-    Use for composition rules that are associative under their
-    ``tensor_op`` but lack an identity element — Reichenbach-style
-    material implication composition, weighted shortest-path on
-    a non-pointed lattice, etc. Callers who want a full algebra
+    Use for composition rules whose composition is associative but
+    which lack an identity element, for instance weighted shortest
+    paths over a semiring without a multiplicative unit. Callers who
+    want a full algebra
     (with identity, dagger, compact-closed structure) should use
     `CustomAlgebra` instead.
 
@@ -644,6 +724,12 @@ class CustomSemigroupoid(Semigroupoid):
         When ``True`` (default) checks ``tensor_op`` is associative
         on a fixed pseudo-random sample at construction time.  Set
         ``False`` to skip the smoke test.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is empty, or if ``verify_associative`` is set and
+        ``tensor_op`` fails the associativity check.
     """
 
     def __init__(
@@ -732,18 +818,16 @@ def semigroupoid(
     )
 
 
-class CustomBilinearForm(BilinearForm):
-    """User-defined `BilinearForm` built from callable
-    operations.
+class CustomMagmoid(Magmoid):
+    """User-defined `Magmoid` built from callable operations.
 
-    Use for composition rules whose ``tensor_op`` is **not**
-    associative — for instance signed-dot-product or top-k
-    truncating rules. Callers must pin an association order
-    explicitly when chaining; the runtime doesn't promise that
-    ``(f >> g) >> h == f >> (g >> h)``.
+    Use for composition rules whose composition is not associative,
+    for instance signed-dot-product or top-k truncating rules. Callers
+    must pin an association order explicitly when chaining; the
+    runtime does not promise that ``(f >> g) >> h == f >> (g >> h)``.
 
-    No associativity smoke test runs because the operation may be
-    non-associative.
+    No associativity smoke test runs because a magmoid satisfies no
+    law.
 
     Parameters
     ----------
@@ -753,6 +837,11 @@ class CustomBilinearForm(BilinearForm):
         Binary product (need not be associative).
     join : Callable
         Reduction along an axis.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is empty.
     """
 
     def __init__(
@@ -762,7 +851,7 @@ class CustomBilinearForm(BilinearForm):
         join: Callable[[torch.Tensor, int | tuple[int, ...]], torch.Tensor],
     ) -> None:
         if not name:
-            raise ValueError("CustomBilinearForm: name must be non-empty")
+            raise ValueError("CustomMagmoid: name must be non-empty")
         self._name = str(name)
         self._tensor_op = tensor_op
         self._join = join
@@ -778,15 +867,15 @@ class CustomBilinearForm(BilinearForm):
         return self._join(t, dim)
 
     def __repr__(self) -> str:
-        return f"CustomBilinearForm(name={self._name!r})"
+        return f"CustomMagmoid(name={self._name!r})"
 
 
-def bilinear_form(
+def magmoid(
     name: str,
     tensor_op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     join: Callable[[torch.Tensor, int | tuple[int, ...]], torch.Tensor],
-) -> CustomBilinearForm:
-    """Convenience constructor for `CustomBilinearForm`.
+) -> CustomMagmoid:
+    """Convenience constructor for `CustomMagmoid`.
 
     Parameters
     ----------
@@ -799,23 +888,29 @@ def bilinear_form(
 
     Returns
     -------
-    CustomBilinearForm
+    CustomMagmoid
         The composition rule built from the callables.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is empty.
     """
-    return CustomBilinearForm(name, tensor_op, join)
+    return CustomMagmoid(name, tensor_op, join)
 
 
-def material_implication() -> CustomSemigroupoid:
-    """Reichenbach material implication composition as a Semigroupoid.
+def material_implication() -> CustomMagmoid:
+    """Reichenbach material-implication composition as a `Magmoid`.
 
-    Tensor product is the probabilistic implication
-    ``a → b = 1 - a + a*b``; join is the product reduction.
-    Associative but lacks an identity, so it's a semigroupoid,
-    not an algebra.
+    The tensor product is the Reichenbach implication
+    ``a → b = 1 - a + a*b`` and the join is the product reduction, so
+    ``(f >> g)[i, k] = ∏_j (1 - f[i, j] + f[i, j] g[j, k])``. Neither
+    the scalar implication nor this composition is associative, and
+    no element is a two-sided identity, so the rule is a magmoid.
 
     Returns
     -------
-    CustomSemigroupoid
+    CustomMagmoid
         The material-implication composition rule.
     """
 
@@ -830,22 +925,17 @@ def material_implication() -> CustomSemigroupoid:
             result = result.prod(dim=d)
         return result
 
-    # Material implication isn't actually associative — `(a→b)→c`
-    # ≠ `a→(b→c)` — but its *composition* under join=product is
-    # the well-defined Reichenbach S-implication composition. We
-    # skip the associativity smoke test because the binary ⊗
-    # itself isn't associative; what matters is the composition
-    # algorithm is consistent.
-    return CustomSemigroupoid(
-        "MaterialImplication", _impl, _prod, verify_associative=False
-    )
+    return CustomMagmoid("MaterialImplication", _impl, _prod)
 
 
 class ProductFuzzyAlgebra(Algebra):
     """[0,1] with product t-norm and probabilistic sum (noisy-OR).
 
-    This is the enrichment for the Kleisli category of the fuzzy
-    powerset monad with the product t-norm:
+    The product t-norm does not distribute over the probabilistic
+    sum (``0.5 · (0.5 ⊕ 0.5) = 0.375`` while
+    ``(0.5 · 0.5) ⊕ (0.5 · 0.5) = 0.4375``), so this algebra is not a
+    semiring and composition is unital but not associative: chains of
+    ``>>`` depend on their bracketing. The operations are
 
         ⊗ = product:      a ⊗ b = a * b
         ⋁ = noisy-OR:     ⋁_i x_i = 1 - ∏_i (1 - x_i)
@@ -869,7 +959,7 @@ class ProductFuzzyAlgebra(Algebra):
         if isinstance(dim, int):
             dim = (dim,)
 
-        t_clamped = clamp_probs(t)
+        t_clamped = t.clamp(min=0.0, max=1.0 - EPS)
         log_complement = torch.log1p(-t_clamped)
         sum_log = log_complement.sum(dim=dim)
 
@@ -931,7 +1021,7 @@ class ProductFuzzyAlgebra(Algebra):
         product = m_expanded * n_expanded
 
         # log-space noisy-OR for stability
-        product_clamped = clamp_probs(product)
+        product_clamped = product.clamp(min=0.0, max=1.0 - EPS)
         log_complement = torch.log1p(-product_clamped)
 
         contract_dims = tuple(range(n_domain, n_domain + n_shared))
@@ -940,7 +1030,7 @@ class ProductFuzzyAlgebra(Algebra):
         return -torch.expm1(sum_log)
 
 
-class BooleanAlgebra(Algebra):
+class BooleanAlgebra(IdempotentSemiring):
     """{0, 1} with logical AND and OR.
 
     The enrichment for the category Rel of crisp binary relations:
@@ -999,6 +1089,16 @@ class BooleanAlgebra(Algebra):
     def zero(self) -> float:
         return 0.0
 
+    def dual(self) -> Algebra:
+        """The dual algebra, an idempotent commutative semiring.
+
+        Returns
+        -------
+        Algebra
+            A `DualIdempotentSemiring` over this algebra.
+        """
+        return DualIdempotentSemiring(self)
+
 
 # ============================================================================
 # Łukasiewicz / Gödel t-norm pair on [0, 1]
@@ -1050,7 +1150,7 @@ class LukasiewiczAlgebra(Algebra):
         return 0.0
 
 
-class GodelAlgebra(Algebra):
+class GodelAlgebra(IdempotentSemiring):
     """[0,1] with Gödel (min) t-norm.
 
     ⊗ = min,   ⋁ = max,   ⋀ = min,
@@ -1092,13 +1192,23 @@ class GodelAlgebra(Algebra):
     def zero(self) -> float:
         return 0.0
 
+    def dual(self) -> Algebra:
+        """The dual algebra, an idempotent commutative semiring.
+
+        Returns
+        -------
+        Algebra
+            A `DualIdempotentSemiring` over this algebra.
+        """
+        return DualIdempotentSemiring(self)
+
 
 # ============================================================================
 # Tropical / max-plus / log-prob semirings
 # ============================================================================
 
 
-class TropicalAlgebra(Algebra):
+class TropicalAlgebra(IdempotentSemiring):
     """[0, ∞] with (+, min) — Lawvere metric spaces.
 
         ⊗ = addition (distances compose),
@@ -1160,8 +1270,8 @@ class TropicalAlgebra(Algebra):
         return result
 
 
-class MaxPlusAlgebra(Algebra):
-    """Max-plus (Viterbi) semiring on (-∞, ∞].
+class MaxPlusAlgebra(IdempotentSemiring):
+    """Max-plus (Viterbi) semiring on ℝ ∪ {-∞}.
 
     Distinct from `TropicalAlgebra` (which is min-plus,
     suited to shortest-path aggregations): the join here is ``max``
@@ -1222,13 +1332,17 @@ class MaxPlusAlgebra(Algebra):
         return result
 
 
-class LogProbAlgebra(Algebra):
-    """Log-space sum-product semiring on (-∞, 0].
+class LogProbAlgebra(Semiring):
+    """Log-space sum-product semiring on [-∞, ∞).
 
     Tensor is real addition (probability multiplication in log-
     space) and join is `torch.logsumexp` (probability
-    summation in log-space). It supports float32 numerics for
-    hierarchical-Bayes log-likelihood pipelines.
+    summation in log-space). ``exp`` is an isomorphism onto the
+    probability semiring ``([0, ∞), +, ·)``, so the carrier must
+    contain positive values: ``logsumexp(0, 0) = log 2``. The join is
+    not idempotent, so this is a semiring and not a lattice. It
+    supports float32 numerics for hierarchical-Bayes log-likelihood
+    pipelines.
 
         ⊗ = +,   ⋁ = logsumexp,   ⋀ = min,
         I = 0 (log 1), ⊥ = -∞ (log 0).
@@ -1305,11 +1419,12 @@ class LogProbAlgebra(Algebra):
 # ============================================================================
 
 
-class RealAlgebra(Algebra):
+class RealAlgebra(Semiring):
     """Sum-product semiring on the real numbers (ℝ, +, ·).
 
-    The canonical numeric semiring: addition is the lattice join,
-    multiplication the monoidal tensor. Use when entries are
+    The canonical numeric semiring: addition is the semiring sum (not
+    a lattice join, since it is not idempotent), multiplication the
+    tensor. Use when entries are
     unbounded real weights with no probability interpretation.
     """
 
@@ -1416,7 +1531,7 @@ class ProbabilityAlgebra(Algebra):
         return result
 
 
-class CountingAlgebra(Algebra):
+class CountingAlgebra(Semiring):
     """Sum-product semiring on the non-negative integers (ℕ, +, ·).
 
     Counting algebra: composition counts the number of distinct
@@ -1516,12 +1631,11 @@ DUAL_GODEL = GODEL.dual()
 # Markov sum-product algebra (Kleisli composition for stochastic kernels)
 # ============================================================================
 #
-# Lives here rather than in ``quivers.core.algebras`` so the
-# core categorical layer can reference it without crossing into
-# the stochastic subpackage (which itself depends on core).
+# Defined in the core layer so that core categorical code can use it
+# without importing the stochastic subpackage, which depends on core.
 
 
-class MarkovAlgebra(Algebra):
+class MarkovAlgebra(Semiring):
     """Sum-product composition for stochastic matrices.
 
     Implements the composition rule of FinStoch:
@@ -1535,10 +1649,10 @@ class MarkovAlgebra(Algebra):
         ¬ = complement (1 - p),
         I = 1.0, ⊥ = 0.0.
 
-    Not a true algebra in the lattice-theoretic sense (Σ is not
-    idempotent), but the composition formula matches the algebra
-    interface and composition of row-stochastic matrices yields
-    row-stochastic matrices.
+    The operations form the probability semiring ``([0, ∞), +, ·)``;
+    its sum is not idempotent, so it is a semiring and not a lattice.
+    Composition is ordinary matrix multiplication, and the composite
+    of row-stochastic matrices is row-stochastic.
     """
 
     @property
@@ -1583,14 +1697,17 @@ MARKOV = MarkovAlgebra()
 __all__ = [
     "CompositionRule",
     "Semigroupoid",
-    "BilinearForm",
+    "Magmoid",
     "Algebra",
+    "Semiring",
+    "IdempotentSemiring",
     "DualAlgebra",
+    "DualIdempotentSemiring",
     "CustomAlgebra",
     "CustomSemigroupoid",
     "semigroupoid",
-    "CustomBilinearForm",
-    "bilinear_form",
+    "CustomMagmoid",
+    "magmoid",
     "material_implication",
     "ProductFuzzyAlgebra",
     "BooleanAlgebra",
