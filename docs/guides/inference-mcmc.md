@@ -30,7 +30,7 @@ They move continuous coordinates only. A discrete latent site is updated by a
 [Gibbs block](#composing-kernels) composed with them or summed out in the model.
 
 MCMC targets the posterior of one run of the program, so `MCMC.run` takes an input
-with one row, such as `x = torch.zeros(1, 1)` and refuses more rows
+with one row, such as `x = torch.zeros(1, 1)`, and refuses more rows
 ([Input rows are independent runs](inference-foundations.md#input-rows-are-independent-runs)).
 Its latents are the sites one run at `(x, observations)` reaches, every position of a
 scanned program cell included.
