@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 139 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 140 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 71 / 139   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 86 / 139   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 103 / 139  |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 91 / 139   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 77 / 139   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 118 / 139  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 104 / 139  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 120 / 139  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 106 / 139  |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 97 / 139   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 96 / 139   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 72 / 140   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 87 / 140   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 104 / 140  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 92 / 140   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 78 / 140   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 119 / 140  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 105 / 140  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 121 / 140  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 107 / 140  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 98 / 140   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 97 / 140   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -140,6 +140,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 | Program                                         | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |-------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `steps/call_lowered_pure`                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/call_step`                               | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/function_linear`                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/function_positions`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
