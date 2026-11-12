@@ -191,7 +191,25 @@ _DOC_MD_FILES = sorted(
 )
 
 
+@pytest.fixture
+def _fresh_torch_state():
+    """Run one page under the process-wide torch state a reader starts
+    from, and put that state back afterwards.
+
+    A page may set process-wide state for its own blocks: the case
+    study sets the default dtype to float64. A reader runs each page in
+    a fresh interpreter, so the next page must not inherit that dtype
+    or the generator state the page's draws left behind; otherwise a
+    page's result depends on which pages ran before it in the session.
+    """
+    dtype = torch.get_default_dtype()
+    with torch.random.fork_rng():
+        yield
+    torch.set_default_dtype(dtype)
+
+
 @pytest.mark.slow
+@pytest.mark.usefixtures("_fresh_torch_state")
 @pytest.mark.parametrize("doc_name", _DOC_MD_FILES)
 def test_gallery_try_it_blocks_execute(doc_name):
     """Execute every ``## Try it`` Python block in the doc. A block
