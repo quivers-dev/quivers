@@ -176,6 +176,8 @@ from quivers.qiec.terms import Computation, Local
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
+from quivers.structural.decoder import Decoder, decoder_draw_message
+from quivers.structural.encoder import Encoder, encoder_draw_message
 from quivers.dsl.compiler._prelude import (
     CompileError,
     _CompiledContraction,
@@ -5595,6 +5597,14 @@ class _ProgramsMixin:
             if isinstance(morph, LearnedFunction):
                 raise CompileError(
                     learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
+            if isinstance(morph, Decoder):
+                raise CompileError(
+                    decoder_draw_message(draw.morphism), draw.line, draw.col
+                )
+            if isinstance(morph, Encoder):
+                raise CompileError(
+                    encoder_draw_message(draw.morphism), draw.line, draw.col
                 )
             if isinstance(morph, torch.nn.Module) and any(
                 isinstance(module, AttentionSource) for module in morph.modules()
