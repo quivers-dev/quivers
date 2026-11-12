@@ -355,7 +355,7 @@ score log_Z = chart.goal_weight()
 ```
 
 Under `LogProb` the score is the log inside weight of the sentence under the deduction's current
-weights, and SVI and NUTS over the program's parameters reach the deduction's weights through it.
+weights, and stochastic variational inference (SVI) and the No-U-Turn Sampler (NUTS) over the program's parameters reach the deduction's weights through it.
 
 A corpus of independent sentences of one length is one input of one run, a table with one sentence
 for each element of a plate $P$:

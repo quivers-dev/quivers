@@ -600,7 +600,7 @@ No-U-Turn Sampler [@neal2011mcmc; @hoffman2014nuts].
 
 A model whose learnable parameters have no prior still denotes a kernel, with the parameters held
 fixed. The module [`quivers.inference.lifts`](../api/inference/lifts.md) turns such a model into a
-[`MonadicProgram`](../api/continuous/programs.md) with an explicit prior, so that SVI and NUTS can
+[`MonadicProgram`](../api/continuous/programs.md) with an explicit prior, so that stochastic variational inference (SVI) and NUTS can
 treat the parameters as latent variables, as in a Bayesian neural network [@mackay1992bayesian]. The
 library calls these functions *Bayesian lifts*. Below, $\theta \in \mathbb R^D$ is the vector of all
 learnable parameters of the wrapped model, $\sigma_\theta > 0$ is a fixed prior scale, and
