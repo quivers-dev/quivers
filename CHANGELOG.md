@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.55.4] - 2026-11-12
+
+### Fixed
+
+- **A grouped marginalization batched over its observation plate reads the observe's `via` map on every target.** In `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]` with `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]`, the Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church renderings weigh word `n` by `theta_tok[token_idx[n]]`, as Stan, the compiled runtime, and the reference machine do, where they had paired it with row `n`'s weights whenever the map was not the identity. A prior whose leading axis is the grouping plate counts as allocated per group whatever axes follow it, and a prior shared by every group sums the rows a group collects before the reduction over the class, as on a coarser grouping plate.
+- **JAGS renders a per-token topic model whose prior gathers each token's document row.** A `let theta_tok = theta[doc_idx]` lowers to `theta_tok[n, k] <- theta[doc_idx[n] + 1, k]`, reading the gathered row one entry per loop iteration, where JAGS had refused the model.
+
 ## [0.55.3] - 2026-11-12
 
 ### Fixed
