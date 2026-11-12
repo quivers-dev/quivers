@@ -84,7 +84,7 @@ The network weights are point estimates, not random variables. Only $z$ and $y$ 
 
 `program vae : Row -> ObsSpace` is the generative model. `sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]` draws one standard-Normal code per row, and `observe y : Row <- decoder(z)` scores each row's observation under the decoder at that row's code. `define reconstruct = encoder >> decoder` is the composite kernel from an observation to the distribution of its reconstruction. The four exports make `prog.encoder`, `prog.decoder` and `prog.reconstruct` available next to the program, and all of them share one set of network weights.
 
-The encoder becomes the variational posterior through the [`Guide`](../api/inference/guide.md#quivers.inference.guides.Guide) interface. A guide supplies `rsample` and `log_prob` for the latent sites; the `EncoderGuide` class below answers both by applying the declared `encoder` kernel to the observed rows. [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) with the [`ELBO`](../api/inference/elbo.md) objective then optimizes the decoder's weights (the program's parameters) and the encoder's weights together, which is Kingma and Welling's training procedure. The library ships no guide class that wraps a declared morphism, so the page writes this one; its two methods are the whole of it.
+The declared `encoder` is the variational posterior. [`AmortizedGuide`](../api/inference/guide.md#quivers.inference.guides.AmortizedGuide) takes the program, its observed sites, and a map from each latent site to the morphism that proposes it and the datum it reads, here `{"z": (encoder, "y")}`: it draws `z` from `encoder(y)` row by row and scores the draw under the same kernel, so one set of encoder weights serves every observation, $q(z_n \mid y_n) = \mathrm{encoder}(y_n)$. The guide's parameters are the encoder's own, and [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) with the [`ELBO`](../api/inference/elbo.md) objective optimizes them together with the decoder's weights (the program's parameters), which is Kingma and Welling's training procedure. `guide.observe` points the same guide at new observations, which is how the held-out checks below get the posterior of data the networks never saw.
 
 ## Try it
 
@@ -144,38 +144,19 @@ print(f"log joint at the true codes: {log_joint_true[0].item():.1f} (hand-writte
 
 ### Training the encoder and decoder by the ELBO
 
-`EncoderGuide` is the amortized posterior. The fit conditions on `y` alone; the codes stay latent and are drawn from the encoder at every step.
+The fit conditions on `y` alone; the codes stay latent and are drawn from the encoder at every step. Before training, the block checks that the guide scores a draw exactly as the declared encoder does: its log density must equal `encoder.log_prob` summed over the rows, to a relative 1e-6.
 
 ```python
-from quivers.inference import ELBO, SVI
-from quivers.inference.guides import Guide
-
-
-class EncoderGuide(Guide):
-    """The amortized posterior q(z | y): the declared encoder applied
-    to every observed row."""
-
-    def __init__(self, model, encoder, y):
-        super().__init__()
-        self._registry = self.build_registry(model, {"y"})
-        self.encoder = encoder
-        self.y = y
-
-    @property
-    def latent_names(self):
-        return ["z"]
-
-    def rsample(self, x):
-        return {"z": self.encoder.rsample(self.y)}
-
-    def log_prob(self, x, sites):
-        total = self.encoder.log_prob(self.y, sites["z"]).sum()
-        return total.expand(x.shape[0])
-
+from quivers.inference import ELBO, SVI, AmortizedGuide
 
 torch.manual_seed(1)
-guide = EncoderGuide(model, encoder, y)
-optim = torch.optim.Adam(list(model.parameters()) + list(encoder.parameters()), lr=3e-3)
+guide = AmortizedGuide(model, {"y"}, {"z": (encoder, "y")}, x=x_in, observations=observations)
+draw = guide.rsample(x_in)
+assert draw["z"].shape == (N, latent_dim)
+assert torch.allclose(guide.log_prob(x_in, draw)[0], encoder.log_prob(y, draw["z"]).sum(), rtol=1e-6)
+assert {id(p) for p in guide.parameters()} == {id(p) for p in encoder.parameters()}
+
+optim = torch.optim.Adam(list(model.parameters()) + list(guide.parameters()), lr=3e-3)
 svi = SVI(model, guide, optim, ELBO())
 losses = [svi.step(x_in, observations) for _ in range(3000)]
 print(f"training ELBO per row: first step {-losses[0] / N:.2f}, last 100 steps {-sum(losses[-100:]) / 100 / N:.2f}")
@@ -188,7 +169,7 @@ Two baselines, both fitted to the same training rows. [Probabilistic PCA](ppca.m
 ```python
 def heldout_elbo(y_eval, particles=20):
     """Monte Carlo ELBO per row on rows the networks never saw."""
-    q = EncoderGuide(model, encoder, y_eval)
+    q = AmortizedGuide(model, {"y"}, {"z": (encoder, "y")}, x=x_in, observations={"y": y_eval})
     with torch.no_grad():
         terms = []
         for _ in range(particles):
@@ -248,8 +229,8 @@ exact = torch.distributions.MultivariateNormal(
 exact_test = float(exact.log_prob(y_lin_test).mean())
 
 model, encoder = linear.morphism, linear.encoder
-guide = EncoderGuide(model, encoder, y_lin)
-optim = torch.optim.Adam(list(model.parameters()) + list(encoder.parameters()), lr=3e-3)
+guide = AmortizedGuide(model, {"y"}, {"z": (encoder, "y")}, x=x_in, observations={"y": y_lin})
+optim = torch.optim.Adam(list(model.parameters()) + list(guide.parameters()), lr=3e-3)
 svi = SVI(model, guide, optim, ELBO())
 for _ in range(3000):
     svi.step(x_in, {"y": y_lin})
@@ -269,7 +250,7 @@ With the networks fixed at their trained weights, the program's only latent site
 from quivers.inference import MCMC, NUTSKernel
 
 model, encoder = prog.morphism, prog.encoder
-guide = EncoderGuide(model, encoder, y)
+guide = AmortizedGuide(model, {"y"}, {"z": (encoder, "y")}, x=x_in, observations=observations)
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
 mc = MCMC(kernel, num_warmup=30, num_samples=30, num_chains=1, init_strategy="guide", seed=3)
 result = mc.run(model, x_in, observations, guide=guide)
