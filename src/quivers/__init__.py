@@ -77,12 +77,9 @@ from quivers.monadic.monads import (
     Monad,
     KleisliCategory,
     FuzzyPowersetMonad,
-    FreeMonoidMonad,
 )
 from quivers.categorical.adjunctions import (
     Adjunction,
-    ForgetfulFunctor,
-    FreeForgetfulAdjunction,
 )
 from quivers.enriched.kan_extensions import (
     ObjectMap,
@@ -106,7 +103,6 @@ from quivers.categorical.base_change import (
 )
 from quivers.monadic.distributive_laws import (
     DistributiveLaw,
-    FreeMonoidPowersetLaw,
 )
 
 # -- new extensions --
@@ -114,7 +110,6 @@ from quivers.monadic.distributive_laws import (
 from quivers.monadic.comonads import (
     Comonad,
     CoKleisliCategory,
-    DiagonalComonad,
     CofreeComonad,
 )
 from quivers.monadic.algebras import (
@@ -410,11 +405,9 @@ __all__ = [
     "Monad",
     "KleisliCategory",
     "FuzzyPowersetMonad",
-    "FreeMonoidMonad",
     # comonads
     "Comonad",
     "CoKleisliCategory",
-    "DiagonalComonad",
     "CofreeComonad",
     # algebras and coalgebras
     "MonadAlgebra",
@@ -426,8 +419,6 @@ __all__ = [
     "EilenbergMooreCategory",
     # adjunctions
     "Adjunction",
-    "ForgetfulFunctor",
-    "FreeForgetfulAdjunction",
     # kan extensions
     "ObjectMap",
     "Projection",
@@ -446,7 +437,6 @@ __all__ = [
     "FuzzyToBool",
     # distributive laws
     "DistributiveLaw",
-    "FreeMonoidPowersetLaw",
     # weighted limits
     "Weight",
     "Diagram",

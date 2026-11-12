@@ -51,12 +51,12 @@ instances, comonads, algebras, distributive laws, transformers, and
 algebraic effects.
 
 - **[Typeclass Hierarchy](monadic/typeclasses.md)**: `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Foldable`, `Traversable`, `MonadTrans` ABCs
-- **[Stdlib Effect Instances](monadic/instances.md)**: `Identity`, `Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`, `List`
+- **[Stdlib Effect Instances](monadic/instances.md)**: `Identity`, `Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`
 - **[Monad Transformers](monadic/transformers.md)**: `StateT`, `ReaderT`, `MaybeT`, `ContT`, `WriterT`
 - **[Algebraic Effects](monadic/algebraic.md)**: `Operation`, `EffectSignature`, `Handler`, `FreeMonad`
 - **[Bridges](monadic/bridges.md)**: `Kleisli` / `ArrowMonad` connecting the monad and arrow towers
 - **[Typeclass Theories](monadic/theories.md)**: panproto-theory mirrors
-- **[Concrete Monads](monadic/monads.md)**: `KleisliCategory`, `FuzzyPowersetMonad`, `FreeMonoidMonad`
+- **[Concrete Monads](monadic/monads.md)**: `KleisliCategory`, `FuzzyPowersetMonad`
 - **Comonads**, **Algebras**, **Distributive Laws**
 
 ## Arrows Package

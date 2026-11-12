@@ -12,9 +12,7 @@ from quivers.categorical.natural_transformations import (
     ComponentwiseNT,
 )
 from quivers.categorical.adjunctions import (
-    ForgetfulFunctor,
     Adjunction,
-    FreeForgetfulAdjunction,
 )
 from quivers.categorical.monoidal import (
     MonoidalStructure,
@@ -47,9 +45,7 @@ __all__ = [
     "NaturalTransformation",
     "ComponentwiseNT",
     # adjunctions
-    "ForgetfulFunctor",
     "Adjunction",
-    "FreeForgetfulAdjunction",
     # monoidal
     "MonoidalStructure",
     "CartesianMonoidal",
