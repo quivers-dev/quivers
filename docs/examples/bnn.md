@@ -266,11 +266,116 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 print(f"posterior mean noise scale: {float(result.samples['sigma'].mean()):.3f}")
 ```
 
+### The same network declared with latent network weights
+
+A neural kernel can carry the prior itself. Declaring `net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal` makes the weights and biases of its one-hidden-layer `tanh` network [sample sites](../reference/qvr/probabilistic-programs.md#latent-network-weights) of every program that reaches it, each with a `Normal(0, prior_scale)` prior, at the names `net_param_layer0_weight`, `net_param_layer0_bias`, `net_param_weight`, and `net_param_bias`. The network has two output heads: the first is the response mean and the exponential of the second the response scale, so the noise level is a function of the weights rather than a separate site. The source is shorter than the page's main source, but no transpile target lowers a network applied to drawn weights (`param-source:mlp:latent`), which is why the main source writes the layers out.
+
+The checks below were fixed before they were first run. At a traced draw of the weights, the compiled runtime must match a hand-written float64 density to a relative 1e-5 and the reference machine to 1e-9, and an oracle with prior scale 2 must disagree by more than 1e-3. Then NUTS (one chain, 300 warmup and 300 kept draws, tree depth 7) is run on 20 points of $y = \sin(2x) + \mathcal{N}(0, 0.1^2)$, $x$ uniform on $[-1.5, 1.5]$. The posterior-mean network output at 50 held-out inputs must lie within an RMSE of 0.25 of $\sin(2x)$, while the prior-mean output, the same network averaged over 300 prior draws, must be further than 0.5 from it; the noise is 0.1, and the best straight line has an RMSE of about 0.45 on this range.
+
+```python
+import math
+
+import torch.distributions as D
+
+from quivers.dsl import loads
+from quivers.inference import trace
+
+LATENT_SOURCE = """
+# A Bayesian neural network regression: a one-hidden-layer network kernel
+# whose weights and biases are latent sites with Normal(0, 1) priors. The
+# network's first output head is the response mean and the exponential of
+# its second is the response scale, so the noise level is learned with the
+# weights.
+object Feature : Real 1
+object Target : Real 1
+object Row : FinSet 20
+
+morphism net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal
+
+program bnn : Row -> Target
+    observe y : Row <- net(x)
+    return y
+
+export bnn
+"""
+HIDDEN = 8
+SHAPES = {
+    "net_param_layer0_weight": (HIDDEN, 1),
+    "net_param_layer0_bias": (HIDDEN,),
+    "net_param_weight": (2, HIDDEN),
+    "net_param_bias": (2,),
+}
+
+
+def heads(w, inputs):
+    """The network's raw output heads at inputs (n, 1), float64."""
+    hidden = torch.tanh(inputs @ w["net_param_layer0_weight"].T + w["net_param_layer0_bias"])
+    return hidden @ w["net_param_weight"].T + w["net_param_bias"]
+
+
+def latent_oracle(w, inputs, responses, scale=1.0):
+    prior = D.Normal(torch.tensor(0.0, dtype=torch.float64), torch.tensor(scale, dtype=torch.float64))
+    total = sum(float(prior.log_prob(v).sum()) for v in w.values())
+    raw = heads(w, inputs)
+    return total + float(D.Normal(raw[:, 0], raw[:, 1].exp()).log_prob(responses).sum())
+
+
+def host(value):
+    return float(value) if value.dim() == 0 else tuple(host(row) for row in value)
+
+
+def sine_data(seed, n):
+    generator = torch.Generator().manual_seed(seed)
+    inputs = (torch.rand(n, 1, generator=generator) * 3.0 - 1.5).double()
+    return inputs, torch.sin(2.0 * inputs[:, 0]) + 0.1 * torch.randn(n, generator=generator, dtype=torch.float64)
+
+
+torch.manual_seed(0)
+latent_program = loads(LATENT_SOURCE)
+inputs, responses = sine_data(seed=1, n=20)
+recorded = trace(latent_program.morphism, torch.zeros(1, 1), observations={"x": inputs.float(), "y": responses.float()})
+w = {name: recorded.sites[name].value.reshape(shape).double() for name, shape in SHAPES.items()}
+expected = latent_oracle(w, inputs.float().double(), responses.float().double())
+wrong = latent_oracle(w, inputs.float().double(), responses.float().double(), scale=2.0)
+got = float(recorded.log_joint[0])
+run = latent_program.run(
+    "bnn",
+    data={"x": host(inputs.float().double()), "y": host(responses.float().double()[:, None])},
+    sites={name: host(value) for name, value in w.items()},
+    seed=0,
+)
+print(f"compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; prior scale 2 {wrong:.6f}")
+assert math.isclose(got, expected, rel_tol=1e-5)
+assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+assert not math.isclose(got, wrong, rel_tol=1e-3)
+
+inputs, responses = sine_data(seed=2, n=20)
+result = MCMC(NUTSKernel(max_tree_depth=7), num_warmup=300, num_samples=300, num_chains=1, seed=0).run(
+    loads(LATENT_SOURCE).morphism, torch.zeros(1, 1), {"x": inputs.float(), "y": responses.float()}
+)
+grid = torch.linspace(-1.5, 1.5, 50, dtype=torch.float64)[:, None]
+target = torch.sin(2.0 * grid[:, 0])
+draws = {name: result.samples[name].reshape(-1, *shape).double() for name, shape in SHAPES.items()}
+count = next(iter(draws.values())).shape[0]
+posterior_mean = torch.stack([heads({k: v[i] for k, v in draws.items()}, grid)[:, 0] for i in range(count)]).mean(0)
+generator = torch.Generator().manual_seed(3)
+prior_mean = torch.stack(
+    [heads({k: torch.randn(*s, generator=generator, dtype=torch.float64) for k, s in SHAPES.items()}, grid)[:, 0]
+     for _ in range(count)]
+).mean(0)
+posterior_rmse = float(((posterior_mean - target) ** 2).mean().sqrt())
+prior_rmse = float(((prior_mean - target) ** 2).mean().sqrt())
+print(f"held-out RMSE: posterior mean {posterior_rmse:.4f}, prior mean {prior_rmse:.4f}; "
+      f"acceptance {float(result.acceptance_rates.mean()):.2f}")
+assert posterior_rmse < 0.25
+assert prior_rmse > 0.5
+```
+
 ## Categorical perspective
 
 `bnn : Resp -> Target` is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. Its sample steps compose a prior over the parameter space $\mathbb{R}^{13} \times \mathbb{R}_{>0}$ with a likelihood kernel from weights to responses, and the network is the deterministic map inside that kernel from a weight vector and an input to a Normal mean. The posterior predictive at a new input is then the Kleisli composite of the posterior over weights with the same kernel, which is why its spread inherits the posterior's disagreement about the function.
 
-Declaring the weights as sites is what separates this source from a neural kernel such as `morphism net : A -> B [param_source=mlp] ~ Normal`. There the network's weights belong to the morphism's [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource) and are learned as point estimates; no source-level syntax places a prior on them. Here they are random variables of the program, so a single source denotes the whole mixture $\int p(y \mid x, \theta)\, p(\theta \mid \mathcal{D})\, d\theta$.
+Declaring the weights as sites is what separates this source from a neural kernel such as `morphism net : A -> B [param_source=mlp] ~ Normal`, whose network's weights belong to the morphism's [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource) and are learned as point estimates. Here they are random variables of the program, as they are under `weights=latent` in the section above, so a single source denotes the whole mixture $\int p(y \mid x, \theta)\, p(\theta \mid \mathcal{D})\, d\theta$.
 
 ## See also
 
