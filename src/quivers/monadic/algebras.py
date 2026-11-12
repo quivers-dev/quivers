@@ -217,9 +217,7 @@ class ObservedAlgebra(Algebra):
     ) -> None:
         super().__init__(monad, carrier)
         t_carrier = monad.fmap_obj(carrier)
-        self._morphism = observed(
-            t_carrier, carrier, structure_tensor, algebra=algebra
-        )
+        self._morphism = observed(t_carrier, carrier, structure_tensor, algebra=algebra)
         if not self.verify_unit_law(atol):
             raise ValueError(
                 "ObservedAlgebra: the structure map fails the unit law α ∘ η = id"
@@ -378,13 +376,10 @@ class ObservedCoalgebra(Coalgebra):
     ) -> None:
         super().__init__(comonad, carrier)
         w_carrier = comonad.endofunctor.map_object(carrier)
-        self._morphism = observed(
-            carrier, w_carrier, structure_tensor, algebra=algebra
-        )
+        self._morphism = observed(carrier, w_carrier, structure_tensor, algebra=algebra)
         if not self.verify_counit_law(atol):
             raise ValueError(
-                "ObservedCoalgebra: the structure map fails the counit law "
-                "ε ∘ γ = id"
+                "ObservedCoalgebra: the structure map fails the counit law ε ∘ γ = id"
             )
         if not self.verify_coassociativity(atol):
             raise ValueError(

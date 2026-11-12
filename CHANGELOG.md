@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`Alternative_` is the powerset monad over `BOOLEAN`.** Its morphisms are Boolean relations, so its Kleisli composition (the composition of Rel) is associative, where noisy-OR composition under `PRODUCT_FUZZY` was not.
 - **The function-space monad instances act on functions only.** `State`, `Reader`, `Continuation` and `Writer` raise `ValueError` from `fmap` and `lift_a2` when a morphism is not a function, where a row without a unit entry was silently read as mapping to index 0. `GiryMonad.kleisli_compose` raises `ValueError` for a morphism that is not over `MARKOV`.
 
+- **`ArrowMonad` is the monad its arrow determines.** `ArrowMonad(Function())` is the identity monad and `ArrowMonad(Kleisli(m))` is `m` (`a(1, A) ≅ m(A)`), so `fmap_obj`, `pure`, `fmap` and `join` agree in their types; any other arrow raises `TypeError`, since the arrow interface does not expose its hom objects. `FreeMonad.fmap` raises `ValueError` for a morphism that is not a partial function.
+
 ### Fixed
 
 - **`Writer.join` exists at every object, and `Writer` checks its monoid.** The multiplication is reshaped to the carrier's shape, so `join` at `Writer(A)` (needed for associativity) no longer raises a shape error, and an operation that is not associative or whose `unit_index` is not a two-sided unit raises `ValueError` when used.

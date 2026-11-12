@@ -85,7 +85,9 @@ def _decode_function(
     return tuple(outputs)
 
 
-def _function_table(f: Morphism, domain_size: int, codomain_size: int) -> list[int]:
+def _function_table(
+    f: Morphism, domain_size: int, codomain_size: int, partial: bool = False
+) -> list[int]:
     """Read a morphism as a function between flat index sets.
 
     The function-space instances are monads on finite sets and
@@ -102,16 +104,21 @@ def _function_table(f: Morphism, domain_size: int, codomain_size: int) -> list[i
         The size of the flattened domain.
     codomain_size : int
         The size of the flattened codomain.
+    partial : bool
+        Accept a partial function: a row that is all zero is undefined
+        and reported as ``-1``.
 
     Returns
     -------
     list[int]
-        ``table[i]`` is the flat index of the image of ``i``.
+        ``table[i]`` is the flat index of the image of ``i``, or ``-1``
+        where a partial function is undefined.
 
     Raises
     ------
     ValueError
-        If some row of ``f`` is not the indicator of a single element.
+        If some row of ``f`` is not the indicator of a single element
+        (or, with ``partial``, all zero).
     """
     algebra = f.algebra
     unit = float(algebra.unit) if isinstance(algebra, Algebra) else 1.0
@@ -122,9 +129,11 @@ def _function_table(f: Morphism, domain_size: int, codomain_size: int) -> list[i
         row = rows[i]
         hits = [j for j in range(codomain_size) if abs(float(row[j]) - unit) <= 1e-6]
         rest_zero = all(
-            abs(float(row[j]) - zero) <= 1e-6 or j in hits
-            for j in range(codomain_size)
+            abs(float(row[j]) - zero) <= 1e-6 or j in hits for j in range(codomain_size)
         )
+        if partial and not hits and rest_zero:
+            table.append(-1)
+            continue
         if len(hits) != 1 or not rest_zero:
             raise ValueError(
                 "the function-space monad instances act on functions; row "
@@ -458,9 +467,7 @@ class Alternative_(dx.Model):
         # data[step_fn_flat, b_flat, a_flat, b'_flat] = unit iff
         # decode(step_fn_flat)[(a, b)] == b'.
         ab_size = A.size * B.size
-        data = torch.full(
-            (step_fn.cardinality, B.size, A.size, B.size), BOOLEAN.zero
-        )
+        data = torch.full((step_fn.cardinality, B.size, A.size, B.size), BOOLEAN.zero)
         for fn_flat in range(step_fn.cardinality):
             outputs = _decode_function(fn_flat, ab_size, B.size)
             for b_flat in range(B.size):

@@ -102,7 +102,14 @@ _REFERENCE: dict[str, tuple[Algebra, _Binary, _Binary, float, float, list[float]
         0.0,
         [-math.inf, -1.0, 0.0, 1.5],
     ),
-    "Real": (REAL, lambda a, b: a + b, lambda a, b: a * b, 0.0, 1.0, [-2.0, 0.0, 1.0, 3.0]),
+    "Real": (
+        REAL,
+        lambda a, b: a + b,
+        lambda a, b: a * b,
+        0.0,
+        1.0,
+        [-2.0, 0.0, 1.0, 3.0],
+    ),
     "Counting": (
         COUNTING,
         lambda a, b: a + b,
@@ -129,7 +136,14 @@ _REFERENCE: dict[str, tuple[Algebra, _Binary, _Binary, float, float, list[float]
         1.0,
         [0.0, 0.25, 0.5, 0.75],
     ),
-    "Lukasiewicz": (LUKASIEWICZ, _bounded_sum, _luk_tnorm, 0.0, 1.0, [0.0, 0.25, 0.5, 0.75, 1.0]),
+    "Lukasiewicz": (
+        LUKASIEWICZ,
+        _bounded_sum,
+        _luk_tnorm,
+        0.0,
+        1.0,
+        [0.0, 0.25, 0.5, 0.75, 1.0],
+    ),
     "Probability": (
         PROBABILITY,
         _bounded_sum,
@@ -156,9 +170,26 @@ _REFERENCE: dict[str, tuple[Algebra, _Binary, _Binary, float, float, list[float]
     ),
 }
 
-_SEMIRINGS = ["Boolean", "Godel", "Tropical", "MaxPlus", "LogProb", "Real", "Counting", "Markov", "BooleanDual", "GodelDual"]
+_SEMIRINGS = [
+    "Boolean",
+    "Godel",
+    "Tropical",
+    "MaxPlus",
+    "LogProb",
+    "Real",
+    "Counting",
+    "Markov",
+    "BooleanDual",
+    "GodelDual",
+]
 _IDEMPOTENT = ["Boolean", "Godel", "Tropical", "MaxPlus", "BooleanDual", "GodelDual"]
-_NON_SEMIRINGS = ["ProductFuzzy", "Lukasiewicz", "Probability", "Reichenbach", "LukasiewiczDual"]
+_NON_SEMIRINGS = [
+    "ProductFuzzy",
+    "Lukasiewicz",
+    "Probability",
+    "Reichenbach",
+    "LukasiewiczDual",
+]
 
 _ATOL = 1e-9
 
@@ -238,9 +269,7 @@ def test_idempotent_semirings_have_idempotent_addition(name: str) -> None:
         assert _eq(plus(a, a), a)
 
 
-@pytest.mark.parametrize(
-    "name", [n for n in _SEMIRINGS if n not in _IDEMPOTENT]
-)
+@pytest.mark.parametrize("name", [n for n in _SEMIRINGS if n not in _IDEMPOTENT])
 def test_non_idempotent_semirings_are_not_declared_idempotent(name: str) -> None:
     alg, plus, _, _, _, grid = _REFERENCE[name]
     assert not isinstance(alg, IdempotentSemiring)

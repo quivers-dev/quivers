@@ -101,9 +101,7 @@ def test_endofunctor_is_a_functor(algebra: Semiring) -> None:
     f = _random(A, B, algebra, seed=1)
     g = _random(B, C, algebra, seed=2)
     fun = w.endofunctor
-    assert _close(
-        fun.map_morphism(f >> g), fun.map_morphism(f) >> fun.map_morphism(g)
-    )
+    assert _close(fun.map_morphism(f >> g), fun.map_morphism(f) >> fun.map_morphism(g))
     assert _close(
         fun.map_morphism(identity(A, algebra=algebra)),
         identity(fun.map_object(A), algebra=algebra),
@@ -116,9 +114,7 @@ def test_cokleisli_category_is_a_category(algebra: Semiring) -> None:
     f = _random(ProductSet(components=(A, S)), B, algebra, seed=3)
     g = _random(ProductSet(components=(B, S)), C, algebra, seed=4)
     h = _random(ProductSet(components=(C, S)), A, algebra, seed=5)
-    assert _close(
-        cat.compose(cat.compose(f, g), h), cat.compose(f, cat.compose(g, h))
-    )
+    assert _close(cat.compose(cat.compose(f, g), h), cat.compose(f, cat.compose(g, h)))
     assert _close(cat.compose(cat.identity(A), f), f)
     assert _close(cat.compose(f, cat.identity(B)), f)
 

@@ -45,6 +45,7 @@ from quivers.core.morphisms import Morphism, observed
 from quivers.core.morphisms import identity as id_morph
 from quivers.core.objects import FinSet, ProductSet, SetObject
 from quivers.core.algebras import PRODUCT_FUZZY
+from quivers.monadic.instances import _function_table
 from quivers.monadic.typeclasses import Monad
 
 
@@ -446,9 +447,14 @@ class Handler(ValueModel):
 class FreeMonad(dx.Model):
     """The free monad over an effect signature with a depth bound.
 
-    ``FreeMonad(sig, depth)`` carries the bounded-depth signature-tree
-    construction. Its typeclass instance methods are concrete
-    V-relation morphisms over the flat-FinSet carrier.
+    ``FreeMonad(sig, depth)`` carries the signature trees of depth at
+    most ``depth``. ``join`` grafts trees and drops a graft deeper than
+    the bound, so it is a partial map. Depth adds along each path, so
+    whichever bracketing grafts a three-level tree, an intermediate
+    graft is never deeper than the whole: both sides of the
+    associativity law drop exactly the trees deeper than the bound, and
+    the monad laws hold on finite sets with partial functions. ``fmap``
+    accepts functions only.
 
     Attributes
     ----------
@@ -486,7 +492,14 @@ class FreeMonad(dx.Model):
         ``Free^{d-1}(f)`` on each operation's continuation slots.
         Each operation node's continuation function-space is re-encoded
         through the recursive ``fmap``'s deterministic image.
+
+        Raises
+        ------
+        ValueError
+            If ``f`` is not a partial function, since the bounded free
+            monad is a monad on finite sets and partial functions.
         """
+        _function_table(f, A.size, B.size, partial=True)
         carrier_A = self._carrier(A)
         carrier_B = self._carrier(B)
         if carrier_A == A and carrier_B == B:

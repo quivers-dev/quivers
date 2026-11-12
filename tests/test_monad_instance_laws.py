@@ -37,7 +37,10 @@ from quivers.monadic import (
     State,
     Writer,
 )
+from quivers.monadic.algebraic import EffectSignature, FreeMonad, Operation
+from quivers.monadic.bridges import ArrowMonad, Kleisli
 from quivers.monadic.typeclasses import Monad
+from quivers.arrows.instances import Function
 from quivers.stochastic.giry import GiryMonad
 
 ONE = FinSet(name="One", cardinality=1)
@@ -64,6 +67,13 @@ def _function(dom: SetObject, cod: SetObject, table: list[int], m: Monad) -> Mor
     return observed(dom, cod, data.reshape(*dom.shape, *cod.shape), algebra=algebra)
 
 
+_TICK = EffectSignature(
+    name="Tick", operations=(Operation(name="tick", parameter=ONE, result=ONE),)
+)
+_CHOOSE = EffectSignature(
+    name="Choose", operations=(Operation(name="choose", parameter=ONE, result=C),)
+)
+
 #: (monad, object at which unit and associativity are materialized)
 _MONADS: dict[str, tuple[Monad, SetObject]] = {
     "identity": (Identity(), A),
@@ -74,6 +84,10 @@ _MONADS: dict[str, tuple[Monad, SetObject]] = {
     "writer": (Writer(monoid=FinSet(name="M", cardinality=2)), A),
     "fuzzy-powerset": (FuzzyPowersetMonad(GODEL), A),
     "giry": (GiryMonad(), A),
+    "arrow-monad-function": (ArrowMonad(arrow=Function()), A),
+    "arrow-monad-kleisli-maybe": (ArrowMonad(arrow=Kleisli(monad=Maybe())), A),
+    "free-tick": (FreeMonad(signature=_TICK, depth=2), ONE),
+    "free-choose": (FreeMonad(signature=_CHOOSE, depth=1), ONE),
 }
 
 
@@ -115,7 +129,9 @@ def test_functor_laws_on_functions(name: str) -> None:
     assert _close(m.fmap(a, a, id_a), identity(m.fmap_obj(a), algebra=_algebra_of(m)))
 
 
-def _kleisli(m: Monad, k: Morphism, h: Morphism, mid: SetObject, end: SetObject) -> Morphism:
+def _kleisli(
+    m: Monad, k: Morphism, h: Morphism, mid: SetObject, end: SetObject
+) -> Morphism:
     return k >> m.fmap(mid, m.fmap_obj(end), h) >> m.join(end)
 
 
@@ -124,7 +140,10 @@ def _kleisli_arrows(m: Monad) -> list[Morphism]:
     return [_function(ONE, t_one, [i], m) for i in range(t_one.size)]
 
 
-_KLEISLI = {**_MONADS, "continuation": (Continuation(answer=FinSet(name="R", cardinality=2)), ONE)}
+_KLEISLI = {
+    **_MONADS,
+    "continuation": (Continuation(answer=FinSet(name="R", cardinality=2)), ONE),
+}
 
 
 @pytest.mark.parametrize("name", sorted(_KLEISLI))
@@ -165,7 +184,9 @@ def test_writer_refuses_an_operation_that_is_not_a_monoid() -> None:
     for a in range(m):
         for b in range(m):
             table[(a * m + b) * m + a] = 1.0
-    writer = Writer(monoid=FinSet(name="M", cardinality=m), monoid_op_tensor=tuple(table))
+    writer = Writer(
+        monoid=FinSet(name="M", cardinality=m), monoid_op_tensor=tuple(table)
+    )
     with pytest.raises(ValueError, match="unit"):
         writer.join(A)
 
@@ -179,3 +200,25 @@ def test_giry_refuses_a_kernel_over_another_algebra() -> None:
     f = observed(A, A, torch.full((2, 2), 0.5))
     with pytest.raises(ValueError, match="cannot compose"):
         GiryMonad().kleisli_compose(f, f)
+
+
+def test_arrow_monad_of_a_kleisli_arrow_is_its_monad() -> None:
+    """``ArrowMonad(Kleisli(m))(A) = a(1, A) ≅ m(A)``."""
+    m = Maybe()
+    am = ArrowMonad(arrow=Kleisli(monad=m))
+    assert am.fmap_obj(A) == m.fmap_obj(A)
+    assert _close(am.pure(A), m.pure(A))
+
+
+def test_arrow_monad_refuses_an_arrow_without_hom_objects() -> None:
+    am = ArrowMonad(arrow=torch.nn.Linear(1, 1))
+    with pytest.raises(TypeError, match="hom objects"):
+        am.fmap_obj(A)
+
+
+@pytest.mark.parametrize("name", ["free-tick", "free-choose"])
+def test_free_monad_refuses_a_relation(name: str) -> None:
+    m, _ = _MONADS[name]
+    relation = observed(ONE, A, torch.tensor([[1.0, 1.0]]))
+    with pytest.raises(ValueError, match="not the indicator of one element"):
+        m.fmap(ONE, A, relation)

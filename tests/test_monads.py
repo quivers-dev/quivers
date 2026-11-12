@@ -5,7 +5,14 @@ import torch
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import observed
 from quivers.monadic.monads import FuzzyPowersetMonad, KleisliCategory
-from quivers.core.algebras import BOOLEAN, GODEL, LOG_PROB, PRODUCT_FUZZY, REAL, TROPICAL
+from quivers.core.algebras import (
+    BOOLEAN,
+    GODEL,
+    LOG_PROB,
+    PRODUCT_FUZZY,
+    REAL,
+    TROPICAL,
+)
 
 
 class TestFuzzyPowersetMonad:
