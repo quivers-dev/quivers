@@ -1175,6 +1175,8 @@ class _DeclarationsMixin:
             if init_mode == "auto":
                 _apply_auto_init(morph, domain, codomain, self._algebra)
             self._morphisms[member] = morph
+            if decl.init_family is not None:
+                self._latent_priors[member] = decl.init_family
 
     def _compile_observed_role(
         self,
@@ -1359,6 +1361,18 @@ class _DeclarationsMixin:
         name: str,
         names: list[str],
     ) -> None:
+        if decl.init_family is not None or decl.init_expr is not None:
+            # An embedding is a Normal kernel at each element's learned
+            # centre; its law is fixed by the role, so an initializer
+            # would be read by nothing.
+            raise CompileError(
+                f"embed morphism {name!r}: an embedding is a Normal kernel "
+                f"placed at each element's learned centre, so it takes no "
+                f"``~`` initializer; drop the initializer, or declare a "
+                f"``role=kernel`` morphism with the family you want",
+                decl.line,
+                decl.col,
+            )
         domain = self._resolve_type(decl.domain)
         if not isinstance(domain, FinSet):
             raise CompileError(

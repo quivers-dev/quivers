@@ -5558,7 +5558,31 @@ class _ProgramsMixin:
         tuple of (morphism, step_args)
             The compiled morphism and the variable-only args for
             the step spec (None = use program input).
+
+        Raises
+        ------
+        CompileError
+            If the draw passes arguments to a latent morphism whose
+            `~ Family(...)` prior fixes them.
         """
+        prior = self._latent_priors.get(draw.morphism)
+        if prior is not None:
+            # A latent morphism declared `~ Family(args)` is drawn from as
+            # that family, whose arguments the declaration fixes.
+            if draw.args:
+                raise CompileError(
+                    f"latent morphism {draw.morphism!r} is drawn from as its "
+                    f"prior `{prior.family}(...)`, whose arguments its "
+                    f"declaration fixes; draw from it without arguments",
+                    draw.line,
+                    draw.col,
+                )
+            return self._resolve_draw_morphism(
+                draw.with_(morphism=prior.family, args=prior.args),
+                bound_vars,
+                program_codomain,
+                plate_rows=plate_rows,
+            )
         if draw.morphism in self._morphisms:
             morph = self._morphisms[draw.morphism]
             if isinstance(morph, LearnedFunction):

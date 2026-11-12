@@ -1692,7 +1692,8 @@ def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
     Raises
     ------
     UnregisteredRefusalKind
-        If the reason is not ``cycle``, ``no-init`` or ``duplicate``.
+        If the reason is not ``cycle``, ``no-init``, ``duplicate`` or
+        ``embed-initializer``.
     """
     reason, _, rest = tail.partition(":")
     name = rest.partition(":")[0]
@@ -1708,6 +1709,12 @@ def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
         )
     elif reason == "duplicate":
         headline = f"morphism `{name}` is declared twice"
+    elif reason == "embed-initializer":
+        headline = (
+            f"the embedding `{name}` carries a `~` initializer, but an "
+            f"embedding is a Normal kernel at each element's learned centre "
+            f"and takes none"
+        )
     else:
         raise UnregisteredRefusalKind(f"morphism:{tail}")
     if explained:
@@ -1718,6 +1725,10 @@ def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
             f"Declare `{name}` with `~ Family(...)`, or draw from a family directly."
         ),
         "duplicate": "Rename one of the two declarations.",
+        "embed-initializer": (
+            "Drop the initializer, or declare a `role=kernel` morphism with "
+            "the family you want."
+        ),
     }[reason]
     return f"{headline}. {remedy}"
 

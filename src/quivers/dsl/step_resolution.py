@@ -725,6 +725,18 @@ def morphism_table(module: Module) -> dict[str, MorphismDecl]:
     out: dict[str, MorphismDecl] = {}
     for stmt in module.statements:
         if isinstance(stmt, MorphismDecl):
+            if _role_of(stmt) == "embed" and (
+                stmt.init_family is not None or stmt.init_expr is not None
+            ):
+                raise StepResolutionError(
+                    "qvr-transpile",
+                    [f"morphism:embed-initializer:{stmt.names[0]}"],
+                    explanation=(
+                        f"declared at line {stmt.line}. Drop the initializer, "
+                        f"or declare a `role=kernel` morphism with the family "
+                        f"you want."
+                    ),
+                )
             for name in stmt.names:
                 if name in out:
                     raise StepResolutionError(
