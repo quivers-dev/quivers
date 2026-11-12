@@ -29,6 +29,7 @@ The library includes `IdentityFunctor`, `ComposedFunctor`, and `FreeMonoidFuncto
 <!-- python: skip -->
 ```python
 from quivers.categorical.functors import IdentityFunctor, ComposedFunctor, FreeMonoidFunctor
+from quivers.core.algebras import MARKOV
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import morphism
 
@@ -43,7 +44,7 @@ assert I.map_object(X) == X
 F = FreeMonoidFunctor(max_length=3)
 FX = F.map_object(X)            # FreeMonoid(generators=X, max_length=3)
 
-f = morphism(X, Y)
+f = morphism(X, Y, algebra=MARKOV)  # the word functor needs a Semiring
 Ff = F.map_morphism(f)          # FunctorMorphism with domain F(X), codomain F(Y)
 
 # Composition of functors
@@ -74,13 +75,13 @@ abstract class, and [`ComponentwiseNT`](../api/categorical/natural_transformatio
 builds one from a function that returns each component. `verify_naturality(f)`
 compares the two sides of the square for one morphism `f`.
 
-<!-- python: skip -->
 ```python
+import torch
 from quivers.categorical.functors import IdentityFunctor, FreeMonoidFunctor
 from quivers.categorical.natural_transformations import ComponentwiseNT
-from quivers.categorical.adjunctions import FreeForgetfulAdjunction
+from quivers.core.algebras import MARKOV
 from quivers.core.objects import FinSet
-from quivers.core.morphisms import morphism
+from quivers.core.morphisms import morphism, observed
 
 X = FinSet(name="X", cardinality=3)
 Y = FinSet(name="Y", cardinality=4)
@@ -88,14 +89,24 @@ Y = FinSet(name="Y", cardinality=4)
 F = IdentityFunctor()
 G = FreeMonoidFunctor(max_length=3)
 
-# η: Id ⇒ Free, the length-1 embedding, taken from the adjunction below
-adj = FreeForgetfulAdjunction(max_length=3)
-eta = ComponentwiseNT(F, G, adj.unit_component)
+def length_one_words(A):
+    """η_A : A → A^{≤3}, each element as a word of length one."""
+    words = G.map_object(A)
+    tensor = torch.zeros(A.size, words.size)
+    for a in range(A.size):
+        tensor[a, words.encode((a,))] = 1.0
+    return observed(A, words, tensor, algebra=MARKOV)
+
+eta = ComponentwiseNT(F, G, length_one_words)
 
 # check the naturality square on one morphism
-f = morphism(X, Y)
+f = morphism(X, Y, algebra=MARKOV)
 assert eta.verify_naturality(f)
 ```
+
+`FreeMonoidFunctor` maps each word of length $k$ to words of length $k$ by applying a
+morphism letter by letter, and it satisfies the functor laws when the `Algebra` is a
+`Semiring`.
 
 ## Adjunctions
 
@@ -115,40 +126,12 @@ $A^* \to M$: evaluate the letters and multiply. The unit $\eta_A : A \to A^*$ em
 letters as words of length one, and the counit $\varepsilon_M : M^* \to M$ multiplies
 out a word of elements of $M$.
 
-[`FreeForgetfulAdjunction`](../api/categorical/adjunctions.md) implements this
-adjunction on words of bounded length. Its `unit_component(A)` is the embedding
-as words of length one. Its `counit_component` at a free monoid $A^*$ is concatenation
-$(A^*)^* \to A^*$, which is $\varepsilon$ at the free monoid and the multiplication of
-the monad $GF$. A plain `FinSet` carries no monoid operation, so
-`counit_component(A)` at a `FinSet` cannot be a counit. The class returns there the
-partial map that sends each word of length one to its letter and every other word to an
-row of zeros. Concatenations longer than `max_length` also go to a row of zeros, so
-the bounded construction agrees with the adjunction only on words that fit. The
-methods `verify_triangle_left(A)` and `verify_triangle_right(A)` compare the two
-triangle composites with the identity at one object.
-
-<!-- python: skip -->
-```python
-from quivers.categorical.adjunctions import FreeForgetfulAdjunction
-from quivers.core.objects import FinSet, FreeMonoid
-
-A = FinSet(name="A", cardinality=2)
-adjunction = FreeForgetfulAdjunction(max_length=2)
-
-# Left and right functors
-F = adjunction.left        # FreeMonoidFunctor
-U = adjunction.right       # ForgetfulFunctor
-
-# T(A) = U(F(A)) is the bounded free monoid on A
-FA = F.map_object(A)
-assert isinstance(U.map_object(FA), FreeMonoid)
-
-eta_A = adjunction.unit_component(A)        # A → A*, length-one words
-mu_A = adjunction.counit_component(FA)      # (A*)* → A*, concatenation
-
-assert adjunction.verify_triangle_left(A)
-assert adjunction.verify_triangle_right(A)
-```
+[`Adjunction`](../api/categorical/adjunctions.md) is the abstract interface: a subclass gives the
+left and right functors and the components `unit_component(A)` and `counit_component(B)`, and
+`verify_triangle_left(A)` and `verify_triangle_right(B)` compare the two triangle composites with
+the identity at one object. The free monoid adjunction itself has no finite implementation: $A^*$
+is infinite, and words of bounded length are not closed under concatenation, so a bounded counit
+fails the triangle identities.
 
 ## Monoidal Structures
 
@@ -161,13 +144,13 @@ states that any two composites of these isomorphisms between the same objects ag
 so a wiring of parallel morphisms does not depend on how it is parenthesized. A
 symmetric monoidal category also has a braiding $X \otimes Y \cong Y \otimes X$.
 
-### Cartesian Monoidal
+### Cartesian product as a monoidal product {#cartesian-monoidal}
 
 [`CartesianProductMonoidal`](../api/categorical/monoidal.md) uses the Cartesian product of
 finite sets, with the one-element set `Unit` as $I$, and gives the `associator`, the
 `left_unitor` and `right_unitor`, and the `braiding`. On functions this product is
-the categorical product. On relations and Markov kernels it is only a monoidal
-product: a kernel into a pair is not determined by its two marginals, so there is no
+the categorical product. On relations and Markov kernels it is a symmetric monoidal
+product and not a categorical one: a kernel into a pair is not determined by its two marginals, so there is no
 product in the categorical sense. Markov kernels with this product, together with
 copying and discarding, form a
 [Markov category](https://ncatlab.org/nlab/show/Markov+category) [@fritz2020synthetic].
@@ -226,18 +209,14 @@ A [`BaseChange`](../api/categorical/base_change.md) applies an entrywise map fro
 `Algebra` to another to a morphism and keeps its domain and codomain. When the map is
 monotone and preserves the combining operations up to inequality, this is
 [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
-[@kelly1982basic]. `FuzzyToBool(threshold)` sends scores at or above the threshold to
-1 and the rest to 0, and `BoolToFuzzy` includes $\{0, 1\}$ in $[0, 1]$. They act like
-the QVR transformations `threshold` (which uses a strict inequality at 0.5) and
-`boolean_embedding` ([Transformations](transformations.md#singletons)).
+[@kelly1982basic]. `BoolToFuzzy` includes $\{0, 1\}$ in $[0, 1]$, and it acts like the QVR
+transformation `boolean_embedding` ([Transformations](transformations.md#singletons)). The
+inclusion preserves both operations and both units, so it commutes with composition. The reverse
+direction, thresholding, is the QVR transformation `threshold`. It does not commute with
+composition: two scores of `0.6` pass a threshold at `0.5`, while their product `0.36` does not.
 
-Thresholding does not commute with composition: two scores of `0.6` pass a threshold
-at `0.5`, while their product `0.36` does not, so thresholding a composite can differ
-from composing thresholded morphisms.
-
-<!-- python: skip -->
 ```python
-from quivers.categorical.base_change import BoolToFuzzy, FuzzyToBool
+from quivers.categorical.base_change import BoolToFuzzy
 from quivers.core.algebras import BOOLEAN, PRODUCT_FUZZY
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import morphism
@@ -245,18 +224,11 @@ from quivers.core.morphisms import morphism
 X = FinSet(name="X", cardinality=3)
 Y = FinSet(name="Y", cardinality=4)
 
-# fuzzy → boolean via thresholding
-fuzzy_morph = morphism(X, Y, algebra=PRODUCT_FUZZY)
-to_bool = FuzzyToBool(threshold=0.5)
-bool_morph = to_bool.apply_to_morphism(fuzzy_morph)
+bool_morph = morphism(X, Y, algebra=BOOLEAN)
+fuzzy_morph = BoolToFuzzy().apply_to_morphism(bool_morph)
 
-assert bool_morph.algebra == BOOLEAN
-assert bool_morph.domain == fuzzy_morph.domain
-assert bool_morph.codomain == fuzzy_morph.codomain
-
-# boolean → fuzzy via inclusion
-to_fuzzy = BoolToFuzzy()
-fuzzy_again = to_fuzzy.apply_to_morphism(bool_morph)
+assert fuzzy_morph.algebra == PRODUCT_FUZZY
+assert fuzzy_morph.domain == bool_morph.domain
 ```
 
 ## Traced Monoidal Structure
@@ -271,15 +243,17 @@ $$
 that feeds the output $X$ back into the input $X$ [@joyal1996traced]. On finite
 tensors, the trace of $f : Y \times X \to Z \times X$ fixes an input $y$ and output
 $z$, matches the two $X$ indices, and reduces $f[(y, x), (z, x)]$ over $x$ with the
-`Algebra`'s $\bigoplus$, as a matrix trace sums the diagonal. The function
-[`trace`](../api/categorical/traced.md) wraps a
-[`CompactClosedTrace`](../api/categorical/traced.md). It takes the object fed back last
+`Algebra`'s $\bigoplus$, as a matrix trace sums the diagonal. This is the trace that
+compact closure induces, and it satisfies the trace axioms when the `Algebra` is a `Semiring`.
+The function [`trace`](../api/categorical/traced.md) wraps a
+[`CompactClosedTrace`](../api/categorical/traced.md), which requires a `Semiring`. It takes the object fed back last
 in the domain and codomain, while the method `Morphism.trace` takes it first
 ([Morphisms](morphisms.md#transpose-trace-cup-and-cap)).
 
 <!-- python: skip -->
 ```python
 from quivers.categorical.traced import trace
+from quivers.core.algebras import MARKOV
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import morphism
 
@@ -287,8 +261,8 @@ X = FinSet(name="X", cardinality=2)
 Y = FinSet(name="Y", cardinality=3)
 Z = FinSet(name="Z", cardinality=4)
 
-# f: (Y × X) → (Z × X)
-f = morphism(Y * X, Z * X)
+# f: (Y × X) → (Z × X), over a semiring
+f = morphism(Y * X, Z * X, algebra=MARKOV)
 
 # Trace over X: returns Y → Z with the feedback loop closed
 traced_f = trace(f, feedback=X, domain=Y, codomain=Z)
@@ -302,7 +276,7 @@ assert traced_f.codomain == Z
 |-----------|---------------|--------|
 | Functor | maps of objects and morphisms | `Functor`, `F.map_morphism(f)` |
 | Natural transformation | one morphism per object, commuting with every $F(f)$ | `ComponentwiseNT(F, G, component)` |
-| Adjunction | $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$ | `FreeForgetfulAdjunction(max_length)` |
+| Adjunction | $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$ | `Adjunction` (abstract) |
 | Monoidal product | parallel composition with coherent regrouping | `CartesianProductMonoidal`, `f @ g` |
-| Change of base | entrywise map between `Algebra`s | `FuzzyToBool().apply_to_morphism(f)` |
+| Change of base | entrywise map between `Algebra`s | `BoolToFuzzy().apply_to_morphism(f)` |
 | Trace | feedback of one wire | `trace(f, feedback=X, domain=Y, codomain=Z)` |

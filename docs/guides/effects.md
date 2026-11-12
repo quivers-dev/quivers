@@ -61,7 +61,7 @@ than a symmetric monoidal one [@jacobs2009categorical].
 
 ## Stdlib effect instances
 
-`quivers.monadic.instances` provides eight effects, each a `dx.Model` that holds its
+`quivers.monadic.instances` provides seven effects, each a `dx.Model` that holds its
 parameters (`Continuation(answer=S)` holds its answer type) and registers with its
 classes through `ABC.register`. The linguistic uses follow Bumford and Charlow
 [@bumford2026effect].
@@ -75,7 +75,12 @@ classes through `ABC.register`. The linguistic uses follow Bumford and Charlow
 | `State(state)` | `Monad` | dynamic anaphora, discourse referents |
 | `Reader(env)` | `Monad` | assignment functions, indexicals |
 | `Writer(monoid)` | `Monad` | appositives, nonrestrictive relative clauses |
-| `ListMonad(max_length)` | `MonadPlus`, `Foldable`, `Traversable` | sets of readings |
+
+`Alternative_` is the powerset monad, presented by its Kleisli category $\mathbf{Rel}$, so its morphisms
+are over `BOOLEAN`. `State`, `Reader`, `Writer`, and `Continuation` are monads on finite sets and
+functions: their operations act on morphisms whose rows have exactly one nonzero entry and raise
+`ValueError` on any other morphism. `Writer` checks at construction that its monoid is associative
+with a two-sided unit.
 
 Every `Monad` is also an `Applicative` and a `Functor`, since the classes are
 subclasses of one another.

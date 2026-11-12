@@ -51,18 +51,19 @@ and `compose`:
 
 ```python
 from quivers.monadic.monads import KleisliCategory, FuzzyPowersetMonad
+from quivers.core.algebras import GODEL
 from quivers.core.morphisms import morphism
 from quivers.core.objects import FinSet
 
-monad = FuzzyPowersetMonad()
+monad = FuzzyPowersetMonad(algebra=GODEL)
 kleisli = KleisliCategory(monad)
 
 X = FinSet(name="X", cardinality=3)
 Y = FinSet(name="Y", cardinality=4)
 Z = FinSet(name="Z", cardinality=2)
 
-f = morphism(X, Y)              # read as a Kleisli arrow X ⇝ Y
-g = morphism(Y, Z)
+f = morphism(X, Y, algebra=GODEL)   # read as a Kleisli arrow X ⇝ Y
+g = morphism(Y, Z, algebra=GODEL)
 
 h = kleisli.compose(f, g)       # X ⇝ Z
 ```
@@ -71,28 +72,28 @@ h = kleisli.compose(f, g)       # X ⇝ Z
 
 On sets, the $\mathcal V$-valued powerset monad sends $X$ to the set $\mathcal V^X$ of
 functions from $X$ to $\mathcal V$, read as fuzzy subsets of $X$. A Kleisli arrow
-$X \to \mathcal V^Y$ is then a $\mathcal V$-valued relation, which the library stores
-as a matrix. `FuzzyPowersetMonad(algebra)` works directly with these matrices:
+$X \to \mathcal V^Y$ is then a $\mathcal V$-valued relation, and the Kleisli category is the
+category $\mathcal V$-$\mathbf{Rel}$ of these relations under the matrix product
+[@hofmann2014monoidal]. The monad laws need that product to be associative and unital, so
+$\mathcal V$ must be a semiring, and reading a fuzzy subset as the join of its points needs
+$\bigoplus$ to be idempotent. `FuzzyPowersetMonad(algebra)` thus takes an `IdempotentSemiring`,
+such as `BOOLEAN` (the ordinary powerset monad, whose Kleisli category is $\mathbf{Rel}$),
+`GODEL`, or `TROPICAL`, and raises `TypeError` for any other `Algebra`, `PRODUCT_FUZZY`
+included. It works directly with the matrices:
 
 - `fmap_obj(X)` returns `X`, the object that indexes the membership values;
 - `fmap(f)` returns `f`;
 - `pure(X)` and `join(X)` both return `identity(X)` for the chosen `Algebra`;
-- Kleisli composition is `f >> g`.
-
-Its Kleisli category is thus the category of morphisms of
-[Morphisms](morphisms.md) under the chosen `Algebra`, and Kleisli composition is
-associative exactly when that composition is. Under the default `PRODUCT_FUZZY`,
-product does not distribute over noisy-OR, and regrouping a chain of Kleisli
-composites can change the result ([Core Types](core.md#productfuzzyalgebra)).
+- Kleisli composition is `f >> g`, and it refuses a morphism over another `Algebra`.
 
 ```python
 from quivers.monadic.monads import FuzzyPowersetMonad
 from quivers.core.objects import FinSet
-from quivers.core.algebras import PRODUCT_FUZZY
+from quivers.core.algebras import BOOLEAN
 
 X = FinSet(name="X", cardinality=3)
 
-monad = FuzzyPowersetMonad(algebra=PRODUCT_FUZZY)
+monad = FuzzyPowersetMonad(algebra=BOOLEAN)
 
 # fmap_obj returns the indexing object itself
 TX = monad.fmap_obj(X)
@@ -100,32 +101,6 @@ assert TX == X
 
 # The unit is the identity morphism of the chosen Algebra
 eta_X = monad.unit(X)
-```
-
-## Free Monoid Monad
-
-The list monad has lists of every finite length, and a finite implementation has to
-bound them. `FreeMonoidMonad(max_length)` takes `fmap_obj(X)` to the
-[`FreeMonoid`](core.md#freemonoid) of words of length at most `max_length`. Its
-`pure` makes a word of length one, and its `join` concatenates a word of words. A
-concatenation longer than `max_length` is dropped, as a row of zeros, rather than
-cut to a prefix: with `max_length=2`, flattening `[[a, b], [c]]` gives nothing. The
-monad equations thus hold as for lists only on inputs whose flattenings fit within
-the bound.
-
-```python
-from quivers.monadic.monads import FreeMonoidMonad
-from quivers.core.objects import FinSet, FreeMonoid
-
-monad = FreeMonoidMonad(max_length=3)
-
-X = FinSet(name="X", cardinality=5)
-
-# T(X) = FreeMonoid(generators=X, max_length=3)
-TX = monad.fmap_obj(X)
-assert isinstance(TX, FreeMonoid)
-assert TX.generators == X
-assert TX.max_length == 3
 ```
 
 ## Comonads
@@ -154,53 +129,32 @@ $g : W(Y) \to Z$ as $g \circ W(f) \circ \delta_X$. `CoKleisliCategory` wraps a
 `Comonad` and computes this composite:
 
 ```python
-from quivers.monadic.comonads import CoKleisliCategory, DiagonalComonad
-
-comonad = DiagonalComonad()
-cokleisli = CoKleisliCategory(comonad)
-```
-
-## Diagonal Comonad {#diagonal-comonad}
-
-`DiagonalComonad` has $W(A) = A \times A$ and $W(f) = f \times f$. Its `counit` is the
-first projection $(a, b) \mapsto a$, and its `comultiply` copies the pair,
-$(a, b) \mapsto ((a, b), (a, b))$. With these maps the first counit law holds, but
-$W\varepsilon \circ \delta$ sends $(a, b)$ to $(a, a)$, so the second counit law
-fails whenever $a \neq b$. The class thus does not define a comonad, and its
-coKleisli composite need not be associative or unital.
-
-```python
-from quivers.monadic.comonads import DiagonalComonad
+from quivers.monadic.comonads import CoKleisliCategory, CofreeComonad
+from quivers.core.algebras import MARKOV
 from quivers.core.objects import FinSet
 
-X = FinSet(name="X", cardinality=3)
-comonad = DiagonalComonad()
-
-# Endofunctor action: W(X) = X × X
-WX = comonad.endofunctor.map_object(X)
-assert WX == X * X
-
-# Counit ε_X : X × X → X (first projection)
-eps = comonad.counit(X)
-
-# Comultiplication δ_X : X × X → (X × X) × (X × X)
-delta = comonad.comultiply(X)
+store = FinSet(name="S", cardinality=4)
+comonad = CofreeComonad(store=store, algebra=MARKOV)
+cokleisli = CoKleisliCategory(comonad)
 ```
 
 ## Environment Comonad {#cofree-comonad}
 
-`CofreeComonad(store=S)` is the environment comonad $W(A) = A \times S$ described
-above: `counit` is the projection $(a, s) \mapsto a$ and `comultiply` is
-$(a, s) \mapsto ((a, s), s)$. On functions these maps satisfy the comonad laws.
-Despite the class name, this is neither the cofree comonad on a functor nor the store
-comonad $W(A) = S \times A^S$.
+`CofreeComonad(store=S, algebra=V)` is the environment comonad $W(A) = A \times S$
+described above: `counit` is the projection $(a, s) \mapsto a$, `comultiply` is
+$(a, s) \mapsto ((a, s), s)$, and $W(f) = f \times \mathrm{id}_S$. It is the cofree comonad on
+the constant functor at $S$, and not the store comonad $W(A) = S \times A^S$. Since only the
+environment is copied and every morphism acts on it as the identity, the counit and the
+comultiplication are natural for every $\mathcal V$-valued morphism, and the comonad laws hold.
+The constructor requires a `Semiring`, so that the coKleisli composite is associative.
 
 ```python
 from quivers.monadic.comonads import CofreeComonad
+from quivers.core.algebras import MARKOV
 from quivers.core.objects import FinSet
 
 store = FinSet(name="S", cardinality=4)
-comonad = CofreeComonad(store=store)
+comonad = CofreeComonad(store=store, algebra=MARKOV)
 ```
 
 ## Algebras and Coalgebras {#algebras-and-coalgebras}
@@ -224,9 +178,10 @@ equations.
 import torch
 from quivers.monadic.algebras import FreeAlgebra, ObservedAlgebra
 from quivers.monadic.monads import FuzzyPowersetMonad
+from quivers.core.algebras import BOOLEAN
 from quivers.core.objects import FinSet
 
-monad = FuzzyPowersetMonad()
+monad = FuzzyPowersetMonad(algebra=BOOLEAN)
 X = FinSet(name="X", cardinality=3)
 
 # Free algebra: carrier is T(A), structure map is μ_A
@@ -240,7 +195,7 @@ assert free_alg.verify_associativity()
 # Algebra from an explicit structure tensor α : T(A) → A
 TA = monad.fmap_obj(X)
 alpha_tensor = torch.eye(TA.size, X.size)[: TA.size, : X.size]
-explicit_alg = ObservedAlgebra(monad, X, alpha_tensor)
+explicit_alg = ObservedAlgebra(monad, X, alpha_tensor, algebra=BOOLEAN)  # checks both laws
 ```
 
 ## Eilenberg-Moore Category
@@ -256,10 +211,11 @@ that equation for given tensors.
 ```python
 from quivers.monadic.algebras import EilenbergMooreCategory
 from quivers.monadic.monads import FuzzyPowersetMonad
+from quivers.core.algebras import BOOLEAN
 from quivers.core.morphisms import morphism
 from quivers.core.objects import FinSet
 
-monad = FuzzyPowersetMonad()
+monad = FuzzyPowersetMonad(algebra=BOOLEAN)
 X = FinSet(name="X", cardinality=3)
 em = EilenbergMooreCategory(monad)
 
@@ -267,7 +223,7 @@ em = EilenbergMooreCategory(monad)
 free_alg = em.free_algebra(X)
 
 # Check whether a base morphism f : A → B is a homomorphism between two algebras
-f = morphism(X, X)
+f = morphism(X, X, algebra=BOOLEAN)
 is_hom = em.is_homomorphism(f, free_alg, free_alg)
 ```
 
@@ -280,17 +236,6 @@ $\lambda : S \circ T \Rightarrow T \circ S$ is such a rule, a natural transforma
 compatible with both units and both multiplications, and it makes $T \circ S$ a monad
 [@beck1969distributive].
 
-`FreeMonoidPowersetLaw(max_length)` has components
-$\lambda_A : \mathrm{Free}(P(A)) \to P(\mathrm{Free}(A))$ that read a word of fuzzy
-sets $(S_1, \dots, S_k)$ as the fuzzy set of words with membership
-$\lambda(S_1, \dots, S_k)(a_1, \dots, a_k) = \bigotimes_i S_i(a_i)$, computed with
-the chosen `Algebra`'s $\otimes$.
-
-```python
-from quivers.monadic.distributive_laws import FreeMonoidPowersetLaw
-
-law = FreeMonoidPowersetLaw(max_length=3)
-```
-
-[`distributive_laws`](../api/monadic/distributive_laws.md) documents the
-construction.
+[`DistributiveLaw`](../api/monadic/distributive_laws.md) is the abstract interface: a subclass
+gives the outer monad $S$, the inner monad $T$, and the component
+$\lambda_A : S(T(A)) \to T(S(A))$ at each object (`distribute(A)`).

@@ -4,19 +4,21 @@ In an [enriched category](https://ncatlab.org/nlab/show/enriched+category) the
 morphisms from one object to another form an object of a monoidal category
 $\mathcal V$ rather than a set [@kelly1982basic]. For a finite morphism with scores in
 an [`Algebra`](core.md#algebras-enrichment-algebras), each entry is such a value, and
-the constructions of enriched category theory reduce to sums and products of tensor
-entries. `quivers.enriched` implements the finite versions of ends and coends, the
-Yoneda lemma, Kan extensions, weighted limits, profunctors, Day convolution, and
-optics. Each function takes an `Algebra` (default `PRODUCT_FUZZY`) and computes with
-its $\otimes$, its reduction $\bigoplus$ (`join`), its reduction $\bigwedge$ (`meet`),
-and, where needed, an internal hom.
+the constructions of enriched category theory reduce to joins, meets, and products of
+tensor entries. `quivers.enriched` implements the finite versions of ends and coends, the
+Yoneda lemma, Kan extensions, weighted limits, profunctors, Day convolution, and optics.
 
-Two cautions apply throughout. First, the functions reduce over finite index sets
-and treat the index categories as discrete, with only identity morphisms, so they
-check no naturality or dinaturality condition along other morphisms. Second, the
-general theorems hold when $\mathcal V$ is a complete closed monoidal structure such as
-a [quantale](https://ncatlab.org/nlab/show/quantale), and most built-in instances are
-not ([Core Types](core.md#algebras-enrichment-algebras)).
+These constructions are joins, meets, and internal homs in a
+[complete lattice](https://en.wikipedia.org/wiki/Complete_lattice), and they have their
+universal properties only when the `Algebra`'s $\bigoplus$ is the lattice join, its
+$\bigwedge$ (`meet`) the infimum, and its internal hom the residuum. Every function here
+therefore takes an [`IdempotentSemiring`](../api/core/algebras.md) (`BOOLEAN`, `GODEL`,
+`TROPICAL`, `MAX_PLUS`, or the duals of `BOOLEAN` and `GODEL`) and raises `TypeError` for any
+other `Algebra`. On such a semiring the *residuum* $[w, x]$ is the greatest $v$ with
+$v \otimes w \le x$, the internal hom of the lattice (`IdempotentSemiring.residuum`), and
+$\top$ (`IdempotentSemiring.top`) is its greatest element. The index categories are finite
+and discrete, with only identity morphisms, so no naturality or dinaturality condition
+along other morphisms arises.
 
 ## Ends and coends
 
@@ -32,13 +34,13 @@ the diagonal of the matched contravariant and covariant axes and reduce it with
 $\bigwedge$ or $\bigoplus$. Under the Boolean semiring the two read as "every matched
 case" and "some matched case".
 
-For the matrix below the diagonal entries are `0.9`, `0.8`, and `0.7`. The default
-product meet gives `0.504`, and noisy-OR gives `0.994`.
+For the matrix below the diagonal entries are `0.9`, `0.8`, and `0.7`. Under `GODEL`, whose
+join is the maximum and whose meet is the minimum, the end is `0.7` and the coend `0.9`.
 
 ```python
 import torch
 from quivers.enriched.ends_coends import end, coend
-from quivers.core.algebras import PRODUCT_FUZZY
+from quivers.core.algebras import GODEL
 
 # F: C^op × C → V with C of size 3, so F is shape (3, 3).
 F = torch.tensor([
@@ -47,11 +49,8 @@ F = torch.tensor([
     [0.3, 0.6, 0.7],
 ])
 
-# Coend ∫^X F(X, X) joins along the diagonal pair (axis 0, axis 1).
-ce = coend(F, contra_dims=(0,), co_dims=(1,), algebra=PRODUCT_FUZZY)
-
-# End ∫_X F(X, X) meets along the same diagonal.
-e = end(F, contra_dims=(0,), co_dims=(1,), algebra=PRODUCT_FUZZY)
+ce = coend(F, contra_dims=(0,), co_dims=(1,), algebra=GODEL)  # 0.9
+e = end(F, contra_dims=(0,), co_dims=(1,), algebra=GODEL)     # 0.7
 ```
 
 ## Yoneda
@@ -67,18 +66,16 @@ $\mathcal V$ [@kelly1982basic].
 
 [`yoneda_lemma`](../api/enriched/yoneda.md) computes the left side,
 $\bigwedge_X \bigwedge_x [\mathcal C(x, a), F(x)]$, from a `Presheaf` and the hom
-tensors $\mathcal C(X_i, A)$. It does not check that the inputs form a presheaf, so the
-isomorphism holds only for inputs that meet the lemma's hypotheses. The internal hom
-is the residuum $[w, x] = \sup\{v : w \otimes v \le x\}$ for `PRODUCT_FUZZY`, where it
-equals $\min(1, x / w)$, and for `BOOLEAN`, where it equals $\max(1 - w, x)$. For any
-other `Algebra` the function uses $\neg(w \otimes \neg x)$, which is not the residuum
-in general.
+tensors $\mathcal C(X_i, A)$, with the residuum of the `IdempotentSemiring` as internal hom.
+It does not check that the inputs form a presheaf, so the isomorphism holds for inputs that meet
+the lemma's hypotheses.
 
 ```python
 import torch
 from quivers.enriched.yoneda import (
     yoneda_lemma, yoneda_embedding, verify_yoneda_preserves_composition, Presheaf,
 )
+from quivers.core.algebras import GODEL
 from quivers.core.objects import FinSet
 
 X1 = FinSet(name="X1", cardinality=2)
@@ -88,13 +85,14 @@ X2 = FinSet(name="X2", cardinality=3)
 F = Presheaf(
     objects=(X1, X2),
     values={0: torch.tensor([0.6, 0.2]), 1: torch.tensor([0.1, 0.5, 0.9])},
+    algebra=GODEL,
 )
 
 hom_tensors = [
     torch.eye(2),                    # C(X1, X1)
     torch.zeros(3, 2),               # C(X2, X1)
 ]
-fa = yoneda_lemma(presheaf=F, obj_index=0, hom_tensors=hom_tensors)
+fa = yoneda_lemma(presheaf=F, obj_index=0, hom_tensors=hom_tensors, algebra=GODEL)
 ```
 
 The [Yoneda embedding](https://ncatlab.org/nlab/show/Yoneda+embedding)
@@ -109,12 +107,15 @@ $f$'s tensor as a [`Profunctor`](../api/enriched/profunctors.md), the same value
 [`verify_yoneda_preserves_composition(f, g)`](../api/enriched/yoneda.md) compares
 `yoneda_embedding(f >> g)` with the profunctor composite of `yoneda_embedding(f)` and
 `yoneda_embedding(g)`. This tests one instance of functoriality, preservation of
-composition. Despite its name, it tests neither fullness nor faithfulness, which are
-statements about bijectivity on hom-sets.
+composition, at the given morphisms. Fullness and faithfulness, which are statements about
+bijectivity on hom-sets, are not tested.
 
-<!-- python: skip -->
 ```python
-y_f = yoneda_embedding(f)                          # f : Morphism
+from quivers.core.morphisms import morphism
+
+f = morphism(X1, X2, algebra=GODEL)
+g = morphism(X2, X1, algebra=GODEL)
+y_f = yoneda_embedding(f)
 preserves = verify_yoneda_preserves_composition(f, g, atol=1e-5)
 ```
 
@@ -135,20 +136,22 @@ $$
 For a map from observations to participants, each fiber holds one participant's
 observations, and under Boolean operations the two extensions ask whether any, or
 every, observation qualifies. An empty fiber gives the zero of $\bigoplus$ on the left
-and the unit of $\bigwedge$ on the right. General Kan extensions also involve the
-morphisms of the categories, which these functions do not model.
+and the top $\top$ of the lattice on the right. Kan extensions along functors between
+categories with more than identity morphisms also involve those morphisms, which these
+functions do not model.
 
 [`left_kan`](../api/enriched/kan_extensions.md) and
 [`right_kan`](../api/enriched/kan_extensions.md) take $p$ as an
 [`ObjectMap`](../api/enriched/kan_extensions.md). Two are provided:
 [`Projection`](../api/enriched/kan_extensions.md), from a product onto chosen factors,
 and [`Inclusion`](../api/enriched/kan_extensions.md), of one component
-$A_k \hookrightarrow A_1 + \dots + A_n$ of a coproduct. Both functions read $R$'s tensor
-without gradients and return a fixed `ObservedMorphism`.
+$A_k \hookrightarrow A_1 + \dots + A_n$ of a coproduct. Both functions use $R$'s
+`IdempotentSemiring`, read its tensor without gradients, and return a fixed `ObservedMorphism`.
 
 ```python
 import torch
 from quivers.enriched.kan_extensions import Inclusion, left_kan, right_kan
+from quivers.core.algebras import GODEL
 from quivers.core.objects import FinSet, CoproductSet
 from quivers.core.morphisms import observed
 
@@ -159,7 +162,7 @@ S = CoproductSet(components=(A0, A1))
 iota = Inclusion(coproduct=S, component_index=0)  # A0 ↪ A0 + A1
 
 B = FinSet(name="B", cardinality=4)
-R = observed(A0, B, torch.rand(2, 4))  # R: A0 → B
+R = observed(A0, B, torch.rand(2, 4), algebra=GODEL)  # R: A0 → B
 
 LanR = left_kan(R, along=iota)         # Lan_iota R: S → B
 RanR = right_kan(R, along=iota)        # Ran_iota R: S → B
@@ -173,38 +176,41 @@ the `A0` rows and fill the `A1` rows with the empty reductions.
 A [weighted limit](https://ncatlab.org/nlab/show/weighted+limit) $\{W, D\}$ of a
 diagram $D$ by a weight $W$ generalizes a limit by letting $W(j)$ say how strongly the
 $j$-th part of the diagram constrains the result [@kelly1982basic]. It is built from
-the internal hom: in a residuated structure, $[a, c]$ is the largest $b$ with
-$a \otimes b \le c$, and for Boolean values $[w, d]$ is implication, so a weight of 0
-imposes no constraint.
+the internal hom: $[w, d]$ is the largest $v$ with $v \otimes w \le d$, and for Boolean
+values it is implication, so a weight of 0 imposes no constraint.
 
-For a discrete diagram, with no morphisms between its objects, the weighted limit is
-the product of the cotensors of each $D(j)$ by $W(j)$.
-[`weighted_limit`](../api/enriched/weighted_limits.md) represents each cotensor by
-applying $[W(j), -]$ entrywise to the identity tensor of $D(j)$, with the internal hom
-described under [Yoneda](#yoneda), and combines the results across $j$ by the outer
-$\otimes$-product. The result for objects $A$, $B$, $C$ thus has shape
-`(*A.shape, *A.shape, *B.shape, *B.shape, *C.shape, *C.shape)`, here `(2, 2, 4, 4, 3, 3)`.
-A [`Weight`](../api/enriched/weighted_limits.md) holds one value per index, and a
-[`Diagram`](../api/enriched/weighted_limits.md) holds the tuple of objects.
+For a family of parallel morphisms $f_j : A \to B$ indexed by a finite set $J$, each an
+object of the lattice $\mathcal V^{A \times B}$, the weighted limit and colimit are computed
+entrywise,
+
+$$
+\{W, f\} = \bigwedge_{j \in J} [W(j), f_j], \qquad W \otimes_J f = \bigoplus_{j \in J} W(j) \otimes f_j,
+$$
+
+and they have the universal properties $g \le \{W, f\} \iff W(j) \otimes g \le f_j$ for every
+$j$, and $W \otimes_J f \le g \iff W(j) \otimes f_j \le g$ for every $j$.
+[`weighted_limit_morphisms`](../api/enriched/weighted_limits.md) and
+[`weighted_colimit_morphisms`](../api/enriched/weighted_limits.md) compute the two tensors. A
+[`Weight`](../api/enriched/weighted_limits.md) holds one value per index, and
+`representable_weight` gives the weight that is the unit at one index and the zero elsewhere.
 
 ```python
+import torch
 from quivers.enriched.weighted_limits import (
-    Diagram, Weight, weighted_limit, representable_weight,
+    Weight, weighted_limit_morphisms, weighted_colimit_morphisms,
 )
+from quivers.core.algebras import GODEL
+from quivers.core.morphisms import observed
 from quivers.core.objects import FinSet
 
-J = FinSet(name="J", cardinality=3)
-
-# Representable weight at index 0: values (1, 0, 0)
-W = representable_weight(index_set=J, represented_at=0)
-
-# Discrete diagram of objects.
 A = FinSet(name="A", cardinality=2)
-B = FinSet(name="B", cardinality=4)
-C = FinSet(name="C", cardinality=3)
-D = Diagram(objects=(A, B, C))
+B = FinSet(name="B", cardinality=3)
+f0 = observed(A, B, torch.tensor([[0.9, 0.2, 0.4], [0.1, 0.8, 0.6]]), algebra=GODEL)
+f1 = observed(A, B, torch.tensor([[0.3, 0.7, 0.5], [0.6, 0.4, 0.2]]), algebra=GODEL)
 
-limit_tensor = weighted_limit(W, D)  # shape (2, 2, 4, 4, 3, 3)
+W = Weight(values=torch.tensor([1.0, 0.5]), algebra=GODEL)
+lim = weighted_limit_morphisms(W, [f0, f1], algebra=GODEL)      # shape (2, 3)
+colim = weighted_colimit_morphisms(W, [f0, f1], algebra=GODEL)  # shape (2, 3)
 ```
 
 ## Profunctors
@@ -219,18 +225,19 @@ table with one input index and one output index, and composition is the matrix
 product of [Morphisms](morphisms.md#composition-the-operator).
 
 [`Profunctor`](../api/enriched/profunctors.md) wraps a tensor of shape
-`(*contra.shape, *co.shape)`. `Profunctor.from_morphism(f)` wraps a morphism's
+`(*contra.shape, *co.shape)` over an `IdempotentSemiring`. `Profunctor.from_morphism(f)` wraps a morphism's
 tensor, and `Profunctor.compose` computes the coend formula.
 
 ```python
 import torch
 from quivers.enriched.profunctors import Profunctor
+from quivers.core.algebras import GODEL
 from quivers.core.objects import FinSet
 
 A = FinSet(name="A", cardinality=3)
 B = FinSet(name="B", cardinality=4)
 data = torch.rand(3, 4)
-P = Profunctor(contra=A, co=B, tensor=data)
+P = Profunctor(contra=A, co=B, tensor=data, algebra=GODEL)
 ```
 
 ## Day convolution
@@ -246,14 +253,17 @@ $$
 (F \circledast G)(C) = \bigoplus_{A, B \,:\, A \otimes B = C} F(A) \otimes G(B),
 $$
 
-where $A$, $B$, and $C$ range over a given tuple of objects. A decomposition counts
-only when the product of two listed objects is itself listed, so the tuple must
-include the products of interest. In the example the only such product is `A * B`,
-and the result is `0.6 * 0.7 = 0.42` at that index and zero elsewhere.
+where $A$, $B$, and $C$ range over a given tuple of objects. Without further data the tuple
+must be closed under the product, and the function raises `ValueError` otherwise. A
+`product_table` lists the decompositions instead: it maps a pair of indices $(i, j)$ to the index
+$k$ of their product and the hom value $\mathcal C(C_k, A_i \otimes B_j)$. In the example the only
+decomposition is $A \otimes B = A \times B$, and under `GODEL` the result is
+$\min(0.6, 0.7) = 0.6$ at that index and zero elsewhere.
 
 ```python
 import torch
 from quivers.enriched.day_convolution import day_convolution, day_unit
+from quivers.core.algebras import GODEL
 from quivers.core.objects import FinSet
 from quivers.categorical.monoidal import CartesianProductMonoidal
 
@@ -266,9 +276,12 @@ monoidal = CartesianProductMonoidal()
 f_values = torch.tensor([0.6, 0.4, 0.1])
 g_values = torch.tensor([0.5, 0.7, 0.2])
 
-FG = day_convolution(f_values, g_values, objects=objects, monoidal=monoidal)
-# tensor([0.0000, 0.0000, 0.4200])
-unit = day_unit(objects=objects, unit_index=0)
+table = {(0, 1): (2, torch.tensor(1.0))}   # A ⊗ B is objects[2]
+FG = day_convolution(
+    f_values, g_values, objects=objects, monoidal=monoidal, algebra=GODEL, product_table=table,
+)
+# tensor([0.0000, 0.0000, 0.6000])
+unit = day_unit(objects=objects, unit_index=0, algebra=GODEL)
 ```
 
 ## Optics
@@ -285,8 +298,8 @@ provides four kinds, all subclasses of [`Optic`](../api/enriched/optics.md):
   [`ProductSet`](../api/core/objects.md);
 - [`Prism`](../api/enriched/optics.md) focuses on one case of a
   [`CoproductSet`](../api/core/objects.md);
-- [`Adapter`](../api/enriched/optics.md) is a pair of morphisms meant to be mutually
-  inverse, with `verify_isomorphism` to check this;
+- [`Adapter`](../api/enriched/optics.md) is a pair of mutually inverse morphisms, and its
+  constructor raises `ValueError` when the round trips differ from the identities;
 - [`Grate`](../api/enriched/optics.md) is given by a tensor representing a map from
   functions $I \to A$ into the whole $S$, for an index object $I$.
 
@@ -321,15 +334,19 @@ cotraverse = torch.zeros(6, 2)  # (|S|, |A|)
 grate = Grate(source=S, focus=A, index=I, cotraverse_tensor=cotraverse)
 ```
 
-[`compose_optics`](../api/enriched/optics.md) composes two optics:
+[`compose_optics`](../api/enriched/optics.md) composes two optics into a
+[`ComposedOptic`](../api/enriched/optics.md):
 
 ```python
 combined = compose_optics(outer=lens, inner=adapter)
 ```
 
-Each optic's `.forward()` and `.backward()` return morphisms. A lens with read map
-$\mathrm{get}$ and write map $\mathrm{put}$ is expected to satisfy the lens laws:
-$\mathrm{put}(s, \mathrm{get}(s)) = s$ (writing back what was read changes nothing)
-and $\mathrm{get}(\mathrm{put}(s, a)) = a$ (reading after writing returns what was
-written). A prism is expected to satisfy the analogous laws for matching and building.
-The library provides no check of either set of laws.
+Each optic's `.forward()` and `.backward()` return morphisms. A lens's `.forward()` is its read
+map $\mathrm{get} : S \to A$, and `Lens.put()` is its write map
+$\mathrm{put} : S \times A \to S$, which replaces the focus and keeps the rest. Both are
+functions, so the lens laws hold under every `Algebra`: GetPut,
+$\mathrm{put}(s, \mathrm{get}(s)) = s$ (writing back what was read changes nothing); PutGet,
+$\mathrm{get}(\mathrm{put}(s, a)) = a$ (reading after writing returns what was written); and
+PutPut, $\mathrm{put}(\mathrm{put}(s, a), a') = \mathrm{put}(s, a')$ [@foster2007combinators]. A
+prism is expected to satisfy the analogous laws for matching and building. A `Grate` wraps a
+tensor it is given and checks no law.
