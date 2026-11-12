@@ -33,7 +33,7 @@ flowchart LR
 
 A declaration whose kind has no converter for a hop is passed on unchanged and then
 checked against the target grammar like any other, so it stops the migration if the
-target grammar no longer accepts it. In that case the migrator also prints, on standard
+target grammar does not accept it. In that case the migrator also prints, on standard
 error, the revisions at which the grammar rule was introduced and last present
 ([Blame on migration failure](#vcs-blame-on-migration-failure)).
 
