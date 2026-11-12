@@ -1,33 +1,30 @@
 # Categorical Structures
 
-Category theory studies which ways of assembling typed operations agree.
-Functors transform whole pipelines, natural transformations compare
-functors, and monoidal and traced structures describe parallel wiring
-and feedback. [Core Types](core.md)
-and [Morphisms](morphisms.md) supply the finite table interpretation.
-For each construction, the equations specify the properties required of
-the underlying operations.
+`quivers.categorical` implements functors, natural transformations, adjunctions,
+monoidal products, change of base, and traces over the finite morphisms of
+[Core Types](core.md) and [Morphisms](morphisms.md). Each class computes the
+structure on tensors. Most also carry a `verify_*` method that checks the defining
+equation numerically on given inputs, which tests that equation at those inputs and
+does not prove it in general. Mac Lane is the standard reference for every definition
+below [@maclane1998categories].
 
 ## Functors
 
-A functor transforms an entire typed system consistently. As an ordinary
-set-theoretic example, send a set of letters to lists of letters and a
-letter-renaming function to the function that renames every letter in a list.
-Renaming letters with `f` and then `g` gives the same list as renaming once
-with their composite: `map(g, map(f, xs)) = map(g ∘ f, xs)`.
-Mapping the identity similarly leaves the list unchanged. These are the
-identity and composition laws that also govern functors on Quivers’
-[typed morphisms](morphisms.md#composition-the-operator) [@maclane1998categories].
+A [functor](https://ncatlab.org/nlab/show/functor) $F : \mathcal C \to \mathcal D$
+sends each object $X$ to an object $F(X)$ and each morphism $f : X \to Y$ to a
+morphism $F(f) : F(X) \to F(Y)$, so that identities go to identities and
+$F(g \circ f) = F(g) \circ F(f)$. The free monoid construction is the standard
+example: it sends a set $X$ to the words over $X$ and a function to the map that
+applies it letter by letter.
 
-A functor $F: \mathcal{C} \to \mathcal{D}$ between $\mathcal{V}$-enriched categories maps objects to objects and morphisms to morphisms, preserving composition and identity.
+[`Functor`](../api/categorical/functors.md) is an abstract class with three methods:
 
-In quivers, [`Functor`](../api/categorical/functors.md) is an abstract base class with three abstract methods:
+- `map_object(obj)`: the object $F(X)$;
+- `map_morphism(morph)`: the morphism $F(f)$, a
+  [`FunctorMorphism`](../api/core/morphisms.md) that recomputes its tensor from `f`;
+- `map_tensor(tensor, algebra)`: the action on a morphism's tensor.
 
-- `map_object(obj)`: the object map $F_\text{obj}: \text{Ob}(\mathcal{C}) \to \text{Ob}(\mathcal{D})$
-- `map_morphism(morph)`: the morphism map, returning a [`FunctorMorphism`](../api/core/morphisms.md)
-- `map_tensor(tensor, algebra)`: the tensor-level action
-
-Concrete subclasses ship with the library:
+The library includes `IdentityFunctor`, `ComposedFunctor`, and `FreeMonoidFunctor`:
 
 <!-- python: skip -->
 ```python
@@ -53,29 +50,29 @@ Ff = F.map_morphism(f)          # FunctorMorphism with domain F(X), codomain F(Y
 FF = ComposedFunctor(F, F)      # F ∘ F applied as outer ∘ inner
 ```
 
-To define your own functor, subclass `Functor` and implement the three abstract methods.
+A new functor subclasses `Functor` and implements the three methods.
 
 ## Natural Transformations
 
-A natural transformation changes representations uniformly across types.
-For instance, place a value in a singleton list. Renaming the value and then
-making its singleton list agrees with making the list and renaming its
-element. The diagram below expresses that two-route agreement:
-$G(f) \circ \alpha_X = \alpha_Y \circ F(f)$. A component $\alpha_X$
-is the conversion at type `X`; naturality requires all such conversions to
-satisfy the displayed equation for every eligible `f`.
-
-A natural transformation $\alpha: F \Rightarrow G$ between functors $F, G: \mathcal{C} \to \mathcal{D}$ is a family of morphisms $\{\alpha_X: F(X) \to G(X)\}$ indexed by objects of $\mathcal{C}$, such that the naturality square commutes:
+A [natural transformation](https://ncatlab.org/nlab/show/natural+transformation)
+$\alpha : F \Rightarrow G$ between functors $F, G : \mathcal C \to \mathcal D$ is a
+family of morphisms $\alpha_X : F(X) \to G(X)$, one for each object $X$, such that
+$G(f) \circ \alpha_X = \alpha_Y \circ F(f)$ for every $f : X \to Y$:
 
 $$
-\begin{array}{cccc}
-F(X) \xrightarrow{\alpha_X} & G(X) \\
-\Big\downarrow F(f) & & \Big\downarrow G(f) \\
-F(Y) \xrightarrow{\alpha_Y} & G(Y)
+\begin{array}{ccc}
+F(X) & \xrightarrow{\;\alpha_X\;} & G(X) \\
+\Big\downarrow{\scriptstyle F(f)} & & \Big\downarrow{\scriptstyle G(f)} \\
+F(Y) & \xrightarrow{\;\alpha_Y\;} & G(Y)
 \end{array}
 $$
 
-[`NaturalTransformation`](../api/categorical/natural_transformations.md) is an ABC; use [`ComponentwiseNT`](../api/categorical/natural_transformations.md) to construct one from a callable that produces each component:
+Embedding each element as a word of length one is a natural transformation from the
+identity functor to the free monoid functor.
+[`NaturalTransformation`](../api/categorical/natural_transformations.md) is an
+abstract class, and [`ComponentwiseNT`](../api/categorical/natural_transformations.md)
+builds one from a function that returns each component. `verify_naturality(f)`
+compares the two sides of the square for one morphism `f`.
 
 <!-- python: skip -->
 ```python
@@ -91,79 +88,89 @@ Y = FinSet(name="Y", cardinality=4)
 F = IdentityFunctor()
 G = FreeMonoidFunctor(max_length=3)
 
-# unit η: Id ⇒ Free (length-1 embedding) reuses the adjunction's unit
+# η: Id ⇒ Free, the length-1 embedding, taken from the adjunction below
 adj = FreeForgetfulAdjunction(max_length=3)
 eta = ComponentwiseNT(F, G, adj.unit_component)
 
-# verify naturality on a chosen morphism
+# check the naturality square on one morphism
 f = morphism(X, Y)
 assert eta.verify_naturality(f)
 ```
 
 ## Adjunctions
 
-An adjunction relates two ways of specifying the same map. In the ordinary
-free-monoid example, assigning each letter an element of a monoid uniquely
-determines a concatenation-preserving map on all words: evaluate the letters
-and multiply their values. Thus maps from a free monoid correspond to maps
-from its generators into the underlying set. Formally,
-$\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$, naturally in `A` and `B`.
-The unit and counit encode this correspondence; they need not be inverses.
-An adjunction also determines a [monad](monadic.md#monads): its unit inserts
-a value into the composite functor, and its counit supplies the map used to
-flatten two applications of that functor [@maclane1998categories].
+An [adjunction](https://ncatlab.org/nlab/show/adjunction) $F \dashv G$ between
+functors $F : \mathcal C \to \mathcal D$ and $G : \mathcal D \to \mathcal C$ is a
+bijection $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$, natural in $A$ and $B$. It
+is equivalently given by a *unit* $\eta : \mathrm{id}_{\mathcal C} \Rightarrow GF$ and
+a *counit* $\varepsilon : FG \Rightarrow \mathrm{id}_{\mathcal D}$ satisfying the two
+triangle identities $\varepsilon_{F(A)} \circ F(\eta_A) = \mathrm{id}_{F(A)}$ and
+$G(\varepsilon_B) \circ \eta_{G(B)} = \mathrm{id}_{G(B)}$. Every adjunction determines
+a [monad](monadic.md#monads) $GF$, whose multiplication is
+$G \varepsilon_F : GFGF \Rightarrow GF$.
 
-Quivers stores words only up to a chosen length. Concatenations exceeding
-that bound are dropped, which changes the maps used in the unbounded
-free-monoid adjunction. Triangle-identity checks must thus use the
-actual bounded operations and specify which input lengths they cover.
+The standard example is the free monoid adjunction between sets and monoids. Giving
+each letter of $A$ a value in a monoid $M$ determines a unique map of monoids
+$A^* \to M$: evaluate the letters and multiply. The unit $\eta_A : A \to A^*$ embeds
+letters as words of length one, and the counit $\varepsilon_M : M^* \to M$ multiplies
+out a word of elements of $M$.
 
-An adjunction $F \dashv G$ is a pair of functors with morphisms $\eta: \text{id}_\mathcal{C} \Rightarrow GF$ (unit) and $\varepsilon: FG \Rightarrow \text{id}_\mathcal{D}$ (counit) satisfying triangle identities.
-
-The free-forgetful adjunction $\text{Free} \dashv \text{Forget}$ is shipped as [`FreeForgetfulAdjunction`](../api/categorical/adjunctions.md):
+[`FreeForgetfulAdjunction`](../api/categorical/adjunctions.md) implements this
+adjunction on words of bounded length. Its `unit_component(A)` is the length-one
+embedding. Its `counit_component` at a free monoid $A^*$ is concatenation
+$(A^*)^* \to A^*$, which is $\varepsilon$ at the free monoid and the multiplication of
+the monad $GF$. A plain `FinSet` carries no monoid operation, so
+`counit_component(A)` at a `FinSet` cannot be a counit. The class returns there the
+partial map that sends each length-one word to its letter and every other word to an
+all-zero row. Concatenations longer than `max_length` also go to an all-zero row, so
+the bounded construction agrees with the adjunction only on words that fit. The
+methods `verify_triangle_left(A)` and `verify_triangle_right(A)` compare the two
+triangle composites with the identity at one object.
 
 <!-- python: skip -->
 ```python
 from quivers.categorical.adjunctions import FreeForgetfulAdjunction
 from quivers.core.objects import FinSet, FreeMonoid
 
-A = FinSet(name="A", cardinality=5)
-adjunction = FreeForgetfulAdjunction(max_length=3)
+A = FinSet(name="A", cardinality=2)
+adjunction = FreeForgetfulAdjunction(max_length=2)
 
 # Left and right functors
 F = adjunction.left        # FreeMonoidFunctor
 U = adjunction.right       # ForgetfulFunctor
 
-# Monad image T(A) = U(F(A)) is the free monoid on A
-T_A = U.map_object(F.map_object(A))
-assert isinstance(T_A, FreeMonoid)
+# T(A) = U(F(A)) is the bounded free monoid on A
+FA = F.map_object(A)
+assert isinstance(U.map_object(FA), FreeMonoid)
 
-# Unit and counit components
-eta_A = adjunction.unit_component(A)        # A → A*
-eps_A = adjunction.counit_component(A)      # A* → A
+eta_A = adjunction.unit_component(A)        # A → A*, length-one words
+mu_A = adjunction.counit_component(FA)      # (A*)* → A*, concatenation
 
-# Triangle identities
+assert adjunction.verify_triangle_left(A)
 assert adjunction.verify_triangle_right(A)
 ```
 
 ## Monoidal Structures
 
-A monoidal product describes doing two things side by side. With pairs,
-`(a, (b, c))` and `((a, b), c)` contain the same information; the associator
-converts between their groupings. A unitor removes a redundant singleton
-component. A braiding swaps the two components. Coherence requires that
-different routes through these regroupings agree, so wiring a larger
-pipeline does not depend on arbitrary parentheses.
-
-A monoidal category $(\mathcal{C}, \otimes, I)$ has:
-
-- A bifunctor $\otimes: \mathcal{C} \times \mathcal{C} \to \mathcal{C}$ (the product)
-- A unit object $I$
-- Natural associativity, left identity, right identity (with coherence)
+A [monoidal category](https://ncatlab.org/nlab/show/monoidal+category)
+$(\mathcal C, \otimes, I)$ has a product $\otimes$ on objects and morphisms, a unit
+object $I$, and isomorphisms that regroup $(X \otimes Y) \otimes Z \cong
+X \otimes (Y \otimes Z)$ (the associator) and remove a unit factor (the left and right
+unitors). The [coherence theorem](https://ncatlab.org/nlab/show/coherence+theorem+for+monoidal+categories)
+states that any two composites of these isomorphisms between the same objects agree,
+so a wiring of parallel morphisms does not depend on how it is parenthesized. A
+symmetric monoidal category also has a braiding $X \otimes Y \cong Y \otimes X$.
 
 ### Cartesian Monoidal
 
-The standard monoidal structure on finite sets. [`CartesianMonoidal`](../api/categorical/monoidal.md) exposes the object-level `product`, the `unit` (terminal object), and the coherence morphisms `associator`, `left_unitor`, `right_unitor`, `braiding`:
+[`CartesianMonoidal`](../api/categorical/monoidal.md) uses the Cartesian product of
+finite sets, with the one-element set `Unit` as $I$, and gives the `associator`, the
+`left_unitor` and `right_unitor`, and the `braiding`. On functions this product is
+the categorical product. On relations and Markov kernels it is only a monoidal
+product: a kernel into a pair is not determined by its two marginals, so there is no
+product in the categorical sense. Markov kernels with this product, together with
+copying and discarding, form a
+[Markov category](https://ncatlab.org/nlab/show/Markov+category) [@fritz2020synthetic].
 
 <!-- python: skip -->
 ```python
@@ -185,7 +192,7 @@ swap = monoidal.braiding(X, Y)              # X × Y → Y × X
 assoc = monoidal.associator(X, Y, X)        # (X×Y)×X → X×(Y×X)
 ```
 
-Morphism-level tensor product is provided directly on `Morphism` via the `@` operator:
+On morphisms the product is the `@` operator:
 
 <!-- python: skip -->
 ```python
@@ -196,7 +203,8 @@ fg = f @ g                                   # ProductMorphism: X×X → Y×Y
 
 ### Coproduct Monoidal
 
-Coproduct as the monoidal operation:
+`CoproductMonoidal` uses the disjoint union, with the empty set `EMPTY` (exported by
+`quivers.categorical.monoidal`) as unit:
 
 <!-- python: skip -->
 ```python
@@ -212,18 +220,20 @@ XY = monoidal.product(X, Y)
 assert XY == X + Y
 ```
 
-The unit here is the initial object (empty set), exposed as `EMPTY` from `quivers.categorical.monoidal`.
-
 ## Base Change
 
-A threshold turns a soft score into a yes/no decision. The table keeps its
-row and column types, but subsequent composition uses Boolean operations.
-Thresholding can discard a weak link before another operation uses its
-score. Thus thresholding a composite need not agree with composing the
-thresholded tables; consult [Transformations](transformations.md) before
-using a preservation law.
+A [`BaseChange`](../api/categorical/base_change.md) applies an entrywise map from one
+`Algebra` to another to a morphism and keeps its domain and codomain. When the map is
+monotone and preserves the combining operations up to inequality, this is
+[change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
+[@kelly1982basic]. `FuzzyToBool(threshold)` sends scores at or above the threshold to
+1 and the rest to 0, and `BoolToFuzzy` includes $\{0, 1\}$ in $[0, 1]$. They act like
+the QVR transformations `threshold` (which uses a strict inequality at 0.5) and
+`boolean_embedding` ([Transformations](transformations.md#singletons)).
 
-Change the enriching algebra without changing the structure of morphisms. [`BaseChange`](../api/categorical/base_change.md) is an ABC; concrete instances are `BoolToFuzzy` and `FuzzyToBool`:
+Thresholding does not commute with composition: two scores of `0.6` pass a threshold
+at `0.5`, while their product `0.36` does not, so thresholding a composite can differ
+from composing thresholded morphisms.
 
 <!-- python: skip -->
 ```python
@@ -251,19 +261,21 @@ fuzzy_again = to_fuzzy.apply_to_morphism(bool_morph)
 
 ## Traced Monoidal Structure
 
-For `f : Y * X -> Z * X`, fix an external input `y` and output `z`,
-match the two `X` indices, and aggregate `f[y, x, z, x]` over `x`.
-The matching condition is the feedback wire; the remaining axes are `Y`
-and `Z`, leaving exactly the axes shown in the displayed type.
-
-A traced monoidal category adds a trace operator:
+A [traced monoidal category](https://ncatlab.org/nlab/show/traced+monoidal+category)
+has an operation
 
 $$
-\text{tr}^X_{Y,Z}: \mathcal{C}(Y \otimes X, Z \otimes X) \to \mathcal{C}(Y, Z)
+\mathrm{tr}^X_{Y,Z} : \mathcal C(Y \otimes X, Z \otimes X) \to \mathcal C(Y, Z)
 $$
 
-The finite tensor trace matches an input index with an output index and
-reduces over their shared value, just as a matrix trace sums diagonal entries. The free function [`trace`](../api/categorical/traced.md) wraps a [`CartesianTrace`](../api/categorical/traced.md):
+that feeds the output $X$ back into the input $X$ [@joyal1996traced]. On finite
+tensors, the trace of $f : Y \times X \to Z \times X$ fixes an input $y$ and output
+$z$, matches the two $X$ indices, and reduces $f[(y, x), (z, x)]$ over $x$ with the
+`Algebra`'s $\bigoplus$, as a matrix trace sums the diagonal. The function
+[`trace`](../api/categorical/traced.md) wraps a
+[`CartesianTrace`](../api/categorical/traced.md). It takes the fed-back object last
+in the domain and codomain, while the method `Morphism.trace` takes it first
+([Morphisms](morphisms.md#transpose-trace-cup-and-cap)).
 
 <!-- python: skip -->
 ```python
@@ -278,21 +290,19 @@ Z = FinSet(name="Z", cardinality=4)
 # f: (Y × X) → (Z × X)
 f = morphism(Y * X, Z * X)
 
-# Trace over X: returns A → B with the feedback loop closed
+# Trace over X: returns Y → Z with the feedback loop closed
 traced_f = trace(f, feedback=X, domain=Y, codomain=Z)
 assert traced_f.domain == Y
 assert traced_f.codomain == Z
 ```
 
-The trace contracts the matching $X$ wire, leaving the external domain $Y$ and codomain $Z$.
-
 ## Summary
 
-| Structure | Concept | Syntax |
-|-----------|---------|--------|
-| Functor | Object and morphism map | `F: C → D` |
-| Natural Transform | Family of morphisms | `α: F ⇒ G` |
-| Adjunction | Natural correspondence between two kinds of morphism | `F ⊣ G` |
-| Monoidal | Product with coherence | `(C, ⊗, I)` |
-| Base Change | Enrichment transformation | `FuzzyToBool().apply_to_morphism(f)` |
-| Traced | Feedback/iteration | `trace(f, feedback=X, domain=Y, codomain=Z)` |
+| Structure | What it gives | Library entry point |
+|-----------|---------------|--------|
+| Functor | maps of objects and morphisms | `Functor`, `F.map_morphism(f)` |
+| Natural transformation | one morphism per object, commuting with every $F(f)$ | `ComponentwiseNT(F, G, component)` |
+| Adjunction | $\mathcal D(F(A), B) \cong \mathcal C(A, G(B))$ | `FreeForgetfulAdjunction(max_length)` |
+| Monoidal product | parallel composition with coherent regrouping | `CartesianMonoidal`, `f @ g` |
+| Change of base | entrywise map between `Algebra`s | `FuzzyToBool().apply_to_morphism(f)` |
+| Trace | feedback of one wire | `trace(f, feedback=X, domain=Y, codomain=Z)` |
