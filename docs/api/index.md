@@ -87,7 +87,7 @@ weighted deduction systems.
 - **[Families](stochastic/families.md)**: parametric families of finite distributions
 - **[Transforms](stochastic/transforms.md)**: conditioning, mixing, and factoring of stochastic morphisms
 - **[Queries](stochastic/queries.md)**: probabilities, marginals, and expectations
-- **[Giry Monad](stochastic/giry.md)**: the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) on finite sets and the category `FinStoch`
+- **[Giry Monad](stochastic/giry.md)**: the [distribution monad](https://ncatlab.org/nlab/show/distribution+monad) on finite sets (class `GiryMonad`) and its Kleisli category `FinStoch`
 - **[Weighted Deduction](stochastic/deduction.md)**: rule schemas, chart semirings, and chart parsers
 
 ## Continuous Package

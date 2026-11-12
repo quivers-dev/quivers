@@ -39,6 +39,6 @@ any of the kernels above, and estimates the evidence
 
 ## Variational warmup
 
-`WarmupThenHMC` fits a guide with SVI and starts the chains from it.
+`WarmupThenHMC` fits a guide with stochastic variational inference (SVI) and starts the chains from it.
 
 ::: quivers.inference.warmup
