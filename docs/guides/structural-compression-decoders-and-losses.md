@@ -27,7 +27,7 @@ small neural networks:
   function for each sort and number of children;
 - the `primitive` head gives the logits over a data sort's vocabulary;
 - the `binder_select` head gives the logits over the variables in scope, for an
-  index-sorted child.
+  child of an index sort.
 
 ```qvr
 signature LF

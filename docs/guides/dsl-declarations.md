@@ -1,7 +1,7 @@
 # DSL Declarations
 
-A `.qvr` module is a sequence of declarations. `program` blocks and many-input
-contractions have their own pages ([Programs and Let-Expressions](dsl-programs-and-lets.md),
+A `.qvr` module is a sequence of declarations. `program` blocks and contractions
+of several inputs have their own pages ([Programs and Let-Expressions](dsl-programs-and-lets.md),
 [Contractions](dsl-contractions.md)), and the [Overview](dsl-overview.md#grammar)
 summarizes the grammar.
 
@@ -35,7 +35,7 @@ the rule must belong to, and the compiler checks the registered rule against it:
 | `bilinear_form` | `BilinearForm` | neither |
 | `rule` | any `CompositionRule` | none required |
 
-No law is checked ([The composition-rule hierarchy](transformations.md#the-composition-rule-hierarchy)).
+No law is checked ([The hierarchy of composition rules](transformations.md#the-composition-rule-hierarchy)).
 The operations
 [`identity(A)`](../api/core/morphisms.md#quivers.core.morphisms.identity),
 [`f.dagger`](../api/core/morphisms.md#quivers.core.morphisms.Morphism.dagger),
@@ -261,7 +261,7 @@ More than fifty families are registered ([Continuous Families](continuous-famili
 `Flow` is not one of them: it builds a conditional
 [normalizing flow](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 [@rezende2015flows] with `n_layers` coupling layers (4 by default) and hidden width
-`hidden_dim` (64 by default). The runtime chooses the lookup-table or the parametric
+`hidden_dim` (64 by default). The runtime chooses the table lookup or the parametric
 form by whether the codomain is a [`FinSet`](../api/core/objects.md) or a
 [`ContinuousSpace`](../api/continuous/spaces.md).
 
@@ -366,7 +366,7 @@ morphism cell : Feature * Hidden -> Hidden [role=function, param_source=mlp(16, 
   `let z = proj(x)`, with one argument per factor of its domain, and never draws from
   it, so `sample z <- proj(x)` is refused. In a chain it composes like any morphism,
   and as the cell of a scan it gives a deterministic recurrence.
-- **Point-estimated weights.** Its weights are parameters of the compiled program,
+- **Weights as point estimates.** Its weights are parameters of the compiled program,
   fit by whatever objective trains the model, as a network kernel's are. The checked
   core reads them as typed program inputs (`proj_param_weight`, `proj_param_bias`, and
   `cell_param_layer<k>_weight` and `_bias` for hidden layers), as the
@@ -529,7 +529,7 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
 - **`atoms NAME, NAME, ...`** lists the constructor symbols. In a rule pattern an
   identifier that is neither a declared atom nor a numeral is a pattern variable,
   whatever its spelling, and a variable that occurs twice in a rule must match the same
-  term at both occurrences. A declared atom in a chart-position slot, such as the first
+  term at both occurrences. A declared atom in a slot for a chart position, such as the first
   two slots of `span`, is a compile error naming the rule and the identifier.
 - **`rule NAME : premises |- conclusion`** is an inference rule with any number of
   comma-separated premises. A trailing `#[learnable]` pragma gives the rule a learnable
@@ -548,7 +548,7 @@ Slash, product, and modal type constructors are declared atoms, not built-in syn
 In Steedman notation [@steedman2000syntactic], `Fwd(X, Y)` is `X/Y`, which takes a `Y`
 on its right to give `X`, and `Bwd(X, Y)` is `X\Y`, which takes a `Y` on its left. The
 usual further names are `Tns(X, Y)` for a product, `Dia(X)` and `Box(X)` for the
-modalities ◇ and □, and `Cont(X)` for a continuation-typed category, and a grammar may
+modalities ◇ and □, and `Cont(X)` for the category of a continuation, and a grammar may
 declare any others.
 
 ### Axioms {#axiom-sources}
@@ -580,7 +580,7 @@ A `#[learnable]` lexicon entry gets a log weight, a PyTorch
 [`nn.Parameter`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Parameter.html)
 initialized to `0.0`.
 
-### Chart-query expressions
+### Expressions that query a chart {#chart-query-expressions}
 
 A program parses its input with `parse`, and the result is a chart that answers
 queries:

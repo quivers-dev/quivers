@@ -129,7 +129,7 @@ gives a `Module` that compiles to the same program.
   orthonormal centered columns, matching R's
   [`stats::poly`](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/poly.html).
   Raw monomials remain available via `I(x**k)`.
-- **One coefficient per design-matrix column** (matches brms
+- **One coefficient per column of the design matrix** (matches brms
   display). `poly(x, 2)` produces two named coefficients
   `beta_poly_x_2_1` and `beta_poly_x_2_2`, and `x*z` produces three
   named coefficients (`beta_x`, `beta_z`, `beta_x_z`). Each column's values reach the
@@ -189,8 +189,8 @@ $\mu + \mu^2 / \mathrm{disp}$: `mu = exp(eta)`, `disp > 0`, and the compiler emi
 `NegativeBinomial(disp, mu / (mu + disp))`, matching QVR's
 `(total_count, probs)` convention.
 
-The other scalar response families likewise use regression-facing
-parameters rather than exposing constructor-specific slots. Gamma uses
+The other scalar response families likewise take the parameters
+named in regression rather than the slots of their constructors. Gamma uses
 mean `mu` and shape `shape`, then emits `Gamma(shape, shape / mu)`.
 Beta uses mean `mu` and precision `phi`, then emits
 `Beta(mu * phi, (1 - mu) * phi)`. Student-t maps `nu`, `mu`, and
@@ -225,7 +225,7 @@ choice_fit = fit(
 ```
 
 Categorical responses must contain every label between zero and `K - 1`.
-Class-specific random effects use the
+Random effects for each class use the
 [non-centered parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html),
 which writes a group effect as its scale times a standard normal draw, and
 `reparameterize="centered"` is rejected when a categorical formula has random effects.
@@ -245,7 +245,7 @@ each observation. The mixture family represents each response as a finite Gaussi
 linear predictor shifts every component location for a row. Component
 weights are shared across rows, location offsets are centered to separate
 them from the formula intercept, and every component has its own positive
-scale. The `K - 1` free logits and offsets are mapped to sum-zero `K`-vectors through
+scale. The `K - 1` free logits and offsets are mapped to sum-to-zero `K`-vectors through
 an orthonormal Helmert basis, a set of `K - 1` orthonormal contrasts, so the default
 isotropic normal priors give distributions on those vectors that are symmetric under
 permuting the components and have no redundant common direction:
@@ -364,7 +364,7 @@ spread and leaving the coefficients where they started.
 ### Prior overrides
 
 Prior overrides are keyed by the latent's name in the generated program, which
-`formula_to_qvr` shows before fitting. A prior is a brms-style `Family(arg, arg, ...)`
+`formula_to_qvr` shows before fitting. A prior is, as in brms, a `Family(arg, arg, ...)`
 call, whose numeric arguments become floats and whose identifier arguments refer to
 other latents of the program. An explicit prior is emitted exactly as written, without
 the scaling above. The full call shape lives in

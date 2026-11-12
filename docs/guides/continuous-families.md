@@ -66,7 +66,7 @@ from quivers.continuous.families import (
 )
 ```
 
-### Positive-valued families
+### Families on the positive reals {#positive-valued-families}
 
 For positive outputs, $(0, \infty)$:
 
@@ -91,7 +91,7 @@ gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
 
-### Unit-interval families
+### Families on the unit interval {#unit-interval-families}
 
 For outputs in $(0, 1)$:
 
@@ -258,7 +258,7 @@ structure.
 
 ## Structured priors over weight matrices
 
-### MatrixNormal: Kronecker-covariance matrix prior
+### MatrixNormal: matrix prior with Kronecker covariance {#matrixnormal-kronecker-covariance-matrix-prior}
 
 The rows of a weight matrix may covary because their inputs are related, and its
 columns because their outputs are. A
@@ -308,7 +308,7 @@ an inverse Wishart [@gelman2013bayesian]. The change-of-variables Jacobian for i
 symmetric matrix contributes a `-(d + 1) log det(Sigma)` term to
 the log-density.
 
-### LKJCholesky: correlation-matrix prior
+### LKJCholesky: prior on correlation matrices {#lkjcholesky-correlation-matrix-prior}
 
 A correlation matrix describes association apart from each variable's scale, and its
 [Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition) is the
@@ -344,7 +344,7 @@ the unit sphere in $\mathbb{R}^k$. Every off-diagonal correlation $r$
 of a $d \times d$ draw thus has
 $(r + 1)/2 \sim \mathrm{Beta}(\eta - 1 + d/2, \eta - 1 + d/2)$. The
 [compiled runtime](dsl-overview.md#compilation-pipeline), every factory over the family (the fixed and
-variable-concentration forms, a plate over it, and
+forms with a variable concentration, a plate over it, and
 [`LKJCorrelationFactor`][quivers.continuous.families.LKJCorrelationFactor]),
 and the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for its core language, all draw through one implementation of
 this construction, so a program's prior draws follow the same law in

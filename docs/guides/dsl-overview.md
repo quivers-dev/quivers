@@ -120,7 +120,7 @@ helper computation that an enumeration handler sums. The QIEC checker then valid
 and call graphs for the whole module at once.
 
 Every downstream tool reads the checked module. The reference machine runs a `define`
-or a `program` through one entry-point call
+or a `program` through one call of an entry point
 ([`invoke_entry`](../api/qiec/entries.md)). The compiled runtime lowers a program's
 calls of other computations to its own steps where it can. A program with a call it
 cannot lower becomes a [`CheckedProgram`](../api/effects/checked_program.md), which
@@ -363,5 +363,5 @@ except CompileError as e:
 - [Programs and Let-Expressions](dsl-programs-and-lets.md): `program` blocks, their
   steps, the `over` clause, factor expressions, primitives, and inline distribution
   families.
-- [Contractions](dsl-contractions.md): many-input contractions, wiring inference,
+- [Contractions](dsl-contractions.md): contractions of several inputs, wiring inference,
   and the explicit `wiring` option.

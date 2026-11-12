@@ -159,7 +159,7 @@ takes as `agenda_factory=`:
 - `knuth_agenda()`, best-first search over hyperpaths
   [@knuth1977generalization; @nederhof2003weighted];
 - `depth_first_agenda()`, last in first out, for proof search;
-- `semi_naive_agenda()`, first in first out, for Datalog-style systems
+- `semi_naive_agenda()`, first in first out, for systems in the style of Datalog
   [@mcallester2002complexity].
 
 ## Production probabilities per left-hand side
@@ -382,7 +382,7 @@ compares the chart with the generated search on one grammar, and
 [generated computations](../reference/qvr/generated-computations.md#deduction-declarations)
 lists the families, effects,
 [handlers](../reference/qvr/effects-and-handlers.md#handler-declarations), and entries
-a deduction or rule-schema parser adds.
+a deduction or a parser built from rule schemata adds.
 
 ## Schema export
 

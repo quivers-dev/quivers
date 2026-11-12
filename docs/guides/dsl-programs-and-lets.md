@@ -539,8 +539,8 @@ axis.
 **Conversions and weights**: `real`, `int`, `weight`, `weight_value`.
 
 **Arithmetic and comparisons**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`,
-`>=`, `&&`, `||`, and the call forms `pow`, `abs`, `min`, and `max`. The two-argument
-`min(a, b)` and `max(a, b)` are pointwise, unlike the one-argument reductions below: two
+`>=`, `&&`, `||`, and the call forms `pow`, `abs`, `min`, and `max`. The
+`min(a, b)` and `max(a, b)` with two arguments are pointwise, unlike the reductions of one argument below: two
 tensors compare entry by entry, a number broadcasts against a tensor, and two `Int`
 operands give an `Int`, so `ys[max(t - 1, 0)]` clamps an index expression into range.
 
@@ -595,7 +595,7 @@ extents add, so `concat(h, c)` of two `Real 4` vectors has 8 entries and `concat
 `(2, 3)` tables is `(2, 6)`. `slice(v, start, length)` keeps the `length` entries of
 the last axis from `start`, counted from zero. Both bounds are nonnegative integer
 literals, since the checked type states the slice's extent, and a position computed at
-run time is read with a gather, `v[i]`. A number joins as the one-entry vector `[x]`. A
+run time is read with a gather, `v[i]`. A number joins as the vector with one entry `[x]`. A
 slice past the end of the axis, a zero length, a number where a tensor belongs, and
 tensors of different element types or leading axes are refused. This is how a scan
 carries a state of several parts as one vector, such as the hidden and cell states of an
@@ -646,7 +646,7 @@ The compiled runtime also accepts operations that the checked core lacks:
 `softshrink`, `std`, `swish`, `tanhshrink`, `threshold`, and `var`. A program that uses
 one runs in PyTorch, but `qvr check` reports it, the reference machine cannot run it,
 and no transpile target accepts it. `qvr check --target TARGET` lists what a target
-refuses. Calls resolve to these primitives before module-level declarations, and the
+refuses. Calls resolve to these primitives before the module's declarations, and the
 compiler checks the number of arguments of a call to a declared callable.
 
 ### Factor expressions: assembling indexed tensors
@@ -678,7 +678,7 @@ program p : Out -> Out
 
 #### Pattern-match form (single-axis)
 
-When each entry of a one-axis `factor` is a different expression, the case form lists
+When each entry of a `factor` is a different expression, the case form lists
 them side by side:
 
 ```qvr

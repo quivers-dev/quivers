@@ -256,7 +256,7 @@ continuous ones.
   applies its components in order on every transition, and
   [`MixtureKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MixtureKernel)
   applies one, chosen with fixed probabilities. Both forward the
-  chain-local generator and warmup to every component, and a mixture draws
+  generator local to each chain and warmup to every component, and a mixture draws
   its warmup choices when warmup starts, so each component adapts over
   exactly the transitions that select it.
 
@@ -391,7 +391,7 @@ energy Bayesian fraction of missing information (E-BFMI) need
 [`to_datatree`](../api/diagnostics/arviz_io.md#quivers.diagnostics.arviz_io.to_datatree)
 writes these statistics under ArviZ's names (`diverging`, `tree_depth`,
 `n_steps`, `energy`, `step_size`, `acceptance_rate`), so divergences
-can be located in parameter space and tree-depth saturation checked
+can be located in parameter space and saturation of the tree depth checked
 draw by draw.
 
 ## Tempered sequential Monte Carlo

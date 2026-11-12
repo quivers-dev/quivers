@@ -34,7 +34,7 @@ domain and codomain sizes (numbers of elements) against the declaration, then co
 the contraction under the named [rule](transformations.md#the-composition-rule-hierarchy).
 When the inputs span several lines, each input, the last included, ends with a comma.
 
-## Type-driven wiring inference
+## Inferring the wiring from the types {#type-driven-wiring-inference}
 
 An einsum string names each axis by a letter, lists the inputs' axes before the arrow
 and the output's after it, and sums every letter missing from the output. For
@@ -136,7 +136,7 @@ gives each one's standard name):
 - `log_prob`: addition and log-sum-exp, the log semiring, for summing out discrete
   latent variables in log space;
 - `tropical`: addition and minimum, for shortest-path costs;
-- `max_plus`: addition and maximum, for best-path log scores;
+- `max_plus`: addition and maximum, for the log score of the best path;
 - `boolean`, `godel`, `lukasiewicz`, `probability`, `counting`: the remaining built-in
   instances.
 

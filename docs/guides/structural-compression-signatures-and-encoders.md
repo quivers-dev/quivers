@@ -80,7 +80,7 @@ some arguments, are binding signatures [@fiore1999abstract].
 
 The encoder and the decoder both carry a context $\Gamma$ of bound variables. Each
 entry is a triple `(var_sort, embedding, type_term)` of the variable's sort, its
-vector, and its annotation, and `BoundVar(i)` in an object-sorted position reads the
+vector, and its annotation, and `BoundVar(i)` in a position of object sort reads the
 entry at depth `i`. The encoder's `var_init` rule, below, computes a variable's vector
 from its annotation.
 
@@ -191,7 +191,7 @@ transformer in the sense of Vaswani et al. [@vaswani2017attention]. Every factor
 returns an [`Encoder`](../api/structural/encoder.md), the same runtime value an
 explicit body produces.
 
-### Sequence-shaped sugar
+### Shorthand for sequences {#sequence-shaped-sugar}
 
 For sequence signatures, $\mathrm{Seq} = \mathrm{Nil} \mid \mathrm{Cons}(A, \mathrm{Seq})$,
 a `Cons` rule can take one of two extra forms:
@@ -216,7 +216,7 @@ encoder Tfm : Seq
 
 `gru_step` and `tfm_step` stand for functions the module declares.
 
-### Graph-shaped sugar
+### Shorthand for graphs {#graph-shaped-sugar}
 
 Graphs can contain cycles, so there is no bottom-up order. Message passing instead
 updates every vertex's vector for a fixed number of rounds: each edge sends a message

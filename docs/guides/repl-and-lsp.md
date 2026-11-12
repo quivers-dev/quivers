@@ -161,7 +161,7 @@ The root and each namespace expand on every refresh. Click a leaf (or arrow-key 
 `:info NAME` in the output log.
 
 Above the tree is a one-line **filter input**. Type any substring
-and the tree fuzzy-collapses to the bindings whose names contain it.
+and the tree collapses, by fuzzy matching, to the bindings whose names contain it.
 Clear the filter to bring everything back.
 
 ### Output log
@@ -204,7 +204,7 @@ in full or with the short form in the second column.
 | --- | --- | --- |
 | `:load FILE` | `:l` | Parse + elaborate, rebind the session env |
 | `:reload` | `:r` | Re-`:load` the last file, print added/removed/changed names |
-| `:type EXPR` | `:t` | Print a value-level GHCi-style signature (`f :: A -> B`); type-level names are handled by `:kind` |
+| `:type EXPR` | `:t` | Print the signature of a value, in the style of GHCi (`f :: A -> B`); type-level names are handled by `:kind` |
 | `:kind T` | `:k` | Resolve a type-level name or expression (`object X : FinSet 3`, `FinSet 3 :: FinSet 3`) |
 | `:transpile TARGET` |  | Emit the loaded module for `stan`, `numpyro`, `pyro`, `pymc`, `edward2`, `turing`, `gen`, `church`, `webppl`, `bugs`, or `jags` |
 | `:runtime [PROVIDER\|FILE.json]` |  | Show the current runtime, attach a registered provider, or load an explicit provider configuration |
@@ -214,7 +214,7 @@ in full or with the short form in the second column.
 | `:doc NAME` |  | Render only the doc comment(s) for NAME |
 | `:browse [PATH]` | `:b` | List every binding, optionally filtered by a top-level namespace (`objects`/`spaces`/`morphisms`/`rules`/...) or by a `::`-separated scope path (`lda`, `lda::z`, `CCG::fwd_app`). Paths show that binding's inner scope. |
 | `:plate PROGRAM` | `:p` | Render PROGRAM's plate diagram. Default is a Rich table; flags `--mermaid` / `--dot` / `--tikz` / `--daft` emit alternative formats; `--open` renders to PNG via daft or graphviz and opens with the system viewer. |
-| `:graph PROGRAM` | `:g` | Vertical step-flow view of PROGRAM (one row per sample / observe / let / marginalize / return step with its dependency parents). Same `--mermaid` / `--dot` / `--open` flags as `:plate`. |
+| `:graph PROGRAM` | `:g` | Vertical view of the steps of PROGRAM (one row per sample / observe / let / marginalize / return step with its dependency parents). Same `--mermaid` / `--dot` / `--open` flags as `:plate`. |
 | `:where NAME` |  | List every scope path whose final segment is NAME (top-level and nested). Useful for finding every site a binding is referenced. |
 | `:effects PROGRAM` |  | Compare PROGRAM's declared `[effects=[...]]` set against the effect set the compiler infers from the body. |
 | `:shape PROGRAM` |  | Pretty-print PROGRAM's `ChainShape`: each step's depth, kind, intermediate axis size, and source location. |
@@ -323,7 +323,7 @@ accepts. An unsupported feature is reported at its source location.
 
 #### `:runtime [PROVIDER|FILE.json]`
 
-With no argument, show the active runtime-provider configuration and its
+With no argument, show the active configuration of runtime providers and its
 source. A bare name selects the built-in `core` provider or an installed
 `quivers.qiec_runtime` entry point. A path loads the same non-executable JSON
 configuration accepted by `qvr run --runtime`:
@@ -390,7 +390,7 @@ the plain and TUI frontends.
 
 #### `:detach`
 
-Remove every runtime provider from the session and clear the last-run status.
+Remove every runtime provider from the session and clear the status of the last run.
 Pure computations whose argument and result types require a provider validator
 will then fail with `qiec-run-validator`. Use `:runtime core`, another provider
 name, or a JSON configuration path to attach a runtime again.
@@ -514,10 +514,10 @@ Badges in the table view:
 
 #### `:graph PROGRAM [--mermaid|--dot|--open]` / `:g PROGRAM`
 
-Vertical step-flow view of PROGRAM. One row per program step
+Vertical view of the steps of PROGRAM. One row per program step
 (sample / observe / let / marginalize / return) with its
 dependency parents on the side. Differs from `:plate` in that
-the rows are *steps* (program-source order) rather than
+the rows are *steps* (in the order of the program source) rather than
 *variables* (which a `let` can introduce mid-stream).
 
 ```
@@ -554,7 +554,7 @@ references to 'Doc':
 
 For a probabilistic PROGRAM, compare its declared `[effects=[...]]` option block against
 the effect set the compiler infers from the body's step kinds
-(`Sample` from sample-sites, `Score` from observes, `Marginal`
+(`Sample` from sample sites, `Score` from observes, `Marginal`
 from marginalize blocks, `Pure` otherwise).
 
 ```
@@ -758,11 +758,11 @@ What each container kind exposes as named children:
 | Container | Children |
 |---|---|
 | `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return); every program is a scope, with or without typed parameters |
-| `marginalize` | the same set of program-step kinds, nested inside the marginalize block |
+| `marginalize` | the same kinds of program step, nested inside the marginalize block |
 | `deduction` | rules + atoms + lexicon entries |
 | `signature` | sorts + constructors + binders + vertex_kinds + edge_kinds |
 | `encoder` (inline body) | op_rules + init_rules + message_rules + update_rules + var_inits |
-| `decoder` | per-constructor heads |
+| `decoder` | one head per constructor |
 | `bundle` | member rule names |
 | `contraction` | declared input parameter names |
 | `object` / `morphism` / `rule` / `loss` / `category` | none (leaf) |
@@ -771,8 +771,7 @@ The env tree on the right side of the TUI carries each binding's
 full `::` path on its node data, and clicking any node, top-level or
 nested, fires `:info PATH` against that exact binding. Tab
 completion completes `lda::` to the program's children, `lda::z::`
-to the inner marginalize's children, and so on. A bare-name
-prefix like `thet` also offers nested names (`lda::theta`) without the enclosing
+to the inner marginalize's children, and so on. A prefix of a bare name, such as `thet`, also offers nested names (`lda::theta`) without the enclosing
 prefix.
 
 ### Program exploration
@@ -780,7 +779,7 @@ prefix.
 Five commands work together for understanding a program's
 structure:
 
-* `:graph PROGRAM`, vertical step-flow view (one row per program
+* `:graph PROGRAM`, vertical view of the steps (one row per program
   step with its dependency parents). The TUI default, with
   `--mermaid` / `--dot` / `--open` for external formats.
 * `:plate PROGRAM`, plate-notation diagram of the program's
@@ -924,12 +923,12 @@ The strip is hidden when there are no diagnostics.
 
 ### Click handlers
 
-Two frontends are click-aware:
+Two frontends respond to clicks:
 
 - **Identifiers in rendered output.** Clicking a type-, function-,
-  or namespace-colored identifier fires `:info NAME` in the eval
+  or identifier colored by its namespace fires `:info NAME` in the eval
   log. Works on any text the renderer painted with one of those
-  semantic colors: env-known names, grammar-classified types,
+  semantic colors: names the environment knows, types the grammar classifies,
   built-in functions, algebras.
 - **`PATH:LINE:COL` footers.** The `-- declared at ...` line under
   every `:info` body is a clickable link that launches
@@ -1035,7 +1034,7 @@ its kind, and go-to-definition jumps to the site's name in that step.
 The server also handles `workspace/didChangeConfiguration`. Either
 `{"qvr": {"transpileTarget": "stan"}}` or
 `{"transpileTarget": "stan"}` changes the selected backend and immediately
-reanalyzes every open document. An empty target disables target-specific
+reanalyzes every open document. An empty target disables the target's
 diagnostics without restarting the server.
 
 ### VS Code / Cursor
@@ -1114,7 +1113,7 @@ Every capability advertised by `qvr-lsp`:
 | `textDocument/prepareRename` / `textDocument/rename` | Rename a declaration the document makes (a computation, an operation, a handler, an instance, or a lexical binder) at every reference; a prelude name or a keyword is refused |
 | `textDocument/documentSymbol` | All top-level declarations plus their nested symbols: a computation's parameters, locals, scoped instances, branch binders, and call sites (a recursive call marked as such); a handler's clauses, each with its binders and calls; a program's steps, a call step detailed by its callee, a marginalize block's scope nested beneath it |
 | `textDocument/completion` | Env names, members and qualified instance operations (the prelude's `random.sample` included), grammar keywords, builtins, and paths, from the same source as the REPL completer |
-| `textDocument/semanticTokens/full` | Env-aware semantic token stream classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key color the same everywhere |
+| `textDocument/semanticTokens/full` | Semantic tokens, informed by the environment and classified by the Pygments lexer's own rules, so a handler clause's operation, a call's callee, a resumption grade, and a handler option key color the same everywhere |
 | `textDocument/formatting` | Re-emission of the current QVR AST via [`module_to_source`](../api/dsl/emit.md); a document whose checked module fails to lower is left unformatted |
 | `textDocument/didOpen` / `didChange` / `didSave` / `didClose` | Incremental sync, full re-analysis per change |
 | `workspace/didChangeConfiguration` | Update the selected transpile target and republish diagnostics for every open document, re-running only the capability pass over the already checked module |

@@ -197,7 +197,7 @@ arrow without `ArrowApply` has no monad counterpart.
 ## Worked example: scope-taking via Continuation
 
 The gallery grammar `docs/examples/source/quantifier_scope.qvr` derives quantifier
-scope with continuation-typed categories [@bumford2026effect]. Its rules write
+scope with categories of continuations [@bumford2026effect]. Its rules write
 categories in Steedman notation, with the result leftmost: `Fwd(A, B)` is `A/B`,
 which takes a `B` on its right to give `A`, and `Bwd(A, B)` is `A\B`, which takes a
 `B` on its left to give `A` [@steedman2000syntactic]. `Cont(X)` is a category of
@@ -223,7 +223,7 @@ deduction QScope : Term -> Term [semiring=LogProb, start=S, depth=4, tolerance=1
 `fwd_app_cont` is the applicative lift of forward application,
 `Cont(A/B), Cont(B) ⊢ Cont(A)`, and has the same shape as the schema `apply_Continuation_r`
 that `class_directed_lifts` generates. `pure_cont` is the unit, `A ⊢ Cont(A)`.
-`scope_take`, `Cont(A), B\A ⊢ Cont(B)`, lets a continuation-typed argument take scope
+`scope_take`, `Cont(A), B\A ⊢ Cont(B)`, lets an argument whose category is a continuation take scope
 over the function that consumes it, and `cont_elim` lowers a `Cont(S)` to an `S`.
 These two are written by hand: the generated `bind` lift has the different shape
 `T(X), T(Y)/X ⊢ T(Y)`.

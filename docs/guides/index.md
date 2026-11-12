@@ -74,8 +74,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 23. [Analysis: Data and Formulas](analysis-data-and-formulas.md): dataframes and
     regression formulas compiled to QVR.
-24. [Analysis: Fitting and Diagnostics](analysis-fitting-and-diagnostics.md): one-call
-    fitting, ArviZ diagnostics, convergence checks, simulation-based calibration, and
+24. [Analysis: Fitting and Diagnostics](analysis-fitting-and-diagnostics.md): fitting in one call, ArviZ diagnostics, convergence checks, simulation-based calibration, and
     initialization tools.
 
 ## Tools

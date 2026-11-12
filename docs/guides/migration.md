@@ -93,7 +93,7 @@ Kept:
 - **Top-level comments.** File headers and comments between declarations pass through
   unchanged.
 - **Comments in bodies.** Comments inside `program`, `deduction`, `marginalize`,
-  `signature`, `encoder`, `decoder`, `loss`, and composition-rule bodies pass through
+  `signature`, `encoder`, `decoder`, `loss`, and the bodies of composition rules pass through
   as written, in document order among the converted entries.
 - **Comments in lexicon blocks.**
 - **Doc comments.** `#!` lines move with the declaration they document.

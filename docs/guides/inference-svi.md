@@ -27,7 +27,7 @@ can put mass near several separated modes. Comparing families means fitting each
 several initializations and comparing their ELBOs and posterior predictive draws.
 
 The `Auto*` guides are built from a model and a set of observed site names
-([Variational Guides](../api/inference/guide.md)). The single-family guides are below.
+([Variational Guides](../api/inference/guide.md)). The guides of a single family are below.
 [`AutoGuideList`](../api/inference/guide.md#quivers.inference.guides.AutoGuideList)
 and [`AutoStructured`](../api/inference/guide.md#quivers.inference.guides.AutoStructured)
 combine guides for different sites into one family, and
@@ -63,7 +63,7 @@ where $T_i = \mathsf{biject\_to}(\mathrm{support}(p_i))$ is the
 bijector for site $i$'s prior support: the identity on the real
 line for `Normal`, $\exp$ for `HalfNormal` / `Gamma` /
 `Exponential` / `LogNormal`, sigmoid for `Beta` / `Uniform(0, 1)`
-/ `LogitNormal`, an affine-shifted sigmoid for arbitrary
+/ `LogitNormal`, a shifted and scaled sigmoid for arbitrary
 `Uniform(low, high)` / `TruncatedNormal`, and
 [`StickBreakingTransform`](https://docs.pytorch.org/docs/stable/distributions.html#torch.distributions.transforms.StickBreakingTransform)
 for `Dirichlet`. The learnable parameters $(\mu_i, \sigma_i)$ live in the
@@ -341,10 +341,10 @@ iwae = IWAEBound(num_particles=16, estimator=DoublyReparameterized())
 loss = iwae(model, guide, x, observations)
 ```
 
-Multi-particle objectives run a Python `for` loop over
+Objectives with several particles run a Python `for` loop over
 `num_particles`, calling `guide.rsample_strata` once per particle and
 `model.log_joint` once per stratum, and stack the
-log-densities into a leading `(K * S, batch)` axis with a log-weight
+log-densities into a leading `(K * S, batch)` axis with a log weight
 for each draw. An ordinary guide returns a single stratum ($S = 1$, equal
 weights $1/K$), and an `AutoMixtureGuide` returns one stratum per component,
 weighted by the mixture weights. `torch.distributions` and the model
@@ -448,7 +448,7 @@ A program whose records live in a plate scores every record on every
 step. Stochastic variational inference [@hoffman2013svi] scores a random
 subset of the records instead and multiplies their contribution by the
 number of records over the subset's size. The minibatch estimate of the
-ELBO is then unbiased for the full-data ELBO, and so is its gradient, so
+ELBO is then unbiased for the ELBO of the full data, and so is its gradient, so
 SVI converges to the same posterior while each step reads only the
 subset's observations.
 
@@ -649,7 +649,7 @@ for _ in range(800):
 The objectives draw through `Guide.rsample_strata`, which returns
 [`GuideDraw`](../api/inference/guide.md#quivers.inference.guides.GuideDraw)
 records: the sites, the guide log-density the objective pairs with
-them, and a stratum log-weight. Its default returns one draw from
+them, and a log weight for each stratum. Its default returns one draw from
 `rsample`, scored by `log_prob`, with weight one. A guide whose sampler
 makes a discrete choice that `rsample` cannot reparameterize overrides
 it to return weighted strata whose weighted average estimates

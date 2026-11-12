@@ -138,7 +138,7 @@ sampler statistics of each draw under ArviZ's names (`diverging`,
 delegates to
 [`arviz.compare`](https://python.arviz.org/en/stable/api/generated/arviz.compare.html)
 with stacking weights. Its `round_to` parameter is ArviZ's rounding policy:
-`"auto"` is the display-oriented default, an integer selects decimal
+`"auto"` is the default for display, an integer selects decimal
 places, and `"none"` preserves full numeric precision. The
 [`loo` wrapper](../api/diagnostics/comparison.md#quivers.diagnostics.comparison.loo)
 delegates PSIS to [`arviz.loo`](https://python.arviz.org/en/stable/api/generated/arviz.loo.html);
@@ -459,7 +459,7 @@ for warning in saturation_warnings(module):
 
 
 
-## Module-to-source: `quivers.dsl.emit`
+## From a module back to source: `quivers.dsl.emit` {#module-to-source-quiversdslemit}
 
 [`module_to_source`](../api/dsl/emit.md) writes a [`Module`](../api/dsl/ast_nodes.md)
 AST as `.qvr` source, covering every declaration, program step, and expression form.

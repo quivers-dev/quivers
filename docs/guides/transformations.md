@@ -112,7 +112,7 @@ pipe = compose_trans(softmax(B), EXPECTATION)
 g    = f.change_base(pipe)
 ```
 
-## The composition-rule hierarchy
+## The hierarchy of composition rules
 
 A *composition rule* (class [`CompositionRule`](../api/core/algebras.md)) is the
 pair of operations $\otimes$ and $\bigoplus$ that `>>` uses:
@@ -123,7 +123,7 @@ $$
 
 Its *level* records which laws the rule claims. Associativity would let
 `(f >> g) >> h` be regrouped as `f >> (g >> h)`, and an identity would let a
-do-nothing morphism be inserted. For this matrix product both follow when $\otimes$
+morphism that changes nothing be inserted. For this matrix product both follow when $\otimes$
 and $\bigoplus$ form a [semiring](https://en.wikipedia.org/wiki/Semiring)
 [@goodman1999semiring], and product with noisy-OR is not one
 ([Core Types](core.md#productfuzzyalgebra)). No level's laws are checked by the
@@ -232,13 +232,13 @@ and $0 \otimes (0 \otimes 0) = 1$. Parenthesize chains under this rule explicitl
 `material_implication` in the table above is a different object, an entrywise map
 into `Godel`.
 
-## Many-input contractions {#operadic-contractions}
+## Contractions of several inputs {#operadic-contractions}
 
 Binary composition `f >> g` sums over one shared axis. A `contraction` declaration
 combines three or more morphisms in one step, as a
 [tensor contraction](https://en.wikipedia.org/wiki/Tensor_contraction) written in
 [einsum](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html) notation
-and evaluated under the module's composition rule. Many-input operations of this
+and evaluated under the module's composition rule. Operations of several inputs of this
 kind compose by plugging outputs into inputs, and wiring diagrams are the standard
 account of that structure [@spivak2013operad].
 [DSL Contractions](dsl-contractions.md) covers the QVR syntax in full.
