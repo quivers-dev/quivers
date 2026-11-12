@@ -2,8 +2,9 @@
 
 The fixture is a zero-inflated Poisson whose gate is
 ``marginalize z <- ContinuousBernoulli(logits=eta)``: each row is a mixture of
-a point mass at zero and ``Poisson(3)``, weighted by ``sigmoid(-eta)`` and
-``sigmoid(eta)``. It is scored at predictors from -30 to 30, where the
+a point mass at zero and ``Poisson(r)`` at a per-row rate ``r``, weighted by ``sigmoid(-l)`` and
+``sigmoid(l)`` for the row's logit ``l = eta + x``. It is scored at
+predictors from -30 to 30, where the
 probability ``sigmoid(eta)`` is within an ulp of zero or one and a weight
 formed as ``1 - sigmoid(eta)`` loses its digits. The compiled runtime and the
 reference machine are pinned to an exact double-precision computation of the
@@ -42,7 +43,8 @@ _MARGINAL = "steps/marginalize_continuous_bernoulli_logits"
 _OBSERVED = "steps/observe_continuous_bernoulli_logits"
 
 _COUNTS = [0, 3, 0, 5]
-_RATE = 3.0
+_OFFSETS = [0.0, 0.5, -0.5, 1.0]
+_RATES = [3.0, 2.0, 4.0, 3.5]
 _ETAS = [-30.0, -15.0, 0.0, 15.0, 30.0]
 _POINTS = [0.1, 0.45, 0.8, 0.97]
 
@@ -115,24 +117,23 @@ def _exact_marginal(eta: float) -> float:
     Parameters
     ----------
     eta : float
-        The gate's logit.
+        The shared predictor; row ``n``'s gate has logit
+        ``eta + _OFFSETS[n]``.
 
     Returns
     -------
     float
         The prior's log density plus each row's log marginal.
     """
-    logit = _f64(eta)
+    logit = _f64(eta) + _f64(_OFFSETS)
     counts = _f64(_COUNTS)
-    active = torch.nn.functional.logsigmoid(logit) + D.Poisson(_f64(_RATE)).log_prob(
+    active = torch.nn.functional.logsigmoid(logit) + D.Poisson(_f64(_RATES)).log_prob(
         counts
     )
     inactive = torch.where(
-        counts == 0,
-        torch.nn.functional.logsigmoid(-logit).expand(counts.shape),
-        _f64(-math.inf),
+        counts == 0, torch.nn.functional.logsigmoid(-logit), _f64(-math.inf)
     )
-    prior = D.Normal(_f64(0.0), _f64(10.0)).log_prob(logit)
+    prior = D.Normal(_f64(0.0), _f64(10.0)).log_prob(_f64(eta))
     return float(prior + torch.logaddexp(active, inactive).sum())
 
 
@@ -194,14 +195,16 @@ def _reference(fixture: str) -> list[float]:
     joints: list[float] = []
     for eta in _ETAS:
         expected = exact(eta)
-        compiled = float(
-            program.morphism.log_joint(
-                torch.zeros(1, 1),
-                {"eta": torch.tensor([[eta]]), name: torch.tensor(data).float()},
-            ).sum()
-        )
+        values = {"eta": torch.tensor([[eta]]), name: torch.tensor(data).float()}
+        host = {name: tuple(data)}
+        if not observed:
+            values["x"] = torch.tensor(_OFFSETS)
+            values["r"] = torch.tensor(_RATES)
+            host["x"] = tuple(_OFFSETS)
+            host["r"] = tuple(_RATES)
+        compiled = float(program.morphism.log_joint(torch.zeros(1, 1), values).sum())
         assert compiled == pytest.approx(expected, rel=_FLOAT32_TOLERANCE), eta
-        run = program.run(entry, data={name: tuple(data)}, sites={"eta": eta})
+        run = program.run(entry, data=host, sites={"eta": eta})
         assert run.log_joint == pytest.approx(expected, rel=_FLOAT64_TOLERANCE), eta
         joints.append(run.log_joint)
     return joints
@@ -243,10 +246,18 @@ def test_target_scores_the_reference_joint(backend: str, scratch: pathlib.Path) 
         script=script,
         source=source,
         source_ext=ext,
-        points=[{"params": {"eta": eta}, "data": {"y": _COUNTS}} for eta in _ETAS],
+        points=[
+            {"params": {"eta": eta}, "data": {"y": _COUNTS, "x": _OFFSETS, "r": _RATES}}
+            for eta in _ETAS
+        ],
         scratch=scratch / backend,
-        shapes={"eta": [], "y": [len(_COUNTS)]},
-        dtypes={"eta": "float", "y": "int"},
+        shapes={
+            "eta": [],
+            "y": [len(_COUNTS)],
+            "x": [len(_OFFSETS)],
+            "r": [len(_RATES)],
+        },
+        dtypes={"eta": "float", "y": "int", "x": "float", "r": "float"},
     )
     _equivalence.assert_log_density_match(
         _reference(_MARGINAL),
@@ -262,7 +273,13 @@ def test_church_scores_the_reference_joint(scratch: pathlib.Path) -> None:
     result = ChurchProbe().evaluate(
         source,
         _MARGINAL.replace("/", "-"),
-        [_protocol.Point(params={"eta": eta}, data={"y": _COUNTS}) for eta in _ETAS],
+        [
+            _protocol.Point(
+                params={"eta": eta},
+                data={"y": _COUNTS, "x": _OFFSETS, "r": _RATES},
+            )
+            for eta in _ETAS
+        ],
         scratch=scratch / "church",
     )
     _equivalence.assert_log_density_match(
