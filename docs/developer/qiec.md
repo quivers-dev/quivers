@@ -46,8 +46,8 @@ indexed-family declarations, effect interfaces, rows, handler signatures, value 
 terms, source provenance, and equality evidence. Python callables and mutable resources cannot
 cross it.
 
-The *runtime attachment boundary* associates stable identifiers with values and handler
-implementations that live only in the running Python process. An *attachment* is such a value
+The runtime associates stable identifiers with values and handler implementations that live
+only in the running Python process. An *attachment* is such a value
 or handler, for instance a PyTorch module for a neural component, addressed by a stable QIEC
 identifier and never serialized with the module (`RuntimeAttachments` in
 [`quivers.qiec.evaluator`](../api/qiec/evaluator.md)). A *provider* is an object that binds
@@ -117,7 +117,7 @@ handler is reinstalled around the continuation it resumes, while effects that th
 itself performs go only to outer handlers. Dispatch checks the exact applied interface as well as the instance and the
 operation identifier.
 
-The machine enforces resumption grades at the attachment boundary. A grade `0` clause cannot
+The machine enforces resumption grades when it runs a handler clause. A grade `0` clause cannot
 resume, an affine clause resumes at most once, and a linear clause resumes exactly once. An
 unrestricted clause may resume several times only when the captured context is declared
 duplicable. Each additional resumption extends the dynamic address with a resumption path, which
@@ -695,7 +695,7 @@ The integration has five parts.
    and lowers the surface, programs included, into a serializable `QiecModule`.
 3. The compiler attaches that checked module to its environment and produces a `Program` whose
    execution runs the module's computations.
-4. `Lower` derives each program's target plan from its checked computation and projects the whole
+4. `Lower` derives each program's target plan from its well-typed computation and projects the whole
    module into `IRQiecModule`. Its typed nodes keep declarations, rows, provenance, values,
    evidence, computations, and resumption grades, so a renderer receives one lowered root.
 5. The CLI, TUI, REPL, language server, Pygments and tree-sitter highlighters, TextMate grammar,
