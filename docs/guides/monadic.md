@@ -1,55 +1,53 @@
 # Monads & Comonads
 
-A function can return more than a bare value: it might return several
-alternatives, a random outcome, or a value together with updated state.
-A **monad** supplies compatible operations for building and sequencing
-computations of one such kind. A **comonad** describes operations that
-consume values with context. We first connect these ideas to ordinary
-functions, then give their laws and Quivers interfaces.
+A function can return more than a bare value: several alternatives, a random outcome,
+or a value together with updated state. A [monad](https://ncatlab.org/nlab/show/monad)
+packages one such kind of result with the operations needed to build and sequence
+computations that return it, and a [comonad](https://ncatlab.org/nlab/show/comonad)
+packages values that carry a context to be consumed
+[@moggi1991notions; @wadler1992essence]. `quivers.monadic` implements both over the
+finite morphisms of [Morphisms](morphisms.md).
 
 ## Monads
 
-For the ordinary list monad, `pure(a)` produces `[a]`; `fmap(f)` applies
-`f` to each element; `join` flattens one layer of lists. For instance,
-`[[1, 2], [3]]` becomes `[1, 2, 3]`. The type constructor `T` says what
-extra structure a result carries. An *[endofunctor](categorical.md#functors)* maps objects and arrows
-within the same category; here it maps element types to list types and
-functions to elementwise functions [@moggi1991notions; @wadler1992essence].
-
-The laws below say that flattening three layers in either order agrees,
-and that adding then removing a singleton layer changes nothing. They
-justify regrouping a [sequence of computations](dsl-programs-and-lets.md#kleisli-bind-syntax). They are obligations on
-an implementation: each side of an equation must give the same result.
-
-A monad $T: \mathcal{C} \to \mathcal{C}$ is an endofunctor with two [natural transformations](categorical.md#natural-transformations):
-
-- **Unit** $\eta: \text{id} \Rightarrow T$ (embedding into the monad)
-- **Multiply** $\mu: T \circ T \Rightarrow T$ (flattening nested applications)
-
-satisfying associativity and unitality (monad laws):
+A monad on a category $\mathcal C$ is an
+[endofunctor](categorical.md#functors) $T : \mathcal C \to \mathcal C$ with two
+[natural transformations](categorical.md#natural-transformations), the *unit*
+$\eta : \mathrm{id} \Rightarrow T$ and the *multiplication*
+$\mu : T \circ T \Rightarrow T$, satisfying
 
 $$
-\mu \circ \mu T = \mu \circ T \mu, \quad \mu \circ \eta T = \text{id}, \quad \mu \circ T \eta = \text{id}
+\mu \circ \mu T = \mu \circ T \mu, \qquad \mu \circ \eta T = \mathrm{id}, \qquad \mu \circ T \eta = \mathrm{id}.
 $$
 
-[`Monad`](../api/monadic/typeclasses.md) (in `quivers.monadic.typeclasses`) is an abstract base class. Concrete implementations must provide `endofunctor`, `fmap_obj`, `fmap`, `pure`, and `join`; the Eilenberg-Moore aliases `unit` / `multiply` are usually exposed too.
+For the list monad, $T(X)$ is the set of lists over $X$, $\eta$ makes the singleton
+list `[a]`, $T$ applies a function to every element, and $\mu$ flattens one layer, so
+`[[1, 2], [3]]` becomes `[1, 2, 3]`. The first law says that flattening three layers
+gives the same list in either order, and the other two say that adding and then
+removing a singleton layer changes nothing. Together they make
+[sequencing](programs.md#bind-steps) independent of how the steps are grouped.
 
-## Kleisli Category
+[`Monad`](../api/monadic/typeclasses.md) (in `quivers.monadic.typeclasses`) is an
+abstract class. A subclass provides `endofunctor`, `fmap_obj` (the object map),
+`fmap` (the morphism map), `pure` (the unit), and `join` (the multiplication). The
+concrete monads also expose `unit` and `multiply` as other names for `pure` and
+`join`.
 
-Suppose `f(x)` returns a list of possible intermediate values and `g(y)`
-returns possible outputs for one intermediate. To compose them, apply `g`
-to every value from `f`, then flatten the resulting list of lists. For
-probabilities, the corresponding operation weights each route and sums
-over the intermediate. A Kleisli arrow packages this familiar sequencing
-pattern as an arrow `X -> Y` whose actual result has type `T(Y)`.
+## Kleisli Category {#kleisli-category}
 
-Every monad $T$ induces a Kleisli category $\mathcal{C}_T$ where:
+Suppose `f(x)` returns a list of possible intermediate values and `g(y)` returns a
+list of possible outputs. To compose them, apply `g` to every value from `f` and
+flatten the resulting list of lists. In general, the
+[Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category)
+$\mathcal C_T$ of a monad $T$ has the objects of $\mathcal C$, has as arrows
+$X \rightsquigarrow Y$ the morphisms $X \to T(Y)$ of $\mathcal C$, and composes them by
 
-- Objects are the same as $\mathcal{C}$
-- Morphisms $X \rightsquigarrow Y$ are morphisms $X \to T(Y)$ in $\mathcal{C}$
-- Composition is Kleisli composition: $(g \circ_T f)(x) = \mu(T(g)(f(x)))$
+$$
+g \circ_T f = \mu_Z \circ T(g) \circ f.
+$$
 
-In quivers, [`KleisliCategory`](../api/monadic/monads.md) wraps any `Monad` and exposes `identity` and `compose`:
+[`KleisliCategory`](../api/monadic/monads.md) wraps a `Monad` and exposes `identity`
+and `compose`:
 
 ```python
 from quivers.monadic.monads import KleisliCategory, FuzzyPowersetMonad
@@ -63,15 +61,29 @@ X = FinSet(name="X", cardinality=3)
 Y = FinSet(name="Y", cardinality=4)
 Z = FinSet(name="Z", cardinality=2)
 
-f = morphism(X, Y)              # interpreted as Kleisli arrow X ⇝ Y
+f = morphism(X, Y)              # read as a Kleisli arrow X ⇝ Y
 g = morphism(Y, Z)
 
-h = kleisli.compose(f, g)       # X ⇝ Z via μ ∘ T(g) ∘ f
+h = kleisli.compose(f, g)       # X ⇝ Z
 ```
 
 ## Fuzzy Powerset Monad
 
-The fuzzy powerset monad on the V-enriched category of finite sets:
+On sets, the $\mathcal V$-valued powerset monad sends $X$ to the set $\mathcal V^X$ of
+functions from $X$ to $\mathcal V$, read as fuzzy subsets of $X$. A Kleisli arrow
+$X \to \mathcal V^Y$ is then a $\mathcal V$-valued relation, which the library stores
+as a matrix. `FuzzyPowersetMonad(algebra)` works directly with these matrices:
+
+- `fmap_obj(X)` returns `X`, the object that indexes the membership values;
+- `fmap(f)` returns `f`;
+- `pure(X)` and `join(X)` both return `identity(X)` for the chosen `Algebra`;
+- Kleisli composition is `f >> g`.
+
+Its Kleisli category is thus the category of morphisms of
+[Morphisms](morphisms.md) under the chosen `Algebra`, and Kleisli composition is
+associative exactly when that composition is. Under the default `PRODUCT_FUZZY`,
+product does not distribute over noisy-OR, and regrouping a chain of Kleisli
+composites can change the result ([Core Types](core.md#productfuzzyalgebra)).
 
 ```python
 from quivers.monadic.monads import FuzzyPowersetMonad
@@ -82,32 +94,24 @@ X = FinSet(name="X", cardinality=3)
 
 monad = FuzzyPowersetMonad(algebra=PRODUCT_FUZZY)
 
-# At the set level, T(X) = X
+# fmap_obj returns the indexing object itself
 TX = monad.fmap_obj(X)
 assert TX == X
 
-# η_X : X → T(X) is the identity morphism with PRODUCT_FUZZY enrichment
+# The unit is the identity morphism of the chosen Algebra
 eta_X = monad.unit(X)
 ```
 
-A fuzzy subset is stored as one membership value for each element of `X`,
-so `fmap_obj(X) == X` retains the object that indexes those values.
-Composition uses the selected relation operation. With `PRODUCT_FUZZY`,
-product fails to distribute over noisy-OR, so different parenthesizations
-can give different results; see the numerical calculation in
-[Core Types](core.md#productfuzzyalgebra).
-
 ## Free Monoid Monad
 
-The ordinary list monad includes lists of every finite length. A finite
-implementation must bound that collection. Here `pure` inserts a
-length-one word and `join` concatenates nested words; flattenings longer
-than `max_length` are dropped rather than clipped to a prefix. This
-can lose weight: with `max_length=2`, flattening `[[a, b], [c]]`
-drops the length-three result. The usual list-monad equations thus
-require a separate check for this truncated representation.
-
-The `FreeMonoidMonad` API stores words up to a maximum length:
+The list monad has lists of every finite length, and a finite implementation has to
+bound them. `FreeMonoidMonad(max_length)` takes `fmap_obj(X)` to the
+[`FreeMonoid`](core.md#freemonoid) of words of length at most `max_length`. Its
+`pure` makes a word of length one, and its `join` concatenates a word of words. A
+concatenation longer than `max_length` is dropped, as an all-zero row, rather than
+cut to a prefix: with `max_length=2`, flattening `[[a, b], [c]]` gives nothing. The
+monad equations thus hold as for lists only on inputs whose flattenings fit within
+the bound.
 
 ```python
 from quivers.monadic.monads import FreeMonoidMonad
@@ -126,28 +130,28 @@ assert TX.max_length == 3
 
 ## Comonads
 
-The direction of the extra structure changes. A monadic operation produces
-`T(Y)`; a contextual operation consumes `W(X)`. For a standard product
-comonad `W(X) = E * X`, a fixed environment `E` travels with the value:
-`counit(e, x) = x` extracts it, and `comultiply(e, x) = (e, (e, x))`
-retains the environment for another contextual operation. This ordinary
-example motivates the interface; it is different from the pair operation
-implemented by `DiagonalComonad` below.
+A comonad reverses the direction: an endofunctor $W$ with a *counit*
+$\varepsilon : W \Rightarrow \mathrm{id}$ and a *comultiplication*
+$\delta : W \Rightarrow W \circ W$, satisfying
 
-A comonad $W: \mathcal{C} \to \mathcal{C}$ is a dual monad with:
+$$
+W\delta \circ \delta = \delta W \circ \delta, \qquad \varepsilon W \circ \delta = \mathrm{id}, \qquad W \varepsilon \circ \delta = \mathrm{id}.
+$$
 
-- **Counit** $\varepsilon: W \Rightarrow \text{id}$ (projection from comonad)
-- **Comultiply** $\delta: W \Rightarrow W \circ W$ (extend / duplicate)
+A monadic operation produces $T(Y)$, while a comonadic one consumes $W(X)$. In the
+environment comonad $W(X) = X \times S$, a fixed environment $s$ travels with each
+value: $\varepsilon(x, s) = x$ extracts the value, and
+$\delta(x, s) = ((x, s), s)$ keeps the environment for the next operation.
 
-[`Comonad`](../api/monadic/comonads.md) is an ABC; subclasses provide `endofunctor`, `counit(obj)`, and `comultiply(obj)`.
+[`Comonad`](../api/monadic/comonads.md) is an abstract class whose subclasses provide
+`endofunctor`, `counit(obj)`, and `comultiply(obj)`.
 
 ## CoKleisli Category
 
-The coKleisli category $\mathcal{C}^W$ has:
-
-- Objects as in $\mathcal{C}$
-- Morphisms $X \rightleftharpoons Y$ are morphisms $W(X) \to Y$ in $\mathcal{C}$
-- Composition $f \,=\!\!>\!\!>\, g = g \circ W(f) \circ \delta$
+The coKleisli category of $W$ has the objects of $\mathcal C$, has as arrows from
+$X$ to $Y$ the morphisms $W(X) \to Y$, and composes $f : W(X) \to Y$ with
+$g : W(Y) \to Z$ as $g \circ W(f) \circ \delta_X$. `CoKleisliCategory` wraps a
+`Comonad` and computes this composite:
 
 ```python
 from quivers.monadic.comonads import CoKleisliCategory, DiagonalComonad
@@ -156,16 +160,14 @@ comonad = DiagonalComonad()
 cokleisli = CoKleisliCategory(comonad)
 ```
 
-## Diagonal Comonad
+## Diagonal Comonad {#diagonal-comonad}
 
-With the current `DiagonalComonad` pair operations, $(a,b)$ duplicates to $((a,b),(a,b))$.
-Applying the first projection inside each pair then gives $(a,a)$, not
-$(a,b)$ in general; thus $W(\varepsilon)\circ\delta=\mathrm{id}$
-fails whenever `a` and `b` differ. The example below constructs these
-pair operations.
-
-The `DiagonalComonad` implementation stores $W(A) = A \times A$, takes the
-first projection as `counit`, and duplicates the pair in `comultiply`:
+`DiagonalComonad` has $W(A) = A \times A$ and $W(f) = f \times f$. Its `counit` is the
+first projection $(a, b) \mapsto a$, and its `comultiply` copies the pair,
+$(a, b) \mapsto ((a, b), (a, b))$. With these maps the first counit law holds, but
+$W\varepsilon \circ \delta$ sends $(a, b)$ to $(a, a)$, so the second counit law
+fails whenever $a \neq b$. The class therefore does not define a comonad, and its
+coKleisli composite need not be associative or unital.
 
 ```python
 from quivers.monadic.comonads import DiagonalComonad
@@ -185,9 +187,13 @@ eps = comonad.counit(X)
 delta = comonad.comultiply(X)
 ```
 
-## Cofree Comonad
+## Environment Comonad {#cofree-comonad}
 
-The `CofreeComonad` class provides a store-based representation:
+`CofreeComonad(store=S)` is the environment comonad $W(A) = A \times S$ described
+above: `counit` is the projection $(a, s) \mapsto a$ and `comultiply` is
+$(a, s) \mapsto ((a, s), s)$. On functions these maps satisfy the comonad laws.
+Despite the class name, this is neither the cofree comonad on a functor nor the store
+comonad $W(A) = S \times A^S$.
 
 ```python
 from quivers.monadic.comonads import CofreeComonad
@@ -197,20 +203,22 @@ store = FinSet(name="S", cardinality=4)
 comonad = CofreeComonad(store=store)
 ```
 
-## Algebras and Coalgebras
+## Algebras and Coalgebras {#algebras-and-coalgebras}
 
-A monad describes structured values; a **monad algebra** specifies how to
-evaluate that structure into a value of one carrier `A`. For lists of
-numbers, summation is an example: a singleton evaluates to its number,
-and summing flattened lists agrees with summing each sublist and then
-summing the results. These are exactly the two laws below. This use of
-*algebra* is distinct from the entry-combination `Algebra` in [Core Types](core.md).
-
-A $T$-algebra is a pair $(A, \alpha: T(A) \to A)$ satisfying:
+An [algebra for a monad](https://ncatlab.org/nlab/show/algebra+over+a+monad) $T$
+evaluates structured values into one carrier: it is a pair
+$(A, \alpha : T(A) \to A)$ with
 
 $$
-\alpha \circ \eta_A = \text{id}_A, \quad \alpha \circ \mu_A = \alpha \circ T(\alpha)
+\alpha \circ \eta_A = \mathrm{id}_A, \qquad \alpha \circ \mu_A = \alpha \circ T(\alpha).
 $$
+
+Summation is an algebra for the list monad on numbers: a singleton sums to its
+element, and summing a flattened list equals summing the sums of its sublists. This
+sense of "algebra" is unrelated to the `Algebra` class of [Core Types](core.md). The
+*free algebra* on $A$ has carrier $T(A)$ and structure map $\mu_A$. Dually, a
+coalgebra for a comonad $W$ is a pair $(A, \gamma : A \to W(A))$ satisfying the dual
+equations.
 
 ```python
 import torch
@@ -225,7 +233,7 @@ X = FinSet(name="X", cardinality=3)
 free_alg = FreeAlgebra(monad, X)
 assert free_alg.carrier == monad.fmap_obj(X)
 
-# Verify the algebra laws
+# Check the algebra laws at this object
 assert free_alg.verify_unit_law()
 assert free_alg.verify_associativity()
 
@@ -235,17 +243,15 @@ alpha_tensor = torch.eye(TA.size, X.size)[: TA.size, : X.size]
 explicit_alg = ObservedAlgebra(monad, X, alpha_tensor)
 ```
 
-A $W$-coalgebra is the dual notion $(A, \gamma: A \to W(A))$.
-
 ## Eilenberg-Moore Category
 
-This category organizes the evaluators just described. A map between two
-carriers is allowed only when mapping after evaluation agrees with
-evaluating after mapping the structured inputs. For list summation, this
-is the requirement that the map preserve the chosen addition and zero.
-The homomorphism test below checks that agreement for supplied tensors.
-
-The Eilenberg-Moore category of $T$ has $T$-algebras as objects and algebra homomorphisms as morphisms:
+The [Eilenberg-Moore category](https://ncatlab.org/nlab/show/Eilenberg-Moore+category)
+of $T$ has the $T$-algebras as objects. A morphism from $(A, \alpha)$ to
+$(B, \beta)$ is a map $h : A \to B$ with $h \circ \alpha = \beta \circ T(h)$, so that
+evaluating and then mapping agrees with mapping the structured input and then
+evaluating. For list summation, this asks that $h$ preserve addition and zero.
+`EilenbergMooreCategory.is_homomorphism(h, alg_a, alg_b)` compares the two sides of
+that equation for given tensors.
 
 ```python
 from quivers.monadic.algebras import EilenbergMooreCategory
@@ -265,15 +271,20 @@ f = morphism(X, X)
 is_hom = em.is_homomorphism(f, free_alg, free_alg)
 ```
 
-## Distributive Laws
+## Distributive Laws {#distributive-laws}
 
-Effects do not generally commute. A list of distributions and a distribution
-over lists store different structures; combining them requires a specified
-rule for moving one layer through the other. A distributive law supplies
-that rule and its compatibility with both units and multiplications.
-The type $T(S(A)) \to S(T(A))$ records the direction of the exchange.
+Two monads do not compose into a monad in general. A list of distributions and a
+distribution over lists are different structures, and moving one layer through the
+other needs a rule. A [distributive law](https://ncatlab.org/nlab/show/distributive+law)
+$\lambda : S \circ T \Rightarrow T \circ S$ is such a rule, a natural transformation
+compatible with both units and both multiplications, and it makes $T \circ S$ a monad
+[@beck1969distributive].
 
-A distributive law $\lambda: T \circ S \Rightarrow S \circ T$ between monads allows lifting one through the other:
+`FreeMonoidPowersetLaw(max_length)` has components
+$\lambda_A : \mathrm{Free}(P(A)) \to P(\mathrm{Free}(A))$ that read a word of fuzzy
+sets $(S_1, \dots, S_k)$ as the fuzzy set of words with membership
+$\lambda(S_1, \dots, S_k)(a_1, \dots, a_k) = \bigotimes_i S_i(a_i)$, computed with
+the chosen `Algebra`'s $\otimes$.
 
 ```python
 from quivers.monadic.distributive_laws import FreeMonoidPowersetLaw
@@ -281,4 +292,5 @@ from quivers.monadic.distributive_laws import FreeMonoidPowersetLaw
 law = FreeMonoidPowersetLaw(max_length=3)
 ```
 
-The lifted monad combines word-formation with fuzzy aggregation; see [`distributive_laws`](../api/monadic/distributive_laws.md) for the precise construction.
+[`distributive_laws`](../api/monadic/distributive_laws.md) documents the
+construction.
