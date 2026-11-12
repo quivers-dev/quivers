@@ -390,6 +390,9 @@ _EXPECTED_ORTHOGONAL_RAISES[
 _EXPECTED_ORTHOGONAL_RAISES[
     ("jags", "steps", "marginalize_per_group_prior_shared_class")
 ] = "let-expr:elementwise-axis-operator"
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("jags", "steps", "marginalize_gathered_prior_data")
+] = "let-expr:elementwise-axis-operator"
 
 # The ordered probit, inverse Wishart, and matrix normal are refused by
 # name where a target has no class or literal form for them.

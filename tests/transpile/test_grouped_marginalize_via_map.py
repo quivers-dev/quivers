@@ -306,6 +306,10 @@ def test_every_rendering_target_reads_the_via_map(target: str) -> None:
             "token_idx[",
             "theta_tok,token_idx",
             "token_idx))",
+            # The rows scattered into their groups through the map.
+            ",token_idx,",
+            "(token_idx,tf.int32)",
+            "token_idx6)",
         )
     ), emitted
 
