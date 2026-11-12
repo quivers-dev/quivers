@@ -1,0 +1,17 @@
+# Exercises a `let` that gathers a two-axis slice of a three-axis `let`
+# table by an index covariate, read as a Normal location one entry at a
+# time over each observation's array.
+object Group : FinSet 2
+object Part : FinSet 2
+object Class : FinSet 3
+object Row : FinSet 4
+object Val : Real 1
+
+program slices : Row -> Val
+    sample a : Group <- Normal(loc=0.0, scale=1.0)
+    let table = factor g : Group, p : Part, k : Class in a[g] * real(p + 1) + real(k)
+    let row_slice = table[group_idx]
+    observe y : Row <- Normal(loc=row_slice, scale=1.0) [over=[Part, Class]]
+    return a
+
+export slices
