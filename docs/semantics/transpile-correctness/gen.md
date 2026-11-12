@@ -27,7 +27,7 @@ converts parameters for each family, inverting rates to scales and complementing
 `HalfNormal` and `HalfCauchy` are written as the base distribution, `normal(0, scale)` and
 `cauchy(0, scale)`, without truncation. At a positive value the emitted density is half the QVR density, so
 the log densities differ by $-\log 2$ there. But the emitted distribution also gives mass to negative values,
-where the half family has none. A comparison at positive points therefore sees a constant offset, while
+where the half family has none. A comparison at positive points thus sees a constant offset, while
 forward sampling from the emitted model can produce negative values the QVR model cannot.
 
 The wrapper families `Truncated` and `Mixture` are written with Distributions.jl's
