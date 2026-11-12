@@ -15,7 +15,8 @@ Cover:
    produced it. The single-phase mode, started from the same far-off
    point, folds the transient into its estimate and fails the same
    check.
-3. The single-phase mode reproduces its fixed-seed draws bit for bit.
+3. The single-phase mode reproduces its fixed-seed draws in double
+   precision, within a tolerance that rejects a changed adaptation.
 4. Windowed NUTS recovers a conjugate posterior, and the step-size
    initialization draws only from the chain's generator and refuses an
    improper target.
@@ -24,6 +25,7 @@ Cover:
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 import didactic.api as dx
 import pytest
@@ -416,40 +418,62 @@ def _location_scale_model() -> MonadicProgram:
     ).morphism
 
 
+@pytest.fixture
+def _double_precision() -> Iterator[None]:
+    """Run one test with double precision as the default dtype."""
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    yield
+    torch.set_default_dtype(previous)
+
+
+# A warmup chain feeds each transition's rounding into the next step
+# size, so the last-bit differences between two builds of the tensor
+# library grow along the chain. In single precision they reach the
+# second decimal of a draw within these 34 transitions, a growth of
+# about 3e5 over the unit roundoff. In double precision the same growth
+# leaves the draws agreeing to about 3e-11, and a change to the
+# adaptation moves them in the third decimal or earlier. The tolerance
+# sits between the two, three hundred times the rounding spread and
+# five orders of magnitude below the smallest algorithmic change.
+_FIXED_SEED_TOLERANCE = 1e-8
+
+
+@pytest.mark.usefixtures("_double_precision")
 @pytest.mark.parametrize(
     ("kernel", "mu", "tau", "step_size"),
     [
         (
             HMCKernel(step_size=0.1, num_steps=5, mass_matrix="diagonal"),
             [
-                0.5788787603378296,
-                0.6797456741333008,
-                0.7778991460800171,
-                0.7101612091064453,
+                0.5124340748016095,
+                0.38155822340967893,
+                0.330723482521707,
+                0.4407756414303186,
             ],
             [
-                0.8588930368423462,
-                0.8565139174461365,
-                0.8598603010177612,
-                0.8965176343917847,
+                0.8884378845934165,
+                1.018821921137096,
+                1.0335575370962047,
+                0.9319657795099819,
             ],
-            0.16133334028900623,
+            0.1322998453713618,
         ),
         (
             NUTSKernel(max_tree_depth=4, mass_matrix="dense"),
             [
-                0.5872042775154114,
-                0.5872042775154114,
-                0.6138293743133545,
-                0.7573347091674805,
+                0.3040881178805937,
+                0.2970807877991641,
+                0.3039251892883055,
+                0.3169293756794823,
             ],
             [
-                1.039720058441162,
-                1.039720058441162,
-                0.867976188659668,
-                0.7471525073051453,
+                0.9754264376695655,
+                0.9966324679450695,
+                1.0017816468967673,
+                1.0416156575948803,
             ],
-            0.1469486534707658,
+            0.13978354773399873,
         ),
     ],
     ids=["hmc-diagonal", "nuts-dense"],
@@ -460,17 +484,52 @@ def test_single_phase_mode_reproduces_its_fixed_seed_draws(
     tau: list[float],
     step_size: float,
 ) -> None:
-    """The default single-phase adaptation draws exactly what it drew
-    before the windowed mode existed (values recorded from that code)."""
+    """The default single-phase adaptation draws its recorded chain.
+
+    The draws and the adapted step size are pinned in double precision,
+    where the chain is reproducible across builds of the tensor library
+    to far below `_FIXED_SEED_TOLERANCE`.
+    """
     assert kernel.adaptation == "single"
     result = MCMC(kernel, num_warmup=30, num_samples=4, num_chains=1, seed=11).run(
         _location_scale_model(),
         torch.zeros(1, 1),
         {"y": torch.linspace(-1.0, 2.0, 20)},
     )
-    assert result.samples["mu"][0].tolist() == mu
-    assert result.samples["tau"][0].tolist() == tau
-    assert kernel.step_size == step_size
+    assert result.samples["mu"].dtype == torch.float64
+    assert result.samples["mu"][0].tolist() == pytest.approx(
+        mu, rel=0.0, abs=_FIXED_SEED_TOLERANCE
+    )
+    assert result.samples["tau"][0].tolist() == pytest.approx(
+        tau, rel=0.0, abs=_FIXED_SEED_TOLERANCE
+    )
+    assert kernel.step_size == pytest.approx(
+        step_size, rel=0.0, abs=_FIXED_SEED_TOLERANCE
+    )
+
+
+def test_fixed_seed_tolerance_rejects_a_changed_adaptation_target() -> None:
+    """A chain adapted toward another acceptance rate fails the pin.
+
+    The recorded step size belongs to the default acceptance target; the
+    same seed adapted toward a different target lands far outside
+    `_FIXED_SEED_TOLERANCE`, so the pin separates adaptation changes
+    from rounding.
+    """
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        kernel = HMCKernel(
+            step_size=0.1, num_steps=5, mass_matrix="diagonal", target_accept=0.9
+        )
+        MCMC(kernel, num_warmup=30, num_samples=4, num_chains=1, seed=11).run(
+            _location_scale_model(),
+            torch.zeros(1, 1),
+            {"y": torch.linspace(-1.0, 2.0, 20)},
+        )
+    finally:
+        torch.set_default_dtype(previous)
+    assert abs(kernel.step_size - 0.1322998453713618) > 1e3 * _FIXED_SEED_TOLERANCE
 
 
 # ---------------------------------------------------------------------------
