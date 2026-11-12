@@ -1,140 +1,241 @@
-# Setting and Notation
+# Setting and notation
 
-This page fixes the semantic universe in which every QVR phrase will be interpreted.
+QVR phrases are interpreted in three categories: $\mathcal V$-matrices between finite sets,
+stochastic matrices between finite sets, and Markov kernels between standard Borel spaces.
+Programs that condition on data are interpreted as s-finite kernels. The definitions below are
+the ones the other semantics pages link to, and the notation fixed here is used on every page.
 
-Start with a table $f[x,y]$ whose rows name inputs and columns name outputs.
-An entry might mean a probability, a compatibility score, or a travel cost.
-To follow $f$ by a second table $g$, first combine the two entries along each
-route $x\to y\to z$, then combine all routes through the possible $y$ values.
-Those two choices are the operations $\otimes$ and $\bigoplus$ below.
+## 0. Categories, functors, and monads
 
-For probabilities, a row $f[x,-]=(0.7,0.3)$ and a column
-$g[-,z]=(0.2,0.8)$ give $0.7\cdot0.2+0.3\cdot0.8=0.38$.
-For travel costs, the corresponding calculation would add the costs along
-each route and take the minimum across routes. The table shape is the same;
-the interpretation of its entries determines the calculation.
+A [*category*](https://ncatlab.org/nlab/show/category) consists of objects, a set of
+[*morphisms*](https://ncatlab.org/nlab/show/morphism) $f : A \to B$ for each pair of objects
+(the [*hom-set*](https://ncatlab.org/nlab/show/hom-set)), an associative composition, and an
+identity morphism on each object [@maclane1998categories]. We write $g \circ f$ for "first $f$,
+then $g$", and $f ; g$ for the same composite in diagrammatic order. A
+[*functor*](https://ncatlab.org/nlab/show/functor) is a map between categories that preserves
+composition and identities, and it is
+[*faithful*](https://ncatlab.org/nlab/show/faithful+functor) when it is injective on each
+hom-set. A [*natural transformation*](https://ncatlab.org/nlab/show/natural+transformation)
+between two functors is a family of morphisms, one per object, that commutes with the image of
+every morphism.
 
-The general categorical account of composition and structure-preserving maps
-is developed in [@maclane1998categories]; enriched categories replace ordinary
-hom-sets with objects of a specified enriching category [@kelly1982basic].
+A [*monad*](https://ncatlab.org/nlab/show/monad) on a category $\mathcal C$ is a functor
+$T : \mathcal C \to \mathcal C$ with a unit $\eta_X : X \to T(X)$ and a multiplication
+$\mathrm{m}_X : T(T(X)) \to T(X)$, natural in $X$, that satisfy a left unit law, a right unit law,
+and an associativity law [@maclane1998categories]. Moggi interprets effectful programs by
+morphisms $X \to T(Y)$ [@moggi1991notions]. These morphisms form the
+[*Kleisli category*](https://ncatlab.org/nlab/show/Kleisli+category) of $T$, with the same
+objects as $\mathcal C$, the unit $\eta_X$ as identity on $X$, and the composite of
+$f : X \to T(Y)$ and $g : Y \to T(Z)$ given by $\mathrm{m}_Z \circ T(g) \circ f$. A monad on a
+category with products is [*strong*](https://ncatlab.org/nlab/show/strong+monad) when it has a
+natural map $X \times T(Y) \to T(X \times Y)$ compatible with the unit and multiplication, and
+it is [*commutative*](https://ncatlab.org/nlab/show/commutative+monad) when the two ways of
+pairing $T(X) \times T(Y) \to T(X \times Y)$ agree, so that independent effects may be performed
+in either order [@kock1972strong].
 
-## 1. Algebras as enrichment bases
+A [*monoidal category*](https://ncatlab.org/nlab/show/monoidal+category) has a tensor product
+$\boxtimes$ of objects and of morphisms with a unit object, associative and unital up to
+isomorphisms that satisfy the coherence conditions [@maclane1998categories]. It is
+[*symmetric*](https://ncatlab.org/nlab/show/symmetric+monoidal+category) when there is also a
+swap $A \boxtimes B \to B \boxtimes A$ that squares to the identity. A
+[*Markov category*](https://ncatlab.org/nlab/show/Markov+category) is a symmetric monoidal
+category in which every object carries a copy map $A \to A \boxtimes A$ and a discard map
+$A \to I$, compatible with the tensor product. Kernels form Markov categories, and Fritz uses
+this structure to state conditional independence and conditionals without measure theory
+[@fritz2020synthetic].
 
-The implementation calls any instance of `quivers.core.algebras.Algebra` a *QVR algebra*. The class supplies `tensor_op`, `join`, `meet`, `negate`, `unit`, and `zero`, the operations behind calculations such as [combining weather and travel tables](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value); the equations below state the laws required of those operations. A unital [quantale](https://ncatlab.org/nlab/show/quantale) supplies the stronger structure needed for the usual enriched-category results: a complete lattice $V$, a monoid product $\otimes$, and arbitrary joins $\bigvee$ over which $\otimes$ distributes on both sides:
+For a monoidal category $\mathbf W$, a
+[*$\mathbf W$-enriched category*](https://ncatlab.org/nlab/show/enriched+category) has an
+object of $\mathbf W$ in place of each hom-set, with composition and identities given by
+morphisms of $\mathbf W$ [@kelly1982basic].
 
-$$
-a \otimes \bigvee_{i \in I} b_i \;=\; \bigvee_{i \in I} (a \otimes b_i),
-\qquad
-\Bigl(\bigvee_{i \in I} a_i\Bigr) \otimes b \;=\; \bigvee_{i \in I} (a_i \otimes b).
-$$
+## 1. Weights and their operations
 
-We write $\bigoplus$ for the implementation's reduction operation. It is a lattice join only for the built-ins whose reduction is idempotent. Results that invoke arbitrary joins, bottom elements, or distributivity thus carry an explicit quantale hypothesis.
+Composition of finite weighted relations is computed with two operations on a set of weights.
+Let $\mathcal V = (V, \otimes, \bigoplus, \mathbf 1)$ be a set $V$ of weights with a binary
+product $\otimes$, a reduction $\bigoplus$ that combines any finite family of weights, and a unit
+$\mathbf 1$ for $\otimes$. In the library, these are the methods `tensor_op`, `join`, and `unit`
+of the class [`Algebra`](../api/core/algebras.md), which also gives a zero, a meet, and a
+negation. The method name `join` does not mean that $\bigoplus$ is a lattice join: it is the
+sum for the sum-product instances and log-sum-exp for the log semiring.
 
-For the symmetric monoidal relation interpretation below, assume that the
-quantale is commutative and unital. Quantales are standard enrichment bases. QVR's eleven built-ins are cataloged in [Algebras and base change](algebras.md), but several are finite-reduction semirings or t-norm/t-conorm pairs rather than unital quantales. QVR evaluates their tensor contractions through the shared `Algebra` interface. For a categorical result, use the hypotheses stated with that result and check them against the operations in the catalog.
+The laws below hold for some instances and fail for others, and the results that need them say
+so. [Semirings, t-norms, and change of base](algebras.md) lists which laws each built-in
+instance satisfies.
 
-## 2. V-enriched relations
+- $\mathcal V$ is a [*semiring*](https://en.wikipedia.org/wiki/Semiring) when $\bigoplus$ is an
+  associative and commutative addition with a zero $\mathbf 0$, $\otimes$ is associative with
+  unit $\mathbf 1$, $\otimes$ distributes over $\bigoplus$ on both sides, and $\mathbf 0$
+  annihilates: $a \otimes \mathbf 0 = \mathbf 0 \otimes a = \mathbf 0$
+  [@goodman1999semiring; @mohri2002semiring]. It is *commutative* when $\otimes$ is.
+- A [*quantale*](https://ncatlab.org/nlab/show/quantale) is a
+  [complete lattice](https://en.wikipedia.org/wiki/Complete_lattice) $V$, that is, a partial
+  order in which every subset has a least upper bound $\bigvee$, with an associative product
+  $\otimes$ that distributes over arbitrary joins on both sides
+  [@rosenthal1996quantaloids]:
 
-Read $\mathcal V$ as the collection of allowed entry values together with
-the operations for combining them. A relation valued in $\mathcal V$ is thus
-a weighted table. The term *enriched* records that relationships carry these
-values instead of only a yes/no answer. The categorical laws require the
-algebraic hypotheses stated above; the table calculation itself needs fewer
-assumptions.
+    $$
+    a \otimes \bigvee_{i \in I} b_i = \bigvee_{i \in I} (a \otimes b_i),
+    \qquad
+    \Bigl(\bigvee_{i \in I} a_i\Bigr) \otimes b = \bigvee_{i \in I} (a_i \otimes b).
+    $$
 
-Let $X, Y$ be finite sets. A *$\mathcal{V}$-relation* from $X$ to $Y$ is a function
+    A quantale with a unit for $\otimes$ is *unital*. When $\bigoplus$ is the join $\bigvee$, a
+    unital quantale is a semiring whose addition is idempotent.
+- A [*t-norm*](https://en.wikipedia.org/wiki/T-norm) is an associative, commutative, monotone
+  operation on $[0, 1]$ with unit $1$, and a *t-conorm* is the same with unit $0$
+  [@klement2000triangular]. They generalize logical conjunction and disjunction. A t-norm
+  paired with a t-conorm need not satisfy distributivity, and so need not be a semiring.
+
+## 2. V-matrices {#2-v-enriched-relations}
+
+Let $X$ and $Y$ be finite sets. A *$\mathcal V$-matrix* (or $\mathcal V$-valued relation) from
+$X$ to $Y$ is a function
 
 $$
 r : X \times Y \to V.
 $$
 
-We denote by $\mathcal{V}\text{-}\mathbf{Rel}$ the category whose objects are finite sets and whose hom-sets $\mathcal{V}\text{-}\mathbf{Rel}(X, Y)$ consist of the matrices $V^{X\times Y}$. With pointwise order, these hom-sets are complete lattices, and composition preserves joins in each argument; this is the quantaloid structure [@rosenthal1996quantaloids]. Composition is the $\mathcal{V}$-matrix product:
+The composite of $r : X \to Y$ and $s : Y \to Z$ is the matrix product over $\mathcal V$:
 
 $$
-(r ; s)(x, z) \;=\; \bigoplus_{y \in Y} r(x, y) \otimes s(y, z),
-\qquad r : X \to Y,\ s : Y \to Z.
+(r ; s)(x, z) = \bigoplus_{y \in Y} r(x, y) \otimes s(y, z).
 $$
 
-Identities are the indicator $\mathcal{V}$-relations $1_X(x, x') = \mathbf{1}$ if $x = x'$ and $\bot$ otherwise, where $\bot$ is the bottom of the lattice. The category $\mathcal{V}\text{-}\mathbf{Rel}$ is symmetric monoidal: tensor product is given by
+When $\mathcal V$ is a semiring, this composition is associative, and the matrices
+$1_X(x, x') = \mathbf 1$ for $x = x'$ and $\mathbf 0$ otherwise are identities. Finite sets and
+$\mathcal V$-matrices then form a category, which we write $\mathbf{Mat}(\mathcal V)$
+[@hofmann2014monoidal]. For the Boolean semiring it is the category $\mathbf{Rel}$ of relations
+between finite sets. When $\mathcal V$ is a quantale, each hom-set $V^{X \times Y}$ is a complete
+lattice under the pointwise order and composition preserves joins in each argument, so
+$\mathbf{Mat}(\mathcal V)$ is a
+[*quantaloid*](https://ncatlab.org/nlab/show/quantaloid), a category enriched in complete lattices
+[@rosenthal1996quantaloids].
+
+When the semiring $\mathcal V$ is also commutative, $\mathbf{Mat}(\mathcal V)$ is symmetric
+monoidal. The
+tensor of objects is the Cartesian product, and the tensor of matrices is the Kronecker product
 
 $$
-(r \boxtimes s)((x_1, x_2), (y_1, y_2)) \;=\; r(x_1, y_1) \otimes s(x_2, y_2).
+(r \boxtimes s)((x_1, x_2), (y_1, y_2)) = r(x_1, y_1) \otimes s(x_2, y_2).
 $$
 
-## 3. Standard Borel spaces and Markov kernels
+Given the semiring laws, commutativity of $\otimes$ is what makes $\boxtimes$ a functor, that is, what makes
+$(r ; r') \boxtimes (s ; s') = (r \boxtimes s) ; (r' \boxtimes s')$.
 
-The primer’s [sample, density, and interval-probability example](../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample) explains what a kernel assigns to an input. The [continuous composition guide](../guides/continuous-spaces.md#composition-sampledcomposition) shows the corresponding sampling and density calls.
+If $\mathcal V$ is not a semiring, the formula above still defines a composite, and the runtime
+computes it, but the composite need not be associative and the identity matrices need not be
+identities. [Composition rules](composition-rules.md) gives the levels of law that a rule may
+claim.
 
-A table cannot list every possible real-valued output. A kernel instead
-answers questions about sets of outputs: given input $s$, what is the
-probability that the output lies in an interval $B$? For a conditional Normal
-distribution, $k(s,[0,1])$ is the Normal probability between zero and one at
-the parameters selected by $s$. The measurable-space conditions below make
-these probabilities and their integrals well defined. They cover familiar
-finite sets, Euclidean spaces, and the structured spaces used by QVR.
+## 3. Standard Borel spaces and Markov kernels {#3-standard-borel-spaces-and-markov-kernels}
 
-A *standard Borel space* is a measurable space $(S, \Sigma)$ isomorphic to a Borel subset of a Polish space. Write $\mathbf{SBor}$ for the category of standard Borel spaces with measurable maps.
+A [*measurable space*](https://en.wikipedia.org/wiki/Measurable_space) $(S, \Sigma)$ is a set
+$S$ with a [σ-algebra](https://en.wikipedia.org/wiki/%CE%A3-algebra) $\Sigma$ of subsets, the
+events to which probabilities are assigned. It is a
+[*standard Borel space*](https://en.wikipedia.org/wiki/Standard_Borel_space) when it is
+isomorphic to a Borel subset of a [Polish space](https://en.wikipedia.org/wiki/Polish_space),
+that is, of a separable, completely metrizable space. Every finite set with all subsets as events,
+every $\mathbb R^n$, and every countable product of these is standard Borel
+[@kechris1995classical]. We write $\mathbf{SBor}$ for the category of standard Borel spaces and
+[measurable functions](https://en.wikipedia.org/wiki/Measurable_function).
 
-A *Markov kernel* from $S$ to $T$ is a function $k : S \times \Sigma_T \to [0, 1]$ such that $k(s, \cdot)$ is a probability measure on $T$ for every $s$, and $k(\cdot, B)$ is measurable for every $B \in \Sigma_T$. The category $\mathbf{Kern}$ has standard Borel spaces as objects and Markov kernels as morphisms, with composition
+A [*Markov kernel*](https://en.wikipedia.org/wiki/Markov_kernel) $k$ from $S$ to $T$ assigns to
+each $s \in S$ a probability measure $k(s, -)$ on $T$, such that $s \mapsto k(s, B)$ is
+measurable for every event $B$ of $T$. On finite sets, a Markov kernel is a
+[stochastic matrix](https://en.wikipedia.org/wiki/Stochastic_matrix). Kernels compose by
+integrating over the intermediate value, as in the
+[Chapman–Kolmogorov equation](https://en.wikipedia.org/wiki/Chapman%E2%80%93Kolmogorov_equation):
 
 $$
-(k_1 ; k_2)(s, C) \;=\; \int_T k_2(t, C) \, k_1(s, \mathrm{d}t).
+(k ; l)(s, C) = \int_T l(t, C) \, k(s, \mathrm{d}t).
 $$
 
-It is the Kleisli category of the *Giry monad* $\mathcal{G} : \mathbf{SBor} \to \mathbf{SBor}$, $S \mapsto \mathcal{G}(S) = \{\mu \mid \mu \text{ probability measure on } S\}$.
+A measurable function $f : S \to T$ gives the *deterministic kernel* $s \mapsto \delta_{f(s)}$,
+where $\delta_t$ is the [Dirac measure](https://en.wikipedia.org/wiki/Dirac_measure) at $t$.
 
-We write $\mathbf{Stoch}$ for the full subcategory of $\mathbf{Kern}$ on finite discrete spaces. Its morphisms are stochastic matrices. Its objects are finite, while the distributions they support form continuous families: on a two-element set, a distribution is determined by any $p\in[0,1]$. Thus the probability-measure construction takes that finite set outside $\mathbf{FinSet}$.
+The [*Giry monad*](https://ncatlab.org/nlab/show/Giry+monad) $\mathcal G$ sends a space $S$ to
+the space $\mathcal G(S)$ of probability measures on $S$, with the least σ-algebra that makes
+each evaluation $\mu \mapsto \mu(B)$ measurable [@giry1982categorical]. If $S$ is standard Borel,
+so is $\mathcal G(S)$ [@kechris1995classical], so $\mathcal G$ is a monad on $\mathbf{SBor}$. Its
+unit sends $s$ to $\delta_s$, and its multiplication averages a measure over measures. A Markov
+kernel from $S$ to $T$ is the same thing as a measurable map $S \to \mathcal G(T)$, and the
+Kleisli composite of two such maps is the integral above, so Markov kernels are the morphisms of
+the Kleisli category of $\mathcal G$ [@giry1982categorical; @panangaden1999markov]. The Giry monad
+is commutative: this is [Fubini's theorem](https://en.wikipedia.org/wiki/Fubini%27s_theorem) for
+probability measures.
 
-Giry develops the measure-theoretic construction [@giry1982categorical].
-Fritz supplies a complementary account in terms of compositional probability
-and conditional independence [@fritz2020synthetic].
+Following Fritz, we write $\mathbf{BorelStoch}$ for the category of standard Borel spaces and
+Markov kernels, and $\mathbf{FinStoch}$ for its full subcategory on finite sets, whose morphisms
+are stochastic matrices [@fritz2020synthetic]. Both are Markov categories. On a standard Borel
+space every joint distribution has a measurable family of conditional distributions, which fails
+for general measurable spaces [@fritz2020synthetic]. On finite sets, $\mathcal G$ restricts to
+the [*distribution monad*](https://ncatlab.org/nlab/show/distribution+monad) $\mathcal D$, which
+sends $X$ to the probability vectors on $X$. Since $\mathcal D(X)$ is a simplex, an infinite set,
+$\mathcal D$ is not a monad on $\mathbf{FinSet}$, but its Kleisli morphisms between finite sets
+are exactly the stochastic matrices. The class [`FinStoch`](../api/stochastic/giry.md) implements
+$\mathbf{FinStoch}$ as the Kleisli category of the class `GiryMonad`.
 
-## 4. The three semantic strata
+## 4. Finite and s-finite kernels {#4-finite-and-s-finite-kernels}
 
-QVR phrases inhabit three strata, each interpreted in a distinct ambient category.
+A program that conditions on data multiplies probabilities by likelihoods, so its denotation is a
+kernel into measures that need not have mass one. A *kernel* from $S$ to $T$ in this sense assigns
+to each $s$ a measure $k(s, -)$ on $T$ with values in $[0, \infty]$, measurably in $s$. It is
+*finite* when there is a single bound $r < \infty$ with $k(s, T) < r$ for every $s$, and
+*s-finite* when it is a countable sum $\sum_{i} k_i$ of finite kernels [@staton2017commutative].
+A subprobability kernel has $k(s, T) \le 1$ for every $s$.
 
-| Stratum | Source of morphism declaration | Ambient category |
+Staton shows that s-finite kernels compose by the same integral as Markov kernels, that this
+composition is associative, and that iterated integrals against s-finite kernels may be taken in
+either order [@staton2017commutative]. The last fact is what makes two independent `sample` or
+`score` steps of a program commute. Kernels whose weight $\exp(w)$ comes from an unbounded
+`score` expression $w$ are s-finite but in general not finite, which is why the finite kernels
+alone do not suffice [@staton2017commutative]. Staton conjectures that s-finite kernels are not
+the Kleisli category of a commutative monad on measurable spaces, so the pages that use them speak
+of the category of s-finite kernels, not of a measure monad.
+
+## 5. Fragments {#5-fragments}
+
+QVR morphisms fall into three fragments, each interpreted in its own category.
+
+| Fragment | Declared by | Category |
 |---------|--------------------------------|-------------------|
-| Discrete $\mathcal{V}$-enriched | `latent`, `observed` (no `~ Family` clause) | $\mathcal{V}\text{-}\mathbf{Rel}$ |
-| Stochastic | `kernel` between finite-set types (no `~ Family` clause) | $\mathbf{Stoch}$ |
-| Continuous | `morphism ... ~ Family` with a continuous codomain; continuous `object` declarations | $\mathbf{Kern}$ |
+| Finite weighted | `morphism` with `role=latent` or `role=observed` | $\mathbf{Mat}(\mathcal{V})$ |
+| Finite stochastic | `morphism` with `role=kernel` between finite sets and no `~ Family` initializer | $\mathbf{FinStoch}$ |
+| Continuous | `morphism` with a `~ Family` initializer and a continuous codomain, and `object` declarations of continuous spaces | $\mathbf{BorelStoch}$ |
 
-The three strata are not independent: the inclusion $\iota : \mathbf{FinSet} \hookrightarrow \mathbf{SBor}$ (every finite set is canonically a standard Borel space with the discrete $\sigma$-algebra) lifts to a faithful embedding $\mathbf{Stoch} \hookrightarrow \mathbf{Kern}$, and the *functional* sub-category $\mathcal{V}_{\mathbb{B}}\text{-}\mathbf{Rel}_{\mathrm{fun}}$ of row-deterministic Boolean relations embeds into $\mathbf{Stoch}$. The `discretize` and `embed` declarations denote the Giry-monad–level transition between strata; see [Morphisms §5](morphisms.md#5-stratum-transitions).
+The fragments are related by embeddings. Giving a finite set all its subsets as events makes it a
+standard Borel space, and this inclusion $\mathbf{FinSet} \hookrightarrow \mathbf{SBor}$ extends
+to a full and faithful functor $\mathbf{FinStoch} \hookrightarrow \mathbf{BorelStoch}$. A Boolean
+matrix with exactly one true entry in each row is a function, and these functions embed into
+$\mathbf{FinStoch}$ as the deterministic kernels. A `discretize` declaration denotes a
+deterministic kernel from a continuous space to a finite set, and an `embed` declaration denotes a
+kernel in the opposite direction ([Morphisms §5](morphisms.md#5-fragment-transitions)).
 
-## 5. Environments
+## 6. Environments {#5-environments}
 
-An environment is a lookup table for names. If the source declares `State`,
-then $\rho_{\mathrm{obj}}(\mathsf{State})$ is the set assigned to that name.
-The double brackets $\llbracket e\rrbracket_\rho$ mean “interpret expression
-$e$ using these bindings.” Subscripts distinguish which kind of name is being
-looked up.
+A *semantic environment* $\rho$ is a partial function from identifiers to denotations. It has
+one part for each kind of name:
 
-A *semantic environment* $\rho$ is a partial function from identifiers to denotations, partitioned into:
+- $\rho_{\mathrm{obj}}$ maps object names to finite sets.
+- $\rho_{\mathrm{spc}}$ maps space names to standard Borel spaces.
+- $\rho_{\mathrm{mor}}$ maps morphism names to $\mathcal V$-matrices, stochastic matrices, or
+  Markov kernels.
+- $\rho_{\mathrm{cat}}$ maps the atoms of syntactic categories to their denotations in the
+  weighted deduction fragment.
+- $\rho_{\mathrm{var}}$ maps the variables bound earlier in a `program` body to points of their
+  spaces ([Programs as kernels](programs.md)).
 
-- $\rho_{\mathrm{obj}}$: finite-set objects;
-- $\rho_{\mathrm{spc}}$: standard Borel spaces;
-- $\rho_{\mathrm{mor}}$: morphisms (discrete, stochastic, or continuous);
-- $\rho_{\mathrm{cat}}$: category atoms in the grammar fragment;
-- $\rho_{\mathrm{rv}}$: random variables bound earlier in a `program` body, each carrying its current Kleisli arrow (see [Programs §1](programs.md#1-the-giry-monad)).
+We write $\rho[x \mapsto v]$ for $\rho$ extended with the binding of $x$ to $v$, and
+$\llbracket \phi \rrbracket_{\rho}$ for the denotation of the phrase $\phi$ in $\rho$. We drop
+$\rho$ when it is clear from the context.
 
-Following established practice, we write $\rho[x \mapsto v]$ for the environment obtained by extending $\rho$ with the binding $x = v$. The denotation of a phrase $\phi$ in environment $\rho$ is written $\llbracket \phi \rrbracket_{\rho}$; we elide $\rho$ when the binding context is clear.
+## 7. Typing judgments
 
-## 6. Well-typedness
-
-The [two checking judgments](typing.md#1-the-two-judgments) identify which environment supplies each name and which conditions the compiler checks. The primer’s [notation table](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) explains the brackets, turnstile, and hom-set notation.
-
-Read $\Gamma\vdash\phi:\tau$ as “given the declarations in $\Gamma$, the
-phrase $\phi$ has type $\tau$.” A typing context records what a name may
-refer to; a semantic environment records its meaning. For composition, the
-practical question is whether the outputs of the first operation match the
-inputs of the next.
-
-The QVR type system is given by judgments of the form
-
-$$
-\Gamma \vdash \phi : \tau,
-$$
-
-where $\Gamma$ is a typing context analogous to $\rho$ but tracking only sorts (object / space / morphism with domain–codomain types), and $\tau$ is the assigned sort. The compiler resolves and checks the supported phrase forms before constructing runtime objects. The judgments in these pages specify those resolution and checking steps.
-
-The [Typing](typing.md) chapter records the declarative judgments and relates them to checks in `quivers.dsl.compiler`. [Correspondence and limitations](adequacy.md) separates equations exercised by tests from broader mathematical assumptions.
+A [*typing judgment*](https://en.wikipedia.org/wiki/Typing_rule) $\Gamma \vdash \phi : \tau$
+states that in the typing context $\Gamma$ the phrase $\phi$ has type $\tau$. The context
+$\Gamma$ records, for each name in scope, its sort (object, space, or morphism with its domain and
+codomain), where $\rho$ records its denotation. The compiler checks these judgments before it
+builds any runtime object, and the denotation $\llbracket \phi \rrbracket_\rho$ is defined only
+for well-typed phrases. [Typing and checking](typing.md#1-the-two-judgments) gives the judgments
+of the source checker and of the QIEC checker.
