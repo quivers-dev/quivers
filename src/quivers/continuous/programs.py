@@ -506,6 +506,10 @@ class MonadicProgram(ContinuousMorphism):
         The host data whose checked type leads with the plate of the
         draw they fill; each may also be supplied without that axis, as
         one value every row shares.
+    host_data_notes : dict[str, str]
+        For a host datum the program passes straight to a computation's
+        parameter, a located note naming that call, which a refusal of
+        the datum's shape carries. Filled by the DSL compiler.
     site_plates : dict[str, tuple[tuple[str, int | None], ...]]
         The plates each draw or observe site ranges over, keyed by the
         site's name: one ``(plate, extent)`` pair per batch axis of the
@@ -545,6 +549,7 @@ class MonadicProgram(ContinuousMorphism):
         self.effect_set: frozenset[str] | None = effect_set
         self.host_data_types: dict[str, TypeExpr] = {}
         self.host_data_shared: frozenset[str] = frozenset()
+        self.host_data_notes: dict[str, str] = {}
         self.site_plates: dict[str, tuple[tuple[str, int | None], ...]] = {}
         # The argument widths of each plated step, read from its
         # morphism's domain once: by step key, the morphism read and the

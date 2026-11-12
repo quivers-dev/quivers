@@ -1846,10 +1846,12 @@ def check_host_data(
                 if len(layouts) > 1
                 else ""
             )
+            note = program.host_data_notes.get(name)
             raise ValueError(
                 f"host datum {name!r} has shape {supplied}, but the checked "
                 f"program reads it at type {rendered}, of shape "
                 f"{admissible}{shared}; supply data of that shape"
+                + ("" if note is None else f". {note}")
             )
         per_run_data[name] = per_run != supplied
         dimensions = layout

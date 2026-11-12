@@ -1163,8 +1163,11 @@ def handled_reason(owner: NamedComputation, term: Computation) -> str:
     str
         The reason clause.
     """
+    effect = (
+        f"the effect `{term.effect.name}`" if isinstance(term, NewInstance) else "an effect"
+    )
     return (
-        f"handles an effect inside `{owner.name}`{origin_line(term)}, and the "
+        f"handles {effect} inside `{owner.name}`{origin_line(term)}, and the "
         f"compiled runtime runs only the program's own `Random` and `Score` "
         f"requests, not a handler and its resumptions"
     )

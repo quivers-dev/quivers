@@ -60,6 +60,7 @@ from quivers.qiec.terms import PlateAxis
 from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
+from quivers.qiec.program_runtime import passed_data_notes
 
 
 def _plate_axes(
@@ -512,6 +513,7 @@ class Compiler(
             target.site_plates = {
                 site.name: _plate_axes(site.batch) for site in entry.sites
             }
+            target.host_data_notes = passed_data_notes(module, entry.name)
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.
