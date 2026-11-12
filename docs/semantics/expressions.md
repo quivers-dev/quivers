@@ -156,7 +156,7 @@ and objects as wires, the cup bends a wire and the snake equations straighten it
 When the module's rule $\mathcal V$ is a commutative semiring, $\mathbf{Mat}(\mathcal V)$ is compact
 closed with each object its own dual. The compiler accepts the four expressions below only when the
 rule is an `Algebra` ([Composition rules §2](composition-rules.md#2-the-denotation-of-at-each-level)),
-which the default `ProductFuzzyAlgebra` is although it is not a semiring.
+which the default `ProductFuzzyAlgebra` is, though it is not a semiring.
 
 **Cup and cap.** With $\delta(a, a') = \mathbf 1$ if $a = a'$ and $\mathbf 0$ otherwise,
 
