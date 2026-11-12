@@ -28,7 +28,7 @@ contributes one axis per component, so a morphism $X \times Y \to Z$ has shape
 | `MarginalizedMorphism` | a morphism with codomain components reduced away | `f.marginalize(Z)` |
 | `TransformedMorphism` | a fixed rearrangement of another morphism's tensor | `f.dagger`, `f.trace(A)` |
 | `RepeatMorphism` | the $n$-fold composite $f \gg \dots \gg f$ of an endomorphism, by repeated squaring, with $n$ settable at run time | [`repeat`](dsl-declarations.md#repeat-iterated-composition) |
-| `CurriedMorphism` | the same tensor as `f : X * Y -> Z`, read as a morphism into a categorial (slash) type | [`curry`](dsl-declarations.md) |
+| `CurriedMorphism` | the entries of `f : X * Y -> Z` read as a morphism `X -> Y * Z` or `Y -> X * Z` | [`curry`](dsl-declarations.md#curry-combinators-residuation-witnesses) |
 | `FunctorMorphism` | the image of a morphism under a [`Functor`](categorical.md#functors) | `functor(f)` |
 
 All of them are subclasses of the abstract `Morphism`. Composites, products,

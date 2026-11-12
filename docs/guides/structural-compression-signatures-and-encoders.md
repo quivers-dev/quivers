@@ -181,15 +181,15 @@ encoder bow_enc : Seq0 [factory=bow_encoder]
 | Factory | Signature | What it computes |
 |---|---|---|
 | `rnn_encoder(sig, dim)` | sequence | a right fold over the list with a GRU cell [@cho2014encoder] |
-| `transformer_encoder(sig, dim)` | sequence | a right fold in which each `Cons` step applies an MLP to the concatenation of a linear projection of the head and a linear projection of the tail's vector |
+| `transformer_encoder(sig, dim, heads, layers)` | sequence | a transformer encoder [@vaswani2017attention]: the element embeddings plus sinusoidal position encodings pass through `layers` layers of multi-head self-attention and a position-wise feed-forward network, with residual connections and layer normalization, and the sequence vector is the mean over positions |
 | `bow_encoder(sig, dim)` | sequence | the sum of the element embeddings, which ignores order |
 | `tree_lstm_encoder(sig, dim)` | tree | a child-sum tree-LSTM over binary trees [@tai2015treelstm] |
 | `gnn_encoder(sig, iterations, dim, readout)` | graph | message passing with one MLP per edge kind, one GRU update per vertex kind, and a mean, sum, or max readout |
 
-`transformer_encoder` contains no attention layer, so despite its name it is not a
-transformer in the sense of Vaswani et al. [@vaswani2017attention]. Every factory
-returns an [`Encoder`](../api/structural/encoder.md), the same runtime value an
-explicit body produces.
+`transformer_encoder` uses the `attention` form of the next section: the step at the
+innermost `Cons` receives every element's embedding and attends over all of them, and the
+empty sequence embeds as a learned vector. `heads` must divide `dim`. Every factory returns an
+[`Encoder`](../api/structural/encoder.md), the same runtime value an explicit body produces.
 
 ### Shorthand for sequences {#sequence-shaped-sugar}
 

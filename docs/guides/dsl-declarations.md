@@ -911,30 +911,29 @@ define gf = g << f    # the same composite as fg
 export gf
 ```
 
-### Curry combinators (residuation witnesses)
+### Curry combinators {#curry-combinators-residuation-witnesses}
 
 Currying passes the arguments of a function of two arguments one at a time: a function
 of a pair `(x, y)` becomes a function that takes `x` and returns a function awaiting
-`y`. In a [residuated](https://en.wikipedia.org/wiki/Residuated_lattice) structure the
-two directions have their own types, and for $f : X \otimes Y \to Z$ the postfix
-combinators give
+`y`. For morphisms between finite sets, a morphism into $Y \times Z$ plays the part of that
+returned function, since finite sets with weighted matrices form a compact closed category in
+which the internal hom from $Y$ to $Z$ is $Y \times Z$ [@maclane1998categories]. For
+$f : X \times Y \to Z$ the postfix combinators give
 
-| Postfix | Result |
-|---------|--------|
-| `f.curry_right` | a morphism `X -> Z/Y` |
-| `f.curry_left`  | a morphism `Y -> X\Z` |
+| Postfix | Result | Entries |
+|---------|--------|---------|
+| `f.curry_right` | a morphism `X -> Y * Z` | `g[x, (y, z)] = f[(x, y), z]` |
+| `f.curry_left`  | a morphism `Y -> X * Z` | `g[y, (x, z)] = f[(x, y), z]` |
 
-where `Z/Y` and `X\Z` are categorial types over the codomain in Lambek notation, with the
-argument under the slash [@lambek1958mathematics]. The tensor is unchanged, and only its
-split into domain and codomain axes is reread, so the domain must be a product of at
-least two factors.
+The entries are those of `f`, read with a different split into domain and codomain axes, so the
+domain must be a product of at least two factors.
 
 ```qvr
 object X : FinSet 3
 object Y : FinSet 4
 object Z : FinSet 5
 morphism f : X * Y -> Z [role=latent]
-define g = f.curry_right    # g : X -> Z/Y
+define g = f.curry_right    # g : X -> Y * Z
 export g
 ```
 
