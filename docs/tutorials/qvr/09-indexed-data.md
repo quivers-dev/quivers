@@ -91,7 +91,7 @@ print(run.value)
 
 `run.entry.kind` is `"computation"`. The computation runs on the reference machine, the library's interpreter for the Quivers Indexed Effect Core ([QIEC](../../reference/qvr/index.md)), the typed core language that QVR declarations elaborate to. `run.result.runtime` is `"core"`, and `run.result.trace` records each step of the run, the recursive calls included, as an event.
 
-## 5. Indexed types for statistical data
+## 5. Transfer the pattern to statistical data
 
 Length is one useful index among several. An index can record whether a measurement is observed or missing (the [type reference](../../reference/qvr/types-and-indexed-families.md) uses a family `Measurement` indexed by `Observed` and `Missing`), whether a value is exact or censored on the left, on the right, or to an interval, or whether a covariance parameter is raw, a Cholesky factor, or positive definite. An index earns its place when a constructor establishes an invariant that later case analysis uses.
 
