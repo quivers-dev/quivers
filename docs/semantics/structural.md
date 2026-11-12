@@ -5,8 +5,8 @@ over terms and graphs, which the library calls *structural compression*. A signa
 well-formed terms. An encoder folds a term into a vector, one learned function per constructor,
 as recursive autoencoders and tree-structured networks do [@pollack1990recursive; @tai2015treelstm].
 A decoder maps a vector to a probability distribution over terms, and a loss is a scalar objective
-attached to one of these computations. The guide is
-[Tree and graph autoencoders: signatures and encoders](../guides/structural-compression-signatures-and-encoders.md).
+attached to one of these computations
+([Tree and graph autoencoders: signatures and encoders](../guides/structural-compression-signatures-and-encoders.md)).
 
 For a list with constructors `Nil` and `Cons`, encoding `Cons(a, Nil)` encodes `a`, takes the vector
 of `Nil`, and applies the learned function for `Cons` to the two vectors. The recursion follows the
@@ -250,7 +250,7 @@ An undirected edge sends messages both ways, a directed edge only in its directi
 are shared across vertices of one kind and the aggregation does not depend on the order of the
 messages, the vertex states are [equivariant](https://en.wikipedia.org/wiki/Equivariant_map) under
 relabeling of the vertices, and a readout that does not depend on order gives the same graph vector for
-every labeling [@battaglia2018relational]. A user function that depends on the order of its inputs
+every labeling [@battaglia2018relational]. A function of the inputs that depends on their order
 need not have these properties.
 
 ## 3. Decoders

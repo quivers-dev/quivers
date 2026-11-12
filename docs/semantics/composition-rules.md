@@ -34,7 +34,7 @@ which evaluates for any rule. Which equations it satisfies depends on the laws o
   [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no associativity and no
   identities.
 
-The library has one class for each level the user may declare:
+The library has one class for each level a module may declare:
 
 ```mermaid
 graph TD
