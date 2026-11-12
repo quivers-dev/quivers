@@ -1,7 +1,6 @@
 # Architecture
 
-The library has twenty subpackages and two public top-level modules,
-`program.py` and `giry.py`.
+The library has twenty subpackages and one public top-level module, `program.py`.
 
 ## Follow one model through the library
 
@@ -34,7 +33,7 @@ quivers/
 ├── enriched/       # ends and coends, Kan extensions, weighted limits,
 │                   # profunctors, Yoneda, Day convolution, optics
 ├── monadic/        # functor, applicative, and monad type classes,
-│                   # monad instances and transformers, comonads,
+│                   # monad instances, comonads,
 │                   # monad algebras, distributive laws, free monads
 ├── arrows/         # arrow type classes and their instances
 ├── stochastic/     # FinStoch, discretized families, conditioning,
@@ -58,8 +57,7 @@ quivers/
 ├── cli/            # the qvr command, REPL, grammar migrations
 ├── kernel/         # Jupyter kernel
 ├── lsp/            # language server
-├── program.py      # Program: a morphism as an nn.Module
-└── giry.py         # re-exports GiryMonad and FinStoch
+└── program.py      # Program: a morphism as an nn.Module
 ```
 
 The QVR tree-sitter grammar is in `grammars/qvr/` at the repository root. The
@@ -74,7 +72,7 @@ same grammar whatever that dependency provides.
 Objects, algebras, and morphisms between finite sets ([API](../api/core/objects.md)).
 
 - **`objects.py`:** objects as `dx.TaggedUnion` variants: `SetObject` (root), `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`, `EnumSet`, `FreeResiduated`, and the one-element set `Unit`.
-- **`algebras.py`:** the classes that fix how weights combine. `CompositionRule` is the root. `Semigroupoid` is a composition rule declared associative, whose morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory). `Magmoid` is a composition rule with no associativity or identity guarantee. `Algebra` adds an identity and the operations $\otimes$ and $\bigoplus$. The concrete classes include `ProductFuzzyAlgebra`, `BooleanAlgebra`, `StandardMVAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `BoundedSumProductAlgebra`, `CountingAlgebra`, and `MarkovAlgebra`, each with a shared instance (`PRODUCT_FUZZY`, `BOOLEAN`, `MARKOV`, and so on).
+- **`algebras.py`:** the classes that fix how weights combine. `CompositionRule` is the root. `Semigroupoid` is a composition rule declared associative, whose morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory). `Magmoid` is a composition rule with no associativity or identity guarantee. `Algebra` adds a unit, a zero, a meet, and a negation, so composition has identities. `Semiring` is both an `Algebra` and a `Semigroupoid`, the class of the instances whose operations satisfy the semiring laws, and `IdempotentSemiring` adds an idempotent $\bigoplus$. The concrete classes include `ProductFuzzyAlgebra`, `BooleanAlgebra`, `StandardMVAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `BoundedSumProductAlgebra`, `CountingAlgebra`, and `MarkovAlgebra`, each with a shared instance (`PRODUCT_FUZZY`, `BOOLEAN`, `MARKOV`, and so on).
 - **`algebra_morphisms.py`:** `CarrierMap`, the entrywise maps from one `Algebra`'s weights to another's, and its subclass `AlgebraHomomorphism` for the maps that preserve both operations and both units, with instances such as `Embedding`, `Threshold`, and `ProbabilityToReal`.
 - **`morphism_transformations.py`:** `MorphismTransformation` and its row normalizations `Softmax`, `L1Normalize`, and `L2Normalize`, and Bayesian inversion `BayesInvert`. These and the entrywise maps are what `Morphism.change_base` applies.
 - **`morphisms.py`:** `Morphism` and its subclasses `ObservedMorphism` (fixed tensor), `LatentMorphism` (learnable tensor), `ComposedMorphism`, `ProductMorphism`, `MarginalizedMorphism`, `TransformedMorphism`, `FunctorMorphism`, `RepeatMorphism`, and `CurriedMorphism`, with the factories `morphism()`, `observed()`, `identity()`, `cup()`, and `cap()`.
@@ -82,15 +80,15 @@ Objects, algebras, and morphisms between finite sets ([API](../api/core/objects.
 
 ### `categorical/`
 
-[Functors](https://ncatlab.org/nlab/show/functor), natural transformations, and adjunctions between categories of finite morphisms (`Functor`, `NaturalTransformation`, `Adjunction`); monoidal structures (`CartesianProductMonoidal`, `CoproductMonoidal`); [traced monoidal](https://ncatlab.org/nlab/show/traced+monoidal+category) structure (`TracedMonoidal`, `trace()`); and change of base between Boolean and product fuzzy weights (`BaseChange`).
+[Functors](https://ncatlab.org/nlab/show/functor), natural transformations, and adjunctions between categories of finite morphisms (`Functor`, `NaturalTransformation`, `Adjunction`); monoidal structures (`CartesianProductMonoidal`, `CoproductMonoidal`); [traced monoidal](https://ncatlab.org/nlab/show/traced+monoidal+category) structure (`TracedMonoidal`, `CompactClosedTrace`, `trace()`); and change of base between Boolean and product fuzzy weights (`BaseChange`).
 
 ### `enriched/`
 
-Constructions from [enriched category theory](https://ncatlab.org/nlab/show/enriched+category) [@kelly1982basic] computed on finite tensors: ends and coends, left and right [Kan extensions](https://ncatlab.org/nlab/show/Kan+extension), weighted limits and colimits, profunctors, the Yoneda embedding, Day convolution, and optics (lenses, prisms, adapters, grates).
+Constructions from [enriched category theory](https://ncatlab.org/nlab/show/enriched+category) [@kelly1982basic] computed on finite tensors over an `IdempotentSemiring`: ends and coends, left and right [Kan extensions](https://ncatlab.org/nlab/show/Kan+extension), weighted limits and colimits, profunctors, the Yoneda embedding, Day convolution, and optics (lenses, prisms, adapters, grates).
 
 ### `monadic/`
 
-The [type classes](https://en.wikipedia.org/wiki/Type_class) `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Foldable`, `Traversable`, and `MonadTrans` [@mcbride2008applicative; @wadler1992essence], with instances (`Identity`, `Maybe`, `State`, `Reader`, `Writer`, `List`, `Continuation`), monad transformers, the monads `FuzzyPowersetMonad` and `FreeMonoidMonad` with `KleisliCategory`, comonads, algebras of a monad and the Eilenberg-Moore category, distributive laws, free monads with handlers (`algebraic.py`), bridges to the arrow classes (`bridges.py`), and law checks (`laws.py`). `theories.py` describes each type class as a panproto theory.
+The [type classes](https://en.wikipedia.org/wiki/Type_class) `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Foldable`, `Traversable`, and `MonadTrans` [@mcbride2008applicative; @wadler1992essence], with instances (`Identity`, `Maybe`, `Alternative_`, `State`, `Reader`, `Writer`, `Continuation`), the monad `FuzzyPowersetMonad` with `KleisliCategory`, comonads, algebras of a monad and the Eilenberg-Moore category, distributive laws, free monads with handlers (`algebraic.py`), bridges to the arrow classes (`bridges.py`), and law checks (`laws.py`). `theories.py` describes each type class as a panproto theory.
 
 ### `arrows/`
 
@@ -191,10 +189,9 @@ The Jupyter kernel: `install.py` registers it and `quivers_kernel.py` runs it.
 
 The language server, built on pygls: `server.py` handles requests and `document.py` tracks open documents.
 
-### Top-level modules
+### Top-level module {#top-level-modules}
 
 - **`program.py`:** `Program`, which wraps a finite or continuous morphism as an `nn.Module`.
-- **`giry.py`:** re-exports `GiryMonad` and `FinStoch` from `quivers.stochastic.giry`.
 
 ## Dependencies between packages
 
@@ -206,7 +203,7 @@ this order, in which each group imports only from the groups before it:
 2. `enriched/`, on `core/` and `categorical/`.
 3. `monadic/` and `arrows/`, which import each other, on `core/` and `categorical/`.
 4. `stochastic/`, `continuous/`, `qiec/`, `dsl/`, `effects/`, `inference/`, `analysis/`, `diagnostics/`, `transpile/`, and `program.py`, which import one another and every group above.
-5. `data/`, `formulas/`, and `giry.py`, on group 4.
+5. `data/` and `formulas/`, on group 4.
 6. `cli/`, on group 4, and then `lsp/` and `kernel/`, on `cli/`.
 
 Imports inside functions add further edges, among them `categorical/` to
