@@ -167,8 +167,8 @@ The `semiring` option chooses $K$:
 | `Counting` | $+$ | $\times$ | number of derivations |
 
 `LogProb` is the log semiring, `Viterbi` the max-plus semiring, and `Counting` the counting semiring
-([Semirings, t-norms, and change of base](algebras.md)). They are the deduction semirings of the
-class `ChartSemiring`, a different class from the `Algebra` instances that compose morphisms. The
+([Semirings, t-norms, and change of base](algebras.md)). They are the instances of the
+class `ChartSemiring` that a deduction accepts, a different class from the `Algebra` instances that compose morphisms. The
 same rules give the answers in the last column under the different semirings, as in semiring
 parsing [@goodman1999semiring]. A value of `semiring` outside these four is read as `LogProb`
 without an error.

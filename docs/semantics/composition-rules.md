@@ -139,9 +139,9 @@ $\bigoplus$ replaces the sum, so `ab,bc->ac` is the composite `>>`.
 
 Let the inputs $T_1, \dots, T_n$ have letter sequences $\mathrm{spec}_1, \dots, \mathrm{spec}_n$
 over a set $\mathcal L$ of letters, let $Y \subseteq \mathcal L$ be the output letters, and let
-$\mathcal L_c = \mathcal L \setminus Y$ be the reduced letters. The wiring is *flat* when no letter
-occurs twice within one input or within the output. The library accepts only flat wirings, so a
-diagonal or a trace cannot be written as a contraction. For a flat wiring the contraction denotes
+$\mathcal L_c = \mathcal L \setminus Y$ be the reduced letters. The library accepts only wirings in
+which no letter occurs twice within one input or within the output, so a diagonal or a trace
+cannot be written as a contraction. For such a wiring the contraction denotes
 
 $$
 \llbracket \Phi \rrbracket(T_1, \dots, T_n)[y] = \bigoplus_{c} \bigotimes_{i = 1}^{n} T_i\bigl[(y, c)|_{\mathrm{spec}_i}\bigr],
@@ -161,7 +161,7 @@ contraction NAME (x_1 : A_1 -> B_1, ..., x_n : A_n -> B_n) : DOM -> COD [rule=R,
 ```
 
 where `rule=R` is required and names one of the built-in rules of §3, and `wiring="SPEC"` is an
-optional flat einsum string that the compiler otherwise infers from the declared types. An
+optional einsum string, with no letter repeated within one input or the output, that the compiler otherwise infers from the declared types. An
 expression calls the contraction as `NAME(e_1, ..., e_n)`.
 
 Contractions of this kind are operations of the

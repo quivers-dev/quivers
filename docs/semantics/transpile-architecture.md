@@ -305,7 +305,7 @@ family needs one `ContinuousMorphism` subclass and one `FamilyMeta` entry, and n
 
 ## 4. `Lower`: from a module to the IR {#4-lower-module-ir}
 
-[Program elaboration](typing.md#8-program-elaboration) gives the checked computation that lowering reads,
+[Program elaboration](typing.md#8-program-elaboration) gives the well-typed computation that lowering reads,
 and the [transpilation pipeline](transpile-correctness/index.md#1-pipeline) the comparisons that test this
 stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), implements
 `dx.Mapping[Module, IRProgram]`. Its `forward`:

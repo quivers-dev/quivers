@@ -221,8 +221,8 @@ one part for each kind of name:
 - $\rho_{\mathrm{spc}}$ maps space names to standard Borel spaces.
 - $\rho_{\mathrm{mor}}$ maps morphism names to $\mathcal V$-matrices, stochastic matrices, or
   Markov kernels.
-- $\rho_{\mathrm{cat}}$ maps the atoms of syntactic categories to their denotations in the
-  weighted deduction fragment.
+- $\rho_{\mathrm{cat}}$ maps the atoms of syntactic categories to their denotations in
+  [weighted deduction](grammar.md).
 - $\rho_{\mathrm{var}}$ maps the variables bound earlier in a `program` body to points of their
   spaces ([Programs as kernels](programs.md)).
 
