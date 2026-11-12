@@ -115,7 +115,7 @@ right = (a >> (b >> c)).tensor
 assert not torch.allclose(left, right)
 ```
 
-[Algebras and base change](../semantics/algebras.md) states which laws each
+[Semirings, t-norms, and change of base](../semantics/algebras.md) states which laws each
 `Algebra` satisfies.
 
 ## 4. A probabilistic program describes how data could arise
