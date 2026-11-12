@@ -90,6 +90,8 @@ PROBE_MODULES = frozenset(
         "test_numeric_equivalence",
         "test_ordinal_matrix_numeric",
         "test_over_array_numeric",
+        "test_per_row_parameter_numeric",
+        "test_bernoulli_logits_numeric",
         "test_parameterization_numeric",
         "test_builtin_numeric",
         "test_qiec_call_equivalence",

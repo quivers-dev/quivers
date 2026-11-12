@@ -51,6 +51,7 @@ class:
 * `Dirichlet(α)` ↔ `Dirichlet(concentration=α)` (with `jnp.full((K,), α)` broadcast when α is scalar)
 * `Categorical(probs=p)` ↔ `Categorical(probs=p)`
 * `Bernoulli(p)` ↔ `Bernoulli(probs=p)`
+* `Bernoulli(logits=l)` ↔ `Bernoulli(logits=l)`
 * `LogitNormal` ↔ `LogitNormal(loc=μ, scale=σ)`
 
 In each case $\pi_{F, \mathsf{NumPyro}}$ is the identity and

@@ -36,7 +36,12 @@ from quivers.dsl.ast_nodes import (
     ExprCompose,
     ExprIdent,
     ExprTensorProduct,
+    LetStep,
+    MarginalizeStep,
     Module,
+    ObserveStep,
+    ProgramStep,
+    SampleStep,
     Statement,
     ObjectDecl,
     ObjectExpr,
@@ -60,7 +65,7 @@ from quivers.analysis.scope import (
     scope_children,
 )
 from quivers.dsl.constraints import Violation, check_constraints
-from quivers.dsl.emit import module_to_source
+from quivers.dsl.emit import draw_call_to_source, module_to_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.cli.repl_browse import (
     _children_for_bundle,
@@ -1536,7 +1541,9 @@ class ReplSession:
             return _resp(render_dot(graph))
         if fmt == "open":
             return self._plate_open(graph)
-        return _resp(_render_step_flow(graph))
+        # The graph was built from this declaration, so it exists.
+        lines = _scoped_step_lines(self._compiler.programs[name].draws, name)
+        return _resp(_render_step_flow(graph, lines))
 
     def where(self, name: str) -> ReplResponse:
         """List every scope path whose final segment is ``name``."""
@@ -2206,13 +2213,48 @@ def _inferred_effects_from_graph(graph) -> set[str]:  # type: ignore[no-untyped-
     return inferred
 
 
-def _render_step_flow(graph) -> str:  # type: ignore[no-untyped-def]
+def _scoped_step_lines(steps: Iterable[ProgramStep], prefix: str) -> dict[str, str]:
+    """Each draw of a program body as written, keyed by its scope path.
+
+    Parameters
+    ----------
+    steps : Iterable[ProgramStep]
+        The body, searched through marginalization scopes.
+    prefix : str
+        The scope path of the body, the program's name at the top.
+
+    Returns
+    -------
+    dict[str, str]
+        ``<prefix>::<name>`` mapped to the step's source line, for
+        every sample, observe, and marginalize site, and to
+        ``let <name> = …`` for every let.
+    """
+    lines: dict[str, str] = {}
+    for step in steps:
+        if isinstance(step, LetStep):
+            lines[f"{prefix}::{step.name}"] = f"let {step.name} = …"
+        elif isinstance(step, SampleStep):
+            for var in step.vars:
+                lines[f"{prefix}::{var}"] = _render_sample_line(step)
+        elif isinstance(step, ObserveStep):
+            for var in step.vars:
+                lines[f"{prefix}::{var}"] = _render_observe_line(step)
+        elif isinstance(step, MarginalizeStep):
+            lines[f"{prefix}::{step.var}"] = _render_marginalize_line(step)
+            lines.update(_scoped_step_lines(step.scope, f"{prefix}::{step.var}"))
+    return lines
+
+
+def _render_step_flow(graph, lines: dict[str, str]) -> str:  # type: ignore[no-untyped-def]
     """Render a vertical step-flow table for ``:graph``.
 
     One row per step with columns: # / kind / step expression /
     parents. Differs from ``:plate``'s variable-oriented view in
     that the step expression carries the family + args + options,
     so the user can see the full source-level form for each step.
+    ``lines`` holds each draw's source line by scope path, so a
+    literal or keyword argument reads as written.
     """
     parents_by_dst: dict[str, list[str]] = {}
     for e in graph.edges:
@@ -2225,7 +2267,7 @@ def _render_step_flow(graph) -> str:  # type: ignore[no-untyped-def]
             (
                 str(i),
                 node.kind,
-                _step_text(node),
+                lines[node.scope_path],
                 ", ".join(parents_by_dst.get(node.name, ())) or "-",
             )
         )
@@ -2245,24 +2287,6 @@ def _render_step_flow(graph) -> str:  # type: ignore[no-untyped-def]
     ]
     out_lines.extend(_fmt(row) for row in rows)
     return "\n".join(out_lines)
-
-
-def _step_text(node) -> str:  # type: ignore[no-untyped-def]
-    if node.kind == "latent":
-        plates = " : " + " x ".join(node.plates) if node.plates else ""
-        fam = f"{node.family}({', '.join(node.args)})" if node.family else "?"
-        return f"sample {node.name}{plates} <- {fam}"
-    if node.kind == "observed":
-        plates = " : " + " x ".join(node.plates) if node.plates else ""
-        fam = f"{node.family}({', '.join(node.args)})" if node.family else "?"
-        return f"observe {node.name}{plates} <- {fam}"
-    if node.kind == "marginalized":
-        plates = " : " + " x ".join(node.plates) if node.plates else ""
-        fam = f"{node.family}({', '.join(node.args)})" if node.family else "?"
-        return f"marginalize {node.name}{plates} <- {fam}"
-    if node.kind == "deterministic":
-        return f"let {node.name} = …"
-    return node.name
 
 
 def _has_command(name: str) -> bool:
@@ -2932,10 +2956,7 @@ def _extract_export_expr(mod: Module):
 
 def _call_str(step: Any) -> str:
     head = getattr(step, "morphism", "?") or "?"
-    args = getattr(step, "args", None)
-    if not args:
-        return str(head)
-    return f"{head}({', '.join(str(a) for a in args)})"
+    return draw_call_to_source(str(head), getattr(step, "args", None))
 
 
 def _index_suffix(idx: Any) -> str:

@@ -62,6 +62,8 @@ Binary response, sigmoid link, Bernoulli likelihood.
         numpyro.sample("y", dist.Bernoulli(logits=logit), obs=y)
     ```
 
+`Bernoulli` also takes the log-odds directly, so the same likelihood can be written `observe y : Item <- Bernoulli(logits=logit)` without the `sigmoid` let. Scored from its logits, the density keeps its precision where the linear predictor saturates, while `sigmoid(logit)` in single precision rounds to one once `logit` passes about 17. The transpile targets that have a logit-parameterized Bernoulli (Stan's `bernoulli_logit`, Turing's `BernoulliLogit`, PyMC's `logit_p`, and the `logits` keyword of Pyro, NumPyro, and Edward2) render it natively; BUGS, JAGS, Church, Gen, and WebPPL refuse it by name.
+
 QVR's let-arithmetic exposes the standard nonlinearities so you can name the inverse link explicitly. The full builtin set:
 
 | Builtin | Domain | Codomain | Use |

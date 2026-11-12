@@ -5547,7 +5547,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         bound.update(names)
                         continue
                     morphism = self._program_morphisms.get(step.morphism)
-                    plate = self._step_plate(step, record, morphism, group)
+                    # A grouped marginalization's latent is batched over
+                    # its own group, so its prior's free names range over
+                    # that axis as its scope's do.
+                    own_group = group
+                    if isinstance(step, MarginalizeStep):
+                        if step.over is not None:
+                            own_group = self._axis(step.over, step)
+                        elif step.over_objs:
+                            own_group = self._axis(step.over_objs[0], step)
+                    plate = self._step_plate(step, record, morphism, own_group)
                     batch = plate.batch[0] if plate.batch else None
                     if batch is not None:
                         for argument in step.args or ():
@@ -5556,12 +5565,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                                     axes.setdefault(free, batch)
                     bound.update(names)
                     if isinstance(step, MarginalizeStep):
-                        inner_group = group
-                        if step.over is not None:
-                            inner_group = self._axis(step.over, step)
-                        elif step.over_objs:
-                            inner_group = self._axis(step.over_objs[0], step)
-                        visit(step.scope, inner_group)
+                        visit(step.scope, own_group)
 
         visit(declaration.draws, None)
         return {

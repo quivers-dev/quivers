@@ -1,0 +1,15 @@
+# Exercises a per-row `factor` let inside a marginalize scope whose axis
+# shares its cardinality with the marginalized latent's: `after` and `rate`
+# range over `Step`, not `Tau`, so the observe reads `rate` at its row.
+object Step : FinSet 4
+object Tau : FinSet 4
+program change : Step -> Step
+    sample rate_before <- Gamma(concentration=2.0, rate=1.0)
+    sample rate_after <- Gamma(concentration=2.0, rate=1.0)
+    let tau_prior = factor k : Tau in 1.0 / 4.0
+    marginalize tau : Tau <- Categorical(probs=tau_prior) [reduction=logsumexp]
+        let after = factor t : Step in real(min(max(t - tau, 0), 1))
+        let rate = (1.0 - after) * rate_before + after * rate_after
+        observe y : Step <- Poisson(rate=rate)
+    return y
+export change
