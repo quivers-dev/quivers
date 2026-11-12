@@ -318,4 +318,4 @@ def test_family_meta_total_count_unchanged() -> None:
     # the count is pinned: a family arriving without its per-target
     # names, or leaving, changes what `transpile` accepts, and this
     # is where that shows up.
-    assert len(FAMILY_META) == 58
+    assert len(FAMILY_META) == 60

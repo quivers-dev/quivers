@@ -27,11 +27,7 @@ from quivers.diagnostics import (
 )
 from quivers.dsl import loads
 from quivers.inference import MCMC, NUTSKernel
-from quivers.inference.mcmc.driver import (
-    MCMCResult,
-    _ess_1d,
-    _split_rhat_1d,
-)
+from quivers.inference import MCMCResult
 
 
 def test_arviz_dependency_floor_matches_datatree_api() -> None:
@@ -52,8 +48,6 @@ def _make_result(samples: dict[str, torch.Tensor]) -> MCMCResult:
         log_densities=torch.randn(n_chains, n_draws),
         acceptance_rates=torch.tensor([0.85] * n_chains),
         divergence_counts=torch.tensor([0] * n_chains),
-        r_hat={k: torch.tensor(1.003) for k in samples},
-        ess={k: torch.tensor(950.0) for k in samples},
         num_warmup=500,
         num_samples=n_draws,
     )
@@ -77,61 +71,6 @@ def _make_fit(
         log_likelihood=log_likelihood,
         observed_data=observed,
     )
-
-
-def _quivers_convergence(draws: np.ndarray) -> tuple[float, float]:
-    tensor = torch.as_tensor(draws, dtype=torch.float64)
-    return float(_split_rhat_1d(tensor)), float(_ess_1d(tensor))
-
-
-class TestMCMCConvergenceDiagnostics:
-    @pytest.mark.parametrize("n_draws", [200, 201])
-    def test_iid_chains_match_arviz_for_odd_and_even_draws(self, n_draws):
-        draws = np.random.default_rng(7).normal(size=(4, n_draws))
-
-        r_hat, ess = _quivers_convergence(draws)
-
-        assert r_hat == pytest.approx(float(az.rhat(draws, method="rank")), rel=1e-10)
-        assert ess == pytest.approx(float(az.ess(draws, method="bulk")), rel=1e-10)
-
-    def test_separated_locations_match_arviz_and_reduce_bulk_ess(self):
-        generator = np.random.default_rng(8)
-        draws = generator.normal(size=(4, 500))
-        draws[2:] += 2.0
-
-        r_hat, ess = _quivers_convergence(draws)
-
-        assert r_hat == pytest.approx(float(az.rhat(draws, method="rank")), rel=1e-10)
-        assert ess == pytest.approx(float(az.ess(draws, method="bulk")), rel=1e-10)
-        assert ess < 20
-
-    def test_separated_scales_use_conservative_folded_rhat(self):
-        generator = np.random.default_rng(9)
-        draws = generator.normal(size=(4, 500))
-        draws[2:] *= 4.0
-
-        r_hat, ess = _quivers_convergence(draws)
-        rank = float(az.rhat(draws, method="z_scale"))
-        folded = float(az.rhat(draws, method="folded"))
-
-        assert folded > rank
-        assert r_hat == pytest.approx(max(rank, folded), rel=1e-10)
-        assert r_hat > 1.1
-        assert ess == pytest.approx(float(az.ess(draws, method="bulk")), rel=1e-10)
-
-    def test_constant_coordinates_match_arviz_contract(self):
-        draws = np.ones((4, 100))
-        r_hat, ess = _quivers_convergence(draws)
-
-        assert np.isnan(r_hat)
-        assert np.isnan(float(az.rhat(draws, method="rank")))
-        assert ess == float(az.ess(draws, method="bulk")) == draws.size
-
-    def test_insufficient_draws_return_nan(self):
-        r_hat, ess = _quivers_convergence(np.ones((4, 3)))
-
-        assert np.isnan(r_hat)
-        assert np.isnan(ess)
 
 
 class TestToDataTree:

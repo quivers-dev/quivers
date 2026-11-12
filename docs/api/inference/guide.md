@@ -13,7 +13,8 @@ ABC and `LatentRegistry` introspection layer. They are
 `AutoNormalGuide`, `AutoDeltaGuide`, `AutoMultivariateNormalGuide`,
 `AutoLowRankMultivariateNormalGuide`, `AutoLaplaceApproximation`,
 `AutoNormalizingFlow`, `AutoIAFGuide`, `AutoNeuralSplineGuide`,
-`AutoMixtureGuide`, `AutoGuideList`, and `AutoStructured`.
+`AutoMixtureGuide`, `AutoGuideList`, `AutoStructured`, and `AmortizedGuide`,
+which runs [declared encoders](../../guides/inference-svi.md#amortizedguide) on the data.
 
 `quivers.inference` re-exports every guide, and `quivers.inference.guides`
 adds the Pyro-style short names (`AutoNormal`, `AutoMultivariateNormal`,

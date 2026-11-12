@@ -39,6 +39,7 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
 from quivers.continuous._lkj import OnionLKJCholesky
+from quivers.continuous.log_space import LogGamma, LogitBeta
 from quivers.continuous._ordered import OrderedLogistic
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
@@ -461,6 +462,41 @@ class MixedInlineDistribution(ContinuousMorphism):
     @property
     def support(self) -> _constraints.Constraint:
         return self._support
+
+    def with_domain(self, domain: AnySpace) -> MixedInlineDistribution:
+        """Return the same all-literal family on a declared input space.
+
+        Parameters
+        ----------
+        domain : AnySpace
+            Input space whose values select no family parameters.
+
+        Returns
+        -------
+        MixedInlineDistribution
+            The family with every parameter a literal, reading its
+            input only for the number of rows.
+
+        Raises
+        ------
+        ValueError
+            If a parameter is read from the input, whose columns the
+            new domain would not carry.
+        """
+        if any(kind == "var" for kind, _ in self._param_spec):
+            raise ValueError(
+                "MixedInlineDistribution.with_domain: a parameter is read from "
+                "the input, so the input space is fixed by the parameters"
+            )
+        return MixedInlineDistribution(
+            domain,
+            self.codomain,
+            self._param_spec,
+            self._dist_builder,
+            discrete=self._discrete,
+            support=self._support,
+            param_event_ranks=self._param_event_ranks,
+        )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Reconstruct full parameter list from input + stored literals.
@@ -921,6 +957,110 @@ def make_fixed_beta(
     return FixedDistribution(codomain, builder, support=_constraints.unit_interval)
 
 
+def make_fixed_logit_beta(
+    concentration1: float, concentration0: float, codomain: AnySpace
+) -> FixedDistribution:
+    """Create a fixed LogitBeta(concentration1, concentration0) distribution.
+
+    The draw is ``logit(p)`` for ``p ~ Beta(concentration1,
+    concentration0)``, scored and sampled on the real line by
+    [`LogitBeta`][quivers.continuous.log_space.LogitBeta]. The shapes
+    are passed through unclamped, so a shape far below one keeps its
+    exact density rather than being lifted to a floor.
+
+    Parameters
+    ----------
+    concentration1 : float
+        The Beta shape on ``p`` (positive).
+    concentration0 : float
+        The Beta shape on ``1 - p`` (positive).
+    codomain : AnySpace
+        Output space.
+
+    Returns
+    -------
+    FixedDistribution
+        Distribution morphism sampling from LogitBeta(a, b).
+
+    Raises
+    ------
+    ValueError
+        If either shape is not positive.
+    """
+    _require_positive("LogitBeta", concentration1=concentration1)
+    _require_positive("LogitBeta", concentration0=concentration0)
+    d = getattr(codomain, "dim", 1)
+
+    def builder(batch: int, device: torch.device) -> D.Distribution:
+        a = torch.full((batch, d), concentration1, device=device)
+        b = torch.full((batch, d), concentration0, device=device)
+        return LogitBeta(a, b)
+
+    return FixedDistribution(codomain, builder, support=_constraints.real)
+
+
+def make_fixed_log_gamma(
+    concentration: float, rate: float, codomain: AnySpace
+) -> FixedDistribution:
+    """Create a fixed LogGamma(concentration, rate) distribution.
+
+    The draw is ``log(g)`` for ``g ~ Gamma(concentration, rate)``,
+    scored and sampled on the real line by
+    [`LogGamma`][quivers.continuous.log_space.LogGamma]. The parameters
+    are passed through unclamped, so a shape far below one keeps its
+    exact density rather than being lifted to a floor.
+
+    Parameters
+    ----------
+    concentration : float
+        The Gamma shape (positive).
+    rate : float
+        The Gamma rate (positive).
+    codomain : AnySpace
+        Output space.
+
+    Returns
+    -------
+    FixedDistribution
+        Distribution morphism sampling from LogGamma(concentration, rate).
+
+    Raises
+    ------
+    ValueError
+        If the shape or the rate is not positive.
+    """
+    _require_positive("LogGamma", concentration=concentration)
+    _require_positive("LogGamma", rate=rate)
+    d = getattr(codomain, "dim", 1)
+
+    def builder(batch: int, device: torch.device) -> D.Distribution:
+        conc_t = torch.full((batch, d), concentration, device=device)
+        rate_t = torch.full((batch, d), rate, device=device)
+        return LogGamma(conc_t, rate_t)
+
+    return FixedDistribution(codomain, builder, support=_constraints.real)
+
+
+def _require_positive(family: str, **parameter: float) -> None:
+    """Refuse a literal parameter that is not a positive number.
+
+    Parameters
+    ----------
+    family : str
+        The family, for the diagnostic.
+    **parameter : float
+        One keyword naming the parameter and giving its value.
+
+    Raises
+    ------
+    ValueError
+        If the value is not positive.
+    """
+    for name, value in parameter.items():
+        if not float(value) > 0.0:
+            raise ValueError(f"{family} needs a positive {name}; got {value!r}")
+
+
 def make_fixed_exponential(rate: float, codomain: AnySpace) -> FixedDistribution:
     """Create a fixed Exponential(rate) distribution.
 
@@ -1220,6 +1360,8 @@ _FIXED_FACTORIES: dict[str, tuple[tuple[str, ...], Callable]] = {
     "HalfNormal": (("scale",), make_fixed_halfnormal),
     "LogNormal": (("loc", "scale"), make_fixed_lognormal),
     "Gamma": (("concentration", "rate"), make_fixed_gamma),
+    "LogGamma": (("concentration", "rate"), make_fixed_log_gamma),
+    "LogitBeta": (("concentration1", "concentration0"), make_fixed_logit_beta),
     "Dirichlet": (("concentration",), make_fixed_dirichlet),
     "LKJCholesky": (("concentration",), make_fixed_lkj_cholesky),
     "TruncatedNormal": (
@@ -1244,6 +1386,8 @@ _FAMILY_SUPPORTS: dict[str, _constraints.Constraint] = {
     "HalfNormal": _constraints.positive,
     "LogNormal": _constraints.positive,
     "Gamma": _constraints.positive,
+    "LogGamma": _constraints.real,
+    "LogitBeta": _constraints.real,
     "Dirichlet": _constraints.simplex,
     "Logistic": _constraints.real,
     "HalfStudentT": _constraints.positive,
@@ -1371,6 +1515,25 @@ def _logitnormal_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build LogitNormal from [mu, sigma]."""
     base = D.Normal(params[0], params[1].clamp(min=EPS))
     return D.TransformedDistribution(base, [D.SigmoidTransform()])
+
+
+def _logit_beta_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build LogitBeta from [concentration1, concentration0], unclamped.
+
+    The distribution checks that both shapes are positive, so a shape
+    that has reached zero raises rather than being lifted to a floor.
+    """
+    return LogitBeta(params[0], params[1], validate_args=True)
+
+
+def _log_gamma_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build LogGamma from [concentration, rate], unclamped.
+
+    The distribution checks that both parameters are positive, so a
+    parameter that has reached zero raises rather than being lifted to
+    a floor.
+    """
+    return LogGamma(params[0], params[1], validate_args=True)
 
 
 def _uniform_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1754,6 +1917,12 @@ _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
     "HalfNormal": (("scale",), _halfnormal_builder, False),
     "LogNormal": (("loc", "scale"), _lognormal_builder, False),
     "Gamma": (("concentration", "rate"), _gamma_builder, False),
+    "LogGamma": (("concentration", "rate"), _log_gamma_builder, False),
+    "LogitBeta": (
+        ("concentration1", "concentration0"),
+        _logit_beta_builder,
+        False,
+    ),
     "Dirichlet": (("concentration",), _dirichlet_builder, False),
     "OrderedLogistic": (
         ("predictor", "cutpoints"),
@@ -2034,6 +2203,16 @@ _BASE_DISTRIBUTION_BUILDERS: dict = {
     ),
     "Exponential": lambda a: D.Exponential(
         torch.as_tensor(a[0]),
+    ),
+    "LogGamma": lambda a: LogGamma(
+        torch.as_tensor(a[0]),
+        torch.as_tensor(a[1]),
+        validate_args=True,
+    ),
+    "LogitBeta": lambda a: LogitBeta(
+        torch.as_tensor(a[0]),
+        torch.as_tensor(a[1]),
+        validate_args=True,
     ),
     "Poisson": lambda a: D.Poisson(torch.as_tensor(a[0])),
     "Bernoulli": lambda a: D.Bernoulli(probs=torch.as_tensor(a[0])),
@@ -2883,6 +3062,8 @@ __all__ = [
     "make_fixed_halfcauchy",
     "make_fixed_halfnormal",
     "make_fixed_lkj_cholesky",
+    "make_fixed_log_gamma",
+    "make_fixed_logit_beta",
     "make_fixed_logitnormal",
     "make_fixed_lognormal",
     "make_fixed_normal",

@@ -39,6 +39,9 @@ type Matrix = tuple[tuple[float, ...], ...]
 #: categorical families when a construction leaves it out.
 RELAXATION_TEMPERATURE = 0.5
 
+#: The log of the largest finite float, past which ``exp`` overflows.
+_LOG_FLOAT_MAX = math.log(2.0**1023 * (2.0 - 2.0**-52))
+
 
 def relaxation_temperature(a: Mapping[str, object], family: str) -> float:
     """The temperature a relaxed family is constructed at.
@@ -1069,6 +1072,150 @@ def _logitnormal_density(a: Mapping[str, object], value: object) -> float:
         )
         - math.log(point)
         - math.log1p(-point)
+    )
+
+
+def _positive_parameter(a: Mapping[str, object], name: str, family: str) -> float:
+    """A parameter that must be a positive number.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+    name : str
+        The parameter.
+    family : str
+        The family, for the diagnostic.
+
+    Returns
+    -------
+    float
+        The parameter's value.
+
+    Raises
+    ------
+    DistributionError
+        If the value is not a positive number.
+    """
+    value = real_parameter(a, name, family)
+    if not value > 0.0:
+        raise DistributionError(f"{family} needs a positive {name}, got {value!r}")
+    return value
+
+
+def _log_standard_gamma(shape: float, rng: random.Random) -> float:
+    """Draw ``log(G)`` for ``G ~ Gamma(shape, 1)`` without forming ``G``.
+
+    The draw is ``log G' + log(U) / shape`` for independent ``G' ~
+    Gamma(shape + 1, 1)`` and ``U ~ Uniform(0, 1]``, the shape
+    augmentation of Marsaglia and Tsang, which stays finite for shapes
+    far below the point where a Gamma draw underflows.
+
+    Parameters
+    ----------
+    shape : float
+        The positive Gamma shape.
+    rng : random.Random
+        The generator to draw from.
+
+    Returns
+    -------
+    float
+        One log-Gamma draw.
+    """
+    boosted = rng.gammavariate(shape + 1.0, 1.0)
+    return math.log(boosted) + math.log(1.0 - rng.random()) / shape
+
+
+def _loggamma_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw one value from ``LogGamma``, the log of a Gamma variable.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+    rng : random.Random
+        The generator to draw from.
+
+    Returns
+    -------
+    object
+        The drawn value.
+    """
+    shape = _positive_parameter(a, "concentration", "LogGamma")
+    rate = _positive_parameter(a, "rate", "LogGamma")
+    return _log_standard_gamma(shape, rng) - math.log(rate)
+
+
+def _loggamma_density(a: Mapping[str, object], value: object) -> float:
+    """The log density of ``LogGamma`` at a point of the real line.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+    value : object
+        The point evaluated.
+
+    Returns
+    -------
+    float
+        ``a (log r + y) - r exp(y) - lgamma(a)``, ``-inf`` where
+        ``r exp(y)`` exceeds the largest float.
+    """
+    point = finite_value(value, "LogGamma")
+    shape = _positive_parameter(a, "concentration", "LogGamma")
+    rate = _positive_parameter(a, "rate", "LogGamma")
+    exponent = point + math.log(rate)
+    if exponent > _LOG_FLOAT_MAX:
+        return -math.inf
+    return shape * exponent - math.exp(exponent) - math.lgamma(shape)
+
+
+def _logitbeta_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw one value from ``LogitBeta``, the logit of a Beta variable.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+    rng : random.Random
+        The generator to draw from.
+
+    Returns
+    -------
+    object
+        The drawn value, a difference of two log-Gamma draws.
+    """
+    first = _positive_parameter(a, "concentration1", "LogitBeta")
+    second = _positive_parameter(a, "concentration0", "LogitBeta")
+    return _log_standard_gamma(first, rng) - _log_standard_gamma(second, rng)
+
+
+def _logitbeta_density(a: Mapping[str, object], value: object) -> float:
+    """The log density of ``LogitBeta`` at a point of the real line.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+    value : object
+        The point evaluated.
+
+    Returns
+    -------
+    float
+        ``a logsigmoid(x) + b logsigmoid(-x) - log B(a, b)``.
+    """
+    point = finite_value(value, "LogitBeta")
+    first = _positive_parameter(a, "concentration1", "LogitBeta")
+    second = _positive_parameter(a, "concentration0", "LogitBeta")
+    return (
+        first * _log_sigmoid(point)
+        + second * _log_sigmoid(-point)
+        - math.lgamma(first)
+        - math.lgamma(second)
+        + math.lgamma(first + second)
     )
 
 
@@ -4072,6 +4219,8 @@ LOG_MASSES: Mapping[str, Callable[[Mapping[str, object]], float]] = {
 #: Samplers of the families beyond the scalar core, by family name.
 SAMPLERS: Mapping[str, Sampler] = {
     "LogitNormal": _logitnormal_sample,
+    "LogGamma": _loggamma_sample,
+    "LogitBeta": _logitbeta_sample,
     "TruncatedNormal": _truncatednormal_sample,
     "Gumbel": _gumbel_sample,
     "Chi2": _chi2_sample,
@@ -4118,6 +4267,8 @@ SAMPLERS: Mapping[str, Sampler] = {
 #: Log densities of the families beyond the scalar core, by family name.
 DENSITIES: Mapping[str, Density] = {
     "LogitNormal": _logitnormal_density,
+    "LogGamma": _loggamma_density,
+    "LogitBeta": _logitbeta_density,
     "TruncatedNormal": _truncatednormal_density,
     "Gumbel": _gumbel_density,
     "Chi2": _chi2_density,

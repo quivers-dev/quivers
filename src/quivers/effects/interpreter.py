@@ -50,15 +50,18 @@ from quivers.effects.program_module import (
     INPUT_NAME,
     SCAN_POSITION,
     SCAN_SEQUENCE,
+    SCAN_STATES,
     HostStep,
     ProgramKernel,
     derived_bindings,
     once_sites,
     program_kernel,
+    reversed_scan_sites,
     scanned_sites,
     site_label,
 )
 from quivers.effects.sites import TorchSampleable
+from quivers.effects.subsample import site_plates, subsampled_rows
 from quivers.effects.trace_handler import TraceHandler
 from quivers.qiec.builtins import (
     PARAM_GET,
@@ -90,6 +93,7 @@ from quivers.qiec.terms import (
     Perform,
     Var,
 )
+from quivers.stochastic.agenda import ChartView, CorpusChart
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -262,6 +266,28 @@ class _ParameterizedMorphism(ContinuousMorphism):
         """
         return self._call("log_prob", x, y)
 
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Score a subset of a plate's rows under the supplied parameters.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The value scored.
+        *rows : torch.Tensor
+            One index per plate axis, as the inner morphism's
+            ``log_prob_rows`` reads them.
+
+        Returns
+        -------
+        torch.Tensor
+            The log density of the kept rows.
+        """
+        return self._call("log_prob_rows", x, y, *rows)
+
     def __getattr__(self, name: str) -> torch.Tensor | torch.nn.Module:
         """Read a submodule, or any other attribute from the inner morphism.
 
@@ -285,6 +311,116 @@ class _ParameterizedMorphism(ContinuousMorphism):
             return getattr(super().__getattr__("_inner"), name)
 
 
+class _SubsampledMorphism(ContinuousMorphism):
+    """A plated site's morphism scored at a subset of its plate rows, rescaled.
+
+    Parameters
+    ----------
+    inner : ContinuousMorphism
+        The site's morphism, run under any parameters a ``Param`` handler
+        supplied; it scores a subset of rows through ``log_prob_rows``.
+    rows : tuple[torch.Tensor, ...]
+        One index per plate axis of the site, outermost first: the
+        subset's rows along a subsampled axis, every row along another.
+    factor : float
+        The product, over the subsampled axes, of the axis's extent over
+        the subset's size.
+    """
+
+    def __init__(
+        self,
+        inner: ContinuousMorphism,
+        rows: tuple[torch.Tensor, ...],
+        factor: float,
+    ) -> None:
+        super().__init__(inner.domain, inner.codomain)
+        self._inner = inner
+        self._rows = rows
+        self._factor = factor
+
+    def rsample(  # type: ignore[override]
+        self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
+    ) -> torch.Tensor:
+        """Draw every row of the plate, as the inner morphism does.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        sample_shape : torch.Size
+            Extra sample dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            The draw.
+        """
+        return self._inner.rsample(x, sample_shape)
+
+    def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """The subset's log density times the plate's factor.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            The input.
+        y : torch.Tensor
+            The site's value.
+
+        Returns
+        -------
+        torch.Tensor
+            ``factor`` times the summed log density of the kept rows.
+        """
+        log_prob_rows = getattr(self._inner, "log_prob_rows")
+        return self._factor * log_prob_rows(x, y, *self._rows)
+
+
+def _subsampled_rows(
+    run: RunContext,
+    step: HostStep,
+    spec: Draw | Observe,
+    morphism: ContinuousMorphism,
+) -> tuple[tuple[torch.Tensor, ...], float] | None:
+    """The rows a site is scored at under the run's subsampled plates.
+
+    Parameters
+    ----------
+    run : RunContext
+        The run, with the subsets its handlers registered.
+    step : HostStep
+        The site's host step.
+    spec : Draw | Observe
+        The site's step record.
+    morphism : ContinuousMorphism
+        The site's declared morphism.
+
+    Returns
+    -------
+    tuple[tuple[torch.Tensor, ...], float] | None
+        One index per plate axis of the site and the site's factor, or
+        ``None`` for a site in no subsampled plate.
+
+    Raises
+    ------
+    ValueError
+        If the site is in a subsampled plate but its morphism has no
+        per-row density, or the plate's extent at the site is not fixed.
+    """
+    if not run.subsamples:
+        return None
+    label = step.site
+    assert label is not None
+    found = subsampled_rows(label, site_plates(step.program, spec), run.subsamples)
+    if found is not None and not isinstance(morphism, PlateDraw | VectorisedObserve):
+        raise ValueError(
+            f"site {label!r} ranges over a subsampled plate, but it draws from "
+            f"{type(morphism).__name__}, which has no density per plate row; "
+            "only a plate draw or a plated observation can be subsampled"
+        )
+    return found
+
+
 def _split_observations(
     program: MonadicProgram, observations: Mapping[str, torch.Tensor]
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor]]:
@@ -294,8 +430,9 @@ def _split_observations(
     ``n``-th occurrence under ``"<label>@<n>"``, of shape ``(batch,
     ...)``; or, for every position at once, under ``"<label>"``, with
     the positions on the axis after the batch, ``(batch, seq_len,
-    ...)``, entry ``[:, n]`` being the value at the ``n``-th
-    occurrence.
+    ...)``, entry ``[:, t]`` being the value at input position ``t``:
+    the ``t``-th occurrence, or for a site a reversed scan reaches,
+    which visits the last position first, the ``(seq_len - 1 - t)``-th.
 
     Parameters
     ----------
@@ -329,6 +466,7 @@ def _split_observations(
         for name in label.split(","):
             declared[name] = label
     scanned = scanned_sites(program)
+    backward = reversed_scan_sites(program)
     derived, per_position = derived_bindings(program)
     sites: dict[str, torch.Tensor] = {}
     supplied: dict[str, torch.Tensor] = {}
@@ -345,8 +483,13 @@ def _split_observations(
                     f"position, so its values are laid out (batch, seq_len, "
                     f"...); got shape {tuple(value.shape)}"
                 )
+            # A reversed scan reaches its last position first, so the
+            # value at input position ``t`` is the occurrence that many
+            # from the end.
+            length = int(value.shape[1])
             for index, entry in enumerate(value.unbind(1)):
-                stacked[site_label(name, index)] = entry
+                occurrence = length - 1 - index if name in backward else index
+                stacked[site_label(name, occurrence)] = entry
         elif at and occurrence.isdigit() and base in scanned:
             sites[name] = value
         elif name in derived or (at and occurrence.isdigit() and base in per_position):
@@ -950,6 +1093,10 @@ class _HostSteps:
             return lambda argument, _context: self._scan_entry(step, _host(argument))
         if step.kind == "scan_state":
             return lambda argument, _context: self._scan_state(step, _host(argument))
+        if step.kind == "scan_states":
+            return lambda argument, _context: self._scan_states(step, _host(argument))
+        if step.kind == "scan_collect":
+            return lambda argument, _context: self._scan_collect(step, _host(argument))
         raise ValueError(f"unknown host step kind {step.kind!r}")
 
     def _split_input(self, argument: object, _context: ClauseContext) -> object:
@@ -1035,11 +1182,19 @@ class _HostSteps:
         )
         assert step.site is not None
         values = self._parameters(step.site, morphism, context)
-        if values:
-            return TorchSampleable(
-                _ParameterizedMorphism(morphism, values), inp, declared=morphism
-            )
-        return TorchSampleable(morphism, inp)
+        drawing: ContinuousMorphism = (
+            _ParameterizedMorphism(morphism, values) if values else morphism
+        )
+        subsampled = _subsampled_rows(self.run, step, spec, morphism)
+        if subsampled is not None:
+            rows, factor = subsampled
+            annotations = self.run.annotations.setdefault(step.site, {})
+            annotations["subsample_scale"] = factor
+            annotations["subsample_rows"] = rows
+            drawing = _SubsampledMorphism(drawing, rows, factor)
+        if drawing is morphism:
+            return TorchSampleable(morphism, inp)
+        return TorchSampleable(drawing, inp, declared=morphism)
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext
@@ -1182,6 +1337,10 @@ class _HostSteps:
         if callable(spec.value):
             stripped, carried = self._one_run(step, env)
             value = spec.value(stripped)
+            if isinstance(value, ChartView | CorpusChart):
+                # The checked program binds a deduction's answer, the
+                # inside weight of its goal.
+                value = value.goal_weight()
             if carried:
                 value = _with_run_axis(value)
             self.axis.record(step.program, spec.name, carried)
@@ -1283,24 +1442,46 @@ class _HostSteps:
         step : HostStep
             The step.
         argument : HostValue
-            The environment tuple, holding the sequence.
+            The environment tuple, holding the sequence and, for a scan
+            that starts from a binding, that binding.
 
         Returns
         -------
         torch.Tensor
-            The initial state, ``(batch, dim H)``: the scan's own when it
-            has one, else zero.
+            The initial state, ``(batch, dim H)``: the binding the scan
+            starts from, else the scan's own state when it has one, else
+            zero.
+
+        Raises
+        ------
+        ValueError
+            If the binding the scan starts from does not hold one state
+            per row.
         """
         spec = step.spec
         assert isinstance(spec, Scan)
-        (value,) = _environment(step, argument).values()
+        environment = _environment(step, argument)
+        value = environment[step.environment[0]]
         batch = int(value.shape[0])
+        body = spec.step
+        width = int(getattr(body.codomain, "dim"))
+        if spec.initial_from is not None:
+            start = environment[spec.initial_from]
+            if start.dim() == 2 and tuple(start.shape) == (batch, width):
+                return start
+            if start.dim() == 1 and int(start.shape[0]) == width:
+                return start.unsqueeze(0).expand(batch, -1)
+            if start.numel() == batch * width:
+                return start.reshape(batch, width)
+            raise ValueError(
+                f"scan {spec.name!r} starts from {spec.initial_from!r}, of shape "
+                f"{tuple(start.shape)}, which is not one state of width {width} "
+                f"per row of the batch of {batch}"
+            )
         if spec.initial is not None:
             return spec.initial.unsqueeze(0).expand(batch, -1)
-        body = spec.step
-        width = getattr(body.codomain, "dim")
         dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
-        return torch.zeros(batch, int(width), device=value.device, dtype=dtype)
+        return torch.zeros(batch, width, device=value.device, dtype=dtype)
 
     def _scan_state(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """The state a scan's step returned, carried to the next position.
@@ -1336,26 +1517,81 @@ class _HostSteps:
         return value
 
     def _scan_entry(self, step: HostStep, argument: HostValue) -> torch.Tensor:
-        """The entry a scan reads at a position.
+        """The entry a scan reads at the next position it visits.
 
         Parameters
         ----------
         step : HostStep
             The step.
         argument : HostValue
-            The environment tuple, holding the sequence and the position.
+            The environment tuple, holding the sequence and the count of
+            positions visited.
 
         Returns
         -------
         torch.Tensor
-            ``(batch,)`` for a discrete entry, else ``(batch, dim)``.
+            ``(batch,)`` for a discrete entry, else ``(batch, dim)``: the
+            entry at the count's position, or, for a reversed scan, at
+            the position that many from the end.
         """
         spec = step.spec
         assert isinstance(spec, Scan)
         env = _environment(step, argument)
-        position = env[SCAN_POSITION]
-        assert isinstance(position, int)
-        return _sequence(spec, env[SCAN_SEQUENCE])[:, position]
+        visited = env[SCAN_POSITION]
+        assert isinstance(visited, int)
+        sequence = _sequence(spec, env[SCAN_SEQUENCE])
+        position = int(sequence.shape[1]) - 1 - visited if spec.reverse else visited
+        return sequence[:, position]
+
+    def _scan_states(self, step: HostStep, argument: HostValue) -> torch.Tensor:
+        """The states a scan returning every state has gathered at its start.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : HostValue
+            The environment tuple, holding the sequence.
+
+        Returns
+        -------
+        torch.Tensor
+            No states, ``(batch, 0, dim H)``, on the sequence's device.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        (value,) = _environment(step, argument).values()
+        width = int(getattr(spec.step.codomain, "dim"))
+        dtype = value.dtype if value.is_floating_point() else torch.get_default_dtype()
+        return torch.zeros(
+            int(value.shape[0]), 0, width, device=value.device, dtype=dtype
+        )
+
+    def _scan_collect(self, step: HostStep, argument: HostValue) -> torch.Tensor:
+        """Gather the state a scan's step returned among the scan's states.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+        argument : HostValue
+            The environment tuple, holding the states gathered so far and
+            the state the step returned.
+
+        Returns
+        -------
+        torch.Tensor
+            The states, ``(batch, visited, dim H)``, in input order: the
+            new state after the others, or, for a reversed scan, which
+            visits the positions from the last, before them.
+        """
+        spec = step.spec
+        assert isinstance(spec, Scan)
+        env = _environment(step, argument)
+        gathered = env[SCAN_STATES]
+        state = env["__scan_next"].unsqueeze(1).to(gathered.dtype)
+        parts = (state, gathered) if spec.reverse else (gathered, state)
+        return torch.cat(parts, dim=1)
 
 
 def _handle_chain(installations: list[Installation], inner: Computation) -> Computation:
@@ -1532,11 +1768,17 @@ def check_host_data(
     for name, expected in program.host_data_types.items():
         if name not in data:
             continue
-        value = torch.as_tensor(data[name])
         split = tensor_shape(expected)
         element, dimensions = (expected, ()) if split is None else split
         rendered = render_static(expected)
-        supplied = tuple(value.shape)
+        if element == STRING:
+            # Text has no tensor form: a sentence is a sequence of tokens,
+            # a corpus a sequence of equally long sentences.
+            supplied = _string_shape(name, data[name], rendered)
+            value = None
+        else:
+            value = torch.as_tensor(data[name])
+            supplied = tuple(value.shape)
         layouts = [tuple(dimensions)]
         if name in program.host_data_shared and dimensions:
             layouts.append(tuple(dimensions[1:]))
@@ -1564,13 +1806,56 @@ def check_host_data(
                     f"host datum {name!r} fixes extent {dimension.name!r} at "
                     f"{extent}, but {fixed[1]!r} fixes it at {fixed[0]}"
                 )
-        if not _element_admits(element, value):
+        if value is not None and not _element_admits(element, value):
             raise TypeError(
                 f"host datum {name!r} has dtype {value.dtype}, but the checked "
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
     return per_run_data
+
+
+def _string_shape(name: str, value: object, rendered: str) -> tuple[int, ...]:
+    """The shape of a nested sequence of tokens.
+
+    Parameters
+    ----------
+    name : str
+        The datum's name, for the diagnostic.
+    value : object
+        The datum: a string, or a sequence (list or tuple) of data of one
+        shape.
+    rendered : str
+        The checked type, for the diagnostic.
+
+    Returns
+    -------
+    tuple[int, ...]
+        The lengths of its nesting levels; empty for one string.
+
+    Raises
+    ------
+    TypeError
+        If a leaf is not a string.
+    ValueError
+        If the sequences at one level differ in length.
+    """
+    if isinstance(value, str):
+        return ()
+    if not isinstance(value, list | tuple):
+        raise TypeError(
+            f"host datum {name!r} holds {type(value).__name__}, but the checked "
+            f"program reads it at type {rendered}, whose elements are strings"
+        )
+    shapes = {_string_shape(name, item, rendered) for item in value}
+    if len(shapes) > 1:
+        raise ValueError(
+            f"host datum {name!r} holds sequences of different lengths, but the "
+            f"checked program reads it at type {rendered}; a corpus takes "
+            "sentences of one length"
+        )
+    inner = shapes.pop() if shapes else ()
+    return (len(value), *inner)
 
 
 def _matching_layout(

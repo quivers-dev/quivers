@@ -1,0 +1,16 @@
+# Exercises a scan that visits the positions from the last to the first,
+# `scan(cell, reverse=true)`, returning every state in input order.
+object Val : Real 1
+
+program cell(u_t, h_prev) : Val * Val -> Val
+    let m = 0.8 * h_prev + u_t
+    sample h <- Normal(loc=m, scale=0.5)
+    observe r <- Normal(loc=h, scale=0.5)
+    return h
+
+define backward = scan(cell, reverse=true, outputs=all)
+
+program prog : Val -> Val
+    sample states <- backward
+    return states
+export prog

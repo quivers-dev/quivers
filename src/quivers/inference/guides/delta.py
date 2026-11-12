@@ -43,7 +43,15 @@ class AutoDeltaGuide(Guide):
         a HalfNormal, the centre of the unit interval, the uniform
         Dirichlet, etc.). Small Gaussian noise is added so two
         coordinate values don't collide.
+
+    Notes
+    -----
+    The guide's density is constant, so it scores a latent in a
+    [`subsample`][quivers.effects.subsample]d plate as it scores every
+    other latent.
     """
+
+    scores_subsampled_rows = True
 
     def __init__(
         self,
