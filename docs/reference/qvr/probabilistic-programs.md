@@ -99,7 +99,7 @@ model that the checked module and every transpiled program describe.
 An *index map* is a function from observation rows to groups, given as an integer array, whose
 fiber over a group is the set of rows in that group. The `via=` option of a grouped step names one
 ([exact marginalization](#exact-marginalization)), and the API gives it the parameter role
-`fibration`.
+`index_map`.
 
 Pure collection expressions such as `map` stay on the right of `=`. An effectful `traverse` is
 computation syntax, stays on the right of `<-`, and joins the called computation's effects to the
