@@ -152,7 +152,7 @@ nav:
       - 9. Indexed data and total functions: tutorials/qvr/09-indexed-data.md
       - 10. Effects and handlers: tutorials/qvr/10-effects-and-handlers.md
       - 11. Parsing as an effectful computation: tutorials/qvr/11-parsing-and-search.md
-      - 12. Structural autoencoders: tutorials/qvr/12-structural-autoencoders.md
+      - 12. Tree autoencoders: tutorials/qvr/12-structural-autoencoders.md
       - 13. Check, inspect, and transpile: tutorials/qvr/13-release-workflow.md
       - 14. Exact Bayes with finite collections: tutorials/qvr/14-collection-programs.md
     - Python API tutorials:

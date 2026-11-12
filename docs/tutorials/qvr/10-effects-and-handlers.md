@@ -57,7 +57,7 @@ qvr> :effects robust_request
 qvr> :effects robustify
 ```
 
-The row of `robust_request` keeps `robust`, and that of `robustify` is empty. `qvr run` can thus run `robustify` on the reference machine, the library's interpreter for the core language QIEC ([chapter 9](09-indexed-data.md#4-run-the-summary)), with no handler from outside:
+The row of `robust_request` keeps `robust`, and that of `robustify` is empty. `qvr run` can thus run `robustify` on the reference machine, the library's interpreter for the core language, the [Quivers Indexed Effect Core](../../reference/qvr/index.md) (QIEC) ([chapter 9](09-indexed-data.md#4-run-the-summary)), with no handler from outside:
 
 ```bash
 qvr run docs/tutorials/qvr/source/authored-handler.qvr robustify 8.0 --trace

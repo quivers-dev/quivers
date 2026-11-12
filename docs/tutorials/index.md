@@ -15,7 +15,7 @@ Two tracks. The QVR track writes and fits statistical models in [QVR](../referen
 9. **[Indexed data and total functions](qvr/09-indexed-data.md)**. Inductive families, parameters and indices, and case analysis with a motive.
 10. **[Effects and handlers](qvr/10-effects-and-handlers.md)**. Effect instances, effect rows, authored and foreign handlers, and resumption grades.
 11. **[Parsing as an effectful computation](qvr/11-parsing-and-search.md)**. A categorial grammar compiled to a chart parser and to a search computation, and parsing inside a probabilistic program.
-12. **[Structural autoencoders](qvr/12-structural-autoencoders.md)**. Tree autoencoders over typed terms, attachments, and gradients through the reference machine.
+12. **[Tree autoencoders](qvr/12-structural-autoencoders.md)**. Autoencoders over typed terms, attachments, and gradients through the reference machine.
 13. **[Check, inspect, and transpile](qvr/13-release-workflow.md)**. Target checks, entry points, traces, the language server, and transpiling before a release.
 14. **[Exact Bayes with finite collection expressions](qvr/14-collection-programs.md)**. `traverse`, `map`, and `logsumexp_over` in a posterior computed by enumeration.
 

@@ -1,6 +1,6 @@
 # 1. Your first quiver
 
-The Python track builds models from the classes that QVR compiles to: the compiler checks a module in its core language QIEC and builds its compiled runtime, the PyTorch modules that `loads` returns, from [`FinSet`](../../api/core/objects.md), [`Morphism`](../../api/core/morphisms.md), and the other classes of this track. Use it to write new constructs, build libraries on quivers, or inspect what a QVR module compiles to. To write and fit a statistical model, start with the [QVR track](../qvr/01-first-model.md).
+The Python track builds models from the classes that QVR compiles to: the compiler checks a module in its core language, the [Quivers Indexed Effect Core](../../reference/qvr/index.md) (QIEC), and builds its compiled runtime, the PyTorch modules that `loads` returns, from [`FinSet`](../../api/core/objects.md), [`Morphism`](../../api/core/morphisms.md), and the other classes of this track. Use it to write new constructs, build libraries on quivers, or inspect what a QVR module compiles to. To write and fit a statistical model, start with the [QVR track](../qvr/01-first-model.md).
 
 An *object* is a named finite set, and a *morphism* `f : A -> B` is a matrix of weights of shape `(|A|, |B|)`. Composing `f : X -> Y` with `g : Y -> Z` gives a morphism `X -> Z` by a matrix product over two operations on the weights, a product $\otimes$ and a sum $\oplus$:
 

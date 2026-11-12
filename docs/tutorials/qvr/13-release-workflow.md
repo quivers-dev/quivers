@@ -11,7 +11,7 @@ qvr check docs/tutorials/qvr/source/authored-handler.qvr
 qvr check --target pyro docs/tutorials/qvr/source/authored-handler.qvr
 ```
 
-The first command parses the module, resolves its names, elaborates it to QIEC, type-checks the result, checks handler coverage, and validates the module. The second also checks the module against the capabilities of the Pyro target. Repeat the target check for every target named in the release notes or the package metadata. Then run `qvr transpile` for each of them, because the capability check does not exercise every renderer.
+The first command parses the module, resolves its names, elaborates it to the [Quivers Indexed Effect Core](../../reference/qvr/index.md) (QIEC), type-checks the result, checks handler coverage, and validates the module. The second also checks the module against the capabilities of the Pyro target. Repeat the target check for every target named in the release notes or the package metadata. Then run `qvr transpile` for each of them, because the capability check does not exercise every renderer.
 
 ## 2. Inspect the public entry points {#2-inspect-the-public-boundary}
 
