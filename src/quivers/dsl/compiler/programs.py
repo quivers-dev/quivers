@@ -52,7 +52,12 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.programs import MonadicProgram, _lookup_arg
 from quivers.effects.checked_program import CheckedProgram
-from quivers.continuous.param_source import IdentitySource, ParamSource
+from quivers.continuous.param_source import (
+    AttentionSource,
+    IdentitySource,
+    ParamSource,
+    attention_draw_message,
+)
 from quivers.continuous.spaces import (
     CholeskyFactor,
     ContinuousSpace,
@@ -5557,6 +5562,12 @@ class _ProgramsMixin:
             if isinstance(morph, LearnedFunction):
                 raise CompileError(
                     learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
+            if isinstance(morph, torch.nn.Module) and any(
+                isinstance(module, AttentionSource) for module in morph.modules()
+            ):
+                raise CompileError(
+                    attention_draw_message(draw.morphism), draw.line, draw.col
                 )
             if draw.args is not None:
                 for a in draw.args:
