@@ -1,13 +1,10 @@
 # Shapes
 
-These factories provide common [sequence, tree, and graph structures](../../guides/structural-compression-signatures-and-encoders.md#stdlib-shapes) with encoder or
-decoder components. Choose a shape that matches the [relationships in the data](../../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data), then
-inspect its generated signature before extending it with new constructors or fields.
-
-Ready-made signatures, encoders, and decoders for the three principal
-compressible shapes: sequences, trees, and graphs. Each factory builds
-on the generic `Encoder` and `Decoder` runtimes, so the objects it
-returns can be inspected and composed like any hand-built one.
+These factories give ready-made signatures, encoders, and decoders for the three common
+[shapes](../../guides/structural-compression-signatures-and-encoders.md#stdlib-shapes): sequences,
+trees, and graphs. Each builds on the generic `Encoder` and `Decoder`, so the objects it returns can
+be inspected, composed, and extended with new constructors or fields like any hand-built one. A
+shape is chosen to match the [relations in the data](../../tutorials/qvr/12-structural-autoencoders.md#2-construct-typed-host-data).
 
 ::: quivers.structural.shapes.seq
 

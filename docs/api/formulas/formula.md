@@ -1,12 +1,11 @@
 # `quivers.formulas.formula`
 
-[Parsing a formula](../../guides/analysis-data-and-formulas.md#formulas-quiversformulas) separates ordinary predictor columns from group-specific terms. The
-resulting record carries design information that later compilation uses to create
-parameter sites and indexed lookups. A formula describes model structure; its [design
-matrices](../../tutorials/python/08-analysis-pipelines.md#a-first-fit-gaussian-regression-in-one-line) also depend on the data and category encoding.
-
-Parsed-formula IR: `Formula`, `FixedColumn`, `RandomTerm`, plus the
-`formula_from_data` adapter over `formulae.design_matrices`.
+[Parsing a formula](../../guides/analysis-data-and-formulas.md#formulas-quiversformulas) separates the
+ordinary predictor columns (`FixedColumn`) from the group terms (`RandomTerm`), and the `Formula`
+record carries the design information from which compilation builds parameter sites and indexed
+lookups. `formula_from_data` builds it over `formulae.design_matrices`, so its
+[design matrices](../../tutorials/python/08-analysis-pipelines.md#a-first-fit-gaussian-regression-in-one-line)
+depend on the data and the category encoding as well as on the formula.
 
 `Formula`, `FormulaData`, and `FixedColumn` are immutable values that
 compare by every field. Two formulas are equal only when their formula

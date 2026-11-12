@@ -1,11 +1,10 @@
 # `quivers.diagnostics.predictive_checks`
 
-[Posterior predictive checks](../../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) compare a feature of the observations with the same feature
-in replicated data [@gelman2013bayesian]. For instance, an observed upper quantile outside the range of
-simulated upper quantiles can expose a poorly modeled tail. Leave-one-out probability
-integral transform (LOO-PIT) checks assess calibration of predictions for held-out
-observations.
-
-Posterior-predictive p-values and LOO-PIT calibration.
+A [posterior predictive check](../../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks)
+compares a statistic of the observations with its distribution over replicated data
+[@gelman1996predictive; @gelman2013bayesian]. An observed upper quantile beyond the range of the
+replicated ones, for instance, exposes a poorly modeled tail. The module gives posterior predictive
+p-values and leave-one-out probability integral transform (LOO-PIT) checks of calibration for
+held-out observations.
 
 ::: quivers.diagnostics.predictive_checks

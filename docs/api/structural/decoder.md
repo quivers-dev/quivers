@@ -1,16 +1,15 @@
 # Decoders
 
-A decoder uses a vector to define a distribution over structured values. It chooses a
-root constructor, generates its fields, and continues through its children. [Sampling
-produces a reconstruction; scoring evaluates the probability or density assigned to a
-supplied structure](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks). [Reconstruction training](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss) increases the score of the original
-structure.
+A [decoder](../../guides/structural-compression-decoders-and-losses.md#decoder-blocks) maps a vector to
+a distribution over terms of a signature. `Decoder` is a `torch.nn.Module` that implements a
+[Kleisli arrow](https://ncatlab.org/nlab/show/Kleisli+category) $\mathrm{Vec}_D \to \mathcal{G}(T_\Sigma)$
+of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) $\mathcal{G}$, from vectors of
+dimension $D$ to distributions over the terms $T_\Sigma$ of the signature $\Sigma$. It chooses a root
+constructor, generates its fields, and continues through the children. It has two operations, and
+[reconstruction training](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss)
+raises the score of the original term:
 
-`Decoder` is a `torch.nn.Module` that realizes the Kleisli coalgebra
-`Vec_D → Kern(T_Σ)`. Given an input vector, it defines a distribution
-over terms of a signature through two operations:
-
-- `sample(vec, ctx, sort)` draws a single `Term`.
+- `sample(vec, ctx, sort)` draws a single `Term`;
 - `log_prob(term, vec, ctx, sort)` scores an observed term
   under the same distribution.
 
@@ -20,12 +19,10 @@ Corecursion over a signature Σ proceeds as follows:
    *choice set*, every constructor and binder whose codomain is
    that sort, plus the built-in `BoundVar` whenever the context
    contains at least one in-scope variable of that sort.
-2. For the chosen op, the parent vector is split into per-child
-   sub-vectors by the per-(sort, arity) `factor` function, and
-   the decoder recurses on each child.
-3. Data-sorted children are sampled from a closed vocabulary via
-   the per-sort `primitive` head; index-sorted children are
-   sampled via `binder_select` over the in-scope variables.
+2. For the chosen operation, the decoder's `factor` head for that sort and arity splits the
+   parent vector into one vector per child, and the decoder recurses on each child.
+3. Children of a data sort are sampled from a closed vocabulary by that sort's `primitive` head,
+   and children of an index sort by `binder_select` over the variables in scope.
 4. Binder ops extend Γ before recursing on their scoped arguments, as
    in the encoder.
 

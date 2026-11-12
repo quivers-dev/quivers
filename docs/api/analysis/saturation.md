@@ -1,8 +1,9 @@
 # [Saturation](../../guides/analysis-fitting-and-diagnostics.md#saturation_warnings) diagnostics
 
-Saturation occurs when bounded values approach an endpoint and their gradients become
-small. These diagnostics report where it occurs in a composition. Inspect the [parameter
-initialization](../../guides/analysis-fitting-and-diagnostics.md#recommend_init-and-apply_init_spec) and the number of contributions to a reduction when many values approach
-zero or one.
+A bounded value *saturates* when it approaches an endpoint of its range and its gradient
+vanishes. `SaturationWarning`s report, at their source locations, the steps where an `Algebra`'s
+initialization recipe differs from the default `Normal(0, 1)` enough to predict saturation, such as
+a deep chain under noisy-OR, which approaches one in every entry
+([initialization](../../guides/analysis-fitting-and-diagnostics.md#recommend_init-and-apply_init_spec)).
 
 ::: quivers.analysis.saturation

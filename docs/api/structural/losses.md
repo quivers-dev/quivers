@@ -1,14 +1,11 @@
 # Loss registry
 
-A [loss attachment](../../guides/structural-compression-decoders-and-losses.md#loss-declarations) associates a scalar training objective with a declared component.
-[Reconstruction loss](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss), for instance, penalizes low probability assigned to an original
-tree. The registry records these objectives, their attachment sites, and their weights
-for use during training.
-
-Each compiled module has a `LossRegistry` that maps attachment sites to
-weighted scalar-loss callables. Attachment sites include program,
-deduction, encoder, decoder, and rule names, as well as chart and global
-sites.
+A [loss attachment](../../guides/structural-compression-decoders-and-losses.md#loss-declarations)
+attaches a weighted scalar training objective to a declared component, such as the
+[reconstruction loss](../../tutorials/qvr/12-structural-autoencoders.md#3-invoke-the-checked-loss),
+which penalizes a low probability of the original tree. Each compiled module has a `LossRegistry`
+that maps attachment sites to weighted loss functions. The sites are program, deduction, encoder,
+decoder, and rule names, and the chart and global sites.
 
 The training driver calls `LossRegistry.evaluate(env)` to sum the
 registered losses. `evaluate_on(kind, target, env, rule_deduction)`
