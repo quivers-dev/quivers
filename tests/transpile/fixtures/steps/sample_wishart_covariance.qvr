@@ -1,0 +1,7 @@
+# A Wishart whose scale is written as its covariance matrix.
+object Dim : FinSet 2
+object One : FinSet 1
+program wishart_covariance : One -> One
+    sample sigma : Dim <- Wishart(df=4.0, covariance_matrix=[[1.0, 0.5], [0.5, 1.25]])
+    return sigma
+export wishart_covariance

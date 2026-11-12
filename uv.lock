@@ -1773,7 +1773,7 @@ wheels = [
 
 [[package]]
 name = "quivers"
-version = "0.46.0"
+version = "0.53.0"
 source = { editable = "." }
 dependencies = [
     { name = "didactic" },

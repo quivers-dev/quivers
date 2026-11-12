@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 116 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 125 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 68 / 116   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 81 / 116   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 90 / 116   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 84 / 116   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 73 / 116   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 98 / 116   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 87 / 116   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 99 / 116   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 87 / 116   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 84 / 116   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 87 / 116   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 125   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 125   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 91 / 125   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 81 / 125   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 125   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 105 / 125  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 92 / 125   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 107 / 125  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 93 / 125   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 86 / 125   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 84 / 125   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -142,6 +142,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_positions`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_self_attention`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -151,39 +153,45 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_let_probs`                  | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_vector_probs`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_step`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernoulli_logits`               | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_binomial_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                     | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
+| `steps/observe_geometric_logits`               | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_mvn_lkj_factor`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/observe_ordered_probit`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_over_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_plated_vector_location`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_shared_probs_vector`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_location_latent`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_location_let`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_vector_scale_rate`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_inverse_wishart_factor`          | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
+| `steps/sample_matrix_normal`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_covariance`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_precision`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_vector_location`                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_wishart_covariance`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/sample_wishart_precision`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_marginal_chain`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -227,6 +235,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_score_host_weight`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_select`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_template_substitution`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_tensor_builtins`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.4 Option values
 
@@ -290,38 +299,6 @@ Each backend words it differently; this is bugs's. `bugs` on `tensor_contraction
 bugs cannot transpile this program:
   - the module's `composition_decl` declaration declares a composition rule: the algebra (its `tensor_op`, `join`, `unit` and `zero`) that says how morphism scores combine when morphisms are composed. It is structure over the whole module, not a random variable and not a step. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for declaring the algebra a category composes in. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. A composition rule has no counterpart to emit. Add a `program ... :` block to the module and the rule is carried as module metadata while that program is transpiled; to run the rule itself, evaluate the module in quivers, which is where composition rules have meaning.
   - the module's `contraction_decl` declaration declares a contraction: a morphism built by folding several input morphisms together over their shared axes, with the product and sum of the fold taken from the `rule=` composition rule it names. Its meaning lives entirely in that algebra. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for a morphism defined by contracting other morphisms over an algebra's fold. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. A contraction has no counterpart to emit. Write the quantities you want scored as explicit `sample` / `observe` steps of a `program ... :` block, or evaluate the contraction in quivers and pass its result in as data.
-```
-
-### `family:MultivariateNormal:scale_tril`
-
-Refused for: `steps/observe_mvn_host_factor`.
-
-Reported kinds:
-
-```text
-family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
-```
-
-Each backend words it differently; this is bugs's. `bugs` on `steps/observe_mvn_host_factor` reports:
-
-```text
-bugs cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
-```
-
-### `family:Wishart:scale_tril`
-
-Refused for: `steps/sample_wishart_host_factor`.
-
-Reported kinds:
-
-```text
-family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
-```
-
-Each backend words it differently; this is bugs's. `bugs` on `steps/sample_wishart_host_factor` reports:
-
-```text
-bugs cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time; write it as a matrix literal
 ```
 
 ### `loss_decl`
@@ -392,6 +369,42 @@ Every backend reports it in the same words. `bugs` on `bnn` reports:
 no transpile target can transpile this program:
   - no transpile target can transpile this program. The refusal is tagged `morphism 'net' draws its parameters from a 'mlp' network. The network's weights are model-internal and appear in neither the wire form nor the sample sites, so no backend can reconstruct the mean the morphism computes at line 33. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.`, which has no explanation registered yet; please report it.
   - a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+```
+
+### `param-source:positions`
+
+Refused for: `steps/function_positions`.
+
+Reported kinds:
+
+```text
+param-source:positions
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_positions` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism draws its parameters from a `positions` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'pos' (line 9, through pos) applies a 'positions' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+```
+
+### `param-source:self_attention`
+
+Refused for: `steps/function_self_attention`.
+
+Reported kinds:
+
+```text
+param-source:self_attention
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_self_attention` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism draws its parameters from a `self_attention` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'attn' (line 9, through attn) applies a 'self_attention' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `qiec:capability:neural-attachment:dec`, `qiec:capability:neural-attachment:dec__nll`, `qiec:capability:neural-attachment:enc`
@@ -493,6 +506,22 @@ Each backend words it differently; this is bugs's. `bugs` on `schema_chart_parse
 
 ```text
 QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `scan:marginal:no-lowering:cell`
+
+Refused for: `steps/scan_marginal_chain`.
+
+Reported kinds:
+
+```text
+scan:marginal:no-lowering:cell
+```
+
+Every backend reports it in the same words. `bugs` on `steps/scan_marginal_chain` reports:
+
+```text
+`scan(cell, init=p)` sums the states of a discrete Markov chain out: `cell` returns the latent it marginalizes, so the chain's likelihood is the forward algorithm's sum over every path of states, computed from a table of the cell's weights at each position and each pair of states. no transpile target has lowering of that recursion: its positions arrive with the data, and the cell's weights would have to be rendered as target code at every pair of states. Fit the model with the compiled runtime, or score it on the reference machine with `qvr run`.
 ```
 
 ### `scan:no-lowering:cell`
@@ -664,6 +693,27 @@ bugs cannot transpile this program:
   - bugs cannot score a draw from `OrderedLogistic`: no BUGS target name
 ```
 
+**`arg:list-literal`, `family:OrderedProbit`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+arg:list-literal
+family:OrderedProbit: no BUGS target name
+```
+
+`bugs` on `steps/observe_ordered_probit` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
+  - bugs cannot score a draw from `OrderedProbit`: no BUGS target name
+```
+
 **`arg:list-literal`, `family:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -687,7 +737,7 @@ bugs cannot transpile this program:
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -697,10 +747,52 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`bugs` on `steps/sample_mvn_host_loc` reports:
+`bugs` on `steps/sample_mvn_covariance` reports:
 
 ```text
 bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+```
+
+**`arg:matrix-literal`, `family:InverseWishart`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+arg:matrix-literal
+family:InverseWishart: no BUGS target name
+```
+
+`bugs` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+  - bugs cannot score a draw from `InverseWishart`: no BUGS target name
+```
+
+**`arg:matrix-literal`, `family:MatrixNormal`**
+
+Refused for: `steps/sample_matrix_normal`.
+
+Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+arg:matrix-literal
+family:MatrixNormal: no BUGS target name
+```
+
+`bugs` on `steps/sample_matrix_normal` reports:
+
+```text
+bugs cannot transpile this program:
+  - bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
+  - bugs cannot score a draw from `MatrixNormal`: no BUGS target name
 ```
 
 **`call:graph:noisy`**
@@ -757,6 +849,24 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. bugs cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_bernoulli_logits` reports:
+
+```text
+bugs cannot score a draw from `Bernoulli`: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:BetaBinomial:no-bugs-distribution`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -775,6 +885,24 @@ family:BetaBinomial:no-bugs-distribution: the BUGS distribution catalogue has no
 bugs cannot score a draw from `BetaBinomial`: the BUGS distribution catalogue has no beta-binomial, and the zeros trick that would write its closed-form marginal into the joint needs a data-bound carrier the BUGS language cannot declare (it has no `data { ... }` block)
 ```
 
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: bugs has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_binomial_logits` reports:
+
+```text
+bugs cannot score a draw from `Binomial`: bugs has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -791,6 +919,24 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 bugs cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: bugs has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_geometric_logits` reports:
+
+```text
+bugs cannot score a draw from `Geometric`: bugs has no Geometric parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Kumaraswamy:no-free-density-term`**
@@ -863,6 +1009,60 @@ family:MixtureNormal:no-free-density-term: a finite mixture is an explicit weigh
 
 ```text
 bugs cannot score a draw from `MixtureNormal`: a finite mixture is an explicit weighted density in the BUGS function library, but adding one to the joint needs a free log-density term the language has no statement for
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which bugs has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`bugs` on `steps/observe_mvn_host_factor` reports:
+
+```text
+bugs cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which bugs has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+bugs cannot score a draw from `NegativeBinomial`: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which bugs has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`bugs` on `steps/sample_wishart_host_factor` reports:
+
+```text
+bugs cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which bugs has no Cholesky parameterization of Wishart to take; write it as a matrix literal
 ```
 
 **`let-expr:LetExprFactor:wide`**
@@ -994,7 +1194,7 @@ bugs cannot emit this `observe` step: the data codes Categorical classes from ze
 
 **`observe:class-code:y`**
 
-Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`, `steps/observe_shared_probs_vector`.
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1037,7 +1237,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_matrix_normal`, `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1047,7 +1247,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`church` on `steps/sample_mvn_factor` reports:
+`church` on `steps/sample_matrix_normal` reports:
 
 ```text
 church cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -1089,6 +1289,24 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_bernoulli_logits` reports:
+
+```text
+church cannot score a draw from `Bernoulli`: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:BetaBinomial:no-church-target`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -1105,6 +1323,24 @@ family:BetaBinomial:no-church-target
 
 ```text
 church has no `BetaBinomial` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: church has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_binomial_logits` reports:
+
+```text
+church cannot score a draw from `Binomial`: church has no Binomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Categorical:logits`**
@@ -1125,6 +1361,24 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 church cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: church has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_geometric_logits` reports:
+
+```text
+church cannot score a draw from `Geometric`: church has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:HalfStudentT:no-church-target`**
 
 Refused for: [`half_student_t_hierarchical`](examples/half-student-t-hierarchical.md).
@@ -1141,6 +1395,24 @@ family:HalfStudentT:no-church-target
 
 ```text
 church has no `HalfStudentT` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:InverseWishart:no-church-target`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:InverseWishart:no-church-target
+```
+
+`church` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+church has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:Kumaraswamy:no-church-target`**
@@ -1215,6 +1487,42 @@ family:MixtureNormal:no-church-target
 church has no `MixtureNormal` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which church has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`church` on `steps/observe_mvn_host_factor` reports:
+
+```text
+church cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which church has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: church has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+church cannot score a draw from `NegativeBinomial`: church has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:OneHotCategorical:no-church-target`**
 
 Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
@@ -1251,6 +1559,24 @@ family:OrderedLogistic:no-church-target
 church has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:OrderedProbit:no-church-target`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedProbit:no-church-target
+```
+
+`church` on `steps/observe_ordered_probit` reports:
+
+```text
+church has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:RelaxedOneHotCategorical:no-church-target`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -1271,7 +1597,7 @@ church has no `RelaxedOneHotCategorical` distribution. Pick a family this target
 
 **`family:Wishart:no-church-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1281,10 +1607,28 @@ Reported kinds:
 family:Wishart:no-church-target
 ```
 
-`church` on `steps/sample_wishart_factor` reports:
+`church` on `steps/sample_wishart_covariance` reports:
 
 ```text
 church has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which church has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`church` on `steps/sample_wishart_host_factor` reports:
+
+```text
+church cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which church has no Cholesky parameterization of Wishart to take; write it as a matrix literal
 ```
 
 **`let-expr:axis-reduction:church`**
@@ -1345,6 +1689,42 @@ marginalize:ungrouped-over-plate:z
 
 Every program below renders on at least one other backend and is refused here.
 
+**`family:InverseWishart:no-edward2-target`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:InverseWishart:no-edward2-target
+```
+
+`edward2` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+edward2 has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which edward2 has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`edward2` on `steps/observe_mvn_host_factor` reports:
+
+```text
+edward2 cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which edward2 has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
 **`family:OrderedLogistic:no-edward2-target`**
 
 Refused for: `steps/observe_ordinal_code`, `steps/observe_vector_parameter_data`.
@@ -1363,9 +1743,27 @@ family:OrderedLogistic:no-edward2-target
 edward2 has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:OrderedProbit:no-edward2-target`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedProbit:no-edward2-target
+```
+
+`edward2` on `steps/observe_ordered_probit` reports:
+
+```text
+edward2 has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:Wishart:no-edward2-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1375,10 +1773,28 @@ Reported kinds:
 family:Wishart:no-edward2-target
 ```
 
-`edward2` on `steps/sample_wishart_factor` reports:
+`edward2` on `steps/sample_wishart_covariance` reports:
 
 ```text
 edward2 has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which edward2 has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`edward2` on `steps/sample_wishart_host_factor` reports:
+
+```text
+edward2 cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which edward2 has no Cholesky parameterization of Wishart to take; write it as a matrix literal
 ```
 
 **`marginalize:ungrouped-over-plate:state`**
@@ -1457,6 +1873,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_bernoulli_logits` reports:
+
+```text
+gen cannot score a draw from `Bernoulli`: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: gen has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_binomial_logits` reports:
+
+```text
+gen cannot score a draw from `Binomial`: gen has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1473,6 +1925,78 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 gen cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: gen has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_geometric_logits` reports:
+
+```text
+gen cannot score a draw from `Geometric`: gen has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:InverseWishart:no-gen-target`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:InverseWishart:no-gen-target
+```
+
+`gen` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+gen has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which gen has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`gen` on `steps/observe_mvn_host_factor` reports:
+
+```text
+gen cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which gen has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: gen has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+gen cannot score a draw from `NegativeBinomial`: gen has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:OneHotCategorical:no-gen-target`**
@@ -1511,6 +2035,24 @@ family:OrderedLogistic:no-gen-target
 gen has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:OrderedProbit:no-gen-target`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedProbit:no-gen-target
+```
+
+`gen` on `steps/observe_ordered_probit` reports:
+
+```text
+gen has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:RelaxedOneHotCategorical:no-gen-target`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -1531,7 +2073,7 @@ gen has no `RelaxedOneHotCategorical` distribution. Pick a family this target su
 
 **`family:Wishart:no-gen-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1541,10 +2083,28 @@ Reported kinds:
 family:Wishart:no-gen-target
 ```
 
-`gen` on `steps/sample_wishart_factor` reports:
+`gen` on `steps/sample_wishart_covariance` reports:
 
 ```text
 gen has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which gen has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`gen` on `steps/sample_wishart_host_factor` reports:
+
+```text
+gen cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which gen has no Cholesky parameterization of Wishart to take; write it as a matrix literal
 ```
 
 **`let-expr:axis-reduction:gen`**
@@ -1625,7 +2185,7 @@ jags cannot take a list literal `[a, b, c]` in a distribution-argument position.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_precision`, `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1635,7 +2195,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`jags` on `steps/sample_wishart_factor` reports:
+`jags` on `steps/sample_mvn_precision` reports:
 
 ```text
 jags cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -1695,6 +2255,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_bernoulli_logits` reports:
+
+```text
+jags cannot score a draw from `Bernoulli`: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: jags has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_binomial_logits` reports:
+
+```text
+jags cannot score a draw from `Binomial`: jags has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1713,9 +2309,27 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 jags cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: jags has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_geometric_logits` reports:
+
+```text
+jags cannot score a draw from `Geometric`: jags has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:MultivariateNormal:non-ref-covariance`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1725,10 +2339,82 @@ Reported kinds:
 family:MultivariateNormal:non-ref-covariance: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
 ```
 
-`jags` on `steps/sample_mvn_factor` reports:
+`jags` on `steps/sample_mvn_covariance` reports:
 
 ```text
 jags cannot score a draw from `MultivariateNormal`: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which jags has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`jags` on `steps/observe_mvn_host_factor` reports:
+
+```text
+jags cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which jags has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: jags has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+jags cannot score a draw from `NegativeBinomial`: jags has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which jags has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`jags` on `steps/sample_wishart_host_factor` reports:
+
+```text
+jags cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which jags has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+**`family:no-target-name:InverseWishart`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:no-target-name:InverseWishart
+```
+
+`jags` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+jags has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:no-target-name:LKJCholesky`**
@@ -1751,9 +2437,9 @@ jags has no `LKJCholesky` distribution. Pick a family this target supports, or w
 
 **`family:no-target-name:MatrixNormal`**
 
-Refused for: `axes/matrix_kronecker`.
+Refused for: `axes/matrix_kronecker`, `steps/sample_matrix_normal`.
 
-Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -1801,6 +2487,24 @@ family:no-target-name:OrderedLogistic
 
 ```text
 jags has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-target-name:OrderedProbit`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:no-target-name:OrderedProbit
+```
+
+`jags` on `steps/observe_ordered_probit` reports:
+
+```text
+jags has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:no-target-name:RelaxedOneHotCategorical`**
@@ -1919,6 +2623,24 @@ jags cannot transpile this program:
 
 Every program below renders on at least one other backend and is refused here.
 
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: numpyro has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`numpyro` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+numpyro cannot score a draw from `NegativeBinomial`: numpyro has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:no-target-name:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -1993,6 +2715,60 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. pymc cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: pymc has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`pymc` on `steps/observe_geometric_logits` reports:
+
+```text
+pymc cannot score a draw from `Geometric`: pymc has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:InverseWishart`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:InverseWishart
+```
+
+`pymc` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+pymc has no `InverseWishart` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: pymc has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`pymc` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+pymc cannot score a draw from `NegativeBinomial`: pymc has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:OneHotCategorical`**
@@ -2145,6 +2921,42 @@ declare:simplex:event-rank:0: Stan simplex requires exactly one event dim
 
 ```text
 the declared shape of a `simplex` parameter has no Stan declaration form: event-rank:0. The site's axes do not say which of them are event axes. Name them with `[over=...]`, or draw from a family that fixes its own event shape.: Stan simplex requires exactly one event dim
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: stan has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`stan` on `steps/observe_geometric_logits` reports:
+
+```text
+stan cannot score a draw from `Geometric`: stan has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: stan has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`stan` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+stan cannot score a draw from `NegativeBinomial`: stan has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:no-stan-target:OneHotCategorical`**
@@ -2309,6 +3121,60 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 turing cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: turing has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`turing` on `steps/observe_geometric_logits` reports:
+
+```text
+turing cannot score a draw from `Geometric`: turing has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which turing has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`turing` on `steps/observe_mvn_host_factor` reports:
+
+```text
+turing cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which turing has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: turing has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`turing` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+turing cannot score a draw from `NegativeBinomial`: turing has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:OneHotCategorical`**
 
 Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
@@ -2345,6 +3211,24 @@ family:OrderedLogistic: no Turing.jl mapping
 turing cannot score a draw from `OrderedLogistic`: no Turing.jl mapping
 ```
 
+**`family:OrderedProbit`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:OrderedProbit: no Turing.jl mapping
+```
+
+`turing` on `steps/observe_ordered_probit` reports:
+
+```text
+turing cannot score a draw from `OrderedProbit`: no Turing.jl mapping
+```
+
 **`family:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -2361,6 +3245,24 @@ family:RelaxedOneHotCategorical: no Turing.jl mapping
 
 ```text
 turing cannot score a draw from `RelaxedOneHotCategorical`: no Turing.jl mapping
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which turing has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`turing` on `steps/sample_wishart_host_factor` reports:
+
+```text
+turing cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which turing has no Cholesky parameterization of Wishart to take; write it as a matrix literal
 ```
 
 **`let-expr:axis-reduction:turing`**
@@ -2512,6 +3414,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_bernoulli_logits` reports:
+
+```text
+webppl cannot score a draw from `Bernoulli`: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: webppl has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_binomial_logits` reports:
+
+```text
+webppl cannot score a draw from `Binomial`: webppl has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -2528,6 +3466,96 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 webppl cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: webppl has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_geometric_logits` reports:
+
+```text
+webppl cannot score a draw from `Geometric`: webppl has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:MultivariateNormal:scale_tril`**
+
+Refused for: `steps/observe_mvn_host_factor`, `steps/observe_mvn_lkj_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:MultivariateNormal:scale_tril: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which webppl has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+`webppl` on `steps/observe_mvn_host_factor` reports:
+
+```text
+webppl cannot score a draw from `MultivariateNormal`: the MultivariateNormal's scale_tril is a Cholesky factor known only at run time, which webppl has no Cholesky parameterization of MultivariateNormal to take; write it as a matrix literal
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: webppl has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+webppl cannot score a draw from `NegativeBinomial`: webppl has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Wishart:scale_tril`**
+
+Refused for: `steps/sample_wishart_host_factor`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:Wishart:scale_tril: the Wishart's scale_tril is a Cholesky factor known only at run time, which webppl has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+`webppl` on `steps/sample_wishart_host_factor` reports:
+
+```text
+webppl cannot score a draw from `Wishart`: the Wishart's scale_tril is a Cholesky factor known only at run time, which webppl has no Cholesky parameterization of Wishart to take; write it as a matrix literal
+```
+
+**`family:no-webppl-target:InverseWishart`**
+
+Refused for: `steps/sample_inverse_wishart_factor`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:InverseWishart
+```
+
+`webppl` on `steps/sample_inverse_wishart_factor` reports:
+
+```text
+webppl has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:no-webppl-target:OneHotCategorical`**
@@ -2566,6 +3594,24 @@ family:no-webppl-target:OrderedLogistic
 webppl has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:no-webppl-target:OrderedProbit`**
+
+Refused for: `steps/observe_ordered_probit`.
+
+Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:OrderedProbit
+```
+
+`webppl` on `steps/observe_ordered_probit` reports:
+
+```text
+webppl has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:no-webppl-target:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -2586,7 +3632,7 @@ webppl has no `RelaxedOneHotCategorical` distribution. Pick a family this target
 
 **`family:no-webppl-target:Wishart`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -2596,7 +3642,7 @@ Reported kinds:
 family:no-webppl-target:Wishart
 ```
 
-`webppl` on `steps/sample_wishart_factor` reports:
+`webppl` on `steps/sample_wishart_covariance` reports:
 
 ```text
 webppl has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.

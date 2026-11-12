@@ -112,6 +112,61 @@ def probability(arguments: Mapping[str, object], family: str) -> float:
     raise DistributionError(f"{family} needs probs or logits")
 
 
+def log_probabilities(
+    arguments: Mapping[str, object], family: str
+) -> tuple[float, float]:
+    """The log success and log failure probability of a Bernoulli-like family.
+
+    From ``logits`` both come through the softplus, ``log p = -softplus(-l)``
+    and ``log (1 - p) = -softplus(l)``, which stay finite and accurate where
+    the probability itself rounds to zero or one.
+
+    Parameters
+    ----------
+    arguments : Mapping[str, object]
+        The named parameters, holding ``probs`` or ``logits``.
+    family : str
+        The family, for the diagnostic.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``log p`` and ``log (1 - p)``, ``-inf`` where the probability is
+        zero or one.
+
+    Raises
+    ------
+    DistributionError
+        If neither parameterization is supplied.
+    """
+    if "logits" in arguments:
+        logit = real_parameter(arguments, "logits", family)
+        return -_softplus(-logit), -_softplus(logit)
+    success = probability(arguments, family)
+    return (
+        math.log(success) if success > 0.0 else -math.inf,
+        math.log1p(-success) if success < 1.0 else -math.inf,
+    )
+
+
+def _softplus(value: float) -> float:
+    """``log(1 + exp(value))`` without overflow or loss of precision.
+
+    Parameters
+    ----------
+    value : float
+        The argument.
+
+    Returns
+    -------
+    float
+        The softplus.
+    """
+    if value > 0.0:
+        return value + math.log1p(math.exp(-value))
+    return math.log1p(math.exp(value))
+
+
 def simplex(arguments: Mapping[str, object], family: str) -> tuple[float, ...]:
     """The category probabilities of a categorical-like family.
 

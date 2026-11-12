@@ -311,9 +311,8 @@ def render_let_expr_julia(
 
 def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """True iff ``expr`` contracts an axis anywhere in its tree:
-    either a reduction along the last axis of an array with an event
-    axis or with two or more axes, or the matrix-vector product an
-    affine parameter map denotes.
+    a reduction of an argument with one or more axes, or the
+    matrix-vector product an affine parameter map denotes.
 
     A binding whose body contracts an axis cannot be wrapped in
     Julia's ``@.`` macro: the macro broadcasts the contraction
@@ -324,6 +323,14 @@ def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """
     if isinstance(expr, LetExprCall):
         if _reduces_named_axis(ctx, expr.func, expr.args):
+            return True
+        if (
+            expr.func in _AXIS_REDUCING_CALLS
+            and len(expr.args) == 1
+            and infer_array_rank(ctx, expr.args[0]) >= 1
+        ):
+            # Under `@.` a reduction of a vector, a list literal
+            # included, would reduce each entry alone.
             return True
         return any(let_expr_has_axis_reduction(ctx, a) for a in expr.args)
     if isinstance(expr, LetExprBinOp):

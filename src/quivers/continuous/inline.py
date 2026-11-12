@@ -39,8 +39,9 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
 from quivers.continuous._lkj import OnionLKJCholesky
+from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous.log_space import LogGamma, LogitBeta
-from quivers.continuous._ordered import OrderedLogistic
+from quivers.continuous._ordered import OrderedLogistic, OrderedProbit
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
     MixtureNormal,
@@ -81,6 +82,15 @@ from quivers.dsl.family_schemas import (
     family_parameterizations,
 )
 from quivers.dsl.draw_args import bind_family_arguments
+
+
+class UnsizedParameterError(ValueError):
+    """An inline family parameter whose shape only the data would fix.
+
+    The compiled runtime sizes every parameter when it builds a program,
+    so a matrix parameter whose extents the checked program leaves open
+    cannot be built; the compiler reports it at the draw.
+    """
 
 
 def _floating_support(support: _constraints.Constraint) -> bool:
@@ -1393,6 +1403,9 @@ _FAMILY_SUPPORTS: dict[str, _constraints.Constraint] = {
     "HalfStudentT": _constraints.positive,
     "BetaBinomial": _constraints.nonnegative_integer,
     "OrderedLogistic": _constraints.nonnegative_integer,
+    "OrderedProbit": _constraints.nonnegative_integer,
+    "InverseWishart": _constraints.positive_definite,
+    "MatrixNormal": _constraints.independent(_constraints.real, 2),
     "ZeroInflatedPoisson": _constraints.nonnegative_integer,
     "HurdlePoisson": _constraints.nonnegative_integer,
     "ZeroOneInflatedBeta": _constraints.unit_interval,
@@ -1885,6 +1898,56 @@ def _ordered_logistic_builder(params: list[torch.Tensor]) -> D.Distribution:
     return OrderedLogistic(params[0], params[1])
 
 
+def _ordered_probit_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build OrderedProbit from ``[eta, cutpoints]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The predictor, one value per row, and the sorted cutpoints, shared
+        ``(K - 1,)`` or per row ``(batch, K - 1)``.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The ordered-probit distribution.
+    """
+    return OrderedProbit(params[0], params[1])
+
+
+def _inverse_wishart_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build InverseWishart from ``[df, scale_tril]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The degrees of freedom and the lower Cholesky factor of the scale
+        of the Wishart whose inverse is drawn.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The inverse-Wishart distribution.
+    """
+    return InverseWishart(params[0], params[1])
+
+
+def _matrix_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build MatrixNormal from ``[loc, row_covariance, col_covariance]``.
+
+    Parameters
+    ----------
+    params : list[torch.Tensor]
+        The mean matrix and the row and column covariances.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The matrix-normal distribution.
+    """
+    return MatrixNormal(params[0], params[1], params[2])
+
+
 def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a categorical distribution from one tensor of logits."""
     if len(params) != 1:
@@ -1929,6 +1992,13 @@ _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
         _ordered_logistic_builder,
         True,
     ),
+    "OrderedProbit": (("eta", "cutpoints"), _ordered_probit_builder, True),
+    "InverseWishart": (("df", "scale_tril"), _inverse_wishart_builder, False),
+    "MatrixNormal": (
+        ("loc", "row_covariance", "col_covariance"),
+        _matrix_normal_builder,
+        False,
+    ),
     "ZeroInflatedPoisson": (
         ("zero_prob", "rate"),
         _zero_inflated_poisson_builder,
@@ -1962,6 +2032,7 @@ _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
 # shape ``(batch, D)``. Families not listed default to all-rank-0.
 _PARAM_EVENT_RANKS: dict[str, tuple[int, ...]] = {
     "OrderedLogistic": (0, 1),  # predictor scalar, cutpoints vector
+    "OrderedProbit": (0, 1),
     "Categorical": (1,),  # probabilities or logits over the categories
     "Dirichlet": (1,),  # concentration over the simplex
     "MixtureNormal": (1, 1, 1),  # per-component vectors
@@ -2531,18 +2602,17 @@ def make_inline_distribution(
             _spec: FamilySpec = spec,
             _parameters: tuple[str, ...] = source_parameters,
         ) -> D.Distribution:
-            values: dict[str, torch.Tensor] = {}
-            for index, (name, value) in enumerate(
-                zip(_parameters, params, strict=True)
-            ):
-                if name == "probs":
-                    values[name] = value.clamp(min=EPS, max=1.0 - EPS)
-                else:
-                    values[name] = _spec.params[index].inline_clamp(value)
-            return _spec.dist_class(**values)
+            return _spec.dist_class(
+                **{
+                    name: _selected_clamp(_spec, name, value)
+                    for name, value in zip(_parameters, params, strict=True)
+                }
+            )
 
         param_names = selected_parameters
-        dist_builder = _selected_builder
+        dist_builder = _ALTERNATIVE_BUILDERS.get(
+            (family, selected_parameters), _selected_builder
+        )
     if len(args) != len(param_names):
         raise ValueError(
             f"inline {family} expects {len(param_names)} args ({', '.join(param_names)}), got {len(args)}"
@@ -2601,7 +2671,7 @@ def make_inline_distribution(
                 else:
                     var_dim = _param_row_width(vtype, fam_event_ranks[i])
             if event_rank >= 2 and param_shapes[-1] is None:
-                raise ValueError(
+                raise UnsizedParameterError(
                     f"inline {family} reads its {param_names[i]!r} from "
                     f"{lookup_name!r}, a matrix whose shape the checked program "
                     "leaves to the data; the compiled runtime sizes every "
@@ -2729,16 +2799,13 @@ def _make_fixed_selected_parameters(
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         values: dict[str, torch.Tensor] = {}
-        for index, (name, value) in enumerate(zip(parameters, evaluated, strict=True)):
+        for name, value in zip(parameters, evaluated, strict=True):
             if isinstance(value, (list, tuple)):
-                tensor = torch.as_tensor(value, device=device).expand(batch, -1)
+                literal = torch.as_tensor(value, device=device)
+                tensor = literal.expand(batch, *literal.shape)
             else:
                 tensor = torch.full((batch, d), float(value), device=device)
-            if name == "probs":
-                tensor = tensor.clamp(min=EPS, max=1.0 - EPS)
-            else:
-                tensor = spec.params[index].inline_clamp(tensor)
-            values[name] = tensor
+            values[name] = _selected_clamp(spec, name, tensor)
         return spec.dist_class(**values)
 
     return FixedDistribution(
@@ -2747,6 +2814,89 @@ def _make_fixed_selected_parameters(
         discrete=spec.discrete,
         support=spec.support,
     )
+
+
+class _LogitGeometric(D.Geometric):
+    """A geometric distribution scored from its logits in log space.
+
+    `torch.distributions.Geometric` scores through its probability,
+    whose complement rounds to zero once the logit passes about 17 in
+    single precision. With ``log p = -softplus(-l)`` and
+    ``log (1 - p) = -softplus(l)`` the count of failures ``k`` scores
+    ``k log (1 - p) + log p`` at every finite logit.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        The log-odds of a success.
+    """
+
+    def __init__(self, logits: torch.Tensor) -> None:
+        super().__init__(logits=logits)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        """The log mass at a count of failures.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The counts.
+
+        Returns
+        -------
+        torch.Tensor
+            The log masses.
+        """
+        if self._validate_args:
+            self._validate_sample(value)
+        value, logits = torch.broadcast_tensors(value, self.logits)
+        failures = value * -torch.nn.functional.softplus(logits)
+        return failures - torch.nn.functional.softplus(-logits)
+
+
+def _logit_geometric_builder(params: list[torch.Tensor]) -> D.Distribution:
+    """Build a geometric distribution from ``[logits]``."""
+    return _LogitGeometric(params[0])
+
+
+#: Builders for an alternative parameterization whose `torch.distributions`
+#: class loses precision there, keyed by family and the parameters the
+#: source names.
+_ALTERNATIVE_BUILDERS: dict[
+    tuple[str, tuple[str, ...]], Callable[[list[torch.Tensor]], D.Distribution]
+] = {("Geometric", ("logits",)): _logit_geometric_builder}
+
+
+def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.Tensor:
+    """Keep a parameter the source names inside its family's constraint.
+
+    A probability is held off zero and one, a parameter the family's
+    specification declares takes its own inline clamp, and an alternative
+    the specification does not declare (logits, a covariance or a
+    precision matrix) is passed as written: logits range over the reals,
+    and a matrix's own validation reports one that is not positive
+    definite.
+
+    Parameters
+    ----------
+    spec : FamilySpec
+        The family's specification.
+    name : str
+        The parameter the source names.
+    value : torch.Tensor
+        Its value.
+
+    Returns
+    -------
+    torch.Tensor
+        The value the family is built with.
+    """
+    if name == "probs":
+        return value.clamp(min=EPS, max=1.0 - EPS)
+    declared = {param.name: param for param in spec.params}
+    if name in declared:
+        return declared[name].inline_clamp(value)
+    return value
 
 
 def _bind_inline_arguments(

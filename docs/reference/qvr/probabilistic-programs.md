@@ -495,6 +495,90 @@ Current transpile targets refuse scans with `scan:no-lowering:<cell>` because
 the open sequence extent is not a declared categorical object. A scan with
 `outputs=all` or `reverse=true` is refused under the same kind.
 
+### Marginalized chains
+
+A scan's state may be a finite latent that the cell marginalizes and returns.
+Returning the latent of a `marginalize` block carries it to the next position,
+so its sum extends over the rest of the chain: the scan sums every path of
+states out, which is the likelihood of a hidden Markov model
+[@rabiner1989hmm].
+
+<!-- compile: qiec -->
+```qvr
+object State : FinSet 2
+object Symbol : FinSet 4
+object StartProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(hmm_step, init=start)
+
+program hmm : Symbol -> StartProbs
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+
+export hmm
+```
+
+The chain is `z_0 ~ start`, `z_t ~ Categorical(transition[z_{t-1}])` at every
+position `t` the scan visits, with the block's observations scored at `z_t`.
+Its log marginal likelihood is computed by the forward algorithm in log space,
+in `O(T K^2)` for `T` positions and `K` states:
+
+```
+log_filter_0 = log start
+table_t[j]   = logsumexp_i(log_filter_{t-1}[i] + log p(z_t = j | z_{t-1} = i) + log p(obs_t | z_t = j))
+evidence_t   = logsumexp_j(table_t[j])
+log_filter_t = table_t - evidence_t
+```
+
+and the chain contributes `sum_t evidence_t` to the joint, under the name its
+`sample` step binds (`path` above). Both execution paths compute it: the
+compiled runtime as one score per run, the reference machine through the
+cell's row, the program the cell elaborates to with its block enumerated under
+a handler that keeps one weight per state. Gradients reach every parameter the
+cell reads.
+
+1. **The cell.** `program cell(x_t, z_prev) : X * S -> S` with `S` a declared
+   `FinSet`: lets (which may read the entry, the previous state, and the
+   scanning program's bindings), then one `marginalize z : S <- Categorical(...)`
+   with `probs=` or `logits=` and the default `reduction=logsumexp`, then
+   `return z`. The block holds lets and observations of one value per
+   position. An observation named after the entry, as `observe symbol` above,
+   scores the entry itself; any other name `y` is one observation per
+   position, which the scanning program takes as the sequence `y`, laid out as
+   for any scan.
+2. **The first state.** `init=p` names a probability vector over `S` bound
+   before the scan; it is the distribution of the state before the first
+   position, which emits nothing. A vector with zeros starts the chain among
+   the other states. Without `init=` the chain is refused
+   (`scan:marginal:init:<cell>`).
+3. **Order.** `reverse=true` visits the positions from the last to the first,
+   so the chain runs right to left; observations are still read in input
+   order.
+4. **The binding.** The states are summed out, so the name the `sample` step
+   binds holds no state: reading it later or returning it is refused
+   (`scan:marginal:read:<name>`). A trace records it as the chain's log
+   marginal likelihood, one value per run, and records no per-position site.
+
+Forms outside the forward algorithm are refused where they are written, on both
+paths, under `scan:marginal:<reason>:<cell>`: a cell of another type
+(`state`), a step other than a let before the block or other than a let or an
+observation inside it, or a step after it (`step`), a transition family other
+than `Categorical` (`family`), a grouped block (`grouped`), another reduction
+(`reduction`), a plated, fibred, or destructured observation (`observation`), a
+chain composed with other elements (`chain`), observed rather than sampled
+(`observe`), inside a `marginalize` block (`scope`), asked for every state with
+`outputs=all` (`outputs`), and a draw or call of the cell other than as a
+scan's cell (`entry`). Every transpile target refuses a marginalized chain with
+`scan:marginal:no-lowering:<cell>`.
+
 ## Network kernels
 
 A morphism with `[param_source=mlp(...)]` elaborates its affine layers and
@@ -547,6 +631,59 @@ Every transpile target refuses a function with weights under
 sites nor data a target is given. A `param_source=identity` function has no
 weights: it is its output nonlinearity applied to its argument, and every
 target renders it.
+
+## Sequence functions
+
+A learned function declared with `param_source=self_attention` or
+`param_source=positions(N)` reads a whole sequence. A program calls it in a
+`let` with one argument, a table `Tensor[Real]([T, d])` with `d` the width
+of its domain and `T` any extent, open or fixed; a free name passed straight
+to it is a host table `Tensor[Real]([<name>_extent, d])`. The value is the
+table `Tensor[Real]([T, m])` for a codomain of width `m`.
+
+<!-- compile: false -->
+```qvr
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+morphism positions : Model -> Model [role=function, param_source=positions(32)]
+```
+
+Self-attention with `h` heads of width `e = m / h` elaborates to comprehensions
+over `T`:
+
+1. the query, key, and value tables, one affine map per row,
+   `q[i] = Wq x[i] + bq` and likewise `k` and `v`, with weights
+   `attn_param_query_weight` `(m, d)` and bias `attn_param_query_bias` `(m)`
+   (and `key`, `value`);
+2. per head `g` and position `i`, the scores
+   `s[j] = sum_u q[i, g e + u] k[j, g e + u] / sqrt(e)` and the weights
+   `softmax(s)`; under `causal=true`, the weights
+   `w[j] = [j <= i] exp(s[j] - max_{j' <= i} s[j'])` normalized to sum to
+   one, which are the softmax over the positions `j <= i` and zero after `i`;
+3. the context `c[i, col] = sum_j a[col div e, i, j] v[j, col]`, the heads'
+   weighted values laid end to end;
+4. the output projection `attn_param_weight c[i] + attn_param_bias` at every
+   position, with weight `(m, m)`.
+
+A position table elaborates to `x[i, k] + positions_param_positions[i, k]`,
+with the table `(N, d)` a program input of role `weight`; a sequence longer
+than `N` is refused when it is read. The weights are typed program inputs, so
+the reference machine runs a call with the compiled program's weights
+supplied as data, and the compiled runtime holds the network as submodule
+`_function_<f>` (parameters `source.query`, `source.key`, `source.value`,
+`source.output`, or `source.table`). Each call is bound as `<f>__call<n>`.
+
+A sequence function contributes no site. Drawing from one is refused, as is
+a call whose argument is not one table of `d`-wide rows (a single vector, for
+instance), a call inside a `factor` or lambda body, and a sequence function
+composed in a chain or used as a scan's cell, which apply their morphisms
+one position at a time (`chain:sequence-function:<f>`, where the chain is
+drawn). The options `heads`, a positive divisor of `m`, and `causal`, `true`
+or `false` and required, belong to `self_attention`; `output`, `activation`,
+and `weights=latent` are refused for both networks.
+
+Every transpile target refuses a sequence function under
+`param-source:self_attention` or `param-source:positions`, because its
+weights are neither sites nor data a target is given.
 
 ## Latent network weights
 

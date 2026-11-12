@@ -1,0 +1,9 @@
+# A multivariate normal whose mean is sampled and whose covariance is
+# written as its covariance matrix.
+object Dim : FinSet 2
+object One : FinSet 1
+program mvn_covariance : One -> One
+    sample m <- Normal(loc=0.0, scale=1.0) [over=Dim]
+    sample v <- MultivariateNormal(loc=m, covariance_matrix=[[1.0, 0.5], [0.5, 1.25]]) [over=Dim]
+    return v
+export mvn_covariance

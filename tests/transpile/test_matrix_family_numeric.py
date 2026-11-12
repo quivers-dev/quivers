@@ -332,7 +332,7 @@ def test_target_refuses_under_its_kind(fixture: str, backend: str) -> None:
 
 
 @pytest.mark.parametrize("family", ["MultivariateNormal", "Wishart"])
-@pytest.mark.parametrize("backend", ["numpyro", "stan"])
+@pytest.mark.parametrize("backend", ["turing", "webppl"])
 def test_a_factor_known_only_at_run_time_is_refused_by_its_keyword(
     family: str, backend: str
 ) -> None:
@@ -351,5 +351,25 @@ def test_a_factor_known_only_at_run_time_is_refused_by_its_keyword(
         transpile(parse(source), target=backend)
     assert list(caught.value.kinds) == [
         f"family:{family}:scale_tril: the {family}'s scale_tril is a Cholesky "
-        "factor known only at run time; write it as a matrix literal",
+        f"factor known only at run time, which {backend} has no Cholesky "
+        f"parameterization of {family} to take; write it as a matrix literal",
     ], caught.value.kinds
+
+
+@pytest.mark.parametrize("family", ["MultivariateNormal", "Wishart"])
+@pytest.mark.parametrize("backend", ["numpyro", "pymc", "pyro", "stan"])
+def test_a_factor_known_only_at_run_time_renders_where_the_library_takes_one(
+    family: str, backend: str
+) -> None:
+    draw = (
+        "MultivariateNormal(loc=[0.0, 1.0], scale_tril=L) [over=Dim]"
+        if family == "MultivariateNormal"
+        else "Wishart(df=4.0, scale_tril=L) [over=[Dim, Dim]]"
+    )
+    source = (
+        "object Dim : FinSet 2\nobject One : FinSet 1\n"
+        "program p : One -> One\n"
+        "    sample L : Dim <- LKJCholesky(concentration=2.0)\n"
+        f"    sample v <- {draw}\n    return v\nexport p\n"
+    )
+    assert transpile(parse(source), target=backend)

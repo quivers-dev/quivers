@@ -1,0 +1,14 @@
+# Exercises a causal self-attention function called in a let on a host
+# sequence; its weights are model-internal, so every target refuses it.
+object Model : Real 4
+object Val : Real 1
+
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+
+program p : Val -> Val
+    let h = attn(seq)
+    let s = sum(sum(h))
+    observe y <- Normal(loc=s, scale=1.0)
+    return y
+
+export p
