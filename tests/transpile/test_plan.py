@@ -351,3 +351,15 @@ def test_a_pure_call_is_inlined_and_an_effectful_call_is_a_call() -> None:
     assert call.plate.batch_dims == ()
     assert isinstance(observe, IRObserve)
     assert observe.args[0] == IRArgRef(name="c", indices=())
+
+
+def test_a_fibration_is_bounded_by_the_groups_not_the_rows() -> None:
+    # Twelve observation rows map into eight groups: the map's values run
+    # over the groups, so its range is 0..7, not 0..11.
+    source = GROUPED.replace(
+        "object Comp : FinSet 4\n", "object Comp : FinSet 4\nobject Resp : FinSet 12\n"
+    ).replace("observe r : Item <-", "observe r : Resp <-")
+    ir = Lower().forward(parse(source))
+    fibration = next(item for item in ir.inputs if item.name == "idx")
+    assert fibration.constraint == CSIntegerInterval(lower=0, upper=7)
+    assert fibration.plate.batch_dims == (DimStatic(size=12, name="Resp"),)
