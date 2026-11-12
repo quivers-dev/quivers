@@ -40,7 +40,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **`Lens.put` is the lens update, `Adapter` checks its isomorphism, and `compose_optics` returns a `ComposedOptic`.** `Lens.put()` is the function `S × A → S` that replaces the focus, satisfying GetPut, PutGet and PutPut with `Lens.forward`; `Lens.backward` is documented as the converse of the projection. `Adapter` raises `ValueError` unless its two morphisms are mutually inverse (it takes an `atol`), and the composite of two optics is a `ComposedOptic`, not an `Adapter`.
 
+- **A map from observation rows to groups is an index map, not a fibration.** The QIEC parameter role `"fibration"` is `"index_map"`, the program-step fields `fibration_var` and `fibration_axes` are `index_map_var` and `index_map_axes`, the transpile diagnostic codes `qiec:fibration:<name>` and `marginalize:grouped-fibration` are `qiec:index_map:<name>` and `marginalize:grouped-index-map`, and diagnostics, help text and messages say "index map". The QVR `via` syntax is unchanged.
+
 ### Fixed
+
+- **Currying is the bijection `Hom(X × Y, Z) ≅ Hom(X, [Y, Z])`.** `CurriedMorphism` (`f.curry_right`, `f.curry_left`) of `f : X × Y → Z` has codomain `Y × Z` (or `X × Z`), the internal hom of V-matrices, and its tensor is re-indexed to match, where it declared codomain `Z` while returning `f`'s tensor unchanged (and, for `curry_left`, with the axes in the wrong order). The new `UncurriedMorphism` inverts it.
 
 - **The residuum is the internal hom of each lattice.** `weighted_limit_morphisms` and `yoneda_lemma` use `IdempotentSemiring.residuum`, where an approximation `¬(w ⊗ ¬x)` gave wrong values for `GODEL` (`[0.5, 0.25]` came out as `1` rather than `0.25`). `day_convolution` matches the monoidal product to an object by equality, not by tensor shape, and raises `ValueError` when the objects are not closed under the product.
 
