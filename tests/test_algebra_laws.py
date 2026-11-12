@@ -433,7 +433,8 @@ def test_residuum_is_right_adjoint_to_the_tensor(name: str) -> None:
     for v, w, x in itertools.product(grid, repeat=3):
         r = float(
             alg.residuum(
-                torch.tensor(w, dtype=torch.float64), torch.tensor(x, dtype=torch.float64)
+                torch.tensor(w, dtype=torch.float64),
+                torch.tensor(x, dtype=torch.float64),
             )
         )
         assert leq(times(v, w), x) == leq(v, r), (v, w, x, r)

@@ -84,11 +84,18 @@ class TestDayConvolutionMonoidalLaws:
     associative and the representable at the unit is its unit."""
 
     objects = [FinSet(name=f"g{i}", cardinality=1) for i in range(3)]
-    table = {(i, j): ((i + j) % 3, torch.tensor(1.0)) for i in range(3) for j in range(3)}
+    table = {
+        (i, j): ((i + j) % 3, torch.tensor(1.0)) for i in range(3) for j in range(3)
+    }
 
     def _conv(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         return day_convolution(
-            f, g, self.objects, CartesianProductMonoidal(), GODEL, product_table=self.table
+            f,
+            g,
+            self.objects,
+            CartesianProductMonoidal(),
+            GODEL,
+            product_table=self.table,
         )
 
     @staticmethod

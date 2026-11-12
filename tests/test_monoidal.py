@@ -3,7 +3,11 @@
 import torch
 from quivers.core.objects import FinSet, ProductSet, CoproductSet, Unit
 from quivers.core.morphisms import identity
-from quivers.categorical.monoidal import CartesianProductMonoidal, CoproductMonoidal, EmptySet
+from quivers.categorical.monoidal import (
+    CartesianProductMonoidal,
+    CoproductMonoidal,
+    EmptySet,
+)
 
 
 class TestCartesianProductMonoidal:
