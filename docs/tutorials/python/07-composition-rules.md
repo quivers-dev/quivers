@@ -8,30 +8,39 @@ A rule's class states which laws it claims. Only `semigroupoid(...)` tests its c
 
 | Class (QVR level) | Claims | Structure of the morphisms |
 |---|---|---|
-| `Algebra` (`algebra`) | associativity and an identity, plus a unit, a zero, a meet, and a negation | a [category](https://ncatlab.org/nlab/show/category) |
+| `Semiring` (`algebra` or `semigroupoid`) | the semiring laws, so associativity and an identity | a [category](https://ncatlab.org/nlab/show/category) |
+| `IdempotentSemiring` (the same) | a semiring whose $\oplus$ is idempotent | a category whose hom-sets are lattices |
+| `Algebra` (`algebra`) | an identity, with a unit, a zero, a meet, and a negation | identities, with composition that may depend on bracketing |
 | `Semigroupoid` (`semigroupoid`) | associativity, no identity | a [semicategory](https://ncatlab.org/nlab/show/semicategory) (semigroupoid) [@tilson1987categories] |
-| `BilinearForm` (`bilinear_form`) | nothing | a [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no laws |
-| `CompositionRule` (`rule`) | nothing | the base class of the three above |
-
-The name `BilinearForm` does not mean a [bilinear form](https://en.wikipedia.org/wiki/Bilinear_form) in the linear algebra sense, a map linear in each argument. It marks a rule that claims no associativity and no identity.
+| `Magmoid` (`bilinear_form`) | nothing | a [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no laws |
+| `CompositionRule` (`rule`) | nothing | the base class of the others |
 
 ```mermaid
 classDiagram
     class CompositionRule {
         "tensor_op + join, no algebraic promises"
     }
-    class BilinearForm {
-        "no promises; opted-out of associativity"
+    class Magmoid {
+        "no promises"
     }
     class Semigroupoid {
         "associative tensor_op, no identity"
     }
     class Algebra {
-        "associative + identity + meet + negate"
+        "identity + unit + zero + meet + negate"
     }
-    CompositionRule <|-- BilinearForm
+    class Semiring {
+        "associative + identity"
+    }
+    class IdempotentSemiring {
+        "idempotent join, a lattice"
+    }
+    CompositionRule <|-- Magmoid
     CompositionRule <|-- Semigroupoid
-    Semigroupoid <|-- Algebra
+    CompositionRule <|-- Algebra
+    Semigroupoid <|-- Semiring
+    Algebra <|-- Semiring
+    Semiring <|-- IdempotentSemiring
 ```
 
 Code that needs `identity`, `dagger`, `trace`, `cup`, or `cap` requires an `Algebra`, code that rebrackets composites requires at least a `Semigroupoid`, and code that only contracts tensors accepts any `CompositionRule`.
@@ -44,11 +53,11 @@ from quivers.core.algebras import (
 )
 ```
 
-Every built-in algebra is a subclass of `Algebra`, so also of `Semigroupoid` and `CompositionRule`. The class records a claim, not a fact: `PRODUCT_FUZZY` is an `Algebra`, but its product does not distribute over its noisy-OR, and its composition is not associative.
+Every built-in instance is an `Algebra`, and the eight semirings among them are also of class `Semiring`, and so of `Semigroupoid`. `PRODUCT_FUZZY` is an `Algebra` and not a `Semiring`: its product does not distribute over its noisy-OR, and its composition is not associative. The class records a claim that the library does not prove.
 
-## Building a semigroupoid
+## Rules below `Algebra` {#building-a-semigroupoid}
 
-`material_implication()` returns a `CustomSemigroupoid` whose $\otimes$ is the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] and whose $\oplus$ is the product. This $\otimes$ has the left identity 1, since $1 \to b = b$, but no two-sided identity, which is why the rule is not an `Algebra`. It is also not associative: with $a = b = c = 0.5$, $(a \to b) \to c = 0.625$ and $a \to (b \to c) = 0.875$. The helper thus skips the associativity test that `semigroupoid(...)` runs, and composites under it must keep their bracketing.
+`material_implication()` returns a `CustomMagmoid` whose $\otimes$ is the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] and whose $\oplus$ is the product. This $\otimes$ has the left identity 1, since $1 \to b = b$, but no two-sided identity, which is why the rule is not an `Algebra`. It is also not associative: with $a = b = c = 0.5$, $(a \to b) \to c = 0.625$ and $a \to (b \to c) = 0.875$. It is thus a `Magmoid`, and composites under it must keep their bracketing.
 
 ```python
 import torch
@@ -90,7 +99,7 @@ At construction it tests associativity of $\otimes$ on a fixed set of random inp
 
 ## Building a rule without laws
 
-`bilinear_form(name, tensor_op, join)` builds a rule that claims nothing. The midpoint $(a + b)/2$ is not associative:
+`magmoid(name, tensor_op, join)` builds a rule that claims nothing. The midpoint $(a + b)/2$ is not associative:
 
 ```python
 from quivers.core.algebras import magmoid
@@ -112,7 +121,7 @@ right = bf.tensor_op(a, bf.tensor_op(b, c))
 assert not torch.allclose(left, right)
 ```
 
-`bilinear_form(...)` runs no test. Rules whose reduction is not the addition of a semiring, such as a top-$k$ truncation or a sum weighted by a softmax, generally lose associativity and belong at this level.
+`magmoid(...)` runs no test. Rules whose reduction is not the addition of a semiring, such as a top-$k$ truncation or a sum weighted by a softmax, generally lose associativity and belong at this level.
 
 ## Operations that need an identity
 
@@ -129,7 +138,7 @@ for attribute in ("unit", "identity_tensor"):
         print(attribute, "is unavailable on", type(mi).__name__)
 ```
 
-In QVR, `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` fail to compile in a module declared `composition X [level=semigroupoid]` or `[level=bilinear_form]` ([chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws)).
+In QVR, `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` fail to compile in a module whose rule is not an `Algebra`, such as an inline rule declared `[level=semigroupoid]` or `[level=bilinear_form]` ([chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws)).
 
 ## Contractions of several tensors {#operadic-n-ary-contractions}
 

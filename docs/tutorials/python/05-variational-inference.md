@@ -276,4 +276,4 @@ print(f"Guide z: {z_guide.item():.3f}")
 
 ## Next
 
-[Chapter 6](06-first-class-trans.md) treats transformations between algebras as values: `MorphismTransformation` and `AlgebraHomomorphism`, composition with `>>>`, and change of base. The [inference guide](../../guides/inference-foundations.md) documents traces, conditioning, guides, objectives, and SVI in full.
+[Chapter 6](06-first-class-trans.md) treats transformations between algebras as values: `MorphismTransformation` and `CarrierMap`, composition with `>>>`, and change of base. The [inference guide](../../guides/inference-foundations.md) documents traces, conditioning, guides, objectives, and SVI in full.

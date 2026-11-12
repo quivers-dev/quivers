@@ -70,18 +70,20 @@ An [`Algebra`](../../api/core/algebras.md) gives $\otimes$, $\oplus$ (the method
 
 ```
 CompositionRule
-    ├── BilinearForm     (level bilinear_form: no associativity or identity)
-    └── Semigroupoid     (level semigroupoid: associative, no identity)
-            └── Algebra  (level algebra: associative, with identity, meet, and negation)
+    ├── Magmoid           (level bilinear_form: no associativity or identity)
+    ├── Semigroupoid      (level semigroupoid: associative, no identity)
+    ├── Algebra           (level algebra: identity, unit, zero, meet, and negation)
+    └── Semiring          (an Algebra and a Semigroupoid: associative with identity)
+            └── IdempotentSemiring  (idempotent sum)
 ```
 
-Under a rule declared `semigroupoid` the morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory), a category without identities [@tilson1987categories]. Under `bilinear_form` composition has no laws at all (the structure is a [magmoid](https://ncatlab.org/nlab/show/magmoid)). The class name `BilinearForm` does not mean a bilinear form in the linear algebra sense. `identity(A)` and the operations `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)`, which bend, transpose, and loop the wires of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category), need an `Algebra`. Under `composition material_impl [level=semigroupoid]`, `identity(A)` fails with
+Under a rule declared `semigroupoid` the morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory), a category without identities [@tilson1987categories]. Under `bilinear_form` composition has no laws at all (the structure is a [magmoid](https://ncatlab.org/nlab/show/magmoid)). The eight semirings in the table are of class `Semiring`, so either level accepts them, and the other three are of class `Algebra` only. `identity(A)` and the operations `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)`, which bend, transpose, and loop the wires of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category), need an `Algebra`. Under `composition material_impl [level=bilinear_form]`, `identity(A)` fails with
 
 ```text
-CompileError: line 3, col 11: identity: requires a Algebra composition rule (needs identity / unit / zero); the module declares semigroupoid 'MaterialImplication', which does not have those. ...
+CompileError: line 3, col 11: identity: requires an algebra-level composition rule (one with an identity, a unit, and a zero); the module declares the bilinear_form 'MaterialImplication', which has none. Declare an algebra, as in `composition product_fuzzy [level=algebra]`, or drop the identity operation.
 ```
 
-The rule `material_impl` uses the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] as $\otimes$ and the product as $\oplus$. That $\otimes$ is not associative, and the constructor skips the associativity check, so composites under this rule must not be rebracketed. [Chapter 7 of the Python track](../python/07-composition-rules.md) covers the hierarchy in detail.
+The rule `material_impl` uses the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] as $\otimes$ and the product as $\oplus$. That $\otimes$ is not associative, so the rule is a `Magmoid`, and composites under it must not be rebracketed. [Chapter 7 of the Python track](../python/07-composition-rules.md) covers the hierarchy in detail.
 
 ## Composition operators
 
@@ -96,7 +98,7 @@ The rule `material_impl` uses the Reichenbach implication $a \to b = 1 - a + ab$
 
 `f.change_base(phi)` applies a map `phi` to the tensor of `f` and retags the result with the target rule. `phi` is one of two kinds:
 
-- An *entrywise map* (class `AlgebraHomomorphism`) applies a function $\varphi : V \to W$ to each entry. When $\varphi$ is monotone and lax for $\otimes$, $\oplus$, and the unit, it induces [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category) in Kelly's sense [@kelly1982basic]. The named maps include `expectation` (from `Markov` to `ProductFuzzy`, reading each probability as a degree of membership), `log_prob`, `max_plus`, `threshold`, and `boolean_embedding`.
+- An *entrywise map* (class `CarrierMap`) applies a function $\varphi : V \to W$ to each entry. When $\varphi$ is monotone and lax for $\otimes$, $\oplus$, and the unit, it induces [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category) in Kelly's sense [@kelly1982basic]. The named maps include `expectation` (from `Markov` to `ProductFuzzy`, reading each probability as a degree of membership), `log_prob`, `max_plus`, `threshold`, and `boolean_embedding`.
 - A [`MorphismTransformation`](../../api/core/transformations.md) rewrites the whole tensor, for instance normalizing each row. The constructors `softmax(B)`, `l1_normalize(B)`, and `l2_normalize(B)` normalize along the axis of `B`, and `bayes_invert(prior)` computes a Bayesian inversion [@cho2019disintegration]. A row normalization is not a change of base.
 
 Both kinds are values: a `define` can bind them, `>>>` composes them, and `change_base` applies them:

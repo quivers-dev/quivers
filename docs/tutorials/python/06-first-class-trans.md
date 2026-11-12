@@ -2,7 +2,7 @@
 
 A morphism carries its algebra, the operations under which it composes. Converting a morphism from one algebra $\mathcal V$ to another $\mathcal W$ changes both its entries and that tag. The library has two kinds of conversion, both [`quivers.core`](../../api/core/transformations.md) classes:
 
-- An *entrywise map* (class `AlgebraHomomorphism`) applies a function $\varphi : \mathcal V \to \mathcal W$ to each entry. When $\varphi$ is monotone and lax for $\otimes$, $\oplus$, and the unit, it induces [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category) in the sense of enriched category theory [@kelly1982basic]. The library does not check these laws.
+- An *entrywise map* (class `CarrierMap`) applies a function $\varphi : \mathcal V \to \mathcal W$ to each entry. When $\varphi$ is monotone and lax for $\otimes$, $\oplus$, and the unit, it induces [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category) in the sense of enriched category theory [@kelly1982basic]. The library does not check these laws.
 - A *morphism transformation* (class `MorphismTransformation`) rewrites the whole tensor. Softmax and L1 and L2 normalization divide each row by a total or a norm, and Bayes inversion combines a prior with the kernel before normalizing over the input.
 
 Both have a `.source` algebra, a `.target` algebra, and an `apply` method. Both are values: a variable can hold one, [`compose_trans`](../../api/core/transformations.md) (written `>>>` in QVR) composes them, and [`Morphism.change_base`](../../api/core/morphisms.md) applies either kind.
@@ -32,8 +32,8 @@ Entrywise maps that take no arguments:
 
 | Name | `.source` | `.target` | What `apply` does to each entry |
 |---|---|---|---|
-| `EXPECTATION` | `Markov` | `ProductFuzzy` | Clamps to $[0, 1]$, so a probability is read as a degree of membership. |
-| `MATERIAL_IMPLICATION` | `ProductFuzzy` | `Godel` | Clamps to $[0, 1]$. Later composition uses minimum and maximum. |
+| `MARKOV_TO_PRODUCT_FUZZY` | `Markov` | `ProductFuzzy` | Clamps to $[0, 1]$, so a probability is read as a degree of membership. |
+| `PRODUCT_FUZZY_TO_GODEL` | `ProductFuzzy` | `Godel` | Clamps to $[0, 1]$. Later composition uses minimum and maximum. |
 | `PROBABILITY_CLAMP` | `Real` | `Probability` | Clamps to $[0, 1]$. |
 | `PROBABILITY_TO_REAL` | `Probability` | `Real` | Leaves it unchanged. |
 | `COUNTING_FROM_REAL` | `Real` | `Counting` | Clamps below at zero and rounds down. |
@@ -143,7 +143,7 @@ A `define` whose right side is a transformation binds a name for a transformatio
 
 ## Try this
 
-- Compose `softmax(B)` with `EXPECTATION`, apply the result to two different morphisms, and check that both results are `ProductFuzzy` morphisms whose rows sum to one.
+- Compose `softmax(B)` with `MARKOV_TO_PRODUCT_FUZZY`, apply the result to two different morphisms, and check that both results are `ProductFuzzy` morphisms whose rows sum to one.
 - Build `compose_trans(softmax(B), PROBABILITY_TO_REAL)` and read the `TypeError`.
 
 ## Next

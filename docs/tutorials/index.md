@@ -28,6 +28,6 @@ Two tracks. The QVR track writes and fits statistical models in [QVR](../referen
 4. **[Fuzzy logic factorization](python/04-fuzzy-factorization.md)**. Factorizing a relation under the product t-norm and noisy-OR.
 5. **[Variational inference](python/05-variational-inference.md)**. Traces, conditioning, `Guide`, `ELBO`, `SVI`, and `Predictive`.
 6. **[First-class transformations](python/06-first-class-trans.md)**. Entrywise maps and morphism transformations as values, `compose_trans`, and Bayesian inversion.
-7. **[Composition rules beyond algebras](python/07-composition-rules.md)**. `Algebra`, `Semigroupoid`, and `BilinearForm` by the laws they claim, and `EinsumWiring` for contractions of several tensors.
+7. **[Composition rules beyond algebras](python/07-composition-rules.md)**. `Algebra`, `Semigroupoid`, and `Magmoid` by the laws they claim, and `EinsumWiring` for contractions of several tensors.
 8. **[Analysis pipelines](python/08-analysis-pipelines.md)**. Regression formulas compiled to QVR, hierarchical, ordinal, categorical, and mixture regressions, PSIS-LOO, and posterior predictive checks.
 9. **[Debugging quivers programs](python/09-debugging.md)**. `CompileError`, compiled steps, traces, the SVI loss, and NUTS diagnostics.
