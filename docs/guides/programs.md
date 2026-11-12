@@ -2,25 +2,21 @@
 
 ## What is a MonadicProgram?
 
-A probabilistic program describes a procedure for generating data. For
-instance, draw a latent mean `mu`, draw a response around that mean, and
-return the response. The same description can score actual responses by
-using their observed values instead of drawing them. Inference is the
-additional task of finding plausible latent values given those observations.
-The [inference guides](inference-foundations.md) explain how SVI and MCMC
-use the program’s scores to fit or sample the latent mean.
+A probabilistic program describes a procedure for generating data: draw a latent mean
+`mu`, draw a response around it, and return the response. The same description scores
+actual responses when their observed values replace the draws, and inference finds
+plausible latent values given those observations
+([Inference Foundations](inference-foundations.md)).
 
-A
-[`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram)
-is a probabilistic program specified as a sequence of sampling, observation,
-and deterministic steps. It defines a
+A [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram)
+is such a program, a sequence of draws, observations, and deterministic steps, and it
+is the class that compiling a QVR `program` produces. It is a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
-from a domain to a codomain via [monadic
-composition](https://ncatlab.org/nlab/show/Kleisli+category)
-(Kleisli bind).
-
-The program syntax mirrors probabilistic programming languages
-(Pyro, NumPyro, Stan):
+from its domain to its codomain: a Markov kernel built by composing its steps in the
+[Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of a probability
+[monad](https://ncatlab.org/nlab/show/monad) [@moggi1991notions], each step drawing
+from a distribution that may depend on the values drawn before it. Pyro and NumPyro
+write programs in the same sequential style [@bingham2019pyro; @phan2019numpyro]:
 
 <!-- compile: false -->
 ```qvr
@@ -32,15 +28,15 @@ program name : domain -> codomain
     return y
 ```
 
-Each `sample ... <- ...` step draws from a conditional distribution
-and binds the result. The `observe` keyword conditions the program on
-an external observation.
+Each `sample ... <- ...` step draws from a conditional distribution and binds the
+result, and `observe` scores an observed value instead of drawing it.
 
 ## Program structure
 
-A program is an
+A program is a PyTorch
 [`nn.Module`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html)
-that, when called, executes forward ancestral sampling:
+whose `rsample` runs [ancestral sampling](https://en.wikipedia.org/wiki/Bayesian_network),
+drawing each variable after the variables it depends on, in program order:
 
 ```python
 from quivers.continuous import Draw, MonadicProgram
@@ -70,8 +66,8 @@ samples = program.rsample(
     torch.zeros(4, dtype=torch.long), sample_shape=torch.Size([100])
 )  # shape (100, 4, 1)
 
-# Log joint: sum_i log p(z_i | pa(z_i)) given every bound variable,
-# one joint per run: the four input rows are four independent runs.
+# Log joint density given every bound variable, one value per run:
+# the four input rows are four independent runs.
 x_val = torch.randn(4, 1)
 y_val = torch.randn(4, 1)
 log_joint = program.log_joint(
@@ -80,46 +76,33 @@ log_joint = program.log_joint(
 )  # shape (4,); log_joint.sum() is the joint of the four runs
 ```
 
-## Bind steps
+Each row of a program's input is one independent run
+([Input rows are independent runs](inference-foundations.md#input-rows-are-independent-runs)).
 
-A *binding* gives a value a name for subsequent steps. [A stochastic bind
-first draws the value, then makes it available](https://pyro.ai/examples/intro_long.html#Background:-the-pyro.sample-primitive) [@pyroIntroduction]. Thus [`sample y <- f(x)`](../reference/qvr/probabilistic-programs.md#step-reference)
-uses the particular value of `x` drawn earlier in this execution. Repeating
-the program produces a new set of draws. The monadic account expresses
-this sequencing without treating random computations as ordinary functions
-returning fixed values.
+## Draw steps {#bind-steps}
 
-A bind step `sample x <- f` or `sample x <- f(y, z)` samples from a morphism,
-optionally conditioned on previous variables.
-
-Single bind:
+A draw gives a random value a name for the later steps, as Pyro's `sample` does
+[@pyroIntroduction]. In
+[`sample y <- f(x)`](../reference/qvr/probabilistic-programs.md#step-reference), `y` is
+drawn given the particular value of `x` drawn earlier in the same run, and running the
+program again draws new values. A draw takes a morphism with no arguments, a morphism
+applied to earlier names, or several names at once from a morphism into a product:
 
 <!-- compile: false -->
 ```qvr
 sample x <- prior_f
-```
-
-Conditioned bind:
-
-<!-- compile: false -->
-```qvr
 sample y <- likelihood_f(x)
+sample (u, v) <- joint_f(z, w)
 ```
 
-Destructuring tuple bind (stacked along feature dimension):
-
-<!-- compile: false -->
-```qvr
-sample (x, y) <- joint_f(z, w)
-```
-
-The variable names on the left side are bound in the environment.
-An indexed bind `sample v : A <- F(args)` declares `v` as an
-$A$-indexed plate of independent draws.
+In the last form the names are bound to the components of the product in order. A
+plated draw, `sample v : A <- F(args)`, draws one value per element of `A`
+([plates](dsl-programs-and-lets.md#indexed-bind-plate)).
 
 ## Let steps
 
-Deterministic binding:
+`let` binds a deterministic value: a literal, an earlier name, arithmetic, or a
+primitive ([let expressions](dsl-programs-and-lets.md#let-expressions-arithmetic-primitives-and-collections)).
 
 <!-- compile: false -->
 ```qvr
@@ -127,35 +110,24 @@ let x = y + z
 let weight = 0.5
 ```
 
-Supports literals, variable references, arithmetic, and the
-let-expression primitives; see
-[DSL Programs and Let-Expressions](dsl-programs-and-lets.md#let-expressions-arithmetic-primitives-and-collections)
-for the full primitive list.
-
 ## Observe keyword
 
-An observation says: "use this measured value here, and score how well
-the current latent values predict it." If `mu` changes, the observed
-response remains fixed but its likelihood changes. SVI uses the resulting
-score to update a guide; MCMC uses it when proposing and accepting changes
-to `mu`.
-
-Condition the program on an observation:
+An observation uses a measured value in place of a draw and scores how well the current
+latent values predict it. If `mu` changes, the observed response stays fixed and its
+likelihood changes. SVI uses this score to update a guide, and MCMC uses it when
+proposing and accepting new values of `mu`.
 
 <!-- compile: false -->
 ```qvr
 observe y <- likelihood(x)
 ```
 
-This marks `y` as conditioned. During inference, observations
-clamp these variables to external values. An indexed-observe
-`observe r : N <- F(args)` accumulates a batched likelihood over
-the index set `N`, with the response buffer supplied via the
-runtime `observations` dict.
+The observed value of `y` comes from the [`observations` dict](#the-observations-dict),
+and `observe r : N <- F(args)` scores one observed value per element of `N`.
 
 ## Return statement
 
-Specify the program output. Single or tuple:
+`return` names the program's output, one value or a tuple:
 
 <!-- compile: false -->
 ```qvr
@@ -167,29 +139,21 @@ return x
 return (x, y, z)
 ```
 
-The return value's shape determines the codomain. Tuples are
-bare-positional; the resulting product space's components are
-ordered by tuple position.
+The returned value fixes the codomain, and a tuple's components form a product space
+in the order written.
 
 ## Domains and codomains
 
-Domains can be:
-
-- A single [`FinSet`](../api/core/objects.md) or
-  [`ContinuousSpace`](../api/continuous/spaces.md).
-- A product of sets / spaces: `X * Y * Z`.
-- Named parameters: the domain is the product, but variables can
-  refer to sub-components.
-
-Codomains are determined by the return statement shape.
+A domain is a [`FinSet`](../api/core/objects.md), a
+[`ContinuousSpace`](../api/continuous/spaces.md), or a product of these, `X * Y * Z`,
+whose components the program may name ([Named parameters](#named-parameters)). The
+codomain is fixed by what the program returns.
 
 ## rsample and log_joint
 
-Two key operations on a compiled program:
-
 ### rsample(x, sample_shape=(), observations=None)
 
-Generate samples by executing the program:
+`rsample` runs the program and returns draws of its output:
 
 ```python
 x = torch.zeros(5, dtype=torch.long)
@@ -197,58 +161,47 @@ samples = program.rsample(x, sample_shape=torch.Size([1000]))
 # shape: (1000, 5, codomain_dim)
 ```
 
-Sequential ancestral sampling: each draw step samples, previous
-draws are available to subsequent steps. `observations` is an
-optional `dict[str, torch.Tensor]` clamping observed sites to
-runtime data.
-
-The input's rows are independent runs of the whole program: an input
-of `B` rows draws every site `B` times, once per run, and a plated
-site's rows sit after the run axis. The rows a program observes come
-from its data and its plates, not from the input's rows, so a program
-whose observations live in a plate is run on one row, such as
-`torch.zeros(1, 1)`.
+Each draw step samples in order, and later steps read earlier draws. The optional
+`observations` dict fixes observed sites to data. The draws are reparameterized where
+the family allows, so gradients flow through them [@kingma2014autoencoding].
 
 ### log_joint(x, intermediates)
 
-A joint score combines all the modeled choices in one execution. For
-`mu ~ Normal(0,1)` and `y ~ Normal(mu,1)`, it is
-$\log p(\mu,y)=\log p(\mu)+\log p(y\mid\mu)$. The first term
-is the prior score; the second is the likelihood. Supplying a candidate
-`mu` and an observed `y` lets inference compare candidates. The
-normalizing constant of the posterior is not required for this comparison.
-
-Compute $\log p(z_1, \ldots, z_k \mid x) = \sum_i \log p(z_i \mid
-\mathrm{pa}(z_i))$ given all bound-variable values:
+`log_joint` scores one run of the program at given values of all its variables. For
+$\mu \sim \mathcal N(0, 1)$ and $y \sim \mathcal N(\mu, 1)$ it is
+$\log p(\mu, y) = \log p(\mu) + \log p(y \mid \mu)$, the prior term plus the likelihood
+term. In general it is $\sum_i \log p(z_i \mid \mathrm{pa}(z_i))$, where
+$\mathrm{pa}(z_i)$ are the variables the step for $z_i$ reads, its parents in the
+[Bayesian network](https://en.wikipedia.org/wiki/Bayesian_network) of the program
+[@koller2009probabilistic]. Inference compares such scores at different latent values,
+which does not need the posterior's normalizing constant.
 
 <!-- python: skip -->
 ```python
-x = torch.randn(5)
+x = torch.zeros(5, dtype=torch.long)
 intermediates = {"z": z_value, "y": y_value}  # every bound variable
 
 log_pjoint = program.log_joint(x, intermediates)
 ```
 
-`log_joint` returns one joint per run of the input, shape `(B,)` for
-`B` input rows: each entry is the sum of that run's draw / plate-draw /
-observe / score terms, and `log_joint(x, values).sum()` is the joint of
-all the runs. A value in `intermediates` is either one per run, along a
-leading axis of length `B`, or one that every run shares. It is used
-inside
-[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO)
-after the guide samples latents.
+`log_joint` returns one value per run, shape `(B,)` for `B` input rows, each the sum of
+that run's draw, plated draw, observe, and score terms, so `log_joint(x, values).sum()`
+is the joint of all the runs. A value in `intermediates` either has one entry per run,
+along a leading axis of length `B`, or is shared by every run.
+[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) calls it
+after the guide has drawn the latent values.
 
 ### The `observations` dict
 
-Indexed-observe steps (`observe r : N <- F(args)`) read their
-response buffers from a runtime
-`observations: dict[str, torch.Tensor]`, keyed by the
-observed-variable name. The dict is passed as the `observations`
-kwarg to
+An observe step reads its observed values from a dict
+`observations: dict[str, torch.Tensor]` keyed by the observed name. The dict is the
+`observations` argument of
 [`MonadicProgram.rsample`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.rsample)
-and as the final positional argument to
-[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) /
-[`SVI.step`](../api/inference/svi.md#quivers.inference.svi.SVI.step):
+and the last positional argument of
+[`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) and
+[`SVI.step`](../api/inference/svi.md#quivers.inference.svi.SVI.step). The same dict
+carries the program's [data inputs](inference-foundations.md#host-data-per-row-covariates-and-index-arrays),
+the names it reads without binding.
 
 <!-- python: skip -->
 ```python
@@ -261,14 +214,13 @@ samples = program.rsample(x, observations=observations)
 loss = elbo(model, guide, x, observations)
 ```
 
-There is no `.qvr`-level data block; the tensor sources live in
-Python at the call site, and the keys must match the response
-identifiers declared in the program body.
+QVR has no data block: the tensors are passed from Python at the call, and the keys
+must match the names the program observes or reads.
 
 ## Named parameters
 
-If the domain is a product, name the components via the `params`
-argument so steps can reference them by name:
+When the domain is a product, `params` names its components so that steps can read
+them by name:
 
 <!-- python: skip -->
 ```python
@@ -287,67 +239,87 @@ program = MonadicProgram(
 )
 ```
 
-The program splits the product input along the feature axis at
-runtime and binds each slice to the corresponding name in `params`.
+At run time the program splits the input along its last axis and binds each part to
+its name. In QVR the names follow the program's name, `program f(a, b) : A * B -> Z`:
+
+```qvr
+object A : Real 1
+object B : Real 2
+object Z : Real 1
+
+morphism g : A * B -> Z ~ Normal
+
+program f(a_val, b_val) : A * B -> Z
+    sample z <- g(a_val, b_val)
+    return z
+
+export f
+```
 
 ## Example: a simple model
 
+A normal model with unknown mean and scale, compiled from QVR:
+
 ```python
 import torch
-from quivers.continuous import Draw, MonadicProgram
-from quivers.continuous.families import (
-    ConditionalNormal,
-    ConditionalLogitNormal,
+from quivers.dsl import loads
+
+program = loads("""
+object Unit : FinSet 1
+object R1 : Real 1
+
+program model : Unit -> R1
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- LogNormal(loc=0.0, scale=1.0)
+    sample y <- Normal(loc=mu, scale=sigma)
+    return y
+
+export model
+""").morphism
+
+draws = program.rsample(torch.zeros(1, 1), sample_shape=torch.Size([3]))  # (3, 1, 1)
+score = program.log_joint(
+    torch.zeros(1, 1),
+    {"mu": torch.tensor([[0.2]]), "sigma": torch.tensor([[1.1]]), "y": torch.tensor([[0.5]])},
 )
-from quivers.continuous.spaces import Euclidean
-from quivers.core.objects import FinSet
-
-Unit = FinSet(name="Unit", cardinality=1)
-R1 = Euclidean(name="R1", dim=1)
-R2 = Euclidean(name="R2", dim=2)
-
-prior_mu    = ConditionalNormal(Unit, R1)
-prior_sigma = ConditionalLogitNormal(Unit, R1)
-likelihood  = ConditionalNormal(R2, R1)
-
-program = MonadicProgram(
-    Unit,
-    R1,
-    steps=[
-        Draw(names=("mu",), morphism=prior_mu),
-        Draw(names=("sigma",), morphism=prior_sigma),
-        Draw(names=("y",), morphism=likelihood, args=("mu", "sigma")),
-    ],
-    return_vars=("y",),
-)
-
-# Use for inference
-optimizer = torch.optim.Adam(program.parameters())
 ```
 
-## Destructuring binds
+Building the last step in Python as `Draw(names=("y",), morphism=ConditionalNormal(R2, R1), args=("mu", "sigma"))`
+would define a different model: `ConditionalNormal` computes a normal's mean and scale
+from its input with a learned network, so `y` would not have mean `mu` and scale
+`sigma`. [Building programs in Python](#building-programs-in-python) shows the records
+that give a family's parameters directly.
 
-Extract multiple values from a tuple-returning sub-program:
+## Destructuring draws
 
-<!-- compile: false -->
+A draw from a program that returns a tuple binds each component:
+
 ```qvr
+object X : FinSet 2
+object Y : Real 1
+object Z : Real 1
+
+morphism some_morphism : X -> Y ~ Normal
+morphism g : Y * Y -> Z ~ Normal
+
 program sub : X -> Y * Y
-    sample (a, b) <- some_morphism
+    sample a <- some_morphism
+    sample b <- some_morphism
     return (a, b)
 
 program main : X -> Z
     sample (u, v) <- sub
     sample w <- g(u, v)
     return w
-```
 
-The pattern `sample (u, v) <- sub` destructures the output.
+export main
+```
 
 ## Observation clamping
 
-During inference, the
 [`condition()`](../api/inference/conditioning.md#quivers.inference.conditioning.condition)
-function clamps observations:
+returns a program whose named sites are fixed to given values
+([Conditioning on observations](inference-foundations.md#conditioning-on-observations)):
 
 ```python
 from quivers.inference import condition
@@ -362,34 +334,12 @@ x = torch.zeros(3, dtype=torch.long)
 tr = conditioned.trace(x)
 ```
 
-## Product domains and outputs
-
-For multiple domain inputs, stack along the feature dimension:
-
-<!-- compile: false -->
-```qvr
-program f(x_val, y_val) : (X * Y) -> Z
-    sample z <- g(x_val, y_val)
-    return z
-```
-
-The bare-identifier parameters `x_val`, `y_val` name the
-projections of the product domain. Internally, the domain tensor
-is reshaped to match.
-
 ## Building programs in Python
 
-The step-record interface is useful when a model is assembled by Python
-code or generated from another representation. It describes the same
-dependencies as QVR source. `Draw` and `Observe` introduce random and
-measured values; `Let` computes from values already available. The example
-below compares the joint scores of two constructions of the same model,
-which is stronger evidence of agreement than merely comparing their shapes.
-
-Every program the DSL compiles is assembled from objects the
-[`quivers.continuous`](../api/continuous/programs.md) package exports, so
-a program can be built in Python without writing QVR source. The step
-records are the contract:
+Every program the compiler builds is made of classes that
+[`quivers.continuous`](../api/continuous/programs.md) exports, so a model assembled by
+Python code, or generated from another representation, can be built without QVR
+source. The step records are:
 
 | Record | Source form | Fields |
 |---|---|---|
@@ -398,25 +348,24 @@ records are the contract:
 | [`Let`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) | `let w = expression` | `name`, `value` |
 | [`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) | a `marginalize` block | `name`, `score` |
 
-A draw's `args` are binding names, or
+A draw's `args` are names of earlier bindings or
 [`Indexed`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Indexed)
-gathers such as `mu[group]`; `None` reads the program input. A let's
-`value` is a constant, the name of an earlier binding, or a function
-of the environment, which may declare the names it reads through
+gathers such as `mu[group]`, and `None` reads the program input. A `Let`'s `value` is a
+constant, the name of an earlier binding, or a function of the environment, which may
+declare the names it reads with
 [`reading`](../api/continuous/program_steps.md#quivers.continuous.program_steps.reading).
-The morphisms are the ones the compiler emits: a fixed-parameter
-family comes from a `make_fixed_*` factory such as
-[`make_fixed_normal`](../api/continuous/inline.md#quivers.continuous.inline.make_fixed_normal);
+The morphisms are the ones the compiler emits. A family with fixed parameters comes
+from a `make_fixed_*` factory such as
+[`make_fixed_normal`](../api/continuous/inline.md#quivers.continuous.inline.make_fixed_normal),
 a family whose parameters are bindings is a
 [`MixedInlineDistribution`](../api/continuous/inline.md#quivers.continuous.inline.MixedInlineDistribution)
-over the stacked arguments; an indexed draw `sample v : A <- F(...)` is a
-[`PlateDraw`](../api/continuous/plate.md#quivers.continuous.plate.PlateDraw)
-of one draw per element of `A`; and an indexed observe is a
+over the stacked arguments, a plated draw `sample v : A <- F(...)` is a
+[`PlateDraw`](../api/continuous/plate.md#quivers.continuous.plate.PlateDraw) of one
+draw per element of `A`, and a plated observe is a
 [`VectorisedObserve`](../api/continuous/plate.md#quivers.continuous.plate.VectorisedObserve).
 
-The program below is a hierarchical Normal model with one mean per
-group, built twice: once from source, and once from the records. The
-two score every value identically.
+The hierarchical normal model below, with one mean per group, is built once from source
+and once from the records, and the two give the same log joint density:
 
 ```python
 import torch
@@ -489,16 +438,17 @@ values = {
     "y": torch.randn(6),
     "group": torch.tensor([0, 0, 1, 1, 2, 2]),
 }
-x = torch.arange(6)
+x = torch.zeros(1, 1)
 torch.testing.assert_close(compiled.log_joint(x, values), built.log_joint(x, values))
 ```
 
-A group-level correlation structure follows the same pattern. A
-`PlateDraw` over an LKJ prior on Cholesky factors draws one factor per
-group, whether the prior is the inline family
+Here `group` is a data input, the index array assigning each row to its group. A
+correlation structure per group follows the same pattern: a `PlateDraw` over an LKJ
+prior on Cholesky factors draws one factor per group, whether the prior is the inline
+family
 ([`make_fixed_lkj_cholesky`](../api/continuous/inline.md#quivers.continuous.inline.make_fixed_lkj_cholesky))
 or the [`LKJCorrelationFactor`](../api/continuous/families.md#quivers.continuous.families.LKJCorrelationFactor)
-morphism:
+morphism [@lewandowski2009lkj]:
 
 ```python
 from quivers.continuous import CholeskyFactor, make_fixed_lkj_cholesky
@@ -511,32 +461,11 @@ reference = D.LKJCholesky(4, torch.tensor(2.0)).log_prob(draw.reshape(3, 4, 4)).
 torch.testing.assert_close(factors.log_prob(torch.zeros(1), draw).squeeze(), reference)
 ```
 
-## Integration with the DSL
-
-MonadicPrograms are the output of `.qvr` DSL compilation. The DSL
-parser translates:
-
-<!-- compile: false -->
-```qvr
-object X : FinSet 3
-object Y : FinSet 4
-program my_prog : X -> Y
-    sample mu <- LogitNormal(mu=0, sigma=1)
-    sample x <- Normal(loc=mu, scale=1)
-    return x
-
-export my_prog
-```
-
-into a `MonadicProgram` instance that can be trained. The full DSL
-syntax for programs is documented in
-[DSL Programs and Let-Expressions](dsl-programs-and-lets.md).
-
 ## Where to next
 
-- [Hierarchical Programs](programs-hierarchical.md): parametric
-  templates for crossed random intercepts, monotone-spline
-  coefficients, and the grouped [marginalization](dsl-programs-and-lets.md#scoped-marginalize) construct for
-  fibred discrete latents.
-- [Variational Inference](inference-foundations.md): how programs
-  feed into the variational training loop.
+- [DSL Programs and Let-Expressions](dsl-programs-and-lets.md): the full QVR syntax of
+  programs.
+- [Hierarchical Programs](programs-hierarchical.md): templates for crossed random
+  intercepts, monotone effects, and marginalizing a discrete latent once per group.
+- [Inference Foundations](inference-foundations.md): how programs are fit by
+  variational inference and MCMC.
