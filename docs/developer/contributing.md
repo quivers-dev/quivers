@@ -159,7 +159,6 @@ quivers/
 │   ├── stochastic/                # Finite stochastic morphisms, semirings, weighted deduction
 │   ├── structural/                # Encoders, decoders, and losses over term signatures
 │   ├── transpile/                 # Lowering and renderers for target PPLs
-│   ├── giry.py                    # Re-export of quivers.stochastic.giry
 │   └── program.py                 # Program, the compiled module container
 ├── tests/                         # Test suite; subdirectories for dsl, qiec, transpile, and others
 ├── tools/                         # API reference, docstring, and release checks
