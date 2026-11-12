@@ -17,7 +17,7 @@ Flags:
 
 - `--json`: emit a single JSON document on stdout containing the
   full diagnostic list, as expected by CI and pre-commit hooks.
-- `--target TARGET`: compare every checked QIEC computation with the selected
+- `--target TARGET`: compare every checked [Quivers Indexed Effect Core](qiec/index.md) (QIEC) computation with the selected
   transpiler's advertised capabilities. Unsupported features are errors, so
   this mode serves as an early release gate for one target. It does not
   render the target program, so `qvr transpile --to TARGET FILE` remains the

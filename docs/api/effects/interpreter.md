@@ -2,7 +2,7 @@
 
 `run_program` runs a `MonadicProgram` on the
 [reference machine](../../developer/qiec.md#reference-evaluator) under the handler stack
-[@plotkin2009handlers; @bauer2015programming]. It encodes the program as a QIEC computation,
+[@plotkin2009handlers; @bauer2015programming]. It encodes the program as a [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) computation,
 installs the stacked handlers as lexically scoped handlers of the program's `random` and `score`
 instances, and runs the program's Python steps through `Compute` handlers over PyTorch. A draw
 receives its value from its handler, and an

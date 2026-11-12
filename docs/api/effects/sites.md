@@ -1,6 +1,6 @@
 # Sampleables
 
-A `MonadicProgram` step draws from a `ContinuousMorphism` at an input tensor, and the QIEC request
+A `MonadicProgram` step draws from a `ContinuousMorphism` at an input tensor, and the [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) request
 `Random.sample` takes one sampleable value. `TorchSampleable` wraps the pair as that value
 ([sample sites](../../guides/inference-foundations.md#trace-and-sample-sites)). It offers the sampling
 and scoring interface the prelude handlers use, and keeps the morphism and the input for a

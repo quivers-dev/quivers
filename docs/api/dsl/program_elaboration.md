@@ -1,7 +1,7 @@
 # Program elaboration
 
 These functions [elaborate](../../semantics/typing.md#8-program-elaboration) a `program` declaration
-into a QIEC computation, resolving its names and dependencies. A change to how
+into a [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) computation, resolving its names and dependencies. A change to how
 [draws, observations, or deterministic bindings](../../reference/qvr/probabilistic-programs.md#step-reference)
 run is made here.
 

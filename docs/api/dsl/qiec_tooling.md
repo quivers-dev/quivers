@@ -1,6 +1,7 @@
 # QIEC tooling
 
-These functions expose analysis and symbol metadata of the checked core to
+These functions expose analysis and symbol metadata of the checked
+[Quivers Indexed Effect Core](../qiec/index.md) (QIEC) to
 [diagnostics](../../tutorials/qvr/13-release-workflow.md#4-use-target-diagnostics-while-editing) and
 [editor features](../../reference/qvr/execution-and-tooling.md#language-server-features), linking
 source locations, names, and types to the corresponding core declarations.

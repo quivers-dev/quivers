@@ -1,7 +1,7 @@
 # Deduction elaboration
 
 These functions elaborate a [deduction declaration](../../reference/qvr/generated-computations.md#deduction-declarations)
-into QIEC families, handlers, and computations
+into [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) families, handlers, and computations
 ([generated effects](../../tutorials/qvr/11-parsing-and-search.md#3-see-the-generated-effects)).
 The [QIEC developer note](../../developer/qiec.md#qvr-surface) lists what a deduction elaborates
 to.
