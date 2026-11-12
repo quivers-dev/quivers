@@ -85,16 +85,29 @@ def _change(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
-def _lda(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+def _lda_prior(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     theta, phi = v["theta"], v["phi"]
-    w, doc = v["w"].long(), v["doc_idx"].long()
     prior = D.Dirichlet(torch.ones(2, dtype=torch.float64)).log_prob(theta).sum()
-    prior = (
+    return (
         prior
         + D.Dirichlet(torch.full((3,), 0.5, dtype=torch.float64)).log_prob(phi).sum()
     )
-    # Each token's topic is drawn from its own document's weights.
-    return prior + torch.log((theta[doc] * phi[:, w].T).sum(-1)).sum()
+
+
+def _lda(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    theta, phi = v["theta"], v["phi"]
+    w, doc, token = v["w"].long(), v["doc_idx"].long(), v["token_idx"].long()
+    # Word `n` belongs to token `token[n]`, whose topic is drawn from its
+    # document's weights `theta[doc[token[n]]]`.
+    weights = theta[doc][token]
+    return _lda_prior(v) + torch.log((weights * phi[:, w].T).sum(-1)).sum()
+
+
+def _lda_unmapped(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    theta, phi = v["theta"], v["phi"]
+    w, doc = v["w"].long(), v["doc_idx"].long()
+    # Word `n` paired with row `n`'s weights, the `via` map left unread.
+    return _lda_prior(v) + torch.log((theta[doc] * phi[:, w].T).sum(-1)).sum()
 
 
 #: Each case: its fixture, its data, its clamped points, and its oracle.
@@ -132,6 +145,32 @@ _CASES: dict[str, tuple[str, dict[str, Host], list[dict[str, Host]], Oracle]] = 
             {
                 "theta": [[0.75, 0.25], [0.25, 0.75]],
                 "phi": [[0.5, 0.25, 0.25], [0.125, 0.125, 0.75]],
+            },
+            {
+                "theta": [[0.5, 0.5], [0.875, 0.125]],
+                "phi": [[0.25, 0.25, 0.5], [0.625, 0.25, 0.125]],
+            },
+            {
+                "theta": [[0.125, 0.875], [0.625, 0.375]],
+                "phi": [[0.75, 0.125, 0.125], [0.25, 0.5, 0.25]],
+            },
+        ],
+        _lda,
+    ),
+    # The word rows arrive in an order other than the tokens', so the
+    # `via` map is a permutation and each word must be weighed by its own
+    # token's document.
+    "lda-permuted-rows": (
+        _LDA,
+        {
+            "w": [2, 0, 1, 2, 0, 0],
+            "doc_idx": [0, 0, 0, 1, 1, 1],
+            "token_idx": [3, 0, 5, 1, 4, 2],
+        },
+        [
+            {
+                "theta": [[0.875, 0.125], [0.125, 0.875]],
+                "phi": [[0.75, 0.125, 0.125], [0.0625, 0.125, 0.8125]],
             },
             {
                 "theta": [[0.5, 0.5], [0.875, 0.125]],
@@ -318,6 +357,19 @@ def test_the_changepoint_oracle_separates_rows_from_a_shared_rate() -> None:
         + D.Poisson(values["rate_before"]).log_prob(values["y"]).sum()
     )
     assert abs(float(oracle(values)) - float(shared)) > 1.0
+
+
+def test_the_lda_oracle_separates_the_via_map_from_the_row_order() -> None:
+    # Pairing each word with its own row's weights, as a target that
+    # leaves the `via` map unread does, scores a joint the oracle tells
+    # apart at every permuted point.
+    _, data, points, oracle = _CASES["lda-permuted-rows"]
+    for point in points:
+        values = {
+            name: torch.as_tensor(value, dtype=torch.float64)
+            for name, value in {**data, **point}.items()
+        }
+        assert abs(float(oracle(values)) - float(_lda_unmapped(values))) > 0.5
 
 
 @pytest.mark.parametrize(
