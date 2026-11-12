@@ -108,7 +108,7 @@ A [`Draw`](../../api/continuous/program_steps.md#quivers.continuous.program_step
 - `morphism`: the conditional distribution to draw from.
 - `args`: the earlier bindings the distribution reads, or `None` (the default) for the program input.
 
-An [`Observe`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) has the same fields and scores given data instead of drawing. A [`Let`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) binds one `name` to a deterministic `value`, and a [`Score`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) binds a `name` to the value of its `score` function and adds that value to the log weight. A name that a step reads and no earlier step binds is a data input, resolved at run time from the observations ([data inputs in the guide](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays)).
+An [`Observe`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) has the same fields and scores given data instead of drawing. A [`Let`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) binds one `name` to a deterministic `value`, and a [`Score`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) binds a `name` to the value of its `score` function and adds that value to the log weight. A name that a step reads and no earlier step binds is a *data input*, resolved at run time from the observations ([data inputs in the guide](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays)).
 
 Sample the program with an integer input:
 

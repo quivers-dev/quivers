@@ -51,7 +51,7 @@ print(float(run.value.detach()))
 8.16720962524414
 ```
 
-The reference machine and the compiled runtime's loss registry (`structural.losses`) give the same scalar. The runtime label names both providers: `core` runs the QIEC computation, and `structural` answers the encoder and decoder requests.
+The reference machine and the loss registry (`structural.losses`) of the [compiled runtime](../../guides/dsl-overview.md#compilation-pipeline), the PyTorch implementation of the module, give the same scalar. The runtime label names both providers: `core` runs the QIEC computation, and `structural` answers the encoder and decoder requests.
 
 ## 4. Differentiate through the run {#4-differentiate-through-the-entry-boundary}
 

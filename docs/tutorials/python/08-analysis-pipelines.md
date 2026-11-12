@@ -60,7 +60,7 @@ A [`BayesianFit`](../../api/formulas/fit.md) has these fields:
 | `.formula` | The parsed [`Formula`](../../api/formulas/formula.md): columns, family, response. |
 | `.program` | The compiled [`MonadicProgram`](../../api/continuous/programs.md). |
 | `.posterior` | An `MCMCResult` (NUTS or HMC) or a [`Guide`](../../api/inference/guide.md) (SVI). |
-| `.observations` | The observations dict used for inference: response values, data inputs, and group indices. |
+| `.observations` | The observations dict used for inference: response values, [data inputs](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays), and group indices. |
 
 The QVR program that the formula compiled to:
 
