@@ -4,6 +4,16 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.47.0] - 2026-11-11
+
+### Added
+
+- **Checked `matmul`, `layer_norm`, and `rms_norm` in let expressions.** `matmul(a, b)` sums the last axis of `a` against the first axis of a vector or matrix `b` (extents checked to agree), row by row for `a` of any rank; `layer_norm(v)` and `rms_norm(v)` normalize each row along the last axis with an optional real `eps` (`1e-5` and `1e-6` by default). They are checked, run on the reference machine and the compiled runtime, and transpile to every target, where they had been available only to native eager execution (`layer_norm`, `rms_norm`) or not at all (`matmul`).
+
+### Fixed
+
+- **Julia, WebPPL, and Church reduce a vector inside a let.** A Julia binding whose expression reduces a vector (a list literal included) is no longer wrapped in `@.`, which had applied the reduction to each entry; WebPPL and Church define `mean`, which a let reading a vector's mean had called unbound.
+
 ## [0.46.0] - 2026-11-11
 
 ### Added
