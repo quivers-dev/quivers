@@ -115,7 +115,7 @@ let weight = 0.5
 
 An observation uses a measured value in place of a draw and scores how well the current
 latent values predict it. If `mu` changes, the observed response stays fixed and its
-likelihood changes. SVI uses this score to update a guide, and MCMC uses it when
+likelihood changes. Stochastic variational inference (SVI) uses this score to update a guide, and MCMC uses it when
 proposing and accepting new values of `mu`.
 
 <!-- compile: false -->

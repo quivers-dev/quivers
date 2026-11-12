@@ -46,7 +46,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
     axis of the input, data inputs, and conditioning.
 14. [Variational Inference: Guides, Objectives, and SVI](inference-svi.md): guides,
     objectives, gradient estimators, the training loop, and predictive sampling.
-15. [MCMC and Hybrid Samplers](inference-mcmc.md): HMC and NUTS, composed kernels,
+15. [MCMC and Hybrid Samplers](inference-mcmc.md): Hamiltonian Monte Carlo (HMC) and the No-U-Turn Sampler (NUTS), composed kernels,
     tempered sequential Monte Carlo, and convergence diagnostics.
 
 ## Categorical structures

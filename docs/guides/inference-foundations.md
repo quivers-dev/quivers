@@ -269,7 +269,7 @@ divergence or a poor guide fit ([SVI](inference-svi.md#svi-stochastic-variationa
 
 - [Variational Inference: SVI](inference-svi.md): guides, objectives, gradient
   estimators, the training loop, and predictive sampling.
-- [MCMC and Hybrid Samplers](inference-mcmc.md): HMC, NUTS, hybrid samplers, and
+- [MCMC and Hybrid Samplers](inference-mcmc.md): Hamiltonian Monte Carlo (HMC), the No-U-Turn Sampler (NUTS), hybrid samplers, and
   predictive sampling from chains.
 - [Analysis: Fitting and Diagnostics](analysis-fitting-and-diagnostics.md): fitting,
   model comparison, and posterior predictive checks built on these pieces.

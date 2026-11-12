@@ -143,7 +143,7 @@ smallest normal number of the dtype, and at shape `1e-8` the median draw of `Log
 is near `-6.9e7`.
 
 Because the support is the real line, a site drawn from either family
-takes the identity as its bijector, so HMC, NUTS, and the guides see the exact
+takes the identity as its bijector, so Hamiltonian Monte Carlo (HMC), the No-U-Turn Sampler (NUTS), and the guides see the exact
 density, and prior draws, `rsample`, and initialization from the prior
 all sample the declared prior. A downstream quantity on the constrained
 scale is a `let`:

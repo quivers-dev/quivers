@@ -323,11 +323,11 @@ joint_fit = fit(
 )
 ```
 
-With `method="svi"`, `num_samples` is the number of SVI steps. The runtime recomputes
+With `method="svi"`, `num_samples` is the number of stochastic variational inference (SVI) steps. The runtime recomputes
 `parser(sentence_features)` on every step and passes the result to the generated
 program as the data input `neural_eta`. The SVI optimizer includes the predictor parameters, so gradients
 flow through the ordinal likelihood into the parser. A trainable external
-predictor is restricted to SVI, and NUTS and [HMC](inference-mcmc.md#mcmc-hmc-and-nuts) accept it only after its
+predictor is restricted to SVI, and the No-U-Turn Sampler (NUTS) and [HMC](inference-mcmc.md#mcmc-hmc-and-nuts) accept it only after its
 parameters have been frozen.
 
 Every [`ParamSource`](../api/continuous/param_source.md) is an

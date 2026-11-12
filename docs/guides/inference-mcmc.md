@@ -484,7 +484,7 @@ path between base and target: each transition draws a fresh momentum
 and takes leapfrog steps on the bridge
 $q_0^{1-\beta_k}\, p^{\beta_k}$, with no Metropolis correction. The
 base mean and scale, step sizes, and inverse temperatures are jointly
-trained via SVI, differentiating through the whole trajectory.
+trained via stochastic variational inference (SVI), differentiating through the whole trajectory.
 
 Each draw comes with the log importance weight of its own trajectory,
 
