@@ -137,6 +137,13 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # and the zeros trick that would score the shifted code needs a
     # data-bound carrier, so BUGS refuses the observed code.
     ("bugs", "lda"): "observe:class-code",
+    # lda gathers each token's topic weights, `theta[doc_idx]`, as the
+    # prior of a per-token marginalize. Turing and Gen read a marginalize
+    # head's weights only from a declared plate, and JAGS has no
+    # expression form for the elementwise operator the gather lowers to.
+    ("gen", "lda"): "marginalize:weight-plate",
+    ("turing", "lda"): "marginalize:weight-plate",
+    ("jags", "lda"): "let-expr:elementwise-axis-operator",
 }
 
 # A morphism that draws its mean from an `mlp` param source keeps its
@@ -169,6 +176,12 @@ for _ungrouped_backend in (
         _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, _ungrouped_example)] = (
             "marginalize:ungrouped-over-plate"
         )
+
+# irt_2pl scores its responses with `Bernoulli(logits=...)`. These
+# targets have no Bernoulli given by its logits and refuse it by name
+# rather than rebuild the probability with a sigmoid.
+for _logit_backend in ("bugs", "gen", "jags", "webppl"):
+    _EXPECTED_TRANSPILE_RAISES[(_logit_backend, "irt_2pl")] = "family:Bernoulli:logits"
 
 # tree_categorical builds its leaf table with a `factor` over the
 # `Class` axis, which no plate of the program carries; the Gen helper
@@ -342,8 +355,8 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
     "irt_2pl": (
         -1307.60009765625,
         -1328.0120849609375,
-        -1623.36962890625,
-        -1703.003662109375,
+        -1623.3701171875,
+        -1702.986572265625,
         -1334.9044189453125,
         -1599.81591796875,
     ),
@@ -356,12 +369,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         41.459083557128906,
     ),
     "lda": (
-        -18.173583984375,
-        -18.84844970703125,
-        -444.3291015625,
-        -437.18743896484375,
-        -20.41473388671875,
-        -442.911376953125,
+        -2883.196533203125,
+        -2889.601806640625,
+        -4164.62158203125,
+        -4198.44140625,
+        -2867.694580078125,
+        -4146.25732421875,
     ),
     "logistic_noise_regression": (
         -80.29877471923828,

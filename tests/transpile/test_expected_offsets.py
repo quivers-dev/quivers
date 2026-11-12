@@ -625,16 +625,12 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("webppl", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
     # irt_2pl: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
-    ("bugs", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     # kumaraswamy_bounded_outcome: 1 HalfNormal folded factor(s).
     # `jags` also owes the zeros-trick lift: it has no `Kumaraswamy`
     # distribution, so `_emit_kumaraswamy` writes the closed-form
@@ -659,11 +655,8 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs` refuses the example: its word codes are observed class
-    # codes, which BUGS cannot shift to `dcat`'s one-based classes.
-    ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "lda"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "lda"): _derived(half_sites=0, dropped_sites=0),
+    # `bugs`, `jags`, `turing`, and `gen` refuse the example; the
+    # refusals are pinned in `_EXPECTED_TRANSPILE_RAISES`.
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),
