@@ -487,14 +487,14 @@ class SMC:
         self.seed = seed
         self.generator = generator
 
-    def _run_generator(self) -> torch.Generator:
-        """The generator of one run.
+    def _run_seed(self) -> int:
+        """The base seed of one run.
 
         Returns
         -------
-        torch.Generator
-            Derived from ``seed``, from a draw of ``generator``, or from
-            Torch's initial seed, without touching the global RNG.
+        int
+            ``seed``, a draw of ``generator``, or Torch's initial seed,
+            read without touching the global RNG.
         """
         if self.generator is not None:
             base = int(
@@ -506,7 +506,7 @@ class SMC:
             base = self.seed
         else:
             base = torch.initial_seed()
-        return MCMC._chain_generator(base, 0)
+        return base
 
     @staticmethod
     def _log_evidence_increment(
@@ -611,13 +611,19 @@ class SMC:
         """
         _require_one_run(x, "SMC.run")
         _check_observed_support(model, observations, "SMC.run")
+        base = self._run_seed()
+        # The run that fixes the latents draws from a stream of its own
+        # derived from the run's seed, so a seeded run records the same
+        # latents whatever Torch's global RNG holds, and leaves it as it was.
+        recording = MCMC._chain_generator(base, -1)
         with torch.random.fork_rng(devices=[]):
+            torch.random.set_rng_state(recording.get_state())
             recorded = trace(model, x, observations=observations)
         gibbs_sites = self.kernel.gibbs_sites
         gibbs_morphisms = _check_gibbs_sites(recorded, gibbs_sites)
         registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = TemperedPotential(model, registry, x, observations, 0.0)
-        generator = self._run_generator()
+        generator = MCMC._chain_generator(base, 0)
         self.kernel._set_generator(generator)
 
         positions, gibbs = self._prior_particles(
