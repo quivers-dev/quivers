@@ -168,7 +168,7 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
     ----------
     declaration : ProgramDecl
         A program for which
-        [`returns_marginalized_latent`][quivers.dsl.markov_chains.returns_marginalized_latent]
+        `returns_marginalized_latent`
         holds.
 
     Returns
