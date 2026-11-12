@@ -175,6 +175,9 @@ _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "binomial": "lpmf",
     "categorical": "lpmf",
     "categorical_logit": "lpmf",
+    "bernoulli_logit": "lpmf",
+    "binomial_logit": "lpmf",
+    "multi_normal_prec": "lpdf",
     "cauchy": "lpdf",
     "chi_square": "lpdf",
     "continuous_bernoulli": "lpdf",
@@ -207,6 +210,42 @@ _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "weibull": "lpdf",
     "wishart": "lpdf",
 }
+
+
+#: The Stan density that takes each alternative parameterization a family
+#: call can name, keyed by family and the parameter that selects it.
+_STAN_PARAMETERIZED_NAMES: dict[tuple[str, str], str] = {
+    ("Categorical", "logits"): "categorical_logit",
+    ("Bernoulli", "logits"): "bernoulli_logit",
+    ("Binomial", "logits"): "binomial_logit",
+    ("MultivariateNormal", "precision_matrix"): "multi_normal_prec",
+}
+
+
+def _stan_parameterized_name(
+    family: str, arg_names: tuple[str, ...], default: str
+) -> str:
+    """The Stan density for the parameterization a call names.
+
+    Parameters
+    ----------
+    family : str
+        The family.
+    arg_names : tuple[str, ...]
+        The parameters the call supplies.
+    default : str
+        The family's Stan density under its canonical parameterization.
+
+    Returns
+    -------
+    str
+        The density that takes the named parameterization.
+    """
+    for name in arg_names:
+        selected = _STAN_PARAMETERIZED_NAMES.get((family, name))
+        if selected is not None:
+            return selected
+    return default
 
 
 def _is_infinite_bound(bound: IRArg) -> bool:
@@ -1365,8 +1404,7 @@ class StanRenderer(RendererBase):
             return self._emit_mixture_normal(
                 ctx, name=name, args=args, arg_names=arg_names, plate=plate
             )
-        if family == "Categorical" and arg_names == ("logits",):
-            stan_name = "categorical_logit"
+        stan_name = _stan_parameterized_name(family, arg_names, stan_name)
         density_name = self._log_density_name(family, stan_name)
         vector_slots = _vector_argument_slots(meta, arg_names)
         parent = self._ensure_block(ctx, "model")
@@ -2018,8 +2056,7 @@ class StanRenderer(RendererBase):
                 "qvr-stan",
                 [f"family:no-stan-target:{node.family}"],
             )
-        if node.family == "Categorical" and node.arg_names == ("logits",):
-            stan_name = "categorical_logit"
+        stan_name = _stan_parameterized_name(node.family, node.arg_names, stan_name)
         # Eligibility checks satisfied; compute the latent cardinality.
         latent_card = self._latent_cardinality(meta, node)
         if latent_card is None:
@@ -2227,8 +2264,7 @@ class StanRenderer(RendererBase):
                 "qvr-stan",
                 [f"family:no-stan-target:{node.family}"],
             )
-        if node.family == "Categorical" and node.arg_names == ("logits",):
-            stan_name = "categorical_logit"
+        stan_name = _stan_parameterized_name(node.family, node.arg_names, stan_name)
         # Declare the latent in the parameters block.
         self.declare(
             ctx,
@@ -2318,8 +2354,7 @@ class StanRenderer(RendererBase):
                 "qvr-stan",
                 [f"family:no-stan-target:{node.family}"],
             )
-        if node.family == "Categorical" and node.arg_names == ("logits",):
-            stan_name = "categorical_logit"
+        stan_name = _stan_parameterized_name(node.family, node.arg_names, stan_name)
         lps_name = self._marginalize_var or ""
         if not lps_name:
             raise UnsupportedConstruct(
@@ -2415,8 +2450,7 @@ class StanRenderer(RendererBase):
                 "qvr-stan",
                 [f"family:no-stan-target:{node.family}"],
             )
-        if node.family == "Categorical" and node.arg_names == ("logits",):
-            stan_name = "categorical_logit"
+        stan_name = _stan_parameterized_name(node.family, node.arg_names, stan_name)
         lpdf_name = self._log_density_name(node.family, stan_name)
         lps_name = self._marginalize_var or ""
         group_idx_exprs = self._marginalize_group_index_exprs(node, parent, loop_names)

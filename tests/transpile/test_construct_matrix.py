@@ -262,6 +262,67 @@ for _backend in (
         "family:Wishart:scale_tril"
     )
 
+# An alternative parameterization a target's library lacks is refused by
+# name, beside the literal-matrix limits the canonical forms meet.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    {
+        ("bugs", "steps", "sample_mvn_covariance"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_covariance"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_covariance"): (
+            "family:MultivariateNormal:non-ref-covariance"
+        ),
+        ("bugs", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+        ("church", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+        ("jags", "steps", "sample_mvn_precision"): "arg:matrix-literal",
+    }
+)
+for _fixture in ("sample_wishart_covariance", "sample_wishart_precision"):
+    for _backend, _kind in (
+        ("bugs", "arg:matrix-literal"),
+        ("jags", "arg:matrix-literal"),
+        ("church", "family:Wishart"),
+        ("edward2", "family:Wishart"),
+        ("gen", "family:Wishart"),
+        ("webppl", "family:no-webppl-target:Wishart"),
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = _kind
+for _fixture, _family, _backends in (
+    (
+        "observe_bernoulli_logits",
+        "Bernoulli",
+        ("bugs", "church", "gen", "jags", "webppl"),
+    ),
+    (
+        "observe_binomial_logits",
+        "Binomial",
+        ("bugs", "church", "gen", "jags", "webppl"),
+    ),
+    (
+        "observe_geometric_logits",
+        "Geometric",
+        ("bugs", "church", "gen", "jags", "pymc", "stan", "turing", "webppl"),
+    ),
+    (
+        "observe_negative_binomial_logits",
+        "NegativeBinomial",
+        (
+            "bugs",
+            "church",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "stan",
+            "turing",
+            "webppl",
+        ),
+    ),
+):
+    for _backend in _backends:
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            f"family:{_family}:logits"
+        )
+
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.
 _EXPECTED_ORTHOGONAL_RAISES.update(

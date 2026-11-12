@@ -1,0 +1,9 @@
+# A Binomial observation written with logits, the log-odds a sampled
+# linear predictor gives.
+object Row : FinSet 4
+object One : FinSet 1
+program binomial_logits : One -> One
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    observe y : Row <- Binomial(total_count=10, logits=eta)
+    return eta
+export binomial_logits

@@ -198,6 +198,20 @@ def can_spell(target: str, family: str) -> bool:
     )
 
 
+#: Alternative parameterizations no speller here reads, each with the
+#: parameter the spellers read in its place: a first-class construction
+#: naming the alternative alone is refused rather than spelled
+#: positionally as that parameter.
+_UNSPELLED_ALTERNATIVES: dict[tuple[str, str], str] = {
+    **{
+        (family, "logits"): "probs"
+        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+    },
+    ("MultivariateNormal", "precision_matrix"): "covariance_matrix",
+    ("Wishart", "precision_matrix"): "scale_tril",
+}
+
+
 def spell_distribution(
     target: str,
     family: str,
@@ -234,6 +248,20 @@ def spell_distribution(
     if not can_spell(target, family):
         raise UnsupportedConstruct(
             f"qvr-{target}", [f"qiec:distribution:{family}:no-{target}-spelling"]
+        )
+    alternative = next(
+        (
+            name
+            for name in arguments
+            if (family, name) in _UNSPELLED_ALTERNATIVES
+            and _UNSPELLED_ALTERNATIVES[(family, name)] not in arguments
+        ),
+        None,
+    )
+    if alternative is not None:
+        raise UnsupportedConstruct(
+            f"qvr-{target}",
+            [f"qiec:distribution:{family}:{alternative}:no-{target}-spelling"],
         )
     record = FAMILIES[family]
     speller = _SPELLERS[target]
