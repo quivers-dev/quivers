@@ -1,56 +1,32 @@
-# GRU-Shaped Stochastic Language Model
-#
-# A stochastic gated recurrence wrapped in scan and used as a
-# causal language model. It borrows the update and reset gates
-# of a GRU, but its candidate is centered directly on the
-# reset-gated previous state rather than on a learned transform
-# of (x_t, r_t * h_{t-1}).
-#
-# Generative structure:
-#
-#   z_t      ~ LogitNormal(gate_z(x_t, h_{t-1}))  update gate
-#   r_t      ~ LogitNormal(gate_r(x_t, h_{t-1}))  reset gate
-#   h_cand   ~ Normal(r_t * h_{t-1}, 0.5)         simplified candidate
-#   h_t      = (1 - z_t) * h_{t-1} + z_t * h_cand gated update
-#   next_t   ~ Categorical(logits=lm_head(h_t))   next-token target
-#
-# scan threads hidden state across each sequence and returns its
-# terminal state; a Categorical lm_head projects that summary
-# onto the Token vocabulary.
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
-#
-# Reference: [Cho et al. 2014](https://doi.org/10.3115/v1/D14-1179).
+# A gated recurrent unit language model with learned weights. The gates and
+# the candidate state are learned functions of the current token and the
+# state; the update interpolates between the previous state and the
+# candidate, and each position scores the next token.
+object Vocab : Real 6
+object Hidden : Real 8
+object Logits : Real 6
 
-object Token : FinSet 256
-object Embedded : Real 64
-object Hidden : Real 128
+# z_t = sigmoid(W_z [x_t; h_{t-1}] + b_z), the update gate.
+morphism update_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+# r_t = sigmoid(W_r [x_t; h_{t-1}] + b_r), the reset gate.
+morphism reset_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+# n_t = tanh(W_n [x_t; r_t * h_{t-1}] + b_n), the candidate state.
+morphism candidate : Vocab * Hidden -> Hidden [role=function, output=tanh]
+morphism lm_head : Hidden -> Logits [role=function]
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism gate_z, gate_r : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism lm_head : Hidden -> Token ~ Categorical
+program gru_step(x_t, h_prev) : Vocab * Hidden -> Hidden
+    let z = update_gate(x_t, h_prev)
+    let r = reset_gate(x_t, h_prev)
+    let n = candidate(x_t, r * h_prev)
+    let h = (1.0 - z) * n + z * h_prev
+    let logits = lm_head(h)
+    observe next_token <- Categorical(logits=logits)
+    return h
 
-program gru_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample z <- gate_z(x_t, h_prev)
-    sample r <- gate_r(x_t, h_prev)
+define run_all = scan(gru_step)
 
-    let reset_hidden = r * h_prev
-
-    sample h_cand <- Normal(loc=reset_hidden, scale=0.5)
-
-    let z_complement = 1.0 - z
-    let h_new = z_complement * h_prev + z * h_cand
-    return h_new
-
-define backbone = tok_embed >> scan(gru_cell)
-
-program gru_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token <- lm_head(h)
-    return next_token
+program gru_lm : Vocab -> Hidden
+    sample last <- run_all
+    return last
 
 export gru_lm
