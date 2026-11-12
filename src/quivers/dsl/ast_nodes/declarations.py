@@ -596,7 +596,7 @@ class LossDecl(Statement):
     Option keys: ``weight=<expr>``, ``on=<attachment>``. The
     ``on`` value is an `OptionCall` of one of ``program(NAME)``,
     ``deduction(NAME)``, ``encoder(NAME)``, ``decoder(NAME)``,
-    ``rule(NAME, in=DEDUCTION)``, ``chart(of=DEDUCTION)``, or an
+    ``rule(RULE, DEDUCTION)``, ``chart(DEDUCTION)``, or an
     `OptionFlag` ``global``.
     """
 

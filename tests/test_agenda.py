@@ -186,10 +186,11 @@ class TestEndToEnd:
         # Two log(1) = 0 premises × LOG_PROB.times = 0 + 0 = 0
         assert float(w) == 0.0
 
-    def test_strategy_independence_idempotent(self):
-        """Goodman 1999 §3: chart fixed point is strategy-independent
-        for idempotent semirings. Run CKY, FIFO/semi-naive, and LIFO
-        on the same grammar + axioms and assert the goal weights agree.
+    def test_strategy_independence_acyclic(self):
+        """On an acyclic grammar the chart is the sum over derivations,
+        whatever the agenda discipline. Run CKY, FIFO/semi-naive, LIFO,
+        and Earley on the same grammar and axioms and assert the goal
+        weights agree.
         """
         rules, semiring = self.grammar()
         axioms = [
@@ -219,8 +220,8 @@ class TestEndToEnd:
         # All strategies agree on the chart's goal-item set.
         keys = [tuple(sorted(d)) for d in weights]
         assert all(k == keys[0] for k in keys), f"goal-item sets differ: {keys}"
-        # All strategies agree on each goal's weight, up to numerical
-        # logsumexp ordering (LOG_PROB is idempotent under join).
+        # All strategies agree on each goal's weight, up to the
+        # floating-point order of the logsumexp reductions.
         for k in weights[0]:
             vals = [d[k] for d in weights]
             assert all(abs(v - vals[0]) < 1e-5 for v in vals), (

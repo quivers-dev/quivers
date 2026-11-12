@@ -52,7 +52,6 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.joint_plan import JointPlan
-from quivers.effects.trace_types import Trace
 from quivers.inference.mcmc.driver import (
     MCMC,
     _check_gibbs_sites,
@@ -712,7 +711,7 @@ class SMC:
             run = _with_generator(
                 generator, lambda: trace(model, x, observations=observations)
             )
-            draw = _registry_draw(registry, run)
+            draw = registry.trace_draw(run)
             unconstrained, _ = registry.to_unconstrained(draw)
             positions.append(registry.flatten_unconstrained(unconstrained))
             gibbs.append({name: run.sites[name].value.detach() for name in gibbs_sites})
@@ -853,49 +852,6 @@ class SMC:
                 [_gibbs_draw(values[name], morphism) for values in gibbs]
             )
         return samples
-
-
-def _registry_draw(registry: LatentRegistry, run: Trace) -> dict[str, torch.Tensor]:
-    """One draw per registry site, at its constrained shape, from a run.
-
-    A site a destructuring draw binds takes its share of the draw's
-    value, split evenly along the last axis.
-
-    Parameters
-    ----------
-    registry : LatentRegistry
-        The registry.
-    run : Trace
-        A run of the model.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Each registry site's value at `LatentSite.constrained_shape`.
-
-    Raises
-    ------
-    ValueError
-        If a registry site is missing from the run.
-    """
-    out: dict[str, torch.Tensor] = {}
-    for name, site in registry.sites.items():
-        record = run.sites.get(name)
-        value: torch.Tensor | None = None
-        if record is not None:
-            value = record.value.detach()
-        else:
-            for label, candidate in run.sites.items():
-                names = label.split(",")
-                if name in names:
-                    value = candidate.value.detach().chunk(len(names), dim=-1)[
-                        names.index(name)
-                    ]
-                    break
-        if value is None:
-            raise ValueError(f"SMC: the run did not reach the latent site {name!r}")
-        out[name] = value.reshape(site.constrained_shape)
-    return out
 
 
 def _increments(log_likelihoods: torch.Tensor, delta: float) -> torch.Tensor:

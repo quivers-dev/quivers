@@ -247,8 +247,8 @@ def learned_function_draw_message(name: str) -> str:
     """
     return (
         f"the learned function {name!r} is deterministic, so no step draws "
-        f"from it; bind its value with `let v = {name}(...)` and draw from a "
-        f"family around it, as in `sample s <- Normal(loc=v, scale=...)`"
+        f"from it; bind its value with `let v = {name}(x)` and draw from a "
+        f"family around it, as in `sample s <- Normal(loc=v, scale=1.0)`"
     )
 
 

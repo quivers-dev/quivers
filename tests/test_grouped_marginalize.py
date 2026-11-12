@@ -240,7 +240,7 @@ class TestGroupedMarginalizeSurface:
 
         export demo
         """
-        with pytest.raises(CompileError, match="must carry its own `via"):
+        with pytest.raises(CompileError, match="must carry its own via option"):
             _compile(src)
 
     def test_grouped_requires_class_annotation(self):

@@ -2246,6 +2246,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if isinstance(declaration, ProgramDecl)
         }
         computations: list[NamedComputation] = []
+        # The type of each latent every elaborated program samples, by
+        # program, for the posterior blocks that consume them.
+        self._program_latent_types: dict[str, dict[str, TypeExpr]] = {}
         # The cell of a marginalized chain returns the latent it
         # marginalizes; it elaborates only as the row of the scan that
         # runs it.
@@ -2492,6 +2495,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state.tables = _gathered_tables(declaration.draws)
         state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
+        self._program_latent_types[declaration.name] = {
+            site.name: scope.locals[site.name].type
+            for site in state.sites
+            if site.kind == "sample" and site.name in scope.locals
+        }
         self._unify_result_extents(declaration, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
@@ -2624,7 +2632,23 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"parameter(s) for a domain of {len(factors)} factor(s)",
                     code="qiec-program",
                 )
+            consumed = self._consumed_latent_types(declaration)
             for name, factor in zip(declaration.params, factors, strict=True):
+                if consumed is not None:
+                    latent = consumed.get(name)
+                    if latent is None:
+                        self._fail(
+                            declaration,
+                            f"posterior block {declaration.name!r} names the "
+                            f"parameter {name!r}, which is not a latent the "
+                            "model it consumes samples; its latents are "
+                            + (", ".join(repr(n) for n in consumed) or "none"),
+                            code="qiec-program",
+                        )
+                    self._declare_parameter(
+                        name, latent, "domain", scope, state, declaration
+                    )
+                    continue
                 info = self._object_info(factor, declaration)
                 if info.real_width is not None:
                     type_: TypeExpr = tensor_type(REAL, (_extent(info.real_width),))
@@ -2730,6 +2754,46 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             self._program_objects[parameter.name] = info
             state.template_objects.append(parameter.name)
+
+    def _consumed_latent_types(
+        self: _Elaborator, declaration: ProgramDecl
+    ) -> dict[str, TypeExpr] | None:
+        """The latent types of the model a posterior block consumes.
+
+        A posterior block (``[over=model]``) names the model's latents as
+        its parameters, so each parameter has the type of the model's
+        site of that name: real for a real draw, a real vector for a
+        vector draw, an index for a draw over a finite set.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+
+        Returns
+        -------
+        dict[str, TypeExpr] | None
+            The consumed model's sampled latents and their types, or
+            ``None`` when the program is not a posterior block.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the consumed model is not a program elaborated before the
+            block.
+        """
+        over = _option_entry(declaration.options, "over")
+        if not isinstance(over, OptionName):
+            return None
+        latents = self._program_latent_types.get(over.value)
+        if latents is None:
+            self._fail(
+                declaration,
+                f"posterior block {declaration.name!r} consumes {over.value!r}, "
+                "which is not a program declared before it",
+                code="qiec-program",
+            )
+        return latents
 
     def _declare_parameter(
         self: _Elaborator,
