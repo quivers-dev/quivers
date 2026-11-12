@@ -27,7 +27,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **`left_kan` and `right_kan` require an `IdempotentSemiring`.** Along a function between finite sets, the Kan extensions are the pointwise join and meet of a complete lattice, so the functions refuse an algebra whose join is not a lattice join (`PRODUCT_FUZZY`, `LOG_PROB`, ...) with a `TypeError`, use the morphism's own algebra by default, and fill an empty fibre with the top element for `right_kan` (`IdempotentSemiring.top`, `+∞` for `MAX_PLUS`) where it had used the unit. Both satisfy `Lan_p ⊣ p* ⊣ Ran_p`.
 
+- **The enriched constructions require a complete lattice.** `coend`, `end`, `Profunctor`, `Presheaf`, `yoneda_lemma`, `yoneda_density`, `representable_profunctor`, `corepresentable_profunctor`, `Weight`, `weighted_limit_morphisms`, `weighted_colimit_morphisms`, `representable_weight`, `terminal_weight`, `day_convolution`, `day_unit` and `day_convolution_profunctors` take a required `IdempotentSemiring` algebra (no `PRODUCT_FUZZY` default) and raise `TypeError` otherwise; `day_convolution` takes `algebra` before `product_table`. Internal homs are `IdempotentSemiring.residuum` (Boolean and Gödel implication, truncated subtraction for `TROPICAL`, subtraction for `MAX_PLUS`), and empty meets are `IdempotentSemiring.top`. `Profunctor.compose` refuses a profunctor over another algebra.
+- **`weighted_limit`, `weighted_colimit` and `Diagram` are removed.** They returned tensor products of scaled identity tensors, which are not weighted (co)limits; the weighted (co)limits of parallel morphisms remain as `weighted_limit_morphisms` and `weighted_colimit_morphisms`, characterized by their universal properties.
+- **`verify_yoneda_fully_faithful` is renamed `verify_yoneda_preserves_composition`**, which is the one equation it checks.
+
 ### Fixed
+
+- **The residuum is the internal hom of each lattice.** `weighted_limit_morphisms` and `yoneda_lemma` use `IdempotentSemiring.residuum`, where an approximation `¬(w ⊗ ¬x)` gave wrong values for `GODEL` (`[0.5, 0.25]` came out as `1` rather than `0.25`). `day_convolution` matches the monoidal product to an object by equality, not by tensor shape, and raises `ValueError` when the objects are not closed under the product.
 
 - **API docstrings state the mathematics correctly.** `quivers.stochastic.semiring` describes the log semiring on `[-∞, ∞)` as a non-idempotent semiring rather than a lattice or quantale; `quivers.core.objects` lists its six set-object variants and documents `SetObject` as an object type and `FreeResiduated` as a finite set of Lambek-calculus formulas; `quivers.continuous.programs` shows the current `sample x <- f` syntax.
 

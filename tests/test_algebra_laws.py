@@ -419,3 +419,21 @@ def test_idempotent_semirings_are_bounded_lattices(name: str) -> None:
         for c in grid:
             if leq(c, a) and leq(c, b):
                 assert leq(c, m)
+
+
+@pytest.mark.parametrize("name", _IDEMPOTENT)
+def test_residuum_is_right_adjoint_to_the_tensor(name: str) -> None:
+    """``v ⊗ w ≤ x ⟺ v ≤ [w, x]`` for every ``v, w, x`` on the grid."""
+    alg, plus, times, _, _, grid = _REFERENCE[name]
+    assert isinstance(alg, IdempotentSemiring)
+
+    def leq(a: float, b: float) -> bool:
+        return _eq(plus(a, b), b)
+
+    for v, w, x in itertools.product(grid, repeat=3):
+        r = float(
+            alg.residuum(
+                torch.tensor(w, dtype=torch.float64), torch.tensor(x, dtype=torch.float64)
+            )
+        )
+        assert leq(times(v, w), x) == leq(v, r), (v, w, x, r)

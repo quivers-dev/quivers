@@ -8,7 +8,8 @@ is:
     (F ⊛ G)(C) = ∫^{A,B} C(C, A ⊗ B) ⊗ F(A) ⊗ G(B)
 
 In our finite setting, this becomes a computable coend (join over
-all pairs (A, B) such that A ⊗ B can map to C).
+all pairs (A, B) such that A ⊗ B can map to C). The coend is a join,
+so V must be a complete lattice (an `IdempotentSemiring`).
 
 The unit for Day convolution is the representable presheaf at the
 monoidal unit: y(I)(C) = C(C, I).
@@ -27,7 +28,8 @@ from collections.abc import Sequence
 import torch
 
 from quivers.core.objects import SetObject
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import IdempotentSemiring
+from quivers.enriched._lattice import require_lattice
 from quivers.categorical.monoidal import MonoidalStructure
 from quivers.enriched.profunctors import Profunctor
 
@@ -37,8 +39,8 @@ def day_convolution(
     g_values: torch.Tensor,
     objects: Sequence[SetObject],
     monoidal: MonoidalStructure,
+    algebra: IdempotentSemiring,
     product_table: dict[tuple[int, int], tuple[int, torch.Tensor]] | None = None,
-    algebra: Algebra | None = None,
 ) -> torch.Tensor:
     """Compute the Day convolution (F ⊛ G)(C) for each object C.
 
@@ -68,15 +70,23 @@ def day_convolution(
         (k, hom_tensor) where objects[i] ⊗ objects[j] ≅ objects[k]
         and hom_tensor is C(objects[k], objects[i] ⊗ objects[j]).
         If None, uses identity hom (discrete category).
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         1D tensor of shape (n,) with (F ⊛ G)(objects[i]) at index i.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
+    ValueError
+        If the value tensors have the wrong shape, or (without a
+        product table) the objects are not closed under ``⊗``.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "Day convolution")
     n = len(objects)
 
     if f_values.shape != (n,) or g_values.shape != (n,):
@@ -113,22 +123,25 @@ def day_convolution(
                 result[k] = new_val.squeeze(0)
 
             else:
-                # discrete case: A_i ⊗ A_j must map to some A_k
-                # for FinSets with cartesian monoidal, this only
-                # works when objects are closed under ⊗
+                # Discrete case: (F ⊛ G)(C) joins F(A) ⊗ G(B) over the
+                # pairs with A ⊗ B = C, so A ⊗ B must be one of the
+                # objects.
                 prod = monoidal.product(objects[i], objects[j])
-
-                # find matching object
-                for k in range(n):
-                    if objects[k].shape == prod.shape:
-                        current = result[k].unsqueeze(0)
-                        new_val = q.join(
-                            torch.stack([current, fg.unsqueeze(0)]),
-                            dim=0,
-                        )
-                        result[k] = new_val.squeeze(0)
-
-                        break
+                matches = [k for k in range(n) if objects[k] == prod]
+                if not matches:
+                    raise ValueError(
+                        f"Day convolution over a discrete category needs the "
+                        f"objects closed under the monoidal product; "
+                        f"{objects[i]!r} ⊗ {objects[j]!r} = {prod!r} is not "
+                        f"among them"
+                    )
+                k = matches[0]
+                current = result[k].unsqueeze(0)
+                new_val = q.join(
+                    torch.stack([current, fg.unsqueeze(0)]),
+                    dim=0,
+                )
+                result[k] = new_val.squeeze(0)
 
     return result
 
@@ -136,7 +149,7 @@ def day_convolution(
 def day_unit(
     objects: Sequence[SetObject],
     unit_index: int,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Create the unit presheaf for Day convolution.
 
@@ -149,15 +162,20 @@ def day_unit(
         The objects of the finite category.
     unit_index : int
         The index of the monoidal unit in the objects list.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         1D tensor of shape (n,) representing the unit presheaf.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "Day convolution")
     n = len(objects)
     result = torch.full((n,), q.zero)
     result[unit_index] = q.unit
@@ -169,7 +187,7 @@ def day_convolution_profunctors(
     p: Profunctor,
     q_prof: Profunctor,
     monoidal: MonoidalStructure,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> Profunctor:
     """Day convolution of two profunctors.
 
@@ -193,15 +211,20 @@ def day_convolution_profunctors(
         Right profunctor Q: C ↛ D.
     monoidal : MonoidalStructure
         The monoidal structure providing ⊗.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     Profunctor
         The Day convolution P ⊛ Q: A⊗C ↛ B⊗D.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    qnt = algebra if algebra is not None else PRODUCT_FUZZY
+    qnt = require_lattice(algebra, "Day convolution")
 
     contra = monoidal.product(p.contra, q_prof.contra)
     co = monoidal.product(p.co, q_prof.co)

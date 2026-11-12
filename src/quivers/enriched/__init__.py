@@ -29,9 +29,6 @@ from quivers.enriched.kan_extensions import (
 # weighted_limits
 from quivers.enriched.weighted_limits import (
     Weight,
-    Diagram,
-    weighted_limit,
-    weighted_colimit,
     weighted_limit_morphisms,
     weighted_colimit_morphisms,
     representable_weight,
@@ -49,7 +46,7 @@ from quivers.enriched.yoneda import (
     yoneda_embedding,
     yoneda_lemma,
     yoneda_density,
-    verify_yoneda_fully_faithful,
+    verify_yoneda_preserves_composition,
 )
 
 # day_convolution
@@ -81,9 +78,6 @@ __all__ = [
     "right_kan",
     # weighted_limits
     "Weight",
-    "Diagram",
-    "weighted_limit",
-    "weighted_colimit",
     "weighted_limit_morphisms",
     "weighted_colimit_morphisms",
     "representable_weight",
@@ -97,7 +91,7 @@ __all__ = [
     "yoneda_embedding",
     "yoneda_lemma",
     "yoneda_density",
-    "verify_yoneda_fully_faithful",
+    "verify_yoneda_preserves_composition",
     # day_convolution
     "day_convolution",
     "day_unit",

@@ -458,6 +458,29 @@ class IdempotentSemiring(Semiring):
         """
         ...
 
+    @abstractmethod
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """The residuum ``[w, x]``, the greatest ``v`` with ``v ⊗ w ≤ x``.
+
+        The order is ``a ≤ b ⟺ a ⊕ b = b``. Residuation,
+        ``v ⊗ w ≤ x ⟺ v ≤ [w, x]``, makes ``[w, -]`` right adjoint to
+        ``- ⊗ w``; it is the internal hom that weighted limits and
+        the Yoneda lemma use.
+
+        Parameters
+        ----------
+        w : torch.Tensor
+            The left argument, broadcastable with ``x``.
+        x : torch.Tensor
+            The right argument.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[w, x]`` elementwise.
+        """
+        ...
+
 
 class DualAlgebra(Algebra):
     """The role-swapped dual of a commutative algebra.
@@ -563,6 +586,15 @@ class DualIdempotentSemiring(DualAlgebra, IdempotentSemiring):
         """The greatest element of the join order."""
         return float(self._base.zero)
 
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """``[w, x] = 0`` if ``w ≥ x`` (real order), else ``x``.
+
+        The dual order reverses the reals and its tensor is ``max``, so
+        ``max(v, w) ≥ x`` on the reals; its least real solution is
+        ``0`` when ``w ≥ x`` and ``x`` otherwise.
+        """
+        w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
+        return torch.where(w >= x, torch.zeros_like(x), x)
 
 def _fold_along_dim(
     op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
@@ -1120,6 +1152,10 @@ class BooleanAlgebra(IdempotentSemiring):
         """The greatest element of the join order."""
         return 1.0
 
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """``[w, x] = ¬w ∨ x``, Boolean implication."""
+        w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
+        return torch.maximum(1.0 - w, x)
 
 # ============================================================================
 # Standard MV-algebra and Gödel algebra on [0, 1]
@@ -1248,6 +1284,10 @@ class GodelAlgebra(IdempotentSemiring):
         """The greatest element of the join order."""
         return 1.0
 
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """``[w, x] = 1`` if ``w ≤ x``, else ``x``: the Gödel implication."""
+        w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
+        return torch.where(w <= x, torch.ones_like(x), x)
 
 # ============================================================================
 # Tropical / max-plus / log-prob semirings
@@ -1320,6 +1360,16 @@ class TropicalAlgebra(IdempotentSemiring):
         """The greatest element of the join order."""
         return 0.0
 
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """``[w, x] = max(x - w, 0)``, truncated subtraction.
+
+        The order reverses the reals (``a ≤ b ⟺ min(a, b) = b``), so
+        ``v + w ≤ x`` there means ``v + w ≥ x`` on the reals, whose
+        least real solution is ``max(x - w, 0)``; ``w = ∞`` gives ``0``.
+        """
+        w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
+        diff = torch.where(torch.isinf(w), torch.zeros_like(x), x - w)
+        return diff.clamp(min=0.0)
 
 class MaxPlusAlgebra(IdempotentSemiring):
     """Max-plus (Viterbi) semiring on ℝ ∪ {-∞}.
@@ -1387,6 +1437,12 @@ class MaxPlusAlgebra(IdempotentSemiring):
         """The greatest element of the join order."""
         return float("inf")
 
+    def residuum(self, w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """``[w, x] = x - w``, with ``[-∞, x] = +∞`` and ``[w, +∞] = +∞``."""
+        w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
+        inf = torch.full_like(x, float("inf"))
+        out = torch.where(torch.isneginf(w), inf, x - w)
+        return torch.where(torch.isposinf(x), inf, out)
 
 class LogProbAlgebra(Semiring):
     """Log-space sum-product semiring on [-∞, ∞).

@@ -4,11 +4,11 @@ The coend ∫^X F(X,X) computes the join (existential) over the diagonal of
 matched contravariant/covariant dimensions. The end ∫_X F(X,X) computes
 the meet (universal) over the diagonal.
 
-These routines implement finite diagonal reductions. General categorical
-ends and coends also require compatibility with the indexing category's
-morphisms; this API does not construct arbitrary such compatibility data.
-The selected algebra determines whether the reductions have the laws
-needed for an enriched interpretation.
+These routines implement the (co)ends over a discrete indexing category,
+where the compatibility conditions are vacuous: the coend is the join and
+the end the meet over the diagonal. They are (co)ends when the join and
+meet are those of a complete lattice, so the algebra must be an
+`IdempotentSemiring`.
 """
 
 from __future__ import annotations
@@ -16,14 +16,15 @@ from __future__ import annotations
 from collections.abc import Callable
 import torch
 
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import IdempotentSemiring
+from quivers.enriched._lattice import require_lattice
 
 
 def coend(
     tensor: torch.Tensor,
     contra_dims: tuple[int, ...],
     co_dims: tuple[int, ...],
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Compute coend ∫^X F(X,X) via diagonal extraction and join.
 
@@ -42,16 +43,22 @@ def coend(
     co_dims : tuple[int, ...]
         Dimension indices for the covariant occurrences of X.
         Must be same length as contra_dims, with matching sizes.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         Result with matched dimension pairs removed via join.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
+    ValueError
+        If the dimension lists differ in length or size.
     """
-    if algebra is None:
-        algebra = PRODUCT_FUZZY
+    algebra = require_lattice(algebra, "a (co)end")
 
     if len(contra_dims) != len(co_dims):
         raise ValueError(
@@ -69,7 +76,7 @@ def end(
     tensor: torch.Tensor,
     contra_dims: tuple[int, ...],
     co_dims: tuple[int, ...],
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Compute end ∫_X F(X,X) via diagonal extraction and meet.
 
@@ -84,16 +91,22 @@ def end(
         Dimension indices for contravariant occurrences.
     co_dims : tuple[int, ...]
         Dimension indices for covariant occurrences.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         Result with matched dimension pairs removed via meet.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
+    ValueError
+        If the dimension lists differ in length or size.
     """
-    if algebra is None:
-        algebra = PRODUCT_FUZZY
+    algebra = require_lattice(algebra, "a (co)end")
 
     if len(contra_dims) != len(co_dims):
         raise ValueError(

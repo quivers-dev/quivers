@@ -11,21 +11,32 @@ and the weighted colimit W ⊗_J D by:
 
     C(W ⊗_J D, X) ≅ [J, V](W, C(D-, X))
 
-In our finite setting, these reduce to end/coend computations:
+For a discrete indexing set J and a diagram of parallel morphisms
+f_j: A → B, viewed as objects of the V-category of V-valued matrices
+A → B (the power V^{A×B}, complete when V is a complete lattice), these
+reduce to the pointwise end and coend
 
-    {W, D} = ∫_j [W(j), D(j)]     (weighted limit)
-    W ⊗_J D = ∫^j W(j) ⊗ D(j)    (weighted colimit)
+    {W, f} = ⋀_j [W(j), f_j]      (weighted limit)
+    W ⊗_J f = ⋁_j W(j) ⊗ f_j      (weighted colimit)
 
-where [-, -] denotes the internal hom in V and ⊗ the tensor.
+where [-, -] is V's residuum (internal hom) [Kelly (1982), §3]. They
+are characterized by g ≤ {W, f} ⟺ W(j) ⊗ g ≤ f_j for every j, and
+W ⊗_J f ≤ g ⟺ W(j) ⊗ f_j ≤ g for every j, which needs V to be an
+`IdempotentSemiring` with its `IdempotentSemiring.residuum`.
 
 This module provides:
 
-    Weight                  — a V-valued presheaf (weight functor)
-    Diagram                 — a finite diagram of objects/morphisms
-    weighted_limit()        — compute {W, D}
-    weighted_colimit()      — compute W ⊗_J D
-    representable_weight()  — weight represented by an object
-    terminal_weight()       — constant weight at the unit
+    Weight                       — a V-valued weight on a finite set
+    weighted_limit_morphisms()   — compute {W, f}
+    weighted_colimit_morphisms() — compute W ⊗_J f
+    representable_weight()       — weight represented by an index
+    terminal_weight()            — constant weight at the unit
+
+References
+----------
+Kelly, G. M. (1982). *Basic Concepts of Enriched Category Theory*.
+Cambridge University Press. Reprinted in *Reprints in Theory and
+Applications of Categories*, 10 (2005).
 """
 
 from __future__ import annotations
@@ -33,17 +44,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import didactic.api as dx
 import torch
 
-from quivers.core.objects import SetObject, FinSet
+from quivers.core.objects import FinSet
 from quivers.core.morphisms import Morphism
-from quivers.core.algebras import (
-    PRODUCT_FUZZY,
-    Algebra,
-    BooleanAlgebra,
-    ProductFuzzyAlgebra,
-)
+from quivers.core.algebras import IdempotentSemiring
+from quivers.enriched._lattice import require_lattice
 
 
 @dataclass
@@ -61,19 +67,24 @@ class Weight:
     values : torch.Tensor
         A 1D tensor of shape (|J|,) with values in L (the algebra's
         lattice). W(j) = values[j].
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
+
+    Raises
+    ------
+    TypeError
+        If ``algebra`` is not an `IdempotentSemiring`.
+    ValueError
+        If ``values`` is not one-dimensional.
     """
 
     values: torch.Tensor
-    algebra: Algebra | None = None
+    algebra: IdempotentSemiring
 
     def __post_init__(self) -> None:
         if self.values.ndim != 1:
             raise ValueError(f"weight values must be 1D, got shape {self.values.shape}")
-
-        if self.algebra is None:
-            self.algebra = PRODUCT_FUZZY
+        self.algebra = require_lattice(self.algebra, "a weight")
 
     @property
     def size(self) -> int:
@@ -81,192 +92,10 @@ class Weight:
         return self.values.shape[0]
 
 
-class Diagram(dx.Model):
-    """A finite diagram of morphisms sharing a common domain or codomain.
-
-    For weighted limits, this is a collection of morphisms
-    D(j): X → A_j for each index j (cone-shaped).
-    For weighted colimits, this is a collection of morphisms
-    D(j): A_j → X for each index j (cocone-shaped).
-
-    In the discrete case, this is a tuple of
-    objects with no connecting morphisms.
-
-    Attributes
-    ----------
-    objects : tuple[SetObject, ...]
-        The objects A_j in the diagram, one per index j.
-    """
-
-    objects: tuple[SetObject, ...]
-
-    @property
-    def size(self) -> int:
-        """Number of objects in the diagram."""
-        return len(self.objects)
-
-
-def weighted_limit(
-    weight: Weight,
-    diagram: Diagram,
-    algebra: Algebra | None = None,
-) -> torch.Tensor:
-    """Compute the weighted limit {W, D} for a discrete diagram.
-
-    For a discrete diagram (no connecting morphisms), the weighted
-    limit reduces to:
-
-        {W, D} = ∫_j [W(j), D(j)] = ⋀_j [W(j), D(j)]
-
-    where [w, x] is the internal hom in the algebra (residuation):
-
-        [w, x] = sup{v : w ⊗ v ≤ x}
-
-    For the product-fuzzy algebra, [w, x] = min(1, x/w) when w > 0,
-    and the unit when w = 0.
-
-    For discrete diagrams with objects A_0, ..., A_{n-1}, this
-    computes a tensor of shape (∏_j |A_j|,) representing the
-    weighted product.
-
-    Parameters
-    ----------
-    weight : Weight
-        The weight W with values W(j) for each j.
-    diagram : Diagram
-        The diagram of objects.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
-
-    Returns
-    -------
-    torch.Tensor
-        The weighted limit tensor. For discrete diagrams, shape is
-        the meet of identity tensors scaled by the weights.
-    """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
-
-    if weight.size != diagram.size:
-        raise ValueError(f"weight size {weight.size} != diagram size {diagram.size}")
-
-    n = weight.size
-
-    if n == 0:
-        return torch.tensor(q.unit)
-
-    # for a discrete diagram, the weighted limit is the meet
-    # (product) of the identities scaled by internal homs
-    # {W, D}_j gives a "weighted identity" for each component
-    components: list[torch.Tensor] = []
-
-    for j in range(n):
-        obj = diagram.objects[j]
-        w_j = weight.values[j]
-
-        # identity tensor for object j, scaled by the weight
-        id_j = q.identity_tensor(obj.shape)
-        scaled = _internal_hom_scalar(w_j, id_j, q)
-        components.append(scaled)
-
-    # the weighted limit is the meet over all components
-    # for independent objects, this is just the collection
-    # return as a list of component tensors
-    # for the product, stack and meet over the first dim
-    if len(components) == 1:
-        return components[0]
-
-    # for a discrete diagram, return the component-wise meet
-    # the result represents the product weighted by W
-    # we return as a dictionary-like structure encoded as a tuple
-    # but for simplicity, we return the tensor for the product
-    # which is the outer-meet of all scaled identities
-    result = components[0]
-
-    for comp in components[1:]:
-        # outer product via tensor_op, then reshape
-        n_r = result.ndim
-        n_c = comp.ndim
-
-        r_exp = result.reshape(*result.shape, *([1] * n_c))
-        c_exp = comp.reshape(*([1] * n_r), *comp.shape)
-
-        result = q.tensor_op(r_exp, c_exp)
-
-    return result
-
-
-def weighted_colimit(
-    weight: Weight,
-    diagram: Diagram,
-    algebra: Algebra | None = None,
-) -> torch.Tensor:
-    """Compute the weighted colimit W ⊗_J D for a discrete diagram.
-
-    For a discrete diagram, the weighted colimit reduces to:
-
-        W ⊗_J D = ∫^j W(j) ⊗ D(j) = ⋁_j W(j) ⊗ D(j)
-
-    This is the join (existential) over j of the tensor product of
-    the weight value with the identity at each object.
-
-    Parameters
-    ----------
-    weight : Weight
-        The weight W with values W(j) for each j.
-    diagram : Diagram
-        The diagram of objects.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
-
-    Returns
-    -------
-    torch.Tensor
-        The weighted colimit tensor.
-    """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
-
-    if weight.size != diagram.size:
-        raise ValueError(f"weight size {weight.size} != diagram size {diagram.size}")
-
-    n = weight.size
-
-    if n == 0:
-        return torch.tensor(q.zero)
-
-    components: list[torch.Tensor] = []
-
-    for j in range(n):
-        obj = diagram.objects[j]
-        w_j = weight.values[j]
-
-        # identity tensor scaled by weight
-        id_j = q.identity_tensor(obj.shape)
-        scaled = q.tensor_op(id_j, w_j)
-        components.append(scaled)
-
-    if len(components) == 1:
-        return components[0]
-
-    # join over all components (outer-join)
-    result = components[0]
-
-    for comp in components[1:]:
-        n_r = result.ndim
-        n_c = comp.ndim
-
-        r_exp = result.reshape(*result.shape, *([1] * n_c))
-        c_exp = comp.reshape(*([1] * n_r), *comp.shape)
-
-        # join of tensor products
-        result = q.tensor_op(r_exp, c_exp)
-
-    return result
-
-
 def weighted_limit_morphisms(
     weight: Weight,
     morphisms: Sequence[Morphism],
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Compute a weighted limit from a family of morphisms.
 
@@ -284,15 +113,23 @@ def weighted_limit_morphisms(
         The weight W.
     morphisms : Sequence[Morphism]
         The morphisms f_j comprising the cone.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         The weighted limit tensor.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
+    ValueError
+        If the weight and the family differ in size or the family is
+        empty.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "a weighted (co)limit")
 
     if weight.size != len(morphisms):
         raise ValueError(
@@ -310,7 +147,7 @@ def weighted_limit_morphisms(
     for j in range(n):
         w_j = weight.values[j]
         f_j = morphisms[j].tensor
-        hom = _internal_hom_scalar(w_j, f_j, q)
+        hom = q.residuum(w_j, f_j)
         components.append(hom)
 
     # meet over all components (they should all have the same shape)
@@ -321,7 +158,7 @@ def weighted_limit_morphisms(
 def weighted_colimit_morphisms(
     weight: Weight,
     morphisms: Sequence[Morphism],
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> torch.Tensor:
     """Compute a weighted colimit from a family of morphisms.
 
@@ -336,15 +173,23 @@ def weighted_colimit_morphisms(
         The weight W.
     morphisms : Sequence[Morphism]
         The morphisms f_j comprising the cocone.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     torch.Tensor
         The weighted colimit tensor.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
+    ValueError
+        If the weight and the family differ in size or the family is
+        empty.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "a weighted (co)limit")
 
     if weight.size != len(morphisms):
         raise ValueError(
@@ -371,7 +216,7 @@ def weighted_colimit_morphisms(
 def representable_weight(
     index_set: FinSet,
     represented_at: int,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> Weight:
     """Create a representable weight (Yoneda-style).
 
@@ -385,15 +230,20 @@ def representable_weight(
         The indexing set J.
     represented_at : int
         The representing index k.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     Weight
         The representable weight at k.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "a weighted (co)limit")
 
     values = torch.full((index_set.cardinality,), q.zero)
     values[represented_at] = q.unit
@@ -403,7 +253,7 @@ def representable_weight(
 
 def terminal_weight(
     index_set: FinSet,
-    algebra: Algebra | None = None,
+    algebra: IdempotentSemiring,
 ) -> Weight:
     """Create the terminal (constant unit) weight.
 
@@ -414,71 +264,27 @@ def terminal_weight(
     ----------
     index_set : FinSet
         The indexing set J.
-    algebra : Algebra or None
-        The enrichment algebra. Defaults to PRODUCT_FUZZY.
+    algebra : IdempotentSemiring
+        The enrichment algebra, a complete lattice.
 
     Returns
     -------
     Weight
         The terminal weight.
+
+    Raises
+    ------
+    TypeError
+        If the algebra is not an `IdempotentSemiring`.
     """
-    q = algebra if algebra is not None else PRODUCT_FUZZY
+    q = require_lattice(algebra, "a weighted (co)limit")
     values = torch.full((index_set.cardinality,), q.unit)
 
     return Weight(values=values, algebra=q)
 
 
-def _internal_hom_scalar(
-    w: torch.Tensor | float,
-    x: torch.Tensor,
-    algebra: Algebra,
-) -> torch.Tensor:
-    """Compute the internal hom [w, x] for a scalar weight w.
-
-    For the product-fuzzy algebra: [w, x] = min(1, x/w) when w > 0,
-        and 1 when w = 0.
-    For the boolean algebra: [w, x] = ¬w ∨ x = max(1-w, x).
-    For general algebras: use residuation [w, x] = ¬(w ⊗ ¬x) as
-        a default approximation.
-
-    Parameters
-    ----------
-    w : torch.Tensor or float
-        The weight value (scalar in L).
-    x : torch.Tensor
-        The tensor to compute the hom into.
-    algebra : Algebra
-        The enrichment algebra.
-
-    Returns
-    -------
-    torch.Tensor
-        The internal hom tensor [w, x].
-    """
-    w_t = torch.as_tensor(w, dtype=x.dtype)
-
-    if isinstance(algebra, ProductFuzzyAlgebra):
-        # [w, x] = min(1, x / w) for w > 0, else 1
-        safe_w = w_t.clamp(min=1e-7)
-        result = (x / safe_w).clamp(max=1.0)
-
-        # where w ≈ 0, return unit
-        return torch.where(w_t < 1e-7, torch.ones_like(x), result)
-
-    elif isinstance(algebra, BooleanAlgebra):
-        # [w, x] = ¬w ∨ x = max(1 - w, x)
-        return torch.max(1.0 - w_t, x)
-
-    else:
-        # general fallback: ¬(w ⊗ ¬x)
-        return algebra.negate(algebra.tensor_op(w_t, algebra.negate(x)))
-
-
 __all__ = [
     "Weight",
-    "Diagram",
-    "weighted_limit",
-    "weighted_colimit",
     "weighted_limit_morphisms",
     "weighted_colimit_morphisms",
     "representable_weight",
