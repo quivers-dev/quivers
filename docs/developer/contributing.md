@@ -3,7 +3,7 @@
 A change to quivers usually touches one of three things: what source programs can express, what
 those programs compute, or how their results reach the user. Syntax work is tested by the parser
 and compiler tests. Distribution and inference work is tested by comparing numerical scores and
-[posterior behaviour](../tutorials/qvr/08-diagnostics-and-comparison.md#convergence-diagnostics).
+[posterior behavior](../tutorials/qvr/08-diagnostics-and-comparison.md#convergence-diagnostics).
 A transpiler is tested on both its emitted syntax and its agreement with the source model's
 [log joint density](../tutorials/python/05-variational-inference.md#tracing-the-model) at the
 same points, since valid target syntax can still encode the wrong distribution. The
@@ -362,7 +362,7 @@ hand-written `ContinuousMorphism` and a `FamilySpec` whose override fields point
 entirely new distribution may also need a `torch.distributions.Distribution` implementation.
 
 Test the registry entry, the fixed and mixed inline forms, conditional sampling, and `log_prob`.
-`tests/test_family_registry.py` holds the shared registry checks, and behaviour specific to one
+`tests/test_family_registry.py` holds the shared registry checks, and behavior specific to one
 family belongs under `tests/continuous/`. Document the family in
 `docs/guides/continuous-families.md` and `docs/api/continuous/families.md`.
 
@@ -384,7 +384,7 @@ Continuous integration runs the following on every pull request, and each can be
 every Python block under `docs/tutorials/`. An HTML comment on the line before a fence chooses the
 mode: `<!-- compile: false -->` and `<!-- python: skip -->` exclude a block,
 `<!-- compile: cumulative -->` joins it to the earlier cumulative blocks of the file, and
-`<!-- compile: qiec -->` lowers it through QIEC as well. A change to a documented behaviour thus
+`<!-- compile: qiec -->` lowers it through QIEC as well. A change to a documented behavior thus
 changes its documentation in the same commit.
 
 ## Commits and pull requests

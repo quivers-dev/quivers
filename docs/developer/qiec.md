@@ -133,8 +133,8 @@ The built-in prelude declares the following interfaces, each with reference hand
   morphism or a closure;
 - `Param`, through which a computation reads a learned parameter by name.
 
-These handlers state the reference behaviour in executable form. A backend may implement the same
-behaviour with its own optimized routines. Samplers, observation tables, semiring operations,
+These handlers state the reference behavior in executable form. A backend may implement the same
+behavior with its own optimized routines. Samplers, observation tables, semiring operations,
 state cells, and trace recorders remain attachments.
 
 A distribution construction evaluates to a [`RuntimeDistribution`](../api/qiec/distributions.md),
@@ -289,7 +289,7 @@ tensors it is given.
 ## How source declarations elaborate {#qvr-surface}
 
 Each source form below elaborates to QIEC terms: helper computations, generated instances,
-handler kinds, input names, and site labels. The syntax, typing, and runtime behaviour of each
+handler kinds, input names, and site labels. The syntax, typing, and runtime behavior of each
 form are specified in the [QVR language reference](../reference/qvr/index.md).
 
 ### Indexed families and computations
@@ -453,7 +453,7 @@ parameter map. The learned tensors of that map are typed program inputs with the
   Its inputs `<m>_param_layer<i>_weight` and `<m>_param_layer<i>_bias` match the shapes of the
   compiled runtime's `MLPSource`, layer by layer.
 - An embedding morphism, `[role=embed]`, is a Normal kernel over its finite domain whose table
-  concatenates the centres and log scales that the compiled runtime learns.
+  concatenates the centers and log scales that the compiled runtime learns.
 
 Under a plate, the map applies at every row. An unbound conditioning name of
 `observe y : Resp <- net(x)` becomes a `Tensor[Real]([|Resp|, width])` data input, an unbound
@@ -835,7 +835,7 @@ Recursive calls, scoped instances, and authored handler clauses are represented 
 core and exercised by the examples above. Their presence in the core does not imply support on
 every target, since the capability checks apply to the reachable computation graph. Optimized
 handler implementations and larger subsets for static targets are possible extensions, and each
-would have to preserve the relevant execution and scoring behaviour.
+would have to preserve the relevant execution and scoring behavior.
 
 Panproto validates objects persisted by earlier releases against the grammar they were written
 under. The migration gate reads the original QVR history without rewriting its content-addressed
