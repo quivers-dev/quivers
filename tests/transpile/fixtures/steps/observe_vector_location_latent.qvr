@@ -1,0 +1,9 @@
+# Exercises an unplated observe whose location is a vector latent: `a` is
+# drawn as one vector over `Feat`, and each entry of `y` is scored at the
+# entry of `a` at its position.
+object Feat : FinSet 3
+program p : Feat -> Feat
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feat]
+    observe y <- Normal(loc=a, scale=0.5)
+    return a
+export p

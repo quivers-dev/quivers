@@ -4,6 +4,14 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.53.1] - 2026-11-11
+
+### Fixed
+
+- **A vector filling a scalar family's parameter is read one entry per draw on every target.** `observe y <- Normal(loc=z, scale=0.5)` with `z` one vector over `Feat` is one Normal per entry of `z`, each at its own entry. Stan, BUGS, JAGS, Gen, WebPPL, and Church read `z` at the position their loop visits (`normal_lpdf(y[m_Feat] | z[m_Feat], 0.5)`), where they had read the whole vector into the scalar slot and scored each entry of `y` against every entry of `z`, or failed to run; Turing broadcasts the family over `z` (`product_distribution(Normal.(z, 0.5))` for an observation, `arraydist(Normal.(z, 0.5))` for a latent). The same holds for a vector in any rank-0 parameter (a scale, a rate) of a sample or an observe, replicated by the vector itself, by `[over=...]`, or by a `: Row` annotation over the vector's axis; a vector filling a parameter that reads a whole event, such as a `Categorical`'s `probs`, stays whole. The plate of such a draw is named after the vector's own axis (`Feat` rather than `z`), so the PyMC coordinate and the loop variables of every target carry that name. Turing refuses, under `sample:partial-axis-parameter`, a draw whose parameter varies along only some of the replicated axes, or a whole-event parameter carrying axes beside a broadcast one.
+- **A pointwise let of one vector computes on BUGS, JAGS, Gen, and Turing, and an `over`-axis observe scores per coordinate on WebPPL.** `let s = exp(a)` with `a` drawn over `Feat` is computed one entry at a time on BUGS and JAGS (`s[m_Feat] <- exp(a[m_Feat])`), whose scalar functions reject a vector argument, and with dotted calls on Gen and Turing (`s = exp.(a)`), where `exp(a)` raised a `MethodError`. A scalar family observed over one `over` axis on WebPPL scores each coordinate (`mapIndexed` over the observation), where the whole array reached a scalar distribution.
+- **A plated observe reads a vector over its rows one entry per row on the compiled runtime.** `observe y : Row <- Normal(loc=z, scale=0.5)` with `z` one vector over `Row` scores row `i` at `z[i]`, as the reference machine does, where the compiled runtime had scored every row against every entry of `z`.
+
 ## [0.53.0] - 2026-11-11
 
 ### Added

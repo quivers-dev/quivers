@@ -1,0 +1,10 @@
+# Exercises a plated observe whose location is one vector over the plate's
+# own axis: `z` is a single vector over `Row`, and the row `y` scores at
+# each position reads the entry of `z` there.
+object Row : FinSet 4
+program p : Row -> Row
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Row]
+    let z = tanh(a)
+    observe y : Row <- Normal(loc=z, scale=0.5)
+    return z
+export p
