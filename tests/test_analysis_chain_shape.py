@@ -187,7 +187,9 @@ class TestInitSpec:
         assert math.isclose(spec.std, 1.0 / 3.0, rel_tol=1e-9)
 
     def test_probability_p_eq_inv_k(self):
-        spec = _algebra_init_spec(BoundedSumProductAlgebra(), depth=5, intermediate_size=1)
+        spec = _algebra_init_spec(
+            BoundedSumProductAlgebra(), depth=5, intermediate_size=1
+        )
         assert spec.distribution == "uniform"
         assert math.isclose(spec.mean, 0.2, rel_tol=1e-9)
 
