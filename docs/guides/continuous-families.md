@@ -224,7 +224,7 @@ from quivers.continuous.families import (
 )
 ```
 
-## Event rank and axis-role syntax
+## Event and batch axes {#event-rank-and-axis-role-syntax}
 
 Three kinds of axis appear in a drawn tensor [@pyroTensorShapes]. A *sample* axis counts
 repeated draws, a *batch* axis counts separate distributions, and an *event* axis
@@ -343,7 +343,7 @@ $y \sim \mathrm{Beta}(k/2, \eta + (d - 1 - k)/2)$ and $u$ uniform on
 the unit sphere in $\mathbb{R}^k$. Every off-diagonal correlation $r$
 of a $d \times d$ draw thus has
 $(r + 1)/2 \sim \mathrm{Beta}(\eta - 1 + d/2, \eta - 1 + d/2)$. The
-compiled runtime, every factory over the family (the fixed and
+[compiled runtime](dsl-overview.md#compilation-pipeline), every factory over the family (the fixed and
 variable-concentration forms, a plate over it, and
 [`LKJCorrelationFactor`][quivers.continuous.families.LKJCorrelationFactor]),
 and the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for its core language, all draw through one implementation of

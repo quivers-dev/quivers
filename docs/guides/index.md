@@ -42,8 +42,8 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 ## Inference
 
-13. [Inference Foundations](inference-foundations.md): traces, sample sites, the run
-    axis, data inputs, and conditioning.
+13. [Inference Foundations](inference-foundations.md): traces, sample sites, the batch
+    axis of the input, data inputs, and conditioning.
 14. [Variational Inference: Guides, Objectives, and SVI](inference-svi.md): guides,
     objectives, gradient estimators, the training loop, and predictive sampling.
 15. [MCMC and Hybrid Samplers](inference-mcmc.md): HMC and NUTS, composed kernels,

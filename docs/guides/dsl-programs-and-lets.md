@@ -273,7 +273,8 @@ gives. With `by_verb = [0.2, -0.1, 0.5]` and `verb_of_item = [2, 0, 2]`,
 `by_verb[verb_of_item]` is `[0.5, 0.2, 0.5]`: items 0 and 2 share the realized effect of
 verb 2. Drawing an effect per item instead would be a different model, and the index
 array is what keeps the sharing. Formally, for values $v : A \to B$ of a plate over $A$
-and an index map $\iota : N \to A$, the gather is the composite
+and an [index map](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents)
+$\iota : N \to A$, the gather is the composite
 $v \circ \iota : N \to B$.
 
 ```qvr
@@ -362,7 +363,7 @@ program uses : Out -> Out
 [Hierarchical Programs](programs-hierarchical.md) works through crossed random
 intercepts and grouped marginalization.
 
-### Posterior blocks
+### Derived quantities of the posterior {#posterior-blocks}
 
 A program can compute a derived quantity from the latent variables of another program,
 like Stan's generated quantities [@carpenter2017stan]. `over=` in its option block names
@@ -389,7 +390,7 @@ posterior draw of the model's [trace](inference-foundations.md#trace-and-sample-
 gives its value. An untyped parameter is read as an integer by the checked core, so a
 real-valued latent needs its `: Real` annotation.
 
-## Axis-role clause: `over` and `iid_over` {#axis-role-clause-over-and-iid_over}
+## Event and batch axes: `over` and `iid_over` {#axis-role-clause-over-and-iid_over}
 
 A draw's axes are of two kinds [@pyroTensorShapes]. *Event* axes belong to one outcome
 of the family, and *batch* axes index independent outcomes. A probability vector over
@@ -464,11 +465,11 @@ axis names fail at type checking.
 
 **Errors.** Two diagnostics come from this clause:
 
-- *"axis count does not match family event_rank"*: on a `morphism`, `over` lists a
+- *"family 'F' has event_rank r, but `over` lists n axis name(s)"*: on a `morphism`, `over` lists a
   number of axes different from the family's number of event dimensions, as happens
   when a flat `MultivariateNormal` (one event dimension) is replaced by a
   `MatrixNormal` (two).
-- *"unknown axis name(s) `A` in `over`"*: a name in `over` is not a factor of the
+- *"unknown axis name(s) ['A'] in `over`"*: a name in `over` is not a factor of the
   domain or codomain. Rename it, or use `dom` or `cod` for a side that is one object.
 
 ```qvr
@@ -529,7 +530,9 @@ one and the result is the plate's total. For a plate of event vectors, as in
 `sum(z_row * w_row)` over a `Resp`-plated value with an `[over=LatentDim]` event axis,
 the result keeps the plate and holds one inner product per row. For a table a `factor`
 builds over `Row` and `Unit`, the result holds one number per `Row`. `normalize` divides
-each row by its sum. Every execution path and transpile target reads the primitives in
+each row by its sum. The [compiled runtime](dsl-overview.md#compilation-pipeline), the
+[reference machine](../developer/qiec.md#reference-evaluator) (the library's interpreter for QIEC), and
+every transpile target read the primitives in
 this way, and a [contraction declaration](dsl-contractions.md) reduces over a named
 axis.
 
@@ -876,7 +879,7 @@ program correlated : One -> One
 export correlated
 ```
 
-Both execution paths score it. Which transpile targets accept a Cholesky factor known
+Both the compiled runtime and the reference machine score it. Which transpile targets accept a Cholesky factor known
 only at run time is listed in [Transpiler support](../transpile-support.md).
 
 ### Alternative parameterizations

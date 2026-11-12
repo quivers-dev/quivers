@@ -155,7 +155,8 @@ explore all of them, while the operation's type stays the same.
 - `FreeMonad(signature)`: the free monad over the signature, an instance of `Monad`;
 - `Handler(signature, target, return_clause, operation_clauses)`: an interpretation
   of `FreeMonad` computations in the monad `target`, whose `as_theory_morphism()`
-  returns the corresponding panproto theory morphism.
+  returns a panproto theory with one operation for the return clause and one for each
+  operation clause.
 
 ## QIEC effect interfaces and rows
 

@@ -115,7 +115,8 @@ A `SampleSite` records:
 
 ## Input rows are independent runs
 
-An input of `B` rows is `B` independent runs of the whole program. Each run draws its
+An input of `B` rows along its leading axis, the *batch axis*, is `B` independent runs of the
+whole program. Each run draws its
 own value of every site and observes the program's data through its own plates. The
 rows a program observes come from its data and its plates, never from the input's rows,
 so a program whose observations live in a plate takes an input with one row, such as
@@ -126,7 +127,7 @@ trace records each site's density per run, shape `(B,)`, and its `log_joint` agr
 value given to `log_joint`, to a trace, or to a handler is either one value per run,
 along a leading axis of length `B`, or one value that every run shares. Each `let` and
 `score` step reads one run's values, so a `factor`, a collection, a reduction, or an
-index reads the binding's own axes and never the run axis.
+index reads the binding's own axes and never the batch axis.
 
 The drivers that target one run's latents refuse an input of more than one row and say
 to pass one. They are [MCMC](inference-mcmc.md#mcmc-hmc-and-nuts), the
@@ -152,10 +153,10 @@ A *draw* is one value of a latent site on its constrained support, with shape
 [`LatentSite.constrained_shape`](../api/inference/guide.md#quivers.inference.registry.LatentSite.constrained_shape):
 `()` for a scalar site, `(d,)` for a `d`-dimensional site, `(d, d)` for a Cholesky
 factor of a correlation matrix, and `(|A|, ...)` for a site plated over `A`. Within one
-run, a site outside any plate leads with a run axis of length one,
+run, a site outside any plate leads with a batch axis of length one,
 `(1, *constrained_shape)`, and a plated site holds its plate's rows,
 `constrained_shape`. Across `B > 1` runs, a value given or recorded per run leads with
-the run axis, `(B, *constrained_shape)`, for both kinds of site.
+the batch axis, `(B, *constrained_shape)`, for both kinds of site.
 
 | Surface | Site outside any plate | Plated site |
 |---|---|---|
@@ -170,7 +171,7 @@ the run axis, `(B, *constrained_shape)`, for both kinds of site.
 
 [`LatentRegistry.trace_values`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_values)
 turns one draw into the values of `B` runs that share it, by expanding each site
-outside any plate across the run axis. MCMC uses it with one run when it scores a
+outside any plate across the batch axis. MCMC uses it with one run when it scores a
 position, so a custom density reached through `log_joint` sees a leading axis of size
 one on every such site.
 [`LatentRegistry.trace_row`](../api/inference/guide.md#quivers.inference.registry.LatentRegistry.trace_row)

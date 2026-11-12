@@ -297,7 +297,8 @@ export bayesian_pcfg
 ```
 
 The program's log joint density is the sum of the Dirichlet log densities and the
-corpus's log likelihood. Both execution paths compute it. The compiled runtime passes
+corpus's log likelihood. Both the [compiled runtime](dsl-overview.md#compilation-pipeline) and the
+[reference machine](../developer/qiec.md#reference-evaluator) compute it. The compiled runtime passes
 the drawn values to the chart and gradients reach them, so
 [`MCMC`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC) with
 [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the

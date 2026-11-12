@@ -96,7 +96,7 @@ sample (u, v) <- joint_f(z, w)
 ```
 
 In the last form the names are bound to the components of the product in order. A
-plated draw, `sample v : A <- F(args)`, draws one value per element of `A`
+draw over a plate, `sample v : A <- F(args)`, draws one value per element of `A`
 ([plates](dsl-programs-and-lets.md#indexed-bind-plate)).
 
 ## Let steps
@@ -185,7 +185,7 @@ log_pjoint = program.log_joint(x, intermediates)
 ```
 
 `log_joint` returns one value per run, shape `(B,)` for `B` input rows, each the sum of
-that run's draw, plated draw, observe, and score terms, so `log_joint(x, values).sum()`
+that run's draw, observe, and score terms, so `log_joint(x, values).sum()`
 is the joint of all the runs. A value in `intermediates` either has one entry per run,
 along a leading axis of length `B`, or is shared by every run.
 [`ELBO.forward`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) calls it
@@ -359,7 +359,7 @@ from a `make_fixed_*` factory such as
 [`make_fixed_normal`](../api/continuous/inline.md#quivers.continuous.inline.make_fixed_normal),
 a family whose parameters are bindings is a
 [`MixedInlineDistribution`](../api/continuous/inline.md#quivers.continuous.inline.MixedInlineDistribution)
-over the stacked arguments, a plated draw `sample v : A <- F(...)` is a
+over the stacked arguments, a draw over a plate `sample v : A <- F(...)` is a
 [`PlateDraw`](../api/continuous/plate.md#quivers.continuous.plate.PlateDraw) of one
 draw per element of `A`, and a plated observe is a
 [`VectorisedObserve`](../api/continuous/plate.md#quivers.continuous.plate.VectorisedObserve).
