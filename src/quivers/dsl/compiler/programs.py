@@ -52,7 +52,12 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.programs import MonadicProgram, _lookup_arg
 from quivers.effects.checked_program import CheckedProgram
-from quivers.continuous.param_source import IdentitySource, ParamSource
+from quivers.continuous.param_source import (
+    AttentionSource,
+    IdentitySource,
+    ParamSource,
+    attention_draw_message,
+)
 from quivers.continuous.spaces import (
     CholeskyFactor,
     ContinuousSpace,
@@ -738,6 +743,42 @@ def _observation_parameter(
         # their columns.
         theta = theta.unsqueeze(0)
     return theta
+
+
+def _binary_log_prior(
+    weight: torch.Tensor, parameterization: str | None
+) -> torch.Tensor:
+    """The log weights of the atoms 0 and 1 of a Bernoulli-family prior.
+
+    From ``logits`` the weights are ``log sigmoid(-l)`` and
+    ``log sigmoid(l)``, computed in log space, so both stay finite and
+    accurate where the probability ``sigmoid(l)`` rounds to zero or one
+    in the runtime's precision. From ``probs`` they are ``log1p(-p)`` and
+    ``log p``, with ``p`` held inside the open unit interval.
+
+    Parameters
+    ----------
+    weight : torch.Tensor
+        The prior's probability, or its logits.
+    parameterization : str | None
+        ``"logits"`` when `weight` holds logits; anything else reads it
+        as a probability.
+
+    Returns
+    -------
+    torch.Tensor
+        The log weights, stacked on a new trailing axis in atom order.
+    """
+    if parameterization == "logits":
+        return torch.stack(
+            [
+                torch.nn.functional.logsigmoid(-weight),
+                torch.nn.functional.logsigmoid(weight),
+            ],
+            dim=-1,
+        )
+    p = weight.clamp(1e-38, 1.0 - 1e-7)
+    return torch.stack([torch.log1p(-p), torch.log(p)], dim=-1)
 
 
 def _shared_vector_parameter(family: ContinuousMorphism | None) -> bool:
@@ -5421,12 +5462,11 @@ class _ProgramsMixin:
                     else torch.log(probs.clamp_min(1e-38))
                 )
             else:
-                p = probs.clamp(1e-38, 1.0 - 1e-7)
                 class_values = [
                     torch.zeros((), dtype=probs.dtype, device=probs.device),
                     torch.ones((), dtype=probs.dtype, device=probs.device),
                 ]
-                log_prior = torch.stack([torch.log1p(-p), torch.log(p)], dim=-1)
+                log_prior = _binary_log_prior(probs, _parameterization)
             if _obs_family is None or _response is None:
                 # No observed likelihood gates the latent: the block
                 # contributes only the reduced log-prior over the
@@ -5557,6 +5597,12 @@ class _ProgramsMixin:
             if isinstance(morph, LearnedFunction):
                 raise CompileError(
                     learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
+            if isinstance(morph, torch.nn.Module) and any(
+                isinstance(module, AttentionSource) for module in morph.modules()
+            ):
+                raise CompileError(
+                    attention_draw_message(draw.morphism), draw.line, draw.col
                 )
             if draw.args is not None:
                 for a in draw.args:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quivers"
-version = "0.53.1"
+version = "0.54.0"
 description = "A typed functional probabilistic programming language with a PyTorch runtime and eleven transpilation targets."
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,9 +30,9 @@ classifiers = [
 ]
 dependencies = [
     "torch>=2.0",
-    "didactic>=0.17.1",
-    "panproto>=0.74.4",
-    "panproto-grammars-all>=0.74.4",
+    "didactic>=0.18.2",
+    "panproto>=0.77.0",
+    "panproto-grammars-all>=0.77.0",
     "pygments>=2.10",
     "tree-sitter>=0.21",
 ]

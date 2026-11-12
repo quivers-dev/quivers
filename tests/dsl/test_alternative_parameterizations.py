@@ -1,8 +1,8 @@
 """Alternative parameterizations score as `torch.distributions` does on both paths.
 
 A multivariate normal or a Wishart written with a covariance or a
-precision matrix, and a Bernoulli, Binomial, Geometric, or negative
-binomial written with logits, are each scored on the compiled runtime and
+precision matrix, and a Bernoulli, continuous Bernoulli, Binomial,
+Geometric, or negative binomial written with logits, are each scored on the compiled runtime and
 the reference machine against `torch.distributions` built with the same
 parameterization in double precision. Each family's alternatives are
 checked to be distinct (a precision read as a covariance, or logits read
@@ -209,6 +209,20 @@ _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]
             + D.Geometric(logits=_t(s["eta"])).log_prob(_t(s["y"])).sum()
         ),
     ),
+    "continuous-bernoulli-logits": (
+        "ContinuousBernoulli",
+        "logits",
+        "program p : One -> One\n"
+        "    sample eta <- Normal(loc=0.0, scale=2.0)\n"
+        "    observe y : Row <- ContinuousBernoulli(logits=eta)\n"
+        "    return eta\n",
+        {"y": [0.1, 0.45, 0.8, 0.97]},
+        {"eta": 1.3},
+        lambda s: (
+            D.Normal(_t(0.0), _t(2.0)).log_prob(_t(s["eta"]))
+            + D.ContinuousBernoulli(logits=_t(s["eta"])).log_prob(_t(s["y"])).sum()
+        ),
+    ),
     "negative-binomial-logits": (
         "NegativeBinomial",
         "logits",
@@ -321,6 +335,12 @@ _MISREAD: dict[str, Oracle] = {
         D.Normal(_t(0.0), _t(2.0)).log_prob(_t(s["eta"]))
         + D.Binomial(10, probs=torch.sigmoid(-_t(s["eta"]))).log_prob(_t(s["y"])).sum()
     ),
+    "continuous-bernoulli-logits": lambda s: (
+        D.Normal(_t(0.0), _t(2.0)).log_prob(_t(s["eta"]))
+        + D.ContinuousBernoulli(probs=torch.sigmoid(-_t(s["eta"])))
+        .log_prob(_t(s["y"]))
+        .sum()
+    ),
 }
 
 
@@ -336,7 +356,13 @@ def test_a_misread_parameterization_scores_another_density(case: str) -> None:
 
 @pytest.mark.parametrize("eta", [-30.0, -12.0, 12.0, 30.0])
 @pytest.mark.parametrize(
-    "case", ["bernoulli-logits", "binomial-logits", "geometric-logits"]
+    "case",
+    [
+        "bernoulli-logits",
+        "binomial-logits",
+        "continuous-bernoulli-logits",
+        "geometric-logits",
+    ],
 )
 def test_logits_score_finitely_where_the_probability_rounds_off(
     case: str, eta: float
@@ -355,6 +381,21 @@ def test_logits_score_finitely_where_the_probability_rounds_off(
             + (
                 counts * -torch.nn.functional.softplus(logit)
                 - torch.nn.functional.softplus(-logit)
+            ).sum()
+        )
+    if case == "continuous-bernoulli-logits":
+        # `torch.distributions.ContinuousBernoulli` forms its normalizer
+        # from the probability even in double precision; in the logit the
+        # normalizer is `l / tanh(l / 2)`, and the endpoint masses are
+        # log-sigmoids.
+        logit = _t(eta)
+        points = _t(_CASES[case][3]["y"])
+        expected = float(
+            D.Normal(_t(0.0), _t(2.0)).log_prob(logit)
+            + (
+                points * torch.nn.functional.logsigmoid(logit)
+                + (1.0 - points) * torch.nn.functional.logsigmoid(-logit)
+                + torch.log(logit.abs() / torch.tanh(logit.abs() / 2.0))
             ).sum()
         )
     assert math.isfinite(compiled) and math.isfinite(reference)

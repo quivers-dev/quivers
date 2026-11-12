@@ -19,10 +19,12 @@ checkpoint intact.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import didactic.api as dx
 import torch
@@ -182,6 +184,121 @@ def tensor_digest(value: torch.Tensor) -> str:
     raw = bytes(flat.view(torch.uint8).tolist()) if flat.numel() else b""
     header = f"{flat.dtype}:{tuple(value.shape)}:".encode()
     return hashlib.sha256(header + raw).hexdigest()
+
+
+@runtime_checkable
+class _ArrayLike(Protocol):
+    """A value that exposes an array view, such as a NumPy array."""
+
+    def __array__(self) -> _ArrayLike:
+        """The value as an array.
+
+        Returns
+        -------
+        _ArrayLike
+            The array.
+        """
+        ...
+
+
+type ObservedDatum = (
+    torch.Tensor
+    | _ArrayLike
+    | bool
+    | int
+    | float
+    | str
+    | Sequence[ObservedDatum]
+    | Mapping[str, ObservedDatum]
+)
+"""A value a run conditions on: an observed site's value or a host datum,
+such as a tensor, a number, an array, a token, or a nested sequence or
+mapping of these (a corpus of tokenized sentences, for instance)."""
+
+
+def _numeric_shape(value: ObservedDatum) -> tuple[int, ...] | None:
+    """The shape of a rectangular nest of Python numbers.
+
+    Parameters
+    ----------
+    value : ObservedDatum
+        The value.
+
+    Returns
+    -------
+    tuple[int, ...] | None
+        The lengths of its nesting levels (empty for one number), or
+        ``None`` when a leaf is not a Python number or the sequences at
+        one level differ in length.
+    """
+    if isinstance(value, bool | int | float):
+        return ()
+    if not isinstance(value, list | tuple):
+        return None
+    shapes = {_numeric_shape(item) for item in value}
+    if None in shapes or len(shapes) > 1:
+        return None
+    inner = shapes.pop() if shapes else ()
+    return None if inner is None else (len(value), *inner)
+
+
+def observation_digest(name: str, value: ObservedDatum) -> StateValue:
+    """A deterministic, content-complete rendering of an observed datum.
+
+    Numeric data are rendered by `tensor_digest` of their tensor form,
+    so a tensor, an array, and a rectangular nest of numbers holding the
+    same values at the same dtype render identically, as the program
+    reads them identically. Text is rendered verbatim, and every other
+    sequence and mapping is rendered item by item, so a corpus of
+    tokenized sentences, ragged or not, is covered token for token.
+
+    Parameters
+    ----------
+    name : str
+        The datum's name, for the diagnostic.
+    value : ObservedDatum
+        The datum.
+
+    Returns
+    -------
+    StateValue
+        A JSON-serializable rendering that two data share exactly when
+        they hold the same content.
+
+    Raises
+    ------
+    TypeError
+        If the datum, or an item nested in it, is none of the kinds an
+        `ObservedDatum` admits, or a mapping in it has a key that is not
+        a string.
+    """
+    if isinstance(value, torch.Tensor):
+        return tensor_digest(value)
+    if isinstance(value, str):
+        return {"text": value}
+    if isinstance(value, bool | int | float):
+        return tensor_digest(torch.as_tensor(value))
+    if isinstance(value, list | tuple):
+        if _numeric_shape(value) is not None:
+            return tensor_digest(torch.as_tensor(value))
+        return {"sequence": [observation_digest(name, item) for item in value]}
+    if isinstance(value, Mapping):
+        rendered: dict[str, StateValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"observed datum {name!r} holds a mapping with the key "
+                    f"{key!r} of type {type(key).__name__}; keys must be strings"
+                )
+            rendered[key] = observation_digest(name, item)
+        return {"mapping": rendered}
+    if isinstance(value, _ArrayLike):
+        return tensor_digest(torch.as_tensor(value))
+    raise TypeError(
+        f"observed datum {name!r} holds a value of type {type(value).__name__}, "
+        "which is not a tensor, an array, a number, a string, or a sequence or "
+        "mapping of these"
+    )
 
 
 def write_checkpoint(

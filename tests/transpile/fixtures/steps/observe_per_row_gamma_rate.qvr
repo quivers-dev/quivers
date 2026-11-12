@@ -1,0 +1,10 @@
+# Exercises a per-row let filling the rate of a plated Gamma observe:
+# `rate` holds one value per `Resp` row, so a target that scores Gamma by
+# its scale takes the reciprocal of every row.
+object Resp : FinSet 4
+program regress : Resp -> Resp
+    sample nu <- Gamma(concentration=2.0, rate=0.5)
+    let rate = nu / x
+    observe y : Resp <- Gamma(concentration=nu, rate=rate)
+    return y
+export regress

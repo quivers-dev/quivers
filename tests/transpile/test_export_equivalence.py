@@ -23,6 +23,7 @@ import didactic.api as dx
 import pytest
 import torch
 
+from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.transpile import UnsupportedConstruct, transpile
 from quivers.transpile.lower import exported_return_names
@@ -1448,3 +1449,55 @@ def test_export_mutation_catalogue_covers_every_target() -> None:
         "the accepted-rewrite controls are empty, so nothing rules "
         "out a check that rejects every rewrite it is handed."
     )
+
+
+_GRID_SOURCE = """\
+object Row : FinSet 2
+object Col : FinSet 3
+object Grid : Real 3
+program grid : Row -> Grid
+    sample a <- Normal(loc=0.0, scale=1.0)
+    let m = factor i : Row, j : Col in a + 10.0 * real(i) + real(j)
+    observe y : Row <- Normal(loc=a, scale=1.0)
+    return m
+export grid
+"""
+
+
+@pytest.mark.parametrize("backend", ["jags", "bugs"])
+def test_matrix_export_reads_back_in_row_major_order(backend: str) -> None:
+    """A non-square matrix export comes back at its own indices.
+
+    JAGS stores a node column-major, so a probe that read the monitor
+    flat would list the 2 x 3 grid `m[i, j] = a + 10 i + j` as
+    `a, a + 10, a + 1, ...`, a transposed export beside a matching
+    joint. Every entry is distinct, so any reordering fails the
+    elementwise comparison with the reference machine's return.
+    """
+    names = exported_return_names(parse(_GRID_SOURCE))
+    assert names == ("m",)
+    values = (0.5, -1.25)
+    points: list[_ProbePoint] = [
+        {"params": {"a": a}, "data": {"y": [0.1, -0.4]}} for a in values
+    ]
+    measured = run_export_probe(
+        backend=backend,
+        source_text=transpile(parse(_GRID_SOURCE), target=backend).decode("utf-8"),
+        export_names=names,
+        points=points,
+        shapes={"a": [], "y": [2]},
+        dtypes={"a": "float", "y": "float"},
+        scratch_name=f"matrix_export_{backend}",
+    )
+    program = loads(_GRID_SOURCE)
+    for a, row in zip(values, measured, strict=True):
+        reference = program.run("grid", data={"y": (0.1, -0.4)}, sites={"a": a}).value
+        assert reference == tuple(
+            tuple(a + 10.0 * i + j for j in range(3)) for i in range(2)
+        )
+        (exported,) = row
+        grid = torch.tensor(exported, dtype=torch.float64)
+        assert tuple(grid.shape) == (2, 3)
+        assert grid.reshape(-1).tolist() == pytest.approx(
+            [value for item in reference for value in item]
+        )

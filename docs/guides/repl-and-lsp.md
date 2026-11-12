@@ -763,7 +763,8 @@ argument, prints detailed help for one command.
 
 #### `:quit` / `:q` / `:exit`
 
-Exit the REPL. The Textual binding `Ctrl-Q` does the same.
+Exit the REPL. The Textual binding `Ctrl-Q` does the same. In the
+[Jupyter kernel](#the-jupyter-kernel) it ends the cell instead.
 
 ### Scope paths (`::`)
 
@@ -1045,6 +1046,8 @@ Cell semantics:
 - Other lines are appended to the live module and compiled.
 - Blank lines separate independent chunks within a cell, so you can
   mix meta-commands and declarations freely.
+- `:quit` ends the cell: the chunks after it are not run, and the
+  kernel stays up. Shut the kernel down from the front end.
 
 Notebook features:
 

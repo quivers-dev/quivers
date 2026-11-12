@@ -38,6 +38,7 @@ from torch.distributions import Distribution
 
 from quivers.dsl.ast_nodes import (
     Expr,
+    LetStep,
     MarginalizeStep,
     Module,
     ObserveStep,
@@ -110,7 +111,12 @@ import didactic.api as dx
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.qiec_ir import host_runtime_capability_diagnostics
 from quivers.transpile._expand_composites import expand_composite_lets
-from quivers.transpile.family_meta import FAMILY_META, FamilyMeta, class_index_outcome
+from quivers.transpile.family_meta import (
+    FAMILY_META,
+    FamilyMeta,
+    class_index_outcome,
+    marginalize_support,
+)
 from quivers.transpile.ir import (
     CSIntegerInterval,
     CSNonnegativeInteger,
@@ -309,6 +315,8 @@ class _ProgramWalk:
         self.ctx = ctx
         self.site_steps: dict[str, SampleStep | ObserveStep | MarginalizeStep] = {}
         _collect_site_steps(program.draws, self.site_steps)
+        self.factor_axes: dict[str, tuple[str, ...]] = {}
+        _collect_factor_axes(program.draws, self.factor_axes)
         self.observed: dict[str, IRObserve] = {}
         self.structured_inputs: dict[str, tuple[ConstraintSpec, Plate]] = {}
         self.param_map_inputs: dict[str, Plate] = {}
@@ -569,7 +577,9 @@ class _ProgramWalk:
             # components are read back where the pair is projected.
             self.tuples[binder.name] = value.items
             return
-        axes = self._inferred_axes(binder.type, value)
+        axes = self._factor_axes(binder.name, binder.type) or self._inferred_axes(
+            binder.type, value
+        )
         self.axes[binder.name] = axes
         plate = self._inferred_plate(binder.type, axes, value)
         self.bound_plates[binder.name] = plate
@@ -619,6 +629,45 @@ class _ProgramWalk:
                 if any(a is not b for a, b in zip(items, current, strict=True)):
                     changes[field.name] = items
         return replace(value, **changes) if changes else value
+
+    def _factor_axes(self, name: str, type_: TypeExpr) -> tuple[str, ...]:
+        """The axis names a source ``factor`` binding states.
+
+        ``let after = factor t : Step in ...`` names its axis ``Step``,
+        which the checked comprehension keeps only as an extent. Two
+        objects of one cardinality leave that extent ambiguous, so the
+        source binder's object names the axis instead, and a value read
+        off the binding inherits it.
+
+        Parameters
+        ----------
+        name : str
+            The bound name.
+        type_ : TypeExpr
+            The checked type of the bound value.
+
+        Returns
+        -------
+        tuple[str, ...]
+            One name per tensor axis when the binding is a source
+            factor whose binder objects have the axes' extents, the
+            trailing axes named as `_inferred_axes` names them; empty
+            otherwise.
+        """
+        stated = self.factor_axes.get(name)
+        shape = tensor_shape(type_)
+        if stated is None or shape is None:
+            return ()
+        dimensions = tuple(shape[1])
+        if len(stated) > len(dimensions):
+            return ()
+        for axis, size in zip(stated, dimensions, strict=False):
+            if not isinstance(size, IndexLiteral) or self.ctx.cards.get(axis) != (
+                size.value
+            ):
+                return ()
+        rest = _typed_dims(type_, ())[len(stated) :]
+        return (*stated, *(str(dim.name) for dim in rest))
 
     def _inferred_axes(self, type_: TypeExpr, value: Value) -> tuple[str, ...]:
         """The axis names of a bound value.
@@ -1169,7 +1218,9 @@ class _ProgramWalk:
                     "pass the result as probs"
                 ],
             )
-        args, arg_names = self._parameterization(family, args, arg_names)
+        args, arg_names = self._parameterization(
+            family, args, arg_names, marginalized=marginalized
+        )
         constraint = _apply_declared_bounds(
             from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
             plate,
@@ -1300,7 +1351,12 @@ class _ProgramWalk:
         return out, tuple(names)
 
     def _parameterization(
-        self, family: str, args: tuple[IRArg, ...], arg_names: tuple[str, ...]
+        self,
+        family: str,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        *,
+        marginalized: bool = False,
     ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
         """Hand an alternative parameterization to the target as it reads it.
 
@@ -1308,8 +1364,11 @@ class _ProgramWalk:
         receives it unchanged, under the keyword the renderer spells it
         with. A literal precision matrix reaches a target without a
         precision parameterization inverted, as the covariance it is the
-        inverse of. Any other alternative a target has no spelling for is
-        refused by name.
+        inverse of. A marginalized latent given on the logit scale its
+        family's marginalize support weighs its atoms from reaches every
+        target unchanged: no target draws it, and every renderer weighs
+        the atoms from the logits in log space. Any other alternative a
+        target has no spelling for is refused by name.
 
         Parameters
         ----------
@@ -1319,6 +1378,8 @@ class _ProgramWalk:
             The call's wire arguments.
         arg_names : tuple[str, ...]
             The parameter each argument fills.
+        marginalized : bool
+            Whether the call is a marginalized latent's prior.
 
         Returns
         -------
@@ -1331,9 +1392,13 @@ class _ProgramWalk:
             If the target has no spelling for the parameterization.
         """
         target = self.planner.target
+        meta = FAMILY_META.get(family)
+        support = marginalize_support(meta) if meta is not None else None
         for position, name in enumerate(arg_names):
             natives = _NATIVE_ALTERNATIVES.get((family, name))
             if natives is None or target in natives:
+                continue
+            if marginalized and support is not None and support.logit_arg == name:
                 continue
             argument = args[position]
             if name == "precision_matrix" and isinstance(argument, IRArgMatrix):
@@ -2048,6 +2113,29 @@ def _collect_site_steps(
             _collect_site_steps(step.scope, out)
 
 
+def _collect_factor_axes(
+    steps: Sequence[ProgramStep], out: dict[str, tuple[str, ...]]
+) -> None:
+    """Index a program's ``factor`` lets by the objects their binders range over.
+
+    Parameters
+    ----------
+    steps : Sequence[ProgramStep]
+        The steps, searched through marginalization scopes.
+    out : dict[str, tuple[str, ...]]
+        The index, extended in place: each let whose value is a
+        ``factor`` over named objects, mapped to those objects in
+        binder order.
+    """
+    for step in steps:
+        if isinstance(step, LetStep) and isinstance(step.value, LetExprFactor):
+            indices = tuple(binder.index for binder in step.value.binders)
+            if all(isinstance(index, TypeName) for index in indices):
+                out[step.name] = tuple(cast(TypeName, index).name for index in indices)
+        elif isinstance(step, MarginalizeStep):
+            _collect_factor_axes(step.scope, out)
+
+
 def _site_and_distribution(
     request: EffectRequest, target: str
 ) -> tuple[SiteValue, DistributionValue]:
@@ -2341,6 +2429,7 @@ _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
         {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
     ),
     ("Geometric", "logits"): frozenset({"ir", "edward2", "numpyro", "pyro"}),
+    ("ContinuousBernoulli", "logits"): frozenset({"ir"}),
     ("NegativeBinomial", "logits"): frozenset({"ir", "edward2", "pyro"}),
     ("MultivariateNormal", "covariance_matrix"): _EVERY_TARGET,
     ("MultivariateNormal", "precision_matrix"): frozenset(

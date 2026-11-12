@@ -1606,8 +1606,22 @@ def _continuousbernoulli_sample(a: Mapping[str, object], rng: random.Random) -> 
     object
         The drawn value.
     """
-    lam = probability(a, "ContinuousBernoulli")
     uniform = rng.random()
+    if "logits" in a:
+        logit = real_parameter(a, "logits", "ContinuousBernoulli")
+        if abs(logit) < 4e-3:
+            return uniform
+        # With ``lambda = sigmoid(l)``, ``(2 lambda - 1) / (1 - lambda)`` is
+        # ``expm1(l)``, so the inverse distribution function needs no
+        # probability that could round to zero or one.
+        if logit > 0.0:
+            # ``log1p(expm1(l) u) = l + log(u + (1 - u) exp(-l))``, which
+            # does not overflow at a large logit.
+            return (logit + math.log(uniform + (1.0 - uniform) * math.exp(-logit))) / (
+                logit
+            )
+        return math.log1p(math.expm1(logit) * uniform) / logit
+    lam = probability(a, "ContinuousBernoulli")
     if abs(lam - 0.5) < 1e-3:
         return uniform
     return math.log1p((2 * lam - 1) * uniform / (1 - lam)) / (
@@ -1631,12 +1645,30 @@ def _continuousbernoulli_density(a: Mapping[str, object], value: object) -> floa
         The log density, ``-inf`` outside the closed unit interval. The
         normalizer is ``2 atanh(1 - 2 lambda) / (1 - 2 lambda)`` away from
         one half, where its limit is two; near one half a Taylor
-        expansion of the same function replaces the quotient.
+        expansion of the same function replaces the quotient. From
+        ``logits`` the same normalizer is ``l / tanh(l / 2)`` and the
+        endpoint masses are ``log sigmoid(l)`` and ``log sigmoid(-l)``,
+        so no probability is formed that could round to zero or one.
     """
     point = finite_value(value, "ContinuousBernoulli")
-    lam = probability(a, "ContinuousBernoulli")
     if not 0.0 <= point <= 1.0:
         return -math.inf
+    if "logits" in a:
+        logit = real_parameter(a, "logits", "ContinuousBernoulli")
+        magnitude = abs(logit)
+        if magnitude < 0.1:
+            square = logit * logit
+            log_normalizer = math.log(2.0) + math.log1p(
+                square / 12.0 - square * square / 720.0
+            )
+        else:
+            log_normalizer = math.log(magnitude) - math.log(math.tanh(magnitude / 2.0))
+        return (
+            point * _log_sigmoid(logit)
+            + (1.0 - point) * _log_sigmoid(-logit)
+            + log_normalizer
+        )
+    lam = probability(a, "ContinuousBernoulli")
     shift = 1.0 - 2.0 * lam
     if abs(shift) < 1e-3:
         log_normalizer = math.log(2.0) + math.log1p(shift * shift / 3 + shift**4 / 5)

@@ -88,6 +88,7 @@ from quivers.transpile.renderers._base import (
     RenderContext,
     assert_no_dropped_param_map,
     host_integer_input_names,
+    logit_weighted,
     mixture_normal_components,
 )
 from quivers.transpile.qiec_ir import IRQiecModule
@@ -1104,7 +1105,8 @@ class PyroRenderer(RendererBase):
         the probability tensor's own trailing axis is already the atom
         axis. A `Bernoulli` atom set weights the atoms 0 and 1 by
         ``log1p(-p)`` and ``log(p)``, which stack into a fresh trailing
-        axis.
+        axis; from its logits ``l`` the weights are ``logsigmoid(-l)``
+        and ``logsigmoid(l)``, computed in log space.
         """
         probs = marginal_weight_probs(
             node,
@@ -1116,6 +1118,21 @@ class PyroRenderer(RendererBase):
         )
         probs_vid = self._arg_to_vid(pctx, probs)
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            logsigmoid = ("torch", "nn", "functional", "logsigmoid")
+            return _stack_last_dim(
+                pctx,
+                (
+                    call(
+                        pctx,
+                        attribute(pctx, logsigmoid),
+                        positional=(
+                            _python_unary_minus(pctx, self._arg_to_vid(pctx, probs)),
+                        ),
+                    ),
+                    call(pctx, attribute(pctx, logsigmoid), positional=(probs_vid,)),
+                ),
+            )
         if family == "Categorical":
             return call(
                 pctx,

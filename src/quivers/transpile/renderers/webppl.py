@@ -77,6 +77,7 @@ from quivers.transpile.renderers._base import (
     RenderContext,
     assert_no_dangling_refs,
     assert_no_dropped_param_map,
+    logit_weighted,
     mixture_component_count,
     mixture_normal_components,
 )
@@ -1211,7 +1212,10 @@ class WebPPLRenderer(RendererBase):
         `log(1 - p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, which `_qvr_take_last` slices however many
-        grouping axes sit above it.
+        grouping axes sit above it. A `Bernoulli` atom set given by its
+        logits ``l`` weights the atoms by ``log sigmoid(-l)`` and
+        ``log sigmoid(l)`` through the runtime's `_qvr_log_sigmoid`,
+        which computes them in log space.
         """
         probs = marginal_weight_probs(
             node,
@@ -1222,6 +1226,40 @@ class WebPPLRenderer(RendererBase):
             target=self.target,
         )
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            zero = f"{prefix}_w_0"
+            one = f"{prefix}_w_1"
+            self._emit_var_decl(
+                ctx,
+                self._body_vid,
+                zero,
+                self._call(
+                    ctx,
+                    self._ident(ctx, "_qvr_log_sigmoid"),
+                    (
+                        self._call(
+                            ctx,
+                            self._ident(ctx, "_qvr_bcast"),
+                            (
+                                self._string_literal(ctx, "-"),
+                                self._number_literal(ctx, 0),
+                                self._render_arg(ctx, probs),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            self._emit_var_decl(
+                ctx,
+                self._body_vid,
+                one,
+                self._call(
+                    ctx,
+                    self._ident(ctx, "_qvr_log_sigmoid"),
+                    (self._render_arg(ctx, probs),),
+                ),
+            )
+            return (zero, one)
         if family == "Bernoulli":
             zero = f"{prefix}_w_0"
             one = f"{prefix}_w_1"
