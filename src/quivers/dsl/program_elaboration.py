@@ -215,6 +215,7 @@ from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
+    _step_value_names,
     build_let_table,
     morphism_table,
     resolve_step_dist,
@@ -484,6 +485,32 @@ def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
             if scan is not None:
                 found.add(scan.sequence)
     return frozenset(found)
+
+
+def _bound_names(step: ProgramStep) -> frozenset[str]:
+    """The names a step binds, with those its scope binds.
+
+    Parameters
+    ----------
+    step : ProgramStep
+        The step.
+
+    Returns
+    -------
+    frozenset[str]
+        The variables of a draw or observation, the name of a let, call,
+        or score, and a block's latent with every name its scope binds.
+    """
+    if isinstance(step, SampleStep | ObserveStep):
+        return frozenset(step.vars)
+    if isinstance(step, LetStep | CallStep | ScoreStep):
+        return frozenset({step.name})
+    if isinstance(step, MarginalizeStep):
+        found = {step.var}
+        for inner in step.scope:
+            found |= _bound_names(inner)
+        return frozenset(found)
+    return frozenset()
 
 
 def _own_site_labels(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
@@ -2866,6 +2893,9 @@ class _ProgramElaboration:
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
         scan = scan_let_call(step.value)
+        if scan is not None and scan.marginal:
+            self._elaborate_marginal_chain(scan, scope, state, step)
+            return
         if scan is not None:
             call = self._scan_call(scan, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
@@ -3618,6 +3648,389 @@ class _ProgramElaboration:
             )
         )
         return passed, positional, step_statics, substitution
+
+    def _elaborate_marginal_chain(
+        self: _Elaborator,
+        scan: ScanCall,
+        scope: _Scope,
+        state: _ProgramState,
+        node: LetStep,
+    ) -> None:
+        """Elaborate a marginalized chain to its log marginal likelihood.
+
+        The scan's cell returns the latent it marginalizes, so the chain
+        ``z_0 ~ init``, ``z_t ~ cell's transition from z_{t-1}``, with
+        each position's observations scored at ``z_t``, has every state
+        summed out. The cell elaborates to a row: the program that, at
+        an entry and a previous state, binds its block's latent to the
+        block's weighted shots, ``log p(z_t = j | z_{t-1}) + log p(obs_t
+        | z_t = j)`` for every state ``j``, enumerated under the table
+        handler. A recursion over the positions carries the log filtering
+        distribution ``log p(z_t | obs_{1..t})`` and adds each position's
+        evidence, which is the forward algorithm in log space::
+
+            table_t[j] = logsumexp_i(carried[i] + row(x_t, i)[j])
+            evidence_t = logsumexp_j(table_t[j])
+            carried'   = table_t - evidence_t
+
+        starting from ``log init``, and the sum of the evidences is the
+        log marginal likelihood, bound to the step's name and scored.
+
+        Parameters
+        ----------
+        scan : ScanCall
+            The marginalized scan: its cell, its sequence, and the name
+            of the first state's distribution.
+        scope : _Scope
+            The scanning program's scope at the scan.
+        state : _ProgramState
+            The scanning program's accumulating state.
+        node : LetStep
+            The scan's step.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the cell is not a chain step the forward algorithm sums
+            out, its state object has no literal extent, the sequence or
+            the first state's distribution is not bound, or the entries
+            are not what the cell reads.
+        """
+        cell_decl = self._program_declarations.get(scan.step)
+        if cell_decl is None:
+            self._fail(
+                node,
+                f"the marginalized chain runs {scan.step!r}, which is not a program",
+                code="qiec-program",
+            )
+        try:
+            cell = markov_cell(cell_decl)
+        except StepResolutionError as error:
+            self._fail(node, "; ".join(error.kinds), code="qiec-program")
+        states = self._object_axis(cell.state_object, node)
+        if not isinstance(states.size, IndexLiteral):
+            self._fail(
+                node,
+                f"the marginalized chain over {cell.name!r} sums states of an "
+                "object with no literal extent",
+                code="qiec-program",
+            )
+        count = int(states.size.value)
+        if scan.init is None or scope.lookup(scan.init) is None:
+            self._fail(
+                node,
+                f"the marginalized chain over {cell.name!r} starts from "
+                f"{scan.init!r}, which the program does not bind before the scan",
+                code="qiec-program",
+            )
+        # The cell reads the scanning program's bindings at their types.
+        own = {cell.entry, cell.previous, cell.latent}
+        for step in cell_decl.draws:
+            own |= _bound_names(step)
+        reads: set[str] = set()
+        for step in cell_decl.draws:
+            reads |= _step_value_names(step)
+        pins = {
+            name: local.type
+            for name in sorted(reads - own)
+            if (local := scope.lookup(name)) is not None
+        }
+        row_name = f"{cell.name}__row__in_{state.declaration.name}_{node.name}"
+        self._markov_rows[row_name] = (cell.latent, cell.entry)
+        try:
+            state.helpers.extend(
+                _elaborate_nested_program(self, cell_decl.with_(name=row_name), pins)
+            )
+        finally:
+            del self._markov_rows[row_name]
+        signature = self.computation_signatures[row_name]
+        row_entry = next(item for item in self.entries if item.name == row_name)
+        table_type = tensor_type(LOG_WEIGHT, (states.size,))
+        if (
+            len(signature.parameters) < 2
+            or signature.parameters[1] != INT
+            or signature.result != table_type
+        ):
+            self._fail(
+                node,
+                f"the cell {cell.name!r} of a marginalized chain does not take "
+                "an entry and a state and weigh each next state",
+                code="qiec-program",
+            )
+        entry_type = signature.parameters[0]
+        local = scope.lookup(scan.sequence)
+        if local is None:
+            self._fail(
+                node,
+                f"the marginalized chain runs over {scan.sequence!r}, which is "
+                "neither bound nor a program input",
+                code="qiec-program",
+            )
+        shape = tensor_shape(local.type)
+        if shape is None or not shape[1]:
+            self._fail(
+                node,
+                f"the marginalized chain runs over {scan.sequence!r}, which is "
+                "not a sequence",
+                code="qiec-program",
+            )
+        extent = shape[1][0]
+        per_position: TypeExpr = (
+            shape[0] if len(shape[1]) == 1 else tensor_type(shape[0], shape[1][1:])
+        )
+        if per_position != entry_type:
+            self._fail(
+                node,
+                f"the marginalized chain feeds {cell.name!r} entries of "
+                f"{render_static(per_position)}, not the "
+                f"{render_static(entry_type)} it reads",
+                code="qiec-program",
+            )
+        passed, positional, row_statics, substitution = self._scan_step_inputs(
+            row_name, row_entry, signature, extent, scope, state, node
+        )
+        name = f"{state.declaration.name}__{node.name}_chain"
+        if name in self.computation_signatures:
+            self._fail(
+                node,
+                f"chain helper {name!r} is declared twice",
+                code="qiec-program",
+            )
+        mentioned = _index_variables_in((local.type, *(item.type for item in passed)))
+        telescope = tuple(
+            binder for name_, binder in state.extents.items() if name_ in mentioned
+        )
+        statics: tuple[StaticArgument, ...] = tuple(
+            IndexVariable(binder.name, binder.sort) for binder in telescope
+        )
+        filter_type = tensor_type(REAL, (states.size,))
+        visited = Local("__chain_t", INT)
+        sequence = Local("__chain_xs", local.type)
+        carried = Local("__chain_log_filter", filter_type)
+        passed_locals = tuple(Local(f"__chain_{item.name}", item.type) for item in passed)
+        identity = ComputationId.derive(self.source.module_name, "computation", name)
+        helper = ComputationSignature(
+            identity,
+            name,
+            telescope,
+            (INT, local.type, filter_type, *(item.type for item in passed_locals)),
+            REAL,
+            signature.effects,
+        )
+        try:
+            self.registry.register_computation(helper)
+        except (KernelError, TypeError, ValueError) as error:
+            self._fail_kernel(node, error, fallback="qiec-program")
+        self.computation_signatures[name] = helper
+        path = ("programs", state.declaration.name, "chains", node.name)
+        counter = Local("__chain_k", INT)
+        length: Value = Reduction(
+            "sum",
+            Comprehension(
+                counter, extent, LiteralValue(1, INT), tensor_type(INT, (extent,))
+            ),
+            INT,
+        )
+        position = Local("__chain_p", INT)
+        position_value: Value = (
+            self._primitive(
+                "sub_int",
+                (
+                    self._primitive(
+                        "sub_int", (length, LiteralValue(1, INT)), node, (*path, "last")
+                    ),
+                    Var(visited),
+                ),
+                node,
+                (*path, "position"),
+            )
+            if scan.reverse
+            else Var(visited)
+        )
+        entry = Local("__chain_x", entry_type)
+        rows = tuple(Local(f"__chain_row_{index}", table_type) for index in range(count))
+        table = Local("__chain_table", filter_type)
+        evidence = Local("__chain_evidence", REAL)
+        following = Local("__chain_next", filter_type)
+        rest = Local("__chain_rest", REAL)
+        column = Local("__chain_j", INT)
+        # The weight of moving from state i to state j and scoring j's
+        # observations, after the filtered weight of i.
+        moves = TensorValue(
+            tuple(
+                self._primitive(
+                    "add_real",
+                    (
+                        Gather(Var(carried), LiteralValue(index, INT), REAL),
+                        self._primitive(
+                            "weight_value",
+                            (Gather(Var(row), Var(column), LOG_WEIGHT),),
+                            node,
+                            (*path, "rows", index, "weight"),
+                        ),
+                    ),
+                    node,
+                    (*path, "rows", index, "move"),
+                )
+                for index, row in enumerate(rows)
+            ),
+            filter_type,
+        )
+        recur = Call(
+            identity,
+            name,
+            statics,
+            (
+                self._primitive(
+                    "add_int",
+                    (Var(visited), LiteralValue(1, INT)),
+                    node,
+                    (*path, "successor"),
+                ),
+                Var(sequence),
+                Var(following),
+                *(Var(item) for item in passed_locals),
+            ),
+            REAL,
+            signature.effects,
+            _origin_at(self, path, "call", node),
+        )
+        continuation: Computation = Bind(
+            table,
+            Return(
+                Comprehension(
+                    column,
+                    states.size,
+                    Reduction("logsumexp", moves, REAL),
+                    filter_type,
+                )
+            ),
+            Bind(
+                evidence,
+                Return(Reduction("logsumexp", Var(table), REAL)),
+                Bind(
+                    following,
+                    Return(
+                        Comprehension(
+                            column,
+                            states.size,
+                            self._primitive(
+                                "sub_real",
+                                (
+                                    Gather(Var(table), Var(column), REAL),
+                                    Var(evidence),
+                                ),
+                                node,
+                                (*path, "normalize"),
+                            ),
+                            filter_type,
+                        )
+                    ),
+                    Bind(
+                        rest,
+                        recur,
+                        Return(
+                            self._primitive(
+                                "add_real",
+                                (Var(evidence), Var(rest)),
+                                node,
+                                (*path, "accumulate"),
+                            )
+                        ),
+                    ),
+                ),
+            ),
+        )
+        passed_arguments = tuple(
+            Gather(
+                Var(item),
+                Var(position),
+                substitute_type(parameter.type, substitution),
+            )
+            if per_step
+            else Var(item)
+            for item, per_step, parameter in zip(
+                passed_locals, positional, row_entry.parameters[2:], strict=True
+            )
+        )
+        for index, row in reversed(tuple(enumerate(rows))):
+            continuation = Bind(
+                row,
+                Call(
+                    signature.id,
+                    signature.name,
+                    row_statics,
+                    (Var(entry), LiteralValue(index, INT), *passed_arguments),
+                    table_type,
+                    signature.effects,
+                    _origin_at(self, (*path, "rows", index), "call", node),
+                ),
+                continuation,
+            )
+        body: Computation = If(
+            self._primitive("eq_int", (Var(visited), length), node, (*path, "finished")),
+            Return(LiteralValue(0.0, REAL)),
+            Bind(
+                position,
+                Return(position_value),
+                Bind(
+                    entry,
+                    Return(Gather(Var(sequence), Var(position), entry_type)),
+                    continuation,
+                ),
+            ),
+        )
+        state.helpers.append(
+            self._checked_computation(
+                helper, (visited, sequence, carried, *passed_locals), body, node, path
+            )
+        )
+        # The log filtering distribution before the first position is the
+        # log of the first state's distribution, minus infinity where it
+        # puts no mass.
+        start = self._step_distribution(
+            SampleStep(
+                vars=(f"{node.name}$start",),
+                morphism="Categorical",
+                args=(
+                    DrawArgNamed(parameter="probs", value=DrawArgName(text=scan.init)),
+                ),
+                line=node.line,
+                col=node.col,
+            ),
+            scope,
+            state,
+            f"{node.name}$start",
+        )
+        initial = Comprehension(
+            column,
+            states.size,
+            self._primitive(
+                "weight_value",
+                (
+                    LogDensity(
+                        start,
+                        Var(column),
+                        _origin_at(self, (*path, "start"), "log-density", node),
+                    ),
+                ),
+                node,
+                (*path, "start"),
+            ),
+            filter_type,
+        )
+        marginal = Call(
+            identity,
+            name,
+            statics,
+            (LiteralValue(0, INT), Var(local), initial, *(Var(item) for item in passed)),
+            REAL,
+            signature.effects,
+            _origin_at(self, path, "call", node),
+        )
+        binder = self._bind_step(scope, node.name, REAL, marginal, node)
+        weight = self._primitive("as_weight", (Var(binder),), node, (*path, "weight"))
+        self._add_score(state.score, weight, scope, state, node)
 
     def _scan_call(
         self: _Elaborator,
