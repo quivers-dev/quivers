@@ -1,25 +1,24 @@
 """Pre-registered library of weighted deduction systems.
 
-Ships agenda-engine `DeductionSystem` instances for the
-canonical algorithmic specializations enumerated in the
-semiring-parsing / agenda-driven-deduction literature
-(Shieber-Schabes-Pereira 1995; Goodman 1999; Klein-Manning 2001;
-Nederhof 2003; Eisner-Blatz 2007; Vieira et al. on Dyna).
+Ships agenda-engine `DeductionSystem` instances for standard
+specializations from the semiring-parsing and agenda-driven-deduction
+literature (Shieber, Schabes, and Pereira 1995; Goodman 1999; Klein and
+Manning 2001; Nederhof 2003; Eisner and Blatz 2007).
 
-Each entry is a `DeductionSystem` constructed from the
-seven irreducible parameters (item algebra, rule set, semiring,
-axiom injector, goal predicate, agenda factory, chart factory)
-of the underlying agenda engine. Users invoke them as
+Each entry is a `DeductionSystem`: a rule set, a semiring, an axiom
+injector, a goal predicate, and an agenda factory (the item algebra is
+implicit in the rules' patterns, and the chart is the default hash
+chart). Users invoke them as
 
 .. code-block:: python
 
-    from quivers.stochastic.stdlib import CCG, Lambek, MLTT, Datalog
-    view = CCG(input_token_axioms)
-    weight = view.weight(some_item)
+    from quivers.stochastic.stdlib import CCG, AB, MLTT, Datalog
+    view = CCG(lexical_axioms)
+    weight = view.goal_weight()
 
-Categorically, each system is a section of the dependent kernel
-:math:`\\Pi(p \\in P).\\ \\mathbf{Kern}(\\mathrm{In}(p), \\mathbf{Set}^{I(p)^{\\mathrm{op}}}_K)`
-indexed by the agenda strategy and the semiring.
+A system maps its axioms to a chart: the weight of each derivable item,
+the semiring sum over the item's derivations of the product of their
+weights.
 """
 
 from __future__ import annotations
@@ -45,70 +44,133 @@ from quivers.stochastic.semiring import (
 # ---------------------------------------------------------------------------
 
 
-def _ccg_rules() -> list[InferenceRule]:
-    """CCG rule set: forward / backward application + harmonic composition."""
+_I, _J, _K = Wildcard("i"), Wildcard("j"), Wildcard("k")
+_X, _Y, _Z = Wildcard("X"), Wildcard("Y"), Wildcard("Z")
+
+
+def _span(i: Wildcard, j: Wildcard, category: tuple | Wildcard) -> tuple:
+    """A span item ``("span", i, j, category)`` over the tokens ``[i, j)``.
+
+    Parameters
+    ----------
+    i, j : Wildcard
+        The span's start and end positions.
+    category : tuple or Wildcard
+        The category pattern.
+
+    Returns
+    -------
+    tuple
+        The item pattern.
+    """
+    return ("span", i, j, category)
+
+
+def _fwd(result: Wildcard, argument: Wildcard) -> tuple:
+    """The forward-slash category ``result / argument``."""
+    return ("slash", "/", result, argument)
+
+
+def _bwd(result: Wildcard, argument: Wildcard) -> tuple:
+    """The backward-slash category ``result\\argument``, seeking its argument on the left."""
+    return ("slash", "\\", argument, result)
+
+
+def _application_rules() -> list[InferenceRule]:
+    """Forward and backward application over adjacent spans.
+
+    ``X/Y`` over ``[i, k)`` and ``Y`` over ``[k, j)`` derive ``X`` over
+    ``[i, j)``; ``Y`` over ``[i, k)`` and ``X\\Y`` over ``[k, j)`` derive
+    ``X`` over ``[i, j)``. Slash categories are written result first:
+    ``X/Y`` and ``X\\Y`` both yield ``X``, seeking ``Y`` on the right and on
+    the left.
+
+    Returns
+    -------
+    list[InferenceRule]
+        The two application rules.
+    """
     return [
-        # Forward application: X/Y, Y |- X
         InferenceRule(
             name="fwd_app",
-            premises=(
-                ("slash", "/", Wildcard("X"), Wildcard("Y")),
-                Wildcard("Y"),
-            ),
-            conclusion=Wildcard("X"),
+            premises=(_span(_I, _K, _fwd(_X, _Y)), _span(_K, _J, _Y)),
+            conclusion=_span(_I, _J, _X),
         ),
-        # Backward application: Y, Y\X |- X
         InferenceRule(
             name="bwd_app",
-            premises=(
-                Wildcard("Y"),
-                ("slash", "\\", Wildcard("Y"), Wildcard("X")),
-            ),
-            conclusion=Wildcard("X"),
+            premises=(_span(_I, _K, _Y), _span(_K, _J, _bwd(_X, _Y))),
+            conclusion=_span(_I, _J, _X),
         ),
     ]
+
+
+def _ccg_rules() -> list[InferenceRule]:
+    """CCG rules: application and harmonic composition over adjacent spans.
+
+    Harmonic composition: ``X/Y, Y/Z ⊢ X/Z`` (forward, B>) and
+    ``Y\\Z, X\\Y ⊢ X\\Z`` (backward, B<), in result-first notation
+    (Steedman 2000, *The Syntactic Process*).
+
+    Returns
+    -------
+    list[InferenceRule]
+        Application and harmonic composition.
+    """
+    return [
+        *_application_rules(),
+        InferenceRule(
+            name="fwd_comp",
+            premises=(_span(_I, _K, _fwd(_X, _Y)), _span(_K, _J, _fwd(_Y, _Z))),
+            conclusion=_span(_I, _J, _fwd(_X, _Z)),
+        ),
+        InferenceRule(
+            name="bwd_comp",
+            premises=(_span(_I, _K, _bwd(_Y, _Z)), _span(_K, _J, _bwd(_X, _Y))),
+            conclusion=_span(_I, _J, _bwd(_X, _Z)),
+        ),
+    ]
+
+
+def _is_sentence(item: tuple) -> bool:
+    """Whether an item is a span of the category ``S``.
+
+    Parameters
+    ----------
+    item : tuple
+        A chart item.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``("span", i, j, "S")``; the system's run narrows
+        it to the span of the whole input.
+    """
+    return (
+        isinstance(item, tuple)
+        and len(item) == 4
+        and item[0] == "span"
+        and item[3] == "S"
+    )
 
 
 CCG = DeductionSystem(
     rules=tuple(_ccg_rules()),
     semiring=LOG_PROB,
     axiom_injector=lambda axioms: list(axioms),
-    goal=lambda item: isinstance(item, tuple) and item[0] == "span" and item[1] == "S",
+    goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
-"""Combinatory categorial grammar recognition: forward and backward application over ``slash`` items, log-probability semiring, CKY agenda."""
+"""Combinatory categorial grammar: application and harmonic composition over ``("span", i, j, category)`` items, log-probability semiring, CKY agenda; the goal is ``S`` over the whole input."""
 
 
-def _lambek_rules() -> list[InferenceRule]:
-    """Lambek calculus: bidirectional application + intro (no type-raising)."""
-    return [
-        InferenceRule(
-            name="fwd_app",
-            premises=(
-                ("slash", "/", Wildcard("X"), Wildcard("Y")),
-                Wildcard("Y"),
-            ),
-            conclusion=Wildcard("X"),
-        ),
-        InferenceRule(
-            name="bwd_app",
-            premises=(
-                Wildcard("Y"),
-                ("slash", "\\", Wildcard("Y"), Wildcard("X")),
-            ),
-            conclusion=Wildcard("X"),
-        ),
-    ]
-
-
-Lambek = DeductionSystem(
-    rules=tuple(_lambek_rules()),
+AB = DeductionSystem(
+    rules=tuple(_application_rules()),
     semiring=LOG_PROB,
     axiom_injector=lambda axioms: list(axioms),
-    goal=lambda item: isinstance(item, tuple) and item[0] == "span" and item[1] == "S",
+    goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
-"""Lambek calculus recognition: forward and backward application, log-probability semiring, CKY agenda."""
+"""AB (Ajdukiewicz-Bar-Hillel) categorial grammar: forward and backward application only, over ``("span", i, j, category)`` items, log-probability semiring, CKY agenda; the goal is ``S`` over the whole input."""
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +466,7 @@ EditDistance = DeductionSystem(
 
 STDLIB_DEDUCTIONS: dict[str, DeductionSystem] = {
     "CCG": CCG,
-    "Lambek": Lambek,
+    "AB": AB,
     "STLC": STLC,
     "MLTT": MLTT,
     "Datalog": Datalog,
@@ -425,7 +487,7 @@ compiler's environment.
 __all__ = [
     "STDLIB_DEDUCTIONS",
     "CCG",
-    "Lambek",
+    "AB",
     "STLC",
     "MLTT",
     "Datalog",
