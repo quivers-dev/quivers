@@ -33,7 +33,9 @@ This program implements zero-inflated Poisson (ZIP) regression [@lambert1992zip]
 # At a marginalize head, a ContinuousBernoulli prior is scored on
 # the two atoms {0, 1} with the Bernoulli weights (pi, 1 - pi);
 # its value is real-valued, so the gate z * rate needs no
-# Bool-to-number conversion.
+# Bool-to-number conversion. The prior is given by its logit,
+# -eta_zero, so both weights are computed in log space and keep
+# their digits where the predictor saturates.
 #
 # Reference: [Lambert 1992](https://doi.org/10.1080/00401706.1992.10485228).
 
@@ -51,11 +53,11 @@ program zip_regression : Resp -> Val
     let bz = beta_zero[out_idx]
     let ar = alpha_rate[out_idx]
     let br = beta_rate[out_idx]
-    let pi_zero = sigmoid(az + bz * x)
-    let pi_poisson = 1.0 - pi_zero
+    let eta_zero = az + bz * x
+    let eta_poisson = -eta_zero
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- ContinuousBernoulli(probs=pi_poisson)
+    marginalize z : Resp <- ContinuousBernoulli(logits=eta_poisson)
         let gated_rate = z * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 
@@ -84,14 +86,18 @@ weighted by its prior probability.
 ## Walkthrough
 
 Per-output coefficient plates `alpha_zero`, `beta_zero` carry the
-[logit](https://en.wikipedia.org/wiki/Logit)-link structural-zero probability
-`pi_zero`, while `alpha_rate`, `beta_rate` carry the log-link rate. The
+[logit](https://en.wikipedia.org/wiki/Logit) `eta_zero` of the structural-zero
+probability `pi_zero = sigmoid(eta_zero)`, while `alpha_rate`, `beta_rate` carry the log-link rate. The
 `marginalize z : Resp` annotation gives each response row its own branch
-indicator, with prior probability `pi_poisson = 1 - pi_zero` of the Poisson
-branch. The body is evaluated at `z = 0`, where the gated rate is zero and
+indicator, whose prior is given by the logit `eta_poisson = -eta_zero` of the
+Poisson branch, so its probability is `1 - pi_zero`. The body is evaluated at `z = 0`, where the gated rate is zero and
 `Poisson(0)` puts all its mass on `y = 0`, and at `z = 1`, where the rate is
 `rate`. The two log densities are combined by log-sum-exp with log weights
-`log(pi_zero)` and `log(1 - pi_zero)`. For a positive count the first branch has
+`log(pi_zero)` and `log(1 - pi_zero)`, which both execution paths and every
+target that renders the block compute from the logit as `log sigmoid(eta_zero)`
+and `log sigmoid(-eta_zero)`; a probability formed with `sigmoid` in a `let`
+would lose its complement's digits in single precision once `|eta_zero|` passes
+about 10. For a positive count the first branch has
 log density `-inf`; log-sum-exp discards it and leaves
 `log(1 - pi_zero) + log Poisson(y | rate)`, with finite gradients. Writing the
 gate as `z * rate` rather than `(1 - s) * rate` with a structural-zero indicator
@@ -100,7 +106,7 @@ target differentiates `0 * rate` at a positive count.
 
 The prior is written `ContinuousBernoulli` rather than `Bernoulli`. At a
 `marginalize` head both are scored on the atoms `{0, 1}` with the Bernoulli
-weights `(1 - pi_poisson, pi_poisson)`, so the scored density is the same. The
+weights `(pi_zero, 1 - pi_zero)`, so the scored density is the same. The
 difference is the value type: a `Bernoulli` value is a `Bool`, and the checked
 expression language has no conversion from `Bool` to a number, so `z * rate`
 would not type-check. A `ContinuousBernoulli` value is real, and on the two

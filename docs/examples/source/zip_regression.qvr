@@ -24,7 +24,9 @@
 # At a marginalize head, a ContinuousBernoulli prior is scored on
 # the two atoms {0, 1} with the Bernoulli weights (pi, 1 - pi);
 # its value is real-valued, so the gate z * rate needs no
-# Bool-to-number conversion.
+# Bool-to-number conversion. The prior is given by its logit,
+# -eta_zero, so both weights are computed in log space and keep
+# their digits where the predictor saturates.
 #
 # Reference: [Lambert 1992](https://doi.org/10.1080/00401706.1992.10485228).
 
@@ -42,11 +44,11 @@ program zip_regression : Resp -> Val
     let bz = beta_zero[out_idx]
     let ar = alpha_rate[out_idx]
     let br = beta_rate[out_idx]
-    let pi_zero = sigmoid(az + bz * x)
-    let pi_poisson = 1.0 - pi_zero
+    let eta_zero = az + bz * x
+    let eta_poisson = -eta_zero
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- ContinuousBernoulli(probs=pi_poisson)
+    marginalize z : Resp <- ContinuousBernoulli(logits=eta_poisson)
         let gated_rate = z * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 
