@@ -121,7 +121,7 @@ preserves = verify_yoneda_fully_faithful(f, g, atol=1e-5)
 ## Kan extensions
 
 A function $p : A \to A'$ between finite sets groups the elements of $A$ by their
-image: the [fiber](programs-hierarchical.md) of $p$ over $a'$ is the set
+image: the [fiber](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents) of $p$ over $a'$ is the set
 $p^{-1}(a')$ of elements sent to $a'$. When $A$ and $A'$ are discrete categories, the
 left [Kan extension](https://ncatlab.org/nlab/show/Kan+extension) of
 $R : A \to B$ along $p$ aggregates each fiber with $\bigoplus$, and the right Kan
