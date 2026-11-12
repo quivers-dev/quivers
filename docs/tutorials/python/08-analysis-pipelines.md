@@ -51,7 +51,7 @@ result = fit(
 )
 ```
 
-Under `method="svi"`, `num_samples` is the number of optimization steps. Under NUTS and HMC it is the number of draws for each chain.
+Under `method="svi"`, `num_steps` is the number of optimization steps and `learning_rate` the step size of the optimizer (default `1e-2`). Under NUTS and HMC, `num_warmup`, `num_samples`, and `num_chains` set the chains, and SVI refuses them.
 
 A [`BayesianFit`](../../api/formulas/fit.md) has these fields:
 
