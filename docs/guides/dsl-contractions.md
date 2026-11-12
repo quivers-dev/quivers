@@ -1,149 +1,153 @@
 # DSL Contractions
 
-A `contraction` block combines several typed input tensors under a
-named composition rule. The declaration gives explicit syntax
-for "combine these typed morphisms by joining shared axes," with
-the einsum wiring either inferred from the typed signature or
-supplied explicitly. The categorical setup is detailed in
-[Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions);
-this page covers the QVR syntax.
+A `contraction` declaration combines several morphisms in one step by a
+[tensor contraction](https://en.wikipedia.org/wiki/Tensor_contraction) under a named
+composition rule. The contraction's [einsum](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html)
+wiring is either inferred from the declared types or given explicitly.
+[Composition Rules](../semantics/composition-rules.md#4-operadic-contractions) gives its
+denotation.
 
 ## Declaration
 
-<!-- compile: false -->
 ```qvr
+object A : FinSet 2
+object B : FinSet 3
+object C : FinSet 4
+object D : FinSet 5
+
 contraction op_apply (
     arg1 : A -> B,
     arg2 : A -> C,
     kernel : B * C -> D,
 ) : A -> D [rule=product_fuzzy]
+
+morphism a1 : A -> B [role=latent]
+morphism a2 : A -> C [role=latent]
+morphism k : B * C -> D [role=latent]
+define r = op_apply(a1, a2, k)
+export r
 ```
 
-The declared name is callable from any expression site as
-`op_apply(arg1_morph, arg2_morph, kernel_morph)`. Each call checks
-argument count and per-argument shape (by numel) against the
-declared signature, then runs the contraction under the named [rule](transformations.md#the-composition-rule-hierarchy).
+The declared name can be called wherever a morphism expression is allowed, as
+`op_apply(a1, a2, k)`. Each call checks the number of arguments and each argument's
+domain and codomain sizes (numbers of elements) against the declaration, then computes
+the contraction under the named [rule](transformations.md#the-composition-rule-hierarchy).
+When the inputs span several lines, each input, the last included, ends with a comma.
 
 ## Type-driven wiring inference
 
-For [ordinary matrix multiplication](stochastic.md#markovalgebra), `"ij,jk->ik"` says: keep the row
-`i` and final column `k`, and sum over the middle index `j`. Thus
-`out[i,k] = sum_j f[i,j] * g[j,k]` under the `real` rule. If the
-matching entries are `[2,3]` and `[5,7]`, that output cell is
-`2*5 + 3*7 = 31`. Another [algebra](core.md#algebras-enrichment-algebras) retains the wiring but replaces
-the product and sum.
+An einsum string names each axis by a letter, lists the inputs' axes before the arrow
+and the output's after it, and sums every letter missing from the output. For
+[matrix multiplication](stochastic.md#markovalgebra), `"ij,jk->ik"` keeps the row `i`
+and the column `k` and sums over the middle index `j`, so
+`out[i,k] = sum_j f[i,j] * g[j,k]` under the `real` rule. If the matching entries are
+`[2, 3]` and `[5, 7]`, that output entry is `2*5 + 3*7 = 31`. Another
+[`Algebra`](core.md#algebras-enrichment-algebras) keeps the wiring and replaces the
+product and the sum with its $\otimes$ and $\bigoplus$.
 
-Axis names identify which operands share an index. Two feature axes may both
-have length 64 and still need distinct names if the contraction must
-range over them independently.
+The compiler names the axes after the objects in the declared types, so two axes share
+a letter exactly when they have the same object, and it infers the wiring by three
+rules:
 
+- an axis that appears in the declared output type is kept;
+- an axis that appears in two or more inputs and not in the output is contracted: the
+  entries are combined with the rule's $\otimes$ and reduced with its $\bigoplus$;
+- an axis that appears in only one input and not in the output is refused.
 
-The compiler infers the einsum wiring from the typed signature
-using three rules:
+Ordinary einsum would sum such an unshared axis. The compiler instead raises an error at
+the declaration, since nothing in the types says whether the axis was meant to be kept
+or reduced, and the message suggests adding the axis to the output type, listing it in
+a `share` option, or writing the `wiring` explicitly. Two feature axes of the same
+length must thus be different objects when the contraction should range over them
+independently.
 
-- Every axis name that appears in the output sequence (the
-  contraction's declared dom and cod) is a *kept* axis (propagates
-  from inputs to output).
-- Every axis name that appears in two or more input sequences but
-  not in the output is a *contracted* axis (joined via the rule's
-  `tensor_op` then `join`).
-- Every axis name that appears in exactly one input sequence and
-  not in the output is *anomalous*: it would need to be summed out
-  by the rule but no other input shares it. The compiler raises
-  with a source-keyed diagnostic and directs the user at the
-  explicit `wiring` clause.
-
-This covers the common cases (standard composition, n-ary
-contraction over a shared latent axis, parallel composition with
-output axes that simply propagate) without requiring the user to
-spell out an einsum string for every contraction.
+The three rules cover composition, contraction of several inputs over a shared
+latent axis, and parallel composition whose output axes pass through, without an
+einsum string.
 
 ## Shared axes in the output
 
-An axis that appears in the output is not summed out. In `"ij,ij->ij"`,
-each output cell combines only the corresponding cells of the two
-inputs. In `"ij,ij->i"`, by contrast, the column index disappears and
-its contributions are reduced. The arrow's right side is what decides
-which information remains in the result.
+An axis in the output is not reduced. With `"ij,ij->ij"` each output entry combines
+only the corresponding entries of the two inputs, and with `"ij,ij->i"` the column
+axis is reduced. An axis named in the declared output is thus kept entry by entry even
+when it appears in several inputs:
 
-
-An axis named in the declared output is kept element-wise even when
-it appears in more than one input:
-
-<!-- compile: false -->
 ```qvr
-contraction broadcast_add (
+composition real [level=algebra]
+object A : FinSet 2
+object B : FinSet 3
+
+contraction broadcast_mul (
     f : A -> B,
-    g : A -> B
+    g : A -> B,
 ) : A -> B [rule=real]
+
+morphism f1 : A -> B [role=latent]
+define r = broadcast_mul(f1, f1)
+export r
 ```
 
-Here both `A` and `B` occur in the flattened output sequence, so the
-inferred wiring is `ab, ab -> ab`. The grammar also accepts a
-`share=[...]` option, but it does not add an axis to the inferred
-output sequence; the declared result type still determines that
-sequence. Use an explicit `wiring` clause when the result cannot be
-expressed by the type-driven rule.
+Both `A` and `B` occur in the output, so the inferred wiring is `ab, ab -> ab`, the
+entrywise product. The option `share=[...]` lists axes that may appear in only one
+input: such an axis is then reduced with $\bigoplus$ instead of refused. Listing an
+axis that the output already keeps changes nothing, and `share` never adds an axis to
+the output, whose axes the declared type fixes.
 
-## `wiring`: explicit einsum escape hatch
+## `wiring`: explicit einsum
 
-The `wiring "<einsum>"` clause is the explicit escape hatch for
-unusual contractions where the inference rules do not apply.
-Common uses:
+The option `wiring="<einsum>"` gives the einsum string directly, for contractions the
+three rules do not decide, such as inputs read in a different axis order or types that
+are not plain products. The string follows the
+[einsum](https://docs.pytorch.org/docs/stable/generated/torch.einsum.html) notation of
+NumPy and PyTorch: one letter per distinct axis, inputs separated by commas, then `->`
+and the kept letters in the order of the declared output. A letter may not repeat
+within one input, so a diagonal or a trace is not expressible as a wiring
+([`f.trace(A)`](morphisms.md#transpose-trace-cup-and-cap) computes a trace).
 
-- **Diagonal extraction**: take the diagonal of a square morphism
-  rather than tracing it out.
-- **Axis reordering**: route inputs to the contraction in a
-  non-standard order.
-- **Non-product signatures**: when the contraction signature
-  involves coproducts or other non-product `TypeExpr`s that the
-  axis-flattening pass cannot handle.
-
-<!-- compile: false -->
 ```qvr
-contraction extract_diag (
-    A : I * I -> 1
-) : I -> 1 [rule=real, wiring="ii->i"]
-```
+composition real [level=algebra]
+object A : FinSet 2
+object B : FinSet 3
+object C : FinSet 4
+object D : FinSet 5
 
-The wiring string follows the standard numpy / torch
-[`einsum`](https://docs.pytorch.org/docs/stable/generated/torch.einsum.html)
-notation: one letter per *distinct* axis name, joined with commas
-across inputs, then `->`, then the kept axes' letters in the
-output's declared order.
+contraction op_explicit (
+    arg1 : A -> B,
+    arg2 : A -> C,
+    kernel : B * C -> D,
+) : A -> D [rule=real, wiring="ab,ac,bcd->ad"]
+
+morphism a1 : A -> B [role=latent]
+morphism a2 : A -> C [role=latent]
+morphism k : B * C -> D [role=latent]
+define r = op_explicit(a1, a2, k)
+export r
+```
 
 ## Choosing the right composition rule
 
-The `rule` keyword references a previously declared composition
-rule (built-in or user-defined). The rule fixes the algebraic
-operations used to contract shared axes:
+`rule=` names a composition rule, built-in or declared in the module, which fixes the
+operations used on contracted axes ([Core Types](core.md#algebras-enrichment-algebras)
+gives each one's standard name):
 
-- **`product_fuzzy`** (default): noisy-OR / product on
-  `[0, 1]`. Right for compositions of fuzzy-truth-valued morphisms.
-- **`real`**: ordinary sum / product on $\mathbb{R}$. Right for
-  ordinary linear-algebra contractions.
-- **`log_prob`**: log-sum-exp / sum on the log-probability
-  semiring. Right for marginalizing discrete latents in a Bayesian
-  composition.
-- **`tropical`**: minimum / addition, for shortest-path costs.
-- **`max_plus`**: maximum / addition, for best-path log scores.
-  Both are tropical-style rules, with opposite optimization directions.
-- **`boolean`** / **`godel`** / **`lukasiewicz`** /
-  **`probability`**: the other built-in truth algebras and
-  probability semirings.
+- `product_fuzzy` (default): product and noisy-OR on $[0, 1]$, for fuzzy truth values;
+- `real`: sum and product on $\mathbb R$, for ordinary linear algebra;
+- `markov`: sum and product of conditional probabilities;
+- `log_prob`: addition and log-sum-exp, the log semiring, for summing out discrete
+  latent variables in log space;
+- `tropical`: addition and minimum, for shortest-path costs;
+- `max_plus`: addition and maximum, for best-path log scores;
+- `boolean`, `godel`, `lukasiewicz`, `probability`, `counting`: the remaining built-in
+  instances.
 
-User-defined rules declared at module scope (see
-[Algebra](dsl-declarations.md#algebra)) are equally valid `rule`
-references; the compiler verifies the rule has the right
-algebraic level (`composition_rule` is permissive; weaker rules
-restrict which operations are available).
+A rule declared in the module ([Algebra](dsl-declarations.md#algebra)) can be named
+the same way. The compiler checks the rule's level against the module's, and a weaker
+level allows fewer operations ([levels](transformations.md#the-composition-rule-hierarchy)).
 
 ## Worked example: bilinear scoring
 
-A typical use case is bilinear scoring of an embedding against a
-weight matrix and a target embedding:
+Bilinear scoring combines an item embedding, a weight matrix, and a target vector:
 
-<!-- compile: false -->
 ```qvr
 composition real [level=algebra]
 object Item : FinSet 1024
@@ -167,16 +171,15 @@ define final = bilinear_score(embedding, weights, target)
 export final
 ```
 
-The inferred wiring is `id,de,es->is`: both feature axes are reduced,
-and the singleton `Scalar` axis remains. The result has shape `(1024, 1)`,
-one bilinear score per item against the shared target vector.
+The inferred wiring is `id,de,es->is`: both feature axes are reduced and the
+one-element `Scalar` axis remains. The result has shape `(1024, 1)`, one score per item
+against the shared target vector.
 
 ## See also
 
-- [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions):
-  the categorical semantics of operadic contractions.
-- [Algebra](dsl-declarations.md#algebra): declaring the composition
-  rule used by the contraction.
-- [Transformations and Composition Rules](transformations.md): the
-  broader `CompositionRule → Semigroupoid → Algebra` hierarchy and
-  first-class change-of-base transformations.
+- [Composition Rules](../semantics/composition-rules.md#4-operadic-contractions): the
+  denotation of contractions.
+- [Algebra](dsl-declarations.md#algebra): declaring the composition rule a contraction
+  uses.
+- [Transformations and Composition Rules](transformations.md): the levels of
+  composition rules and transformations between algebras.

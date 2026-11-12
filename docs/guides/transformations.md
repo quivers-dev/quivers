@@ -290,9 +290,7 @@ The compiler checks the wiring spec where it is declared and raises `CompileErro
 there, not at a call site, when:
 
 - an input lists no letters;
-- the low-level `EinsumWiring` API sees a letter twice within one input (the QVR
-  `wiring` option also allows diagonal extraction, described in
-  [DSL Contractions](dsl-contractions.md));
+- a letter appears twice within one input, which would ask for a diagonal or a trace;
 - the output repeats a letter;
 - an output letter appears in no input.
 
