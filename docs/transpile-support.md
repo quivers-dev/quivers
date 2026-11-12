@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 125 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 132 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 125   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 125   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 91 / 125   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 81 / 125   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 125   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 105 / 125  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 92 / 125   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 107 / 125  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 93 / 125   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 86 / 125   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 84 / 125   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 69 / 132   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 82 / 132   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 98 / 132   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 88 / 132   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 74 / 132   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 112 / 132  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 99 / 132   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 114 / 132  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 100 / 132  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 93 / 132   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 91 / 132   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -165,9 +165,15 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/observe_ordered_probit`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_over_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_plated_vector_location`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_shared_probs_vector`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_latent`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_let`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_vector_scale_rate`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -182,6 +188,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_vector_location`                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_covariance`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
@@ -1194,7 +1201,7 @@ bugs cannot emit this `observe` step: the data codes Categorical classes from ze
 
 **`observe:class-code:y`**
 
-Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`, `steps/observe_shared_probs_vector`.
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
