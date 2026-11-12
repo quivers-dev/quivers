@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **A program step drawing through a `param_source=attention` kernel is refused where it is written.** An attention source pools a sequence of rows into one parameter vector, and a program step hands a kernel one row per draw, so `sample h <- layer` with `layer` reaching such a kernel (directly or through a `define` chain) is refused by `loads` with a `CompileError` at the step's line and column, and by the checked elaboration and `qvr check` with a `qiec-program` diagnostic at the step, where the compiled runtime had failed inside `torch` with an `AssertionError` and `qvr check` had reported an unlocated gap. The message points to a `param_source=self_attention` learned function for attention over a sequence. The kernel outside a program compiles as before.
 - **A program over a finite domain checks its input.** `trace`, `log_joint`, and every other run of a program whose domain is a finite set take one element index per run, a `(B,)` or `(B, 1)` tensor of indices in the set; any other input raises a `ValueError` naming the expected and received shapes (or the indices outside the set), where it had failed inside a network with a shape mismatch.
+## [0.53.2] - 2026-11-11
+
+### Fixed
+
+- **`MCMC.run` samples a program whose data include a corpus of tokens.** The run fingerprint a checkpoint is checked against renders every observation and host datum by content: tensors, numbers, and arrays by dtype, shape, and bytes (a rectangular list of numbers renders as the tensor the program reads), and strings and every other sequence or mapping item by item, so `{"corpus": [["the", "cat", "runs"], ...]}` runs, and resuming with a corpus that differs in one token, in sentence order, or in sentence boundaries is refused as different data. A datum of any other kind is refused with a `TypeError` naming it, rather than left out of the fingerprint. NUTS thus runs on a Bayesian PCFG whose `parse(...)` reads its corpus as host data, where it had stopped before its first draw with `ValueError: too many dimensions 'str'`.
+- **`:quit` in the Jupyter kernel ends the cell and leaves the kernel up.** The chunks after `:quit` are not run, and unless the cell is silent a note on standard error says to shut the kernel down from the front end. The kernel calls no shutdown hook, so under an ipykernel whose `do_shutdown` is a coroutine, `:quit` leaves no unawaited coroutine and raises no `RuntimeWarning`.
+
 ## [0.53.1] - 2026-11-11
 
 ### Fixed
