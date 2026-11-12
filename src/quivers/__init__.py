@@ -91,7 +91,7 @@ from quivers.enriched.kan_extensions import (
 from quivers.enriched.profunctors import Profunctor
 from quivers.categorical.monoidal import (
     MonoidalStructure,
-    CartesianMonoidal,
+    CartesianProductMonoidal,
     CoproductMonoidal,
     EmptySet,
     EMPTY,
@@ -188,8 +188,7 @@ from quivers.enriched.optics import (
 )
 from quivers.categorical.traced import (
     TracedMonoidal,
-    CartesianTrace,
-    IterativeTrace,
+    CompactClosedTrace,
     trace,
     partial_trace,
 )
@@ -426,7 +425,7 @@ __all__ = [
     "Profunctor",
     # monoidal
     "MonoidalStructure",
-    "CartesianMonoidal",
+    "CartesianProductMonoidal",
     "CoproductMonoidal",
     # base change
     "BaseChange",
@@ -461,8 +460,7 @@ __all__ = [
     "compose_optics",
     # traced monoidal
     "TracedMonoidal",
-    "CartesianTrace",
-    "IterativeTrace",
+    "CompactClosedTrace",
     "trace",
     "partial_trace",
     # stochastic

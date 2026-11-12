@@ -16,7 +16,7 @@ from quivers.categorical.adjunctions import (
 )
 from quivers.categorical.monoidal import (
     MonoidalStructure,
-    CartesianMonoidal,
+    CartesianProductMonoidal,
     CoproductMonoidal,
     EmptySet,
     EMPTY,
@@ -28,8 +28,7 @@ from quivers.categorical.base_change import (
 )
 from quivers.categorical.traced import (
     TracedMonoidal,
-    CartesianTrace,
-    IterativeTrace,
+    CompactClosedTrace,
     trace,
     partial_trace,
 )
@@ -48,7 +47,7 @@ __all__ = [
     "Adjunction",
     # monoidal
     "MonoidalStructure",
-    "CartesianMonoidal",
+    "CartesianProductMonoidal",
     "CoproductMonoidal",
     "EmptySet",
     "EMPTY",
@@ -58,8 +57,7 @@ __all__ = [
     "FuzzyToBool",
     # traced
     "TracedMonoidal",
-    "CartesianTrace",
-    "IterativeTrace",
+    "CompactClosedTrace",
     "trace",
     "partial_trace",
 ]

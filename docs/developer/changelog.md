@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`weighted_limit`, `weighted_colimit` and `Diagram` are removed.** They returned tensor products of scaled identity tensors, which are not weighted (co)limits; the weighted (co)limits of parallel morphisms remain as `weighted_limit_morphisms` and `weighted_colimit_morphisms`, characterized by their universal properties.
 - **`verify_yoneda_fully_faithful` is renamed `verify_yoneda_preserves_composition`**, which is the one equation it checks.
 
+- **`CartesianMonoidal` is renamed `CartesianProductMonoidal` and `CartesianTrace` is renamed `CompactClosedTrace`; `IterativeTrace` is removed.** On V-matrices the cartesian product of sets is a symmetric tensor product, not a categorical product, and the trace `⋁_u f((a, u), (b, u))` is the canonical trace of a compact closed category. `IterativeTrace` recomputed that same trace on every pass without reading its previous iterate. `CompactClosedTrace`, `TracedMonoidal`, `trace` and `partial_trace` require a `Semiring` algebra (the morphism's own by default for the functions) and raise `TypeError` otherwise; `partial_trace` compares feedback components by equality rather than by shape.
+
 ### Fixed
 
 - **The residuum is the internal hom of each lattice.** `weighted_limit_morphisms` and `yoneda_lemma` use `IdempotentSemiring.residuum`, where an approximation `¬(w ⊗ ¬x)` gave wrong values for `GODEL` (`[0.5, 0.25]` came out as `1` rather than `0.25`). `day_convolution` matches the monoidal product to an object by equality, not by tensor shape, and raises `ValueError` when the objects are not closed under the product.

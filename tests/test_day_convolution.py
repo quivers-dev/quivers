@@ -5,7 +5,7 @@ import pytest
 
 from quivers.core.objects import FinSet, ProductSet
 from quivers.enriched.profunctors import Profunctor
-from quivers.categorical.monoidal import CartesianMonoidal
+from quivers.categorical.monoidal import CartesianProductMonoidal
 from quivers.core.algebras import GODEL, PRODUCT_FUZZY
 from quivers.enriched.day_convolution import (
     day_convolution,
@@ -43,7 +43,7 @@ class TestDayConvolutionProfunctors:
         p = Profunctor(contra=a, co=b, tensor=p_data, algebra=GODEL)
         q = Profunctor(contra=c, co=d, tensor=q_data, algebra=GODEL)
 
-        monoidal = CartesianMonoidal()
+        monoidal = CartesianProductMonoidal()
         result = day_convolution_profunctors(p, q, monoidal, GODEL)
 
         # result should be (A×C) ↛ (B×D), shape (2, 2, 3, 2)
@@ -69,7 +69,7 @@ class TestDayConvolutionProfunctors:
         p = Profunctor(contra=a, co=b, tensor=torch.rand(2, 3), algebra=GODEL)
         q = Profunctor(contra=c, co=d, tensor=torch.rand(4, 5), algebra=GODEL)
 
-        monoidal = CartesianMonoidal()
+        monoidal = CartesianProductMonoidal()
         result = day_convolution_profunctors(p, q, monoidal, GODEL)
 
         assert isinstance(result.contra, ProductSet)
@@ -88,7 +88,7 @@ class TestDayConvolutionMonoidalLaws:
 
     def _conv(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         return day_convolution(
-            f, g, self.objects, CartesianMonoidal(), GODEL, product_table=self.table
+            f, g, self.objects, CartesianProductMonoidal(), GODEL, product_table=self.table
         )
 
     @staticmethod
@@ -115,7 +115,7 @@ class TestDayConvolutionMonoidalLaws:
         objects = [FinSet(name="A", cardinality=2), FinSet(name="I", cardinality=1)]
         with pytest.raises(ValueError, match="closed under"):
             day_convolution(
-                torch.rand(2), torch.rand(2), objects, CartesianMonoidal(), GODEL
+                torch.rand(2), torch.rand(2), objects, CartesianProductMonoidal(), GODEL
             )
 
     def test_refuses_an_algebra_that_is_not_a_lattice(self):
