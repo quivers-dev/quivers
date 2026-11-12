@@ -212,7 +212,7 @@ states the rules.
 
 ## State-space models
 
-For continuous-state sequences, the per-step transition and emission can be Gaussian kernels. The following state-space demonstration appears in `docs/examples/source/linear_gaussian_ssm.qvr`:
+For continuous-state sequences, the per-step transition and emission can be Gaussian kernels. The following module folds them with `scan` directly:
 
 ```qvr
 object Driver : Real 2
@@ -274,7 +274,7 @@ observation under `s@t` and `o@t`. The cell may also read bindings that
 [scans reference](../../reference/qvr/probabilistic-programs.md#scans) states
 the scoping and addressing rules.
 
-For a fully nonlinear (deep) variant where transition and emission are neural Gaussians, see `docs/examples/source/continuous_hmm.qvr` and `docs/examples/source/deep_markov.qvr`.
+The gallery writes three models this way: the [linear-Gaussian state-space model](../../examples/linear-gaussian-ssm.md), whose posterior is checked against the Rauch-Tung-Striebel smoother; the [continuous state-space model](../../examples/continuous-hmm.md), whose noise depends on the state; and the [deep Markov model](../../examples/deep-markov.md), whose kernels are neural networks.
 
 ## Try this
 

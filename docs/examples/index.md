@@ -41,7 +41,7 @@ particular statistical family.
 | structural signature, encoder, decoder, loss, typed PyTorch attachments | [Term Autoencoder](term-autoencoder.md) | `Program.run("reconstruct", term)` and autograd |
 | grouped and fibred exact marginalization | [Document-level topic mixture](lda.md) | `over`, `via`, and the per-group reduction |
 | program templates and subprogram calls | [Parametric Partial Pooling](parametric-pooling.md) | static object arguments, prefixed sites, labeled tuple return |
-| open sequence extent and recursive scan lowering | [Vanilla RNN LM](vanilla-rnn-lm.md) | generated scan step and trajectory site addresses |
+| learned deterministic functions threaded by a scan | [Vanilla RNN LM](vanilla-rnn-lm.md) | per-position observation sites and maximum-likelihood training |
 | network kernel computation | [Bayesian Neural Network](bnn.md) | MLP parameter source and reference-machine boundary |
 | measure-algebra families | [Bayesian Semantics Case Study](bayesian-semantics-case-study.md) | heterogeneous `Mixture` value used for scoring and prediction |
 | finite collection traversal, indexed effects, nested computation calls, lexical uncertainty | [Lexical-Uncertainty RSA](qiec/lexical-uncertainty-rsa.qvr) | `map`/`fold` normalization, `traverse` over worlds and lexica, lexical marginalization, observed-or-predicted interpretation |
@@ -97,27 +97,28 @@ examples state both where they differ.
 
 - [AR(1) Time Series](ar1.md): the first-order autoregressive model under its exact stationary likelihood.
 - [Bayesian Change-Point Detection](changepoint.md): a Poisson rate switching at a discrete change point that is marginalized exactly.
-- [Stochastic Volatility](stochastic-volatility.md): AR(1) log-volatility conditionals with externally supplied lag values.
-- [Gaussian-kernel state-space model](linear-gaussian-ssm.md): learned transition, emission, and filtering kernels; not a closed-form Kalman filter.
-- [Finite-state path composition](hmm.md): product-fuzzy transition and emission relations, plus a partial discrete-program sketch.
-- [Continuous State-Space Model](continuous-hmm.md): Gaussian transition, emission, and separately learned recognition kernels.
-- [Deep Markov Model](deep-markov.md): nonlinear-MLP transition and emission cells.
+- [Stochastic Volatility](stochastic-volatility.md): a coupled log-volatility path from a stationary start; the joint is checked, parameter recovery is not demonstrated.
+- [Linear-Gaussian State-Space Model](linear-gaussian-ssm.md): a scanned state path whose NUTS posterior matches the Rauch-Tung-Striebel smoother.
+- [Hidden Markov Model](hmm.md): a discrete chain summed out by the forward algorithm, checked against path enumeration and fitted by maximum likelihood.
+- [Continuous State-Space Model](continuous-hmm.md): a Gaussian Markov chain with state-dependent noise, whose posterior mode matches the smoother at linear-Gaussian weights.
+- [Deep Markov Model](deep-markov.md): network-parameterized transition and emission kernels threaded by a scan; the joint is checked, inference is not demonstrated.
 
 ## Language models
 
-- [Vanilla RNN Language Model](vanilla-rnn-lm.md): single-cell Elman RNN scored by a Categorical head.
-- [GRU-shaped language model](gru-lm.md): stochastic reset and update gates with a simplified candidate update.
-- [LSTM-shaped language model](lstm-lm.md): stochastic gates without a separately threaded cell state.
-- [Dual-RNN masked-token model](bidirectional-rnn-lm.md): two left-to-right scans combined for a masked-token target.
-- [Transformer-shaped language model](transformer-lm.md): parallel MLP-normal branches with a Categorical head; no dot-product self-attention or causal mask.
+- [Vanilla RNN Language Model](vanilla-rnn-lm.md): an Elman network with learned weights, scoring the next token at every position.
+- [Stacked RNN Language Model](stacked-rnn-lm.md): a second recurrent layer reading the trajectory the first scan returns.
+- [GRU Language Model](gru-lm.md): learned reset and update gates with the reset gate inside the candidate.
+- [LSTM Language Model](lstm-lm.md): learned input, forget, and output gates with the hidden and cell states threaded together.
+- [Bidirectional RNN Language Model](bidirectional-rnn-lm.md): a forward scan that scores each next token and a reversed scan that scores each previous one, with sampled weights.
+- [Causal Transformer Language Model](transformer-lm.md): one pre-LN block of two-head causal self-attention, checked by hand and fitted on a task that needs attention.
 
 ## Encoder-decoder and structured outputs
 
-- [Sequence-to-Sequence](seq2seq.md): parallel encoder-decoder branches joined by a learned merge, without attention.
+- [Sequence-to-Sequence Transformer](seq2seq.md): encoder self-attention, causal decoder self-attention, and cross-attention over fixed windows, with Bayesian weights.
 
 ## Weighted deductions
 
-- [Probabilistic Context-Free Grammar](pcfg.md): learnable production weights over CKY chart items.
+- [Probabilistic Context-Free Grammar](pcfg.md): a normalized grammar fitted by maximum likelihood, and its Bayesian form with Dirichlet priors.
 - [Weighted Combinatory Categorial Grammar](ccg.md): forward and backward application, harmonic and crossed composition, each needed by some sentence of the lexicon.
 - [Type-Logical Grammar (Lambek calculus)](type-logical.md): a chart parser whose every rule is a theorem of the associative Lambek calculus.
 - [Weighted Multiple Context-Free Grammar](wmcfg.md): rank-2 nonterminals deriving Swiss German cross-serial verb clusters.
