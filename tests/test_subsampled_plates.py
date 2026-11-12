@@ -25,10 +25,14 @@ import pytest
 import torch
 import torch.distributions as D
 
+from quivers.continuous import MonadicProgram
+from quivers.continuous.families import ConditionalNormal
+from quivers.continuous.spaces import Euclidean
 from quivers.dsl import loads
 from quivers.effects import ScaleHandler, SubsampleHandler, subsample
 from quivers.inference import (
     ELBO,
+    AmortizedGuide,
     MCMC,
     RWS,
     SVI,
@@ -458,3 +462,138 @@ def test_the_delta_guide_scores_subsampled_latents() -> None:
     with subsample("Item", torch.tensor([0, 3])):
         loss = ELBO()(program, guide, _X, {"y": _Y[[0, 3]]})
     assert torch.isfinite(loss)
+
+
+# ---------------------------------------------------------------------------
+# an amortized guide over a subsampled plate
+
+_LOCAL = """\
+object Item : FinSet 6
+
+program local : Item -> Item
+    sample z : Item <- Normal(loc=0.0, scale=1.0)
+    observe y : Item <- Normal(loc=z, scale=0.5)
+    return z
+
+export local
+"""
+
+#: The observations, and the same rows as the encoder reads them, one
+#: coordinate each. A plate latent is drawn at every row of its plate, so
+#: the encoder reads the whole plate's data under a subset too.
+_LOCAL_DATA = {"y": _Y, "y_rows": _Y.unsqueeze(-1)}
+
+#: The encoder ``q(z_i | y_i) = Normal(a y_i + b, s)``.
+_A, _B, _S = 0.7, 0.1, 0.4
+
+
+def _local_guide() -> tuple[MonadicProgram, AmortizedGuide]:
+    """The local-latent model and an amortized guide with a fixed linear
+    Normal encoder.
+
+    Returns
+    -------
+    tuple[MonadicProgram, AmortizedGuide]
+        The model and the guide.
+    """
+    program = loads(_LOCAL).morphism
+    encoder = ConditionalNormal(Euclidean(name="Y", dim=1), Euclidean(name="Z", dim=1))
+    with torch.no_grad():
+        linear = encoder.param_source.linear
+        linear.weight.zero_()
+        linear.bias.zero_()
+        linear.weight[0, 0] = _A
+        linear.bias[0] = _B
+        linear.bias[1] = math.log(_S)
+    guide = AmortizedGuide(
+        program, {"y"}, {"z": (encoder, "y_rows")}, x=_X, observations=_LOCAL_DATA
+    )
+    return program, guide
+
+
+def _row_elbo(y: float) -> float:
+    """One row's exact ELBO term under the encoder, in closed form.
+
+    ``E_q[log N(z; 0, 1) + log N(y; z, 0.5) - log q(z | y)]`` for
+    ``q = Normal(m, s)`` with ``m = a y + b``.
+
+    Parameters
+    ----------
+    y : float
+        The row's observation.
+
+    Returns
+    -------
+    float
+        The row's term.
+    """
+    m = _A * y + _B
+    log_two_pi = math.log(2 * math.pi)
+    prior = -0.5 * log_two_pi - 0.5 * (m * m + _S * _S)
+    likelihood = (
+        -0.5 * log_two_pi - math.log(0.5) - ((y - m) ** 2 + _S * _S) / (2 * 0.25)
+    )
+    entropy = 0.5 * log_two_pi + math.log(_S) + 0.5
+    return prior + likelihood + entropy
+
+
+def test_the_amortized_guide_scores_a_subsampled_plate_at_the_subset_rows() -> None:
+    # log q of the plate site under the subset is the subset rows' encoder
+    # log densities times N / B, against the Normal densities by hand.
+    _, guide = _local_guide()
+    z = torch.tensor([0.3, -0.2, 0.9, 0.0, -1.1, 0.5])
+    index = torch.tensor([1, 4])
+    with subsample("Item", index):
+        scored = float(guide.log_prob(_X, {"z": z})[0])
+    rows = D.Normal(_A * _Y + _B, _S).log_prob(z)
+    expected = 3.0 * float(rows[index].sum())
+    assert scored == pytest.approx(expected, abs=1e-5)
+    # Neither the unscaled subset nor the whole plate is that density.
+    assert abs(scored - float(rows[index].sum())) > 1.0
+    assert abs(scored - float(rows.sum())) > 1.0
+
+
+def test_the_amortized_elbo_under_a_subset_estimates_the_scaled_rows() -> None:
+    # Over fresh guide draws the subset's ELBO estimate averages to N / B
+    # times the subset rows' closed-form terms, within five standard errors.
+    program, guide = _local_guide()
+    elbo = ELBO(num_particles=1)
+    index = torch.tensor([0, 3])
+    torch.manual_seed(5)
+    draws = 3000
+    with torch.no_grad(), subsample("Item", index):
+        estimates = torch.tensor(
+            [-float(elbo(program, guide, _X, _LOCAL_DATA)) for _ in range(draws)]
+        )
+    expected = 3.0 * sum(_row_elbo(float(_Y[i])) for i in index.tolist())
+    error = math.sqrt(float(estimates.var()) / draws)
+    assert abs(float(estimates.mean()) - expected) < 5 * error
+    # The full-plate ELBO is another number, outside that band.
+    full = sum(_row_elbo(float(value)) for value in _Y.tolist())
+    assert abs(full - expected) > 10 * error
+
+
+def test_the_amortized_elbo_is_unbiased_over_subsets_at_fixed_draws() -> None:
+    program, guide = _local_guide()
+    elbo = ELBO(num_particles=3)
+
+    def loss_and_grad(index: torch.Tensor | None) -> tuple[float, torch.Tensor]:
+        guide.zero_grad()
+        torch.manual_seed(42)
+        if index is None:
+            loss = elbo(program, guide, _X, _LOCAL_DATA)
+        else:
+            with subsample("Item", index):
+                loss = elbo(program, guide, _X, _LOCAL_DATA)
+        loss.backward()
+        grads = torch.cat(
+            [parameter.grad.reshape(-1) for parameter in guide.parameters()]  # type: ignore[union-attr]
+        )
+        return float(loss), grads
+
+    full_loss, full_grad = loss_and_grad(None)
+    results = [loss_and_grad(index) for index in _subsets(2)]
+    average_loss = sum(loss for loss, _ in results) / len(results)
+    average_grad = sum(grad for _, grad in results) / len(results)
+    assert average_loss == pytest.approx(full_loss, abs=_EXACT * 3)
+    assert torch.allclose(average_grad, full_grad, atol=_EXACT * 3)
