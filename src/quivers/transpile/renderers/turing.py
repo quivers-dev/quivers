@@ -70,6 +70,7 @@ from quivers.transpile.renderers._julia_helpers import (
     let_expr_has_axis_reduction,
     name_array_rank_map,
     nested_tower_names,
+    refuse_nested_slice_gather,
     rebase_index_literals,
     render_let_expr_julia,
 )
@@ -1806,6 +1807,7 @@ class TuringRenderer(RendererBase):
         the reducing call itself, applying `sum` to each scalar
         element and leaving the inner product uncomputed.
         """
+        refuse_nested_slice_gather("turing", node, ctx.shapes)
         sb, counter = ctx.sb, ctx.counter
         lhs = _identifier(sb, counter, node.name)
         shim = _JlCtxShim(sb, counter, ctx.cards, "turing")

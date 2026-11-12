@@ -61,6 +61,7 @@ from quivers.transpile.renderers._julia_helpers import (
     let_expr_has_axis_reduction,
     name_array_rank_map,
     nested_tower_names,
+    refuse_nested_slice_gather,
     render_let_expr_julia,
 )
 from quivers.transpile.renderers._python_helpers import (
@@ -1605,6 +1606,7 @@ class GenRenderer(RendererBase):
 
     def _emit_deterministic(self, node: IRDeterministic) -> None:
         gx = self._gx
+        refuse_nested_slice_gather("gen", node, gx.shapes)
         adapter = _JlCtxAdapter(gx, "gen")
         shapes = gx.shapes.scoped_to(len(node.plate.batch_dims))
         # A body that reduces an event axis (`mu = sum(z_row * w_row)`)
