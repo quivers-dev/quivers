@@ -1,18 +1,17 @@
-# Structural Compression
+# Tree and graph autoencoders
 
-This page gives a denotational semantics for the four declarations that constitute the *structural compression* layer of QVR: `signature`, `encoder`, `decoder`, and `loss`. The user guide is [Structural compression](../guides/structural-compression-signatures-and-encoders.md); this page is the formal companion.
+The declarations `signature`, `encoder`, `decoder`, and `loss` define neural encoders and decoders
+over terms and graphs, which the library calls *structural compression*. A signature fixes the
+well-formed terms. An encoder folds a term into a vector, one learned function per constructor,
+as recursive autoencoders and tree-structured networks do [@pollack1990recursive; @tai2015treelstm].
+A decoder maps a vector to a probability distribution over terms, and a loss is a scalar objective
+attached to one of these computations. The guide is
+[Tree and graph autoencoders: signatures and encoders](../guides/structural-compression-signatures-and-encoders.md).
 
-Structural compression connects symbolic structure to numerical learning.
-A signature says which trees or graphs are well formed. An encoder maps a
-structure to a vector by combining representations of its parts. A decoder
-uses a vector to define a distribution over structures. A loss assigns a
-scalar training objective to the resulting computation.
-
-For a list with constructors `Nil` and `Cons`, encoding `Cons(a, Nil)` means
-encoding `a`, obtaining the vector for `Nil`, then applying the `Cons`
-combiner to those two vectors. The recursion follows the list's shape; the
-learnable functions decide how its parts are represented. The formal term
-*catamorphism* below names this kind of fold.
+For a list with constructors `Nil` and `Cons`, encoding `Cons(a, Nil)` encodes `a`, takes the vector
+of `Nil`, and applies the learned function for `Cons` to the two vectors. The recursion follows the
+shape of the term, and the learned functions decide how its parts are represented. This kind of
+recursion is a *catamorphism* (§2.2).
 
 ## 1. Signatures
 
@@ -28,56 +27,75 @@ signature Σ(Π)
         β_1 : binds (x_1 : v_1 : a_1 : A_1) in (b_1 : B_1) -> r_1
 ```
 
-denotes a [*generalized algebraic theory*](https://ncatlab.org/nlab/show/generalized+algebraic+theory) $\mathrm{Th}_{\Sigma}$ together with its [initial algebra](https://ncatlab.org/nlab/show/initial+algebra) $T_{\Sigma}$.
+declares a many-sorted *binding signature*: sorts, constructors with typed arguments, and binders,
+constructors that bind variables in some of their arguments [@fiore1999abstract]. Its terms are the
+[term algebra](https://en.wikipedia.org/wiki/Term_algebra) over the signature, extended with bound
+variables. A binding signature is not a
+[generalized algebraic theory](https://ncatlab.org/nlab/show/generalized+algebraic+theory), whose
+sorts may depend on terms [@cartmell1986generalised]: here the sorts are a fixed finite set.
 
 ### 1.1 Sorts
 
-The sort declarations partition the sorts into three kinds:
+Each sort has one of three kinds:
 
-| `sort_kind` | Role | Carrier in $T_{\Sigma}$ |
+| Kind | Role | Terms of the sort |
 |---|---|---|
-| `object` | Principal sort, recursively compressed | A set of well-typed terms |
-| `data` | Opaque atoms (`vocab { … }` may close the vocabulary) | A finite set of leaf tokens |
-| `index` | De Bruijn position into a binder context | $\mathbb{N}$ |
+| `object` | a sort the encoder folds recursively | the terms built from constructors and binders |
+| `data` | leaves whose values are opaque tokens, optionally a closed vocabulary `vocab { ... }` | the tokens |
+| `index` | a [de Bruijn index](https://en.wikipedia.org/wiki/De_Bruijn_index) into the bound variables | $\mathbb{N}$ |
 
-Let $S = S_{\mathrm{obj}} \sqcup S_{\mathrm{dat}} \sqcup S_{\mathrm{idx}}$ be the disjoint union. The `dim d` annotation attaches a target dimension $d_s \in \mathbb{N}$ to a sort; encoders / decoders may override it.
+Write $S = S_{\mathrm{obj}} \sqcup S_{\mathrm{dat}} \sqcup S_{\mathrm{idx}}$ for the sorts. The option
+`dim d` gives a sort a default dimension $d_s$, which an encoder or decoder may override.
 
 ### 1.2 Contexts and terms
 
-A context records the variables currently in scope. Under a binder, that
-context is extended before its body is processed. De Bruijn indices identify
-variables by their position in this scope structure rather than by their
-spelling. This makes renaming a bound variable irrelevant to the represented
-term, while still distinguishing an inner variable from an outer one with
-the same written name.
-
-A *syntactic de Bruijn context* is a finite list
+A de Bruijn index names a bound variable by the number of binders between its occurrence and its
+binder, so that renaming bound variables does not change a term and an inner variable is told apart
+from an outer one with the same name [@debruijn1972lambda]. A *context* is a finite list
 
 $$
-\Gamma \;=\; \bigl((v_1, a_1), \dots, (v_k, a_k)\bigr),
+\Gamma = \bigl((v_1, a_1), \dots, (v_k, a_k)\bigr)
 $$
 
-where each $(v_i, a_i)$ is a pair of a *variable sort* $v_i \in S$ and an *annotation term* $a_i$ in some declared annotation sort. We write $\Gamma\langle i\rangle = (v_i, a_i)$ for the $i$-th entry (0-indexed; $i = 0$ is the *most recently bound* / innermost variable, matching the runtime `Context` convention). At the carrier level, the encoder threads alongside $\Gamma$ an *embedding context* $\varepsilon = (\varepsilon_0, \dots, \varepsilon_{k-1})$ with $\varepsilon_i \in \mathbb{R}^{d_{v_i}}$; the embedding $\varepsilon_i$ is the value minted by the encoder's `var_init` rule at the binding site (§2.2).
+of the variables in scope, each with its sort $v_i \in S$ and an annotation term $a_i$ of a declared
+annotation sort. We write $\Gamma\langle i \rangle$ for the entry at index $i$, counting from $0$ for the
+innermost, most recently bound variable, as the runtime class `Context` does. The encoder keeps,
+beside $\Gamma$, a list $\varepsilon = (\varepsilon_0, \dots, \varepsilon_{k-1})$ of embeddings with
+$\varepsilon_i \in \mathbb{R}^{d_{v_i}}$, where $\varepsilon_i$ is the vector the encoder's `var_init`
+rule computed at the binder (§2.1).
 
-The *closed terms of sort $s$ in context $\Gamma$*, written $\Gamma \vdash_\Sigma t : s$, are generated by the rules:
+The terms of sort $s$ in context $\Gamma$, written $\Gamma \vdash_\Sigma t : s$, are generated by four
+rules. They are closed terms when $\Gamma$ is empty and open terms otherwise.
 
-1. **Data leaf.** If $s \in S_{\mathrm{dat}}$ and $d$ is a vocabulary element of $s$ (or any value if $s$ has no inline vocab), then $\Gamma \vdash_\Sigma \mathrm{Data}_s(d) : s$.
-2. **Bound variable.** If $\Gamma\langle i\rangle = (s, a)$ then $\Gamma \vdash_\Sigma \mathrm{BoundVar}(i) : s$.
-3. **Constructor.** For each constructor $c : s_1, \dots, s_n \to t \in K$, if $\Gamma \vdash_\Sigma u_i : s_i$ for $i = 1, \dots, n$, then $\Gamma \vdash_\Sigma c(u_1, \dots, u_n) : t$.
-4. **Binder.** For each binder $\beta : \mathrm{binds}\,(x_1 : v_1 : a_1 : A_1, \dots, x_p : v_p : a_p : A_p)\,\mathrm{in}\,(b_1 : B_1, \dots, b_q : B_q) \to r \in B$, if $\Gamma \vdash_\Sigma \alpha_j : A_j$ for the annotations and $\Gamma' \vdash_\Sigma \beta_j : B_j$ for the scoped arguments in the *extended* context $\Gamma' = \Gamma \cdot (v_1, \alpha_1) \cdot \cdots \cdot (v_p, \alpha_p)$, then $\Gamma \vdash_\Sigma \beta[\alpha_1, \dots, \alpha_p\,;\,\beta_1, \dots, \beta_q] : r$.
+1. **Data leaf.** If $s \in S_{\mathrm{dat}}$ and $d$ is in the vocabulary of $s$ (any value when $s$
+   has no vocabulary), then $\Gamma \vdash_\Sigma \mathrm{Data}_s(d) : s$.
+2. **Bound variable.** If $\Gamma\langle i \rangle = (s, a)$, then $\Gamma \vdash_\Sigma \mathrm{BoundVar}(i) : s$.
+3. **Constructor.** For a constructor $c : s_1, \dots, s_n \to t$, if $\Gamma \vdash_\Sigma u_i : s_i$ for
+   each $i$, then $\Gamma \vdash_\Sigma c(u_1, \dots, u_n) : t$.
+4. **Binder.** For a binder
+   $\beta : \mathrm{binds}\,(x_1 : v_1 : a_1 : A_1, \dots, x_p : v_p : a_p : A_p)\,\mathrm{in}\,(b_1 : B_1, \dots, b_q : B_q) \to r$,
+   if the annotations satisfy $\Gamma \vdash_\Sigma \alpha_j : A_j$ and the scoped arguments satisfy
+   $\Gamma' \vdash_\Sigma \gamma_j : B_j$ in the extended context
+   $\Gamma' = \Gamma \cdot (v_1, \alpha_1) \cdots (v_p, \alpha_p)$, then
+   $\Gamma \vdash_\Sigma \beta[\alpha_1, \dots, \alpha_p ; \gamma_1, \dots, \gamma_q] : r$.
 
-The *initial $\Sigma$-algebra* $T_\Sigma$ is the sort-indexed family
+The terms form the family of sets
 
 $$
-T_\Sigma \;=\; \bigl(T_\Sigma(\Gamma, s)\bigr)_{\Gamma,\, s},
-\qquad T_\Sigma(\Gamma, s) = \{\, t \mid \Gamma \vdash_\Sigma t : s \,\}.
+T_\Sigma = \bigl(T_\Sigma(\Gamma, s)\bigr)_{\Gamma, s},
+\qquad T_\Sigma(\Gamma, s) = \{\, t \mid \Gamma \vdash_\Sigma t : s \,\},
 $$
 
-The reserved tags $\mathrm{Data}$ and $\mathrm{BoundVar}$ are not user-declarable; they are the framework-supplied leaf shapes.
+indexed by contexts and sorts. With the constructors and binders as its operations, $T_\Sigma$ is the
+[initial algebra](https://ncatlab.org/nlab/show/initial+algebra+of+an+endofunctor) of the signature in
+the sense of Fiore, Plotkin, and Turi [@fiore1999abstract]: for every algebra there is exactly one map
+from $T_\Sigma$ to it that respects the operations. Each $T_\Sigma(\Gamma, s)$ is infinite when a sort
+has a recursive constructor, since terms of every depth exist. The tags `Data` and `BoundVar` are
+reserved for the two kinds of leaf.
 
-### 1.3 Graph signatures
+### 1.3 Graph signatures {#13-graph-signatures}
 
-The graph-shaped fragment replaces (or augments) the inductive signature with declarations
+A signature may declare kinds of vertices and edges instead of, or beside, constructors:
 
 ```
 vertex_kinds
@@ -87,11 +105,17 @@ edge_kinds
     ε_2 : K_c -- K_d
 ```
 
-A vertex kind is the type of a vertex; an edge kind is a typed binary relation $\varepsilon \subseteq K_{\mathrm{src}} \times K_{\mathrm{tgt}}$, with `->` directed and `--` undirected. The corresponding initial structure is the category $\mathbf{Graph}_\Sigma$ of finite typed graphs over the kind signature: objects of a fixed labeled multi-relational shape with payload data on each vertex. Encoders interpret graph signatures via message-passing rather than structural recursion (§2.4).
+A vertex kind is the type of a vertex, and an edge kind is a binary relation
+$\varepsilon \subseteq K_{\mathrm{src}} \times K_{\mathrm{tgt}}$, directed for `->` and undirected for `--`.
+The values of such a signature are finite graphs whose vertices and edges have these kinds, with data
+attached to each vertex. Encoders read them by message passing (§2.4) instead of by recursion.
 
 ### 1.4 Parametric signatures
 
-The optional `[Π]` parameter list introduces sort-level parameters $\pi_1, \dots, \pi_m$ that may appear inside sort, constructor, or binder declarations of the signature body. A parametric signature denotes a family of theories indexed by substitutions $\sigma$ assigning each $\pi_i$ to a concrete sort declared in the surrounding module; each $\sigma$ produces a concrete $\mathrm{Th}_{\Sigma(\sigma)}$ with its own initial algebra $T_{\Sigma(\sigma)}$.
+The optional parameter list $\Pi$ introduces sort parameters $\pi_1, \dots, \pi_m$ that may occur in the
+sorts, constructors, and binders of the signature. The signature then stands for one signature
+$\Sigma(\sigma)$ for each substitution $\sigma$ of declared sorts of the module for the parameters, with
+its own terms $T_{\Sigma(\sigma)}$.
 
 ## 2. Encoders
 
@@ -109,53 +133,47 @@ encoder C : Σ(σ_args)
     var_init v_i from A_i as ty |-> body_var_i
 ```
 
-denotes an executable encoder over the named signature. The current grammar has no `encoder ... using ...` factory form.
+denotes a function from the terms (or graphs) of the signature to vectors.
 
-### 2.1 The carrier algebra
+### 2.1 The target algebra
 
-The carrier is the sort-indexed product of Euclidean spaces
+The encoder's vectors live in the family of Euclidean spaces
 
 $$
-\mathcal{A}_C \;=\; \bigl(\mathbb{R}^{d_s}\bigr)_{s \in S_{\mathrm{obj}} \cup S_{\mathrm{dat}}},
+\mathcal{A}_C = \bigl(\mathbb{R}^{d_s}\bigr)_{s \in S_{\mathrm{obj}} \cup S_{\mathrm{dat}}},
 $$
 
-with the dimension $d_s$ taken from the encoder's `dim s = d_s` clauses (defaulting to the signature's inline `dim` annotation when present, raising a compile-time error otherwise). Index sorts have no embedding; their semantics is purely positional.
+one for each object and data sort, with $d_s$ from the clause `dim s = d_s`, or from the signature's
+`dim` when the encoder gives none, and a compile error when neither does. Index sorts have no vector.
+The encoder gives one function for each constructor and binder:
 
-The carrier is equipped with one operation per constructor and binder of $\Sigma$, each interpreted as a measurable map between the appropriate sort dimensions:
+- $\widehat c : \mathbb{R}^{d_{s_1}} \times \cdots \times \mathbb{R}^{d_{s_n}} \to \mathbb{R}^{d_t}$ for a constructor
+  $c : s_1, \dots, s_n \to t$, given by its rule body;
+- $\widehat \beta : \mathbb{R}^{d_{A_1}} \times \cdots \times \mathbb{R}^{d_{A_p}} \times \mathbb{R}^{d_{B_1}} \times \cdots \times \mathbb{R}^{d_{B_q}} \to \mathbb{R}^{d_r}$
+  for a binder, given by its rule body.
 
-- $\widehat c : \mathbb{R}^{d_{s_1}} \times \cdots \times \mathbb{R}^{d_{s_n}} \to \mathbb{R}^{d_t}$ for each constructor $c : s_1, \dots, s_n \to t$, interpreted by the let-expression $\mathrm{body}_c$;
-- $\widehat \beta : \mathbb{R}^{d_{A_1}} \times \cdots \times \mathbb{R}^{d_{A_p}} \times \mathbb{R}^{d_{B_1}} \times \cdots \times \mathbb{R}^{d_{B_q}} \to \mathbb{R}^{d_r}$ for each binder, interpreted by $\mathrm{body}_\beta$.
-
-The *variable-initializer* declarations
+With these functions $\mathcal A_C$ is an algebra for the signature. A `var_init` rule
 
 ```
 var_init v from A as ty |-> body
 ```
 
-specify, for each pair $(v, A)$ of a variable sort and an annotation sort the signature's binders introduce, a map
+gives, for a variable sort $v$ and an annotation sort $A$ that a binder introduces, a function
+$\mathrm{init}_{v, A} : \mathbb{R}^{d_A} \to \mathbb{R}^{d_v}$ that computes the vector of the bound variable
+from the vector of its annotation. A binder without an annotation gives each variable sort one
+learnable vector.
+
+### 2.2 Denotation: structural recursion {#22-denotation-structural-recursion}
+
+The encoder denotes the unique map that respects the operations,
 
 $$
-\mathrm{init}_{v, A} : \mathbb{R}^{d_A} \to \mathbb{R}^{d_v},
+\llbracket C \rrbracket : T_\Sigma \longrightarrow \mathcal{A}_C,
 $$
 
-minting the bound variable's embedding from the embedding of its annotation. Unannotated binders default to a learnable nullary constant per variable sort.
-
-### 2.2 Denotation: structural recursion
-
-The equations below follow four cases of the tree. A data leaf is embedded;
-a variable retrieves its context vector; a constructor combines its encoded
-children; and a binder extends the context for its scoped children. Once
-these [local functions](../guides/structural-compression-signatures-and-encoders.md#encoder-blocks) are fixed, recursion determines the encoder on every
-finite well-formed term. Changing a local function or its learned parameters
-changes the induced map; fixing them determines it uniquely.
-
-The encoder denotes the *unique* $\Sigma$-algebra homomorphism
-
-$$
-\llbracket C \rrbracket \;:\; T_\Sigma \;\longrightarrow\; \mathcal{A}_C
-$$
-
-obtained by initial-algebra recursion threaded with an embedding context. For each sorted term $\Gamma \vdash_\Sigma t : s$ and each embedding context $\varepsilon$ of length $|\Gamma|$ with $\varepsilon_i \in \mathbb{R}^{d_{v_i}}$, the denotation $\llbracket C \rrbracket(t \mid \Gamma, \varepsilon) \in \mathbb{R}^{d_s}$ is defined by structural recursion on $t$:
+computed by recursion on terms with the embeddings of the bound variables carried alongside. For a
+term $\Gamma \vdash_\Sigma t : s$ and embeddings $\varepsilon$ for $\Gamma$, the value
+$\llbracket C \rrbracket(t \mid \Gamma, \varepsilon) \in \mathbb{R}^{d_s}$ is
 
 $$
 \begin{array}{rcl}
@@ -164,188 +182,210 @@ $$
 \llbracket C \rrbracket(\mathrm{BoundVar}(i) \mid \Gamma, \varepsilon)
 & = & \varepsilon_i, \\[2pt]
 \llbracket C \rrbracket(c(u_1, \dots, u_n) \mid \Gamma, \varepsilon)
-& = & \widehat c\bigl(\llbracket C \rrbracket(u_1 \mid \Gamma, \varepsilon),\, \dots,\, \llbracket C \rrbracket(u_n \mid \Gamma, \varepsilon)\bigr), \\[2pt]
-\llbracket C \rrbracket\bigl(\beta[\alpha_1, \dots; \beta_1, \dots] \mid \Gamma, \varepsilon\bigr)
-& = & \widehat \beta\Bigl(\llbracket C \rrbracket(\alpha_j \mid \Gamma, \varepsilon)_j,\; \llbracket C \rrbracket(\beta_k \mid \Gamma', \varepsilon')_k\Bigr).
+& = & \widehat c\bigl(\llbracket C \rrbracket(u_1 \mid \Gamma, \varepsilon), \dots, \llbracket C \rrbracket(u_n \mid \Gamma, \varepsilon)\bigr), \\[2pt]
+\llbracket C \rrbracket\bigl(\beta[\alpha_1, \dots ; \gamma_1, \dots] \mid \Gamma, \varepsilon\bigr)
+& = & \widehat \beta\bigl((\llbracket C \rrbracket(\alpha_j \mid \Gamma, \varepsilon))_j,\, (\llbracket C \rrbracket(\gamma_k \mid \Gamma', \varepsilon'))_k\bigr),
 \end{array}
 $$
 
-In the binder case the *extended* contexts $(\Gamma', \varepsilon')$ are
+where in the binder case
 
 $$
-\Gamma' \;=\; \Gamma \cdot (v_1, \alpha_1) \cdot \dots \cdot (v_p, \alpha_p),
+\Gamma' = \Gamma \cdot (v_1, \alpha_1) \cdots (v_p, \alpha_p),
 \qquad
-\varepsilon' \;=\; \varepsilon \cdot \mathrm{init}_{v_1, A_1}\bigl(\llbracket C \rrbracket(\alpha_1 \mid \Gamma, \varepsilon)\bigr) \cdot \dots \cdot \mathrm{init}_{v_p, A_p}\bigl(\llbracket C \rrbracket(\alpha_p \mid \Gamma, \varepsilon)\bigr),
+\varepsilon' = \varepsilon \cdot \mathrm{init}_{v_1, A_1}\bigl(\llbracket C \rrbracket(\alpha_1 \mid \Gamma, \varepsilon)\bigr) \cdots \mathrm{init}_{v_p, A_p}\bigl(\llbracket C \rrbracket(\alpha_p \mid \Gamma, \varepsilon)\bigr),
 $$
 
-so the scoped arguments $\beta_k$ are encoded with the bound variables' freshly-minted embeddings in scope. The closed-term denotation is the empty-context evaluation $\llbracket C \rrbracket(t) = \llbracket C \rrbracket(t \mid \varnothing, \varnothing)$.
+so the scoped arguments are encoded with the vectors of the new variables in scope. A closed term is
+encoded in the empty context: $\llbracket C \rrbracket(t) = \llbracket C \rrbracket(t \mid \varnothing, \varnothing)$.
 
-The map $\mathrm{embed}_s : \mathrm{Vocab}_s \to \mathbb{R}^{d_s}$ is supplied at encoder construction. The compiler scaffolds a default for each data sort: a per-key learnable parameter dict that lazily allocates a fresh $\mathbb{R}^{d_s}$ vector the first time each leaf value is seen, which suffices for both closed and open vocabularies.
+The map $\mathrm{embed}_s$ from the tokens of a data sort to $\mathbb{R}^{d_s}$ is part of the encoder. By
+default it is a learnable table that creates a vector the first time it sees a token, which works for
+closed and open vocabularies.
 
-This is the standard *catamorphism*, or initial-algebra fold. Initiality supplies the unique map $\llbracket C \rrbracket$ compatible with the constructors; for finite terms, structural recursion constructs this map. Lambek’s lemma identifies the structure map of an initial algebra as an isomorphism [@lambek1968fixpoint].
+This map is a [catamorphism](https://en.wikipedia.org/wiki/Catamorphism), or fold: the unique map out
+of the initial algebra into the algebra $\mathcal A_C$ [@meijer1991functional]. Initiality gives one
+such map for each choice of the functions $\widehat c$, $\widehat \beta$, $\mathrm{init}$, and
+$\mathrm{embed}$, and the recursion computes it on every finite term. Lambek's lemma states that the
+operations of an initial algebra form an isomorphism [@lambek1968fixpoint].
 
-### 2.3 Sequence-shaped sugar
+### 2.3 Modes for list constructors
 
-The `recurrent state` and `attention prefix` modes on a constructor rule are syntactic sugar that fix the recursion shape on a `Cons`-like binary constructor whose second argument is the recursive child.
+A constructor rule may have the mode `recurrent state` or `attention prefix`, for a binary constructor
+such as `Cons` whose second argument has the same sort as its result.
 
-- **Recurrent.** The rule $\mathrm{Cons}(h, t)\,\mathrm{recurrent}\,\mathrm{state} \mapsto \mathrm{body}(h,\,\mathrm{state})$ denotes the right-fold of the constructor body over the list:
+- **Recurrent.** The rule $\mathrm{Cons}(h, t)\ \mathrm{recurrent}\ \mathrm{state} \mapsto \mathrm{body}(h, \mathrm{state})$
+  binds `state` to the vector of the recursive argument, so it is the fold of §2.2:
 
-$$
-\llbracket C \rrbracket(\mathrm{Cons}(h_1, \mathrm{Cons}(h_2, \dots, \mathrm{Cons}(h_n, \mathrm{Nil})))) \;=\; \mathrm{body}\bigl(h_1,\,\mathrm{body}(h_2,\, \dots\,\mathrm{body}(h_n,\,\llbracket C \rrbracket(\mathrm{Nil}))\dots)\bigr),
-$$
+    $$
+    \llbracket C \rrbracket\bigl(\mathrm{Cons}(h_1, \mathrm{Cons}(h_2, \dots, \mathrm{Cons}(h_n, \mathrm{Nil})))\bigr)
+    = \mathrm{body}\bigl(h_1, \mathrm{body}(h_2, \dots \mathrm{body}(h_n, \llbracket C \rrbracket(\mathrm{Nil})) \dots)\bigr).
+    $$
 
-  with `state` bound at each step to the recursive child's already-computed embedding. The outermost body call sees $h_1$ (the head); the innermost sees $h_n$ together with the encoded $\mathrm{Nil}$.
+- **Attention.** The rule $\mathrm{Cons}(h, t)\ \mathrm{attention}\ \mathrm{prefix} \mapsto \mathrm{body}(h, \mathrm{prefix})$
+  walks the list from the outermost `Cons` inward. With $o_0 = \llbracket C \rrbracket(\mathrm{Nil})$, step
+  $i$ computes $o_i = \mathrm{body}\bigl(h_i, [\llbracket C \rrbracket(h_1), \dots, \llbracket C \rrbracket(h_{i-1})], o_{i-1}\bigr)$,
+  and the encoder returns $o_n$, the output of the innermost step.
 
-- **Attention.** The rule $\mathrm{Cons}(h, t)\,\mathrm{attention}\,\mathrm{prefix} \mapsto \mathrm{body}(h, \mathrm{prefix})$ denotes the outside-in walk
-
-$$
-\llbracket C \rrbracket(\mathrm{Cons}(h_1, \mathrm{Cons}(h_2, \dots))) \;=\; \mathrm{body}\bigl(h_k,\, [\llbracket C \rrbracket(h_1),\, \dots,\, \llbracket C \rrbracket(h_{k-1})]\bigr),
-$$
-
-  where `prefix` is the running list of prior non-recursive children's embeddings collected outside-in. The encoder's final embedding is the innermost step's output.
-
-Both modes are derivable from the plain F-algebra rule by a choice of evaluation strategy; the sugar fixes which strategy the runtime uses.
+The recurrent mode is a fold of the `Cons` rule into $\mathbb{R}^{d}$. The attention mode is not: it
+processes the heads in the opposite order and carries the list of earlier heads as extra state, so it is
+a left-to-right fold over the list of heads and not the catamorphism of §2.2.
 
 ### 2.4 Graph encoders
 
-For a graph signature, the encoder iterates message-passing for $T = \mathrm{iterations}$ rounds:
+For a graph signature the encoder runs $T$ rounds of
+[message passing](https://en.wikipedia.org/wiki/Graph_neural_network), $T$ given by `iterations`
+[@gilmer2017neural; @battaglia2018relational]:
 
 $$
 \begin{array}{rcll}
-v_\kappa^{(0)} & = & \mathrm{init}_\kappa(\mathrm{payload}_\kappa) & \text{per vertex of kind } \kappa, \\[2pt]
-m_\varepsilon^{(t)} & = & \mathrm{message}_\varepsilon\bigl(v_{\mathrm{src}}^{(t)},\, v_{\mathrm{tgt}}^{(t)}\bigr) & \text{per edge of kind } \varepsilon, \\[2pt]
-v_\kappa^{(t+1)} & = & \mathrm{update}_\kappa\bigl(v_\kappa^{(t)},\, \mathrm{agg}\{m_\varepsilon^{(t)} : \varepsilon \ni v_\kappa\}\bigr) & \\[2pt]
-\llbracket C \rrbracket(G) & = & \mathrm{readout}(v_\ast^{(T)}). &
+v^{(0)} & = & \mathrm{init}_\kappa(\mathrm{payload}) & \text{for each vertex of kind } \kappa, \\[2pt]
+m_e^{(t)} & = & \mathrm{message}_\varepsilon\bigl(v_{\mathrm{src}}^{(t)}, v_{\mathrm{tgt}}^{(t)}\bigr) & \text{for each edge } e \text{ of kind } \varepsilon, \\[2pt]
+v^{(t+1)} & = & \mathrm{update}_\kappa\bigl(v^{(t)}, \mathrm{agg}\{m_e^{(t)} : e \text{ an edge into } v\}\bigr), & \\[2pt]
+\llbracket C \rrbracket(G) & = & \mathrm{readout}\bigl(\{v^{(T)}\}\bigr). &
 \end{array}
 $$
 
-Undirected edges (`--`) emit messages in both directions; directed edges (`->`) only in the declared direction. When local maps share parameters across vertices and neighborhood aggregation is permutation invariant, the vertex-state computation is permutation equivariant. An invariant readout then produces the same graph-level vector under vertex relabeling. These are the graph-network conditions discussed in the author preprint [@battaglia2018relational]; an arbitrary order-sensitive callback need not satisfy them.
+An undirected edge sends messages both ways, a directed edge only in its direction. When the functions
+are shared across vertices of one kind and the aggregation does not depend on the order of the
+messages, the vertex states are [equivariant](https://en.wikipedia.org/wiki/Equivariant_map) under
+relabeling of the vertices, and a readout that does not depend on order gives the same graph vector for
+every labeling [@battaglia2018relational]. A user function that depends on the order of its inputs
+need not have these properties.
 
 ## 3. Decoders
 
-Decoding reverses the direction of construction, but need not invert the
-encoder. At a list position, a decoder can choose `Nil` or `Cons`; choosing
-`Cons` requires generating a head and continuing with a tail. The choices
-are stochastic, so the output is a distribution over lists. The term
-*coalgebra* describes the local rule that exposes the next layer, and
-*corecursion* describes repeatedly applying it to build the whole structure.
-A depth bound limits this generation and requires terminating choices at the
-boundary.
+A decoder maps a vector to a distribution over terms. At a list position it chooses `Nil` or `Cons`,
+and choosing `Cons` requires generating a head and a tail. A depth bound limits how deep a term may grow,
+and at the bound only productions without recursive arguments may be chosen.
 
-A `decoder D : Σ [depth=d]` declaration denotes, for each object sort $s \in S_{\mathrm{obj}}$ and each syntactic de Bruijn context $\Gamma$ (§1.2), a *Markov kernel*
+A `decoder D : Σ [depth=d]` declaration denotes, for each object sort $s$ and context $\Gamma$, a Markov
+kernel
 
 $$
-\llbracket D \rrbracket_{s, \Gamma} \;:\; \mathbb{R}^{d_s} \;\longrightarrow\; \mathcal{G}\bigl(T_\Sigma(\Gamma, s)\bigr),
+\llbracket D \rrbracket_{s, \Gamma} : \mathbb{R}^{d_s} \longrightarrow \mathcal{G}\bigl(T_\Sigma(\Gamma, s)\bigr),
 $$
 
-producing for each carrier vector a probability distribution over closed signature terms of sort $s$ in context $\Gamma$. The kernel is defined by *structural corecursion* on the term shape: it is the unfold of an $F_\Sigma$-coalgebra in the Kleisli category of the Giry monad, where $F_\Sigma$ is the polynomial endofunctor
+a morphism of the Kleisli category of the [Giry monad](setting.md#3-standard-borel-spaces-and-markov-kernels)
+that sends each vector to a probability distribution on the terms of sort $s$ in $\Gamma$. It generates
+a term top down, one production at a time, following the
+[polynomial functor](https://ncatlab.org/nlab/show/polynomial+functor) of the signature,
 
 $$
-F_\Sigma(X)(s) \;=\; \coprod_{\substack{c\,:\,s_1, \dots, s_n \to s\\ \text{constructors of } s}} \prod_{i=1}^n X(s_i)\;\;\sqcup\;\; \coprod_{\substack{\beta \to s\\ \text{binders of } s}} (\text{annot} \times \text{scoped})\;\;\sqcup\;\;\mathrm{BoundVar}_s,
+F_\Sigma(X)(s) = \coprod_{c\,:\,s_1, \dots, s_n \to s} \prod_{i=1}^n X(s_i) \;\sqcup\; \coprod_{\beta \to s} (\text{annotations} \times \text{scoped arguments}) \;\sqcup\; \mathrm{BoundVar}_s,
 $$
 
-associated to the signature $\Sigma$ (data leaves and bound variables are the constant summands). The depth bound $d$ caps the corecursion: every term in the support of $\llbracket D \rrbracket_s(v, \Gamma)$ has tree depth $\le d$ and consequently inhabits the (finite) initial algebra $T_\Sigma$.
+whose summands are the productions at sort $s$. A decoder is not an
+[F-coalgebra](https://ncatlab.org/nlab/show/coalgebra+for+an+endofunctor), a map $A \to F(A)$ on one
+carrier: it is a kernel from vectors to terms. Every term in the support of
+$\llbracket D \rrbracket_{s, \Gamma}(v)$ has depth at most $d$. The support is a subset of the infinite set
+$T_\Sigma(\Gamma, s)$, and it is finite when the vocabularies of the data sorts are finite.
 
-### 3.1 The four parametric heads
+### 3.1 The four heads
 
-A decoder body declares four per-sort logits-producing maps (each is a let-expression in the carrier vector):
+A decoder body gives four functions of the vector of the current sort, each a `let` expression:
 
-| Head | Signature | Role |
+| Head | Type | Role |
 |---|---|---|
-| $\mathrm{structure}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert K_s\rvert + \lvert B_s\rvert + [\mathrm{BoundVar}]_s - 1}$ | Distribution over the productions at sort $s$: every constructor / binder of $s$, plus a $\mathrm{BoundVar}$ option when $\Gamma$ contains at least one variable of sort $s$ |
-| $\mathrm{primitive}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert \mathrm{Vocab}_s\rvert - 1}$ | Distribution over data leaves of sort $s$. Data sorts must carry a vocabulary (declared inline in the signature or registered at runtime); the primitive head returns logits whose support is restricted to that vocabulary. |
-| $\mathrm{factor}_s(v)$ | $\mathbb{R}^{d_s} \to \prod_i \mathbb{R}^{d_{s_i}}$ | Factorisation of the parent embedding into per-child embeddings; the per-constructor arity / dim sequence is selected by the chosen production |
-| $\mathrm{binder\_select}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert \Gamma_s\rvert - 1}$ | Distribution over in-scope variables of matching sort, where $\Gamma_s$ is the sub-sequence of $\Gamma$ at sort $s$ |
+| $\mathrm{structure}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert K_s\rvert + \lvert B_s\rvert + [\mathrm{BoundVar}]_s - 1}$ | a distribution over the productions at $s$: its constructors $K_s$ and binders $B_s$, and `BoundVar` when $\Gamma$ has a variable of sort $s$ |
+| $\mathrm{primitive}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert \mathrm{Vocab}_s\rvert - 1}$ | a distribution over the tokens of a data sort, which must have a vocabulary, declared in the signature or registered at run time |
+| $\mathrm{factor}_s(v)$ | $\mathbb{R}^{d_s} \to \prod_i \mathbb{R}^{d_{s_i}}$ | the vectors of the arguments of the chosen production |
+| $\mathrm{binder\_select}_s(v)$ | $\mathbb{R}^{d_s} \to \Delta^{\lvert \Gamma_s\rvert - 1}$ | a distribution over the variables in scope of sort $s$, $\Gamma_s$ the entries of $\Gamma$ of that sort |
 
-The required `body |-> recursive` clause selects the framework's structural corecursion as the body shape; `recursive` is the sole legal body keyword.
+Here $\Delta^{n-1}$ is the [probability simplex](types-and-spaces.md#4-denotation-of-space-expressions) on $n$
+outcomes. The required clause `body |-> recursive` selects this top-down generation, and `recursive` is
+the only body keyword.
 
-### 3.2 Denotation: structural corecursion
+### 3.2 Denotation: generation top down
 
-The [decoder-block guide](../guides/structural-compression-decoders-and-losses.md#decoder-blocks) supplies a concrete distribution over constructor choices. Compare the [program bind rule](programs.md#21-bind): a sampled constructor determines which subterms the decoder must produce next.
+For a vector $v \in \mathbb{R}^{d_s}$, a context $\Gamma$, and a remaining depth $d$, the kernel
+$\llbracket D \rrbracket(v, \Gamma, d)$ generates a term of sort $s$ as follows. The procedure is the same
+as ancestral sampling in a program, where a sampled constructor decides which subterms come next
+([Programs as kernels §2.1](programs.md#21-bind)).
 
-For carrier vector $v \in \mathbb{R}^{d_s}$, context $\Gamma$, and depth budget $d$, the kernel $\llbracket D \rrbracket(v, \Gamma, d)$ samples a term $t \in T_\Sigma(\Gamma, s)$ by the procedure:
+1. If $s \in S_{\mathrm{dat}}$, draw a token $d^\star \sim \mathrm{primitive}(v)$ and return $\mathrm{Data}_s(d^\star)$.
+2. Otherwise draw a production $k \sim \mathrm{structure}(v)$.
+    - If $k = \mathrm{BoundVar}$, draw $i \sim \mathrm{binder\_select}(v)$ among the variables of sort $s$
+      in $\Gamma$ and return $\mathrm{BoundVar}(i)$.
+    - If $k$ is a constructor $c : s_1, \dots, s_n \to s$, compute $(v_1, \dots, v_n) = \mathrm{factor}(v)$,
+      draw $u_i \sim \llbracket D \rrbracket(v_i, \Gamma, d - 1)$ for each $i$, and return $c(u_1, \dots, u_n)$.
+    - If $k$ is a binder $\beta$, compute the vectors of the annotations with $\mathrm{factor}$, draw the
+      annotations, extend the context, draw the scoped arguments in the extended context, and return
+      $\beta[\bar\alpha ; \bar\gamma]$.
+3. At $d = 0$, restrict $\mathrm{structure}(v)$ to the productions whose arguments all have data or
+   index sorts, and to `BoundVar` when $\Gamma_s$ is not empty. If no such production exists at the
+   sort, the runtime raises an error.
 
-1. If $s \in S_{\mathrm{dat}}$, sample $d^\star \sim \mathrm{primitive}(v)$ and return $\mathrm{Data}_s(d^\star)$.
-2. Otherwise, sample a choice $k \sim \mathrm{structure}(v)$:
-   - If $k = \mathrm{BoundVar}$ and there is an in-scope variable of sort $s$, sample $i \sim \mathrm{binder\_select}(v)$ over the matching positions of $\Gamma$ and return $\mathrm{BoundVar}(i)$.
-   - If $k$ is a constructor $c : s_1, \dots, s_n \to s$, compute $(v_1, \dots, v_n) = \mathrm{factor}(v)$ and (recursively at depth $d - 1$) sample $u_i \sim \llbracket D \rrbracket(v_i, \Gamma, d - 1)$ for each $i$; return $c(u_1, \dots, u_n)$.
-   - If $k$ is a binder $\beta$, compute the annotation embeddings via $\mathrm{factor}$, sample the annotation terms, extend the context, then sample the scoped children in the extended context. Return $\beta[\bar\alpha; \bar \beta]$.
-3. When $d = 0$, restrict the support of $\mathrm{structure}(v)$ to the set of *terminating* productions: constructors / binders whose every child sort is in $S_{\mathrm{dat}} \cup S_{\mathrm{idx}}$, together with $\mathrm{BoundVar}$ (always terminating, available when $\Gamma_s$ is non-empty). If no terminating production exists at the current sort, the runtime raises a typed error.
-
-This is a depth-bounded corecursion in the Kleisli category of $\mathcal{G}$ over the initial algebra $T_\Sigma$. The associated *score* kernel
-
-$$
-\mathrm{score}_D \;:\; T_\Sigma \times \mathbb{R}^{d_s} \times \mathrm{Ctx} \to \mathbb{R}_{\le 0},
-\qquad
-\mathrm{score}_D(t, v, \Gamma) \;=\; \log P\bigl[t \mid \llbracket D \rrbracket(v, \Gamma)\bigr],
-$$
-
-is the log-probability of producing the observed term $t$ under the same factorized distribution; it is computed by the recursion above with every "sample" replaced by "score against the observed branch."
-
-### 3.3 Round-trip with the encoder
-
-For a paired encoder / decoder over the same signature, the composite
+The log probability of a given term under the decoder,
 
 $$
-\llbracket D \rrbracket \circ \llbracket C \rrbracket \;:\; T_\Sigma \to \mathcal{G}(T_\Sigma)
+\mathrm{score}_D(t, v, \Gamma) = \log P\bigl[t \mid \llbracket D \rrbracket(v, \Gamma)\bigr] \le 0,
 $$
 
-is the *reconstruction kernel*. The reconstruction loss (§4.2 below) trains $C$ and $D$ jointly so that $\llbracket D \rrbracket(\llbracket C \rrbracket(t))$ concentrates near $\delta_t$. An exact reconstruction law would require $D(C(t))=\delta_t$ for each term. If two distinct terms receive the same encoding, the decoder receives identical inputs for both and cannot reconstruct each with probability one.
+is computed by the same recursion, with each draw replaced by the log probability of the branch the
+term takes. It is a function to the reals, not a kernel.
+
+### 3.3 Reconstruction
+
+For an encoder and a decoder over one signature, the composite of $\llbracket C \rrbracket$ and
+$\llbracket D \rrbracket$ is the kernel from terms to distributions over terms that sends $t$ to
+$\llbracket D \rrbracket(\llbracket C \rrbracket(t))$. The reconstruction loss (§4.2) trains both so that
+this distribution puts high probability on $t$. Exact reconstruction,
+$\llbracket D \rrbracket(\llbracket C \rrbracket(t)) = \delta_t$ for every $t$, is impossible when two
+different terms have the same vector, since the decoder then receives the same input for both.
 
 ## 4. Losses
 
-A representation is useful only relative to an objective. A reconstruction
-loss asks the decoder to assign high probability to the encoded input;
-a supervised loss can instead ask an attached computation to predict a
-label. The attachment metadata says where the scalar penalty is evaluated.
-The inference driver chooses the optimizer and uses this penalty to update
-the attached parameters.
-
-A loss declaration has an option block followed by one indented let-expression:
+A loss attaches a scalar objective to a computation: a reconstruction loss asks the decoder to give high
+probability to the encoded input, and a supervised loss asks an attached computation to predict a label.
+A loss declaration has an option block and one indented `let` expression:
 
 ```
 loss L [weight=w, on=K, target=T]
     body
 ```
 
-The compiler interprets supported option keys as attachment metadata and the body as the scalar expression.
+The options say where the loss is evaluated and how it is weighted, and the body is the scalar.
 
-### 4.1 Attachment sites
+### 4.1 Attachment
 
-The optional `on` clause selects an *attachment site*; absent, the loss is global. The attachment kinds and their associated trace types are:
+The option `on` attaches the loss to one kind of computation, and without it the loss is global:
 
-| Attachment | Site | Trace passed to `body` |
+| Attachment | Evaluated | Value passed to `body` |
 |---|---|---|
-| `global` | once per training step | the global environment $\eta$ |
-| `program P` | each invocation of program $P$ | the program's sample / score trace $\tau_P$ |
-| `deduction Δ` | each call to deduction $\Delta$ | the chart $\alpha_\Delta : I \to K$ |
-| `encoder C` | each call to $C$ | the pair $(t, \llbracket C \rrbracket(t))$ |
-| `decoder D` | each call to $D$ | the pair $(v, t)$ with $t \sim \llbracket D \rrbracket(v)$ |
-| `rule R in Δ` | every application of $R$ during $\Delta$'s chart build | the premise / conclusion items at the firing |
-| `chart of Δ` | once on $\Delta$'s completed chart | the chart $\alpha_\Delta$ |
+| `global` | once per training step | the module's environment $E$ |
+| `program P` | at each run of $P$ | the execution trace of the run, its draws and scores [@wingate2011lightweight] |
+| `deduction Δ` | at each evaluation of $\Delta$ | the chart $\alpha_\Delta : I \to K$ |
+| `encoder C` | at each call of $C$ | the pair $(t, \llbracket C \rrbracket(t))$ |
+| `decoder D` | at each call of $D$ | the pair $(v, t)$ with $t$ drawn from $\llbracket D \rrbracket(v)$ |
+| `rule R in Δ` | at each firing of $R$ while $\Delta$ builds its chart | the premises and the conclusion of the firing |
+| `chart of Δ` | once on the finished chart of $\Delta$ | the chart $\alpha_\Delta$ |
 
 ### 4.2 Denotation
 
-For a loss declaration $L$ with weight $w$ (a let-expression in the trace), attachment kind $\kappa$, target $T$, and body $\mathrm{body}_L$, the denotation is the functional
+For a loss $L$ with weight $w$ (a `let` expression in the attached value), attachment $\kappa$, target $T$,
+and body $\mathrm{body}_L$, the denotation is the function
 
 $$
-\llbracket L \rrbracket \;:\; \mathrm{Trace}_{\kappa, T} \to \mathbb{R},
+\llbracket L \rrbracket : \mathrm{Val}_{\kappa, T} \to \mathbb{R},
 \qquad
-\llbracket L \rrbracket(\tau) \;=\; \llbracket w \rrbracket(\tau)\, \cdot\, \llbracket \mathrm{body}_L \rrbracket(\tau).
+\llbracket L \rrbracket(\tau) = \llbracket w \rrbracket(\tau) \cdot \llbracket \mathrm{body}_L \rrbracket(\tau),
 $$
 
-The total loss of a module is the formal sum over every fire of every declared loss in a training step:
+on the values $\mathrm{Val}_{\kappa, T}$ passed at that attachment. The total loss of a training step is
+the sum over every evaluation of every loss in the step:
 
 $$
-\llbracket \mathrm{Total} \rrbracket(\eta) \;=\; \sum_{L,\,\tau \in \mathrm{Fires}(L,\,\eta)} \llbracket L \rrbracket(\tau).
+\llbracket \mathrm{Total} \rrbracket(E) = \sum_{L} \sum_{\tau \in \mathrm{Evals}(L, E)} \llbracket L \rrbracket(\tau).
 $$
 
-Loss bodies are arbitrary let-expressions over the trace; canonical shapes include `-D(C(input)).log_prob(input)` (reconstruction), `cross_entropy(p, q)` (consistency), `-chart.goal_weight()` (parsing likelihood), and `bce_with_logits(pred, target)` (supervised prediction).
+Typical bodies are `-D(C(input)).log_prob(input)` (reconstruction), `cross_entropy(p, q)` (agreement of
+two distributions), `-chart.goal_weight()` (likelihood under a parser), and
+`bce_with_logits(pred, target)` (supervised prediction).
 
-### 4.3 Composition with the inference layer
+### 4.3 Losses and inference
 
-The inference driver passes the total loss to the optimizer. Attached losses are evaluated on the program's execution trace and guide parameter updates. The program's semantic clauses specify its kernel or weighted measure at fixed parameter values. See [Programs §6](programs.md#6-inference-and-conditioning) for the role of conditioning and the inference layer.
-
-## 5. References
-
-For the fixed-point property of initial algebras, see [@lambek1968fixpoint]. For graph-network components and their permutation properties, see the author preprint [@battaglia2018relational].
+The inference driver adds the total loss to its objective and passes it to the optimizer. The losses
+change the parameters that are fitted, not the denotation of a program at fixed parameters, which is
+the kernel of [Programs as kernels](programs.md). The role of conditioning in the inference layer is in
+[Programs as kernels §6](programs.md#6-inference-and-conditioning).
