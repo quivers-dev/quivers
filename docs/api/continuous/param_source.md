@@ -1,19 +1,16 @@
 # Parameter Sources
 
-A [conditional family](../../tutorials/python/03-probabilistic-programs.md#conditional-distribution-families) needs a rule that turns its input into distribution parameters. For
-a Normal response this means obtaining a location and a positive scale for each input. A
-[parameter source](../../guides/continuous-families.md#hand-written-core-families) supplies that rule, which may be a table or a learned network; it is
-separate from the random draw made using those parameters.
-
-`quivers.continuous.param_source` maps a conditional family's input to
-its distribution parameters. For a morphism declared `~ Family` over a
-continuous domain, a `ParamSource` computes the parameters of the
-corresponding Kleisli arrow. Nonlinear dependence on the input is thus
-implemented by the parameter source.
+A *parameter source* is the rule, a table or a network, that turns a
+[conditional family](../../tutorials/python/03-probabilistic-programs.md#conditional-distribution-families)'s
+input into the family's parameters, such as a location and a positive scale for a Normal response
+([core families](../../guides/continuous-families.md#hand-written-core-families)). For a morphism
+declared `~ Family` over a continuous domain, a `ParamSource` computes the parameters of the
+corresponding Markov kernel, separately from the draw made with them. Any nonlinear dependence on
+the input thus lives in the parameter source.
 
 `LinearSource` contains one `nn.Linear`. `MLPSource` is a multilayer
-perceptron with configurable widths and activation, while
-`AttentionSource` is a self-attention head. `LookupSource` and
+perceptron with configurable widths and activation, and
+`AttentionSource` applies self-attention across a sequence and pools it to one parameter vector. `LookupSource` and
 `EmbeddingSource` handle discrete domains. `IdentitySource`,
 `FunctionSource`, and `ComposeSource` implement pass-through, a fixed
 callable, and source composition, respectively.

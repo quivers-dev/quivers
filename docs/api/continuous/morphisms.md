@@ -1,13 +1,11 @@
 # Continuous Morphisms
 
-A conditional distribution accepts an input and specifies possible outputs. Its [sampling
-method](../../guides/continuous-spaces.md#continuousmorphism) generates a value, while `log_prob` evaluates the [mass or density](../../getting-started/concepts.md#5-a-distribution-is-more-than-one-sample) at a supplied
-value. For a composition, simulation draws an intermediate value and then an output;
-evaluating the output density requires summing or integrating over the intermediate
-value [@giry1982categorical; @fritz2020synthetic].
-
-Operational kernels over discrete or continuous carriers. A
-`ContinuousMorphism` evaluates log densities and draws samples rather
-than materializing a finite morphism tensor.
+A `ContinuousMorphism` is a conditional distribution over discrete or continuous spaces that
+evaluates log densities and draws samples rather than storing a finite tensor
+([ContinuousMorphism](../../guides/continuous-spaces.md#continuousmorphism)). Its sampling method
+draws an output for an input, and `log_prob` evaluates the mass or density of a given output. For a
+composite, sampling draws an intermediate value and then an output, while the output density sums
+or integrates over the intermediate value, as in the composition of
+[Markov kernels](https://en.wikipedia.org/wiki/Markov_kernel) [@giry1982categorical; @fritz2020synthetic].
 
 ::: quivers.continuous.morphisms

@@ -1,20 +1,17 @@
 # Deduction Systems
 
-[Weighted deduction](../../guides/deduction.md#the-framework) builds conclusions from rules and scored premises [@shieber1995principles; @goodman1999semiring]. Fitting adjusts
-rule weights, Bayesian lifting introduces priors over them, and sampling draws from a
-normalized distribution over candidate results. The modules below implement these
-operations for shared deductive structures.
-
-The public API for weighted chart deductions consists of the model
-type, its abstract primitives, and operations for fitting, Bayesian
-lifting, and sampling. `quivers.stochastic.deduction` re-exports the
-public symbols.
+A [weighted deduction system](../../guides/deduction.md#the-framework) derives conclusions from
+weighted premises by inference rules, and combines the weights of derivations in a semiring
+[@shieber1995principles; @goodman1999semiring]. `quivers.stochastic.deduction` re-exports the model
+type, its abstract primitives, and the operations below: fitting adjusts rule weights, the Bayesian
+wrapper places priors on them, and sampling draws yields from the normalized distribution over
+sentences of one length.
 
 | Submodule | Job |
 |---|---|
-| [`primitives`](deduction/primitives.md) | Abstract building blocks (`Axiom`, `Deduction`, `Goal`, `Schedule`, `DeductiveSystem`). Most users do not touch these directly. |
-| [`fit`](deduction/fit.md) | Point-estimate gradient fitting (MAP / MLE) of the deduction's learnable log-weights. |
-| [`bayes`](deduction/bayes.md) | Lift the parameters into a Bayesian `MonadicProgram` whose posterior NUTS / SVI can target. |
-| [`sample`](deduction/sample.md) | Exact length-conditional forward sampling of yields from the chart's distribution. |
+| [`primitives`](deduction/primitives.md) | Abstract building blocks (`Axiom`, `Deduction`, `Goal`, `Schedule`, `DeductiveSystem`), used mainly to write new deduction classes. |
+| [`fit`](deduction/fit.md) | Gradient fitting of point estimates (MAP or MLE) of the learnable log weights. |
+| [`bayes`](deduction/bayes.md) | A `MonadicProgram` over the learnable log weights whose posterior No-U-Turn Sampler (NUTS) or stochastic variational inference (SVI) can target. |
+| [`sample`](deduction/sample.md) | Exact forward sampling of yields of a given length from the chart's distribution. |
 
 ::: quivers.stochastic.deduction

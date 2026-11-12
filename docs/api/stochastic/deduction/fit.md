@@ -1,19 +1,12 @@
 # Point-Estimate Fitting
 
-Fitting adjusts learnable rule weights to [increase the aggregate scores of observed
-sentences](../../../guides/deduction.md#charts-as-first-class-differentiable-values), optionally adding a [prior penalty](bayes.md). A chart can exactly aggregate finite
-derivations while the outer optimization remains numerical. Unless the grammar is
-normalized as required, a sum of log chart weights is an objective on weights rather
-than a normalized corpus log likelihood [@goodman1999semiring].
-
-`adam_fit_deduction` maximizes the corpus log-marginal
-$\sum_n \log Z(s_n; \mathbf{w})$ under an optional isotropic
-Normal prior on the deduction's learnable log-weights. Each
-$\log Z$ is computed exactly by the chart's LogProb-semiring
-fixed point; autograd through the agenda's semiring operations
-gives the exact gradient
-$\nabla_\mathbf{w} \log Z(s; \mathbf{w})
-= \mathbb{E}_{d \mid s}[\phi(d)]$ (the standard inside-outside
-identity).
+`adam_fit_deduction` fits a deduction's learnable log weights $\mathbf{w}$ by maximizing the
+corpus objective $\sum_n \log Z(s_n; \mathbf{w})$
+([charts as differentiable values](../../../guides/deduction.md#charts-as-first-class-differentiable-values)),
+optionally with an isotropic Normal [prior](bayes.md) on $\mathbf{w}$. Each $\log Z$ is the
+exact fixed point of the chart under the log semiring, and automatic differentiation through it
+gives the exact gradient $\nabla_\mathbf{w} \log Z(s; \mathbf{w}) = \mathbb{E}_{d \mid s}[\phi(d)]$,
+the expected feature counts of the inside-outside algorithm [@goodman1999semiring]. The objective
+is a corpus log likelihood only when the grammar is normalized.
 
 ::: quivers.stochastic.deduction.fit

@@ -1,10 +1,9 @@
 # Distributive Laws
 
-A distributive law specifies how [two layers of monadic structure interact](../../guides/monadic.md#distributive-laws). Moving from a
-list of optional values to an optional list, for instance, requires deciding how a
-missing element affects the whole result. The compatibility equations ensure that the
-chosen map respects the two monads’ units and multiplications [@moggi1991notions; @wadler1992essence].
-
-Distributive laws between monads and comonads.
+A [distributive law](https://ncatlab.org/nlab/show/distributive+law) swaps two layers of monadic
+or comonadic structure compatibly with both units and multiplications [@beck1969distributive]. Moving
+from a list of optional values to an optional list, for instance, requires deciding how a missing
+element affects the whole result ([distributive laws](../../guides/monadic.md#distributive-laws)).
+The module gives the abstract `DistributiveLaw` interface.
 
 ::: quivers.monadic.distributive_laws

@@ -1,29 +1,27 @@
 # Continuous Distribution Families
 
-quivers ships more than forty built-in conditional distribution families. Each
-takes an input (the domain) and produces learnable parameters via a
-parameter network. This page groups the registry by output shape
-and details the families whose event structure interacts with the
-[axis-role syntax](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over).
-The spaces and base
+A conditional distribution family in quivers is a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
-interface live in [continuous spaces](continuous-spaces.md).
+whose distribution's parameters a parameter source, a lookup table or a network,
+computes from each input. More than fifty families are registered, and in QVR the same
+families are written inline in program steps with given parameters
+([Inline distributions](dsl-programs-and-lets.md#inline-distributions)).
+[Continuous Spaces](continuous-spaces.md) describes the spaces they live on.
 
 ## Family registry
 
-Choose a family by what one outcome represents and which values it may
-take. A Normal can model an unconstrained measurement; a Gamma can model
-a positive duration; a Bernoulli models a binary outcome; a Dirichlet
-models a whole probability vector. Among families with the same support,
-tail behavior can guide the choice: a Student-t places more probability
-on extreme deviations than a Normal.
+A family is chosen by what one outcome represents and which values it may take: a
+Normal for an unconstrained measurement, a Gamma for a positive duration, a Bernoulli
+for a binary outcome, a Dirichlet for a whole probability vector. Among families with
+the same support, the tails decide: a Student-t puts more probability on extreme
+deviations than a Normal.
 
-`ConditionalNormal(domain, codomain)` learns a function from inputs to
-Normal parameters, including a learned mean `mu(x)`. To specify a mean
-exactly, write QVR `Normal(loc=mu, scale=sigma)`: the runtime uses the
-values of `mu` and `sigma` supplied at that point in the program.
+`ConditionalNormal(domain, codomain)` learns a map from inputs to the normal's
+parameters, including its mean. A mean given exactly is written in QVR as
+`Normal(loc=mu, scale=sigma)`, which uses the values bound to `mu` and `sigma` at that
+step.
 
-### Hand-written core families
+### Core families {#hand-written-core-families}
 
 ```python
 from quivers.continuous.families import (
@@ -42,7 +40,7 @@ X = FinSet(name="X", cardinality=5)
 domain = Euclidean(name="X", dim=5)        # or FinSet
 codomain = Euclidean(name="Y", dim=3)
 
-# Conditional normal: learns linear maps mu(x), log_sigma(x)
+# Conditional normal: learns maps x -> mu(x) and x -> log sigma(x)
 normal = ConditionalNormal(domain, codomain)
 
 # Sample from p(y | x)
@@ -56,8 +54,7 @@ log_p = normal.log_prob(x, y)  # shape (8,)
 
 ### Loc-scale families
 
-Standard reparameterizable distributions with learned location and
-scale:
+Families with a learned location and scale, all with reparameterized draws:
 
 ```python
 from quivers.continuous.families import (
@@ -69,9 +66,9 @@ from quivers.continuous.families import (
 )
 ```
 
-### Positive-valued families
+### Families on the positive reals {#positive-valued-families}
 
-For $\mathbb{R}_{>0}$ output:
+For positive outputs, $(0, \infty)$:
 
 ```python
 import torch
@@ -94,9 +91,9 @@ gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
 
-### Unit-interval families
+### Families on the unit interval {#unit-interval-families}
 
-For $(0, 1)$ output:
+For outputs in $(0, 1)$:
 
 ```python
 from quivers.continuous.families import (
@@ -116,8 +113,8 @@ with the map's Jacobian. When the shape is small, as it tends to be in
 sparse and stick-breaking priors, that round trip loses the tails. The
 sigmoid of `-800` is already the smallest normal float, so
 `Beta(0.001, 1)` scores the logit `-800` at about `-99` where its exact
-log density is about `-7.71`; and a Gamma sampler at shape `0.001`
-returns the smallest normal float for roughly half its draws.
+log density is about `-7.71`, and a Gamma sampler at shape `0.001` returns the smallest
+normal float for roughly half its draws.
 
 [`LogitBeta`][quivers.continuous.log_space.LogitBeta] and
 [`LogGamma`][quivers.continuous.log_space.LogGamma] put the variable on
@@ -134,18 +131,19 @@ $$
 
 Both are exact for every finite argument, since no quantity is formed on
 the constrained scale. Sampling stays in log space through the shape
-augmentation of [@marsaglia2000gamma]: for independent
+augmentation of Marsaglia and Tsang [@marsaglia2000gamma]: for independent
 $G' \sim \mathrm{Gamma}(a + 1)$ and $U \sim \mathrm{Uniform}(0, 1)$,
 $\log G' + \log(U) / a$ has the law of $\log G$ with
 $G \sim \mathrm{Gamma}(a)$, and a logit-Beta draw is the difference of two
 such draws. $G'$ has shape at least one, so it never comes near the
-underflow threshold, and its implicit reparameterization gradient carries
-through. Draws are finite for every shape at or above 64 times the
-smallest normal number of the dtype; at shape `1e-8` the median draw of
-`LogGamma` is near `-6.9e7`.
+underflow threshold, and its implicit reparameterization gradient, which
+differentiates the distribution function instead of the sampler, carries through
+[@figurnov2018implicit]. Draws are finite for every shape at or above 64 times the
+smallest normal number of the dtype, and at shape `1e-8` the median draw of `LogGamma`
+is near `-6.9e7`.
 
 Because the support is the real line, a site drawn from either family
-takes the identity bijector, so HMC, NUTS, and the guides see the exact
+takes the identity as its bijector, so Hamiltonian Monte Carlo (HMC), the No-U-Turn Sampler (NUTS), and the guides see the exact
 density, and prior draws, `rsample`, and initialization from the prior
 all sample the declared prior. A downstream quantity on the constrained
 scale is a `let`:
@@ -169,10 +167,9 @@ From Python, the distributions are ordinary `torch.distributions`
 classes, and
 [`make_fixed_logit_beta`][quivers.continuous.inline.make_fixed_logit_beta]
 and [`make_fixed_log_gamma`][quivers.continuous.inline.make_fixed_log_gamma]
-build the fixed program steps the compiler emits for literal parameters.
-Unlike the constrained families, the inline paths pass small literal
-shapes through unchanged rather than lifting them to a floor; a shape that
-is not positive raises.
+build the fixed program steps the compiler emits for literal parameters. The inline
+paths pass small literal shapes through unchanged, and a shape that is not positive
+raises.
 
 ```python
 import torch
@@ -189,11 +186,10 @@ assert torch.isfinite(draws).all()  # near -1000 on average, never clamped
 The conditional forms
 [`ConditionalLogitBeta`][quivers.continuous.families.ConditionalLogitBeta]
 and [`ConditionalLogGamma`][quivers.continuous.families.ConditionalLogGamma]
-learn their shapes through a softplus head, without the shift the
-constrained Beta and Gamma heads add. Stan, NumPyro, and Pyro render both
-families through runtime helpers that carry the same densities and
-log-space samplers; the other targets refuse them by name at transpile
-time (see the [transpile support matrix](../transpile-support.md)).
+learn their shapes as the softplus of a network output. The conditional Beta and Gamma
+families add a positive shift to that softplus (0.1 for `ConditionalBeta`), so their
+learned shapes cannot fall below it. [Transpiler support](../transpile-support.md)
+lists the targets that accept the two log-space families.
 
 ### Multivariate families
 
@@ -228,51 +224,50 @@ from quivers.continuous.families import (
 )
 ```
 
-## Event rank and axis-role syntax
+## Event and batch axes {#event-rank-and-axis-role-syntax}
 
-[Three axes can appear in a sampled tensor](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape) [@pyroTensorShapes]. A **sample axis** counts repeated
-Monte Carlo draws. A **batch axis** counts separate distribution instances.
-An **event axis** holds components scored jointly as one outcome. In the
-example above, `(100, 8, 3)` means 100 draws for eight inputs with three
-output coordinates; `log_prob` reduces the output coordinates and retains
-one score per input. The [axis-role clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over)
-assigns these roles to named QVR axes.
+Three kinds of axis appear in a drawn tensor [@pyroTensorShapes]. A *sample* axis counts
+repeated draws, a *batch* axis counts separate distributions, and an *event* axis
+holds coordinates scored jointly as one outcome. In the example above, `(100, 8, 3)` is
+100 draws for eight inputs with three output coordinates, and `log_prob` sums over the
+output coordinates and keeps one score per input. The
+[`over` clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) assigns
+these roles to named QVR axes.
 
-Event *rank* is the number of event axes, not their length. A
-100-dimensional multivariate Normal has event rank one; a matrix-valued
-family has rank two. Scalar Normal draws across three coordinates can be
-independent even when stored together, whereas a multivariate Normal can
-correlate those coordinates. The `over` and `iid_over` declarations make
-that modeling choice visible.
+A family's number of event dimensions, `event_rank` in the code, counts its event axes,
+not their length: a 100-dimensional multivariate normal has one and a matrix family has
+two. Scalar normal draws over three coordinates are independent even when stored
+together, while a multivariate normal can correlate them, and the `over` clause makes
+that choice explicit:
 
-`event_rank` per family controls the
-[axis-role syntax](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over):
-
-| Family | Event rank | Categorical reading |
+| Family | Event dimensions | Interpretation |
 |---|---|---|
-| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli` | 0 | Scalar; every codomain axis is iid by default |
-| `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP`, `Horseshoe` | 1 | Vector; one named event axis carries the joint distribution |
+| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |
 
-The QVR form `~ Family over <axes>` requires the axis count to
-match the family's event rank exactly; mismatch is a compile-time
-error. In particular, a flat MVN over $\dim(A) \cdot \dim(B)$
-(dense covariance, event_rank 1 with a single named axis whose dim
-equals the product) is categorically distinct from a `MatrixNormal`
-over `(A, B)` (Kronecker structure $V \otimes U$, event_rank 2);
-the declaration thus records both the event axes and the covariance
+On a `morphism` declaration, `[over=<axes>] ~ Family` must list exactly as many axes as
+the family has event dimensions, and a mismatch is a compile error. A `sample` or
+`observe` step may list more, the extra leading axes indexing independent draws
+([`over` clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over)). A
+multivariate normal over all $|A| \cdot |B|$ entries, with a dense covariance and one
+event axis whose length is the product, is a different model from a `MatrixNormal` over
+`(A, B)`, whose covariance is the Kronecker product $V \otimes U$ and which has two
+event axes, so the declaration records both the event axes and the covariance
 structure.
 
 ## Structured priors over weight matrices
 
-### MatrixNormal: Kronecker-covariance matrix prior
+### MatrixNormal: matrix prior with Kronecker covariance {#matrixnormal-kronecker-covariance-matrix-prior}
 
-A weight matrix can have two kinds of similarity: rows may covary because
-their inputs are related, and columns may covary because their outputs are
-related. A matrix-Normal separates those patterns into two covariance
-matrices. This reduces parameters but also restricts the correlations
-available; it is not equivalent to an arbitrary covariance over every
-flattened entry.
+The rows of a weight matrix may covary because their inputs are related, and its
+columns because their outputs are. A
+[matrix normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution)
+$\mathcal{MN}(M, U, V)$ has a row covariance $U$ and a column covariance $V$, and the
+covariance of its flattened entries is their
+[Kronecker product](https://en.wikipedia.org/wiki/Kronecker_product). This needs far
+fewer parameters than a covariance over every entry and also allows fewer
+correlations.
 
 ```python
 from quivers.continuous.families import ConditionalMatrixNormal
@@ -287,15 +282,10 @@ mn = ConditionalMatrixNormal(
 )
 ```
 
-The
-[matrix-Normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution)
-`MN(M, U, V)` is the natural prior for a weight matrix $W :
-\mathbb{R}^d \to \mathbb{R}^k$ whose row and column correlations
-factor separately. When used as a latent-morphism prior in the
-DSL — `morphism W : Euclidean(D) -> Euclidean(K) [role=latent,
-over=[dom, cod]] ~ MatrixNormal(loc, row_scale, col_scale)` — the
-first axis listed in `over` binds the row covariance and the
-second the column covariance.
+As a prior on a learnable table in QVR,
+`morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)`,
+the first axis in `over` takes the row covariance and the second the column
+covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
 
 ### InverseWishart: conjugate covariance prior
 
@@ -312,18 +302,19 @@ d = 4
 iw = ConditionalInverseWishart(domain, Euclidean(name="Sigma", dim=d))
 ```
 
-Conjugate prior for the covariance of a multivariate normal
-([@gelman2013bayesian], §3.6).
-The change-of-variables Jacobian for inverting a positive-definite
+The inverse Wishart is the [conjugate prior](https://en.wikipedia.org/wiki/Conjugate_prior)
+for the covariance of a multivariate normal, so with normal data its posterior is again
+an inverse Wishart [@gelman2013bayesian]. The change-of-variables Jacobian for inverting a positive-definite
 symmetric matrix contributes a `-(d + 1) log det(Sigma)` term to
 the log-density.
 
-### LKJCholesky: correlation-matrix prior
+### LKJCholesky: prior on correlation matrices {#lkjcholesky-correlation-matrix-prior}
 
-A correlation matrix describes association independently of each variable's scale. A Cholesky factor is a triangular representation used to build
-a valid matrix and compute with it efficiently. Modeling a factor avoids
-proposing an arbitrary array that might fail to be a correlation matrix;
-separate scale parameters can then supply marginal variability.
+A correlation matrix describes association apart from each variable's scale, and its
+[Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition) is the
+lower-triangular $L$ with $L L^\top$ equal to it. Placing the prior on the factor means
+every draw is a valid correlation matrix, and separate scale parameters then give the
+marginal variances.
 
 ```python
 from quivers.continuous.families import ConditionalLKJCholesky
@@ -337,12 +328,12 @@ lkj = ConditionalLKJCholesky(
 )
 ```
 
-LKJ-distributed [@lewandowski2009lkj]
-Cholesky factors on the manifold of correlation matrices. The
-matrix dimension comes from `codomain.dim`; the concentration
-parameter is learned from the input by the family's parameter
-network (concentration 1 gives the uniform distribution over
-correlation matrices).
+The family draws Cholesky factors of correlation matrices from the
+[LKJ distribution](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution)
+[@lewandowski2009lkj], with density proportional to $\det(R)^{\eta - 1}$ for the
+correlation matrix $R$ and concentration $\eta$, so $\eta = 1$ is uniform over
+correlation matrices. The matrix dimension is `codomain.dim`, and the parameter source
+learns $\eta$ from the input.
 
 Draws use the onion method of section 3.2 of
 [@lewandowski2009lkj]: row
@@ -352,14 +343,14 @@ $y \sim \mathrm{Beta}(k/2, \eta + (d - 1 - k)/2)$ and $u$ uniform on
 the unit sphere in $\mathbb{R}^k$. Every off-diagonal correlation $r$
 of a $d \times d$ draw thus has
 $(r + 1)/2 \sim \mathrm{Beta}(\eta - 1 + d/2, \eta - 1 + d/2)$. The
-compiled runtime, every factory over the family (the fixed and
-variable-concentration forms, a plate over it, and
+[compiled runtime](dsl-overview.md#compilation-pipeline), every factory over the family (the fixed and
+forms with a variable concentration, a plate over it, and
 [`LKJCorrelationFactor`][quivers.continuous.families.LKJCorrelationFactor]),
-and the QIEC reference machine all draw through one implementation of
+and the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for its core language, all draw through one implementation of
 this construction, so a program's prior draws follow the same law in
 both runtimes. `rsample` is differentiable in the concentration
-through implicitly reparameterized Beta draws; the directions $u$ do
-not depend on it. The log density is torch's `LKJCholesky.log_prob`.
+through implicitly reparameterized Beta draws, and the directions $u$ do not depend
+on it. The log density is torch's `LKJCholesky.log_prob`.
 
 ### Wishart
 
@@ -379,21 +370,14 @@ wishart = ConditionalWishart(
 
 ### ConditionalGaussianProcess
 
-A Gaussian process assigns a joint distribution to function values at
-chosen inputs. Its covariance kernel determines which inputs should have
-similar outputs. With an RBF kernel, nearby inputs tend to receive more
-strongly correlated values; the length scale controls how quickly this
-relationship decays. One draw is a collection of function values, not a
-separate unrelated regression coefficient at every location.
-
-A [Gaussian
-process](https://en.wikipedia.org/wiki/Gaussian_process) on
-$\mathbb{R}^D$ is a Markov kernel $X^N \to \mathcal{G}(\mathbb{R}^N)$
-whose value at any finite collection of input locations
-$x_1, \dots, x_N \in \mathbb{R}^D$ is a joint multivariate Normal
-with covariance $K(x_i, x_j)$. Each evaluation uses the entire collection
-of input locations to construct this covariance matrix. Changing one
-location changes its covariance with the other locations.
+A [Gaussian process](https://en.wikipedia.org/wiki/Gaussian_process) on $\mathbb R^D$
+gives the function values at any finite set of inputs $x_1, \dots, x_N \in \mathbb R^D$
+a joint multivariate normal distribution with covariance $K(x_i, x_j)$
+[@rasmussen2006gp]. As a family it is a kernel from the $N$ input locations to
+distributions on $\mathbb R^N$, and each evaluation builds the covariance matrix from
+all the locations at once, so moving one location changes its covariance with the
+others. With an RBF covariance kernel, nearby inputs get more strongly correlated
+values, and the length scale sets how fast the correlation decays.
 [`ConditionalGaussianProcess`](../api/continuous/families.md#quivers.continuous.families.ConditionalGaussianProcess)
 exposes three covariance kernels (RBF, Matern 5/2, linear) with
 learnable length scale and amplitude.
@@ -416,20 +400,16 @@ f = gp.rsample(x)                # one GP draw at those inputs, shape (N,)
 log_p = gp.log_prob(x, f)        # MVN(0, K(x, x) + jitter * I) density
 ```
 
-The DSL registers the family as `GP` with event rank 1; one named
-axis (the input-location count $N$) carries the joint distribution.
-For the statistical foundations and worked examples, see [@rasmussen2006gp]. The [open-access edition](https://www.gaussianprocess.org/gpml/) is available from the authors.
+QVR registers the family as `GP`, with one event dimension: the axis of the $N$ input
+locations carries the joint distribution.
 
 ### ConditionalHorseshoe
 
-Shrinkage priors express a preference for small coefficients while allowing
-some large effects. In the hierarchy below, the global scale `tau` controls
-overall shrinkage, while each local scale `lambda_d` can let its coefficient
-escape that shrinkage. The heavy tails of the scale priors distinguish this
-behavior from choosing a small Normal variance for every coefficient.
-
-The horseshoe prior [@carvalho2010horseshoe] is a
-sparse-signal prior whose hierarchical form is
+The horseshoe prior [@carvalho2010horseshoe] prefers small coefficients and still
+allows some large ones. In its hierarchical form below, the global scale $\tau$ sets
+the overall shrinkage, and each local scale $\lambda_d$ can let its coefficient escape
+it. The heavy tails of the scale priors are what distinguish it from a small normal
+variance for every coefficient:
 
 $$
 \begin{aligned}
@@ -464,32 +444,26 @@ beta = hs.rsample(x)             # shape (4, 10)
 log_p = hs.log_prob(x, beta)     # shape (4,), summed over coordinates
 ```
 
-The DSL registers the family as `Horseshoe` with event rank 1; the
-one named axis carries the per-coordinate marginal product.
+QVR registers the family as `Horseshoe` with no event dimensions: each coefficient is
+one draw, scored by its marginal density, and draws over several coefficients are
+independent.
 
 ### Choosing among multivariate priors
 
 | Goal | Family | Why |
 |---|---|---|
-| Generic multivariate posterior with dense covariance | `ConditionalMultivariateNormal` | Standard; learnable Cholesky factor. |
-| Weight matrix with separable row / column correlations | `ConditionalMatrixNormal` | Kronecker structure $V \otimes U$ has $r^2 + c^2$ params instead of $(rc)^2$. |
+| Multivariate prior with a dense covariance | `ConditionalMultivariateNormal` | Standard; learnable Cholesky factor. |
+| Weight matrix with separable row and column correlations | `ConditionalMatrixNormal` | The Kronecker covariance $V \otimes U$ has on the order of $r^2 + c^2$ parameters instead of $(rc)^2$. |
 | Covariance prior for a downstream MVN | `ConditionalInverseWishart` | Places a distribution on positive-definite covariance matrices. |
 | Correlation matrix in a hierarchical model | `ConditionalLKJCholesky` | Prior on correlations alone, leaving scales free. |
 | Non-parametric regression with smoothness control | `ConditionalGaussianProcess` | Prior over functions; bandwidth from kernel length-scale. |
-| Sparse signal selection (e.g. variable selection in regression) | `ConditionalHorseshoe` | Strong shrinkage toward zero with heavy tails for large signals. |
+| Sparse signals, such as variable selection in regression | `ConditionalHorseshoe` | Strong shrinkage toward zero with heavy tails for large signals. |
 
 ## See also
 
 - [Continuous Spaces and Morphisms](continuous-spaces.md): the
   surrounding space hierarchy and composition operations.
 - [DSL Programs and Let-Expressions](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over):
-  the `over` / `iid over` axis-role clause that depends on
-  `event_rank`.
+  the `over` and `iid_over` clause, which depends on the number of event dimensions.
 - [Examples Gallery: Horseshoe Regression](../examples/horseshoe-regression.md):
   end-to-end use of `ConditionalHorseshoe` in a regression.
-
-## Further reading
-
-- [@gelman2013bayesian]
-- [@carvalho2010horseshoe]
-- [@marsaglia2000gamma]

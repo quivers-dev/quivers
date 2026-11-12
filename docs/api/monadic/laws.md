@@ -1,10 +1,8 @@
 # Typeclass Laws
 
-These records express equations for monadic operations, including the [identity and
-associativity laws for sequencing](../../guides/monadic.md#monads) [@moggi1991notions; @wadler1992essence]. They provide specifications for implementations and
-for numerical checks on chosen values. A proof of a law must cover the implementation’s
-full domain.
-
-Runtime-checkable typeclass-law scaffolding.
+`check_functor_laws` and `check_monad_laws` test the
+[identity and associativity laws](../../guides/monadic.md#monads) of a type class instance on
+chosen objects [@moggi1991notions; @wadler1992essence]. A passing check covers the values tested,
+and a proof that a law holds must cover the implementation's whole domain.
 
 ::: quivers.monadic.laws

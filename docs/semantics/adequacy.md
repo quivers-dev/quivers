@@ -1,99 +1,114 @@
-# Implementation Correspondence and Limits
+# Implementation correspondence and limits
 
-For each supported QVR phrase, the compiler should construct the runtime object described by its semantic clause. This page connects those clauses to the operations that implement them and the tests that check them.
+For each phrase, the compiler builds a runtime object meant to realize the phrase's denotation. The
+tables below pair each denotation with the operation that computes it, and say where the runtime
+computes it exactly, where it approximates it, and where it computes something else. In programming
+language semantics, *adequacy* is the different statement that an operational semantics agrees with a
+denotational one [@plotkin1977lcf], and it is not established here.
 
 ## 1. What the compiler returns
 
-`Compiler` resolves a parsed module into an environment of objects, morphisms, programs, deductions, structural components, and exports. Evaluation returns an artifact-specific value: a tensor for a discrete morphism, a sample for a sampler, or a dictionary of returned values for a program.
+`Compiler` resolves a parsed module into an environment of objects, morphisms, programs, deductions,
+structural components, and exports. What a phrase computes depends on its runtime object:
 
-Thus correspondence must be stated per artifact:
-
-| Phrase | Runtime object | Evidence-bearing operation |
+| Phrase | Runtime object | Operation that realizes the denotation |
 |---|---|---|
-| `object` | `SetObject` or `ContinuousSpace` | structural equality, shape, membership where implemented |
-| discrete `morphism` | `Morphism` | `.tensor` |
-| family morphism | `ContinuousMorphism` | `.rsample`, `.log_prob` |
-| `program` | `MonadicProgram` or compiled program wrapper | sampling and `.log_joint` |
-| `deduction` | `DeductionSystem` | agenda/chart evaluation |
-| structural declaration | encoder, decoder, signature, or loss object | component-specific method |
+| `object` | `SetObject` or `ContinuousSpace` | structural equality, shape, and membership where implemented |
+| finite `morphism` | `Morphism` | `.tensor`, the matrix |
+| family `morphism` | `ContinuousMorphism` | `.rsample` to draw, `.log_prob` to score |
+| `program` | `MonadicProgram` | drawing, and `.log_joint`, the log joint density |
+| `deduction` | `DeductionSystem` | evaluation of the chart by the agenda |
+| `signature`, `encoder`, `decoder`, `loss` | the component's class | the component's methods |
 
-## 2. Direct correspondences
+## 2. Direct correspondences {#2-direct-correspondences}
 
-Several clauses are close enough to their implementations to check pointwise.
+For these clauses the runtime computes the denotation, up to floating-point error.
 
-First, object resolution is a structural walk over `ObjectExpr`. Nested products and coproducts are flattened without reordering components. Continuous constructors dispatch through the compiler's constructor table.
+- An object expression is resolved by one recursive walk over `ObjectExpr`, which flattens nested
+  products and coproducts without reordering them ([Types and spaces](types-and-spaces.md)). Space
+  constructors are looked up in the compiler's table of constructors.
+- A learnable table (`role=latent`) stores unconstrained parameters and returns their sigmoid as its
+  matrix, and an observed morphism returns the matrix it was given. Composition applies the rule's
+  `tensor_op` and `join` as in [Morphisms §1.1](morphisms.md#11-composition-tensor-identity), and the
+  tensor product applies `tensor_op` entrywise.
+- The expression combinators:
 
-Second, a discrete latent morphism stores a raw parameter and exposes `sigmoid(raw)` as its tensor. An observed morphism exposes its supplied tensor. Composition calls the active composition rule's `tensor_op` and `join`; tensor product applies `tensor_op` pointwise.
-
-Third, the expression combinators have distinct operational contracts:
-
-| Combinator | Current implementation |
+| Combinator | Computes |
 |---|---|
-| `.marginalize(X, ...)` | reduces named **codomain** axes with the active algebra's `join` |
-| `fan(f, g, ...)` | feeds one input to each component and concatenates outputs |
-| `repeat(f, n)` | sequentially composes the same instance, sharing parameters |
-| `stack(f, n)` | sequentially composes deep copies, giving each layer independent parameters |
-| `scan(cell)` | iterates a continuous cell `A * H -> H` over an implicit time axis and returns the final state, or every state with `outputs=all`, from the last position with `reverse=true` |
+| `.marginalize(X, ...)` | reduces the named codomain axes with the rule's `join` |
+| `fan(f, g, ...)` | gives one input to each component and concatenates their outputs |
+| `repeat(f, n)` | composes one instance with itself, its parameters shared |
+| `stack(f, n)` | composes copies in sequence, each with its own parameters |
+| `scan(cell)` | runs a cell `A * H -> H` along the sequence axis and returns the last state, or every state with `outputs=all`, starting from the last position with `reverse=true` |
 
-With `stack(f, 3)`, the output of the first copy enters the second, then the third. With `scan(cell)`, the hidden state passes between successive time steps.
+## 3. Composition of kernels {#3-probabilistic-composition}
 
-## 3. Probabilistic composition
+The composite of two kernels integrates over the intermediate value
+([Morphisms §3](morphisms.md#3-continuous-morphisms)). Drawing from it and evaluating its density are
+different computations: a draw visits one intermediate value, while the density at a fixed output sums
+the contributions of every intermediate value.
 
-The primer first performs this elimination as a [finite matrix product](../getting-started/concepts.md#2-composition-eliminates-an-intermediate-value). The [continuous composition equations](morphisms.md#3-continuous-morphisms) replace that sum with an integral, and the [Python guide](../guides/continuous-spaces.md#composition-sampledcomposition) exercises the estimator discussed here.
+Drawing from `f >> g` is [ancestral sampling](https://en.wikipedia.org/wiki/Bayesian_network): draw the
+intermediate value with `f.rsample`, then the output with `g.rsample`. When each factor draws from its
+declared kernel, the result is a draw from the composite.
 
-Suppose $f$ chooses an intermediate state and $g$ draws an output conditional
-on that state. Generating one output is straightforward: draw the state,
-then draw the output. Computing the density at a fixed output is a different
-task, because every possible intermediate state contributes. With a finite
-two-state kernel this is $p(y)=p(0)p(y\mid0)+p(1)p(y\mid1)$; a continuous
-intermediate state requires an integral. The sampler visits one intermediate state per draw; density evaluation
-accumulates contributions across the intermediate space.
+The density, `SampledComposition.log_prob`, depends on the intermediate:
 
-Sampling from `f >> g` is ancestral: sample the intermediate value with `f.rsample`, then pass it to `g.rsample`. This produces samples from the composite kernel when the component samplers implement their declared kernels.
+- For a finite intermediate set, it sums over the set, and the result is the density of the composite.
+- For a continuous intermediate space, it does not integrate. It sets the noise of each intermediate
+  draw to zero, follows the resulting path $y_k = T_k(y_{k-1}, 0)$, for a Normal kernel the path of
+  means, and returns $\sum_{k<n} \log p_k(y_k \mid y_{k-1}) + \log p_n(z \mid y_{n-1})$. This is the joint
+  density of one path, not the density of the composite at $z$, and it raises an error when a factor
+  cannot be reparameterized or has no density.
 
-Density evaluation is different. `SampledComposition.log_prob` draws a fixed number of intermediate samples, evaluates the second density, and combines the values with `logsumexp - log(n)`. The density-scale average is a Monte Carlo estimator of the integral; taking its logarithm introduces finite-sample bias. The default sample count is 100. Increasing the sample count reduces Monte Carlo error; analytic compositions provide a reference for checking the estimator.
+The composite density can thus be used as a likelihood only when every intermediate is finite or
+deterministic. A program that needs the density of a composite through a continuous intermediate should
+draw the intermediate as a site of its own, so that inference integrates over it.
 
-`ScanMorphism.log_prob(x, y)` scores a supplied trajectory `y`, one state per
-position, as the sum of its transition densities, which is how a scan inside a
-program scores the site it reaches at each position. A final state alone is
-refused: its density is the marginal over every earlier state, which would
-require summing or integrating the joint across all intermediate trajectories.
-A composition whose prefix runs a scan binds it to the trajectory its
-canonical coordinates select and scores that trajectory. A cell without a
-conditional density contributes zero instead.
+`ScanMorphism.log_prob(x, y)` scores a given trajectory `y`, one state for each position, as the sum of
+the densities of its transitions, as a scan inside a program scores the site it reaches at each position.
+It refuses a final state given alone, whose density would be the marginal over every earlier state. A
+composition whose first factor is a scan scores the trajectory its path selects. For a cell with no
+conditional density, such as a deterministic network, the method returns $0$ for every trajectory,
+including one that the cell cannot produce.
 
 ## 4. Programs and data
 
-Program statements preserve their leading-keyword distinction:
+The steps of a program keep their keywords' meanings
+([Programs as kernels](programs.md)):
 
-- `sample` introduces a random value;
-- `observe` adds a family log density at supplied data;
-- `let` binds deterministic tensor arithmetic;
-- `score` adds an explicitly computed scalar to the log joint;
-- finite-support `marginalize` enumerates a scoped latent and removes it from
-  the outer scope; a non-enumerable family currently follows the ordinary
-  single-sample path rather than computing a continuous integral;
-- `return` selects the program result.
+- `sample` draws a value;
+- `observe` adds the log density of a family at a given value;
+- `let` binds deterministic arithmetic on tensors;
+- `score` adds a computed scalar to the log joint density;
+- `marginalize` over a family with finite support sums the latent variable out and removes it from the
+  outer scope, and over any other family it draws one value and runs its scope once, without integrating;
+- `return` selects the result.
 
-`from_data("key")` retrieves data bound to the compiler before expression compilation. Bind the key before compiling the expression that uses it.
+`from_data("key")` reads data bound to the compiler before the expression is compiled, so the key must be
+bound first.
 
-## 5. What the tests establish
+## 5. Tests
 
-The tests cover four parts of the implementation:
+- Tests of the compiler and the language exercise parsing, resolution, type errors, composition of
+  expressions, contractions, programs, and structural declarations.
+- The tests of the [program-shape protocol](program-theory.md) check that extraction is deterministic and
+  that every extracted schema validates.
+- Round-trip tests check that the data values of the library survive serialization to JSON.
+- The transpilation tests check the separate pipeline of
+  [Transpilation correctness](transpile-correctness/index.md).
 
-- compiler and DSL tests exercise parsing, resolution, typing errors, expression composition, contractions, programs, and structural declarations;
-- `tests/test_program_theory.py` checks extraction and validation of program-shape schemas;
-- `tests/test_model_roundtrips.py` checks JSON round trips for `dx.Model` values;
-- `tests/transpile/test_structural.py`, `test_lens_laws.py`, `test_external_syntax.py`, and `test_numeric_equivalence.py` test the separate transpilation pipeline described in [Transpilation correctness](transpile-correctness/index.md).
+## 6. Conditions
 
-## 6. Conditions and open gaps
-
-Five conditions determine how these correspondences can be used.
-
-1. Categorical equations that use distributivity, arbitrary joins, or compact closure require those laws of the active algebra. The counterexamples in [Algebras](algebras.md#21-a-note-on-the-product-fuzzy-and-ukasiewicz-pairs) show why these hypotheses are needed.
-2. Floating-point operations may differ from exact real arithmetic, especially near support boundaries and saturated reductions.
-3. Monte Carlo density calculations are approximate at finite sample counts.
-4. External family comparisons require matching support, parameter maps, and normalizing constants; the [target pages](transpile-correctness/index.md) record these maps.
-5. Schema extraction records program shape. Two models with the same extracted schema can carry different learned weights and assign different probabilities.
-
-Useful extensions are property tests for each algebraic law, comparisons of sampled compositions with analytic Gaussian cases, and compiler tests for each declarative typing rule.
+1. An equation that uses distributivity, arbitrary joins, or compact closure needs those laws of the
+   module's composition rule, and three built-in instances, the default among them, fail distributivity
+   ([Semirings, t-norms, and change of base §2](algebras.md#2-algebraic-scope)).
+2. Floating-point arithmetic may differ from exact arithmetic, especially near the boundary of a support
+   and in reductions that saturate.
+3. The density of a composite through a continuous intermediate is the density of one path (§3), not the
+   integral.
+4. Comparing a family with another system's needs matching supports, parameterizations, and normalizing
+   constants, which the [target pages](transpile-correctness/index.md#4-distribution-parameterization)
+   record.
+5. A [program-shape schema](program-theory.md) records shape: two models with one schema can have different
+   learned weights and assign different probabilities.

@@ -1,13 +1,12 @@
 # Objectives
 
-A [variational objective](../../guides/inference-svi.md#elbo-evidence-lower-bound) evaluates how well a guide approximates the target distribution.
-The [evidence lower bound (ELBO)](https://pyro.ai/examples/svi_part_i.html#ELBO) [@pyroSVI] averages the joint log density minus the guide’s log
-density. Its gap from log evidence is a Kullback–Leibler divergence under the usual
-support and integrability assumptions [@blei2017variational; @hoffman2013svi]. Different objectives change the optimization
-target; estimators determine how gradients are computed.
-
-Variational objectives include `ELBO`, `IWAEBound`, `RenyiBound`,
-`VRIWAEBound`, `ChiVI`, `RWS`, and `DReGsBound`. They pair with the
-gradient-estimator strategies in [Estimators](estimators.md).
+A [variational objective](../../guides/inference-svi.md#elbo-evidence-lower-bound) measures how well
+a guide approximates the posterior. The
+[evidence lower bound](https://en.wikipedia.org/wiki/Evidence_lower_bound) (ELBO) is the expected
+log joint density minus the expected log density of the guide $q$, and its gap from the log
+evidence is the KL divergence $\mathrm{KL}(q \,\|\, p)$ between the guide and the posterior $p$
+[@blei2017variational; @hoffman2013svi; @pyroSVI]. The module gives `ELBO`, `IWAEBound` [@burda2016iwae], `RenyiBound` [@li2016renyi],
+`VRIWAEBound` [@daudel2023vriwae], `ChiVI` [@dieng2017chi], `RWS` [@bornschein2015rws], and
+`DReGsBound` [@tucker2019dreg]. Each pairs with a gradient [estimator](estimators.md).
 
 ::: quivers.inference.objectives

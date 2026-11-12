@@ -1,15 +1,12 @@
 # Chart Semirings
 
-The same chart algorithm can answer different questions by [changing two operations](../../guides/deduction.md#the-framework).
-Boolean operations ask whether a derivation exists; [sum-product adds the weights of
-alternatives](../../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores); max-product selects the best weight. In log space, multiplication becomes
-addition and summation becomes log-sum-exp [@goodman1999semiring]. Reusing the algorithm requires the relevant
-semiring laws.
-
-Semiring abstractions for parameterizing chart parsing
-([Goodman 1999](https://aclanthology.org/J99-4004/)). Selecting a semiring
-changes what the CKY skeleton computes: marginal log-probability, a Viterbi
-best parse, boolean recognition, or a derivation count.
+One chart algorithm answers different questions under
+[different semirings](../../guides/deduction.md#the-framework) [@goodman1999semiring]. The Boolean
+semiring asks whether a derivation exists, the log semiring adds the probabilities of alternatives
+in log space (the [inside weight](../../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores)),
+the Viterbi semiring keeps the best derivation's weight, and the counting semiring counts
+derivations. In log space, multiplication is addition and summation is
+[log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp).
 
 ::: quivers.stochastic.semiring
     options:

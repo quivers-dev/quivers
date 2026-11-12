@@ -1,105 +1,115 @@
-# Denotational Semantics of the QVR DSL
+# Denotational semantics of QVR
 
-This section gives a mathematical interpretation of the QVR DSL and records how that interpretation relates to the current implementation. Each categorical result states its algebraic hypotheses; the implementation sections identify the operations and tests that realize it.
+QVR is the modeling language of quivers. Its
+[denotational semantics](https://en.wikipedia.org/wiki/Denotational_semantics) assigns each
+phrase a mathematical object, its *denotation*, so that the denotation of a compound phrase is
+determined by the denotations of its parts [@moggi1991notions]. The semantics determines when two
+QVR programs denote the same Markov kernel or weighted relation, which rewrites a compiler may
+apply without changing a program's meaning, and which runtime operations each phrase must
+implement.
 
-A *denotation* is what an expression means mathematically. For instance, a
-finite transition table denotes a rule assigning a probability distribution
-to each input state. Composing two such tables means averaging over the
-intermediate state. The notation records this calculation so that we can
-ask which program transformations preserve it.
+Category theory and measure theory enter through the definitions on
+[Setting and notation](setting.md), which the other pages link to. On the grammar pages, a
+[*syntactic category*](https://en.wikipedia.org/wiki/Syntactic_category) is a grammatical type
+such as `NP` or `S/NP`, and "category" alone means a category in the sense of
+[category theory](https://ncatlab.org/nlab/show/category).
 
-There are two useful routes through these pages:
+Every executable QVR declaration elaborates to a term of the
+[Quivers Indexed Effect Core (QIEC)](../reference/qvr/index.md), the typed core language of
+quivers, which has indexed families, effect rows, and effect handlers.
 
-- **From programming to the mathematics:** read the
-  [conceptual introduction](../getting-started/concepts.md), then
-  [types and spaces](types-and-spaces.md), [morphisms](morphisms.md), and
-  [programs](programs.md). Their examples explain what the formal objects do.
-- **From the mathematics to implementation:** begin with
-  [setting and notation](setting.md) and [algebras](algebras.md), then use
-  [typing](typing.md), [implementation correspondence](adequacy.md), and
-  [transpilation correctness](transpile-correctness/index.md) to locate the
-  assumptions, executable checks, and limits of each claim.
+## Pages
 
-The following pages develop the definitions and connect them to the implementation.
-
-1. **[Setting and notation](setting.md).** The semantic universe: $\mathcal{V}$-enriched symmetric monoidal closed categories, finite sets, standard Borel spaces, and the global parameters that distinguish discrete, stochastic, and continuous fragments.
-2. **[Algebras and base change](algebras.md).** The algebraic structure underlying $\mathcal{V}$-enriched composition, the eleven built-in algebras, and the base-change functors that mediate between them.
-3. **[Composition rules](composition-rules.md).** The class hierarchy $\mathbf{CompositionRule} \supseteq \{\mathbf{BilinearForm},\ \mathbf{Semigroupoid} \supseteq \mathbf{Algebra}\}$; user-defined inline composition rules; operadic n-ary contractions via flat wirings; first-class transformations with sequential composition.
-4. **[Types and spaces](types-and-spaces.md).** The denotation of `ObjectExpr` and `SpaceExpr` syntactic categories as objects in $\mathbf{FinSet}$ and $\mathbf{SBor}$ respectively.
-5. **[Morphisms](morphisms.md).** $\mathcal{V}$-relations, stochastic kernels, and continuous conditional families as the three morphism strata; their composition, tensor product, marginalization, and trace.
-6. **[Expressions](expressions.md).** Compositional semantics of expression-level combinators: `>>`, `>>>`, `@`, `.marginalize`, `.change_base`, `fan`, `repeat`, `stack`, `scan`, and the parser combinators.
-7. **[Programs](programs.md).** Probability- and weighted-kernel semantics of `program` blocks; the denotation of bind (`<-`), `observe`, `let`, `score`, finite `marginalize`, and `return`; grouped marginalization with multi-observe fibrations; and the boundary between exact finite enumeration and ordinary sampling.
-8. **[Typing and checking](typing.md).** The current two-layer checker: source-level objects, spaces, axes, and family shapes; QIEC kinds, indexed families, computations, lexical effect rows, handlers, and program elaboration; plus the guarantees and dynamic limits of that implementation.
-9. **[Weighted deduction fragment](grammar.md).** Item algebras, rule systems as hyperedges in a multicategory, semiring-weighted chart enumeration, axiom injectors, strategy independence, and differentiable charts. Includes learnable per-rule and bindings-keyed weights, hierarchical (`parent=`) and bounded (`bounded`) rule parameterizations, alpha-renamed binder blocks, convergent-cycle (`tolerance=`) chart evaluation, and the chart API (`parse(D, x)`, `compose(D_1, D_2)`, `subst(t, v, w)`) that lifts a chart's goal weight into a `program`'s log-joint via a [`score`](programs.md#210-score-factor) step.
-10. **[Schemas, rules, categories, bundles](schemas.md).** Category atoms; rule declarations as universally-quantified hyperedges; pattern-polymorphic schema declarations; bundles as first-class rule sets; the residuated type formers $/$, $\backslash$, $T(\cdot)$; free residuated category universes; object- and space-level aliases.
-11. **[Structural compression](structural.md).** Signatures as generalized algebraic theories; encoders as initial-algebra catamorphisms into a vector carrier; decoders as Kleisli coalgebras of the Giry monad; losses as attached scalar functionals on training-site traces.
-12. **[Compositional effects](effects.md).** Typeclass + algebraic-effects framework over a residuated category universe; class-driven schema lifting; joint type-and-effect dispatch in the chart parser; conservativity over the bare deduction fragment.
-13. **[The program-shape protocol](program-theory.md).** Extraction of a compiled environment into a validating panproto `Schema`, plus the limits of schema equality.
-14. **[Implementation correspondence and limits](adequacy.md).** Direct correspondences, test evidence, Monte Carlo qualifications, and open gaps.
-15. **[Transpilation architecture](transpile-architecture.md).** The `Module -> IRProgram -> panproto.Schema -> bytes` pipeline, its shared family metadata, and backend renderers.
-16. **[Transpilation correctness](transpile-correctness/index.md).** Structural, re-emission, external-syntax, and numeric-equivalence evidence, with per-target support notes: [Stan](transpile-correctness/stan.md), [NumPyro](transpile-correctness/numpyro.md), [Pyro](transpile-correctness/pyro.md), [PyMC](transpile-correctness/pymc.md), [Edward2](transpile-correctness/edward2.md), [Turing.jl](transpile-correctness/turing.md), [Gen.jl](transpile-correctness/gen.md), [Church](transpile-correctness/church.md), [WebPPL](transpile-correctness/webppl.md), [BUGS](transpile-correctness/bugs.md), and [JAGS](transpile-correctness/jags.md).
-
-For the categorical background, see [@maclane1998categories; @kelly1982basic].
-For probability kernels and their compositional interpretation, see
-[@giry1982categorical; @fritz2020synthetic].
+1. **[Setting and notation](setting.md):** the categories, kernels, and monads in which phrases
+   are interpreted, and the notation the other pages use.
+2. **[Semirings, t-norms, and change of base](algebras.md):** the operations that weight
+   composition, the built-in instances of `Algebra`, and maps between them.
+3. **[Composition rules](composition-rules.md):** the levels of laws a composition rule may
+   claim, rules declared in QVR, einsum contractions, and morphism transformations.
+4. **[Types and spaces](types-and-spaces.md):** finite sets and standard Borel spaces as the
+   denotations of object and space expressions.
+5. **[Morphisms](morphisms.md):** weighted relations, stochastic matrices, and Markov kernels,
+   with their composition, tensor product, and marginalization.
+6. **[Expressions](expressions.md):** the expression combinators (`>>`, `@`, `.marginalize`,
+   `fan`, `repeat`, `stack`, `scan`, the parser combinators, and others).
+7. **[Programs as kernels](programs.md):** `program` blocks and their steps (`sample`,
+   `observe`, `let`, `score`, `marginalize`, `return`) as kernels into probability and
+   s-finite measures.
+8. **[Weighted deduction](grammar.md):** `deduction` declarations as weighted deduction systems,
+   their chart denotation, and the conditions under which agenda evaluation computes it.
+9. **[Categorial types, rules, schemas, and bundles](schemas.md):** syntactic categories,
+   rule declarations, rule schemata, and bundles of rules.
+10. **[Tree and graph autoencoders](structural.md):** signatures, encoders as folds over terms,
+    decoders as kernels into terms, and losses.
+11. **[Effects and type classes](effects.md):** the type classes of `quivers.monadic`, algebraic
+    effects and handlers, and how a parser lifts rules into a type class.
+12. **[The program-shape protocol](program-theory.md):** the panproto schema extracted from a
+    compiled module, and what equality of such schemas does and does not show.
+13. **[Typing and checking](typing.md):** the source checker and the QIEC checker, with the
+    judgments each enforces.
+14. **[Implementation correspondence and limits](adequacy.md):** which equations the runtime
+    realizes directly, which tests exercise them, and where the implementation is approximate.
+15. **[Transpilation architecture](transpile-architecture.md):** the pipeline from a compiled
+    module to source text for another probabilistic programming language.
+16. **[Transpilation correctness](transpile-correctness/index.md):** the correctness criterion
+    for each target and the evidence for it, with one page per target:
+    [Stan](transpile-correctness/stan.md), [NumPyro](transpile-correctness/numpyro.md),
+    [Pyro](transpile-correctness/pyro.md), [PyMC](transpile-correctness/pymc.md),
+    [Edward2](transpile-correctness/edward2.md), [Turing.jl](transpile-correctness/turing.md),
+    [Gen.jl](transpile-correctness/gen.md), [Church](transpile-correctness/church.md),
+    [WebPPL](transpile-correctness/webppl.md), [BUGS](transpile-correctness/bugs.md), and
+    [JAGS](transpile-correctness/jags.md).
 
 ## Declaration syntax
 
-The categorical and probabilistic declarations use a shared option-block and
-initializer vocabulary. Their common schematic shape is:
+Most categorical and probabilistic declarations share one shape:
 
 ```
 KIND NAME : SIGNATURE [k = v, ...] [~ INIT] [BODY]
 ```
 
-QIEC declarations have separate checked forms: `index`, `family` and `constructor`, `effect` and
-operations, `instance`, `handler`, and computation-valued `define`. Their
-static telescopes, runtime telescopes, indexed results, and effect rows are
-described in [Typing and checking](typing.md) and summarized in the
-[grammar](grammar.md#11-qiec-fragment).
+- `KIND` is one of `composition`, `category`, `object`, `morphism`, `bundle`, `program`,
+  `contraction`, `export`, `deduction`, `signature`, `encoder`, `decoder`, `loss`, `schema`, or
+  `rule`. A `define` declaration introduces a QIEC computation or names an expression such as a
+  parser or a composed morphism. `let` binds a deterministic value inside a computation or a
+  program body.
+- `SIGNATURE` follows the colon: an object value for `object`, a `dom -> cod` arrow for a
+  declaration that denotes a morphism, and an `inputs / codomain` shape for `contraction`.
+- `[k = v, ...]` is the option block. Each declaration and each step accepts a fixed set of keys
+  and rejects any other key.
+- `~ INIT` is the optional initializer. A `~ Family(args)` initializer gives a parametric
+  family, and a `~ expr` initializer gives a deterministic value. Which forms a `morphism`
+  accepts depends on its `role` option
+  ([QVR reference](../reference/qvr/index.md)).
+- `BODY` is an optional indented block: a rule list for `composition`, `deduction`, or
+  `signature`, a step list for `program`, and the body the grammar fixes for each other kind.
 
-For the categorical/probabilistic shape above:
+The QIEC declarations `index`, `family` with its constructors, `effect` with its operations,
+`instance`, `handler`, and `define` have their own forms, given in
+[Typing and checking](typing.md) and in the [grammar](grammar.md#11-qiec-fragment).
 
-* `KIND` is one of `composition`, `category`, `object`, `morphism`, `bundle`, `program`, `contraction`, `export`, `deduction`, `signature`, `encoder`, `decoder`, `loss`, `schema`, or `rule`. A `define` may instead introduce a QIEC computation or one of the established expression aliases such as a parser or composed morphism. `let` is reserved for deterministic bindings inside computations and program bodies.
-* `SIGNATURE` is a colon-prefixed phrase (an object value for `object`, a `dom -> cod` arrow for everything that denotes a morphism, an `inputs / codomain` shape for `contraction`, etc.).
-* `[k = v, ...]` is the shared option block. Each declaration or step accepts a closed set of keys and rejects ignored or misspelled entries. Options select a role, shape, family, reduction, or elaboration policy.
-* `~ INIT` is the optional *initializer*: either a `Family(args)` clause (sampled stochastic kernel, evaluated through the family registry) or an arbitrary `expr` (deterministic morphism, evaluated through the expression denotation). On a `morphism` declaration the initializer interacts with `role` in the option block: `role=latent` admits only `~ Family(...)`; `role=let` / `role=observed` admits only `~ expr`; `role=kernel` admits both.
-* `[BODY]` is an optional indented block: a rule list for `composition`, `deduction`, or `signature`; a step list for `program`; or the declaration-specific body defined by the grammar.
+A pragma is an attribute statement. The outer form `#[k = v, ...]` decorates the next
+declaration, and the inner form `#![k = v, ...]` decorates the enclosing module. Lexicon entries
+and `rule` lines in a deduction take a trailing `#[k = v, ...]` that sets options for that entry
+or rule, such as `learnable`, `bounded`, `parent`, and `weight = expr`
+([Weighted deduction](grammar.md#21-learnable-rule-weights-learnable)).
 
-Pragmas are top-level *attribute* statements that decorate the *next* declaration (outer form `#[k = v, ...]`) or the *enclosing module* (inner form `#![k = v, ...]`). They carry the same `pragma_entry` shape as the unified option block; the compiler attaches the entries to the decorated declaration or module-level environment.
-
-The deduction fragment adds a parallel form: lexicon entries and individual `rule` lines admit a trailing `#[k = v, ...]` pragma that controls per-entry / per-rule behavior (`learnable`, `bounded`, `parent`, `weight = expr`, etc.; see [Weighted deduction fragment §2.1–§2.3](grammar.md#21-learnable-rule-weights-learnable)).
-
-## Conventions
-
-Throughout, we use the following conventions.
+## Notation
 
 | Symbol | Meaning |
 |--------|---------|
-| $\mathcal{V}$ | A QVR algebra (see [Algebras §1](algebras.md)). |
-| $\otimes,\ \mathbf{1}$ | Monoidal product and unit of $\mathcal{V}$. |
-| $\bigoplus$ | The reduction combining alternatives; a lattice join only where the algebra supplies one. |
-| $\mathbf{FinSet}$ | The category of finite sets. |
-| $\mathbf{SBor}$ | The category of standard Borel spaces with measurable maps. |
-| $\mathcal{V}\text{-}\mathbf{Rel}$ | The $\mathcal{V}$-enriched category of $\mathcal{V}$-relations on finite sets. |
-| $\mathbf{Stoch}$ | Finite sets and stochastic matrices, viewed as a subcategory of kernels. |
-| $\mathbf{Kern}$ | The category of standard Borel spaces and Markov kernels. |
-| $\mathcal{G}$ | The Giry monad (discrete or continuous, disambiguated by context). |
-| $\llbracket \phi \rrbracket$ | The denotation of phrase $\phi$. |
-| $\Gamma \vdash \phi : \tau$ | $\phi$ is well-typed of type $\tau$ under environment $\Gamma$. |
-| $\rho$ | A semantic environment (assignment of denotations to free names). |
+| $\mathcal{V} = (V, \otimes, \bigoplus, \mathbf{1})$ | A set $V$ of weights with a product $\otimes$, a reduction $\bigoplus$, and a unit $\mathbf 1$ ([Setting §1](setting.md#1-weights-and-their-operations)) |
+| $\mathbf{FinSet}$ | Finite sets and functions |
+| $\mathbf{SBor}$ | Standard Borel spaces and measurable maps |
+| $\mathbf{Mat}(\mathcal{V})$ | Finite sets and $\mathcal V$-matrices ([Setting §2](setting.md#2-v-enriched-relations)) |
+| $\mathbf{FinStoch}$ | Finite sets and stochastic matrices |
+| $\mathbf{BorelStoch}$ | Standard Borel spaces and Markov kernels |
+| $\mathcal{D}$, $\mathcal{G}$ | The distribution monad on finite sets and the Giry monad on standard Borel spaces |
+| $\llbracket \phi \rrbracket_\rho$ | The denotation of the phrase $\phi$ in the environment $\rho$ |
+| $\Gamma \vdash \phi : \tau$ | In the typing context $\Gamma$, the phrase $\phi$ has type $\tau$ |
 
-In the categorical fragment, a *type* is a finite-set object and a
-*space* is a standard Borel object. QIEC additionally has a `Type` kind for
-primitive, product, distribution, and indexed-family types; [Typing and
-checking](typing.md#4-qiec-kinds-and-types) keeps those two uses separate. We
-write $|X|$ for the cardinality of a finite set $X$, and $\dim(S)$ for the
-dimension of a continuous space $S$.
-
-## Audience
-
-This document is written for users who wish to reason formally about QVR programs: to verify that two `.qvr` files denote the same morphism, to prove that an optimization pass preserves meaning, or to understand the precise relationship between the syntactic AST, the `dx.Model` value-type layer, and the underlying tensor computations. The [examples and notation explanations](../getting-started/concepts.md#7-reading-the-notation-and-finding-the-next-explanation) introduce the mathematical vocabulary through table calculations and small probabilistic programs. Enriched categories [@kelly1982basic] and probability kernels [@giry1982categorical; @fritz2020synthetic] provide the mathematical background.
-
-## References
-
-For enriched categories, see [@kelly1982basic]. For probability measures and kernels, see [@giry1982categorical; @fritz2020synthetic]. The [concepts primer](../getting-started/concepts.md) introduces the notation used here.
+In the categorical part of the language, a *type* denotes a finite set and a *space* denotes a
+standard Borel space. QIEC also has a `Type` kind for primitive types, products, distributions,
+and indexed families, which [Typing and checking](typing.md#4-qiec-kinds-and-types) keeps
+separate from the first sense. We write $|X|$ for the cardinality of a finite set $X$ and
+$\dim(S)$ for the dimension of a continuous space $S$.

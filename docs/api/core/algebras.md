@@ -1,12 +1,16 @@
 # Algebras
 
-An algebra specifies how to [combine weights along a path and across alternative paths](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine).
-Multiplication and summation give ordinary matrix multiplication; addition and minimum
-compute shortest path costs. Reassociating compositions requires distributivity as well
-as associativity [@kelly1982basic]. With the default product/noisy-OR pair, changing the grouping can
+An `Algebra` fixes how composition
+[combines weights](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine):
+a product $\otimes$ along a path and a reduction $\oplus$ across alternative paths. Each built-in
+instance is a [semiring](https://en.wikipedia.org/wiki/Semiring) [@goodman1999semiring; @mohri2002semiring], a [t-norm](https://en.wikipedia.org/wiki/T-norm) with its t-conorm
+[@klement2000triangular], or a product with capped sum. Multiplication with summation gives the
+ordinary matrix product, and addition with minimum gives shortest path costs. Composition is
+associative only when $\otimes$ is associative and distributes over $\oplus$ [@kelly1982basic].
+The instances whose operations satisfy the semiring laws are of class `Semiring`, and those whose
+$\oplus$ is also idempotent of class `IdempotentSemiring`. The default product t-norm with noisy-OR
+reduction does not distribute, so it is an `Algebra` only, and with it a change of grouping can
 change the result.
-
-Ordered algebraic structures for morphism composition and enriched category theory.
 
 ::: quivers.core.algebras
     options:

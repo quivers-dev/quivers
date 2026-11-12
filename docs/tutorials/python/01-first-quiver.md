@@ -1,25 +1,14 @@
-# Tutorial 1: Your First Quiver
+# 1. Your first quiver
 
-Begin with two tables: one relates positions to colors, and another relates
-colors to outcomes. We want to connect them into a table from positions to
-outcomes. Quivers calls each [named set](../../getting-started/concepts.md#1-an-object-names-the-possible-values) an *object* and each typed relation a
-*morphism*. This chapter builds those relations as tensors and learns their
-entries with PyTorch. The default algebra combines [fuzzy membership values](04-fuzzy-factorization.md#background)
-using multiplication and noisy-OR. These operations have different
-[algebraic properties](../../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine)
-from ordinary matrix multiplication, as the numerical example below shows.
+The Python track builds models from the classes that QVR compiles to: the compiler checks a module in its core language, the [Quivers Indexed Effect Core](../../reference/qvr/index.md) (QIEC), and builds its compiled runtime, the PyTorch modules that `loads` returns, from [`FinSet`](../../api/core/objects.md), [`Morphism`](../../api/core/morphisms.md), and the other classes of this track. Use it to write new constructs, build libraries on quivers, or inspect what a QVR module compiles to. To write and fit a statistical model, start with the [QVR track](../qvr/01-first-model.md).
 
-If you're coming from Stan, PyMC, or Pyro: the Python API is the lower-level interface that the [QVR DSL](../qvr/01-first-model.md) compiles to. You write models as compositions of typed tensors instead of as `program` blocks. Use this track when you want to build new categorical constructs, write libraries on top of quivers, or read the type errors emitted by the DSL compiler. For day-to-day modeling, the DSL track is the right entry point.
+An *object* is a named finite set, and a *morphism* `f : A -> B` is a matrix of weights of shape `(|A|, |B|)`. Composing `f : X -> Y` with `g : Y -> Z` gives a morphism `X -> Z` by a matrix product over two operations on the weights, a product $\otimes$ and a sum $\oplus$:
 
-The example uses three finite sets and two tables. Their typed signatures identify the shared axis that `>>` contracts.
+$$
+(f \mathbin{>\!\!>} g)(x, z) = \bigoplus_{y \in Y} f(x, y) \otimes g(y, z).
+$$
 
-## Concepts
-
-- **Objects**: finite sets ([`FinSet`](../../api/core/objects.md))
-- **Morphisms**: $\mathcal{V}$-relations represented as tensors
-- **Latent morphisms**: parameters (learnable)
-- **Observed morphisms**: fixed tensors
-- **Composition**: tensor contraction according to the algebra's operations
+The default operations, `PRODUCT_FUZZY`, treat each weight as a degree of membership in $[0, 1]$ in the sense of [fuzzy sets](https://en.wikipedia.org/wiki/Fuzzy_set): $\otimes$ is the product and $\oplus$ the probabilistic sum $1 - \prod_i (1 - x_i)$, the noisy-OR of the alternatives [@klement2000triangular; @pearl1988probabilistic]. The example relates positions to colors and colors to outcomes, and learns the entries of one of the two matrices with PyTorch.
 
 ## Setup
 
@@ -33,7 +22,7 @@ from quivers.program import Program
 
 ## Creating objects
 
-Create three finite sets: one for positions (X), one for colors (Y), and one for outcomes (Z):
+Create three finite sets: positions `X`, colors `Y`, and outcomes `Z`.
 
 ```python
 X = FinSet(name="Position", cardinality=3)
@@ -45,13 +34,13 @@ print(Y.size)   # 4
 print(Z.size)   # 2
 ```
 
-Each object has a shape and size. These define the dimensions of the tensors representing morphisms.
+An object's `size` is its number of elements, and its `shape`, here `(3,)`, gives the axes it contributes to a tensor.
 
 ## Creating morphisms
 
-### Latent morphism
+### Learnable morphism
 
-A latent morphism has learnable tensor entries. Create one from X to Y using [`morphism`](../../api/core/morphisms.md):
+[`morphism`](../../api/core/morphisms.md) creates a morphism whose entries are learned:
 
 ```python
 f = morphism(X, Y)
@@ -61,9 +50,7 @@ print(f.tensor)          # shape [3, 4], values in (0, 1)
 print(f.tensor.shape)
 ```
 
-The tensor is initialized with a sigmoid activation, so all entries lie in $(0, 1)$. The entries are PyTorch parameters: they will be updated during backpropagation if you include the morphism in a training loop.
-
-Inspect the underlying module:
+The PyTorch parameter is an unconstrained tensor of logits, and `f.tensor` is its sigmoid, so every entry lies in $(0, 1)$. Training updates the logits.
 
 ```python
 mod = f.module()
@@ -74,7 +61,7 @@ print(params[0].shape)  # torch.Size([3, 4])
 
 ### Observed morphism
 
-An observed morphism has a fixed, non-learnable tensor. Create one from Y to Z with explicit data using [`observed`](../../api/core/morphisms.md):
+[`observed`](../../api/core/morphisms.md) creates a morphism with fixed entries:
 
 ```python
 data = torch.tensor([
@@ -87,9 +74,7 @@ g = observed(Y, Z, data)
 print(g.tensor)
 ```
 
-The tensor shape must match $(|Y|, |Z|) = (4, 2)$. If you pass the wrong shape, an error is raised.
-
-Verify it has no learnable parameters:
+The data must have shape $(|Y|, |Z|) = (4, 2)$. Data of shape `(2, 4)` raises `ValueError: data shape torch.Size([2, 4]) does not match expected (4, 2)`. An observed morphism has no parameters:
 
 ```python
 mod_g = g.module()
@@ -99,16 +84,14 @@ print(len(params_g))  # 0
 
 ## Composition
 
-Compose two morphisms using the `>>` operator. Composition applies the algebra's operations: the tensor product $\otimes$ (multiplication) and the join $\bigvee$ (noisy-OR).
-
-Create a third latent morphism from Z to a new object:
+`>>` composes two morphisms whose codomain and domain agree. Add a learnable morphism out of `Z`:
 
 ```python
 W = FinSet(name="Result", cardinality=5)
 h = morphism(Z, W)
 ```
 
-Compose f and g: X -> Y -> Z
+Compose `f` and `g`, `X -> Y -> Z`:
 
 ```python
 fg = f >> g
@@ -117,43 +100,33 @@ print(fg.codomain.name)  # Outcome
 print(fg.tensor.shape)   # [3, 2]
 ```
 
-Composition is lazy: the tensor is not computed until evaluation. Verify this is a [`ComposedMorphism`](../../api/core/morphisms.md):
+Composition is lazy: the result is a [`ComposedMorphism`](../../api/core/morphisms.md), whose tensor is computed when it is read.
 
 ```python
 from quivers.core.morphisms import ComposedMorphism
 print(isinstance(fg, ComposedMorphism))  # True
 ```
 
-Compose again: (X -> Y -> Z) -> W
+Compose again, `X -> Y -> Z -> W`:
 
 ```python
 fgh = fg >> h
 print(fgh.tensor.shape)  # [3, 5]
 ```
 
-The composition operation uses the algebra's tensor product (here, pointwise multiplication) and join (noisy-OR):
+For a fixed position `x` and outcome `z`, each color `y` gives a route of strength $f(x, y)\, g(y, z)$, and noisy-OR combines the routes: two routes of strengths `0.4` and `0.3` give `1 - 0.6 * 0.7 = 0.58`. Each outcome gets its own degree of membership, so a row may sum to more than one.
 
-$$
-(g \circ f)(x, z) = \bigvee_y f(x, y) \otimes g(y, z)
-$$
+The product does not distribute over the probabilistic sum, so `PRODUCT_FUZZY` is not a [semiring](https://en.wikipedia.org/wiki/Semiring), and composition under it is not associative: the two bracketings of a composite of three morphisms differ.
 
-In PRODUCT_FUZZY, $\otimes$ is multiplication and $\bigvee$ is $1 - \prod_i (1 - x_i)$.
+```python
+left = ((f >> g) >> h).tensor
+right = (f >> (g >> h)).tensor
+print(float((left - right).abs().max()))
+```
 
-To read the equation, fix one position `x` and outcome `z`. For each color
-`y`, multiply the strength of the position-to-color relation by the strength
-of the color-to-outcome relation. Then combine those alternatives. If two
-routes contribute `0.4` and `0.3`, noisy-OR gives `1 - 0.6 * 0.7 = 0.58`.
-A third route of strength zero changes nothing; a route of strength one makes
-the combined value one.
-
-Each outcome receives a fuzzy membership score independently, so a row can
-sum to more than one. Product with noisy-OR can also make bracketing affect
-the result. Keep the written order of composition when extending this example
-to three or more tables.
+With random initial weights the largest entrywise difference is typically near 0.1, so a composite of three or more morphisms under `PRODUCT_FUZZY` must keep its written bracketing.
 
 ## Accessing tensor values
-
-Once composed, access the materialized tensor:
 
 ```python
 tensor_value = fg.tensor
@@ -161,17 +134,11 @@ print(tensor_value.dtype)  # torch.float32
 print(tensor_value.min(), tensor_value.max())  # check range
 ```
 
-For a relation in PRODUCT_FUZZY, values should lie in $[0, 1]$.
+Under `PRODUCT_FUZZY` every entry lies in $[0, 1]$.
 
-## Working as a Differentiable Module
+## Working as a differentiable module
 
-PyTorch records the operations on parameters with `requires_grad=True`.
-Calling [`.backward()`](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients)
-on the loss accumulates its derivatives in each parameter's `.grad` field
-[@pytorchAutogradTutorial]. The optimizer uses those derivatives to update
-the morphism entries.
-
-Wrap a morphism in a [`Program`](../../api/program.md) to make it a differentiable `nn.Module`:
+A [`Program`](../../api/program.md) wraps a morphism as a PyTorch `nn.Module` whose forward pass returns the morphism's tensor:
 
 ```python
 prog = Program(f)
@@ -180,7 +147,7 @@ print(output.shape)  # [3, 4]
 print(output)
 ```
 
-Integrate with PyTorch training:
+Train it like any module. [`.backward()`](https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html#computing-gradients) accumulates the gradient of the loss in each parameter [@pytorchAutogradTutorial], and the optimizer updates the logits of every learnable morphism in the composite:
 
 ```python
 import torch.optim as optim
@@ -201,37 +168,19 @@ for epoch in range(5):
     loss.backward()
     optimizer.step()
 
-    if epoch % 1 == 0:
-        print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+    print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 ```
 
-The parameters of all latent morphisms in the composition will be updated.
+## Other algebras
 
-## Algebras
-
-The examples so far use [`PRODUCT_FUZZY`](../../api/core/algebras.md) as the enrichment:
+The operations of a morphism are held by an [`Algebra`](../../api/core/algebras.md) object:
 
 ```python
 print(PRODUCT_FUZZY.name)  # "ProductFuzzy"
 ```
 
-Other algebras are available ([`BOOLEAN`](../../api/core/algebras.md), [`LUKASIEWICZ`](../../api/core/algebras.md), [`GODEL`](../../api/core/algebras.md)). The choice of algebra affects:
+Others include `BOOLEAN` (AND and OR), `LUKASIEWICZ` (Łukasiewicz t-norm with bounded sum), and `GODEL` (minimum and maximum). The algebra fixes how a learnable morphism's entries are constrained, how morphisms compose, and what the entries mean. [Chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws) lists every built-in algebra with its standard name and its laws.
 
-1. How morphisms are initialized
-2. How they compose
-3. The semantics of the resulting values
+## Next
 
-The examples use `PRODUCT_FUZZY` because their entries denote fuzzy membership and compose by product and noisy-OR.
-
-## Summary
-
-You have:
-
-- Created finite sets (objects)
-- Constructed latent (learnable) and observed (fixed) morphisms
-- Composed morphisms with `>>`
-- Inspected tensor shapes and values
-- Wrapped morphisms as differentiable modules
-- Learned that composition uses the algebra's operations (tensor product and join)
-
-Next, explore how these ideas extend to stochastic morphisms (Markov kernels) in [Tutorial 2](02-stochastic-relations.md).
+[Chapter 2](02-stochastic-relations.md) composes Markov kernels: row-stochastic matrices under sum and product.

@@ -1,10 +1,8 @@
 # Program
 
-The top-level `Program` contains named objects, morphisms, and exports [compiled from a
-module](dsl/index.md#quivers.dsl.load). Use its [lookup methods](../tutorials/python/09-debugging.md#inspecting-a-compiled-program) to select the particular model or other exported
-computation you want to execute, then pass that computation to an execution or inference
-procedure.
-
-Top-level probabilistic program definitions and execution.
+`Program` is the container that [compiling a module](dsl/index.md#quivers.dsl.load) returns, holding its
+named objects, morphisms, and exports. Its
+[lookup methods](../tutorials/python/09-debugging.md#inspecting-a-compiled-program) select the model or
+other exported computation to run or to pass to an inference procedure.
 
 ::: quivers.program

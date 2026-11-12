@@ -1,10 +1,9 @@
 # Identifiers
 
-Stable identifiers distinguish declarations independently of how they are displayed,
-while provenance records where they came from. This supports [linking diagnostics](../../reference/qvr/execution-and-tooling.md#stable-diagnostic-families) and
-generated computations back to source. Human-readable names can be repeated in different
-scopes without making those declarations identical.
-
-Stable identifiers and source provenance for the kernel.
+Stable identifiers distinguish declarations independently of their display names, and provenance
+records the source location each came from. Together they
+[link diagnostics](../../reference/qvr/execution-and-tooling.md#stable-diagnostic-families) and
+generated computations back to source, and let one name recur in different scopes without making
+the declarations identical.
 
 ::: quivers.qiec.identifiers

@@ -1,81 +1,63 @@
 # JAGS
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{JAGS}$.
+JAGS (Just Another Gibbs Sampler) reads models in the syntax of BUGS, with extensions, and fits them by Gibbs
+sampling [@plummer2003jags]. A JAGS model is a directed graphical model, whose joint distribution factors
+over its stochastic nodes, and the data given with it decide which nodes are observed. A `marginalize` block
+of QVR asks for the finite sum $\sum_z p(z) p(y \mid z)$, and the renderer computes that sum and adds its
+logarithm to the joint density ([Transpilation correctness](index.md)).
 
-JAGS uses BUGS-style model declarations and supplied data to distinguish
-unknown variables from observations. A QVR `marginalize` block requests the
-finite sum $\sum_z p(z)p(y\mid z)$. The renderer computes that sum and
-contributes its logarithm to the joint density.
+## How the test evaluates a log density
 
-## Semantics
+The runtime is JAGS through its Python binding [`pyjags`](https://github.com/michaelnowotny/pyjags). The
+probe compiles the model with the data and with the latent variables fixed as initial values, reads JAGS's
+`deviance` monitor before any sampling, and takes $-\mathrm{deviance}/2$ as the log density. The renderer
+writes the subset of BUGS that JAGS accepts, and its conversions of parameters and its zeros trick are those
+of the [BUGS page](bugs.md).
 
-JAGS's denotational semantics is the directed graphical model
-semantics of Plummer
-[@plummer2003jags],
-inheriting BUGS's `model { ... }` block syntax ([@lunn2009bugs]
-[BUGS](bugs.md)) with extensions. The runtime is JAGS itself or
-the [`pyjags`](https://github.com/michaelnowotny/pyjags) Python
-binding; the log-density probe is JAGS's Gibbs sampler log-joint
-accumulator.
+## Change of variables
 
-The renderer targets the BUGS-like subset accepted by JAGS; its
-parameter substitutions and score zero trick follow the BUGS route.
+As for BUGS, $\Psi_{\mathsf{JAGS}} = \mathrm{id}$.
 
-## Unconstrained-space change of variables
+## Family parameterizations {#family-parameterizations}
 
-Identity, as for BUGS. $\Psi_{\mathsf{JAGS}} = \mathrm{id}$.
+JAGS shares the Normal family with a precision of BUGS (`dnorm(μ, τ)` with $\tau = 1/\sigma^2$), the precision
+conventions of `dlnorm`, `dt`, and `dmnorm`, and the calculation that gives $c_{F, \mathsf{JAGS}} = 0$ for every
+family. The [BUGS page](bugs.md#family-parameterizations) has the full table, and JAGS differs in these
+entries:
 
-## Family parameterizations
-
-JAGS shares BUGS's precision-parameterized normal family
-(`dnorm(μ, τ)` with $\tau = 1/\sigma^2$), the same `dlnorm`,
-`dt`, `dmnorm` precision conventions, and the same calculation
-showing $c_{F, \mathsf{JAGS}} = 0$ for every family. See the
-[BUGS page](bugs.md) for the full parameterization table; the
-JAGS family-name differences are:
-
-| QVR family | JAGS call | Note |
+| QVR family | JAGS | Note |
 |---|---|---|
-| `Dirichlet(α)` | `ddirich(α)` | (BUGS uses `ddirch`) |
-| `Gamma(α, β)` | `dgamma(α, β)` | matches BUGS |
-| `Bernoulli(p)` | `dbern(p)` | matches BUGS |
-| `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log-odds; write `probs` |
-| `Categorical(probs=p)` | `dcat(p)` on the one-based code `y_code <- y + 1` the `data` block binds; a drawn class is read back as `code - 1` | $y \mapsto y + 1$ |
-| `Normal(μ, σ)` | `dnorm(μ, 1/σ²)` | precision parameterization |
+| `Dirichlet(α)` | `ddirich(α)` | BUGS writes `ddirch` |
+| `Gamma(α, β)` | `dgamma(α, β)` | as in BUGS |
+| `Bernoulli(p)` | `dbern(p)` | as in BUGS |
+| `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log odds, so write `probs` |
+| `Categorical(probs=p)` | `dcat(p)` at the code `y_code <- y + 1`, which the `data` block binds, and a drawn class is read back as `code - 1` | $y \mapsto y + 1$ |
+| `Normal(μ, σ)` | `dnorm(μ, 1/σ²)` | precision |
+| `FisherSnedecor(d_1, d_2)` | `df(n, m)` | BUGS has no mapping |
 
-JAGS also exposes
-[`dgen.gamma`](https://justinribarski.github.io/JAGS/), `pow`,
-and `inprod` primitives for use in extensions.
+JAGS also has the functions `pow` and `inprod`, and further distributions in its modules, described in the
+[JAGS user manual](https://sourceforge.net/projects/mcmc-jags/files/Manuals/).
 
-## Per-construct emit
+## Emitted constructs
 
-The [BUGS emit rules](bugs.md#per-construct-emit) work through the Poisson zero trick used to add a log score. The [finite marginalization definition](../programs.md#26-marginalize) specifies the weighted sum that the JAGS factor must contain.
+Draws, observations, and plates are written as in [BUGS](bugs.md#per-construct-emit), with the names and
+arguments of JAGS. Unlike BUGS, JAGS has a `data { ... }` block, which transforms the data before the model,
+so it can bind the shifted class codes of observed categorical values. The weighted sum that a `marginalize`
+block must compute is defined on [Programs as kernels](../programs.md#26-marginalize).
 
-Sample, observe, and plate declarations follow the BUGS-style model syntax,
-with JAGS-specific distribution names and argument mappings.
+**`marginalize`.** The renderer builds the weighted sum over the values of the latent variable and scores its
+logarithm with the zeros trick [@lunn2012bugs]. A grouped block first sums the rows that share a latent
+variable. The supported forms of scope and family are checked one by one, and they are more than the
+categorical mixtures BUGS accepts.
 
-**Marginalize.** The renderer constructs the weighted sum over finite support
-values and scores its logarithm using the zero trick. Grouped cases accumulate
-the rows that share a latent before reducing it. Supported scope shapes and
-families are checked explicitly; this path is broader than BUGS's
-categorical-mixture collapse.
+**`score`, `let`.** A score uses the zeros trick, as in BUGS, and a `let` is a deterministic node `<-`. The
+Poisson rate of the zeros trick must be nonnegative, so the constant it carries must exceed the score on the
+whole domain of the parameters.
 
-**Score / let.** The score path uses the documented zero-trick convention;
-deterministic bindings use `<-`. A Poisson rate used by the zero trick must
-be nonnegative, so any additive carrier constant has to satisfy the relevant
-bound throughout the intended parameter domain.
+## Evidence
 
-## Acceptance
-
-* **Tier 1 structural.** Same shape as BUGS.
-* **Tier 1 pipeline composition.** Direct and composed pipeline calls agree.
-* **Tier 2 external syntax.** The test writes a JAGS command file,
-  asks JAGS to load the model, and rejects compiler error output.
-* **Tier 3 numeric equivalence.** The `pyjags` probe evaluates
-  selected emitted densities under the constant-spread criterion.
-
-### References
-
-
-For JAGS’s design and relation to BUGS, see [@plummer2003jags]. A tutorial with worked Bayesian models is [@kruschke2014doing].
+- **Level 1.** The emitted models have the same shape as for BUGS, and calling the stages directly or composed
+  gives the same output.
+- **Level 2.** The test writes a JAGS command file, asks JAGS to load the model, and rejects any error output of
+  the compiler.
+- **Level 3.** The `pyjags` probe evaluates selected emitted densities under the shared tolerance.

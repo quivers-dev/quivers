@@ -1,9 +1,10 @@
 # Checked programs
 
-This wrapper exposes a core computation that has passed type and effect checking through
-the [runtime morphism interface](../../reference/qvr/execution-and-tooling.md#runtime-providers). It [executes that computation on the reference machine](../../reference/qvr/probabilistic-programs.md#running-and-scoring),
-connecting the checked program to callers that expect a morphism.
-
-A program morphism that runs its checked computation on the reference machine.
+A `CheckedProgram` is a program morphism that runs its checked [Quivers Indexed Effect Core](../qiec/index.md) (QIEC) computation on the
+[reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC
+([running and scoring](../../reference/qvr/probabilistic-programs.md#running-and-scoring)). The
+compiler produces one for a program whose calls it cannot turn into compiled steps, so that callers
+that expect a morphism can still sample and score it
+([runtime providers](../../reference/qvr/execution-and-tooling.md#runtime-providers)).
 
 ::: quivers.effects.checked_program

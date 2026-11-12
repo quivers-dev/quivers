@@ -1,22 +1,21 @@
 # Trace
 
-A [trace records the random choices and scores](../../guides/inference-foundations.md#trace-and-sample-sites) from [one execution](../../tutorials/python/05-variational-inference.md#tracing-the-model). Adding the relevant
-log-density contributions gives that execution’s joint score. Inference procedures use
-such scores to weight, optimize, or accept proposed latent values when approximating a
-posterior [@gelman2013bayesian].
-
-Program trace data structures and trace-based inference.
+An [execution trace](../../guides/inference-foundations.md#trace-and-sample-sites) records the
+random choices of [one run](../../tutorials/python/05-variational-inference.md#tracing-the-model) of
+a program, with the value and log density of each site [@wingate2011lightweight]. The sum of those
+log densities is the run's log joint density, which inference uses to weight, optimize, or accept
+proposed latent values. `trace(program, x, observations)` stacks a `TraceHandler` and runs the
+program.
 
 ::: quivers.inference.trace
 
-## Package-level exports
+## Exports of the package {#package-level-exports}
 
 `quivers.inference` also re-exports the variational guides of
 `quivers.inference.guides` and the kernels and runner of
 `quivers.inference.mcmc`, so that `from quivers.inference import
-AutoNormalGuide, NUTSKernel` works. The entries below record those import
-paths with their signatures; the [Guides](guide.md) and [MCMC](mcmc.md)
-pages document each class in full.
+AutoNormalGuide, NUTSKernel` works. Each class is documented in full under
+[Guides](guide.md) or [MCMC](mcmc.md).
 
 ::: quivers.inference
     options:

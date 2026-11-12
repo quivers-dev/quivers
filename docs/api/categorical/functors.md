@@ -1,12 +1,12 @@
 # Functors
 
-A functor maps objects and arrows while preserving identities and composition [@maclane1998categories]. [Mapping a
-function over a list](../../guides/categorical.md#functors) gives a familiar example: mapping f and then g produces the same
-list as mapping their composite. An implementation of the interfaces below must satisfy
-the corresponding equations for its objects and arrows.
-
-The `Functor` interface and its identity, composition, and free-monoid
-implementations.
+A [functor](https://ncatlab.org/nlab/show/functor) maps objects and arrows while preserving
+identities and composition [@maclane1998categories]. [Mapping a function over a list](../../guides/categorical.md#functors)
+is the familiar case: mapping $f$ and then $g$ gives the same list as mapping their composite. The
+module gives the `Functor` interface and its identity, composite, and word (free monoid) instances,
+and an implementation must satisfy the functor equations for its objects and arrows. The word
+functor maps words of each length to words of the same length and satisfies those equations when
+the `Algebra` is a `Semiring`.
 
 ::: quivers.categorical.functors
     options:

@@ -1,11 +1,10 @@
 # Arrow Instances
 
-These instances implement [arrow operations](../../guides/effects.md#typeclass-hierarchy) for Python functions, finite weighted
-relations, and stochastic transitions [@hughes2000arrows]. Function composition passes one result to the
-next function. Stochastic composition averages the next output distribution over the
-possible intermediate values; each transition must be a normalized kernel.
-
-The standard implementations cover finite weighted relations (`VRel`),
-ordinary functions (`Function`), and stochastic transitions (`Stochastic`).
+These instances implement [arrow](https://en.wikipedia.org/wiki/Arrow_(computer_science))
+operations ([type class hierarchy](../../guides/effects.md#typeclass-hierarchy)) for ordinary
+functions (`Function`), finite weighted relations (`VRel`), and stochastic transitions
+(`Stochastic`) [@hughes2000arrows]. Composing functions passes one result to the next function.
+Composing stochastic transitions averages the next output distribution over the intermediate
+values, so each transition must be a normalized kernel.
 
 ::: quivers.arrows.instances

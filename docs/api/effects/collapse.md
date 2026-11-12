@@ -1,11 +1,10 @@
 # Collapse
 
-Collapsing integrates out a latent variable when a [supported conjugate relationship](conjugate.md)
-gives an analytic marginal likelihood. For a [Beta–Bernoulli model](../../examples/beta-binomial-ab-test.md), this integrates over
-the uncertain success probability and scores the observations using the resulting
-marginal. Removing that sampled variable can reduce the dimension of the inference
-problem [@bernardo1994bayesian].
-
-Integrating a conjugate parent out of the joint.
+`CollapseHandler` sums or integrates a conjugate parent out of the joint
+[@bernardo1994bayesian]. The parent adds nothing to the joint, and its child is scored at the run's
+observation under the closed-form marginal that the pair's [conjugacy](conjugate.md) gives. In a
+[Beta and Bernoulli model](../../examples/beta-binomial-ab-test.md), for instance, the observations
+are scored with the success probability integrated out, which removes that latent from the
+inference problem.
 
 ::: quivers.effects.collapse

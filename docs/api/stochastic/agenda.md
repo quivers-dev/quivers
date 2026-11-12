@@ -1,22 +1,19 @@
 # Agenda-based Deduction
 
-An agenda is the work list of chart updates still to process. The system adds axioms,
-applies rules to available facts, and accumulates weights at conclusions [@shieber1995principles; @goodman1999semiring]. Different
-schedules can change efficiency; [equality of final results](../../guides/deduction.md#strategy-independence) requires the relevant
-algebraic and convergence assumptions, especially when rules form cycles.
+`DeductionSystem` is the agenda-based [weighted deduction](../../guides/deduction.md#the-framework)
+system that the DSL compiles a `deduction` to [@shieber1995principles; @goodman1999semiring]. It
+combines axioms, a rule system, a semiring, and an agenda schedule in an `nn.Module`. The
+[agenda](https://en.wikipedia.org/wiki/Chart_parser) is the work list of items still to process:
+the system adds the axioms, applies rules to the items proved so far, and accumulates weights at
+their conclusions [@eisner2005compiling]. Calling the system returns a `ChartView`, a
+differentiable view of the chart, the weight of each proved item. Different schedules change the
+cost, and [equality of final results](../../guides/deduction.md#strategy-independence) requires the
+semiring laws and, when rules form cycles, convergence of the fixed-point iteration. Fitting,
+sampling, and the No-U-Turn Sampler (NUTS) wrapper are in the [deduction package](deduction.md).
 
-The concrete chart implementation used for DSL-compiled weighted
-deductions. `DeductionSystem` combines an axiom injector, a rule
-system, a semiring, and an agenda schedule in an `nn.Module`.
-`DeductionSystem.__call__` returns the differentiable `ChartView`
-presheaf.
+## Items, patterns, and bindings
 
-For fitting, sampling, and the NUTS wrapper, see
-[`api/stochastic/deduction`](deduction.md).
-
-## Item algebra
-
-Items, patterns, and bindings are plain tuples and dictionaries; these
+Items, patterns, and bindings are plain tuples and dictionaries, and these
 aliases name their roles in the signatures below.
 
 A* parsing uses a heuristic to prioritize unfinished analyses

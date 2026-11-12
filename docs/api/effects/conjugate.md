@@ -1,10 +1,9 @@
 # Conjugate marginals
 
-Conjugate updates combine a prior with a likelihood whose product belongs to a known
-distribution family [@bernardo1994bayesian]. A [Beta prior and Bernoulli observations](../../examples/beta-binomial-ab-test.md), for instance, update the
-two shape parameters by adding success and failure counts. The supported combinations
-below provide these [analytic updates](collapse.md).
-
-The closed-form marginals of the standard conjugate pairs.
+A [conjugate prior](https://en.wikipedia.org/wiki/Conjugate_prior) gives a posterior in its own
+family [@bernardo1994bayesian]. A [Beta prior with Bernoulli observations](../../examples/beta-binomial-ab-test.md),
+for instance, updates its two shape parameters by the counts of successes and failures. The module
+gives the closed-form marginals of the standard conjugate pairs, which [`CollapseHandler`](collapse.md)
+uses.
 
 ::: quivers.effects.conjugate

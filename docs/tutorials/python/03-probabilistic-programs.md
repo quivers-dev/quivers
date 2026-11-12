@@ -1,44 +1,8 @@
-# Tutorial 3: Probabilistic Programs
+# 3. Probabilistic programs
 
-[`MonadicProgram`](../../api/continuous/programs.md) represents a probabilistic computation as an ordered sequence of typed sampling, observation, marginalization, and deterministic-binding steps. This chapter constructs programs with discrete and continuous random variables, applies conditional distribution families, and samples from the resulting model.
+A [`MonadicProgram`](../../api/continuous/programs.md) is a probabilistic program built in Python: an ordered list of steps, each of which draws a variable from a conditional distribution, observes data, adds to the log weight, or binds a deterministic value. It is what a QVR `program` block compiles to. Each step may read the values bound before it, so the program samples ancestrally, and its joint density is the product of the conditional densities of its steps. Sequencing steps this way is monadic composition [@moggi1991notions]. Build programs over continuous spaces with conditional distribution families, sample them, and score their joint density.
 
-For a Stan/PyMC reader: a [`MonadicProgram`](../../api/continuous/programs.md) is the Python-API analogue of the QVR DSL's `program` block. You construct it as a list of steps (`bind`, `let`, `observe`, `marginalize`), each step typed by the space its result lives in. The runtime provides `rsample` for draws and `log_joint` for trace-based joint scoring. `MonadicProgram.log_prob` is intentionally unavailable because marginalizing arbitrary intermediate latents is intractable in general.
-
-### The two kinds of step in one sentence
-
-- `v <- F(args)` is a *bind*: it draws `v` from `F(args)` and threads it forward. Use this when `v` is a random variable.
-- `let v = expr` is a *let*: it computes `v` deterministically from earlier variables. Use this when `v` is computed from existing values without a fresh random draw. It can still vary randomly across executions because its inputs vary.
-
-### Host-data channel
-
-The third source of names is *[host data](../qvr/01-first-model.md#the-observations-dict-contract)*: tensors supplied at runtime through the observations dict. They look like free variables in your program body and resolve at trace time from `observations["name"]`. There's no `<-` and no `let`; you just reference the name. Host data is how you pass design matrices, group indices, or any covariate that varies per fit run without rewriting the model. Every `bind` or `let` step that mentions a name not introduced by an earlier `<-`, `let`, or program input is referencing host data.
-
-Consider `z` as a true temperature and `y` as a noisy measurement. First draw
-one temperature, then use that realized temperature as the mean of the
-measurement distribution. Each step describes a distribution; executing the
-step supplies a value to the next one. This form of sequencing is
-[monadic composition](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)
-[@moggi1991notions].
-
-A full trace contains both `z` and `y`, so its [joint density](05-variational-inference.md#tracing-the-model) is
-`p(z) * p(y | z)`. If you keep only `y`, scoring that output generally requires
-integrating over all temperatures that could have produced it. `log_joint`
-evaluates the product at the supplied values. Computing the output marginal
-requires a separate integration method, so `MonadicProgram.log_prob` is unavailable.
-
-## Concepts
-
-- **Continuous spaces**: Euclidean, UnitInterval, Simplex, PositiveReals
-- **Conditional distribution families**: Parameterized distributions (ConditionalNormal, ConditionalBernoulli, etc.)
-- **MonadicProgram**: A probabilistic computation with bind and let steps
-- **Bind step**: Sample a random variable from a distribution conditioned on prior variables (`v <- F(args)`)
-- **Let step**: Deterministic transformation of prior variables
-- **Indexed bind (plate)**: An indexed plate of independent draws (`v : A <- F(args)`)
-- **Indexed observe**: A batched-likelihood step reading from a runtime `observations` dict (`observe r : N <- F(args)`)
-- **Scoped marginalize**: Log-sum-exp pushforward over a latent coordinate (`marginalize c : A <- F(args)` followed by an indented body)
-- **Effect signature**: A program's capability set declared in the option block as `[effects=[Sample, Score, Marginal, Pure]]`; the compiler verifies actual body effects are a subset
-- **Parametric program**: A typed-parameter template inlined per call site as fresh latents
-- **Log-probability**: The log of the joint density
+A program provides `rsample` for draws and `log_joint` for the joint log density of given values of all its variables. Its `log_prob`, the density of the output alone, would need an integral over every intermediate variable, so it raises `NotImplementedError`.
 
 ## Setup
 
@@ -57,7 +21,7 @@ from quivers.continuous import Draw, Let, MonadicProgram
 
 ## Defining spaces
 
-Continuous random variables live in [continuous spaces](../../api/continuous/spaces.md). Create a few:
+Continuous variables take values in [continuous spaces](../../api/continuous/spaces.md):
 
 ```python
 # Euclidean space: R^2
@@ -77,7 +41,7 @@ S = Simplex(name="mixture_weights", dim=3)
 print(S.dim)  # 3
 ```
 
-Each space exposes a `contains` predicate, and bounded spaces support uniform sampling:
+Each space has a `contains` predicate, and a bounded space can be sampled uniformly:
 
 ```python
 samples = U.sample_uniform(100)
@@ -85,11 +49,9 @@ print(samples.shape)  # [100, 1]
 assert (samples >= 0.0).all() and (samples <= 1.0).all()
 ```
 
-## Conditional distribution families
+## Conditional distribution families {#conditional-distribution-families}
 
-A [conditional distribution family](../../api/continuous/families.md) maps an input space to a parameterized family of distributions. For instance, [`ConditionalNormal`](../../api/continuous/families.md) learns mean and scale as functions of the input.
-
-Create a conditional normal from a discrete input (finite set) to a continuous output:
+A [conditional distribution family](../../api/continuous/families.md) maps each input to a distribution on its output space. [`ConditionalNormal`](../../api/continuous/families.md) learns the mean and scale as functions of the input. From a finite set with one element it is an unconditional Normal with learnable parameters:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)
@@ -98,7 +60,7 @@ R = Euclidean(name="latent", dim=1)
 prior_family = ConditionalNormal(Unit, R)
 ```
 
-Sample from it. A discrete input is a 1D LongTensor of indices:
+An input from a finite set is a one-dimensional integer tensor of indices:
 
 ```python
 batch = torch.zeros(5, dtype=torch.long)  # batch of 5 unit inputs
@@ -108,7 +70,7 @@ log_probs = prior_family.log_prob(batch, samples)
 print(log_probs.shape)      # [5]
 ```
 
-Create a likelihood family from continuous to continuous. Continuous inputs have shape `(batch, dim)`:
+An input from a continuous space has shape `(batch, dim)`:
 
 ```python
 likelihood_family = ConditionalNormal(R, R)
@@ -117,16 +79,11 @@ y_samples = likelihood_family.rsample(z_value)
 print(y_samples.shape)  # [5, 1]
 ```
 
-Other families available include [`ConditionalBernoulli`](../../api/continuous/families.md), [`ConditionalBeta`](../../api/continuous/families.md), [`ConditionalLaplace`](../../api/continuous/families.md), and many more. They follow the same `rsample` / `log_prob` interface.
+[`ConditionalBernoulli`](../../api/continuous/families.md), [`ConditionalBeta`](../../api/continuous/families.md), [`ConditionalLaplace`](../../api/continuous/families.md), and the other families have the same `rsample` and `log_prob` interface.
 
 ## Building a `MonadicProgram`
 
-A `MonadicProgram` represents a probabilistic computation as a sequence of steps. Each step is either:
-
-1. **Bind**: sample a random variable from a conditional distribution (`v <- F`)
-2. **Let**: compute a deterministic transformation
-
-Construct a simple two-stage program: bind z from a prior, then bind y from a likelihood conditioned on z.
+Draw `z` from a prior, then `y` from a likelihood whose input is `z`:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)
@@ -145,15 +102,15 @@ program = MonadicProgram(
 )
 ```
 
-Each step is a record. A [`Draw`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Draw) has three fields:
+A [`Draw`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Draw) has three fields:
 
-- `names`: the variable names the step binds (a tuple, even if there is just one variable)
-- `morphism`: the conditional distribution sampled from
-- `args`: the earlier bindings the distribution reads, or `None` (the default) to read the program input
+- `names`: the variables the step binds, as a tuple even for one variable.
+- `morphism`: the conditional distribution to draw from.
+- `args`: the earlier bindings the distribution reads, or `None` (the default) for the program input.
 
-[`Observe`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) has the same fields and scores supplied data instead of sampling. [`Let`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) and [`Score`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) bind one `name` to a deterministic `value` or to a log-density contribution.
+An [`Observe`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) has the same fields and scores given data instead of drawing. A [`Let`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) binds one `name` to a deterministic `value`, and a [`Score`](../../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) binds a `name` to the value of its `score` function and adds that value to the log weight. A name that a step reads and no earlier step binds is a *data input*, resolved at run time from the observations ([data inputs in the guide](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays)).
 
-Sample from the program. A discrete input is a 1D LongTensor of indices:
+Sample the program with an integer input:
 
 ```python
 batch = torch.zeros(10, dtype=torch.long)
@@ -161,14 +118,21 @@ output = program.rsample(batch)
 print(output.shape)  # [10, 1]
 ```
 
-Note that `MonadicProgram.log_prob` is intractable in general because it must
-marginalize over intermediate latents, so it raises `NotImplementedError`. To
-score a program, use a guide and the SVI implementation covered in
-[Tutorial 5](05-variational-inference.md).
+Score given values of `z` and `y` with `log_joint`, which returns $\log p(z) + \log p(y \mid z)$ for each row of the input:
+
+```python
+log_joint = program.log_joint(
+    torch.zeros(3, dtype=torch.long),
+    {"z": torch.zeros(3, 1), "y": torch.ones(3, 1)},
+)
+print(log_joint.shape)  # [3]
+```
+
+[Chapter 5](05-variational-inference.md) fits such a program by stochastic variational inference (SVI).
 
 ## Let bindings
 
-Add a deterministic transformation step. For instance, compute w = z * 2:
+Compute `w = 2 z` deterministically and draw `y` given `w`:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)
@@ -197,11 +161,11 @@ output = program.rsample(batch)
 # internally: z was sampled, w = z*2, then y was sampled from likelihood(w)
 ```
 
-A let binding's value can be a callable (run on the environment), a string (alias to an existing variable), or a float constant.
+The value of a `Let` is a callable applied to the bindings so far, a string naming an existing variable, or a float constant. A `Let` draws nothing, though its value varies from run to run when its inputs do.
 
-## Multi-variable outputs
+## Outputs with several variables {#multi-variable-outputs}
 
-Return multiple variables. Multi-return programs yield a dict keyed by variable name:
+A program that returns several variables yields a dict keyed by name:
 
 ```python
 program = MonadicProgram(
@@ -220,7 +184,7 @@ print(out["z"].shape, out["y"].shape)  # both [10, 1]
 
 ## Conditional Bernoulli
 
-Use discrete outputs. [`ConditionalBernoulli`](../../api/continuous/families.md) requires a FinSet of cardinality 2 (representing {0, 1}) as its codomain:
+[`ConditionalBernoulli`](../../api/continuous/families.md) takes a finite set of size 2, standing for $\{0, 1\}$, as its codomain:
 
 ```python
 from quivers.continuous.families import ConditionalBernoulli
@@ -231,7 +195,7 @@ Coin = FinSet(name="Coin", cardinality=2)
 bernoulli = ConditionalBernoulli(R, Coin)
 ```
 
-This learns logits as a function of the continuous input, then samples binary values:
+It learns the logits as a function of the continuous input and draws binary values:
 
 ```python
 z = torch.randn(5, 2)
@@ -240,11 +204,11 @@ print(samples.shape)               # [5]
 print(((samples == 0) | (samples == 1)).all())  # True
 ```
 
-Note that Bernoulli sampling is not reparameterizable: gradients do not flow through the discrete output.
+A Bernoulli draw has no reparameterization, so no gradient flows through the sampled value.
 
 ## Forward and backward
 
-Wrap the program in a [`Program`](../../api/program.md) module so its parameters are visible to a PyTorch optimizer:
+A [`Program`](../../api/program.md) exposes a program's parameters to a PyTorch optimizer:
 
 ```python
 from quivers.program import Program
@@ -263,11 +227,11 @@ for epoch in range(10):
     optimizer.step()
 ```
 
-This is a toy objective. Proper inference for a generative model is covered in [Tutorial 5](05-variational-inference.md).
+The squared error here only shows the gradient path. [Chapter 5](05-variational-inference.md) fits a generative model by variational inference.
 
-## Complex programs
+## Shared latent variables
 
-Build larger programs with multiple stages and branches. Here is a model for two observations with a shared latent:
+Two observations that share one latent variable:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)
@@ -295,15 +259,6 @@ out = program.rsample(batch)
 print(out["y1"].shape, out["y2"].shape)  # both [20, 1]
 ```
 
-## Summary
+## Next
 
-You have:
-
-- Created continuous spaces
-- Defined conditional distribution families
-- Built `MonadicProgram` instances with bind and let steps
-- Sampled from programs
-- Used `ConditionalNormal` and `ConditionalBernoulli`
-- Integrated programs with PyTorch optimization
-
-Next, see fuzzy logic factorization with algebra-enriched composition in [Tutorial 4](04-fuzzy-factorization.md).
+[Chapter 4](04-fuzzy-factorization.md) factorizes a fuzzy relation into a composite of learnable morphisms.

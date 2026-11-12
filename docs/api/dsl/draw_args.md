@@ -1,11 +1,9 @@
 # Draw arguments
 
-These compiler helpers interpret [arguments at distribution call sites](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families). They associate
-positional and named arguments with the family’s parameters so [elaboration](../../semantics/typing.md#8-program-elaboration) can construct
-the requested draw. Model authors normally supply those arguments in QVR or through the
-public family constructor.
-
-The reading adapter over the `DrawArg` AST.
+This adapter reads the `DrawArg` AST of
+[arguments at a distribution call](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families),
+matching positional and named arguments to the family's parameters so that
+[elaboration](../../semantics/typing.md#8-program-elaboration) can build the draw.
 
 !!! note "Internal module"
     This module is an implementation detail of the compiler and its

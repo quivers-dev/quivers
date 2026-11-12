@@ -1,74 +1,52 @@
 # Pyro
 
-Per-target obligations of [Transpilation correctness](index.md)
-for $\mathsf{T} = \mathrm{Pyro}$.
+A Pyro model is a Python function whose calls `pyro.sample` register named sites, which Pyro's effect
+handlers, the module [`pyro.poutine`](https://docs.pyro.ai/en/stable/poutine.html), record in an execution
+trace [@bingham2019pyro; @pyroEffects]. Conditioning the model on given latent values lets the test probe
+evaluate the point QVR scores ([Transpilation correctness](index.md)).
 
-A Pyro trace records the random-choice sites reached during a model run.
-Conditioning the model on supplied latent values lets the probe evaluate the
-same point that QVR scores. The sum of site log probabilities is then a
-joint log density, including the observations. The test compares these
-scores at the same supplied latent values.
+## How Pyro evaluates a log density
 
-## Semantics
-
-Pyro's denotational semantics is the trace semantics of Bingham,
-Chen, Jankowiak, Obermeyer, Pradhan, Karaletsos, Singh, Szerlip,
-Horsfall, and Goodman
-[@bingham2019pyro] implemented via
-[`pyro.poutine`](https://docs.pyro.ai/en/stable/poutine.html)
-[handlers](https://pyro.ai/examples/effect_handlers.html#Introduction). The log-density probe is
+The probe conditions the model on the parameters $\theta$ and the data $y$, records its trace, and sums
+the log densities of its sites:
 
 ```python
 trace = pyro.poutine.trace(pyro.condition(model, data={**θ, **y})).get_trace(x)
 log_p = trace.log_prob_sum()
 ```
 
-returning the joint log-probability of the trace.
+## Change of variables
 
-## Unconstrained-space change of variables
-
-The renderer uses the model's constrained coordinates, so the map is the
-identity. A probe of a transformed guide would additionally need to account
-for that guide's change of variables.
+The emitted model is in constrained coordinates, so $\Psi_{\mathsf{Pyro}} = \mathrm{id}$. A probe of a
+guide that transforms coordinates would also need that guide's Jacobian.
 
 ## Family parameterizations
 
-Pyro consumes the same
-[`torch.distributions`](https://pytorch.org/docs/stable/distributions.html)
-hierarchy. NumPyro instead implements distributions with JAX arrays and a
-similar interface. The QVR ↔ Pyro mapping is identity for every
-QVR family that has a corresponding `pyro.distributions.*` class.
-$\pi_{F, \mathsf{Pyro}} = \mathrm{id}$ and $c_{F, \mathsf{Pyro}} =
-0$.
+Pyro's distributions are those of
+[`torch.distributions`](https://pytorch.org/docs/stable/distributions.html), the hierarchy QVR's families
+are built on, so the map is the identity for every QVR family with a `pyro.distributions` class:
+$\pi_{F, \mathsf{Pyro}} = \mathrm{id}$ and $c_{F, \mathsf{Pyro}} = 0$.
 
-## Per-construct emit
+## Emitted constructs
 
-**Sample / observe.** `pyro.sample("x", <dist>)` for latents;
-`pyro.sample("y", <dist>, obs=y_data)` for observations. Each
-registers a trace site with the documented log-density
-contribution.
+**`sample` and `observe`.** `pyro.sample("x", <dist>)` for a latent variable and
+`pyro.sample("y", <dist>, obs=y_data)` for an observation, each a site of the trace.
 
-**Plate.** Nested `with pyro.plate(name, B):` contexts per
-[`pyro.plate`](https://docs.pyro.ai/en/stable/primitives.html#pyro.plate)
-[@bingham2019pyro]. Semantics is the product measure of
-$B$ i.i.d. draws.
+**Plates.** Nested `with pyro.plate(name, B):` contexts
+([`pyro.plate`](https://docs.pyro.ai/en/stable/primitives.html#pyro.plate)) [@pyroTensorShapes], whose density
+is the product over the $B$ conditionally independent draws.
 
-**Marginalize.** The renderer enumerates support values and adds the integrated
-log density through `pyro.factor`, using `torch.logsumexp`. It groups row
-contributions before reducing alternatives when `via` is present. The
-hidden coordinate is summed out of the emitted density.
+**`marginalize`.** The renderer enumerates the values of the latent variable, reduces with
+`torch.logsumexp`, and adds the result with `pyro.factor`. With `via` it sums the rows of each group before
+the reduction. The emitted density has the variable summed out.
 
-**Score / let / return.** `pyro.factor("name", expr)` for score;
-deterministic assignment for let; native `return`.
+**`score`, `let`, `return`.** `pyro.factor("name", expr)` for a score, an assignment for a `let`, and
+Python's `return`.
 
-## Acceptance
+## Evidence
 
-* **Tier 1 pipeline composition.** Structural checks cover the
-  emitted `model` function and the `Lower >> PyroRenderer >>
-  EmitPretty(python)` pipeline.
-* **Tier 2 external syntax.** Python's AST parser accepts the
-  generated modules in the external-validation matrix.
-* **Tier 3 numeric equivalence.** For selected fixtures,
-  `trace.log_prob_sum()` is compared with the QVR reference on
-  the shared finite grid and tolerance described in
-  [the test contract](index.md#6-evidence-tiers).
+- **Level 1.** Structural tests check the emitted `model` function and the pipeline `Lower`,
+  `PyroRenderer`, and `EmitPretty(python)`.
+- **Level 2.** Python's `ast` parser accepts the modules of the syntax matrix.
+- **Level 3.** On selected fixtures, `trace.log_prob_sum()` is compared with the QVR density on the shared
+  grid and tolerance ([evidence](index.md#6-evidence-tiers)).

@@ -1,72 +1,85 @@
 # Transformations and Composition Rules
 
-This guide covers two related mechanisms: first-class *transformations* for
-[change of base](categorical.md#base-change) and the *composition-rule hierarchy* beneath [`>>`](morphisms.md#composition-the-operator). Together
-they specify how morphisms cross enrichment algebras.
+A morphism's scores live in one [`Algebra`](core.md#algebras-enrichment-algebras).
+Two mechanisms move between algebras or change how scores combine. A *transformation*
+rewrites a morphism's scores into another `Algebra`, and a *composition rule* fixes
+the operations $\otimes$ and $\bigoplus$ that [`>>`](morphisms.md#composition-the-operator)
+uses. A [contraction](#operadic-contractions) combines more than two morphisms under the composition
+rule.
 
 ## First-class transformations
 
-Suppose a row contains scores `[0.2, 0.8]`. A threshold at `0.5` makes
-separate yes/no decisions `[0, 1]`. Softmax instead compares the entries
-and gives approximately `[0.354, 0.646]`, which sums to one. These solve
-different problems: thresholding produces a relation, while softmax creates
-a conditional probability row from scores. Its object argument identifies
-the output axes over which to normalize.
+The library has two kinds of transformation, and in QVR both are values of the sort
+`Trans`:
 
-Moving a conversion across composition requires it to preserve the
-combining operations. Thresholding at `0.5` fails for product: two scores
-of `0.6` each pass the threshold, while their product `0.36` fails.
-Applying the threshold before or after composition can thus give different
-relations. Row [normalization](stochastic.md#normalization) also uses neighboring entries: increasing
-one score lowers the normalized weights of the others.
+- An *entrywise map* $\varphi : \mathcal V \to \mathcal W$ (class
+  [`CarrierMap`](../api/core/transformations.md)) sends each score to a
+  score in the target `Algebra`, one entry at a time. When $\varphi$ is monotone and
+  preserves $\otimes$, $\bigoplus$, and the unit up to inequality, applying it to
+  every morphism is a [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
+  [@kelly1982basic].
+- A *morphism transformation* (class
+  [`MorphismTransformation`](../api/core/transformations.md)) rewrites the
+  whole tensor and may read several entries at once. Row normalization by
+  [softmax](https://en.wikipedia.org/wiki/Softmax_function), L1 and L2 row
+  normalization, and Bayesian inversion under a prior [@cho2019disintegration] are
+  of this kind.
 
+The difference matters for composition. Suppose a row contains `[0.2, 0.8]`. A
+threshold at `0.5` decides each entry on its own and gives `[0, 1]`. Softmax compares
+the entries and gives approximately `[0.354, 0.646]`, a row that sums to one, so
+raising one score lowers the normalized weight of the others. An entrywise map
+commutes with composition only when it preserves both combining operations, and
+thresholding does not preserve product: two scores of `0.6` each pass the threshold,
+while their product `0.36` fails. Thresholding before or after composing can thus give
+different relations.
 
-A *transformation* turns a morphism in one enrichment algebra into a morphism in another. Two kinds exist:
+QVR binds transformations with `define`, composes them with `>>>`, and applies them
+with the postfix `change_base`. Transformation names live in their own namespace,
+apart from morphism names.
 
-- **Entrywise maps**, exposed through the `AlgebraHomomorphism` API, act pointwise: $\varphi : \mathcal{V} \to \mathcal{W}$ sends each value to the target representation; every entry of the morphism's tensor is sent through $\varphi$.
-- **Morphism transformations** act on the whole tensor, consuming axis information; softmax row-normalization, L1/L2 normalization, and [Bayes inversion under a prior](stochastic.md#conditioning-and-bayesian-updates) all live here.
+### Transformations without arguments {#singletons}
 
-The library treats both as first-class DSL values, living in a transformation namespace disjoint from the morphism namespace. You can let-bind them, compose them with `>>>`, and pass either kind to `change_base`.
+These transformations take no argument:
 
-### Singletons
+| Name | Source | Target | Entrywise action |
+|---|---|---|---|
+| `expectation` | `Markov` | `ProductFuzzy` | clamp to $[0, 1]$ |
+| `material_implication` | `ProductFuzzy` | `Godel` | clamp to $[0, 1]$ |
+| `log_prob` | `ProductFuzzy` | `LogProb` | $\log$ |
+| `max_plus` | `ProductFuzzy` | `MaxPlus` | $\log$ |
+| `threshold` | `ProductFuzzy` | `Boolean` | $1$ if the score exceeds $0.5$, else $0$ |
+| `boolean_embedding` | `Boolean` | `ProductFuzzy` | inclusion |
+| `probability_clamp` | `Real` | `Probability` | clamp to $[0, 1]$ |
+| `probability_to_real` | `Probability` | `Real` | inclusion |
+| `counting_from_real` | `Real` | `Counting` | clamp below at $0$, then floor |
+| `counting_to_real` | `Counting` | `Real` | inclusion |
 
-Bare-name transformations carry a fixed `(source, target)` pair. The shipped catalog:
-
-| Name | `source` | `target` |
-|---|---|---|
-| `expectation` | `Markov` | `ProductFuzzyAlgebra` |
-| `material_implication` | `ProductFuzzyAlgebra` | `Godel` |
-| `log_prob` | `ProductFuzzyAlgebra` | `LogProb` |
-| `max_plus` | `LogProb` | `MaxPlus` |
-| `threshold` | `ProductFuzzyAlgebra` | `Boolean` |
-| `boolean_embedding` | `Boolean` | `ProductFuzzyAlgebra` |
-| `probability_clamp` | `Real` | `Probability` |
-| `probability_to_real` | `Probability` | `Real` |
-| `counting_from_real` | `Real` | `Counting` |
-| `counting_to_real` | `Counting` | `Real` |
+Each is an entrywise map. The logarithms clamp their input below at $10^{-30}$, so a
+score of zero becomes a large negative number.
 
 ### Constructors
 
-Parametric transformations take one argument (an object or a morphism) and produce a transformation value:
+These transformations take one argument, an object or a morphism:
 
-| Constructor | Argument | `source` | `target` |
+| Constructor | Argument | Source | Target |
 |---|---|---|---|
-| `softmax(B)` | object | `ProductFuzzyAlgebra` | `Markov` |
+| `softmax(B)` | object | `ProductFuzzy` | `Markov` |
 | `l1_normalize(B)` | object | `Real` | `Markov` |
 | `l2_normalize(B)` | object | `Real` | `Real` |
 | `bayes_invert(prior)` | morphism | `Markov` | `Markov` |
 
-### Let-binding and composition
+The object argument of the normalizers names the output axes over which each row is
+normalized. All four are morphism transformations.
 
-There are two different pipelines: `f >> g` connects model arrows through
-a shared object; `t1 >>> t2` applies one representation conversion after
-another. Their boundaries are checked against objects and algebras,
-respectively: `cod(f) = dom(g)` and `target(t1) = source(t2)`.
+### Binding and composing transformations
 
+Morphisms and transformations compose in different pipelines. `f >> g` joins two
+morphisms through a shared object and requires the codomain of `f` to equal the
+domain of `g`. `t1 >>> t2` applies one transformation after another and requires the
+target `Algebra` of `t1` to equal the source of `t2`. The compiler checks both
+boundaries.
 
-Both forms can be let-bound and composed with `>>>`. The compiler checks their boundary: `t1 >>> t2` requires `target(t1) = source(t2)`.
-
-<!-- compile: false -->
 ```qvr
 composition product_fuzzy [level=algebra]
 object A : FinSet 3
@@ -79,80 +92,113 @@ define g    = f.change_base(pipe)
 export g
 ```
 
-`softmax(B)` produces a transformation $\mathcal{V}_\mathrm{pf} \to \mathcal{V}_\mathrm{M}$; `expectation` is $\mathcal{V}_\mathrm{M} \to \mathcal{V}_\mathrm{pf}$; their composition returns a row-normalized morphism in $\mathcal{V}_\mathrm{pf}$. For the row above, the final values remain approximately `[0.354, 0.646]`; `expectation` retains the normalized entries.
-
-The `change_base` postfix accepts any expression that denotes a transformation: a bare singleton, a let-bound name, a constructor call, or a `>>>` chain.
+Here `softmax(B)` goes from `ProductFuzzy` to `Markov` and `expectation` goes back, so
+`g` is a row-normalized morphism with scores in `ProductFuzzy`. Since `expectation`
+only clamps to $[0, 1]$, the row `[0.2, 0.8]` from above ends as approximately
+`[0.354, 0.646]`. The argument of `change_base` may be a singleton, a defined name, a
+constructor call, or a `>>>` chain.
 
 ### Python API
 
-The Python core provides the same operations in `quivers.core.trans`:
+`quivers.core.trans` provides the same operations, and QVR's `>>>` compiles to
+`compose_trans`:
 
 <!-- python: skip -->
 ```python
 from quivers.core.trans import compose_trans
 from quivers.core.morphism_transformations import softmax
-from quivers.core.algebra_morphisms import EXPECTATION
+from quivers.core.algebra_morphisms import MARKOV_TO_PRODUCT_FUZZY
 
-pipe = compose_trans(softmax(B), EXPECTATION)
+pipe = compose_trans(softmax(B), MARKOV_TO_PRODUCT_FUZZY)
 g    = f.change_base(pipe)
 ```
 
-The DSL and Python APIs use the same flat-sequence representation; the DSL's `>>>` desugars to `compose_trans`.
+## The hierarchy of composition rules {#the-composition-rule-hierarchy}
 
-## The composition-rule hierarchy
+A *composition rule* (class [`CompositionRule`](../api/core/algebras.md)) is the
+pair of operations $\otimes$ and $\bigoplus$ that `>>` uses:
 
-The level says which operations the API makes available. Associativity
-would permit regrouping `(f >> g) >> h` as `f >> (g >> h)`; an identity
-would permit inserting a do-nothing arrow. For matrix-style composition,
-associativity follows when the combining operations satisfy the relevant
-semiring laws, including distributivity. Product and noisy-OR fail
-distributivity, as the calculation in [Core Types](core.md#productfuzzyalgebra)
-shows. The construction checks exercise selected inputs; the algebraic
-equations specify the requirement across inputs.
+$$
+(f \gg g)[i, k] = \bigoplus_j f[i, j] \otimes g[j, k].
+$$
 
+Its *level* records which laws the rule claims. Associativity lets
+`(f >> g) >> h` be regrouped as `f >> (g >> h)`, and an identity lets a
+morphism that changes nothing be inserted. For this matrix product both follow when $\otimes$
+and $\bigoplus$ form a [semiring](https://en.wikipedia.org/wiki/Semiring)
+[@goodman1999semiring], and product with noisy-OR is not one
+([Core Types](core.md#productfuzzyalgebra)). The classes are:
 
-Underneath `>>` sits the *composition rule* of the enclosing module. The library's hierarchy:
-
+```mermaid
+flowchart TD
+    CR["CompositionRule: ⊗ and ⊕, no promise"]
+    MG["Magmoid: no associativity or identity promise"]
+    SG["Semigroupoid: associative, no identity"]
+    AL["Algebra: unit, zero, meet, negation, so identities"]
+    SR["Semiring: associative with identities"]
+    IS["IdempotentSemiring: ⊕ idempotent, a lattice"]
+    CR --> MG
+    CR --> SG
+    CR --> AL
+    SG --> SR
+    AL --> SR
+    SR --> IS
 ```
-CompositionRule
-    ├── BilinearForm     no associativity promise
-    └── Semigroupoid     associative ⊗, no identity
-            └── Algebra  associative + identity + meet + negate
-```
 
-The four `.qvr` level keywords select the level:
+A rule declared at the `Semigroupoid` level makes its morphisms a
+[semicategory](https://ncatlab.org/nlab/show/semicategory), composition that is
+associative but may lack identities [@tilson1987categories], provided the rule really
+is associative. An `Algebra` gives identities but does not claim associativity. A
+`Semiring` claims both, and the eight built-in semirings are of that class
+([Core Types](core.md#algebras-enrichment-algebras)). `Magmoid` is the class for a
+composition rule with no associativity or identity guarantee, whose morphisms form a
+[magmoid](https://ncatlab.org/nlab/show/magmoid). The library checks no level's laws
+when it runs.
 
-| Declaration | Required level | Available operations |
+Each module declares its rule with `composition` and a level:
+
+| Declaration | Required class | Operations the compiler accepts |
 |---|---|---|
-| `composition X [level=algebra]` | `Algebra` | `>>`, `@`, `identity(A)`, `f.dagger`, `f.trace(A)`, `cup(A)`, `cap(A)`, all compact-closed operations |
-| `composition X [level=semigroupoid]` | `Semigroupoid` | `>>`, `@`, no identity or compact-closed operations |
-| `composition X [level=bilinear_form]` | `BilinearForm` | `>>`, `@`, no associativity guarantee |
-| `composition X [level=rule]` | `CompositionRule` | permissive; accepts any rule |
+| `composition X [level=algebra]` | `Algebra` (a `Semiring` qualifies) | `>>`, `@`, `identity(A)`, `f.dagger`, `f.trace(A)`, `cup(A)`, `cap(A)` |
+| `composition X [level=semigroupoid]` | `Semigroupoid` (a `Semiring` qualifies) | `>>`, `@` |
+| `composition X [level=bilinear_form]` | `Magmoid` | `>>`, `@` |
+| `composition X [level=rule]` | any `CompositionRule` | whatever the resolved rule's class allows |
 
-A typed `CompileError` flags every Algebra-only operation used inside a non-Algebra module. The diagnostic names the operation and the offending rule's level.
+Using `identity`, `dagger`, `trace`, `cup`, or `cap` in a module whose rule is not an
+`Algebra` raises a `CompileError` that names the operation and the rule's level.
 
 ### User-defined inline rules
 
-A composition rule can be defined inline. The body is a sequence of entries whose RHS is a `let`-arithmetic expression:
+A `composition` declaration can define its rule in an indented body. Each entry's
+right side is an arithmetic expression of the kind allowed in `let`:
 
-<!-- compile: false -->
 ```qvr
-composition my_godel [level=algebra]
+composition my_sum_product [level=algebra]
     tensor_op(a, b) = a * b
     join(t) = sum(t)
     unit = 1.0
     zero = 0.0
 
-composition my_semi [level=semigroupoid]
-    tensor_op(a, b) = (1 - a + a * b)
-    join(t) = prod(t)
-
-composition signed_dot [level=bilinear_form]
-    tensor_op(a, b) = (a + b) * 0.5
-    join(t) = sum(t)
+object A : FinSet 3
+morphism f : A -> A [role=latent]
+define g = f >> f
+export g
 ```
 
-Required entries per level:
+```qvr
+composition average_rule [level=bilinear_form]
+    tensor_op(a, b) = (a + b) * 0.5
+    join(t) = sum(t)
+
+object A : FinSet 3
+morphism f : A -> A [role=latent]
+define g = f >> f
+export g
+```
+
+The first rule is ordinary sum-product. The second averages its operands, which is
+not associative, so it is declared at the `bilinear_form` level. The entries each
+level requires are:
 
 | Level | Required | Optional |
 |---|---|---|
@@ -160,15 +206,24 @@ Required entries per level:
 | `semigroupoid` | `tensor_op`, `join` | |
 | `bilinear_form` | `tensor_op`, `join` | |
 
-`CustomAlgebra` runs a small sanity check at construction; `CustomSemigroupoid` runs an associativity smoke check on a fixed sample (skippable via `verify_associative=False` in the Python API). `CustomBilinearForm` runs no check, since the type opts out of the associativity promise.
+The compiler builds inline rules without checking any law. The Python constructors
+check a little. `CustomAlgebra` tests that the unit is a left and right identity for
+$\otimes$ and that the zero absorbs on the left, on five sample values.
+`CustomSemigroupoid` tests that the scalar $\otimes$ is associative on a fixed random
+sample, unless `verify_associative=False` is passed. `CustomMagmoid` checks
+nothing. A passing test does not establish a law, since it covers finitely many
+inputs, and associativity of the scalar $\otimes$ does not by itself make composition
+associative.
 
 ### Material implication
 
-The shipped `material_implication` rule is a `CustomSemigroupoid` with tensor $a \otimes b = 1 - a + a \cdot b$ (Reichenbach implication) and join $\bigvee = \prod$ (product reduction). Use it with the DSL keyword:
+The QVR rule `material_impl` uses the
+[Reichenbach implication](https://en.wikipedia.org/wiki/T-norm_fuzzy_logics)
+$a \otimes b = 1 - a + a b$ [@baczynski2008fuzzy] with the product as its reduction,
+$\bigoplus_j x_j = \prod_j x_j$:
 
-<!-- compile: false -->
 ```qvr
-composition material_impl [level=semigroupoid]
+composition material_impl [level=bilinear_form]
 object A : FinSet 3
 object B : FinSet 3
 morphism f : A -> B [role=latent]
@@ -177,59 +232,78 @@ define composed = f >> g
 export composed
 ```
 
-Compact-closed operations are unavailable; the module otherwise behaves normally.
+The library registers it as a `Magmoid`, since neither its $\otimes$ nor its
+composition is associative, so a module declares it at the `bilinear_form` level. For one-element objects composition is $\otimes$
+itself, and with every score $0$ the two groupings give $(0 \otimes 0) \otimes 0 = 0$
+and $0 \otimes (0 \otimes 0) = 1$. Parenthesize chains under this rule explicitly. The transformation
+`material_implication` in the table above is a different object, an entrywise map
+into `Godel`.
 
-## Operadic contractions
+## Contractions of several inputs {#operadic-contractions}
 
-A [contraction](dsl-contractions.md#type-driven-wiring-inference) extends the same hidden-index calculation to several tables
-at once. In `"sp,sq,pqo->so"`, `s` and `o` label the output, while `p`
-and `q` range over intermediate choices. Each `(p,q)` supplies a product
-of three entries, and the rule aggregates those contributions. *Operadic*
-means that these operations have multiple typed inputs and one typed output;
-you can use the wiring calculation without learning operad theory first.
-
-
-Binary composition `f >> g` contracts two morphisms along a single shared axis. Many tensor-network patterns contract three or more inputs at a shared reduction; the `contraction` declaration provides this syntax.
+Binary composition `f >> g` sums over one shared axis. A `contraction` declaration
+combines three or more morphisms in one step, as a
+[tensor contraction](https://en.wikipedia.org/wiki/Tensor_contraction) written in
+[einsum](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html) notation
+and evaluated under the module's composition rule. Operations of several inputs of this
+kind compose by plugging outputs into inputs, and wiring diagrams are the standard
+account of that structure [@spivak2013operad].
+[DSL Contractions](dsl-contractions.md) covers the QVR syntax in full.
 
 ### Wiring spec
 
-The wiring spec is an einsum-style string with comma-separated input letter-tuples and an arrow to the output letters:
+A wiring spec lists the axes of each input, separated by commas, and the axes of the
+output after an arrow:
 
-```
+```text
 "sp, sq, pqo -> so"
 ```
 
-Each input lists its axes; the arrow's right-hand side names the surviving output letters. Letters present in inputs but not in the output are contracted under the rule's `join`. Letters in the output must appear in at least one input.
+Letters that appear in the inputs and not in the output are reduced with the rule's
+$\bigoplus$, and each output letter must appear in at least one input. In this spec,
+`s` and `o` index the output and `p` and `q` range over intermediate values. Each
+choice of `p` and `q` gives the $\otimes$-product of three entries, and the rule's
+$\bigoplus$ combines those products.
 
 ### Declaration
 
-<!-- compile: false -->
 ```qvr
+composition product_fuzzy [level=algebra]
+object A : FinSet 2
+object B : FinSet 3
+object C : FinSet 4
+object D : FinSet 5
+
 contraction op_apply (
     arg1 : A -> B,
     arg2 : A -> C,
     kernel : B * C -> D,
 ) : A -> D [rule=product_fuzzy, wiring="sp,sq,pqd->sd"]
+
+morphism a1 : A -> B [role=latent]
+morphism a2 : A -> C [role=latent]
+morphism k : B * C -> D [role=latent]
+define combined = op_apply(a1, a2, k)
+export combined
 ```
 
-The declared `op_apply` becomes callable from any expression site: `let combined = op_apply(arg1_morph, arg2_morph, kernel_morph)`. Each call checks the argument count against the declared input arity, and each argument's domain / codomain shape (by numel) against the declared per-input signature.
+`op_apply` can then be called wherever a morphism expression is allowed. Each call
+checks the number of arguments against the declaration and each argument's domain
+and codomain sizes (number of elements) against the declared signature.
 
 ### Validation
 
-The wiring spec is validated at declaration time:
+The compiler checks the wiring spec where it is declared and raises `CompileError`
+there, not at a call site, when:
 
-- Each input must be non-empty.
-- The low-level `EinsumWiring` API requires distinct letters within each input.
-  The DSL's explicit wiring route additionally supports diagonal extraction;
-  see [DSL Contractions](dsl-contractions.md).
-- The output spec may not repeat a letter.
-- Every output letter must appear in at least one input.
-
-A spec violating any of these constraints raises `CompileError` at the declaration, not at the call site.
+- an input lists no letters;
+- a letter appears twice within one input, which would ask for a diagonal or a trace;
+- the output repeats a letter;
+- an output letter appears in no input.
 
 ### Python API
 
-`quivers.core.wiring` provides the corresponding Python functions:
+`quivers.core.wiring` provides the corresponding functions:
 
 <!-- python: skip -->
 ```python
@@ -239,7 +313,7 @@ wiring = einsum_wiring(PRODUCT_FUZZY, "sp, sq, pqo -> so")
 out    = contract(wiring, arg1, arg2, kernel)
 ```
 
-`EinsumWiring` accepts any `CompositionRule` instance, including material implication:
+`EinsumWiring` accepts any `CompositionRule`, including material implication:
 
 <!-- python: skip -->
 ```python
@@ -250,9 +324,13 @@ wiring = einsum_wiring(mi, "ij, jk -> ik")
 out    = wiring.apply(f_tensor, g_tensor)
 ```
 
-## Further reading
+## See also
 
-- The [QVR tutorial chapter 7](../tutorials/qvr/07-categorical.md) introduces the categorical foundations of transformations and composition rules.
-- The [Python tutorial chapters 6 and 7](../tutorials/python/06-first-class-trans.md) cover the Python API in detail.
-- [Composition Rules](../semantics/composition-rules.md) gives the formal semantics.
-- [Algebras and Base Change](../semantics/algebras.md) covers the eleven shipped algebras and the homomorphism registry.
+- [QVR tutorial chapter 7](../tutorials/qvr/07-categorical.md): transformations and
+  composition rules in a worked model.
+- [Python tutorial chapters 6 and 7](../tutorials/python/06-first-class-trans.md): the
+  Python API.
+- [Composition rules](../semantics/composition-rules.md): the denotation of each
+  level.
+- [Semirings, t-norms, and change of base](../semantics/algebras.md): the built-in instances and the
+  registry of entrywise maps.

@@ -1,11 +1,10 @@
 # Natural Transformations
 
-A natural transformation converts one functor’s output into another’s compatibly with
-source arrows [@maclane1998categories]. Its [naturality equation](../../guides/categorical.md#natural-transformations) compares two routes: convert and then process, or
-process and then convert. A component supplies the conversion for one object, and the
-equation must hold for every source arrow.
-
-The `NaturalTransformation` interface and componentwise natural
-transformations.
+A [natural transformation](https://ncatlab.org/nlab/show/natural+transformation) from one functor to
+another gives, for each object, a component that converts the first functor's output into the
+second's [@maclane1998categories]. Its [naturality equation](../../guides/categorical.md#natural-transformations)
+says that converting and then mapping an arrow agrees with mapping and then converting, for every
+arrow of the source category. The module gives the `NaturalTransformation` interface and natural
+transformations defined by their components.
 
 ::: quivers.categorical.natural_transformations

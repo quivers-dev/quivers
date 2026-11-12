@@ -1,10 +1,9 @@
 # Family schemas
 
-A distribution call must use [recognized parameter names and the correct argument
-structure](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families). Family schemas describe those expectations for the source language. This
-catches errors such as confusing a scale keyword with a rate keyword before a backend
-distribution is constructed.
-
-The keyword schemas a distribution-family call in QVR source must match.
+These keyword schemas fix the parameter names and argument structure that a call of a distribution
+family in QVR source must match
+([fixed and conditional families](../../reference/qvr/probabilistic-programs.md#fixed-and-conditional-families)).
+They catch an error such as a scale keyword given where the family expects a rate before any
+backend distribution is built.
 
 ::: quivers.dsl.family_schemas

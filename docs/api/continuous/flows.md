@@ -1,10 +1,9 @@
 # Flows
 
-A [normalizing flow](../../guides/continuous-spaces.md#normalizing-flows) transforms an easily sampled distribution through a sequence of
-invertible maps. Sampling follows those maps. Density evaluation also uses their
-Jacobian determinants to account for changes in volume, allowing the transformed
-distribution to be scored during inference [@rezende2015flows].
-
-Normalizing flows and their transformations.
+A [normalizing flow](https://en.wikipedia.org/wiki/Flow-based_generative_model) pushes a simple
+distribution through a sequence of invertible maps, and scores a value by the base density times
+the inverse maps' Jacobian determinants [@rezende2015flows]
+([normalizing flows](../../guides/continuous-spaces.md#normalizing-flows)). `ConditionalFlow` is a
+conditional flow built from `AffineCouplingLayer`s [@dinh2017realnvp].
 
 ::: quivers.continuous.flows

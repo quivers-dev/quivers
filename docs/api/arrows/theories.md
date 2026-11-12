@@ -1,12 +1,10 @@
 # Arrow Theories (panproto mirror)
 
-These records describe an arrow interface through its [operations and equations](../../guides/effects.md#typeclass-hierarchy). An
-identity law, for instance, requires composing an arrow with an identity to leave it
-unchanged [@hughes2000arrows]. Tooling can inspect this specification when working with an implementation.
-
-`TypeclassTheory` records for the arrow typeclasses: `ThCategory_`,
-`ThArrow`, `ThArrowChoice`, `ThArrowApply`, `ThArrowLoop`, `ThArrowZero`,
-and `ThArrowPlus`.
+Each `TypeclassTheory` records the operations and laws of one arrow class as a panproto theory
+([type class hierarchy](../../guides/effects.md#typeclass-hierarchy)): `ThCategory_`, `ThArrow`,
+`ThArrowChoice`, `ThArrowApply`, `ThArrowLoop`, `ThArrowZero`, and `ThArrowPlus`
+[@hughes2000arrows]. The identity law, for instance, requires composition with an identity to leave
+an arrow unchanged.
 
 ::: quivers.arrows.theories
     options:
