@@ -7,8 +7,10 @@ instance is a [semiring](https://en.wikipedia.org/wiki/Semiring) [@goodman1999se
 [@klement2000triangular], or a product with capped sum. Multiplication with summation gives the
 ordinary matrix product, and addition with minimum gives shortest path costs. Composition is
 associative only when $\otimes$ is associative and distributes over $\oplus$ [@kelly1982basic].
-The default product t-norm with noisy-OR reduction does not distribute, so with it a change of
-grouping can change the result.
+The instances whose operations satisfy the semiring laws are of class `Semiring`, and those whose
+$\oplus$ is also idempotent of class `IdempotentSemiring`. The default product t-norm with noisy-OR
+reduction does not distribute, so it is an `Algebra` only, and with it a change of grouping can
+change the result.
 
 ::: quivers.core.algebras
     options:

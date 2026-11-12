@@ -19,7 +19,7 @@ The `core` package defines the objects, morphisms, composition rules, and tensor
 shared by the other packages.
 
 - **[Objects](core/objects.md)**: finite and enumerated sets, products, coproducts, free monoids, and the categorial (Lambek) types over a set of atoms up to a fixed depth
-- **[Algebras](core/algebras.md)**: the `Algebra` class and its eleven built-in instances, each a [semiring](https://en.wikipedia.org/wiki/Semiring), a [t-norm](https://en.wikipedia.org/wiki/T-norm) with its t-conorm, or a product with capped sum, plus duals and user-defined instances
+- **[Algebras](core/algebras.md)**: the `Algebra`, `Semiring`, and `IdempotentSemiring` classes and the eleven built-in instances, each a [semiring](https://en.wikipedia.org/wiki/Semiring), a [t-norm](https://en.wikipedia.org/wiki/T-norm) with its t-conorm, or a product with capped sum, plus duals and user-defined instances
 - **[Transformations](core/transformations.md)**: entrywise maps between `Algebra` instances and row normalizations, applied by [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
 - **[Morphisms](core/morphisms.md)**: base morphism classes and their composition
 - **[Tensor Operations](core/tensor_ops.md)**: noisy-OR contraction and reduction, noisy-AND reduction, and componentwise lifting of tensors
@@ -53,7 +53,7 @@ effects.
 - **[Concrete Monads](monadic/monads.md)**: `KleisliCategory`, `FuzzyPowersetMonad`
 - **[Comonads](monadic/comonads.md)**: [comonads](https://ncatlab.org/nlab/show/comonad) and their co-Kleisli categories
 - **[Algebras and Coalgebras](monadic/algebras.md)**: [algebras of a monad](https://ncatlab.org/nlab/show/algebra+over+a+monad) and coalgebras of a comonad
-- **[Distributive Laws](monadic/distributive_laws.md)**: [distributive laws](https://ncatlab.org/nlab/show/distributive+law) between monads and comonads
+- **[Distributive Laws](monadic/distributive_laws.md)**: the interface of [distributive laws](https://ncatlab.org/nlab/show/distributive+law) between monads
 
 ## Arrows Package
 

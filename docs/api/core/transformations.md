@@ -22,5 +22,5 @@ then applying it is a [change of base](https://ncatlab.org/nlab/show/change+of+e
         - "!^_"
         - "!^TransValue$"
 
-The homomorphism singletons, their registry, and the `TransValue`
+The carrier map singletons, their registry, and the `TransValue`
 alias are documented on the [core overview](objects.md#package-constants).
