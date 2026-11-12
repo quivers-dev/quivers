@@ -1,34 +1,16 @@
 # 5. Sequence models
 
-QVR has three constructs for sequence-shaped problems such as time series, text, recurrent networks, hidden Markov models, and state-space models:
+QVR has three constructs for sequences:
 
-- **Plate-draws** for IID-along-an-index data (chapter 3 used this for `sample theta : School <- Normal(...)`).
-- **`scan`** for sequential evaluation: a per-step cell function fold-applied along the sequence dimension.
-- **The deduction layer** for chart-shaped problems whose computation is not a
-  simple left-to-right scan, such as CKY, Earley, or another bounded weighted
-  search. [Chapter 11](11-parsing-and-search.md) introduces that layer, and the
-  deduction guide describes its complete API.
+- **Plates** for values that are conditionally independent along an index, as in [chapter 3](03-hierarchical.md).
+- **`scan`** for recurrences: a cell that maps an input and the previous state to the next state is applied along the sequence axis, as Haskell's `mapAccumL` applies a function and threads an accumulator.
+- **Weighted deduction** for chart parsing, where the computation is not a left-to-right pass, as in the [CKY algorithm](https://en.wikipedia.org/wiki/CYK_algorithm). [Chapter 11](11-parsing-and-search.md) covers it.
 
-This chapter covers the first two, then distinguishes the finite-state path
-demonstration in the gallery from a normalized hidden Markov model (HMM),
-which a `scan` over a cell that marginalizes its state expresses.
-
-A repeated measurement axis and a recurrent state do different jobs. A plate
-repeats a distribution across indexed positions, conditionally independently
-given its parameters. A recurrence passes the realized state at one position
-into the next transition. A state might store the current temperature, while
-an emission describes the noisy sensor reading from that temperature.
-
-Read every sequence example by asking what is threaded, what is observed,
-and what is returned. In the current `scan` interface, the returned value is
-the terminal state. Following it with an emission scores or generates from
-that state only. To score an observation at every position, put the
-`observe` inside a program cell: the cell runs once per position, and the
-program that draws the scan takes the whole observation sequence.
+This chapter writes recurrent networks, [hidden Markov models](https://en.wikipedia.org/wiki/Hidden_Markov_model) (HMMs) [@rabiner1989hmm], and linear Gaussian [state space models](https://en.wikipedia.org/wiki/State-space_representation) with the first two. A plate repeats a distribution across positions given its parameters, whereas a recurrence passes the state at one position into the transition at the next.
 
 ## Plates revisited
 
-A *plate-draw* binds one value per index of a finite-set object:
+A plate binds one value for each element of a finite set:
 
 <!-- compile: false -->
 ```qvr
@@ -36,18 +18,16 @@ object School : FinSet 8
 sample theta : School <- Normal(loc=mu, scale=tau)
 ```
 
-is the QVR analogue of NumPyro's `with plate("schools", 8): theta = sample("theta", dist.Normal(mu, tau))`. The result has shape `(8,)`; subsequent `let` arithmetic broadcasts over it. A *vectorized observe* over a plate has the same shape:
+This is NumPyro's `with plate("schools", 8): theta = sample("theta", dist.Normal(mu, tau))`. The result has shape `(8,)`, and later `let` arithmetic broadcasts over it. A vectorized observe statement over a plate has the same shape:
 
 <!-- compile: false -->
 ```qvr
 observe y : School <- Normal(loc=theta, scale=sigma_j)
 ```
 
-A plate represents [conditionally independent draws](03-hierarchical.md#eight-schools-centered) across an index. Use `scan` when step `j+1` takes the state produced at step `j` as an input.
-
 ## `scan` for left-to-right evaluation
 
-`scan` takes a *cell* whose signature is `Input * Hidden -> Hidden` and lifts it to operate along the sequence dimension of an input tensor. The `*` in `Input * Hidden -> Hidden` is "the cell takes two inputs in parallel (an input vector and the previous hidden state) and returns one". That's all you need to read it; the categorical reading (binary product in a monoidal category) is in chapter 7. The cell may be a `kernel ... ~ Family` morphism (one-step state update under a Gaussian transition) or a `program` block (one-step update with its own random draws).
+`scan` takes a *cell* with signature `Input * Hidden -> Hidden`, a map from a pair (the input at one position and the previous state) to the next state, and applies it along the sequence axis of its input. The cell may be a morphism with a family, such as `~ Normal` for a Gaussian transition, or a `program` with its own draws.
 
 ```qvr
 object Token : FinSet 256
@@ -63,72 +43,11 @@ define rnn = tok_embed >> scan(cell) >> output_proj
 export rnn
 ```
 
-The pipeline reads as: embed each token to a 64-dim vector, fold the cell over the sequence dimension (with zero or learned initial state), project the final hidden state to a 64-dim output. The compiler infers the sequence axis from the input tensor's second dimension at evaluation time.
-
-If you've used Haskell's `mapAccumL` or NumPy's `np.cumsum`, this is the same idea generalized to a learnable cell.
-
-## Finite-state path composition
-
-An HMM [@rabiner1989hmm] factors into an
-initial distribution, a row-stochastic transition kernel, and a row-stochastic
-emission kernel. The similarly named gallery file is deliberately narrower.
-Its first export demonstrates repeated composition of fuzzy relations:
-
-```qvr
-composition product_fuzzy [level=algebra]
-object State : FinSet 8
-object Obs : FinSet 16
-morphism initial : State -> State [role=latent]
-morphism transition : State -> State [role=latent]
-morphism emission : State -> Obs [role=latent]
-define n_step = repeat(transition) >> emission
-define hmm    = initial >> n_step
-
-export hmm
-```
-
-Two semantic facts keep this export from being an HMM likelihood:
-
-- The three declarations have no `Dirichlet` families, and the module uses `product_fuzzy`. Their learned tensors are sigmoid-constrained fuzzy relations, not row-stochastic kernels.
-- `repeat(transition)` composes that relation a runtime-selected number of times before the final emission. Under `product_fuzzy`, its result is neither a sum-product forward probability nor a Viterbi score.
-
-### Axis-role syntax in 60 seconds
-
-The clause `~ Family(args) over <axis> [iid over <axis>]` attaches a prior to a kernel `A -> B`. The axes name *which* dimensions of the kernel tensor the family describes and *which* dimensions are replicated independently.
-
-- `over cod` puts the family on the codomain axis. For `transition : State -> State` declared as `~ Dirichlet(concentration=1.0) over cod`, each draw is a simplex over the 8 codomain states.
-- `iid over dom` says the prior is replicated independently across the domain axis. So `over cod iid over dom` gives 8 independent simplex draws, one per domain row, which is exactly a row-stochastic matrix with a row-wise Dirichlet prior.
-- Order matters because the family is built outward: first you say what one row looks like (`over cod`), then you say how rows replicate (`iid over dom`).
-
-Other useful combinations:
-
-| Pattern | Meaning |
-|---|---|
-| `~ Normal(loc=0, scale=1) over cod` | one Gaussian vector over the codomain (no replication) |
-| `~ Normal(loc=0, scale=1) over cod iid over dom` | per-row independent Gaussian vectors |
-| `~ Normal(loc=0, scale=1) iid over cod iid over dom` | full IID matrix of scalars |
-| `~ Dirichlet(concentration=0.1) over cod iid over dom` | sparse row-stochastic prior (concentration < 1) |
-
-If neither `over` nor `iid over` is given, the family is broadcast scalar-wise. The compiler synthesizes the appropriate `PlateDraw` internally; you don't need to think about plates.
-
-The separate `hmm_program` demonstrates the parameter shapes a probabilistic
-version would use: one Dirichlet initial row, one transition row per source
-state, and one emission row per state. Its checked likelihood marginalizes a
-single state shared by the observed emission sequence. `transition_rows` is a
-prior-only draw. Consequently, the observation likelihood depends on one
-shared hidden state, and the data leave `transition_rows` at its prior.
-This program implements a finite-state marginal mixture.
-
-Use the file to study relation powering, axis roles, and one-state finite
-marginalization. A recurrent HMM carries a categorical state from position to
-position, which the next section writes with `scan`.
+`tok_embed` (role `embed`) maps each token to a vector in $\mathbb R^{64}$. `scan(cell)` applies `cell` along the sequence, starting from a zero or learned initial state, and returns the final state, which `output_proj` maps to $\mathbb R^{64}$. The sequence axis is the second axis of the input tensor: an integer input of shape `(3, 5)` (three sequences of five tokens) gives an output of shape `(3, 64)`.
 
 ## Hidden Markov models
 
-A program cell may marginalize the next state and return it. Returning the
-latent of a `marginalize` block carries it to the next position, so its sum
-extends over the rest of the chain, and `scan(cell, init=p)` sums every path
-of states out with the forward algorithm:
+An HMM has an initial distribution over states, a row-stochastic transition matrix, and a row-stochastic emission matrix. A program cell can `marginalize` the next state and return it. Returning the latent of a `marginalize` block carries it to the next position, so its sum extends over the rest of the chain, and `scan(cell, init=p)` sums out every path of states with the [forward algorithm](https://en.wikipedia.org/wiki/Forward_algorithm):
 
 ```qvr
 object State : FinSet 2
@@ -152,11 +71,9 @@ program hmm : Symbol -> StartProbs
 export hmm
 ```
 
-The chain starts from `z_0 ~ start`, moves by `transition`, and emits each
-symbol from the state it moves to. The block observes the cell's entry, so
-the scanned sequence is the observed symbols. The program's log joint is the
-three Dirichlet priors plus the log marginal likelihood, which a forward
-recursion written in torch reproduces:
+The chain starts from $z_0 \sim$ `start`, moves by `transition`, and emits each symbol from the state it moves to. The block observes the cell's input `symbol`, so the scanned sequence is the observed symbols. In `[over=State, iid_over=State]` on `transition`, `over` names the event axis of one Dirichlet draw (one row on the simplex over `State`) and `iid_over` the axis along which rows are drawn independently, so `transition` is a row-stochastic matrix with a Dirichlet prior on each row.
+
+The program's log joint density is the sum of the three Dirichlet log priors and the log marginal likelihood. A forward recursion written in PyTorch reproduces it:
 
 ```python
 import torch
@@ -209,17 +126,24 @@ priors = (
 assert torch.allclose(log_joint, priors + torch.logsumexp(log_alpha, dim=0), atol=1e-5)
 ```
 
-The recursion stays in log space, so a chain of thousands of positions, whose
-path probabilities underflow, still has a finite log marginal. A trace
-records the marginal under `path` and no per-position state. The cell's lets
-may read the entry, so transitions can depend on a covariate, and an
-observation named other than the entry is one observation per position. The
-[marginalized chains reference](../../reference/qvr/probabilistic-programs.md#marginalized-chains)
-states the rules.
+The recursion stays in log space, so a chain of thousands of positions, whose path probabilities underflow, still has a finite log marginal. A trace records the marginal under `path` and no state for each position. The cell's `let` steps may read its input, so transitions can depend on a covariate, and an observation with a name other than the input is one observation per position. The [marginalized chains reference](../../reference/qvr/probabilistic-programs.md#marginalized-chains) gives the rules.
 
-## State-space models
+## Finite-state path composition
 
-For continuous-state sequences, the per-step transition and emission can be Gaussian kernels. The following state-space demonstration appears in `docs/examples/source/linear_gaussian_ssm.qvr`:
+The gallery file [`hmm.qvr`](../../examples/source/hmm.qvr) is not an HMM likelihood. Its export `hmm` composes three morphisms under the `product_fuzzy` composition rule, `initial >> repeat(transition) >> emission`. Under that rule a learnable table (`role=latent`) holds entries in $[0, 1]$, its rows are not normalized, and the composite is neither a forward probability nor a Viterbi score. Its second export, `hmm_program`, marginalizes a single state shared by the whole emitted sequence, and its `transition_rows` draw does not enter the likelihood. The `hmm` program of the previous section is the HMM.
+
+On a `morphism` declaration the axes of a prior are set by the options `over` (event axes) and `iid` (axes of independent replication), with `cod` and `dom` naming the codomain and domain:
+
+<!-- compile: false -->
+```qvr
+morphism transition : State -> State [role=latent, over=cod, iid=dom] ~ Dirichlet(concentration=1.0)
+```
+
+declares a row-stochastic matrix with an independent Dirichlet prior on each row, as `[over=State, iid_over=State]` does on a `sample` step. The [axis clause guide](../../guides/dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) and the [event shapes of each family](../../guides/continuous-families.md#event-rank-and-axis-role-syntax) give the rules.
+
+## State space models
+
+A linear Gaussian state space model has Gaussian transitions and Gaussian emissions. The gallery file [`linear_gaussian_ssm.qvr`](../../examples/source/linear_gaussian_ssm.qvr) declares:
 
 ```qvr
 object Driver : Real 2
@@ -235,18 +159,9 @@ define filter = scan(filter_cell)
 export filter
 ```
 
-`scan(transition_cell)` folds the per-step Gaussian transition along the
-sequence dimension and returns the final state. Composing with `emission`
-thus emits from that final state; it does not return the full latent
-trajectory. The export named `filter` similarly folds a separately learned
-Gaussian kernel. It is not the closed-form Kalman filter
-[@kalman1960filtering], and `ScanMorphism.log_prob`
-does not supply the marginal density of the final state: it scores a supplied
-full trajectory, as `rsample_trajectory` draws it, and refuses a final state
-alone.
+`scan(transition_cell)` returns the final state, so `generate` emits one observation from that state, not one for each position. `filter` applies a separately learned Gaussian cell along the observations and is not the closed-form [Kalman filter](https://en.wikipedia.org/wiki/Kalman_filter) [@kalman1960filtering]. [`ScanMorphism.log_prob`](../../api/continuous/scan.md) scores a full state trajectory of the kind `rsample_trajectory` draws, and refuses a final state alone.
 
-A state-space model that scores the whole observation sequence writes the
-emission inside a program cell:
+To score the whole observation sequence, put the emission inside a program cell:
 
 <!-- compile: qiec -->
 ```qvr
@@ -271,32 +186,14 @@ program ssm : Driver -> State
 export ssm
 ```
 
-Each position draws a latent state, addressed `s@0`, `s@1`, and so on, and
-scores that position's observation. The program takes the observations as
-one sequence `o`, shaped `(batch, T, 2)` for a batch of driver sequences of
-shape `(batch, T, 2)`, and its log joint sums the transition and emission
-densities over the positions. A trace records each position's state and
-observation under `s@t` and `o@t`. The cell may also read bindings that
-`ssm` makes before the scan, such as a sampled noise scale. The
-[scans reference](../../reference/qvr/probabilistic-programs.md#scans) states
-the scoping and addressing rules.
-
-For a fully nonlinear (deep) variant where transition and emission are neural Gaussians, see `docs/examples/source/continuous_hmm.qvr` and `docs/examples/source/deep_markov.qvr`.
+Each position draws a latent state, addressed `s@0`, `s@1`, and so on, and scores that position's observation. For driver sequences of shape `(batch, T, 2)` the program takes the observations as one sequence `o` of shape `(batch, T, 2)`, and its log joint density sums the transition and emission log densities over the positions. A trace records the state and observation at position $t$ under `s@t` and `o@t`. The cell may also read bindings that `ssm` makes before the scan, such as a sampled noise scale. The [scans reference](../../reference/qvr/probabilistic-programs.md#scans) gives the scoping and addressing rules. The gallery files [`continuous_hmm.qvr`](../../examples/source/continuous_hmm.qvr) and [`deep_markov.qvr`](../../examples/source/deep_markov.qvr) replace the linear Gaussian cells with neural ones.
 
 ## Try this
 
-- Change the fuzzy composition algebra and compare the resulting path score.
-  This exercise changes relation semantics; it still does not create a
-  normalized HMM likelihood.
-- Make the linear-Gaussian SSM hierarchical: each sequence has its own transition cell drawn from a hyperprior. (Chapter 3's plate-draw applies.)
-- Swap the linear `transition_cell` for the deep-Markov nonlinear kernel and compare ELBO convergence.
+- Give each of several sequences its own transition scale, drawn around a shared population scale as in chapter 3.
+- Replace the linear `transition` in the state space program with a neural Gaussian cell from `deep_markov.qvr` and compare the ELBO after the same number of SVI steps.
+- Feed the HMM a sequence of 2000 symbols and confirm that `log_joint` stays finite.
 
 ## Next
 
-[Chapter 6](06-inference-zoo.md) surveys the inference algorithms: eleven concrete guide classes, seven objectives, HMC and NUTS, and two hybrid approaches.
-
-
-## Sources and further reading
-
-- *A tutorial on hidden Markov models and selected applications in speech recognition* [@rabiner1989hmm].
-- *A New Approach to Linear Filtering and Prediction Problems* [@kalman1960filtering].
+[Chapter 6](06-inference-zoo.md) chooses among the variational guides, objectives, and samplers.
