@@ -2,7 +2,7 @@
 
 ## Overview
 
-A [probabilistic context-free grammar](https://en.wikipedia.org/wiki/Probabilistic_context-free_grammar) (PCFG) assigns each production a probability, so that the productions sharing a left-hand side form a distribution, and scores a sentence by the total probability of its derivations. This source states a small PCFG as a [weighted deduction](../guides/deduction.md) over [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart items `span(I, J, N)` under the `LogProb` semiring. `normalize=lhs` passes each left-hand side's learned log-weights through a softmax, so the grammar is a proper PCFG and the chart's goal weight is the sentence's log probability. The page checks the chart against a CKY recursion written by hand, fits the production probabilities by maximum likelihood, and, with a Dirichlet prior on each left-hand side, checks the Bayesian program's joint density on both execution paths.
+A [probabilistic context-free grammar](https://en.wikipedia.org/wiki/Probabilistic_context-free_grammar) (PCFG) assigns each production a probability, so that the productions sharing a left-hand side form a distribution, and scores a sentence by the total probability of its derivations. This source states a small PCFG as a [weighted deduction](../guides/deduction.md) over [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart items `span(I, J, N)` under the `LogProb` semiring. `normalize=lhs` passes each left-hand side's learned log-weights through a softmax, so the grammar is a proper PCFG and the chart's goal weight is the sentence's log probability. The page checks the chart against a CKY recursion written by hand, fits the production probabilities by maximum likelihood, and, with a Dirichlet prior on each left-hand side, checks the Bayesian program's joint on both execution paths and its NUTS posterior against the exact conjugate posterior.
 
 ## QVR source
 
@@ -195,12 +195,13 @@ for tokens in corpus[:10]:
 
 A program can place a [prior on the production probabilities](../guides/deduction.md#priors-on-production-probabilities) of a normalized grammar and infer their posterior, the Bayesian PCFG of [@johnson2007bayesian]. The source below is the same grammar without learned weights; the program draws each two-production left-hand side's probabilities from `Dirichlet(1, 1)` and binds them in the `parse` call. The corpus is one input of one run, a table with one sentence per object of `Sentence`, and `chart.goal_weight()` is the sum of the sentences' log inside weights.
 
-Because every sentence has one derivation, each left-hand side's posterior is the conjugate $\mathrm{Dirichlet}(1 + n)$, with $n$ the production counts. On 60 sampled sentences, the program's log joint at a fixed point must equal the CKY oracle (the `Dirichlet(1, 1)` density is one) to 1e-9 on the reference machine and to 1e-3 on the compiled runtime.
+Because every sentence has one derivation, each left-hand side's posterior is the conjugate $\mathrm{Dirichlet}(1 + n)$, with $n$ the production counts. On 60 sampled sentences, the program's log joint at a fixed point must equal the CKY oracle (the `Dirichlet(1, 1)` density is one) to 1e-9 on the reference machine and to 1e-3 on the compiled runtime. NUTS (two chains, 200 warmup and 300 kept draws each) must then reach an effective sample size of at least 100 for every site and put every posterior mean within $4\,\mathrm{sd} / \sqrt{100}$ of the exact posterior mean, and the exact posterior mean must lie within four posterior standard deviations of the generating probabilities.
 
 ```python
 import torch
 
 from quivers.dsl import loads
+from quivers.inference import MCMC, NUTSKernel
 from quivers.inference.trace import trace
 
 BAYESIAN_SOURCE = """
@@ -266,9 +267,25 @@ compiled = float(trace(
 ).log_joint)
 print(f"log joint: oracle {expected:.6f}, reference {checked:.6f}, compiled {compiled:.6f}")
 assert abs(checked - expected) < 1e-9 and abs(compiled - expected) < 1e-3
-```
 
-The posterior itself is not checked on this page. The planned check runs NUTS (two chains, 200 warmup and 300 kept draws each) and compares its means with the exact posterior means, but `MCMC.run` currently fails before its first draw when an observation is a token corpus, in the fingerprint it computes for checkpointing ([#233](https://github.com/quivers-dev/quivers/issues/233)). Until that is fixed, what this section demonstrates is the joint the sampler would target, on both execution paths.
+torch.manual_seed(0)
+result = MCMC(NUTSKernel(step_size=0.3, max_tree_depth=4), num_warmup=200, num_samples=300, num_chains=2).run(
+    program.morphism, torch.zeros(1, 1), {"corpus": corpus}
+)
+for site, lhs in (("p_det", "Det"), ("p_n", "N"), ("p_v", "V")):
+    labels = [label for label, _, _ in TRUE_GRAMMAR[lhs]]
+    alpha = torch.tensor([1.0 + counts[(lhs, label)] for label in labels], dtype=torch.float64)
+    mean = alpha / alpha.sum()
+    sd = torch.sqrt(mean * (1 - mean) / (alpha.sum() + 1))
+    got = result.samples[site].reshape(-1, len(labels)).double().mean(0)
+    ess = float(result.ess[site].min())
+    truth = torch.tensor([p for *_, p in TRUE_GRAMMAR[lhs]], dtype=torch.float64)
+    print(f"{lhs}: truth {truth.tolist()}, exact posterior mean {[round(x, 3) for x in mean.tolist()]}, "
+          f"NUTS {[round(x, 3) for x in got.tolist()]}, ess {ess:.0f}")
+    assert ess >= 100
+    assert torch.all((got - mean).abs() <= 4 * sd / math.sqrt(100))
+    assert torch.all((mean - truth).abs() <= 4 * sd)
+```
 
 ## Categorical perspective
 

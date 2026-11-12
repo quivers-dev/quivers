@@ -118,7 +118,7 @@ examples state both where they differ.
 
 ## Weighted deductions
 
-- [Probabilistic Context-Free Grammar](pcfg.md): a normalized grammar fitted by maximum likelihood, and its Bayesian form with Dirichlet priors.
+- [Probabilistic Context-Free Grammar](pcfg.md): a normalized grammar fitted by maximum likelihood and, with Dirichlet priors, sampled against its conjugate posterior.
 - [Weighted Combinatory Categorial Grammar](ccg.md): forward and backward application, harmonic and crossed composition, each needed by some sentence of the lexicon.
 - [Type-Logical Grammar (Lambek calculus)](type-logical.md): a chart parser whose every rule is a theorem of the associative Lambek calculus.
 - [Weighted Multiple Context-Free Grammar](wmcfg.md): rank-2 nonterminals deriving Swiss German cross-serial verb clusters.
