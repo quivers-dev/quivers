@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 110 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 118 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 110   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 110   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 84 / 110   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 78 / 110   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 110   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 92 / 110   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 81 / 110   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 93 / 110   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 81 / 110   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 78 / 110   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 81 / 110   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 118   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 118   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 90 / 118   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 80 / 118   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 118   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 99 / 118   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 87 / 118   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 101 / 118  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 87 / 118   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 84 / 118   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 83 / 118   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -151,11 +151,15 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_let_probs`                  | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_vector_probs`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_step`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernoulli_logits`               | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_binomial_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                     | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
+| `steps/observe_geometric_logits`               | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -163,15 +167,19 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_covariance`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_precision`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_wishart_covariance`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/sample_wishart_precision`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
@@ -681,7 +689,7 @@ bugs cannot transpile this program:
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`, `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -691,7 +699,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`bugs` on `steps/sample_mvn_host_loc` reports:
+`bugs` on `steps/sample_mvn_covariance` reports:
 
 ```text
 bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -751,6 +759,24 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. bugs cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which bugs has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_bernoulli_logits` reports:
+
+```text
+bugs cannot score a draw from `Bernoulli`: bugs has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:BetaBinomial:no-bugs-distribution`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -769,6 +795,24 @@ family:BetaBinomial:no-bugs-distribution: the BUGS distribution catalogue has no
 bugs cannot score a draw from `BetaBinomial`: the BUGS distribution catalogue has no beta-binomial, and the zeros trick that would write its closed-form marginal into the joint needs a data-bound carrier the BUGS language cannot declare (it has no `data { ... }` block)
 ```
 
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: bugs has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_binomial_logits` reports:
+
+```text
+bugs cannot score a draw from `Binomial`: bugs has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -785,6 +829,24 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 bugs cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: bugs has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_geometric_logits` reports:
+
+```text
+bugs cannot score a draw from `Geometric`: bugs has no Geometric parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:Kumaraswamy:no-free-density-term`**
@@ -857,6 +919,24 @@ family:MixtureNormal:no-free-density-term: a finite mixture is an explicit weigh
 
 ```text
 bugs cannot score a draw from `MixtureNormal`: a finite mixture is an explicit weighted density in the BUGS function library, but adding one to the joint needs a free log-density term the language has no statement for
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`bugs` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+bugs cannot score a draw from `NegativeBinomial`: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`let-expr:LetExprFactor:wide`**
@@ -1031,7 +1111,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1041,7 +1121,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`church` on `steps/sample_mvn_factor` reports:
+`church` on `steps/sample_mvn_covariance` reports:
 
 ```text
 church cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -1083,6 +1163,24 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. church cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which church has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_bernoulli_logits` reports:
+
+```text
+church cannot score a draw from `Bernoulli`: church has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:BetaBinomial:no-church-target`**
 
 Refused for: [`beta_binomial_ab_test`](examples/beta-binomial-ab-test.md).
@@ -1101,6 +1199,24 @@ family:BetaBinomial:no-church-target
 church has no `BetaBinomial` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: church has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_binomial_logits` reports:
+
+```text
+church cannot score a draw from `Binomial`: church has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1117,6 +1233,24 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 church cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: church has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_geometric_logits` reports:
+
+```text
+church cannot score a draw from `Geometric`: church has no Geometric parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:HalfStudentT:no-church-target`**
@@ -1209,6 +1343,24 @@ family:MixtureNormal:no-church-target
 church has no `MixtureNormal` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: church has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`church` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+church cannot score a draw from `NegativeBinomial`: church has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:OneHotCategorical:no-church-target`**
 
 Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
@@ -1265,7 +1417,7 @@ church has no `RelaxedOneHotCategorical` distribution. Pick a family this target
 
 **`family:Wishart:no-church-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1275,7 +1427,7 @@ Reported kinds:
 family:Wishart:no-church-target
 ```
 
-`church` on `steps/sample_wishart_factor` reports:
+`church` on `steps/sample_wishart_covariance` reports:
 
 ```text
 church has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -1359,7 +1511,7 @@ edward2 has no `OrderedLogistic` distribution. Pick a family this target support
 
 **`family:Wishart:no-edward2-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1369,7 +1521,7 @@ Reported kinds:
 family:Wishart:no-edward2-target
 ```
 
-`edward2` on `steps/sample_wishart_factor` reports:
+`edward2` on `steps/sample_wishart_covariance` reports:
 
 ```text
 edward2 has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -1451,6 +1603,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. gen cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which gen has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_bernoulli_logits` reports:
+
+```text
+gen cannot score a draw from `Bernoulli`: gen has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: gen has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_binomial_logits` reports:
+
+```text
+gen cannot score a draw from `Binomial`: gen has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1467,6 +1655,42 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 gen cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: gen has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_geometric_logits` reports:
+
+```text
+gen cannot score a draw from `Geometric`: gen has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: gen has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`gen` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+gen cannot score a draw from `NegativeBinomial`: gen has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:OneHotCategorical:no-gen-target`**
@@ -1525,7 +1749,7 @@ gen has no `RelaxedOneHotCategorical` distribution. Pick a family this target su
 
 **`family:Wishart:no-gen-target`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1535,7 +1759,7 @@ Reported kinds:
 family:Wishart:no-gen-target
 ```
 
-`gen` on `steps/sample_wishart_factor` reports:
+`gen` on `steps/sample_wishart_covariance` reports:
 
 ```text
 gen has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -1619,7 +1843,7 @@ jags cannot take a list literal `[a, b, c]` in a distribution-argument position.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_mvn_precision`, `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1629,7 +1853,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`jags` on `steps/sample_wishart_factor` reports:
+`jags` on `steps/sample_mvn_precision` reports:
 
 ```text
 jags cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -1689,6 +1913,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. jags cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which jags has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_bernoulli_logits` reports:
+
+```text
+jags cannot score a draw from `Bernoulli`: jags has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: jags has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_binomial_logits` reports:
+
+```text
+jags cannot score a draw from `Binomial`: jags has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -1707,9 +1967,27 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 jags cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
 ```
 
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: jags has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_geometric_logits` reports:
+
+```text
+jags cannot score a draw from `Geometric`: jags has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:MultivariateNormal:non-ref-covariance`**
 
-Refused for: `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1719,10 +1997,28 @@ Reported kinds:
 family:MultivariateNormal:non-ref-covariance: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
 ```
 
-`jags` on `steps/sample_mvn_factor` reports:
+`jags` on `steps/sample_mvn_covariance` reports:
 
 ```text
 jags cannot score a draw from `MultivariateNormal`: the `inverse(...)` relation that turns the covariance into `dmnorm`'s precision needs a whole named matrix, and this slot carries a IRArgMatrix
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: jags has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`jags` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+jags cannot score a draw from `NegativeBinomial`: jags has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:no-target-name:LKJCholesky`**
@@ -1913,6 +2209,24 @@ jags cannot transpile this program:
 
 Every program below renders on at least one other backend and is refused here.
 
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: numpyro has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`numpyro` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+numpyro cannot score a draw from `NegativeBinomial`: numpyro has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:no-target-name:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -1987,6 +2301,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 
 ```text
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. pymc cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which pymc has no rendering for
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: pymc has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`pymc` on `steps/observe_geometric_logits` reports:
+
+```text
+pymc cannot score a draw from `Geometric`: pymc has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: pymc has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`pymc` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+pymc cannot score a draw from `NegativeBinomial`: pymc has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:OneHotCategorical`**
@@ -2139,6 +2489,42 @@ declare:simplex:event-rank:0: Stan simplex requires exactly one event dim
 
 ```text
 the declared shape of a `simplex` parameter has no Stan declaration form: event-rank:0. The site's axes do not say which of them are event axes. Name them with `[over=...]`, or draw from a family that fixes its own event shape.: Stan simplex requires exactly one event dim
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: stan has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`stan` on `steps/observe_geometric_logits` reports:
+
+```text
+stan cannot score a draw from `Geometric`: stan has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: stan has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`stan` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+stan cannot score a draw from `NegativeBinomial`: stan has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:no-stan-target:OneHotCategorical`**
@@ -2301,6 +2687,42 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 turing cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: turing has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`turing` on `steps/observe_geometric_logits` reports:
+
+```text
+turing cannot score a draw from `Geometric`: turing has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: turing has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`turing` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+turing cannot score a draw from `NegativeBinomial`: turing has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:OneHotCategorical`**
@@ -2506,6 +2928,42 @@ data:per-row-vector-parameter:weights: the input fills a vector-valued family pa
 The data input `weights` fills a vector-valued family parameter (a mean vector, a concentration, a probability vector) with one vector per row of the draw's plate, so it is a matrix whose rows the plated draw reads one at a time. webppl cannot hand a plated draw a different parameter vector at each row: its plated draw takes one parameter vector shared by every row. Pass one vector shared by every row, or transpile to edward2, numpyro or pyro, which take one vector per row.: the input fills a vector-valued family parameter with one vector per row of a plate, which webppl has no rendering for
 ```
 
+**`family:Bernoulli:logits`**
+
+Refused for: `steps/observe_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Bernoulli:logits: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_bernoulli_logits` reports:
+
+```text
+webppl cannot score a draw from `Bernoulli`: webppl has no Bernoulli parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:Binomial:logits`**
+
+Refused for: `steps/observe_binomial_logits`.
+
+Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
+
+Reported kinds:
+
+```text
+family:Binomial:logits: webppl has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_binomial_logits` reports:
+
+```text
+webppl cannot score a draw from `Binomial`: webppl has no Binomial parameterized by its logits; write the probability the logits name as probs
+```
+
 **`family:Categorical:logits`**
 
 Refused for: `steps/observe_logits_data`.
@@ -2522,6 +2980,42 @@ family:Categorical:logits: the target only exposes the probability parameterizat
 
 ```text
 webppl cannot score a draw from `Categorical`: the target only exposes the probability parameterization; apply softmax in QVR and pass the result as probs
+```
+
+**`family:Geometric:logits`**
+
+Refused for: `steps/observe_geometric_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:Geometric:logits: webppl has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_geometric_logits` reports:
+
+```text
+webppl cannot score a draw from `Geometric`: webppl has no Geometric parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:NegativeBinomial:logits`**
+
+Refused for: `steps/observe_negative_binomial_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:NegativeBinomial:logits: webppl has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+`webppl` on `steps/observe_negative_binomial_logits` reports:
+
+```text
+webppl cannot score a draw from `NegativeBinomial`: webppl has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
 **`family:no-webppl-target:OneHotCategorical`**
@@ -2580,7 +3074,7 @@ webppl has no `RelaxedOneHotCategorical` distribution. Pick a family this target
 
 **`family:no-webppl-target:Wishart`**
 
-Refused for: `steps/sample_wishart_factor`.
+Refused for: `steps/sample_wishart_covariance`, `steps/sample_wishart_factor`, `steps/sample_wishart_precision`.
 
 Renders on: `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -2590,7 +3084,7 @@ Reported kinds:
 family:no-webppl-target:Wishart
 ```
 
-`webppl` on `steps/sample_wishart_factor` reports:
+`webppl` on `steps/sample_wishart_covariance` reports:
 
 ```text
 webppl has no `Wishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
