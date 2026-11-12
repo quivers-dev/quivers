@@ -1,0 +1,12 @@
+# A zero-inflated Poisson whose active weight is given on the logit
+# scale: each row's gate is marginalized over {0, 1} with weights
+# log sigmoid(-eta) and log sigmoid(eta), computed in log space.
+object Row : FinSet 4
+object One : FinSet 1
+program zip_logits : Row -> One
+    sample eta <- Normal(loc=0.0, scale=10.0)
+    marginalize z : Row <- ContinuousBernoulli(logits=eta)
+        let gated_rate = z * 3.0
+        observe y : Row <- Poisson(rate=gated_rate)
+    return eta
+export zip_logits

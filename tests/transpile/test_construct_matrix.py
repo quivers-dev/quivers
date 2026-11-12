@@ -339,6 +339,28 @@ for _fixture, _family, _backends in (
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             f"family:{_family}:logits"
         )
+# No target spells a continuous Bernoulli on the logit scale, so a live
+# draw from one is refused by name everywhere; marginalized, its logits
+# only weigh the atoms, which every target but BUGS scores.
+for _backend in (
+    "bugs",
+    "church",
+    "edward2",
+    "gen",
+    "jags",
+    "numpyro",
+    "pymc",
+    "pyro",
+    "stan",
+    "turing",
+    "webppl",
+):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "steps", "observe_continuous_bernoulli_logits")
+    ] = "family:ContinuousBernoulli:logits"
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("bugs", "steps", "marginalize_continuous_bernoulli_logits")
+] = "marginalize:no-collapse"
 
 # The ordered probit, inverse Wishart, and matrix normal are refused by
 # name where a target has no class or literal form for them.
