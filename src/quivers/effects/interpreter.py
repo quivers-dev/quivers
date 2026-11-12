@@ -30,11 +30,8 @@ from typing import TypeIs
 
 import torch
 
-from quivers.continuous.deterministic import SequenceFunction
 from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
-from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import extract_morphism
-from quivers.core.objects import FinSet
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.program_steps import Call as CallStep
@@ -1975,82 +1972,6 @@ def _rendered_shape(dimensions: tuple[IndexTerm, ...]) -> str:
     return f"({', '.join(parts)})"
 
 
-def _reads_sequence(program: MonadicProgram) -> bool:
-    """Whether a program reads its input as a sequence of elements.
-
-    Parameters
-    ----------
-    program : MonadicProgram
-        The program.
-
-    Returns
-    -------
-    bool
-        True when a step scans, or a morphism the program draws through
-        scans or is a sequence function, each of which reads a run's
-        input as ``T`` positions.
-    """
-    if any(isinstance(step, Scan) for step in program.steps):
-        return True
-    return any(
-        isinstance(module, ScanMorphism | SequenceFunction)
-        for module in program.modules()
-    )
-
-
-def check_program_input(program: MonadicProgram, x: torch.Tensor) -> None:
-    """Check that an input holds elements of a program's finite domain.
-
-    A program over a finite set ``A`` reads one element of ``A`` per
-    run: an input of ``B`` runs is a ``(B,)`` tensor of element indices,
-    or ``(B, 1)``; a program that reads a sequence (a scan, or a
-    sequence function) reads ``(B, T)``, one element per position. Any
-    other input, such as ``(B, T)`` tokens for a program over one token,
-    is no element of the domain, and reading it would hand a network a
-    row of ``T`` elements.
-
-    Parameters
-    ----------
-    program : MonadicProgram
-        The program.
-    x : torch.Tensor
-        The input.
-
-    Raises
-    ------
-    ValueError
-        If the program's domain is a finite set and the input is not one
-        index per run (or per position of a sequence), or an index lies
-        outside the set.
-    """
-    domain = program.domain
-    if not isinstance(domain, FinSet):
-        return
-    if x.dim() > 2 or (
-        x.dim() == 2 and int(x.shape[1]) != 1 and not _reads_sequence(program)
-    ):
-        accepted = (
-            "(B,), (B, 1), or (B, T) for a sequence of T"
-            if _reads_sequence(program)
-            else "(B,) or (B, 1)"
-        )
-        raise ValueError(
-            f"the program's domain is a finite set of {domain.cardinality} "
-            f"elements, so an input of B runs holds element indices of shape "
-            f"{accepted}; got an input of shape {tuple(x.shape)}"
-        )
-    if (
-        x.numel()
-        and not x.is_floating_point()
-        and (int(x.min()) < 0 or int(x.max()) >= domain.cardinality)
-    ):
-        raise ValueError(
-            f"the program's domain is a finite set of {domain.cardinality} "
-            f"elements indexed from 0, and the input holds indices from "
-            f"{int(x.min())} to {int(x.max())}"
-        )
-
-
 def run_program(
     program: MonadicProgram,
     x: torch.Tensor,
@@ -2087,7 +2008,6 @@ def run_program(
         or a value is given for an occurrence of a scanned site the run
         never reaches.
     """
-    check_program_input(program, x)
     sites, supplied, data = _split_observations(program, observations or {})
     runs = int(x.shape[0]) if x.dim() else 1
     per_run_data = check_host_data(program, data, runs=runs if x.dim() else None)

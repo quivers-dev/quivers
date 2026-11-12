@@ -97,7 +97,8 @@ def test_an_attention_kernel_outside_a_program_compiles() -> None:
 def test_a_finite_domain_input_of_several_elements_per_run_is_refused() -> None:
     program = loads(_PLAIN)
     with pytest.raises(
-        ValueError, match=r"of shape \(B,\) or \(B, 1\); got an input of shape \(1, 5\)"
+        ValueError,
+        match=r"'h'.*of shape \(B,\) or \(B, 1\); got an input of shape \(1, 5\)",
     ):
         trace(
             program.morphism,
