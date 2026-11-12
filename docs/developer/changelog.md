@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Learned causal self-attention and position tables over open-length sequences.** A `[role=function]` morphism declared `param_source=self_attention, heads=h, causal=true|false` is multi-head scaled dot-product self-attention, and one declared `param_source=positions(N)` adds a learned vector to each of up to `N` positions. A program calls either in a `let` on a table `Tensor[Real]([T, d])` (the every-state binding of a scan with `outputs=all`, a `let` over one, or a host table) and reads back a table of the same length, `T` open, so a residual block is `let h = u + attn(layer_norm(u))`. Under `causal=true` position `i` attends to positions `j <= i` only. The checked elaboration builds the map from comprehensions over the open extent, with the query, key, value, and output projections (`<f>_param_query_weight`, ..., `<f>_param_weight`) and the position table (`<f>_param_positions`) as typed program inputs, so the reference machine and the compiled runtime agree on it. The runtime realization is the new `SequenceFunction` over a `SelfAttentionSource` or a `PositionSource` (`quivers.continuous`). `heads` must divide the codomain's width and `causal` must be stated; `output`, `activation`, and `weights=latent` are refused for both networks, a sequence function composed in a chain or used as a scan's cell is refused (`chain:sequence-function:<f>`), and every transpile target refuses it as `param-source:self_attention` or `param-source:positions`.
+
 ## [0.47.0] - 2026-11-11
 
 ### Added
