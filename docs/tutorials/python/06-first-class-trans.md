@@ -148,4 +148,4 @@ A `define` whose right side is a transformation binds a name for a transformatio
 
 ## Next
 
-[Chapter 7](07-composition-rules.md) covers composition rules with fewer laws than an `Algebra` and many-input contractions.
+[Chapter 7](07-composition-rules.md) covers composition rules with fewer laws than an `Algebra` and contractions of several tensors.

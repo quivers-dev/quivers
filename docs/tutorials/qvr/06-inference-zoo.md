@@ -72,8 +72,8 @@ The [inference benchmarks](../../developer/inference-benchmarks.md) report how t
 | Estimator | What it does | When |
 |---|---|---|
 | `Reparameterized` | [Reparameterization (pathwise) gradient](https://en.wikipedia.org/wiki/Reparameterization_trick) [@kingma2014autoencoding] | Default. |
-| `StickingTheLanding` | Drops the score term of $\log q$ by detaching the guide parameters in it [@roeder2017sticking] | Noisy gradients near convergence, when the guide is close to the posterior. Valid for `ELBO` and other one-draw bounds. The multi-draw bounds reject it. |
-| `DoublyReparameterized` | Doubly reparameterized gradients [@tucker2019dreg], extended to the Rényi and VR-IWAE bounds | `IWAEBound(K)` at large $K$. `ChiVI` rejects it, and so does a mixture guide on a multi-draw bound. |
+| `StickingTheLanding` | Drops the score term of $\log q$ by detaching the guide parameters in it [@roeder2017sticking] | Noisy gradients near convergence, when the guide is close to the posterior. Valid for `ELBO` and other bounds that use one draw. Bounds that use several draws reject it. |
+| `DoublyReparameterized` | Doubly reparameterized gradients [@tucker2019dreg], extended to the Rényi and VR-IWAE bounds | `IWAEBound(K)` at large $K$. `ChiVI` rejects it, and so does a mixture guide on a bound that uses several draws. |
 | `ScoreFunction` | [Score-function](https://en.wikipedia.org/wiki/Policy_gradient_method) (REINFORCE) estimator with the draws held fixed [@ranganath2014bbvi] | Guides whose draws are not differentiable. |
 
 `IWAEBound(num_particles=16, estimator=DoublyReparameterized())` combines importance weighting with doubly reparameterized guide gradients. A larger $K$ gives a tighter bound at a cost in time and memory, so choose it by profiling.

@@ -116,7 +116,7 @@ print(fgh.tensor.shape)  # [3, 5]
 
 For a fixed position `x` and outcome `z`, each color `y` gives a route of strength $f(x, y)\, g(y, z)$, and noisy-OR combines the routes: two routes of strengths `0.4` and `0.3` give `1 - 0.6 * 0.7 = 0.58`. Each outcome gets its own degree of membership, so a row may sum to more than one.
 
-The product does not distribute over the probabilistic sum, so `PRODUCT_FUZZY` is not a [semiring](https://en.wikipedia.org/wiki/Semiring), and composition under it is not associative: the two bracketings of a three-fold composite differ.
+The product does not distribute over the probabilistic sum, so `PRODUCT_FUZZY` is not a [semiring](https://en.wikipedia.org/wiki/Semiring), and composition under it is not associative: the two bracketings of a composite of three morphisms differ.
 
 ```python
 left = ((f >> g) >> h).tensor

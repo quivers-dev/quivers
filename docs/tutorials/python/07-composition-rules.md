@@ -112,9 +112,9 @@ right = bf.tensor_op(a, bf.tensor_op(b, c))
 assert not torch.allclose(left, right)
 ```
 
-`bilinear_form(...)` runs no test. Rules whose reduction is not the addition of a semiring, such as a top-$k$ truncation or a softmax-weighted sum, generally lose associativity and belong at this level.
+`bilinear_form(...)` runs no test. Rules whose reduction is not the addition of a semiring, such as a top-$k$ truncation or a sum weighted by a softmax, generally lose associativity and belong at this level.
 
-## Algebra-only operations
+## Operations that need an identity
 
 `unit`, `identity_tensor`, and the operations of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category) (`cup`, `cap`, `dagger`, `trace`, which bend, transpose, and loop wires) need an identity, so a rule below `Algebra` lacks them and raises `AttributeError`:
 
@@ -131,7 +131,7 @@ for attribute in ("unit", "identity_tensor"):
 
 In QVR, `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` fail to compile in a module declared `composition X [level=semigroupoid]` or `[level=bilinear_form]` ([chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws)).
 
-## Many-input contractions {#operadic-n-ary-contractions}
+## Contractions of several tensors {#operadic-n-ary-contractions}
 
 Binary composition is `f >> g`, with the shared axis taken from the morphisms' types. [`EinsumWiring`](../../api/core/wiring.md) is for a contraction of three or more tensors at once, such as
 

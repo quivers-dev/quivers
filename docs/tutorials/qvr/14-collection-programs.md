@@ -1,6 +1,6 @@
 # 14. Exact Bayes with finite collection expressions
 
-When a parameter takes finitely many values, its posterior can be computed exactly by enumeration: weight each value by its prior and the likelihood of the data, and normalize. This chapter computes the posterior of a mean $\theta \in \{-1, 0, 1\}$, under a uniform prior, from four Normal observations with known scale. It writes the computation with QVR's collection expressions: `traverse`, which applies a computation to every element of a collection, `map`, which applies a pure function, and `logsumexp_over`, which reduces in log space. The three-point set is the whole parameter space of this model, so the result is exact. Using the same points to approximate a continuous parameter would be a different claim.
+When a parameter takes finitely many values, its posterior can be computed exactly by enumeration: weight each value by its prior and the likelihood of the data, and normalize. This chapter computes the posterior of a mean $\theta \in \{-1, 0, 1\}$, under a uniform prior, from four Normal observations with known scale. It writes the computation with QVR's collection expressions: `traverse`, which applies a computation to every element of a collection, `map`, which applies a pure function, and `logsumexp_over`, which reduces in log space. The set of three points is the whole parameter space of this model, so the result is exact. Using the same points to approximate a continuous parameter would be a different claim.
 
 ## 1. Score one observation
 
@@ -95,7 +95,7 @@ The posterior puts almost all its mass on $\theta = 0$.
 - Add `2.0` to `candidates`. The checker rejects the computation (`computation body returns Tensor[Real]([4]), expected Tensor[Real]([3])`) until the result type of `grid_posterior` and the size of `Posterior` are changed to 4.
 - Replace the uniform prior with a tensor `prior` of three probabilities and compute the log prior as `map([0, 1, 2], i -> log(prior[i]))`, which separates the prior from the likelihood.
 
-A potential worry is that a three-point grid is too small for a serious analysis of a continuous parameter. That is right: the example isolates exact inference over a finite set. The same structure applies to lexical uncertainty, comparison of finitely many models, and quadrature rules whose nodes and weights are fixed in the source.
+A potential worry is that a grid of three points is too small for a serious analysis of a continuous parameter. That is right: the example isolates exact inference over a finite set. The same structure applies to lexical uncertainty, comparison of finitely many models, and quadrature rules whose nodes and weights are fixed in the source.
 
 ## Next
 

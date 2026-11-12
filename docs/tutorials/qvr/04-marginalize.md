@@ -158,7 +158,7 @@ No fixed support size decides between them, so profile the full model. For large
 |---|---|
 | Small finite `K` and cheap body | Start with `marginalize`. |
 | Larger finite `K` or expensive body | Profile marginalization against a sampled estimator. |
-| Very large or unbounded support | Use a sampled estimator or a model-specific approximation. |
+| Very large or unbounded support | Use a sampled estimator or an approximation designed for the model. |
 | Mixed continuous and discrete latents | `marginalize` the discrete part and reparameterize the continuous part. |
 
 ```mermaid

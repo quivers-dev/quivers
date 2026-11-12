@@ -101,7 +101,7 @@ print(disc_normal.tensor.shape)        # [1, 10]
 print(disc_normal.tensor.sum(dim=-1))  # ~[1.0]
 ```
 
-This is a kernel from a one-element set to the grid. The mass of each bin is the normalized density at its center, not the integral of the density over the bin. [`DiscretizedBeta`](../../api/stochastic/families.md) does the same for a Beta density:
+This is a kernel from a set with one element to the grid. The mass of each bin is the normalized density at its center, not the integral of the density over the bin. [`DiscretizedBeta`](../../api/stochastic/families.md) does the same for a Beta density:
 
 ```python
 disc_beta = DiscretizedBeta(Unit, Z_bin)
@@ -136,7 +136,7 @@ print(conditioned.tensor.shape)        # [3, 4]
 print(conditioned.tensor.sum(dim=-1))  # ~[1, 1, 1]
 ```
 
-An observed value $Y = 2$ is the zero-one vector that is one at index 2:
+An observed value $Y = 2$ is the vector that is one at index 2 and zero elsewhere:
 
 ```python
 hard = torch.zeros(4)
@@ -158,7 +158,7 @@ y_idx = torch.tensor([3, 1, 0])
 print(prob(kern, x_idx, y_idx))  # shape [3]
 ```
 
-[`marginal_prob`](../../api/stochastic/queries.md) computes $p(y) = \frac{1}{|X|} \sum_x f(x, y)$, the marginal of the codomain under a **uniform** distribution on the domain, at the requested indices. It takes no prior argument. For another prior, compose a kernel from a one-element set that holds the prior with the kernel, and read the row of the composite.
+[`marginal_prob`](../../api/stochastic/queries.md) computes $p(y) = \frac{1}{|X|} \sum_x f(x, y)$, the marginal of the codomain under a **uniform** distribution on the domain, at the requested indices. It takes no prior argument. For another prior, compose a kernel from a set with one element that holds the prior with the kernel, and read the row of the composite.
 
 ```python
 y_idx = torch.tensor([0, 1, 2, 3])

@@ -51,7 +51,7 @@ assert (samples >= 0.0).all() and (samples <= 1.0).all()
 
 ## Conditional distribution families {#conditional-distribution-families}
 
-A [conditional distribution family](../../api/continuous/families.md) maps each input to a distribution on its output space. [`ConditionalNormal`](../../api/continuous/families.md) learns the mean and scale as functions of the input. From a one-element finite set it is an unconditional Normal with learnable parameters:
+A [conditional distribution family](../../api/continuous/families.md) maps each input to a distribution on its output space. [`ConditionalNormal`](../../api/continuous/families.md) learns the mean and scale as functions of the input. From a finite set with one element it is an unconditional Normal with learnable parameters:
 
 ```python
 Unit = FinSet(name="Unit", cardinality=1)

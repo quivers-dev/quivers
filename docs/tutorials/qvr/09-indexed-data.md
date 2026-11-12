@@ -70,7 +70,7 @@ The bracketed arguments of `Cons` are the parameter (the element type) followed 
 
 ## 4. Run the summary
 
-The complete source is [`indexed-vectors.qvr`](source/indexed-vectors.qvr), whose computation `summarize` builds a three-element vector and returns its sum and its length. Check the file, list its [entry points](../../reference/qvr/execution-and-tooling.md#list-entry-points) (the computations and programs a module exposes to `qvr run` and `Program.run`), and run `summarize`:
+The complete source is [`indexed-vectors.qvr`](source/indexed-vectors.qvr), whose computation `summarize` builds a vector of three elements and returns its sum and its length. Check the file, list its [entry points](../../reference/qvr/execution-and-tooling.md#list-entry-points) (the computations and programs a module exposes to `qvr run` and `Program.run`), and run `summarize`:
 
 ```bash
 qvr check docs/tutorials/qvr/source/indexed-vectors.qvr
