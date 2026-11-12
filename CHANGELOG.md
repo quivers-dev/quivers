@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **`ChartView.derivations(item)` returns the rule applications that derive the item.** Each is a rule name and its antecedent items in premise order, the item's incoming hyperedges in the derivation hypergraph; it had returned every item in the chart. `AgendaResult.applications` lists every rule application of a run.
 - **The stdlib `Lambek` system is `AB`.** It has forward and backward application only, which is the AB (Ajdukiewicz-Bar-Hillel) categorial grammar, not the Lambek calculus; `STDLIB_DEDUCTIONS` lists it as `"AB"`.
 - **`fit` takes the SVI step count as `num_steps`.** `fit(..., method="svi", num_steps=N)` runs `N` optimization steps (1000 by default) at the Adam rate `learning_rate` (0.01 by default); `num_warmup`, `num_samples`, and `num_chains` count MCMC iterations only (500, 1000, and 4 by default). Passing an MCMC count with `method="svi"`, or `num_steps` with NUTS or HMC, raises a `ValueError`, where `num_samples` had been read as the SVI step count.
 - **`UnarySpanDeduction` takes no `iterations` argument.** It closes each chart cell under its unary rules by their Kleene star, which has no round count; `UnarySpanDeduction.closure` returns the star and `UnarySpanDeduction.rule_matrix` the rule matrix.

@@ -581,3 +581,38 @@ def test_rule_callback_runs_once_per_application() -> None:
     np_weight = _logaddexp(-0.4, -1.3)
     assert (name, antecedents, conclusion) == ("app", (("NP",), ("NP",)), ("S",))
     assert weight == pytest.approx(2 * np_weight, abs=1e-6)
+
+
+@pytest.mark.parametrize("grammar_name", sorted(GRAMMARS))
+def test_derivation_hypergraph_counts_the_trees(grammar_name: str) -> None:
+    """Trees rebuilt from `ChartView.derivations` match the Counting chart."""
+    axioms, rules = GRAMMARS[grammar_name]()
+    engine_rules = [r.engine_rule() for r in _oracle_rules(rules, "Counting")]
+    result = run_agenda(
+        axioms=_engine_axioms(axioms, "Boolean"),
+        rules=engine_rules,
+        semiring=BOOLEAN,
+        agenda=FIFOAgenda(),
+    )
+    view = agenda_module.ChartView(result)
+    axiom_count: dict[Term, int] = {}
+    for item, _ in axioms:
+        axiom_count[item] = axiom_count.get(item, 0) + 1
+
+    def trees(item: Term) -> int:
+        total = axiom_count.get(item, 0)
+        for _, antecedents in view.derivations(item):
+            product = 1
+            for antecedent in antecedents:
+                product *= trees(antecedent)
+            total += product
+        return total
+
+    unit_rules = [
+        OracleRule(r.name, r.premises, r.conclusion, None, r.side) for r in rules
+    ]
+    counts = oracle_values(
+        [(item, 1.0) for item, _ in axioms], unit_rules, ORACLE["Counting"]
+    )
+    for item, count in counts.items():
+        assert trees(item) == count, item

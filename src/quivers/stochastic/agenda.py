@@ -243,13 +243,13 @@ def match(
 
 
 class Chart(ABC):
-    """A K-valued presheaf on the item algebra.
+    """A finite map from derived items to their weights in a semiring K.
 
-    Categorically, a chart is the K-presheaf
-    :math:`C : I^{\\mathrm{op}} \\to K` produced by the deduction
-    system on an input. The chart is the least pre-fixed point of
-    the rule-system functor; operationally, the agenda engine
-    populates it bottom-up.
+    A chart assigns each item it holds a weight in the semiring's
+    carrier; an item it does not hold has the semiring's zero. A
+    completed chart solves the deduction system's equations
+    ``value(c) = axiom(c) ⊕ ⨁_{applications e → c} ⊗_j value(a_j)``;
+    the agenda engine fills it bottom-up.
 
     Concrete subclasses choose a storage strategy: dense
     tensor-indexed (for CKY-style spans), sparse hash-indexed
@@ -463,28 +463,20 @@ class HashChart(Chart):
 
 
 class ChartView:
-    """A first-class, differentiable view onto a chart.
+    """A differentiable view onto a completed chart.
 
-    Wraps a `Chart` produced by an agenda run and exposes
-    the user-facing presheaf-evaluation operations:
+    Wraps the `Chart` an agenda run produced, a map from derived items to
+    their weights, and exposes lookups into it:
 
-    * `weight`: query the aggregated weight at a single
-      ground item; returns a differentiable `torch.Tensor`.
-    * `enumerate`: enumerate items matching a pattern with
-      their weights.
-    * `derivations`: extract the derivation forest at an
-      item (under the derivation semiring; for the basic
-      Boolean / LOG_PROB / Viterbi semirings, returns the
-      flat list of matched derivations as a placeholder).
-    * `goal_weight`: return the weight at the goal items
-      identified at run time.
+    * `weight`: the weight of one ground item, a differentiable
+      `torch.Tensor`.
+    * `enumerate`: the items matching a pattern, with their weights.
+    * `derivations`: the rule applications that derive an item, the
+      item's incoming hyperedges in the derivation hypergraph.
+    * `goal_weight`: the semiring sum of the goal items' weights.
 
-    Categorically, the chart is the K-presheaf
-    :math:`I^{\\mathrm{op}} \\to K` produced by the deduction
-    system; ``ChartView``'s methods are presheaf evaluations.
-    Gradients flow through these operations because the
-    underlying tensors carry ``requires_grad`` from the rule
-    weights.
+    Gradients flow through these lookups because the stored tensors
+    carry ``requires_grad`` from the rule and axiom weights.
 
     Parameters
     ----------
@@ -497,7 +489,7 @@ class ChartView:
 
     @property
     def chart(self) -> Chart:
-        """The underlying K-presheaf."""
+        """The underlying chart."""
         return self._result.chart
 
     @property
@@ -617,15 +609,13 @@ class ChartView:
             )
         return encoder(item)
 
-    def derivations(self, item: Item) -> list[Item]:
-        """Return the items of the chart in which ``item`` was derived.
+    def derivations(self, item: Item) -> list[tuple[str, tuple[Item, ...]]]:
+        """The rule applications that derive ``item``.
 
-        The chart records only the aggregate weight at each item,
-        so this returns the chart's item set as a flat enumeration
-        when ``item`` is in the chart. The full derivation forest
-        (a tree-structured object whose leaves are axioms and whose
-        internal nodes are rule firings) is recoverable by running
-        the agenda with a derivation semiring.
+        These are the item's incoming hyperedges in the derivation
+        hypergraph [Klein and Manning (2001)](<https://aclanthology.org/W01-1812/>):
+        each derivation of ``item`` is an axiom of it, or one of these
+        applications together with a derivation of each antecedent.
 
         Parameters
         ----------
@@ -634,19 +624,15 @@ class ChartView:
 
         Returns
         -------
-        list of Item
-            Every item in the chart, or an empty list when ``item``
-            was never derived.
+        list of (str, tuple of Item)
+            Each application's rule name and antecedent items, in
+            premise order; empty when no rule derives ``item``.
         """
-        # In the current implementation we expose the set of
-        # items that contributed to the item's weight; a
-        # derivation-semiring run is required for the full tree.
-        # For the common case where the user wants "every item
-        # in the chart," returning the item list is the closest
-        # correct answer.
-        if item not in (it for it, _ in self._result.chart.items()):
-            return []
-        return [it for it, _ in self._result.chart.items()]
+        return [
+            (rule_name, antecedents)
+            for rule_name, antecedents, conclusion in self._result.applications
+            if conclusion == item
+        ]
 
     def goal_weight(self) -> torch.Tensor:
         """Aggregate weight over all goal items.
@@ -995,7 +981,7 @@ class AgendaResult:
     Attributes
     ----------
     chart : Chart
-        The final K-presheaf on the item algebra.
+        The completed chart: each derived item's weight.
     semiring : ChartSemiring
         The semiring used for weight aggregation.
     goal_items : list of (Item, torch.Tensor)
@@ -1003,12 +989,16 @@ class AgendaResult:
         their final aggregated weights.
     iterations : int
         Number of agenda steps consumed (diagnostic).
+    applications : list of (str, tuple of Item, Item)
+        Every rule application of the run: the rule's name, its
+        antecedent items in premise order, and its conclusion.
     """
 
     chart: Chart
     semiring: ChartSemiring
     goal_items: list[tuple[Item, torch.Tensor]] = field(default_factory=list)
     iterations: int = 0
+    applications: list[tuple[str, tuple[Item, ...], Item]] = field(default_factory=list)
     encoder: Encoder | None = None
     # Sum of all rule-attached + chart-attached loss values fired
     # during this run, populated by `DeductionSystem.run` when a
@@ -1108,9 +1098,7 @@ def run_agenda(
     agenda.bind_semiring(semiring)
     chart = chart or HashChart()
     rules = tuple(rules)
-    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None = (
-        {} if rule_callback is not None else None
-    )
+    applications: dict[tuple[int, tuple[Item, ...]], _Application] = {}
 
     for item, w in axioms:
         agenda.push(item, w)
@@ -1150,7 +1138,7 @@ def run_agenda(
                     applications=applications,
                 )
 
-    if rule_callback is not None and applications is not None:
+    if rule_callback is not None:
         for application in applications.values():
             weights = tuple(_chart_weight(chart, a) for a in application.antecedents)
             rule_callback(
@@ -1175,6 +1163,9 @@ def run_agenda(
         semiring=semiring,
         goal_items=goal_items,
         iterations=iterations,
+        applications=[
+            (a.rule.name, a.antecedents, a.conclusion) for a in applications.values()
+        ],
     )
 
 
@@ -1269,7 +1260,7 @@ def _fire_remaining_premises(
     remaining_indices: list[int],
     fixed_idx: int,
     update: _Update,
-    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application],
 ) -> None:
     """Match the remaining premise patterns against the chart, then fire.
 
@@ -1298,9 +1289,8 @@ def _fire_remaining_premises(
         The premise position the popped item fills.
     update : _Update
         The popped item, its increment, and its old weight.
-    applications : dict or None
-        The rule applications seen so far, recorded for the rule
-        callback; ``None`` when no callback is set.
+    applications : dict
+        The rule applications seen so far.
     """
     if not remaining_indices:
         _fire(
@@ -1383,7 +1373,7 @@ def _fire(
     chart: Chart,
     semiring: ChartSemiring,
     agenda: Agenda,
-    applications: dict[tuple[int, tuple[Item, ...]], _Application] | None,
+    applications: dict[tuple[int, tuple[Item, ...]], _Application],
 ) -> None:
     """Push one rule application's increment onto the agenda.
 
@@ -1412,9 +1402,8 @@ def _fire(
         The semiring of the run.
     agenda : Agenda
         The agenda that receives the conclusion's increment.
-    applications : dict or None
-        The rule applications seen so far, extended with this one;
-        ``None`` when no callback is set.
+    applications : dict
+        The rule applications seen so far, extended with this one.
     """
     if rule.side_condition is not None and not rule.side_condition(bindings):
         return
@@ -1437,15 +1426,14 @@ def _fire(
             continue
         factors.append(w)
     conclusion_item = instantiate(rule.conclusion, bindings)
-    if applications is not None:
-        key = (rule_index, tuple(antecedents))
-        if key not in applications:
-            applications[key] = _Application(
-                rule=rule,
-                bindings=bindings,
-                antecedents=tuple(antecedents),
-                conclusion=conclusion_item,
-            )
+    key = (rule_index, tuple(antecedents))
+    if key not in applications:
+        applications[key] = _Application(
+            rule=rule,
+            bindings=bindings,
+            antecedents=tuple(antecedents),
+            conclusion=conclusion_item,
+        )
     if not complete:
         return
     agenda.push(
@@ -1765,8 +1753,7 @@ class DeductionSystem:
     ) -> ChartView:
         """Run the deduction and return a `ChartView`.
 
-        Convenience for the user-facing presheaf-evaluation API:
-        the chart's weights are differentiable tensors, and the
+        The chart's weights are differentiable tensors, and the
         view exposes ``weight``, ``enumerate``, ``derivations``,
         and ``goal_weight`` methods for downstream programs.
 
