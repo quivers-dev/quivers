@@ -9,7 +9,7 @@ their conclusions [@eisner2005compiling]. Calling the system returns a `ChartVie
 differentiable view of the chart, the weight of each proved item. Different schedules change the
 cost, and [equality of final results](../../guides/deduction.md#strategy-independence) requires the
 semiring laws and, when rules form cycles, convergence of the fixed-point iteration. Fitting,
-sampling, and the NUTS wrapper are in the [deduction package](deduction.md).
+sampling, and the No-U-Turn Sampler (NUTS) wrapper are in the [deduction package](deduction.md).
 
 ## Items, patterns, and bindings
 

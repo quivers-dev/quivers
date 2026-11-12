@@ -11,7 +11,7 @@ sentences of one length.
 |---|---|
 | [`primitives`](deduction/primitives.md) | Abstract building blocks (`Axiom`, `Deduction`, `Goal`, `Schedule`, `DeductiveSystem`), used mainly to write new deduction classes. |
 | [`fit`](deduction/fit.md) | Gradient fitting of point estimates (MAP or MLE) of the learnable log weights. |
-| [`bayes`](deduction/bayes.md) | A `MonadicProgram` over the learnable log weights whose posterior NUTS or SVI can target. |
+| [`bayes`](deduction/bayes.md) | A `MonadicProgram` over the learnable log weights whose posterior No-U-Turn Sampler (NUTS) or stochastic variational inference (SVI) can target. |
 | [`sample`](deduction/sample.md) | Exact forward sampling of yields of a given length from the chart's distribution. |
 
 ::: quivers.stochastic.deduction

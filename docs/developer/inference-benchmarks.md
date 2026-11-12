@@ -9,11 +9,11 @@ For instance, `0.0398 / 0.05` means the absolute error in the chosen mean is
 `0.0398`, within the allowed error `0.05`. It says nothing directly about
 posterior variance, tails, correlations, or a different latent site. A variational
 [guide](../tutorials/qvr/06-inference-zoo.md#step-2-which-variational-guide), the family of
-approximate posteriors fitted by SVI, can recover a mean while underestimating uncertainty.
+approximate posteriors fitted by stochastic variational inference (SVI), can recover a mean while underestimating uncertainty.
 
 The *capture* rows reverse the usual meaning of PASS: they pass when a known failure remains
 detectable, so their metric is read before their status. Throughput has different units across
-families, since one SVI update and one MCMC draw are different amounts of statistical work. The
+families, since one SVI update and one Markov chain Monte Carlo (MCMC) draw are different amounts of statistical work. The
 tables compare the five algorithms at the listed budgets, and changing the number of updates,
 draws, or particles changes both cost and accuracy.
 
@@ -41,7 +41,7 @@ Determinism: every cell calls `torch.manual_seed(0)` before constructing the pro
 
 ## Algorithms
 
-All algorithms are evaluated on every problem with hyperparameters held fixed across problems. The grid thus measures performance under that common configuration, and tuning a method for one problem can change its result. The variational guides are fitted by stochastic variational inference (SVI) [@blei2017variational], and the samplers are Hamiltonian Monte Carlo (HMC) [@neal2011mcmc] and the No-U-Turn Sampler (NUTS) [@hoffman2014nuts].
+All algorithms are evaluated on every problem with hyperparameters held fixed across problems. The grid thus measures performance under that common configuration, and tuning a method for one problem can change its result. The variational guides are fitted by SVI [@blei2017variational], and the samplers are Hamiltonian Monte Carlo (HMC) [@neal2011mcmc] and the No-U-Turn Sampler (NUTS) [@hoffman2014nuts].
 
 | Algorithm | Family | Key hyperparameters |
 |---|---|---|

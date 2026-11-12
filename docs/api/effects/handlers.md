@@ -7,7 +7,7 @@ generates a site, which changes which density terms belong to the model. Replay 
 an [earlier trace](../../tutorials/python/05-variational-inference.md#tracing-the-model), scaling
 multiplies score terms, and [`subsample`](#quivers.effects.subsample.subsample) scores a plate's
 sites at a subset of its rows, rescaled, for
-[minibatch SVI](../../guides/inference-svi.md#minibatches-subsampled-plates).
+[minibatch](../../guides/inference-svi.md#minibatches-subsampled-plates) stochastic variational inference.
 
 ::: quivers.effects.clamp
 

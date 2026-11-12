@@ -5,7 +5,7 @@ constraint solver, and the compiler. `check`
 [validates source files](../tutorials/qvr/13-release-workflow.md#1-check-the-source-and-one-target),
 `run` [runs one entry point](../reference/qvr/execution-and-tooling.md#run-an-entry), `transpile`
 writes target source, and `repl` and `lsp` give interactive and editor access. Fitting a posterior
-with SVI or MCMC goes through the [inference API](inference/svi.md).
+with stochastic variational inference (SVI) or Markov chain Monte Carlo (MCMC) goes through the [inference API](inference/svi.md).
 
 ## `qvr check FILES...`
 

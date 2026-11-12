@@ -7,11 +7,11 @@ The public API of quivers, by subpackage, with each module page generated from i
 | Read the basic concepts | [Concepts by example](../getting-started/concepts.md) | Composition of weighted tables and Bayesian inference, with the terms the library uses |
 | Load a `.qvr` model | [DSL entry points](dsl/index.md) | Parsed or compiled source, depending on the entry point |
 | Build a weighted computation in Python | [Objects](core/objects.md), [morphisms](core/morphisms.md), and [algebras](core/algebras.md) | Finite sets, weighted tables between them, and the rules that combine their weights |
-| Fit a model to data | [SVI](inference/svi.md) or [MCMC](inference/mcmc.md) | An approximation to the posterior, with different computational tradeoffs |
+| Fit a model to data | [Stochastic variational inference](inference/svi.md) (SVI) or [Markov chain Monte Carlo](inference/mcmc.md) (MCMC) | An approximation to the posterior, with different computational tradeoffs |
 | Fit a regression formula | [Formulas](formulas/index.md) | A generated model and fitted result from tabular data |
 | Inspect the results | [Diagnostics](diagnostics/index.md) | Checks of inference behaviour and predictive adequacy |
 | Extend checking or execution | [Quivers Indexed Effect Core](qiec/index.md) | Explicit types, computations, and effect interfaces |
-| Translate to another PPL | [Transpilation](transpile/index.md) | Target source, or a diagnostic naming the unsupported feature |
+| Translate to another probabilistic programming language (PPL) | [Transpilation](transpile/index.md) | Target source, or a diagnostic naming the unsupported feature |
 
 ## Core Package
 
@@ -125,7 +125,7 @@ The `inference` package contains variational inference, MCMC, and posterior pred
 - **[ELBO](inference/elbo.md)**: the evidence lower bound and related objectives
 - **[SVI](inference/svi.md)**: stochastic variational inference
 - **[Predictive](inference/predictive.md)**: posterior predictive sampling
-- **[MCMC](inference/mcmc.md)**: HMC and NUTS kernels and the runner for several chains
+- **[MCMC](inference/mcmc.md)**: Hamiltonian Monte Carlo (HMC) and No-U-Turn Sampler (NUTS) kernels, and the runner for several chains
 
 ## Data, Diagnostics, and Formulas
 

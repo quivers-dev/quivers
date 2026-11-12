@@ -140,7 +140,7 @@ Each reference density is held to the PyTorch definition that the transpile prob
 PyTorch has no class for the family, to the definition in the compiled runtime. The reference
 machine is thus a [test oracle](https://en.wikipedia.org/wiki/Test_oracle) against which a host
 runtime can be checked. Here and below, the *compiled runtime* is the PyTorch implementation of a
-module (`Program`, `MonadicProgram`), used for gradients, SVI, and MCMC.
+module (`Program`, `MonadicProgram`), used for gradients, stochastic variational inference (SVI), and Markov chain Monte Carlo (MCMC).
 
 Two further conventions hold in the reference backend. The LKJ families, whose draw has a size
 that no parameter fixes, read that size from the event extents of the constructed type. A
@@ -222,7 +222,7 @@ handlers of the enclosing run neither observe nor condition its sites.
 #### Prepared joints
 
 Some consumers score one program at many points: the MCMC
-[`PotentialFn`][quivers.inference.mcmc.PotentialFn], the tempered potential that SMC moves under
+[`PotentialFn`][quivers.inference.mcmc.PotentialFn], the tempered potential that sequential Monte Carlo (SMC) moves under
 [@delmoral2006sequential], and [`AutoDAIS`][quivers.inference.dais.AutoDAIS]
 [@zhang2021dais; @geffner2021uha]. These score through a prepared joint
 (`quivers.effects.joint_plan`) rather than one run of the machine per point.
