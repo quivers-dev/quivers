@@ -715,7 +715,7 @@ sample net_param_layer0_bias <- Normal(loc=0.0, scale=s) [over=net__w0_rows]
 
 Here `net__w<k>_rows` and `net__w<k>_cols` are finite objects of the layer's height and width. The
 network's elaboration then reads these bindings where it would otherwise declare `weight` and `bias`
-program inputs, so the checked computation has no such inputs, and the reference machine draws or
+program inputs, so the well-typed computation has no such inputs, and the reference machine draws or
 replays the weights as sites. The compiled runtime applies the network at the weights drawn in the
 run. A kernel with latent weights is drawn from with its inputs named. A morphism with latent weights
 composed in a `define` without a scan, or in a morphism's `~ <expression>`, is refused. Every

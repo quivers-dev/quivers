@@ -6,7 +6,7 @@ each constructor fixes. It is the
 [@dybjer1994inductive], and in a language without dependent types the
 [generalized algebraic data type](https://en.wikipedia.org/wiki/Generalized_algebraic_data_type)
 (GADT) [@xi2003guarded]. A value of `Measurement(Observed)` and one of `Measurement(Missing)`
-belong to one family, but a checked computation cannot use one where the other is expected. The
+belong to one family, but a well-typed computation cannot use one where the other is expected. The
 constructor determines the index, and [case analysis](#indexed-case-analysis) refines it inside
 each branch.
 

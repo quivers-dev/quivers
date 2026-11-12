@@ -80,7 +80,7 @@ graph of search and weights as a deduction.
 
 The compiled runtime's `ChartParser` and the QIEC entry share their lexical and rule weights and
 compute the same inside weight, bounded by `depth`. The `ChartParser` fits by batched PyTorch
-optimization, and the checked computation gives effect handling, entry point execution, stable
+optimization, and the well-typed computation gives effect handling, entry point execution, stable
 serialization, and target diagnostics.
 
 A target without the search runtime reports `qiec:capability:search:<entry>`. A parser that another

@@ -118,7 +118,7 @@ They are listed under [format identifiers](execution-and-tooling.md#format-ident
 
 ## Target support
 
-The reference machine runs every checked computation and every distribution family. A computation
+The reference machine runs every well-typed computation and every distribution family. A computation
 that calls a neural network, such as a structural
 [encoder](../../guides/structural-compression-signatures-and-encoders.md#encoder-blocks), also
 needs a runtime provider that holds the PyTorch module. A transpile target either emits the whole
