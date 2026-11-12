@@ -1945,6 +1945,8 @@ def _transform_rhs_args(
     counter: list[int],
     rhs_args: tuple[str, ...],
     family: str,
+    *,
+    dotted: bool = False,
 ) -> tuple[str, ...]:
     """Apply the family's value-level arg transforms to rendered args.
 
@@ -1959,10 +1961,38 @@ def _transform_rhs_args(
     path that renders a family's args, whether the call is scalar,
     broadcast (`Family.(args)`) or inside an `arraydist`
     comprehension.
+
+    Parameters
+    ----------
+    sb : panproto.SchemaBuilder
+        The schema being built.
+    counter : list[int]
+        The fresh-identifier counter.
+    rhs_args : tuple[str, ...]
+        The rendered family arguments.
+    family : str
+        The QVR family name.
+    dotted : bool
+        Whether the family call is broadcast over rows, so every
+        value-level transform must broadcast too.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The transformed arguments.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If a transform's argument position is outside `rhs_args`.
     """
     if family in _RATE_TO_SCALE_INVERT_POSITIONS:
         rhs_args = _invert_rate_arg(
-            sb, counter, rhs_args, _RATE_TO_SCALE_INVERT_POSITIONS[family]
+            sb,
+            counter,
+            rhs_args,
+            _RATE_TO_SCALE_INVERT_POSITIONS[family],
+            dotted=dotted,
         )
     if family in _PROB_COMPLEMENT_POSITIONS:
         rhs_args = _complement_prob_arg(
@@ -2092,7 +2122,7 @@ def _dist_expr(
             )
         dim = _dim_to_size(sb, counter, event_dims[0])
         rhs_args = (dim, *rhs_args)
-    rhs_args = _transform_rhs_args(sb, counter, rhs_args, family)
+    rhs_args = _transform_rhs_args(sb, counter, rhs_args, family, dotted=dotted)
     return call(
         sb,
         counter,
@@ -2129,8 +2159,10 @@ def _invert_rate_arg(
     counter: list[int],
     rhs_args: tuple[str, ...],
     position: int,
+    *,
+    dotted: bool = False,
 ) -> tuple[str, ...]:
-    """Replace `rhs_args[position]` with `inv(<rhs_args[position]>)`.
+    """Replace `rhs_args[position]` with its reciprocal.
 
     Julia's `Base.inv` returns the multiplicative inverse for any
     numeric type; emitting `inv(rate)` rather than the literal
@@ -2138,7 +2170,33 @@ def _invert_rate_arg(
     child kind would need to be inferred from the arg's emitter
     output. The reciprocal is the canonical Distributions.jl
     `theta = 1/rate` substitution for the `Gamma` and `Exponential`
-    families.
+    families. Inside a broadcast family call (`Gamma.(a, inv.(rate))`)
+    the rate may be one value per row, and `inv` of a vector is a
+    `MethodError`, so the reciprocal is broadcast as well.
+
+    Parameters
+    ----------
+    sb : panproto.SchemaBuilder
+        The schema being built.
+    counter : list[int]
+        The fresh-identifier counter.
+    rhs_args : tuple[str, ...]
+        The rendered family arguments.
+    position : int
+        The 0-based position of the rate argument.
+    dotted : bool
+        Whether the family call is broadcast over rows, so the
+        reciprocal is the dot-broadcast `inv.(rate)`.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The arguments with the rate replaced by its reciprocal.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If `position` is outside `rhs_args`.
     """
     if position >= len(rhs_args):
         raise UnsupportedConstruct(
@@ -2148,7 +2206,8 @@ def _invert_rate_arg(
                 f"{len(rhs_args)} args"
             ],
         )
-    inv_call = _call(
+    call = _broadcast_call if dotted else _call
+    inv_call = call(
         sb,
         counter,
         _identifier(sb, counter, "inv"),

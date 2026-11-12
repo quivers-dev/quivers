@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **A program step drawing through a `param_source=attention` kernel is refused where it is written.** An attention source pools a sequence of rows into one parameter vector, and a program step hands a kernel one row per draw, so `sample h <- layer` with `layer` reaching such a kernel (directly or through a `define` chain) is refused by `loads` with a `CompileError` at the step's line and column, and by the checked elaboration and `qvr check` with a `qiec-program` diagnostic at the step, where the compiled runtime had failed inside `torch` with an `AssertionError` and `qvr check` had reported an unlocated gap. The message points to a `param_source=self_attention` learned function for attention over a sequence. The kernel outside a program compiles as before.
 - **A program over a finite domain checks its input.** `trace`, `log_joint`, and every other run of a program whose domain is a finite set take one element index per run, a `(B,)` or `(B, 1)` tensor of indices in the set; any other input raises a `ValueError` naming the expected and received shapes (or the indices outside the set), where it had failed inside a network with a shape mismatch.
+## [0.53.3] - 2026-11-11
+
+### Fixed
+
+- **A `factor` let is planned over the object its binder names.** A let such as `factor t : Step in ...` beside another object of the same cardinality reaches every transpile target over `Step`, so WebPPL scores a plated observation inside a `marginalize` atom at its row (`rate[n]`), where it had read the whole vector and returned no density.
+- **Turing reciprocates a per-row rate elementwise.** A `Gamma` or `Exponential` rate that holds one value per row renders as `inv.(rate)` inside the broadcast family call, where `inv(rate)` raised a `MethodError` on the vector.
+- **JAGS reads a per-row host datum at the loop's row.** A datum that fills a family parameter of a plated site, such as a known standard error `Normal(loc=mu, scale=se)`, renders as `se[m_School]`, as BUGS renders it, where JAGS rejected the unindexed vector.
+- **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
+- **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
+
 ## [0.53.2] - 2026-11-11
 
 ### Fixed
