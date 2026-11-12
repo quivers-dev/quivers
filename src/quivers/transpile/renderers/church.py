@@ -50,7 +50,11 @@ from quivers.transpile.renderers._ranks import (
     let_expr_rank,
     several_axis_reductions,
 )
-from quivers.transpile.renderers._rows import take_row
+from quivers.transpile.renderers._rows import (
+    scalar_parameter,
+    take_row,
+    visited_position,
+)
 from quivers.transpile.renderers._scheme_helpers import render_let_expr_scheme
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.dsl.ast_nodes.let_expressions import (
@@ -183,6 +187,43 @@ def _index_event_axes(
     if not extra:
         return arg
     return IRArgRef(name=arg.name, indices=(*arg.indices, *extra))
+
+
+def _read_event_at_position(
+    arg: IRArg, plates: Mapping[str, Plate], loops: Mapping[str, str]
+) -> IRArg:
+    """Read a value of event axes only at the batch loops visiting them.
+
+    A reference bound on batch axes is threaded through the plate's
+    row index by the alignment pass; one bound as a single event (a
+    vector drawn ``[over=Feat]``) has no batch axis to align, and is
+    read here at the loop over each of its axes.
+
+    Parameters
+    ----------
+    arg : IRArg
+        The argument.
+    plates : Mapping[str, Plate]
+        The plate of each name bound so far.
+    loops : Mapping[str, str]
+        Each of the site's batch axes mapped to its loop variable.
+
+    Returns
+    -------
+    IRArg
+        The argument indexed at the loops when it is an unindexed
+        reference to a value of event axes only, each a visited axis;
+        else `arg` unchanged.
+    """
+    if not isinstance(arg, IRArgRef) or arg.indices:
+        return arg
+    plate = plates.get(arg.name)
+    if plate is None or plate.batch_dims:
+        return arg
+    visited = visited_position(plate, loops)
+    if not visited:
+        return arg
+    return IRArgRef(name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited))
 
 
 def _is_scalar_constraint(constraint: ConstraintSpec) -> bool:
@@ -1211,7 +1252,6 @@ class ChurchRenderer(RendererBase):
         SchemaFragment
             The emitted vertex id, or ``""`` when nothing is emitted.
         """
-        del arg_names
         # A scalar family observed over event axes scores each event
         # coordinate on its own: the observe loops those axes too, and
         # every argument carrying one of them reads it at that loop.
@@ -1224,6 +1264,21 @@ class ChurchRenderer(RendererBase):
             args = tuple(
                 _index_event_axes(arg, event_loops, self._binding_plates)
                 for arg in args
+            )
+        # A rank-0 parameter filled by one vector over the site's batch
+        # axes (a `z` drawn over `Feat` as the location of a `Normal`
+        # replicated over `Feat`) reads its entry at each position.
+        loops = _loop_variables(plate.batch_dims, "")
+        if len(set(loops)) == len(loops):
+            visiting = {
+                str(dim.name): loop
+                for dim, loop in zip(plate.batch_dims, loops, strict=True)
+            }
+            args = tuple(
+                _read_event_at_position(arg, self._binding_plates, visiting)
+                if scalar_parameter(family, arg_name)
+                else arg
+                for arg, arg_name in zip(args, arg_names, strict=False)
             )
         dist_form = self._dist_form(ctx, family, args, plate, via)
         if observed:

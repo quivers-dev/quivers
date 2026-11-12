@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 127 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 137 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 127   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 76 / 127   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 92 / 127   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 82 / 127   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 68 / 127   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 106 / 127  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 93 / 127   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 108 / 127  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 94 / 127   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 87 / 127   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 85 / 127   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 71 / 137   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 85 / 137   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 102 / 137  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 90 / 137   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 76 / 137   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 117 / 137  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 103 / 137  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 119 / 137  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 105 / 137  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 96 / 137   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 95 / 137   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -138,65 +138,75 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 #### 1.2.2 Program steps
 
-| Program                                         | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
-|-------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `steps/call_step`                               | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/function_linear`                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/function_positions`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/function_self_attention`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/kernel_latent_weights`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/let_step`                                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/marginalize_body_let_chain`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_body_plated_let`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_continuous_bernoulli_logits` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/marginalize_latent_gather`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_latent_value`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_let_probs`                   | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_let_vector_probs`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_step`                        | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_bernoulli_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_binomial_logits`                 | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_class_code`                      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_continuous_bernoulli_logits`     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/observe_gather_event_vector`             | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/observe_gather_matrix_row`               | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
-| `steps/observe_geometric_logits`                | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_logits_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_mvn_host_factor`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_mvn_lkj_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_negative_binomial_logits`        | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
-| `steps/observe_ordered_probit`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_ordinal_code`                    | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_probs_data`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_parameter_data`           | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/return_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_class_code`                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/sample_dirichlet_sampled_concentration`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_inverse_wishart_factor`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
-| `steps/sample_matrix_normal`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_covariance`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_factor`                       | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_host_loc`                     | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_precision`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_sampled_loc`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_onehot_probs`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/sample_onehot_sampled_probs`             | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/sample_relaxed_onehot_probs`             | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
-| `steps/sample_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_wishart_covariance`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/sample_wishart_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/sample_wishart_host_factor`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/sample_wishart_precision`                | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/scan_bidirectional`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_matrix`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_matrix_data`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_vector`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_initial_binding`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_marginal_chain`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_outputs_all`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_reverse`                            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/score_step`                              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| Program                                        | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
+|------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_positions`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_self_attention`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_factor_let_rows`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_gathered_prior_data`        | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_gather`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_value`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_probs`                  | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_vector_probs`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_step`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernoulli_logits`               | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_bernoulli_logits_rows`          | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_binomial_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_class_code`                     | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_gather_event_vector`            | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/observe_gather_matrix_row`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
+| `steps/observe_geometric_logits`               | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_mvn_lkj_factor`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/observe_ordered_probit`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_over_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_per_row_datum_scale`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_per_row_gamma_rate`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_plated_vector_location`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_shared_probs_vector`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_latent`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_let`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_vector_scale_rate`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_inverse_wishart_factor`          | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
+| `steps/sample_matrix_normal`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_covariance`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_precision`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_sampled_loc`                 | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_onehot_probs`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_vector_location`                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_wishart_covariance`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/sample_wishart_precision`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_marginal_chain`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
 
@@ -606,10 +616,6 @@ Every backend reports it in the same words. `bugs` on `vanilla_rnn_lm` reports:
 `scan(rnn_cell)` threads `rnn_cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
 ```
 
-### Refused everywhere, for unrelated reasons
-
-No backend renders `steps/observe_continuous_bernoulli_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
-
 ## 3. What each backend alone refuses
 
 These are target gaps rather than language gaps: another backend renders the same program. Each quoted message is the one that backend raises, including whatever alternative it offers.
@@ -857,7 +863,7 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
 
 Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1128,7 +1134,7 @@ bugs cannot marginalize this latent out: the rows `idx` sends to each `Item` are
 
 **`marginalize:no-collapse:z`**
 
-Refused for: `steps/marginalize_continuous_bernoulli_logits`, [`zip_regression`](examples/zip-regression.md).
+Refused for: [`zip_regression`](examples/zip-regression.md).
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1138,7 +1144,7 @@ Reported kinds:
 marginalize:no-collapse:z: the scope is no categorical mixture, and BUGS has no statement that adds its integrated log-density to the joint
 ```
 
-`bugs` on `steps/marginalize_continuous_bernoulli_logits` reports:
+`bugs` on `zip_regression` reports:
 
 ```text
 bugs cannot marginalize this latent out: the scope is no categorical mixture, and BUGS has no statement that adds its integrated log-density to the joint
@@ -1162,6 +1168,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`bugs` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and BUGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1182,9 +1206,9 @@ marginalize:ungrouped-over-plate:z
 
 **`observe:class-code:w`**
 
-Refused for: [`lda`](examples/lda.md).
+Refused for: `steps/marginalize_gathered_prior_data`, [`lda`](examples/lda.md).
 
-Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -1192,7 +1216,7 @@ Reported kinds:
 observe:class-code:w: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
 ```
 
-`bugs` on `lda` reports:
+`bugs` on `steps/marginalize_gathered_prior_data` reports:
 
 ```text
 bugs cannot emit this `observe` step: the data codes Categorical classes from zero and `dcat` reads them from one; BUGS has no data block to shift the observed codes and no free log-density statement to score them otherwise
@@ -1200,7 +1224,7 @@ bugs cannot emit this `observe` step: the data codes Categorical classes from ze
 
 **`observe:class-code:y`**
 
-Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`, `steps/observe_shared_probs_vector`.
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1297,7 +1321,7 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
 
 Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -1673,6 +1697,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`church` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Church scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1821,6 +1863,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`edward2` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Edward2 scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -1881,7 +1941,7 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
 
 Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -2149,6 +2209,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`gen` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -2165,6 +2243,24 @@ marginalize:ungrouped-over-plate:z
 
 ```text
 `marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Gen.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:weight-plate:theta_tok`**
+
+Refused for: `steps/marginalize_gathered_prior_data`.
+
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:weight-plate:theta_tok: the atom weights reference a name with no declared plate
+```
+
+`gen` on `steps/marginalize_gathered_prior_data` reports:
+
+```text
+gen cannot marginalize this latent out: the atom weights reference a name with no declared plate
 ```
 
 ### jags
@@ -2263,7 +2359,7 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
 
 Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 
@@ -2568,6 +2664,24 @@ let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the in
 jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
 ```
 
+**`let-expr:elementwise-axis-operator:jags`**
+
+Refused for: `steps/marginalize_gathered_prior_data`.
+
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:elementwise-axis-operator:jags: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
+```
+
+`jags` on `steps/marginalize_gathered_prior_data` reports:
+
+```text
+jags-helper cannot lift an infix operator over an axis inside a `let`: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
+```
+
 **`marginalize:ungrouped-over-plate:state`**
 
 Refused for: [`hmm`](examples/hmm.md).
@@ -2584,6 +2698,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`jags` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and JAGS scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -2829,6 +2961,24 @@ marginalize:ungrouped-over-plate:state
 
 ```text
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`pymc` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and PyMC scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
 **`marginalize:ungrouped-over-plate:z`**
@@ -3307,6 +3457,24 @@ marginalize:ungrouped-over-plate:state
 `marginalize state` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize state : A`) or a grouping `over =` clause, either of which this target does emit correctly.
 ```
 
+**`marginalize:ungrouped-over-plate:tau`**
+
+Refused for: `steps/marginalize_factor_let_rows`.
+
+Renders on: `numpyro`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:ungrouped-over-plate:tau
+```
+
+`turing` on `steps/marginalize_factor_let_rows` reports:
+
+```text
+`marginalize tau` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize tau : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
 **`marginalize:ungrouped-over-plate:z`**
 
 Refused for: `steps/marginalize_body_let_chain`, `steps/marginalize_body_plated_let`, `steps/marginalize_latent_gather`, `steps/marginalize_latent_value`, `steps/marginalize_let_probs`, `steps/marginalize_let_vector_probs`.
@@ -3323,6 +3491,24 @@ marginalize:ungrouped-over-plate:z
 
 ```text
 `marginalize z` carries no index and no `over =` clause, so it declares one latent and every row of the plated `observe` inside it is conditioned on that single draw. Its density thus accumulates the body's rows and reduces over the latent once, and Turing.jl scores the rows the other way round, giving each its own draw. That is a different measure, not a different base measure, so it is refused rather than emitted. Give the latent the plate its rows share (`marginalize z : A`) or a grouping `over =` clause, either of which this target does emit correctly.
+```
+
+**`marginalize:weight-plate:theta_tok`**
+
+Refused for: `steps/marginalize_gathered_prior_data`.
+
+Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:weight-plate:theta_tok: the atom weights reference a name with no declared plate
+```
+
+`turing` on `steps/marginalize_gathered_prior_data` reports:
+
+```text
+turing cannot marginalize this latent out: the atom weights reference a name with no declared plate
 ```
 
 **`sample:event-axis-lift:x`**
@@ -3422,7 +3608,7 @@ The data input `weights` fills a vector-valued family parameter (a mean vector, 
 
 **`family:Bernoulli:logits`**
 
-Refused for: `steps/observe_bernoulli_logits`.
+Refused for: `steps/observe_bernoulli_logits`, `steps/observe_bernoulli_logits_rows`.
 
 Renders on: `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`.
 

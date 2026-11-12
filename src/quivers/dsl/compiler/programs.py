@@ -52,7 +52,12 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.programs import MonadicProgram, _lookup_arg
 from quivers.effects.checked_program import CheckedProgram
-from quivers.continuous.param_source import IdentitySource, ParamSource
+from quivers.continuous.param_source import (
+    AttentionSource,
+    IdentitySource,
+    ParamSource,
+    attention_draw_message,
+)
 from quivers.continuous.spaces import (
     CholeskyFactor,
     ContinuousSpace,
@@ -206,6 +211,63 @@ def _arg_names(args: tuple) -> tuple[str, ...]:
         elif isinstance(arg, DrawArgName):
             names.append(arg.text)
     return tuple(names)
+
+
+def _per_row_parameters(
+    family: str,
+    args: tuple,
+    parameter_names: tuple[str, ...] | list[str],
+    value_extents: Mapping[str, tuple[int, ...]],
+    rows: int,
+) -> frozenset[str]:
+    """The bindings a plated observe reads one entry of per row.
+
+    ``observe y : Row <- Normal(loc=z, ...)`` with ``z`` one vector over
+    ``Row`` scores row ``i`` at ``z[i]``: a binding of exactly the
+    plate's rows filling a rank-0 parameter holds one value per row,
+    not a vector every row reads whole.
+
+    Parameters
+    ----------
+    family : str
+        The inline family's name.
+    args : tuple
+        The draw's arguments, positional or named.
+    parameter_names : tuple[str, ...] | list[str]
+        The family's parameters in positional order.
+    value_extents : Mapping[str, tuple[int, ...]]
+        The checked extents of the program's bindings.
+    rows : int
+        The plate's rows.
+
+    Returns
+    -------
+    frozenset[str]
+        The names of the bindings read at each row.
+    """
+    record = FAMILIES.get(family)
+    if record is None:
+        return frozenset()
+    found: set[str] = set()
+    for position, arg in enumerate(args):
+        if isinstance(arg, DrawArgNamed):
+            parameter: str | None = arg.parameter
+            value = arg.value
+        else:
+            parameter = (
+                parameter_names[position] if position < len(parameter_names) else None
+            )
+            value = arg
+        if (
+            parameter is None
+            or parameter not in record.parameter_names
+            or record.parameter(parameter).rank != 0
+            or not isinstance(value, DrawArgName)
+            or tuple(value_extents.get(value.text, ())) != (rows,)
+        ):
+            continue
+        found.add(value.text)
+    return frozenset(found)
 
 
 def _let_expr_reads(node: LetExprNode) -> frozenset[str]:
@@ -3808,6 +3870,7 @@ class _ProgramsMixin:
                     codomain
                     if array is None
                     else Euclidean(name=f"_{step.response_var}", dim=1),
+                    plate_rows=idx_space.size,
                 )
                 # Build a placeholder response of the right shape; the
                 # actual values are supplied at fit time via the
@@ -5503,6 +5566,8 @@ class _ProgramsMixin:
         draw,
         bound_vars: dict[str, AnySpace | None],
         program_codomain: SetObject | ContinuousSpace | None,
+        *,
+        plate_rows: int | None = None,
     ) -> tuple:
         """Resolve a draw step's morphism, handling both named morphisms
         and inline distribution families.
@@ -5515,6 +5580,11 @@ class _ProgramsMixin:
             Currently bound variable types.
         program_codomain : object
             The program's declared codomain (for type inference).
+        plate_rows : int | None
+            The rows of the plate an indexed observe scores the family
+            over, one family per row; ``None`` for a draw of its own.
+            A vector over the plate's rows filling a rank-0 parameter
+            holds one entry per row, which the family reads at its row.
 
         Returns
         -------
@@ -5527,6 +5597,12 @@ class _ProgramsMixin:
             if isinstance(morph, LearnedFunction):
                 raise CompileError(
                     learned_function_draw_message(draw.morphism), draw.line, draw.col
+                )
+            if isinstance(morph, torch.nn.Module) and any(
+                isinstance(module, AttentionSource) for module in morph.modules()
+            ):
+                raise CompileError(
+                    attention_draw_message(draw.morphism), draw.line, draw.col
                 )
             if draw.args is not None:
                 for a in draw.args:
@@ -5596,6 +5672,24 @@ class _ProgramsMixin:
                     },
                     **{k: v for k, v in bound_vars.items() if v is not None},
                 }
+                if plate_rows is not None:
+                    per_row = _per_row_parameters(
+                        draw.morphism, draw.args, param_names, value_extents, plate_rows
+                    )
+                    variable_types = {
+                        **variable_types,
+                        **{
+                            name: Euclidean(
+                                name=f"_{name}", dim=plate_rows, plate_rows=plate_rows
+                            )
+                            for name in per_row
+                        },
+                    }
+                    value_extents = {
+                        name: extents
+                        for name, extents in value_extents.items()
+                        if name not in per_row
+                    }
                 morph, var_args = make_inline_distribution(
                     draw.morphism,
                     draw.args,

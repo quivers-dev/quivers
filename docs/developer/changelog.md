@@ -4,16 +4,43 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Added
-
-- **`ContinuousBernoulli` takes its logits.** `ContinuousBernoulli(logits=l)` is a second parameterization beside `probs=`. The compiled runtime and the reference machine score it in log space, `x log sigmoid(l) + (1 - x) log sigmoid(-l) + log C(l)` with the normalizer `C(l) = l / tanh(l / 2)`, so the density stays exact where `sigmoid(l)` rounds to zero or one (the probability form was off by more than half a nat at `|l| = 30` in single precision). `ConditionalContinuousBernoulli` scores its logits the same way. No transpile target spells the family on the logit scale, so a drawn or observed `ContinuousBernoulli(logits=...)` is refused on every target as `family:ContinuousBernoulli:logits`.
+## [0.53.5] - 2026-11-11
 
 ### Fixed
 
-- **A marginalized Bernoulli-family latent given by its logits weighs its atoms in log space.** At a `marginalize` head, `ContinuousBernoulli(logits=eta)` or `Bernoulli(logits=eta)` weighs the atoms 0 and 1 by `log sigmoid(-eta)` and `log sigmoid(eta)` on the compiled runtime and the reference machine, so a zero-inflated model's joint agrees with the exact mixture at every predictor; the compiled runtime had read the logits as a probability. A mixture weight written as `sigmoid(eta)` or `1.0 - sigmoid(eta)` is formed in single precision before the block reads it and loses its digits once `|eta|` passes about 10; stating the weight on the logit scale avoids that. Every transpile target that renders the block weighs the atoms from the logits without forming the probability's complement (Stan `bernoulli_logit_lpmf`; the log-sigmoid functions of Pyro, NumPyro, and Edward2; `min(l, 0) - log1p(exp(-|l|))` on Turing, Gen, WebPPL, and Church; the logistic function of `l` and of `-l` for the probability-scale mixture weights of PyMC and JAGS), where each had read the logits as a probability or refused `Bernoulli(logits=...)` at a marginalize head. BUGS refuses the block as before.
-- **A literal-argument `Geometric(logits=...)` is scored in log space** like a variable one, where its literal form had been built through `torch.distributions.Geometric`.
+- **A program step drawing through a `param_source=attention` kernel is refused where it is written.** An attention source pools a sequence of rows into one parameter vector, and a program step hands a kernel one row per draw, so `sample h <- layer` with `layer` reaching such a kernel (directly or through a `define` chain) is refused by `loads` with a `CompileError` at the step's line and column, and by the checked elaboration and `qvr check` with a `qiec-program` diagnostic at the step, where the compiled runtime had failed inside `torch` with an `AssertionError` and `qvr check` had reported an unlocated gap. The message points to a `param_source=self_attention` learned function for attention over a sequence. The kernel outside a program compiles as before.
+- **A program over a finite domain checks its input.** `trace`, `log_joint`, and every other run of a program whose domain is a finite set take one element index per run, a `(B,)` or `(B, 1)` tensor of indices in the set; any other input raises a `ValueError` naming the expected and received shapes (or the indices outside the set), where it had failed inside a network with a shape mismatch.
+
+## [0.53.4] - 2026-11-11
+
+### Fixed
+
+- **Transpiling a deeply nested expression is linear in its depth.** quivers requires `didactic>=0.18.2`, whose models keep a nested child as built rather than re-encoding it at every level, so a let that sums twelve builtin calls transpiles in a fraction of a second where it had taken most of a minute. The floor brings `panproto` and `panproto-grammars-all` to `0.77.0`, which that `didactic` requires.
+
+## [0.53.3] - 2026-11-11
+
+### Fixed
+
+- **A `factor` let is planned over the object its binder names.** A let such as `factor t : Step in ...` beside another object of the same cardinality reaches every transpile target over `Step`, so WebPPL scores a plated observation inside a `marginalize` atom at its row (`rate[n]`), where it had read the whole vector and returned no density.
+- **Turing reciprocates a per-row rate elementwise.** A `Gamma` or `Exponential` rate that holds one value per row renders as `inv.(rate)` inside the broadcast family call, where `inv(rate)` raised a `MethodError` on the vector.
+- **JAGS reads a per-row host datum at the loop's row.** A datum that fills a family parameter of a plated site, such as a known standard error `Normal(loc=mu, scale=se)`, renders as `se[m_School]`, as BUGS renders it, where JAGS rejected the unindexed vector.
+- **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
+- **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
+
+## [0.53.2] - 2026-11-11
+
+### Fixed
+
+- **`MCMC.run` samples a program whose data include a corpus of tokens.** The run fingerprint a checkpoint is checked against renders every observation and host datum by content: tensors, numbers, and arrays by dtype, shape, and bytes (a rectangular list of numbers renders as the tensor the program reads), and strings and every other sequence or mapping item by item, so `{"corpus": [["the", "cat", "runs"], ...]}` runs, and resuming with a corpus that differs in one token, in sentence order, or in sentence boundaries is refused as different data. A datum of any other kind is refused with a `TypeError` naming it, rather than left out of the fingerprint. NUTS thus runs on a Bayesian PCFG whose `parse(...)` reads its corpus as host data, where it had stopped before its first draw with `ValueError: too many dimensions 'str'`.
+- **`:quit` in the Jupyter kernel ends the cell and leaves the kernel up.** The chunks after `:quit` are not run, and unless the cell is silent a note on standard error says to shut the kernel down from the front end. The kernel calls no shutdown hook, so under an ipykernel whose `do_shutdown` is a coroutine, `:quit` leaves no unawaited coroutine and raises no `RuntimeWarning`.
+
+## [0.53.1] - 2026-11-11
+
+### Fixed
+
+- **A vector filling a scalar family's parameter is read one entry per draw on every target.** `observe y <- Normal(loc=z, scale=0.5)` with `z` one vector over `Feat` is one Normal per entry of `z`, each at its own entry. Stan, BUGS, JAGS, Gen, WebPPL, and Church read `z` at the position their loop visits (`normal_lpdf(y[m_Feat] | z[m_Feat], 0.5)`), where they had read the whole vector into the scalar slot and scored each entry of `y` against every entry of `z`, or failed to run; Turing broadcasts the family over `z` (`product_distribution(Normal.(z, 0.5))` for an observation, `arraydist(Normal.(z, 0.5))` for a latent). The same holds for a vector in any rank-0 parameter (a scale, a rate) of a sample or an observe, replicated by the vector itself, by `[over=...]`, or by a `: Row` annotation over the vector's axis; a vector filling a parameter that reads a whole event, such as a `Categorical`'s `probs`, stays whole. The plate of such a draw is named after the vector's own axis (`Feat` rather than `z`), so the PyMC coordinate and the loop variables of every target carry that name. Turing refuses, under `sample:partial-axis-parameter`, a draw whose parameter varies along only some of the replicated axes, or a whole-event parameter carrying axes beside a broadcast one.
+- **A pointwise let of one vector computes on BUGS, JAGS, Gen, and Turing, and an `over`-axis observe scores per coordinate on WebPPL.** `let s = exp(a)` with `a` drawn over `Feat` is computed one entry at a time on BUGS and JAGS (`s[m_Feat] <- exp(a[m_Feat])`), whose scalar functions reject a vector argument, and with dotted calls on Gen and Turing (`s = exp.(a)`), where `exp(a)` raised a `MethodError`. A scalar family observed over one `over` axis on WebPPL scores each coordinate (`mapIndexed` over the observation), where the whole array reached a scalar distribution.
+- **A plated observe reads a vector over its rows one entry per row on the compiled runtime.** `observe y : Row <- Normal(loc=z, scale=0.5)` with `z` one vector over `Row` scores row `i` at `z[i]`, as the reference machine does, where the compiled runtime had scored every row against every entry of `z`.
 
 ## [0.53.0] - 2026-11-11
 

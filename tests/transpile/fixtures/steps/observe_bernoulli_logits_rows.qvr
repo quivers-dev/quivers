@@ -1,0 +1,11 @@
+# A logistic regression written through Bernoulli's logits: the linear
+# predictor `eta` is one log-odds per `Trial` row, scored without passing
+# through a sigmoid, so a saturated row keeps its precision.
+object Trial : FinSet 5
+program logit : Trial -> Trial
+    sample a <- Normal(loc=0.0, scale=5.0)
+    sample b <- Normal(loc=0.0, scale=5.0)
+    let eta = a + b * x
+    observe y : Trial <- Bernoulli(logits=eta)
+    return y
+export logit
