@@ -339,13 +339,14 @@ $\beta(s, 0, n)$ is the [inside probability](https://en.wikipedia.org/wiki/Insid
 of $w$ [@baker1979trainable; @goodman1999semiring]. The value depends only on the rules and the
 string, not on the order in which the chart is filled.
 
-That description holds for grammars without unary rules. With a unary rule matrix $U$, the inside
-weights of a cell should be closed under unary chains, $\beta \mapsto \beta (I + U + U^2 + \cdots)$.
-The runtime instead repeats the update $\beta \leftarrow \beta \oplus \beta U$ until the cell stops
-changing or eight times, which gives $\beta (I + U)^k$ and counts a chain of unary rules more than
-once. For one rule $A \to B$ of probability $\tfrac12$ and $\beta(A) = 1$, it returns
-$\beta(B) = 4$ in place of $\tfrac12$. With unary rules the value is thus not the inside
-probability.
+With a unary rule matrix $U$, a chain of unary rules derives a category over a span from another
+category over the same span, so the inside weights of a cell are closed under unary chains: the
+runtime multiplies the cell that the lexical and binary rules produce, once, by the
+[Kleene star](https://en.wikipedia.org/wiki/Kleene_star)
+$U^* = I \oplus U \oplus U^2 \oplus \cdots$, the sum over every chain of the product of its
+weights [@goodman1999semiring; @mohri2002semiring]. For probabilities $U^* = (I - U)^{-1}$, which
+exists when the spectral radius of $U$ is below one. A closure whose series diverges, as for a
+row-stochastic $U$, whose spectral radius is one, has no value, and parsing raises `ValueError`.
 
 ### 4.2 `chart_fold`
 
