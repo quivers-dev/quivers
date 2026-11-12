@@ -927,13 +927,13 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     """
     count = int(_finite_value(value, "Binomial"))
     trials = int(_real(a, "total_count", "Binomial"))
-    probability = _probabilities(a, "Binomial")
+    log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
         return -math.inf
     return (
         _log_choose(trials, count)
-        + count * math.log(probability)
-        + (trials - count) * math.log1p(-probability)
+        + _times(count, log_success)
+        + _times(trials - count, log_failure)
     )
 
 
@@ -975,10 +975,29 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     failures = int(_finite_value(value, "Geometric"))
-    probability = _probabilities(a, "Geometric")
+    log_success, log_failure = _log_probabilities(a, "Geometric")
     if failures < 0:
         return -math.inf
-    return failures * math.log1p(-probability) + math.log(probability)
+    return _times(failures, log_failure) + log_success
+
+
+def _times(count: int, log_mass: float) -> float:
+    """``count`` times a log mass, zero when the count is.
+
+    Parameters
+    ----------
+    count : int
+        How many times the outcome occurs.
+    log_mass : float
+        Its log probability, possibly ``-inf``.
+
+    Returns
+    -------
+    float
+        The product, with ``0 * -inf`` read as zero: an outcome that
+        never occurs contributes nothing, whatever its mass.
+    """
+    return 0.0 if count == 0 else count * log_mass
 
 
 def _laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:

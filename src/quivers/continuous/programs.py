@@ -546,6 +546,12 @@ class MonadicProgram(ContinuousMorphism):
         self.host_data_types: dict[str, TypeExpr] = {}
         self.host_data_shared: frozenset[str] = frozenset()
         self.site_plates: dict[str, tuple[tuple[str, int | None], ...]] = {}
+        # The argument widths of each plated step, read from its
+        # morphism's domain once: by step key, the morphism read and the
+        # argument count, with the widths.
+        self._plate_widths: dict[
+            str, tuple[nn.Module, int, tuple[int | None, ...]]
+        ] = {}
         # compute input component dimensions for param splitting
         if params is not None and len(params) > 1:
             self._param_dims = self._compute_component_dims(domain)
@@ -729,7 +735,7 @@ class MonadicProgram(ContinuousMorphism):
             # run: the run axis a value carries is not one of its rows.
             # A value holding one event of its domain factor is a single
             # input every row shares, and keeps its leading axis.
-            widths = _argument_widths(morph.domain, len(parts))
+            widths = self._plate_argument_widths(spec, morph, len(parts))
             parts = [
                 part
                 if not _arg_carries(arg, carries)
@@ -761,6 +767,37 @@ class MonadicProgram(ContinuousMorphism):
         if len(parts) == 1:
             return self._promote_rank(parts[0])
         return self._stack_tensors(parts)
+
+    def _plate_argument_widths(
+        self, spec: Draw | Observe, morphism: PlateDraw | VectorisedObserve, count: int
+    ) -> tuple[int | None, ...]:
+        """The event width of each argument a plated step's morphism reads.
+
+        The widths depend only on the morphism's domain, so they are read
+        once per step and morphism; a step whose registered morphism is
+        replaced reads its new domain.
+
+        Parameters
+        ----------
+        spec : Draw | Observe
+            The step.
+        morphism : PlateDraw | VectorisedObserve
+            The morphism registered for it.
+        count : int
+            How many arguments the step passes.
+
+        Returns
+        -------
+        tuple[int | None, ...]
+            `_argument_widths` of the morphism's domain.
+        """
+        key = step_key(spec)
+        cached = self._plate_widths.get(key)
+        if cached is not None and cached[0] is morphism and cached[1] == count:
+            return cached[2]
+        widths = _argument_widths(morphism.domain, count)
+        self._plate_widths[key] = (morphism, count, widths)
+        return widths
 
     @staticmethod
     def _stack_params(

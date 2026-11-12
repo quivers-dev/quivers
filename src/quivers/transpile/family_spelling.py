@@ -56,6 +56,7 @@ _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
         "LogGamma": ("LogGamma",),
         "LogitBeta": ("LogitBeta",),
         "InverseWishart": ("InverseWishart",),
+        "OrderedProbit": ("OrderedProbit",),
     },
     "numpyro": {
         "LogitNormal": ("LogitNormal",),
@@ -203,7 +204,12 @@ def can_spell(target: str, family: str) -> bool:
 #: naming the alternative alone is refused rather than spelled
 #: positionally as that parameter.
 _UNSPELLED_ALTERNATIVES: dict[tuple[str, str], str] = {
-    ("Bernoulli", "logits"): "probs",
+    **{
+        (family, "logits"): "probs"
+        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+    },
+    ("MultivariateNormal", "precision_matrix"): "covariance_matrix",
+    ("Wishart", "precision_matrix"): "scale_tril",
 }
 
 
