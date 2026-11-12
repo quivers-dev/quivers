@@ -1,62 +1,39 @@
-"""Algebra homomorphisms and change-of-base for V-enriched
-morphisms.
+"""Carrier maps, algebra homomorphisms, and change of base for morphisms.
 
-A morphism in [`quivers.core.morphisms`][quivers.core.morphisms] is V-enriched: its
-codomain is :math:`\\mathrm{Hom}_V(A, B)` for the active algebra
-``V``. Two morphisms over different algebras (``V`` and ``W``)
-do not directly compose — `Morphism.__rshift__` raises
-``incompatible algebras``. The standard categorical way to
-bridge them is a **algebra homomorphism** (a lax monoidal poset
-functor) :math:`\\varphi : V \\to W` mediating the change of
-base. There is then a 2-functor
-:math:`(-) \\otimes_\\varphi W : V\\text{-}\\mathbf{Cat} \\to W\\text{-}\\mathbf{Cat}`
-that base-changes objects and an induced natural transformation
-on morphisms.
+A morphism in [`quivers.core.morphisms`][quivers.core.morphisms] has
+entries in the carrier of its algebra ``V``. Two morphisms over
+different algebras do not compose (`Morphism.__rshift__` raises
+``incompatible algebras``); ``f.change_base(φ)`` moves a morphism to
+another algebra by applying a map ``φ`` between the carriers to every
+entry.
 
-This module ships:
+* `CarrierMap` is the abstract base: a source algebra, a target
+  algebra, and an entrywise map ``apply``. It promises no law, so
+  change of base along it is an entrywise transformation and need not
+  preserve composition.
+* `AlgebraHomomorphism` is a carrier map that preserves the algebra's
+  operations: ``φ(a ⊗ b) = φ(a) ⊗ φ(b)``, ``φ(a ⊕ b) = φ(a) ⊕ φ(b)``,
+  ``φ(1) = 1`` and ``φ(0) = 0``. Between semirings this is a semiring
+  homomorphism [Golan (1999)], and change of base along it is a functor
+  between the categories of matrices: ``(f >> g).change_base(φ) =
+  f.change_base(φ) >> g.change_base(φ)``.
 
-* `AlgebraHomomorphism` — the abstract base. A homomorphism
-  carries a source algebra, a target algebra, and a function
-  ``apply(t : Tensor) -> Tensor`` that maps a tensor whose entries
-  live in the source's lattice to a tensor whose entries live in
-  the target's lattice. Subclasses implement ``apply`` for a
-  specific pair.
+The shipped homomorphisms are `IdentityHom`, `Embedding` (of a
+sub-algebra such as ``BOOLEAN ↪ PRODUCT_FUZZY``) and `CountingToReal`.
+Every other shipped map (`Expectation`, `LogProb`, `MaxPlus`,
+`Threshold`, `MaterialImplication`, `ProbabilityClamp`,
+`CountingFromReal`, `ProbabilityToReal`) is a `CarrierMap` that fails
+at least one of those equations; the test suite records a
+counterexample for each.
 
-* `Embedding` — the inclusion of a sub-algebra into a
-  super-algebra (e.g. ``Boolean ↪ ProductFuzzyAlgebra``).
+A registry `CARRIER_MAP_REGISTRY` keyed by ``(source.name,
+target.name)`` lets the compiler and user code look up the shipped map
+between two algebras.
 
-* `Expectation` — Markov-to-ProductFuzzyAlgebra (``softmax`` ↦
-  fuzzy membership).
-
-* `LogProb` — ProductFuzzyAlgebra-to-LogProb (``log(p)``).
-
-* `MaxPlus` — ProductFuzzyAlgebra-to-Viterbi (max-plus tropical
-  lift).
-
-* `Threshold` — ProductFuzzyAlgebra-to-Boolean (discretize at a
-  threshold).
-
-* `MaterialImplication` — ProductFuzzyAlgebra-to-Godel (Heyting
-  implication semantics).
-
-* `IdentityHom` — a no-op homomorphism from an algebra to
-  itself, useful as the unit of homomorphism composition.
-
-* A registry `HOMOMORPHISM_REGISTRY` keyed by ``(source.name,
-  target.name)`` so the compiler / user code can look up the
-  canonical homomorphism between two algebras.
-
-The categorical denotation of ``f.change_base(φ)`` for
-``f : A → B`` in V is the V-Cat morphism
-``φ ∘ f : A → B`` in W with tensor
-``φ.apply(f.tensor)`` and lattice values in W. Composition then
-proceeds in W using W's tensor / join operations.
-
-This module is intentionally backend-agnostic: every homomorphism's
-``apply`` operates on a `torch.Tensor` without touching
-PyTorch's autograd or module infrastructure, so a future numpy /
-JAX backend can replace the runtime without touching the
-categorical hierarchy.
+References
+----------
+Golan, J. S. (1999). *Semirings and their Applications*. Springer.
+[doi:10.1007/978-94-015-9333-5](https://doi.org/10.1007/978-94-015-9333-5)
 """
 
 from __future__ import annotations
@@ -81,21 +58,13 @@ from quivers.core.algebras import (
 )
 
 
-class AlgebraHomomorphism(ABC):
-    """A lax monoidal poset functor between two algebras.
+class CarrierMap(ABC):
+    """An entrywise map from one algebra's carrier to another's.
 
-    Concretely, a homomorphism :math:`\\varphi : V \\to W`
-    satisfies:
-
-    * ``φ(a ⊗_V b) ≤ φ(a) ⊗_W φ(b)`` (lax with respect to the
-      monoidal tensor).
-    * ``φ(⋁_i a_i) ≤ ⋁_i φ(a_i)`` (lax with respect to joins).
-    * ``φ(I_V) ≤ I_W`` (lax with respect to the monoidal unit).
-
-    The "lax" qualifier allows for embeddings that preserve order
-    but compress structure (a threshold is lax but not strict).
-    Strictness is *not* required for change-of-base to be
-    categorically valid; only the order-preservation is.
+    A carrier map promises no law: change of base along it applies the
+    map to every entry and need not preserve composition or identities.
+    `AlgebraHomomorphism` is the subclass whose maps preserve the
+    algebra operations.
     """
 
     @property
@@ -122,6 +91,18 @@ class AlgebraHomomorphism(ABC):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.source.name} -> {self.target.name})"
+
+
+class AlgebraHomomorphism(CarrierMap):
+    """A carrier map that preserves the algebra operations.
+
+    ``φ(a ⊗ b) = φ(a) ⊗ φ(b)``, ``φ(⋁ a_i) = ⋁ φ(a_i)``, ``φ(I) = I``
+    and ``φ(⊥) = ⊥`` on the source carrier. Between semirings this is a
+    semiring homomorphism [Golan (1999)], so change of base along it
+    commutes with composition and sends identities to identities.
+    Membership is a claim that the equations hold; the test suite checks
+    every shipped instance.
+    """
 
 
 class IdentityHom(AlgebraHomomorphism):
@@ -176,18 +157,17 @@ class Embedding(AlgebraHomomorphism):
         return t.to(dtype=torch.float32) if t.dtype == torch.bool else t
 
 
-class Expectation(AlgebraHomomorphism):
-    """Markov → ProductFuzzyAlgebra via ``softmax`` to fuzzy membership.
+class Expectation(CarrierMap):
+    """Markov → ProductFuzzyAlgebra, reading probabilities as memberships.
 
     A Markov kernel ``k : A → B`` has rows that sum to 1 (a
     probability distribution over B per a∈A). Reading the
     per-entry probability as a *fuzzy membership* of (a, b)
     in the relation gives a ``ProductFuzzyAlgebra`` morphism.
 
-    Categorically this is the change of base induced by the
-    ``Δ`` natural transformation that erases the normalisation
-    constraint — the resulting fuzzy morphism is no longer
-    row-stochastic but its entries still lie in [0, 1].
+    The map clamps each entry to ``[0, 1]``. It does not preserve the
+    join (a sum of probabilities is not their noisy-OR), so change of
+    base along it does not commute with composition.
     """
 
     def __init__(self) -> None:
@@ -206,7 +186,7 @@ class Expectation(AlgebraHomomorphism):
         return t.clamp(min=0.0, max=1.0)
 
 
-class LogProb(AlgebraHomomorphism):
+class LogProb(CarrierMap):
     """ProductFuzzyAlgebra → LogProb via ``log``.
 
     Maps entries in (0, 1] to (-∞, 0] for
@@ -231,7 +211,7 @@ class LogProb(AlgebraHomomorphism):
         return torch.log(t.clamp(min=1e-30))
 
 
-class MaxPlus(AlgebraHomomorphism):
+class MaxPlus(CarrierMap):
     """ProductFuzzyAlgebra → MaxPlus via ``log``.
 
     The max-plus tropical algebra on the reals has tensor =
@@ -241,11 +221,9 @@ class MaxPlus(AlgebraHomomorphism):
     ProductFuzzyAlgebra) get replaced by max in Viterbi-style
     Viterbi-MAP aggregations.
 
-    The two ProductFuzzyAlgebra → log-target homomorphisms are different
-    *category-theoretically* — `LogProb` carries the join
-    structure to logsumexp, `MaxPlus` carries it to
-    max-plus — even though they share the same per-entry mapping
-    ``log``.
+    `LogProb` and `MaxPlus` share the per-entry map ``log`` and differ
+    only in the target algebra. Neither preserves the join: ``log`` of a
+    noisy-OR is neither the logsumexp nor the maximum of the logs.
     """
 
     def __init__(self) -> None:
@@ -264,14 +242,13 @@ class MaxPlus(AlgebraHomomorphism):
         return torch.log(t.clamp(min=1e-30))
 
 
-class Threshold(AlgebraHomomorphism):
+class Threshold(CarrierMap):
     """ProductFuzzyAlgebra → Boolean via thresholding.
 
     Entries above ``tau`` map to True; entries at or below
-    ``tau`` map to False. This is a *lax* homomorphism: it
-    preserves order (a ≤ b ⟹ threshold(a) ≤ threshold(b)) but
-    compresses information (every value in (tau, 1] collapses to
-    True).
+    ``tau`` map to False. It preserves order (a ≤ b ⟹ threshold(a) ≤ threshold(b)) but
+    not the tensor: two entries just above ``tau`` threshold to True
+    while their product may not.
 
     Parameters
     ----------
@@ -302,17 +279,14 @@ class Threshold(AlgebraHomomorphism):
         return (t > self._tau).to(dtype=torch.float32)
 
 
-class MaterialImplication(AlgebraHomomorphism):
-    """ProductFuzzyAlgebra → Godel via ``a * b + (1 - a)`` reading.
+class MaterialImplication(CarrierMap):
+    """ProductFuzzyAlgebra → Godel, keeping each entry's value.
 
-    Reads each ProductFuzzyAlgebra entry ``p`` as a probability that
-    the implication ``p → q`` holds — the Heyting-implication-
-    style transport that respects the Godel algebra's monoid.
-
-    The mapping is `entry ↦ entry`-preserving on the entry value
-    but changes the *composition* semantics downstream: subsequent
-    `>>` in the Godel algebra uses min / Godel-implication, not
-    product / noisy-OR.
+    The map is the identity on ``[0, 1]`` (clamped), so subsequent
+    ``>>`` composes with min and max rather than product and noisy-OR.
+    It preserves neither operation (``0.5 · 0.5 = 0.25`` but
+    ``min(0.5, 0.5) = 0.5``), so it is a carrier map and not a
+    homomorphism.
     """
 
     def __init__(self) -> None:
@@ -331,21 +305,21 @@ class MaterialImplication(AlgebraHomomorphism):
         return t.clamp(min=0.0, max=1.0)
 
 
-# Canonical homomorphism instances, exposed as module-level
+# Shipped carrier-map instances, exposed as module-level
 # singletons. Users compose with ``f.change_base(EXPECTATION)`` to
 # perform the change of base.
 EXPECTATION = Expectation()
-"""The `Expectation` homomorphism singleton, Markov to ProductFuzzy."""
-LOG_PROB_HOM = LogProb()
-"""The `LogProb` homomorphism singleton, ProductFuzzy to LogProb."""
-MAX_PLUS_HOM = MaxPlus()
-"""The `MaxPlus` homomorphism singleton, ProductFuzzy to MaxPlus."""
+"""The `Expectation` carrier-map singleton, Markov to ProductFuzzy."""
+LOG_PROB_MAP = LogProb()
+"""The `LogProb` carrier-map singleton, ProductFuzzy to LogProb."""
+MAX_PLUS_MAP = MaxPlus()
+"""The `MaxPlus` carrier-map singleton, ProductFuzzy to MaxPlus."""
 MATERIAL_IMPLICATION = MaterialImplication()
-"""The `MaterialImplication` homomorphism singleton, ProductFuzzy to Godel."""
+"""The `MaterialImplication` carrier-map singleton, ProductFuzzy to Godel."""
 
 
 def threshold(tau: float = 0.5) -> Threshold:
-    """Build a `Threshold` homomorphism at the given threshold value.
+    """Build a `Threshold` carrier map at the given threshold value.
 
     Parameters
     ----------
@@ -355,7 +329,7 @@ def threshold(tau: float = 0.5) -> Threshold:
     Returns
     -------
     Threshold
-        The ProductFuzzy-to-Boolean homomorphism at ``tau``.
+        The ProductFuzzy-to-Boolean carrier map at ``tau``.
     """
     return Threshold(tau)
 
@@ -378,13 +352,13 @@ def embedding(source: Algebra, target: Algebra) -> Embedding:
     return Embedding(source, target)
 
 
-class ProbabilityClamp(AlgebraHomomorphism):
+class ProbabilityClamp(CarrierMap):
     """Real → Probability via clamping to the unit interval.
 
     Coerces a real-valued tensor into a probability tensor by
-    clamping entries to ``[0, 1]``. Lax — destroys information
-    outside the unit interval — but preserves the entry-wise
-    order on the survivors.
+    clamping entries to ``[0, 1]``. It preserves order but not the
+    operations: ``clamp(-1 + 0.5) = 0`` while the bounded sum of the
+    clamped entries is ``0.5``.
     """
 
     def __init__(self) -> None:
@@ -403,12 +377,14 @@ class ProbabilityClamp(AlgebraHomomorphism):
         return t.clamp(min=0.0, max=1.0)
 
 
-class CountingFromReal(AlgebraHomomorphism):
+class CountingFromReal(CarrierMap):
     """Real → Counting via floor-and-clamp-to-non-negative.
 
     Coerces a real-valued tensor into a non-negative integer
     counting tensor by flooring and clamping at zero.
-    Information-destroying; inverse is `CountingToReal`.
+    It does not preserve the operations (``floor(0.5 + 0.5) = 1`` while
+    ``floor(0.5) + floor(0.5) = 0``); `CountingToReal` is a one-sided
+    inverse on counting tensors.
     """
 
     def __init__(self) -> None:
@@ -427,11 +403,12 @@ class CountingFromReal(AlgebraHomomorphism):
         return t.clamp(min=0.0).floor()
 
 
-class ProbabilityToReal(AlgebraHomomorphism):
-    """Probability → Real (sub-algebra inclusion).
+class ProbabilityToReal(CarrierMap):
+    """Bounded-sum product algebra → Real, the inclusion of ``[0, 1]``.
 
-    Entries already lie in ``[0, 1] ⊂ ℝ``; the inclusion is
-    strict (preserves every operation).
+    The entries already lie in ``[0, 1] ⊂ ℝ``. The inclusion preserves
+    the product but not the join: the source sums with a cap at 1
+    (``0.5 ⊕ 0.75 = 1``) while the real sum is ``1.25``.
     """
 
     def __init__(self) -> None:
@@ -474,19 +451,19 @@ class CountingToReal(AlgebraHomomorphism):
 
 
 PROBABILITY_CLAMP = ProbabilityClamp()
-"""The `ProbabilityClamp` homomorphism singleton, Real to Probability."""
+"""The `ProbabilityClamp` carrier-map singleton, Real to Probability."""
 COUNTING_FROM_REAL = CountingFromReal()
-"""The `CountingFromReal` homomorphism singleton, Real to Counting."""
+"""The `CountingFromReal` carrier-map singleton, Real to Counting."""
 PROBABILITY_TO_REAL = ProbabilityToReal()
-"""The `ProbabilityToReal` homomorphism singleton, Probability to Real."""
+"""The `ProbabilityToReal` carrier-map singleton, Probability to Real."""
 COUNTING_TO_REAL = CountingToReal()
 """The `CountingToReal` homomorphism singleton, Counting to Real."""
 
 
-HOMOMORPHISM_REGISTRY: dict[tuple[str, str], AlgebraHomomorphism] = {
+CARRIER_MAP_REGISTRY: dict[tuple[str, str], CarrierMap] = {
     ("Markov", "ProductFuzzy"): EXPECTATION,
-    ("ProductFuzzy", "LogProb"): LOG_PROB_HOM,
-    ("ProductFuzzy", "MaxPlus"): MAX_PLUS_HOM,
+    ("ProductFuzzy", "LogProb"): LOG_PROB_MAP,
+    ("ProductFuzzy", "MaxPlus"): MAX_PLUS_MAP,
     ("ProductFuzzy", "Boolean"): Threshold(0.5),
     ("ProductFuzzy", "Godel"): MATERIAL_IMPLICATION,
     ("Boolean", "ProductFuzzy"): Embedding(BOOLEAN, PRODUCT_FUZZY),
@@ -495,13 +472,13 @@ HOMOMORPHISM_REGISTRY: dict[tuple[str, str], AlgebraHomomorphism] = {
     ("Probability", "Real"): PROBABILITY_TO_REAL,
     ("Counting", "Real"): COUNTING_TO_REAL,
 }
-"""The canonical homomorphisms keyed by ``(source.name, target.name)``,
+"""The shipped carrier maps keyed by ``(source.name, target.name)``,
 so compiler and user code can look up the standard bridge between two
 algebras rather than construct one by hand."""
 
 
-def lookup_homomorphism(source: Algebra, target: Algebra) -> AlgebraHomomorphism | None:
-    """Look up the canonical homomorphism ``source → target``.
+def lookup_carrier_map(source: Algebra, target: Algebra) -> CarrierMap | None:
+    """Look up the shipped carrier map ``source → target``.
 
     Identity is always available: algebras of one type yield
     ``IdentityHom(source)``.
@@ -515,16 +492,17 @@ def lookup_homomorphism(source: Algebra, target: Algebra) -> AlgebraHomomorphism
 
     Returns
     -------
-    AlgebraHomomorphism or None
-        The registered bridge from `HOMOMORPHISM_REGISTRY`, or
+    CarrierMap or None
+        The registered bridge from `CARRIER_MAP_REGISTRY`, or
         ``None`` when no canonical bridge is known.
     """
     if type(source) is type(target):
         return IdentityHom(source)
-    return HOMOMORPHISM_REGISTRY.get((source.name, target.name))
+    return CARRIER_MAP_REGISTRY.get((source.name, target.name))
 
 
 __all__ = [
+    "CarrierMap",
     "AlgebraHomomorphism",
     "IdentityHom",
     "Embedding",
@@ -538,8 +516,8 @@ __all__ = [
     "ProbabilityToReal",
     "CountingToReal",
     "EXPECTATION",
-    "LOG_PROB_HOM",
-    "MAX_PLUS_HOM",
+    "LOG_PROB_MAP",
+    "MAX_PLUS_MAP",
     "MATERIAL_IMPLICATION",
     "PROBABILITY_CLAMP",
     "COUNTING_FROM_REAL",
@@ -547,6 +525,6 @@ __all__ = [
     "COUNTING_TO_REAL",
     "threshold",
     "embedding",
-    "HOMOMORPHISM_REGISTRY",
-    "lookup_homomorphism",
+    "CARRIER_MAP_REGISTRY",
+    "lookup_carrier_map",
 ]

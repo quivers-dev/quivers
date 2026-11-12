@@ -42,14 +42,14 @@ homomorphism registry, and the transformation alias.
         - DUAL_LUKASIEWICZ
         - DUAL_GODEL
         - EXPECTATION
-        - LOG_PROB_HOM
-        - MAX_PLUS_HOM
+        - LOG_PROB_MAP
+        - MAX_PLUS_MAP
         - MATERIAL_IMPLICATION
         - PROBABILITY_CLAMP
         - COUNTING_FROM_REAL
         - PROBABILITY_TO_REAL
         - COUNTING_TO_REAL
-        - HOMOMORPHISM_REGISTRY
+        - CARRIER_MAP_REGISTRY
         - TransValue
       show_root_heading: false
       show_root_toc_entry: false

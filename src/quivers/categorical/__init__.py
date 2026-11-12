@@ -24,7 +24,6 @@ from quivers.categorical.monoidal import (
 from quivers.categorical.base_change import (
     BaseChange,
     BoolToFuzzy,
-    FuzzyToBool,
 )
 from quivers.categorical.traced import (
     TracedMonoidal,
@@ -54,7 +53,6 @@ __all__ = [
     # base_change
     "BaseChange",
     "BoolToFuzzy",
-    "FuzzyToBool",
     # traced
     "TracedMonoidal",
     "CompactClosedTrace",

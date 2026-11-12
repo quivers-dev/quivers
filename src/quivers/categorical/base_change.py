@@ -5,11 +5,23 @@ change-of-base 2-functor from V-Cat to W-Cat. This transforms
 all morphism tensors by applying F elementwise, changing the
 enrichment algebra from V to W.
 
+A subclass is a base change only if its value map is lax monoidal:
+I_W ≤ F(I_V), F(a) ⊗ F(b) ≤ F(a ⊗ b), and order-preserving
+[Kelly (1982), §1.10]. Thresholding [0, 1] → {0, 1} at an interior
+point is not (two entries above the threshold can have a product below
+it), so it is offered only as the carrier map
+`quivers.core.algebra_morphisms.Threshold`, not as a base change.
+
 This module provides:
 
     BaseChange (abstract)
-    ├── BoolToFuzzy   — inclusion {0,1} ↪ [0,1]
-    └── FuzzyToBool   — thresholding [0,1] → {0,1}
+    └── BoolToFuzzy   — inclusion {0,1} ↪ [0,1]
+
+References
+----------
+Kelly, G. M. (1982). *Basic Concepts of Enriched Category Theory*.
+Cambridge University Press. Reprinted in *Reprints in Theory and
+Applications of Categories*, 10 (2005).
 """
 
 from __future__ import annotations
@@ -114,44 +126,7 @@ class BoolToFuzzy(BaseChange):
         return tensor.clone()
 
 
-class FuzzyToBool(BaseChange):
-    """Thresholding from the fuzzy algebra to the boolean algebra.
-
-    Applies a threshold: values >= threshold become 1, others become 0.
-    This is a right adjoint to BoolToFuzzy.
-
-    Parameters
-    ----------
-    threshold : float
-        The threshold value. Must be in (0, 1). Default 0.5.
-    """
-
-    def __init__(self, threshold: float = 0.5) -> None:
-        if not (0.0 < threshold < 1.0):
-            raise ValueError(f"threshold must be in (0, 1), got {threshold}")
-
-        self._threshold = threshold
-
-    @property
-    def threshold(self) -> float:
-        """The threshold value."""
-        return self._threshold
-
-    @property
-    def source(self) -> ProductFuzzyAlgebra:
-        return PRODUCT_FUZZY
-
-    @property
-    def target(self) -> BooleanAlgebra:
-        return BOOLEAN
-
-    def apply_to_values(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Threshold: values >= threshold → 1, else → 0."""
-        return (tensor >= self._threshold).float()
-
-
 __all__ = [
     "BaseChange",
     "BoolToFuzzy",
-    "FuzzyToBool",
 ]

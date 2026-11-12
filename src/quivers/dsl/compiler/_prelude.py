@@ -57,9 +57,9 @@ from quivers.core.algebra_morphisms import (
     COUNTING_FROM_REAL,
     COUNTING_TO_REAL,
     EXPECTATION,
-    LOG_PROB_HOM as _LOG_PROB_HOM,
+    LOG_PROB_MAP as _LOG_PROB_HOM,
     MATERIAL_IMPLICATION,
-    MAX_PLUS_HOM as _MAX_PLUS_HOM,
+    MAX_PLUS_MAP as _MAX_PLUS_HOM,
     PROBABILITY_CLAMP,
     PROBABILITY_TO_REAL,
     embedding as _make_embedding,
@@ -192,7 +192,7 @@ def _build_default_trans_singletons() -> dict:
     """Built-in transformation singletons available as bare-name
     references in the DSL.
 
-    Each value is a `AlgebraHomomorphism` or
+    Each value is a `CarrierMap` or
     `MorphismTransformation` (collectively, a ``Trans``
     value).  Bare-name lookup produces the singleton:
 

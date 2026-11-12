@@ -596,6 +596,7 @@ class DualIdempotentSemiring(DualAlgebra, IdempotentSemiring):
         w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
         return torch.where(w >= x, torch.zeros_like(x), x)
 
+
 def _fold_along_dim(
     op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     t: torch.Tensor,
@@ -1157,6 +1158,7 @@ class BooleanAlgebra(IdempotentSemiring):
         w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
         return torch.maximum(1.0 - w, x)
 
+
 # ============================================================================
 # Standard MV-algebra and Gödel algebra on [0, 1]
 # ============================================================================
@@ -1289,6 +1291,7 @@ class GodelAlgebra(IdempotentSemiring):
         w, x = torch.broadcast_tensors(torch.as_tensor(w, dtype=x.dtype), x)
         return torch.where(w <= x, torch.ones_like(x), x)
 
+
 # ============================================================================
 # Tropical / max-plus / log-prob semirings
 # ============================================================================
@@ -1371,6 +1374,7 @@ class TropicalAlgebra(IdempotentSemiring):
         diff = torch.where(torch.isinf(w), torch.zeros_like(x), x - w)
         return diff.clamp(min=0.0)
 
+
 class MaxPlusAlgebra(IdempotentSemiring):
     """Max-plus (Viterbi) semiring on ℝ ∪ {-∞}.
 
@@ -1443,6 +1447,7 @@ class MaxPlusAlgebra(IdempotentSemiring):
         inf = torch.full_like(x, float("inf"))
         out = torch.where(torch.isneginf(w), inf, x - w)
         return torch.where(torch.isposinf(x), inf, out)
+
 
 class LogProbAlgebra(Semiring):
     """Log-space sum-product semiring on [-∞, ∞).

@@ -70,7 +70,7 @@ from quivers.core.algebras import (
     DUAL_GODEL,
 )
 from quivers.core.algebra_morphisms import (
-    AlgebraHomomorphism,
+    CarrierMap,
     IdentityHom,
     Embedding,
     Expectation,
@@ -83,8 +83,8 @@ from quivers.core.algebra_morphisms import (
     ProbabilityToReal,
     CountingToReal,
     EXPECTATION,
-    LOG_PROB_HOM,
-    MAX_PLUS_HOM,
+    LOG_PROB_MAP,
+    MAX_PLUS_MAP,
     MATERIAL_IMPLICATION,
     PROBABILITY_CLAMP,
     COUNTING_FROM_REAL,
@@ -92,8 +92,8 @@ from quivers.core.algebra_morphisms import (
     COUNTING_TO_REAL,
     threshold,
     embedding,
-    HOMOMORPHISM_REGISTRY,
-    lookup_homomorphism,
+    CARRIER_MAP_REGISTRY,
+    lookup_carrier_map,
 )
 from quivers.core.morphism_transformations import (
     BayesInvert,
@@ -199,7 +199,7 @@ __all__ = [
     "DUAL_LUKASIEWICZ",
     "DUAL_GODEL",
     # algebra_morphisms
-    "AlgebraHomomorphism",
+    "CarrierMap",
     "IdentityHom",
     "Embedding",
     "Expectation",
@@ -212,8 +212,8 @@ __all__ = [
     "ProbabilityToReal",
     "CountingToReal",
     "EXPECTATION",
-    "LOG_PROB_HOM",
-    "MAX_PLUS_HOM",
+    "LOG_PROB_MAP",
+    "MAX_PLUS_MAP",
     "MATERIAL_IMPLICATION",
     "PROBABILITY_CLAMP",
     "COUNTING_FROM_REAL",
@@ -221,8 +221,8 @@ __all__ = [
     "COUNTING_TO_REAL",
     "threshold",
     "embedding",
-    "HOMOMORPHISM_REGISTRY",
-    "lookup_homomorphism",
+    "CARRIER_MAP_REGISTRY",
+    "lookup_carrier_map",
     # morphism_transformations
     "BayesInvert",
     "L1Normalize",

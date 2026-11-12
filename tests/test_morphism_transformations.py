@@ -9,7 +9,7 @@ Verifies:
   satisfies the disintegration equation
   ``f^{-1}_pi(a | b) * marginal_b(b) = f(b | a) * prior(a)``.
 * ``Morphism.change_base`` dispatches between
-  ``AlgebraHomomorphism`` (pointwise) and
+  ``CarrierMap`` (pointwise) and
   ``MorphismTransformation`` (shape-aware) correctly.
 """
 
@@ -170,7 +170,7 @@ def test_bayes_invert_rejects_multivariate_prior() -> None:
 
 
 def test_change_base_dispatches_on_algebra_homomorphism() -> None:
-    """Pointwise AlgebraHomomorphism still works through
+    """Pointwise CarrierMap still works through
     change_base."""
     from quivers.core.algebra_morphisms import EXPECTATION
 

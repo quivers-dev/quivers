@@ -49,12 +49,12 @@ from quivers.core.morphisms import (
 from quivers.core.objects import FinSet
 from quivers.core.algebra_morphisms import (
     IdentityHom,
-    LOG_PROB_HOM,
+    LOG_PROB_MAP,
     MATERIAL_IMPLICATION,
-    MAX_PLUS_HOM,
+    MAX_PLUS_MAP,
     Threshold,
     embedding,
-    lookup_homomorphism,
+    lookup_carrier_map,
     threshold,
 )
 from quivers.core.algebras import BOOLEAN, PRODUCT_FUZZY
@@ -80,7 +80,7 @@ def test_change_base_to_log_prob_returns_log_of_tensor() -> None:
     B = FinSet(name="B", cardinality=2)
     data = torch.tensor([[0.4, 0.6], [0.7, 0.3]])
     f = ObservedMorphism(A, B, data)
-    g = f.change_base(LOG_PROB_HOM)
+    g = f.change_base(LOG_PROB_MAP)
     expected = torch.log(data.clamp(min=1e-30))
     assert torch.allclose(g.tensor, expected)
 
@@ -114,27 +114,27 @@ def test_change_base_to_max_plus_via_log() -> None:
     B = FinSet(name="B", cardinality=2)
     data = torch.tensor([[0.5, 0.5], [0.5, 0.5]])
     f = ObservedMorphism(A, B, data)
-    g = f.change_base(MAX_PLUS_HOM)
+    g = f.change_base(MAX_PLUS_MAP)
     expected = torch.log(data.clamp(min=1e-30))
     assert torch.allclose(g.tensor, expected)
 
 
 def test_change_base_rejects_wrong_source_algebra() -> None:
     """A homomorphism's source must match the morphism's algebra;
-    applying ``LOG_PROB_HOM`` (which expects ``ProductFuzzyAlgebra``) to
+    applying ``LOG_PROB_MAP`` (which expects ``ProductFuzzyAlgebra``) to
     a morphism declared over Markov raises an algebra-specific error."""
     A = FinSet(name="A", cardinality=2)
     B = FinSet(name="B", cardinality=2)
     data = torch.tensor([[0.5, 0.5], [0.5, 0.5]])
     f = ObservedMorphism(A, B, data, algebra=MARKOV)
     with pytest.raises(TypeError, match="does not match"):
-        f.change_base(LOG_PROB_HOM)
+        f.change_base(LOG_PROB_MAP)
 
 
 def test_change_base_rejects_non_homomorphism() -> None:
     A = FinSet(name="A", cardinality=2)
     f = LatentMorphism(A, A)
-    with pytest.raises(TypeError, match="AlgebraHomomorphism"):
+    with pytest.raises(TypeError, match="CarrierMap"):
         f.change_base("not a homomorphism")
 
 
@@ -158,7 +158,7 @@ def test_change_base_preserves_gradients_to_morphism_parameters() -> None:
     A = FinSet(name="A", cardinality=2)
     B = FinSet(name="B", cardinality=2)
     f = LatentMorphism(A, B)
-    g = f.change_base(LOG_PROB_HOM)
+    g = f.change_base(LOG_PROB_MAP)
     loss = g.tensor.sum()
     loss.backward()
     raw = f.raw
@@ -325,14 +325,14 @@ def test_tropical_min_plus_compose() -> None:
 
 
 def test_homomorphism_registry_returns_expectation_for_markov_to_pf() -> None:
-    phi = lookup_homomorphism(MARKOV, PRODUCT_FUZZY)
+    phi = lookup_carrier_map(MARKOV, PRODUCT_FUZZY)
     assert phi is not None
     assert phi.source.name == "Markov"
     assert phi.target.name == "ProductFuzzy"
 
 
 def test_homomorphism_registry_returns_identity_for_same_algebra() -> None:
-    phi = lookup_homomorphism(PRODUCT_FUZZY, PRODUCT_FUZZY)
+    phi = lookup_carrier_map(PRODUCT_FUZZY, PRODUCT_FUZZY)
     assert phi is not None
     assert isinstance(phi, IdentityHom)
 
@@ -347,7 +347,7 @@ def test_homomorphism_registry_returns_none_for_unknown_pair() -> None:
         def name(self):
             return "BogusUnregistered"
 
-    phi = lookup_homomorphism(_BogusAlgebra(), PRODUCT_FUZZY)
+    phi = lookup_carrier_map(_BogusAlgebra(), PRODUCT_FUZZY)
     assert phi is None
 
 
@@ -371,9 +371,9 @@ def test_change_base_then_compose_in_target_algebra() -> None:
     B = FinSet(name="B", cardinality=2)
     C = FinSet(name="C", cardinality=2)
     # Construct a "noop" homomorphism from ProductFuzzyAlgebra to Markov.
-    from quivers.core.algebra_morphisms import AlgebraHomomorphism
+    from quivers.core.algebra_morphisms import CarrierMap
 
-    class ProductToMarkov(AlgebraHomomorphism):
+    class ProductToMarkov(CarrierMap):
         @property
         def source(self):
             return PRODUCT_FUZZY

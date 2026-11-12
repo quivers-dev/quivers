@@ -99,7 +99,6 @@ from quivers.categorical.monoidal import (
 from quivers.categorical.base_change import (
     BaseChange,
     BoolToFuzzy,
-    FuzzyToBool,
 )
 from quivers.monadic.distributive_laws import (
     DistributiveLaw,
@@ -147,7 +146,7 @@ from quivers.core.algebras import (
     COUNTING,
 )
 from quivers.core.algebra_morphisms import (
-    AlgebraHomomorphism,
+    CarrierMap,
     IdentityHom,
     Embedding,
     Expectation,
@@ -156,13 +155,13 @@ from quivers.core.algebra_morphisms import (
     Threshold,
     MaterialImplication,
     EXPECTATION,
-    LOG_PROB_HOM,
-    MAX_PLUS_HOM,
+    LOG_PROB_MAP,
+    MAX_PLUS_MAP,
     MATERIAL_IMPLICATION,
     threshold,
     embedding,
-    HOMOMORPHISM_REGISTRY,
-    lookup_homomorphism,
+    CARRIER_MAP_REGISTRY,
+    lookup_carrier_map,
 )
 from quivers.enriched.yoneda import (
     Presheaf,
@@ -351,7 +350,7 @@ __all__ = [
     "REAL",
     "PROBABILITY",
     "COUNTING",
-    "AlgebraHomomorphism",
+    "CarrierMap",
     "IdentityHom",
     "Embedding",
     "Expectation",
@@ -360,13 +359,13 @@ __all__ = [
     "Threshold",
     "MaterialImplication",
     "EXPECTATION",
-    "LOG_PROB_HOM",
-    "MAX_PLUS_HOM",
+    "LOG_PROB_MAP",
+    "MAX_PLUS_MAP",
     "MATERIAL_IMPLICATION",
     "threshold",
     "embedding",
-    "HOMOMORPHISM_REGISTRY",
-    "lookup_homomorphism",
+    "CARRIER_MAP_REGISTRY",
+    "lookup_carrier_map",
     # morphisms
     "Morphism",
     "ObservedMorphism",
@@ -430,7 +429,6 @@ __all__ = [
     # base change
     "BaseChange",
     "BoolToFuzzy",
-    "FuzzyToBool",
     # distributive laws
     "DistributiveLaw",
     # weighted limits

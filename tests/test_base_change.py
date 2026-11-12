@@ -1,11 +1,10 @@
 """Tests for change of enrichment."""
 
 import torch
-import pytest
 
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import observed
-from quivers.categorical.base_change import BoolToFuzzy, FuzzyToBool
+from quivers.categorical.base_change import BoolToFuzzy
 from quivers.core.algebras import PRODUCT_FUZZY, BOOLEAN
 
 
@@ -33,53 +32,28 @@ class TestBoolToFuzzy:
         torch.testing.assert_close(result.tensor, data)
 
 
-class TestFuzzyToBool:
-    def test_threshold_default(self):
-        bc = FuzzyToBool()
-        t = torch.tensor([0.3, 0.5, 0.7, 0.9])
-        result = bc.apply_to_values(t)
-        expected = torch.tensor([0.0, 1.0, 1.0, 1.0])
-        torch.testing.assert_close(result, expected)
+class TestBoolToFuzzyIsLaxMonoidal:
+    """The inclusion ``{0, 1} ↪ [0, 1]`` preserves the unit, the tensor
+    and the order, so it is a (strict) monoidal monotone map and a base
+    change; thresholding at an interior point fails the tensor law,
+    which is why it is not offered as a base change."""
 
-    def test_threshold_custom(self):
-        bc = FuzzyToBool(threshold=0.8)
-        t = torch.tensor([0.3, 0.5, 0.7, 0.9])
-        result = bc.apply_to_values(t)
-        expected = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        torch.testing.assert_close(result, expected)
+    def test_inclusion_preserves_unit_tensor_and_order(self):
+        bc = BoolToFuzzy()
+        vals = torch.tensor([0.0, 1.0])
+        one = bc.apply_to_values(torch.tensor([BOOLEAN.unit]))
+        assert one.item() == PRODUCT_FUZZY.unit
+        for a in vals:
+            for b in vals:
+                lhs = PRODUCT_FUZZY.tensor_op(
+                    bc.apply_to_values(a.reshape(1)), bc.apply_to_values(b.reshape(1))
+                )
+                rhs = bc.apply_to_values(BOOLEAN.tensor_op(a, b).reshape(1))
+                assert torch.equal(lhs, rhs)
 
-    def test_source_target(self):
-        bc = FuzzyToBool()
-        assert bc.source is PRODUCT_FUZZY
-        assert bc.target is BOOLEAN
+    def test_interior_threshold_is_not_lax_monoidal(self):
+        def threshold(x: float) -> float:
+            return 1.0 if x >= 0.5 else 0.0
 
-    def test_invalid_threshold(self):
-        with pytest.raises(ValueError, match="threshold"):
-            FuzzyToBool(threshold=0.0)
-        with pytest.raises(ValueError, match="threshold"):
-            FuzzyToBool(threshold=1.0)
-
-
-class TestRoundTrip:
-    def test_bool_fuzzy_bool(self):
-        """Bool → Fuzzy → Bool should be identity on {0,1} tensors."""
-        bc_to_fuzzy = BoolToFuzzy()
-        bc_to_bool = FuzzyToBool(threshold=0.5)
-
-        t = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-        fuzzy = bc_to_fuzzy.apply_to_values(t)
-        back = bc_to_bool.apply_to_values(fuzzy)
-
-        torch.testing.assert_close(back, t)
-
-    def test_apply_to_morphism_roundtrip(self):
-        a = FinSet(name="A", cardinality=2)
-        b = FinSet(name="B", cardinality=2)
-        data = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-
-        f = observed(a, b, data, algebra=BOOLEAN)
-
-        fuzzy_f = BoolToFuzzy().apply_to_morphism(f)
-        bool_f = FuzzyToBool().apply_to_morphism(fuzzy_f)
-
-        torch.testing.assert_close(bool_f.tensor, data)
+        a = b = 0.6
+        assert threshold(a) * threshold(b) > threshold(a * b)

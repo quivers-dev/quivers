@@ -38,12 +38,12 @@ import torch
 import torch.nn as nn
 from quivers.core.morphism_transformations import MorphismTransformation
 from quivers.core.objects import FinSet, FreeResiduated, SetObject, ProductSet
-from quivers.core.algebra_morphisms import AlgebraHomomorphism
+from quivers.core.algebra_morphisms import CarrierMap
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.core.trans import TransSeq
 
 
-def _build_algebra_homomorphism_transform(phi):
+def _build_carrier_map_transform(phi):
     """Closure factory for the pointwise change-of-base transform.
 
     Splitting the closure construction into a free function avoids
@@ -175,7 +175,7 @@ class Morphism(ABC):
         """Transport this morphism along a change-of-base functor.
 
         ``phi`` may be either a
-        `quivers.core.algebra_morphisms.AlgebraHomomorphism`
+        `quivers.core.algebra_morphisms.CarrierMap`
         (pointwise: the action factors entry-by-entry through
         ``phi.apply``) or a
         `quivers.core.morphism_transformations.MorphismTransformation`
@@ -193,7 +193,7 @@ class Morphism(ABC):
 
         Parameters
         ----------
-        phi : AlgebraHomomorphism or MorphismTransformation
+        phi : CarrierMap or MorphismTransformation
             The change-of-base functor. Its ``source`` must match
             ``self.algebra``.
 
@@ -215,9 +215,9 @@ class Morphism(ABC):
             for step in phi.steps:
                 current = current.change_base(step)
             return cast(TransformedMorphism, current)
-        if not isinstance(phi, (AlgebraHomomorphism, MorphismTransformation)):
+        if not isinstance(phi, (CarrierMap, MorphismTransformation)):
             raise TypeError(
-                f"change_base: expected AlgebraHomomorphism, "
+                f"change_base: expected CarrierMap, "
                 f"MorphismTransformation, or TransSeq; got "
                 f"{type(phi).__name__}"
             )
@@ -227,8 +227,8 @@ class Morphism(ABC):
                 f"{phi.source.name!r} does not match this morphism's "
                 f"algebra {self._algebra.name!r}"
             )
-        if isinstance(phi, AlgebraHomomorphism):
-            transform = _build_algebra_homomorphism_transform(phi)
+        if isinstance(phi, CarrierMap):
+            transform = _build_carrier_map_transform(phi)
             new_domain = self._domain
             new_codomain = self._codomain
         else:

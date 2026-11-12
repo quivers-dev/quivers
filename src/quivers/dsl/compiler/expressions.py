@@ -119,11 +119,7 @@ class _ExpressionsMixin:
         kind = (
             "semigroupoid"
             if isinstance(rule, Semigroupoid)
-            else (
-                "bilinear_form"
-                if isinstance(rule, Magmoid)
-                else "composition_rule"
-            )
+            else ("bilinear_form" if isinstance(rule, Magmoid) else "composition_rule")
         )
         raise CompileError(
             f"{op_name}: requires a Algebra composition rule (needs "
@@ -154,7 +150,7 @@ class _ExpressionsMixin:
           values, an unboxed TransSeq of length 2).
 
         Returns a value that the runtime understands: a
-        `AlgebraHomomorphism`, a
+        `CarrierMap`, a
         `MorphismTransformation`, or a `TransSeq`.
         Raises `CompileError` on any unresolved reference
         or type mismatch.

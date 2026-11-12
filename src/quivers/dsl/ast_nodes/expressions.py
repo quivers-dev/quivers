@@ -76,14 +76,14 @@ class ExprTrace(Expr):
 
 
 class ExprChangeBase(Expr):
-    """Change-of-base: apply a transformation (an algebra
-    homomorphism or `MorphismTransformation`) to a
+    """Change-of-base: apply a transformation (a carrier map, such
+    as an algebra homomorphism, or a `MorphismTransformation`) to a
     morphism.
 
     The transformation is a first-class value: ``phi`` is any
     expression whose compile-time value is a
     `MorphismTransformation` or
-    `AlgebraHomomorphism`.  Concretely:
+    `CarrierMap`.  Concretely:
 
     * A bare identifier resolving a registered singleton
       (``f.change_base(expectation)``) or a let-bound trans value
