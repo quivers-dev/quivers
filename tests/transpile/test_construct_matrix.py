@@ -255,9 +255,13 @@ for _backend in (
     "turing",
     "webppl",
 ):
-    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "observe_mvn_host_factor")] = (
-        "family:MultivariateNormal:scale_tril"
-    )
+    if _backend in ("numpyro", "pymc", "pyro", "stan"):
+        # These take a Cholesky factor known only at run time.
+        continue
+    for _fixture in ("observe_mvn_host_factor", "observe_mvn_lkj_factor"):
+        _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
+            "family:MultivariateNormal:scale_tril"
+        )
     _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "sample_wishart_host_factor")] = (
         "family:Wishart:scale_tril"
     )

@@ -178,6 +178,7 @@ _STAN_LOG_DENSITY_SUFFIX: dict[str, str] = {
     "bernoulli_logit": "lpmf",
     "binomial_logit": "lpmf",
     "multi_normal_prec": "lpdf",
+    "multi_normal_cholesky": "lpdf",
     "cauchy": "lpdf",
     "chi_square": "lpdf",
     "continuous_bernoulli": "lpdf",
@@ -219,6 +220,7 @@ _STAN_PARAMETERIZED_NAMES: dict[tuple[str, str], str] = {
     ("Bernoulli", "logits"): "bernoulli_logit",
     ("Binomial", "logits"): "binomial_logit",
     ("MultivariateNormal", "precision_matrix"): "multi_normal_prec",
+    ("MultivariateNormal", "scale_tril"): "multi_normal_cholesky",
 }
 
 
@@ -1457,6 +1459,15 @@ class StanRenderer(RendererBase):
                 arg_vid = self._render_arg(ctx, substituted)
                 if position in vector_slots and self._reads_real_array(substituted):
                     arg_vid = self._as_event(ctx, arg_vid, 1)
+                if (
+                    family == "Wishart"
+                    and position < len(arg_names)
+                    and arg_names[position] == "scale_tril"
+                ):
+                    # Stan's Wishart takes the scale itself: L L^T.
+                    arg_vid = self._stan_call(
+                        ctx, "multiply_lower_tri_self_transpose", (arg_vid,)
+                    )
                 ctx.sb.edge(dal, arg_vid, "child_of")
         ctx.sb.edge(de, dal, "child_of")
         if truncation_args is None:
@@ -1870,6 +1881,13 @@ class StanRenderer(RendererBase):
                 out.append(arg)
                 continue
             declared_sup, declared_plate = declared
+            if declared_plate.batch_dims and tuple(declared_plate.batch_dims) == tuple(
+                plate.event_dims
+            ):
+                # An array over the draw's event axis is the vector the
+                # slot takes, read as one.
+                out.append(arg)
+                continue
             if (
                 declared_plate.event_dims
                 or not is_real_scalar(declared_sup)

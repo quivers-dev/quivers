@@ -993,6 +993,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
                 "loc": "mu",
                 "covariance_matrix": "cov",
                 "precision_matrix": "tau",
+                "scale_tril": "chol",
             },
             "webppl": {"loc": "mu", "covariance_matrix": "cov"},
         },
