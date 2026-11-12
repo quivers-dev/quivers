@@ -69,7 +69,7 @@ is a pattern variable, whatever its spelling, so `I`, `K`, `X`, and `Y` above ar
 variables and `span`, `Fwd`, and `NP` are constants.
 
 Slashes are not built-in syntax but constructors the grammar declares. The rules here
-writes them in Steedman notation, with the result leftmost [@steedman2000syntactic]:
+write them in Steedman notation, with the result leftmost [@steedman2000syntactic]:
 `Fwd(X, Y)` is `X/Y`, which takes a `Y` on its right to give `X`, and `Bwd(X, Y)` is
 `X\Y`, which takes a `Y` on its left. `harm_comp` is forward harmonic composition,
 `X/Y, Y/Z ⊢ X/Z`. The declaration compiles to a `DeductionSystem` registered under
