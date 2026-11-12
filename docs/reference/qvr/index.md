@@ -3,8 +3,8 @@
 QVR is the modeling language of quivers, written in `.qvr` files, which the compiler parses,
 checks, elaborates to QIEC, and then runs, fits, or transpiles. The *Quivers Indexed Effect Core*
 (QIEC) is the typed core language that every executable QVR declaration elaborates to. It has
-indexed families, effect rows, and handlers, and both the reference machine and the transpilers
-read it. Its checker, serialization, and runtime interface are specified in the
+indexed families, effect rows, and handlers, and both the [reference machine](../../developer/qiec.md#reference-evaluator), the
+library's interpreter for QIEC, and the transpilers read it. Its checker, serialization, and runtime interface are specified in the
 [QIEC developer note](../../developer/qiec.md).
 
 A *computation* is a typed procedure that returns a value and may perform

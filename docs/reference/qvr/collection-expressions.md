@@ -31,7 +31,8 @@ define standardized(xs : Tensor[Real]([3]), center : Real, scale : Real) : Tenso
 
 The lambda may capture pure values in scope, such as `center` and `scale`, and its parameter
 shadows an outer name with the same spelling. Elaboration to the [Quivers Indexed Effect Core](index.md) (QIEC) lowers the form to a typed array comprehension,
-so the reference machine runs it and a target that supports comprehensions renders it.
+so the [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for
+QIEC, runs it and a target that supports comprehensions renders it.
 
 ## Effect-aware traverse
 

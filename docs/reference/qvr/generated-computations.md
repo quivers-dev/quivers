@@ -41,8 +41,8 @@ semiring. For a span grammar, elaboration creates:
 
 Pattern variables shared between premises are checked by structural equality after the recursive
 premises return, and a failed match performs an empty choice. A learned lexical or rule weight is
-read from `Param` under the stable name that the compiled runtime's agenda-based chart parser in
-`quivers.stochastic` uses [@eisner2005compiling], so the two share one parameter store.
+read from `Param` under the stable name that the agenda-based chart parser of the
+[compiled runtime](../../guides/dsl-overview.md#compilation-pipeline) in `quivers.stochastic` uses [@eisner2005compiling], so the two share one parameter store.
 
 Under `normalize=lhs`, the rules that share a left-hand side are normalized as a group
 ([production probabilities](../../guides/deduction.md#production-probabilities-per-left-hand-side)).

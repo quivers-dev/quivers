@@ -5,8 +5,8 @@ of the [Quivers Indexed Effect Core](index.md) (QIEC) that performs through the 
 [effect instances](effects-and-handlers.md#prelude-interfaces), `random : Random` and
 `score : Score`. Each draw becomes a `Random.sample` request at a named *sample site*, and each
 observation or score term becomes a `Score.add` request that adds a log density to the run's
-weight [@wingate2011lightweight]. The program's data, observations, index maps, and scalar
-parameters become value parameters of the computation.
+weight [@wingate2011lightweight]. The program's data inputs and index maps ([Data inputs](#host-data)), observations,
+and scalar parameters become value parameters of the computation.
 
 ## Program declaration
 
@@ -60,7 +60,7 @@ type is inferred from the name's uses:
 
 | Use of the data input `x` | Checked type of `x` |
 | --- | --- |
-| fills a family parameter of a plated draw directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
+| fills a family parameter of a draw over a plate directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
 | subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter (several index vectors in one subscript select one entry per position, `x[i[n], j[n]]`) |
 | combined entry by entry with a value of known shape, as in `x * resid` | that value's shape |
 | read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
@@ -78,10 +78,10 @@ entry by entry with a value over the intended object, or by reading it entrywise
 `sum(factor i : Item in weight[i] * resid[i])`. A name whose uses fix two different shapes is
 refused the same way.
 
-A data input that fills a family parameter of a plated draw directly may also be given without the
+A data input that fills a family parameter of a draw over a plate directly may also be given without the
 plate axis: a scalar `sigma` for `scale=sigma`, or one cutpoint vector of shape `(cuts_extent,)` for
-`cutpoints=cuts`, is one value that every row shares. The compiled runtime reads such a value as it
-is, and the reference machine broadcasts it across the plate before validating
+`cutpoints=cuts`, is one value that every row shares. The [compiled runtime](../../guides/dsl-overview.md#compilation-pipeline), the PyTorch implementation of a module, reads such a value as it
+is, and the [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC, broadcasts it across the plate before validating
 ([`broadcast_shared_data`](../../api/qiec/program_runtime.md#quivers.qiec.program_runtime.broadcast_shared_data)).
 Transpile targets declare the shape with one value per row, so the data given to them are broadcast
 the same way. A target whose library cannot read one parameter vector per row refuses the program
@@ -214,10 +214,10 @@ machine's:
 | a pure callee whose body branches with `if c then e1 else e2` between pure branches | `select(c, e1, e2)`, which evaluates both branches, so a branch undefined where it is not selected (a `log` of a negative number) gives a NaN gradient |
 | a callee whose only requests are the program's `Random.sample` and `Score.add` | the callee's steps in place, as a draw from a program runs: the site `label` it draws becomes `y$label` under the binder `y`, and each score becomes a score step |
 | `let ys <- traverse(xs, x -> f(x, ...))` with a pure `f` | a comprehension over the items of `xs` |
-| the same with an `f` that draws | one plated draw per site of `f`, named `ys$label`, over the object that `xs` runs along |
+| the same with an `f` that draws | one draw over a plate per site of `f`, named `ys$label`, over the object that `xs` runs along |
 
 Each run of a traversed callee reads only its own item and names bound before the `traverse`, so
-the runs are independent and the plated draw is exact. A recurrence, in which a step reads the
+the runs are independent and the draw over the plate is exact. A recurrence, in which a step reads the
 previous one, is written with [`scan`](#scans).
 
 The transpile planner shares this analysis of pure calls, so every target inlines nested pure calls

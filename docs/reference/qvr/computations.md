@@ -94,7 +94,9 @@ The checker follows the reachable call graph, so a wrapper with an empty body ro
 effectful callee is effectful unless it handles the effect. The row bounds which requests a
 computation may make, and the body determines how many it makes and in what order.
 
-Recursion runs on the reference machine's explicit stack, not on the Python stack. A run may be
+Recursion runs on the explicit stack of the
+[reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for
+its core language, not on the Python stack. A run may be
 given *fuel*, a bound on its number of evaluation steps (`--fuel` in
 [execution controls](execution-and-tooling.md#execution-controls)), and a run that exhausts it stops
 with `qiec-run-fuel`.
