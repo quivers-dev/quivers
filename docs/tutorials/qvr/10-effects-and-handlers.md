@@ -100,7 +100,7 @@ Grades `0`, `aff`, and `1` make the continuation one-shot. `omega` makes it mult
 
 ## 5. Decide between authored and foreign handlers
 
-An *authored* handler has its clause bodies written in QVR, so it can be inspected, serialized, and emitted to a transpile target that supports its operations. A *foreign* handler declares only its type, and a *provider*, an object registered with the runtime, gives its behaviour when the module runs. This is the role of a [foreign function interface](https://en.wikipedia.org/wiki/Foreign_function_interface). Use a foreign handler for a sampler, a PyTorch module, a database, or another resource that lives only in the running Python process. Write `[implementation=foreign]` and omit the clause bodies. Omitting them without that option is an error.
+An *authored* handler has its clause bodies written in QVR, so it can be inspected, serialized, and emitted to a transpile target that supports its operations. A *foreign* handler declares only its type, and a *provider*, an object registered with the runtime, gives its behavior when the module runs. This is the role of a [foreign function interface](https://en.wikipedia.org/wiki/Foreign_function_interface). Use a foreign handler for a sampler, a PyTorch module, a database, or another resource that lives only in the running Python process. Write `[implementation=foreign]` and omit the clause bodies. Omitting them without that option is an error.
 
 A process that loads the serialized module must install a provider for each foreign handler. The runtime configuration selects the provider by name, and the Python callables themselves are never serialized ([foreign handlers and providers](../../reference/qvr/effects-and-handlers.md#foreign-handlers-and-providers)).
 
