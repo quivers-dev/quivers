@@ -248,6 +248,34 @@ class AttentionSource(ParamSource):
         return self.head(pooled)
 
 
+def attention_draw_message(name: str) -> str:
+    """The refusal of a program step that draws through an attention source.
+
+    An `AttentionSource` attends over the sequence axis of its input and
+    pools it away, so it reads one parameter vector off a whole sequence
+    of rows. A program step hands a kernel one row per draw, a sequence
+    of length one, over which attention computes no weighting.
+
+    Parameters
+    ----------
+    name : str
+        The name the step draws through.
+
+    Returns
+    -------
+    str
+        The message every path raises.
+    """
+    return (
+        f"the step draws from {name!r}, whose parameters come from a "
+        f"`param_source=attention` network; that network pools a sequence of "
+        f"rows into one parameter vector, and a program step hands a kernel "
+        f"one row per draw, so no draw reads it. Attend over a sequence with "
+        f"a `[role=function, param_source=self_attention]` morphism bound by "
+        f"`let`, and draw from a family around its value"
+    )
+
+
 class SelfAttentionSource(ParamSource):
     """Multi-head scaled dot-product self-attention over a sequence.
 

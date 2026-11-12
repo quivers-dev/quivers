@@ -197,6 +197,7 @@ from quivers.dsl.let_expr_traversal import (
 )
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
 from quivers.continuous.deterministic import learned_function_draw_message
+from quivers.continuous.param_source import attention_draw_message
 from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
@@ -6278,6 +6279,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     target="qvr-qiec",
                 )
             except StepResolutionError as error:
+                if any(
+                    kind == "param-source:attention"
+                    or kind.startswith("param-source:attention:")
+                    for kind in error.kinds
+                ):
+                    self._fail(
+                        step,
+                        attention_draw_message(step.morphism),
+                        code="qiec-program",
+                    )
                 network = self._network_kernel(step, error.kinds)
                 if network is None:
                     self._fail(

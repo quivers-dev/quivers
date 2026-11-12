@@ -32,6 +32,7 @@ import torch
 
 from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 from quivers.core.morphisms import extract_morphism
+from quivers.core.objects import FinSet
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.program_steps import Call as CallStep
@@ -1972,6 +1973,50 @@ def _rendered_shape(dimensions: tuple[IndexTerm, ...]) -> str:
     return f"({', '.join(parts)})"
 
 
+def check_program_input(program: MonadicProgram, x: torch.Tensor) -> None:
+    """Check that an input holds one element of a finite domain per run.
+
+    A program over a finite set ``A`` reads one element of ``A`` per
+    run: an input of ``B`` runs is a ``(B,)`` tensor of element indices,
+    or ``(B, 1)``. A wider input, such as ``(B, T)`` tokens for a
+    program over one token, is no element of the domain, and reading it
+    would hand every step a row of ``T`` elements.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        The program.
+    x : torch.Tensor
+        The input.
+
+    Raises
+    ------
+    ValueError
+        If the program's domain is a finite set and the input is not
+        one index per run, or an index lies outside the set.
+    """
+    domain = program.domain
+    if not isinstance(domain, FinSet):
+        return
+    if x.dim() > 2 or (x.dim() == 2 and int(x.shape[1]) != 1):
+        raise ValueError(
+            f"the program's domain is a finite set of {domain.cardinality} "
+            f"elements, so an input of B runs holds one "
+            f"element index per run, of shape (B,) or (B, 1); got an input of "
+            f"shape {tuple(x.shape)}"
+        )
+    if (
+        x.numel()
+        and not x.is_floating_point()
+        and (int(x.min()) < 0 or int(x.max()) >= domain.cardinality)
+    ):
+        raise ValueError(
+            f"the program's domain is a finite set of {domain.cardinality} "
+            f"elements indexed from 0, and the input holds "
+            f"indices from {int(x.min())} to {int(x.max())}"
+        )
+
+
 def run_program(
     program: MonadicProgram,
     x: torch.Tensor,
@@ -2008,6 +2053,7 @@ def run_program(
         or a value is given for an occurrence of a scanned site the run
         never reaches.
     """
+    check_program_input(program, x)
     sites, supplied, data = _split_observations(program, observations or {})
     runs = int(x.shape[0]) if x.dim() else 1
     per_run_data = check_host_data(program, data, runs=runs if x.dim() else None)
