@@ -21,8 +21,9 @@ the kernel itself.
 
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -32,6 +33,8 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.joint_plan import JointPlans
+from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
@@ -161,6 +164,23 @@ def _distribution_validation() -> Iterator[None]:
         Distribution.set_default_validate_args(previous)
 
 
+type StateValue = (
+    torch.Tensor
+    | float
+    | int
+    | bool
+    | str
+    | None
+    | list[StateValue]
+    | dict[str, StateValue]
+)
+"""A value in a kernel's or a chain state's state dictionary: a tensor, a
+Python scalar or string, ``None``, or a list or string-keyed dictionary
+of such values. These are exactly the values a checkpoint stores and
+`torch.load` reads back with ``weights_only=True``, so loading a
+checkpoint executes no code."""
+
+
 @dataclass
 class KernelState:
     """Mutable container for one chain's MCMC state.
@@ -191,6 +211,20 @@ class KernelState:
     extras : dict
         Per-kernel additional state (e.g. NUTS tree depth, HMC
         step-size adaptation cumulants).
+    stats : dict[str, float]
+        Statistics of the most recent transition, replaced by every
+        `MCMCKernel.step`: ``"accepted"`` (``1.0`` or ``0.0``) and
+        ``"accept_prob"`` for every kernel, with kernel-specific entries
+        such as ``"tree_depth"``. A composite kernel prefixes each
+        component's entries with the component's name and a dot
+        (``"nuts.accepted"``).
+    gibbs_values : dict[str, torch.Tensor]
+        Current values of the sites a `GibbsKernel` updates, which sit
+        outside the flat vector. Each is held as a trace-side value, the
+        layout `MonadicProgram.log_joint` consumes: a non-plate site
+        carries a leading run axis of one, a plate site has its
+        constrained shape. ``log_density`` and ``grad_log_density`` are
+        those of the potential conditioned on these values.
     """
 
     position: torch.Tensor
@@ -200,6 +234,114 @@ class KernelState:
     accept_count: int = 0
     diverged: bool = False
     extras: dict = field(default_factory=dict)
+    stats: dict[str, float] = field(default_factory=dict)
+    gibbs_values: dict[str, torch.Tensor] = field(default_factory=dict)
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The state as a dictionary a checkpoint can store.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            Every field, with tensors detached; `from_state_dict`
+            rebuilds the state exactly.
+
+        Raises
+        ------
+        TypeError
+            If ``extras`` holds a value other than a tensor, a Python
+            scalar, or a string.
+        """
+        extras: dict[str, StateValue] = {}
+        for key, value in self.extras.items():
+            if not isinstance(value, torch.Tensor | float | int | bool | str):
+                raise TypeError(
+                    f"KernelState.state_dict: extras[{key!r}] is a "
+                    f"{type(value).__name__}, which a checkpoint cannot store"
+                )
+            extras[str(key)] = (
+                value.detach() if isinstance(value, torch.Tensor) else value
+            )
+        return {
+            "position": self.position.detach(),
+            "log_density": self.log_density.detach(),
+            "grad_log_density": self.grad_log_density.detach(),
+            "step_count": self.step_count,
+            "accept_count": self.accept_count,
+            "diverged": self.diverged,
+            "extras": extras,
+            "stats": {key: float(value) for key, value in self.stats.items()},
+            "gibbs_values": {k: v.detach() for k, v in self.gibbs_values.items()},
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, StateValue]) -> "KernelState":
+        """Rebuild a state from `state_dict`'s output.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Returns
+        -------
+        KernelState
+            The state.
+
+        Raises
+        ------
+        ValueError
+            If a field is missing or has the wrong type.
+        """
+        try:
+            position = state["position"]
+            log_density = state["log_density"]
+            grad = state["grad_log_density"]
+            step_count = state["step_count"]
+            accept_count = state["accept_count"]
+            diverged = state["diverged"]
+            extras = state["extras"]
+            stats = state["stats"]
+            gibbs_values = state["gibbs_values"]
+        except KeyError as error:
+            raise ValueError(f"KernelState.from_state_dict: missing {error}") from None
+        if not (
+            isinstance(position, torch.Tensor)
+            and isinstance(log_density, torch.Tensor)
+            and isinstance(grad, torch.Tensor)
+            and isinstance(step_count, int)
+            and isinstance(accept_count, int)
+            and isinstance(diverged, bool)
+            and isinstance(extras, dict)
+            and isinstance(stats, dict)
+            and isinstance(gibbs_values, dict)
+        ):
+            raise ValueError("KernelState.from_state_dict: a field has the wrong type")
+        values: dict[str, torch.Tensor] = {}
+        for name, value in gibbs_values.items():
+            if not isinstance(value, torch.Tensor):
+                raise ValueError(
+                    f"KernelState.from_state_dict: Gibbs value {name!r} is not a tensor"
+                )
+            values[name] = value
+        floats: dict[str, float] = {}
+        for key, value in stats.items():
+            if not isinstance(value, float):
+                raise ValueError(
+                    f"KernelState.from_state_dict: statistic {key!r} is not a float"
+                )
+            floats[key] = value
+        return cls(
+            position=position,
+            log_density=log_density,
+            grad_log_density=grad,
+            step_count=step_count,
+            accept_count=accept_count,
+            diverged=diverged,
+            extras=dict(extras),
+            stats=floats,
+            gibbs_values=values,
+        )
 
 
 class PotentialFn:
@@ -220,6 +362,23 @@ class PotentialFn:
     non-plate sites at ``(1, *constrained_shape)``, with the leading
     axis being the program's batch axis, and plate sites at
     ``constrained_shape``.
+
+    The joint is the one `MonadicProgram.log_joint` computes, but the
+    program is not run on the reference machine at every position. The
+    first evaluation at a layout of the values (the shape, dtype, and
+    device of each latent, datum, and conditioned value) prepares the
+    program's scoring run once: its bind chain is compiled to a
+    straight-line sequence of the program's host steps and its sites'
+    densities, which every later evaluation at that layout replays,
+    with the same tensor operations in the same order, so values and
+    gradients are the machine's bit for bit. The preparation is shared
+    with every potential `condition` derives, since conditioning
+    changes values and not their layout. A layout the preparation does
+    not describe is evaluated by ``log_joint`` itself, every call: a
+    program with a scan (whose recursion runs over its sequence), a
+    datum that is not a tensor, and any evaluation made while effect
+    handlers are on the stack, under another installed evaluator, or of
+    a program whose ``log_joint`` is overridden.
 
     Observed data are checked once, at construction, against the
     support of each observed site's distribution, so data that are
@@ -259,7 +418,89 @@ class PotentialFn:
         self._model = model
         self._registry = registry
         self._x = x
+        self._base_observations = observations
+        self._conditioned: dict[str, torch.Tensor] = {}
         self._observations = observations
+        # [forward passes, gradient evaluations], shared with every
+        # conditioned copy so that a chain's evaluations are counted in
+        # one place.
+        self._counts = [0, 0]
+        # The program's log joint prepared per layout of the values,
+        # shared with every conditioned copy: conditioning changes the
+        # values, not their layout.
+        self._plans = JointPlans(model, x)
+
+    @property
+    def num_evaluations(self) -> int:
+        """Forward passes of the log-density so far, gradient ones included.
+
+        Counted across this potential and every potential `condition`
+        derived from it; `check_initial` is not counted.
+        """
+        return self._counts[0]
+
+    @property
+    def num_gradient_evaluations(self) -> int:
+        """Calls of `value_and_grad` so far, across this potential and
+        every potential `condition` derived from it."""
+        return self._counts[1]
+
+    @property
+    def registry(self) -> LatentRegistry:
+        """The registry whose flat vector the potential is a function of."""
+        return self._registry
+
+    @property
+    def conditioned_values(self) -> dict[str, torch.Tensor]:
+        """The site values `condition` fixed, keyed by site name."""
+        return dict(self._conditioned)
+
+    def condition(self, values: Mapping[str, torch.Tensor]) -> "PotentialFn":
+        """The potential with further sites held at given values.
+
+        The returned potential scores the flat vector exactly as this
+        one does, with ``values`` added to the observations
+        `MonadicProgram.log_joint` receives. It replaces, rather than
+        adds to, any values this potential was itself conditioned on,
+        so conditioning on a chain's current `KernelState.gibbs_values`
+        is always relative to the data the potential was built with.
+        Conditioning is what lets a `GibbsKernel` hold sites outside the
+        flat vector: the other kernels move the flat vector under the
+        potential conditioned on the Gibbs sites' current values.
+
+        Parameters
+        ----------
+        values : Mapping[str, torch.Tensor]
+            Trace-side values of sites outside the registry (a non-plate
+            site with a leading run axis of one, a plate site at its
+            constrained shape).
+
+        Returns
+        -------
+        PotentialFn
+            A potential of the same class sharing the model, registry,
+            input, and data.
+
+        Raises
+        ------
+        ValueError
+            If a name in ``values`` is a site of the registry or one of
+            the observations.
+        """
+        clash = sorted(
+            name
+            for name in values
+            if name in self._registry or name in self._base_observations
+        )
+        if clash:
+            raise ValueError(
+                f"PotentialFn.condition: {clash} are latent sites of the registry "
+                "or observations, so they cannot also be conditioned on"
+            )
+        conditioned = copy.copy(self)
+        conditioned._conditioned = dict(values)
+        conditioned._observations = {**self._base_observations, **values}
+        return conditioned
 
     def log_density(self, z: torch.Tensor) -> torch.Tensor:
         """Unconstrained-space log-density (Jacobian-corrected).
@@ -303,14 +544,17 @@ class PotentialFn:
         Raises
         ------
         ValueError
-            If ``z`` does not have the registry's flat length.
+            If ``z`` does not have the registry's flat length, or a plate
+            is subsampled, since the potential is the exact log density.
         Exception
             Any error ``log_joint`` raises that does not mark the
             position as outside the support.
         """
+        refuse_subsampling("PotentialFn")
+        self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
         try:
-            log_p = self._model.log_joint(self._x, {**trace_side, **self._observations})
+            log_p = self._plans.log_joint({**trace_side, **self._observations})
         except (ValueError, torch.linalg.LinAlgError) as error:
             if not _rejects_position(error):
                 raise
@@ -425,6 +669,13 @@ class PotentialFn:
             program or its data rather than a position outside the
             support.
         """
+        self._counts[1] += 1
+        if z.numel() == 0:
+            # Every latent is held outside the flat vector (a model a
+            # GibbsKernel samples alone): there is nothing to
+            # differentiate with respect to.
+            with torch.no_grad():
+                return self.log_density(z).detach(), torch.zeros_like(z)
         z_leaf = z.detach().clone().requires_grad_(True)
         with torch.enable_grad():
             ld = self.log_density(z_leaf)
@@ -461,6 +712,111 @@ class MCMCKernel(ABC):
         """
         self._generator = generator
 
+    @property
+    def gibbs_sites(self) -> frozenset[str]:
+        """The latent sites this kernel updates outside the flat vector.
+
+        `MCMC.run` leaves these sites out of the registry, holds their
+        values in `KernelState.gibbs_values`, and conditions the
+        potential on them. A kernel that moves only the flat vector has
+        none; a `GibbsKernel` has its blocks, and a composite kernel the
+        union of its components'.
+        """
+        return frozenset()
+
+    def tune(self, population: torch.Tensor) -> None:
+        """Tune the kernel to a population of positions.
+
+        A population sampler (`SMC`) calls this after `init`, at every
+        temperature, with the current particles; the kernel may set the
+        parameters it would otherwise adapt (a metric, a proposal scale)
+        from the population's spread. The base implementation leaves the
+        kernel as it is.
+
+        Parameters
+        ----------
+        population : torch.Tensor
+            The particles' flat positions, shape ``(N, D)``.
+        """
+        del population
+
+    def configuration(self) -> dict[str, StateValue]:
+        """The kernel's configuration, for telling kernels apart.
+
+        A checkpoint records it and `MCMC.resume` refuses a checkpoint
+        written by a kernel whose configuration differs. The base
+        implementation records the class; concrete kernels add their
+        hyperparameters, and composites their components'.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The configuration.
+        """
+        return {"kernel": f"{type(self).__module__}.{type(self).__qualname__}"}
+
+    def state_dict(self) -> dict[str, StateValue]:
+        """The kernel's mutable state for one chain.
+
+        Everything a chain's continuation depends on beyond its
+        `KernelState` and its generator: whether the kernel is adapting,
+        and its adaptation state (step size, metric, schedule
+        position). `MCMC` writes it to a checkpoint and restores it with
+        `load_state_dict` after `init`, so a resumed chain continues bit
+        for bit.
+
+        Returns
+        -------
+        dict[str, StateValue]
+            The state.
+        """
+        return {"is_adapting": self.is_adapting}
+
+    def load_state_dict(self, state: dict[str, StateValue]) -> None:
+        """Restore what `state_dict` returned.
+
+        Called after `init` for the same chain, which has rebuilt the
+        kernel's structures for the registry.
+
+        Parameters
+        ----------
+        state : dict[str, StateValue]
+            A dictionary `state_dict` produced.
+
+        Raises
+        ------
+        ValueError
+            If the dictionary lacks an entry or holds one of the wrong
+            type.
+        """
+        flag = state.get("is_adapting")
+        if not isinstance(flag, bool):
+            raise ValueError(
+                f"{type(self).__name__}.load_state_dict: is_adapting must be a bool"
+            )
+        self.is_adapting = flag
+
+    @staticmethod
+    def _evaluate_first(state: KernelState, potential: PotentialFn) -> None:
+        """Fill in the log-density and gradient of a chain's first state.
+
+        A kernel's `init` returns a state whose log-density and
+        gradient are placeholders, since the potential is not known to
+        `init`; the first transition of the chain (``step_count == 0``)
+        evaluates them before using them.
+
+        Parameters
+        ----------
+        state : KernelState
+            The state a transition starts from.
+        potential : PotentialFn
+            The target.
+        """
+        if state.step_count == 0:
+            ld, g = potential.value_and_grad(state.position)
+            state.log_density = ld
+            state.grad_log_density = g
+
     @abstractmethod
     def init(
         self,
@@ -484,8 +840,17 @@ class MCMCKernel(ABC):
         function is constructed once per `MCMC.run` and
         re-used across every step / chain."""
 
-    def start_adaptation(self) -> None:
-        """Enter the adaptation (warmup) phase."""
+    def start_adaptation(self, num_warmup: int) -> None:
+        """Enter the adaptation (warmup) phase.
+
+        Parameters
+        ----------
+        num_warmup : int
+            Number of warmup transitions that follow before
+            `stop_adaptation`, so that a kernel can lay out a warmup
+            schedule.
+        """
+        del num_warmup
         self.is_adapting = True
 
     def stop_adaptation(self) -> None:
@@ -493,4 +858,35 @@ class MCMCKernel(ABC):
         self.is_adapting = False
 
 
-__all__ = ["KernelState", "PotentialFn", "MCMCKernel"]
+def _with_generator[T](generator: torch.Generator | None, draw: Callable[[], T]) -> T:
+    """Run a draw that uses Torch's global RNG on a given generator.
+
+    `torch.distributions` samplers and the program's own draws read the
+    global generator. The draw runs in a forked global state seeded from
+    ``generator``, which then advances by what the draw consumed, so the
+    caller's stream is used and the global state is left as it was.
+
+    Parameters
+    ----------
+    generator : torch.Generator | None
+        The CPU generator to draw from; ``None`` draws from a forked
+        copy of the global state, leaving it untouched.
+    draw : Callable[[], T]
+        The draw.
+
+    Returns
+    -------
+    T
+        What ``draw`` returns.
+    """
+    with torch.random.fork_rng(devices=[]):
+        if generator is not None:
+            torch.random.set_rng_state(generator.get_state())
+        try:
+            return draw()
+        finally:
+            if generator is not None:
+                generator.set_state(torch.random.get_rng_state())
+
+
+__all__ = ["KernelState", "PotentialFn", "MCMCKernel", "StateValue"]

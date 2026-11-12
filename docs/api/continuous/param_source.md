@@ -43,4 +43,18 @@ error rather than a silent no-op, and so is `param_source` on a family
 whose parameters do not come from a source at all (`Horseshoe`,
 `GaussianProcess`, `Independent`, `Transformed`).
 
+A [learned function](deterministic.md) builds its network through
+[`function_source`][quivers.continuous.param_source.function_source], which
+admits the `linear`, `mlp`, and `identity` kinds and threads the declared
+hidden-layer activation into an `MLPSource`. It also admits two networks
+over whole sequences, which a
+[`SequenceFunction`][quivers.continuous.deterministic.SequenceFunction] holds:
+[`SelfAttentionSource`][quivers.continuous.param_source.SelfAttentionSource],
+multi-head scaled dot-product self-attention over the position axis,
+causally masked or not [@vaswani2017attention], and
+[`PositionSource`][quivers.continuous.param_source.PositionSource], a learned
+table of position vectors added to a sequence's rows. Unlike
+`AttentionSource`, which pools the sequence it attends over into one
+parameter vector, both map a sequence of rows to a sequence of rows.
+
 ::: quivers.continuous.param_source

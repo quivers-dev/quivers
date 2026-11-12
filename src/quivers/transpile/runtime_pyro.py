@@ -1,7 +1,8 @@
 """Runtime helpers for transpiled Pyro source.
 
 Pyro ships no `TruncatedNormal`, `LogitNormal`, `HalfStudentT`,
-`MatrixNormal`, or `InverseWishart` distribution. The
+`MatrixNormal`, `InverseWishart`, `LogGamma`, or `LogitBeta`
+distribution. The
 [`PyroRenderer`][quivers.transpile.renderers.pyro.PyroRenderer]
 grafts the relevant class definition from this module onto the top
 of the emitted file (parsed once through panproto's Python
@@ -38,6 +39,11 @@ Each class subclasses
   Cholesky factor of the scale matrix, with the closed form log
   density and a sampler that inverts a Wishart draw on the inverse
   scale matrix.
+* `LogGamma` is ``log(G)`` for ``G ~ Gamma(concentration, rate)`` and
+  `LogitBeta` is ``logit(P)`` for ``P ~ Beta(concentration1,
+  concentration0)``, both on the real line with their exact densities
+  and samplers that stay in log space through the shape augmentation
+  ``log G' + log(U) / a`` with ``G' ~ Gamma(a + 1)``.
 
 The classes live in the quivers package (not embedded as an exec'd
 string inside the emit) so that:
@@ -365,10 +371,176 @@ class InverseWishart(pyro.distributions.torch_distribution.TorchDistribution):
         return torch.cholesky_inverse(torch.linalg.cholesky(draw))
 
 
+class OrderedProbit(pyro.distributions.Categorical):
+    """Ordered-probit categorical: a probit link over sorted cutpoints.
+
+    Parameters
+    ----------
+    eta
+        The real predictor, broadcast over the batch shape.
+    cutpoints
+        The sorted cutpoints, ``(..., K - 1)``.
+
+    Pyro ships no `OrderedProbit`. The category probabilities are the
+    successive differences of the standard normal distribution function
+    at ``cutpoints - eta``, ``len(cutpoints) + 1`` ordered outcomes
+    indexed from zero.
+    """
+
+    def __init__(
+        self,
+        eta: torch.Tensor,
+        cutpoints: torch.Tensor,
+        validate_args: bool | None = None,
+    ) -> None:
+        dtype = torch.get_default_dtype()
+        eta = torch.as_tensor(eta, dtype=dtype)
+        cutpoints = torch.as_tensor(cutpoints, dtype=dtype)
+        cdf = torch.special.ndtr(cutpoints - eta.unsqueeze(-1))
+        lead = cdf.shape[:-1]
+        cumulative = torch.cat(
+            [cdf.new_zeros(*lead, 1), cdf, cdf.new_ones(*lead, 1)], dim=-1
+        )
+        super().__init__(
+            probs=torch.diff(cumulative, dim=-1), validate_args=validate_args
+        )
+
+    def expand(
+        self,
+        batch_shape: torch.Size,
+        _instance: pyro.distributions.Categorical | None = None,
+    ) -> pyro.distributions.Categorical:
+        """The categorical over the same probabilities at a batch shape.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            The batch shape to expand to.
+        _instance : pyro.distributions.Categorical | None
+            Unused; the expansion is a fresh categorical.
+
+        Returns
+        -------
+        pyro.distributions.Categorical
+            The expanded distribution.
+        """
+        del _instance
+        return pyro.distributions.Categorical(probs=self.probs).expand(batch_shape)
+
+
+class LogGamma(pyro.distributions.torch_distribution.TorchDistribution):
+    """``log(G)`` for ``G ~ Gamma(concentration, rate)`` on the real line.
+
+    The density ``a (log r + y) - r exp(y) - lgamma(a)`` is exact for
+    every finite ``y``. Draws stay in log space through the shape
+    augmentation ``log G' + log(U) / a`` with ``G' ~ Gamma(a + 1)`` and
+    ``U ~ Uniform(0, 1]``, so a small shape never forms a Gamma draw
+    that underflows, and ``G'`` carries torch's implicit
+    reparameterization gradient.
+    """
+
+    arg_constraints = {
+        "concentration": pyro.distributions.constraints.positive,
+        "rate": pyro.distributions.constraints.positive,
+    }
+    support = pyro.distributions.constraints.real
+    has_rsample: bool = True
+
+    def __init__(
+        self,
+        concentration: torch.Tensor,
+        rate: torch.Tensor,
+        validate_args: bool | None = None,
+    ) -> None:
+        first = torch.as_tensor(concentration)
+        self.concentration, self.rate = torch.broadcast_tensors(
+            first, torch.as_tensor(rate, dtype=first.dtype)
+        )
+        super().__init__(self.concentration.shape, validate_args=validate_args)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        log_rate = torch.log(self.rate)
+        return (
+            self.concentration * (log_rate + value)
+            - torch.exp(value + log_rate)
+            - torch.lgamma(self.concentration)
+        )
+
+    def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        shape = self._extended_shape(sample_shape)
+        concentration = self.concentration.expand(shape)
+        boosted = pyro.distributions.Gamma(
+            concentration + 1.0, torch.ones_like(concentration)
+        ).rsample()
+        uniform = torch.rand(shape, dtype=concentration.dtype)
+        return (
+            torch.log(boosted)
+            + torch.log1p(-uniform) / concentration
+            - torch.log(self.rate.expand(shape))
+        )
+
+
+class LogitBeta(pyro.distributions.torch_distribution.TorchDistribution):
+    """``logit(P)`` for ``P ~ Beta(concentration1, concentration0)``.
+
+    The density ``a logsigmoid(x) + b logsigmoid(-x) - log B(a, b)`` is
+    exact for every finite ``x``. A draw is the difference of two
+    unit-rate log-Gamma draws, each made in log space by the shape
+    augmentation ``log G' + log(U) / a``.
+    """
+
+    arg_constraints = {
+        "concentration1": pyro.distributions.constraints.positive,
+        "concentration0": pyro.distributions.constraints.positive,
+    }
+    support = pyro.distributions.constraints.real
+    has_rsample: bool = True
+
+    def __init__(
+        self,
+        concentration1: torch.Tensor,
+        concentration0: torch.Tensor,
+        validate_args: bool | None = None,
+    ) -> None:
+        first = torch.as_tensor(concentration1)
+        self.concentration1, self.concentration0 = torch.broadcast_tensors(
+            first, torch.as_tensor(concentration0, dtype=first.dtype)
+        )
+        super().__init__(self.concentration1.shape, validate_args=validate_args)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        first = self.concentration1
+        second = self.concentration0
+        return (
+            first * torch.nn.functional.logsigmoid(value)
+            + second * torch.nn.functional.logsigmoid(-value)
+            - torch.lgamma(first)
+            - torch.lgamma(second)
+            + torch.lgamma(first + second)
+        )
+
+    def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        shape = self._extended_shape(sample_shape)
+        draws = []
+        for concentration in (
+            self.concentration1.expand(shape),
+            self.concentration0.expand(shape),
+        ):
+            boosted = pyro.distributions.Gamma(
+                concentration + 1.0, torch.ones_like(concentration)
+            ).rsample()
+            uniform = torch.rand(shape, dtype=concentration.dtype)
+            draws.append(torch.log(boosted) + torch.log1p(-uniform) / concentration)
+        return draws[0] - draws[1]
+
+
 __all__ = [
+    "OrderedProbit",
     "TruncatedNormal",
     "LogitNormal",
     "HalfStudentT",
     "MatrixNormal",
     "InverseWishart",
+    "LogGamma",
+    "LogitBeta",
 ]

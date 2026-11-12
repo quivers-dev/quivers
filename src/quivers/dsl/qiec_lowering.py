@@ -8,8 +8,8 @@ responsibilities.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -41,9 +41,15 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
 from quivers.qiec.types import render_static
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.transpile._pure_calls import (
+    replace_locals as _replace_locals,
+)
 from quivers.dsl.let_expr_traversal import let_expr_children, substitute_let_expr
 from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
+    LAYER_NORM_EPS,
+    RMS_NORM_EPS,
+    SHAPE_BUILTINS,
     _BINARY_PRIMITIVES,
     _BUILTIN_PRIMITIVES,
     _COLLECTION_BUILTINS,
@@ -52,7 +58,9 @@ from quivers.dsl.pure_builtins import (
 )
 from quivers.dsl.deduction_elaboration import _DeductionElaboration
 from quivers.dsl.structural_elaboration import _StructuralElaboration
+from quivers.dsl.latent_weights import LatentWeightsError, expand_latent_weights
 from quivers.dsl.program_elaboration import (
+    LATENT_WEIGHT_HEADS,
     ObjectInfo,
     _extent,
     _fixed_extent,
@@ -380,26 +388,6 @@ def _substitute_let(
     return substitute_let_expr(expr, substitution)
 
 
-#: The records of a value term a local's reads can sit in: every value
-#: variant and the bindings of a ``LetValue``.
-_VALUE_RECORDS: tuple[type, ...] = (
-    *(item for item in Value.__value__.__args__ if isinstance(item, type)),
-    LetBinding,
-)
-
-type _ValueTerm = (
-    Value
-    | LetBinding
-    | str
-    | int
-    | float
-    | bool
-    | bytes
-    | None
-    | tuple[_ValueTerm, ...]
-)
-"""A value term or one of the parts a rewrite of its locals descends into."""
-
 #: The let expressions a substitution may copy freely: reading one costs
 #: nothing, so duplicating it neither grows a term nor repeats work.
 _ATOMIC_LET_EXPRESSIONS = (
@@ -480,59 +468,6 @@ def _reads_repeatedly(name: str, body: surface.LetExprNode) -> bool:
         return any(visit(child, nested) for child in let_expr_children(node))
 
     return visit(body, False)
-
-
-def _replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
-    """Replace the reads of some locals in a lowered value.
-
-    The replaced locals are fresh binders the lowering introduced, so
-    no binder inside ``value`` can capture a replacement's free locals.
-
-    Parameters
-    ----------
-    value : Value
-        The lowered value.
-    replacements : Mapping[Local, Value]
-        The value each local's reads become.
-
-    Returns
-    -------
-    Value
-        ``value`` with every ``Var`` of a replaced local substituted.
-    """
-
-    def rewrite(term: _ValueTerm) -> _ValueTerm:
-        """Replace each variable the replacements name, sharing unchanged terms.
-
-        Parameters
-        ----------
-        term : _ValueTerm
-            The term.
-
-        Returns
-        -------
-        _ValueTerm
-            The rewritten term, the input itself where nothing changed.
-        """
-        if isinstance(term, Var):
-            return replacements.get(term.local, term)
-        if isinstance(term, tuple):
-            items = tuple(rewrite(item) for item in term)
-            if any(new is not old for new, old in zip(items, term, strict=True)):
-                return items
-            return term
-        if isinstance(term, _VALUE_RECORDS) and is_dataclass(term):
-            changes: dict[str, _ValueTerm] = {}
-            for field in fields(term):
-                current = getattr(term, field.name)
-                if isinstance(current, (tuple, *_VALUE_RECORDS)):
-                    rewritten = rewrite(current)
-                    if rewritten is not current:
-                        changes[field.name] = rewritten
-            return replace(term, **changes) if changes else term
-        return term
-
-    return cast(Value, rewrite(value))
 
 
 _EXPRESSION_FORMS = {
@@ -674,6 +609,122 @@ def _last_axis_reduction(
         else tensor_type(inner_shape[0], (dimensions[0], *inner_shape[1]))
     )
     return Comprehension(binder, dimensions[0], inner, result)
+
+
+def _rebuild_last_axis(
+    tensors: tuple[Value, ...],
+    extents: tuple[int, ...],
+    element: TypeExpr,
+    leading: tuple[IndexTerm, ...],
+    picks: tuple[tuple[int, int], ...],
+    path: tuple[str | int, ...],
+    occupied: frozenset[str],
+) -> Value:
+    """A tensor whose last axis lists chosen entries of other tensors' last axes.
+
+    Parameters
+    ----------
+    tensors : tuple[Value, ...]
+        The tensors read, each of shape ``leading`` followed by its own
+        last extent.
+    extents : tuple[int, ...]
+        Each tensor's last extent.
+    element : TypeExpr
+        Their element type.
+    leading : tuple[IndexTerm, ...]
+        The axes before the last, which every tensor shares.
+    picks : tuple[tuple[int, int], ...]
+        The new last axis, in order: each entry names a tensor by its
+        position and an entry of that tensor's last axis.
+    path : tuple[str | int, ...]
+        Structural path of the call, which names the binders.
+    occupied : frozenset[str]
+        The names of the locals in scope, which no binder repeats.
+
+    Returns
+    -------
+    Value
+        A tensor literal of the picked entries, under one comprehension
+        per leading axis.
+    """
+    stem = "_".join(str(item) for item in path)
+    binders: list[Local] = []
+    taken = set(occupied)
+    for axis in range(len(leading)):
+        name = f"__{stem}_lead{axis}"
+        suffix = 0
+        while name in taken:
+            suffix += 1
+            name = f"__{stem}_lead{axis}_{suffix}"
+        taken.add(name)
+        binders.append(Local(name, INT))
+    rows: list[Value] = []
+    for tensor, extent in zip(tensors, extents, strict=True):
+        row = tensor
+        for axis, binder in enumerate(binders):
+            remaining = (*leading[axis + 1 :], IndexLiteral(extent, NAT))
+            row = Gather(row, Var(binder), tensor_type(element, remaining))
+        rows.append(row)
+    width = IndexLiteral(len(picks), NAT)
+    body: Value = TensorValue(
+        tuple(_entry(rows[operand], entry, element) for operand, entry in picks),
+        tensor_type(element, (width,)),
+    )
+    for axis in reversed(range(len(leading))):
+        body = Comprehension(
+            binders[axis],
+            leading[axis],
+            body,
+            tensor_type(element, (*leading[axis:], width)),
+        )
+    return body
+
+
+def _rows_of(
+    value: Value, rows: tuple[Var, ...], dimensions: tuple[IndexTerm, ...]
+) -> Value:
+    """One row of a tensor, its leading axes fixed by row binders.
+
+    Parameters
+    ----------
+    value : Value
+        The tensor.
+    rows : tuple[Var, ...]
+        One binder per leading axis.
+    dimensions : tuple[IndexTerm, ...]
+        The tensor's dimensions.
+
+    Returns
+    -------
+    Value
+        The row, a vector over the last axis.
+    """
+    row = value
+    for axis, binder in enumerate(rows):
+        row = Gather(row, binder, tensor_type(REAL, dimensions[axis + 1 :]))
+    return row
+
+
+def _entry(row: Value, position: int, element: TypeExpr) -> Value:
+    """One entry of a vector at a literal position.
+
+    Parameters
+    ----------
+    row : Value
+        The vector.
+    position : int
+        The position.
+    element : TypeExpr
+        The vector's element type.
+
+    Returns
+    -------
+    Value
+        The literal's own entry for a tensor literal, else a gather.
+    """
+    if isinstance(row, TensorValue):
+        return row.items[position]
+    return Gather(row, LiteralValue(position, INT), element)
 
 
 class _PointwiseGatherError(ValueError):
@@ -857,6 +908,16 @@ def lower_qvr_to_qiec(
 
     if module_name is None:
         module_name = _module_name(file_path)
+    try:
+        module = expand_latent_weights(module, LATENT_WEIGHT_HEADS)
+    except LatentWeightsError as error:
+        raise QiecDiagnosticError(
+            str(error),
+            code="qiec-program",
+            file=file_path,
+            line=error.line,
+            column=error.col,
+        ) from error
     source = QvrQiecSource(
         qiec_projection(module), module_name, file_path, elaborate_programs
     )
@@ -1393,6 +1454,14 @@ class _Elaborator(
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
         self._program_lets: dict[str, surface.Expr] = {}
         self._program_declarations: dict[str, surface.ProgramDecl] = {}
+        # Types fixed for free names of the program being elaborated: a
+        # scan cell specialized to its scanning program reads each name
+        # that program binds before the scan at that binding's type.
+        self._pinned_types: dict[str, TypeExpr] = {}
+        # The rows of marginalized chains' cells being elaborated, by
+        # program name: the latent each row binds to its block's weighted
+        # shots, and the parameter holding one position's entry.
+        self._markov_rows: dict[str, tuple[str, str]] = {}
         self.registry = KernelRegistry()
         # The type a `return` in the body being lowered should produce. It
         # is a hint for positions that cannot state their type, such as a
@@ -3074,6 +3143,10 @@ class _Elaborator(
                 self._value_type(argument, context, source)
                 for argument, source in zip(arguments, authored.args, strict=True)
             )
+            if authored.func in SHAPE_BUILTINS:
+                return self._lower_shape_builtin(
+                    authored, arguments, types, context, path
+                )
             if authored.func in _REDUCTIONS and len(arguments) == 1:
                 shape = tensor_shape(types[0])
                 if shape is not None:
@@ -4462,6 +4535,622 @@ class _Elaborator(
             value = Gather(value, index_value, result)
             value_type = result
         return value
+
+    def _lower_shape_builtin(
+        self,
+        authored: surface.LetExprCall,
+        arguments: tuple[Value, ...],
+        types: tuple[TypeExpr, ...],
+        context: CheckContext,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """Lower ``concat`` or ``slice`` to selections along the last axis.
+
+        ``concat(a, b, ...)`` joins two or more tensors of one element
+        type along their last axis: every leading axis agrees and the
+        last extents add. ``slice(v, start, length)`` keeps the entries
+        ``start`` to ``start + length - 1`` of the last axis, both bounds
+        integer literals inside the axis. Each is written as one tensor of
+        entries selected at literal positions, under a comprehension per
+        leading axis, so every path that reads selections and tensor
+        literals runs it unchanged.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The call.
+        arguments : tuple[Value, ...]
+            The lowered arguments.
+        types : tuple[TypeExpr, ...]
+            Their types.
+        context : CheckContext
+            Value bindings in scope.
+        path : tuple[str | int, ...]
+            Structural path of the call, which names the binders.
+
+        Returns
+        -------
+        Value
+            The joined or sliced tensor.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the arity is wrong, an operand is not a tensor of a fixed
+            last extent, the operands disagree in element type or leading
+            axes, or a slice bound is not an integer literal inside the
+            axis.
+        """
+        name = authored.func
+        if name == "matmul":
+            return self._lower_matmul(authored, arguments, types, context, path)
+        if name in ("layer_norm", "rms_norm"):
+            return self._lower_norm(authored, arguments, types, context, path)
+        if name == "concat":
+            if len(arguments) < 2:
+                self._fail(
+                    authored,
+                    "concat joins two or more tensors along their last axis",
+                    code="qiec-primitive",
+                )
+            tensors = arguments
+            tensor_types = types
+        else:
+            if len(arguments) != 3:
+                self._fail(
+                    authored,
+                    "slice takes a tensor, a start, and a length: slice(v, start, length)",
+                    code="qiec-primitive",
+                )
+            tensors = arguments[:1]
+            tensor_types = types[:1]
+        shapes: list[tuple[TypeExpr, tuple[IndexTerm, ...], int]] = []
+        for position, (argument_type, source) in enumerate(
+            zip(tensor_types, authored.args, strict=False)
+        ):
+            split = tensor_shape(argument_type)
+            if split is None:
+                hint = (
+                    "; a number x joins as the one-entry vector [x]"
+                    if name == "concat"
+                    else ""
+                )
+                self._fail(
+                    source,
+                    f"{name} acts on the last axis of a tensor, but argument "
+                    f"{position + 1} is a {self._render(argument_type)}{hint}",
+                    code="qiec-primitive",
+                )
+            element, dimensions = split
+            final = dimensions[-1]
+            last = (
+                final.value
+                if isinstance(final, IndexLiteral) and isinstance(final.value, int)
+                else None
+            )
+            if last is None:
+                self._fail(
+                    source,
+                    f"{name} reads the last axis of argument {position + 1} at "
+                    f"fixed positions, but its extent "
+                    f"{render_static(dimensions[-1])} is open",
+                    code="qiec-primitive",
+                )
+            shapes.append((element, tuple(dimensions[:-1]), last))
+        element, leading, _ = shapes[0]
+        for position, (other, other_leading, _) in enumerate(shapes[1:], start=2):
+            if other != element:
+                self._fail(
+                    authored,
+                    f"concat joins tensors of one element type; argument "
+                    f"{position} holds {self._render(other)}, not "
+                    f"{self._render(element)}",
+                    code="qiec-primitive",
+                )
+            if other_leading != leading:
+                self._fail(
+                    authored,
+                    f"concat joins tensors whose axes before the last agree; "
+                    f"argument {position} has other leading axes than the first",
+                    code="qiec-primitive",
+                )
+        if name == "concat":
+            picks: list[tuple[int, int]] = [
+                (operand, entry)
+                for operand, (_, _, extent) in enumerate(shapes)
+                for entry in range(extent)
+            ]
+        else:
+            start = self._static_slice_bound(authored, 1, "start")
+            length = self._static_slice_bound(authored, 2, "length")
+            extent = shapes[0][2]
+            if length < 1:
+                self._fail(
+                    authored.args[2],
+                    f"a slice keeps at least one entry, not {length}",
+                    code="qiec-primitive",
+                )
+            if start + length > extent:
+                self._fail(
+                    authored,
+                    f"slice(v, {start}, {length}) reads entries {start} to "
+                    f"{start + length - 1}, past the last entry of an axis of "
+                    f"{extent}",
+                    code="qiec-primitive",
+                )
+            picks = [(0, start + offset) for offset in range(length)]
+        # An operand that is no name is bound once, so each selection
+        # reads it by name rather than repeating its construction; a
+        # list literal of numbers is read entry by entry in place.
+        bindings: list[LetBinding] = []
+        shared: list[Value] = []
+        for tensor, tensor_type_ in zip(tensors, tensor_types, strict=True):
+            if isinstance(tensor, Var) or (
+                isinstance(tensor, TensorValue) and not leading
+            ):
+                shared.append(tensor)
+                continue
+            local = self._shared_local(f"{name}_operand", tensor_type_, context)
+            bindings.append(LetBinding(local, tensor))
+            shared.append(Var(local))
+        body = _rebuild_last_axis(
+            tuple(shared),
+            tuple(extent for _, _, extent in shapes),
+            element,
+            leading,
+            tuple(picks),
+            path,
+            frozenset(
+                {
+                    *(local.name for local in context.locals),
+                    *(binding.binder.name for binding in bindings),
+                }
+            ),
+        )
+        return self._let(bindings, body, context, authored)
+
+    def _real_tensor(
+        self,
+        authored: surface.LetExprCall,
+        position: int,
+        argument_type: TypeExpr,
+        ranks: tuple[int, ...] | None = None,
+    ) -> tuple[IndexTerm, ...]:
+        """The dimensions of a ``Tensor[Real]`` argument of a tensor builtin.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The call.
+        position : int
+            The argument's position.
+        argument_type : TypeExpr
+            Its type.
+        ranks : tuple[int, ...] or None
+            The ranks the argument may have, or ``None`` for any rank of
+            one or more.
+
+        Returns
+        -------
+        tuple[IndexTerm, ...]
+            Its dimensions.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the argument is not a tensor of reals of an admitted rank.
+        """
+        source = authored.args[position]
+        split = tensor_shape(argument_type)
+        if split is None or split[0] != REAL:
+            self._fail(
+                source,
+                f"{authored.func} takes a Tensor[Real] at argument {position + 1}, "
+                f"not {self._render(argument_type)}",
+                code="qiec-primitive",
+            )
+        dimensions = tuple(split[1])
+        if ranks is not None and len(dimensions) not in ranks:
+            admitted = " or ".join(str(rank) for rank in ranks)
+            self._fail(
+                source,
+                f"{authored.func} takes a tensor of rank {admitted} at argument "
+                f"{position + 1}, not one of rank {len(dimensions)}",
+                code="qiec-primitive",
+            )
+        return dimensions
+
+    def _bound_operand(
+        self,
+        stem: str,
+        value: Value,
+        type_: TypeExpr,
+        context: CheckContext,
+        bindings: list[LetBinding],
+    ) -> Value:
+        """An operand read by name, bound once when it is no name already.
+
+        Parameters
+        ----------
+        stem : str
+            What the local holds, as part of its name.
+        value : Value
+            The operand.
+        type_ : TypeExpr
+            Its type.
+        context : CheckContext
+            Value bindings in scope.
+        bindings : list[LetBinding]
+            The bindings the caller wraps its result in, extended in place.
+
+        Returns
+        -------
+        Value
+            ``value`` for a name, else a local bound to it.
+        """
+        if isinstance(value, Var):
+            return value
+        local = self._shared_local(stem, type_, context)
+        bindings.append(LetBinding(local, value))
+        return Var(local)
+
+    def _lower_matmul(
+        self,
+        authored: surface.LetExprCall,
+        arguments: tuple[Value, ...],
+        types: tuple[TypeExpr, ...],
+        context: CheckContext,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """Lower ``matmul(a, b)`` to sums of products over the shared axis.
+
+        ``a`` has one or more axes and ``b`` one or two; the last axis of
+        ``a`` and the first of ``b`` have one extent and are summed over.
+        The result has the leading axes of ``a`` followed by the second
+        axis of ``b`` when it has one: a matrix times a vector is a
+        vector, a vector times a matrix a vector, a vector times a vector
+        a number, and each row of a tensor of any rank is multiplied
+        alike.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The call.
+        arguments : tuple[Value, ...]
+            The lowered arguments.
+        types : tuple[TypeExpr, ...]
+            Their types.
+        context : CheckContext
+            Value bindings in scope.
+        path : tuple[str | int, ...]
+            Structural path of the call, which names the binders.
+
+        Returns
+        -------
+        Value
+            The product.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the arity is wrong, an operand is not a tensor of reals of
+            an admitted rank, or the contracted extents differ.
+        """
+        if len(arguments) != 2:
+            self._fail(
+                authored,
+                "matmul takes two tensors: matmul(a, b)",
+                code="qiec-primitive",
+            )
+        left = self._real_tensor(authored, 0, types[0])
+        right = self._real_tensor(authored, 1, types[1], (1, 2))
+        if left[-1] != right[0]:
+            self._fail(
+                authored,
+                f"matmul sums the last axis of its first argument, of extent "
+                f"{render_static(left[-1])}, against the first axis of its "
+                f"second, of extent {render_static(right[0])}; they differ",
+                code="qiec-primitive",
+            )
+        bindings: list[LetBinding] = []
+        a = self._bound_operand(
+            "matmul_left", arguments[0], types[0], context, bindings
+        )
+        b = self._bound_operand(
+            "matmul_right", arguments[1], types[1], context, bindings
+        )
+        stem = "_".join(str(item) for item in path)
+        taken = {local.name for local in context.locals} | {
+            binding.binder.name for binding in bindings
+        }
+
+        def fresh(role: str) -> Local:
+            name = f"__{stem}_{role}"
+            suffix = 0
+            while name in taken:
+                suffix += 1
+                name = f"__{stem}_{role}_{suffix}"
+            taken.add(name)
+            return Local(name, INT)
+
+        leading = left[:-1]
+        lead_binders = [fresh(f"row{axis}") for axis in range(len(leading))]
+        row: Value = a
+        for axis, binder in enumerate(lead_binders):
+            row = Gather(row, Var(binder), tensor_type(REAL, left[axis + 1 :]))
+        inner = fresh("inner")
+        column = fresh("column") if len(right) == 2 else None
+        right_entry: Value = Gather(
+            b, Var(inner), REAL if column is None else tensor_type(REAL, right[1:])
+        )
+        if column is not None:
+            right_entry = Gather(right_entry, Var(column), REAL)
+        product = self._primitive(
+            "mul_real",
+            (Gather(row, Var(inner), REAL), right_entry),
+            authored,
+            (*path, "product"),
+        )
+        body: Value = Reduction(
+            "sum",
+            Comprehension(inner, left[-1], product, tensor_type(REAL, (left[-1],))),
+            REAL,
+        )
+        trailing: tuple[IndexTerm, ...] = ()
+        if column is not None:
+            trailing = (right[1],)
+            body = Comprehension(column, right[1], body, tensor_type(REAL, trailing))
+        for axis in reversed(range(len(leading))):
+            body = Comprehension(
+                lead_binders[axis],
+                leading[axis],
+                body,
+                tensor_type(REAL, (*leading[axis:], *trailing)),
+            )
+        return self._let(bindings, body, context, authored)
+
+    def _lower_norm(
+        self,
+        authored: surface.LetExprCall,
+        arguments: tuple[Value, ...],
+        types: tuple[TypeExpr, ...],
+        context: CheckContext,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """Lower ``layer_norm`` or ``rms_norm`` to row statistics and a quotient.
+
+        Each row along the last axis is normalized: ``layer_norm(v)`` is
+        ``(v - mean(v)) / sqrt(mean((v - mean(v))^2) + eps)``, the biased
+        variance as ``torch.nn.functional.layer_norm`` computes it, and
+        ``rms_norm(v)`` is ``v / sqrt(mean(v^2) + eps)``. ``eps`` is a real
+        literal, ``1e-5`` and ``1e-6`` when omitted. The row statistics
+        are bound once, as tensors over the leading axes.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The call.
+        arguments : tuple[Value, ...]
+            The lowered arguments.
+        types : tuple[TypeExpr, ...]
+            Their types.
+        context : CheckContext
+            Value bindings in scope.
+        path : tuple[str | int, ...]
+            Structural path of the call, which names the binders.
+
+        Returns
+        -------
+        Value
+            The normalized tensor, of the argument's shape.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the arity is wrong, the argument is not a tensor of reals,
+            or ``eps`` is not a positive real literal.
+        """
+        name = authored.func
+        if len(arguments) not in (1, 2):
+            self._fail(
+                authored,
+                f"{name} takes a tensor and an optional eps: {name}(v) or "
+                f"{name}(v, 0.00001)",
+                code="qiec-primitive",
+            )
+        dimensions = self._real_tensor(authored, 0, types[0])
+        eps = LAYER_NORM_EPS if name == "layer_norm" else RMS_NORM_EPS
+        if len(arguments) == 2:
+            given = authored.args[1]
+            if (
+                not isinstance(given, surface.LetExprLiteral)
+                or given.integral
+                or given.value <= 0.0
+            ):
+                self._fail(
+                    given,
+                    f"the eps of {name} is a positive real literal, such as 0.00001",
+                    code="qiec-primitive",
+                )
+            eps = float(given.value)
+        leading = dimensions[:-1]
+        width = dimensions[-1]
+        bindings: list[LetBinding] = []
+        source = self._bound_operand(
+            f"{name}_input", arguments[0], types[0], context, bindings
+        )
+        stem = "_".join(str(item) for item in path)
+        taken = {local.name for local in context.locals} | {
+            binding.binder.name for binding in bindings
+        }
+
+        def fresh(role: str) -> Local:
+            local_name = f"__{stem}_{role}"
+            suffix = 0
+            while local_name in taken:
+                suffix += 1
+                local_name = f"__{stem}_{role}_{suffix}"
+            taken.add(local_name)
+            return Local(local_name, INT)
+
+        def entrywise(
+            role: str, entry: Callable[[Value, tuple[Var, ...], Var], Value]
+        ) -> Value:
+            # A tensor of the argument's shape whose entry at a row and
+            # position is `entry(row, row binders, position)`.
+            lead = [fresh(f"{role}_row{axis}") for axis in range(len(leading))]
+            position = fresh(f"{role}_entry")
+            row: Value = source
+            for axis, binder in enumerate(lead):
+                row = Gather(
+                    row, Var(binder), tensor_type(REAL, dimensions[axis + 1 :])
+                )
+            body: Value = Comprehension(
+                position,
+                width,
+                entry(row, tuple(Var(binder) for binder in lead), Var(position)),
+                tensor_type(REAL, (width,)),
+            )
+            for axis in reversed(range(len(leading))):
+                body = Comprehension(
+                    lead[axis],
+                    leading[axis],
+                    body,
+                    tensor_type(REAL, dimensions[axis:]),
+                )
+            return body
+
+        def at_row(statistic: Value, rows: tuple[Var, ...]) -> Value:
+            # The statistic of one row: a number for a vector argument,
+            # else an entry of the tensor over the leading axes.
+            value = statistic
+            for axis, row in enumerate(rows):
+                rest = leading[axis + 1 :]
+                value = Gather(
+                    value, row, REAL if not rest else tensor_type(REAL, rest)
+                )
+            return value
+
+        def mul(left: Value, right: Value, role: str) -> Value:
+            return self._primitive("mul_real", (left, right), authored, (*path, role))
+
+        def statistic(role: str, rows_of: Value) -> Local:
+            # The mean of each row of `rows_of`, bound once.
+            local = self._shared_local(
+                f"{name}_{role}",
+                REAL if not leading else tensor_type(REAL, leading),
+                context,
+            )
+            bindings.append(
+                LetBinding(
+                    local,
+                    _last_axis_reduction(
+                        "mean",
+                        rows_of,
+                        (REAL, dimensions),
+                        (*path, role),
+                        frozenset(taken),
+                    ),
+                )
+            )
+            taken.add(local.name)
+            return local
+
+        offset = LiteralValue(eps, REAL)
+        if name == "layer_norm":
+            mean = statistic("mean", source)
+            centered_local = self._shared_local(f"{name}_centered", types[0], context)
+            bindings.append(
+                LetBinding(
+                    centered_local,
+                    entrywise(
+                        "center",
+                        lambda row, rows, position: self._primitive(
+                            "sub_real",
+                            (Gather(row, position, REAL), at_row(Var(mean), rows)),
+                            authored,
+                            (*path, "center"),
+                        ),
+                    ),
+                )
+            )
+            taken.add(centered_local.name)
+            centered: Value = Var(centered_local)
+        else:
+            centered = source
+        squares = entrywise(
+            "square",
+            lambda row, rows, position: mul(
+                Gather(_rows_of(centered, rows, dimensions), position, REAL),
+                Gather(_rows_of(centered, rows, dimensions), position, REAL),
+                "square",
+            ),
+        )
+        spread = statistic("spread", squares)
+        return self._let(
+            bindings,
+            entrywise(
+                "normalized",
+                lambda row, rows, position: self._primitive(
+                    "div_real",
+                    (
+                        Gather(_rows_of(centered, rows, dimensions), position, REAL),
+                        self._primitive(
+                            "sqrt",
+                            (
+                                self._primitive(
+                                    "add_real",
+                                    (at_row(Var(spread), rows), offset),
+                                    authored,
+                                    (*path, "offset"),
+                                ),
+                            ),
+                            authored,
+                            (*path, "root"),
+                        ),
+                    ),
+                    authored,
+                    (*path, "quotient"),
+                ),
+            ),
+            context,
+            authored,
+        )
+
+    def _static_slice_bound(
+        self, authored: surface.LetExprCall, position: int, role: str
+    ) -> int:
+        """Read a slice bound, which is an integer literal.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The ``slice`` call.
+        position : int
+            The argument's position.
+        role : str
+            ``"start"`` or ``"length"``, for the message.
+
+        Returns
+        -------
+        int
+            The bound.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the argument is not an integer literal.
+        """
+        argument = authored.args[position]
+        if isinstance(argument, surface.LetExprLiteral) and argument.integral:
+            return int(argument.value)
+        self._fail(
+            argument,
+            f"the {role} of a slice is a non-negative integer literal, so the "
+            "slice's extent is known where it is checked; a position computed "
+            "at run time is read by a gather, v[i]",
+            code="qiec-primitive",
+        )
 
     def _pointwise_gather(
         self,

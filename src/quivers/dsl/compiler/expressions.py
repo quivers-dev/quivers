@@ -15,6 +15,7 @@ from quivers.core.algebras import (
     Semigroupoid,
 )
 from quivers.core.objects import SetObject
+from quivers.continuous.scan import ScanMorphism
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.core.trans import TransSeq
 from quivers.dsl.ast_nodes import (
@@ -542,11 +543,14 @@ class _ExpressionsMixin:
                     raise CompileError(str(e), expr.line, expr.col) from e
             return result
         elif isinstance(expr, ExprScan):
-            from quivers.continuous.scan import ScanMorphism
-
             cell = self._compile_expr(expr.expr)
             try:
-                return ScanMorphism(cell, init=expr.init)
+                return ScanMorphism(
+                    cell,
+                    init=expr.init,
+                    outputs=expr.outputs,
+                    reverse=expr.reverse,
+                )
             except TypeError as e:
                 raise CompileError(str(e), expr.line, expr.col) from e
         elif isinstance(expr, ExprParser):

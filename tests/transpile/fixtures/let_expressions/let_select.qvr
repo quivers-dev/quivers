@@ -1,0 +1,19 @@
+# Exercises `select(c, a, b)`, which takes `a` where `c` holds and `b`
+# elsewhere, entry by entry, and `real` of a comparison: a clipped
+# vector, a hinge, an indicator vector, and a mask from a comparison of
+# a factor binder.
+object H : FinSet 3
+object Step : FinSet 2
+
+program p : Step -> Step
+    sample v : H <- Normal(loc=0.0, scale=1.0)
+    sample s <- Normal(loc=0.0, scale=1.0)
+    let clipped = select(v > 0.0, v, 0.1 * v)
+    let hinge = select(s < 0.5, s, 1.0 - s)
+    let positive = real(v > 0.2)
+    let below = factor j : H in real(j <= 1) * v[j]
+    observe y : Step <- Normal(loc=hinge, scale=1.0)
+    score w = sum(clipped) + sum(positive) * s + sum(below) * s * s
+    return y
+
+export p

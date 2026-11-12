@@ -50,6 +50,7 @@ from quivers.transpile.renderers._python_helpers import (
     render_deterministic_python,
     render_let_expr_python,
     string_literal,
+    subscript,
     with_statement,
 )
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
@@ -258,11 +259,24 @@ class PyMCRenderer(RendererBase):
         for inp in ir.inputs:
             self._collect_dims(inp.plate, seen)
         self._collect_dims_in_body(ir.body, seen)
+        # An open extent is the length of an input axis it sizes, which
+        # the input's own array carries.
+        extents: dict[str, tuple[str, int]] = {}
+        for inp in ir.inputs:
+            dims = (*inp.plate.batch_dims, *inp.plate.event_dims)
+            for position, dim in enumerate(dims):
+                if isinstance(dim, DimDynamic):
+                    extents.setdefault(dim.size_name, (inp.name, position))
 
         d = py.v(py.fresh("dict"), "dictionary")
         for name, dim in seen.items():
             key = string_literal(py, name)
-            value = self._np_arange(py, dim)
+            source = extents.get(dim.size_name) if isinstance(dim, DimDynamic) else None
+            value = (
+                self._np_arange_of_axis(py, *source)
+                if source is not None
+                else self._np_arange(py, dim)
+            )
             pair = py.v(py.fresh("pair"), "pair")
             py.e(pair, key, "key")
             py.e(pair, value, "value")
@@ -283,6 +297,29 @@ class PyMCRenderer(RendererBase):
             elif isinstance(node, IRMarginalize):
                 self._collect_dims(node.plate, seen)
                 self._collect_dims_in_body(node.scope, seen)
+
+    def _np_arange_of_axis(self, py: PyCtx, name: str, position: int) -> str:
+        """Emit `np.arange(np.shape(<name>)[<position>])`.
+
+        Parameters
+        ----------
+        py : PyCtx
+            The render state.
+        name : str
+            The input whose axis gives the length.
+        position : int
+            The axis.
+
+        Returns
+        -------
+        str
+            The vertex of the call.
+        """
+        shape = call(
+            py, attribute(py, ("np", "shape")), positional=(identifier(py, name),)
+        )
+        length = subscript(py, shape, (number_literal(py, position),))
+        return call(py, attribute(py, ("np", "arange")), positional=(length,))
 
     def _np_arange(self, py: PyCtx, dim: Dim) -> str:
         """Emit `np.arange(<size>)` for a static dim, or
@@ -606,6 +643,8 @@ class PyMCRenderer(RendererBase):
                         rendered,
                     ),
                 )
+            if arg_name in _PYMC_FACTOR_SCALE_ARGS.get(node.family, frozenset()):
+                rendered, renamed = self._scale_from_factor(ctx, arg_to_emit, rendered)
             keyword.append((renamed, rendered))
 
         # `dims=(<batch+event names>,)`.
@@ -1080,6 +1119,7 @@ class PyMCRenderer(RendererBase):
                 ir=ctx.ir,
             )
             rendered = self._render_arg(ctx, arg_to_emit)
+            renamed = aliases.get(arg_name, arg_name)
             if arg_name in complement_args:
                 rendered = _python_paren(
                     ctx.py,
@@ -1090,7 +1130,9 @@ class PyMCRenderer(RendererBase):
                         rendered,
                     ),
                 )
-            keyword.append((aliases.get(arg_name, arg_name), rendered))
+            if arg_name in _PYMC_FACTOR_SCALE_ARGS.get(observe.family, frozenset()):
+                rendered, renamed = self._scale_from_factor(ctx, arg_to_emit, rendered)
+            keyword.append((renamed, rendered))
         return call(
             ctx.py,
             attribute(ctx.py, chain),
@@ -1310,6 +1352,50 @@ class PyMCRenderer(RendererBase):
         )
         return call(ctx.py, dist_attr, positional=positional)
 
+    def _scale_from_factor(
+        self, ctx: _PyMCCtx, factor: IRArg, rendered: str
+    ) -> tuple[str, str]:
+        """A Wishart's scale ``L @ L.T`` from its Cholesky factor's name.
+
+        PyMC's `Wishart` takes the scale matrix ``V`` alone, so a factor
+        reaches it multiplied out.
+
+        Parameters
+        ----------
+        ctx : _PyMCCtx
+            The render context.
+        factor : IRArg
+            The factor, a whole named matrix.
+        rendered : str
+            The factor's rendered vertex, the product's left operand.
+
+        Returns
+        -------
+        tuple[str, str]
+            The rendered product and the keyword it fills, ``V``.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the factor is not a whole named matrix.
+        """
+        if not isinstance(factor, IRArgRef) or factor.indices:
+            raise UnsupportedConstruct(
+                self.target,
+                [
+                    "family:Wishart:scale_tril: PyMC's Wishart takes its scale "
+                    "multiplied out from a whole named Cholesky factor, and "
+                    f"this slot carries a {type(factor).__name__}"
+                ],
+            )
+        product = _python_binary_op(
+            ctx.py,
+            "@",
+            rendered,
+            attribute(ctx.py, (factor.name, "T")),
+        )
+        return product, "V"
+
     def _render_transform(self, ctx: _PyMCCtx, t: IRArgTransform) -> str:
         """Renderer-applied arithmetic transform on an arg.
 
@@ -1487,6 +1573,12 @@ _PYMC_RUNTIME_HELPER_FAMILIES: dict[str, str] = {
 #: `p` is `1 - probs`.
 _PYMC_COMPLEMENT_ARGS: dict[str, frozenset[str]] = {
     "NegativeBinomial": frozenset({"probs"}),
+}
+
+#: Families whose PyMC scale is the product ``L @ L.T`` of the Cholesky
+#: factor the call supplies: PyMC's `Wishart` has no factor parameter.
+_PYMC_FACTOR_SCALE_ARGS: dict[str, frozenset[str]] = {
+    "Wishart": frozenset({"scale_tril"}),
 }
 
 

@@ -25,6 +25,14 @@ from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
 
 _F = torch.nn.functional
 
+#: The variance offset ``layer_norm`` adds when no ``eps`` is given, as
+#: ``torch.nn.functional.layer_norm`` does.
+LAYER_NORM_EPS = 1e-5
+
+#: The offset ``rms_norm`` adds to the mean square when no ``eps`` is
+#: given.
+RMS_NORM_EPS = 1e-6
+
 #: Eager implementations for the deterministic-expression builtin surface.
 #: Higher-order collection forms are compiled specially because they consume
 #: source lambdas rather than evaluated values.
@@ -120,16 +128,28 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "sort": lambda a: torch.sort(a, dim=-1).values,
     "dropout": lambda a, p=0.5: _F.dropout(a, p=p, training=True),
     "alpha_dropout": lambda a, p=0.5: _F.alpha_dropout(a, p=p, training=True),
-    "layer_norm": lambda a: _F.layer_norm(a, normalized_shape=(a.shape[-1],)),
-    "rms_norm": lambda a: a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + 1e-6),
+    "layer_norm": lambda a, eps=LAYER_NORM_EPS: _F.layer_norm(
+        a, normalized_shape=(a.shape[-1],), eps=float(eps)
+    ),
+    "rms_norm": lambda a, eps=RMS_NORM_EPS: (
+        a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + float(eps))
+    ),
+    "matmul": lambda a, b: torch.matmul(a, b),
     "real": lambda a: (
         a.to(dtype=torch.get_default_dtype())
         if isinstance(a, torch.Tensor)
         else float(a)
     ),
     "int": lambda a: a.to(dtype=torch.int64) if isinstance(a, torch.Tensor) else int(a),
+    "select": lambda cond, a, b: torch.where(
+        torch.as_tensor(cond, dtype=torch.bool),
+        torch.as_tensor(a),
+        torch.as_tensor(b),
+    ),
     "weight": lambda a: a,
     "weight_value": lambda a: a,
+    "concat": lambda *parts: torch.cat(parts, dim=-1),
+    "slice": lambda a, start, length: a[..., int(start) : int(start) + int(length)],
 }
 
 #: Operator and operand type to the primitive that implements it.
@@ -151,8 +171,12 @@ _BINARY_PRIMITIVES: Mapping[LetBinaryOperator, Mapping[TypeExpr, str]] = {
 
 #: Builtin name and argument types to the primitive that implements it.
 _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
-    "real": {(INT,): "int_to_real"},
-    "int": {(REAL,): "real_to_int"},
+    "real": {(INT,): "int_to_real", (BOOL,): "bool_to_real"},
+    "int": {(REAL,): "real_to_int", (BOOL,): "bool_to_int"},
+    "select": {
+        (BOOL, REAL, REAL): "select_real",
+        (BOOL, INT, INT): "select_int",
+    },
     "exp": {(REAL,): "exp"},
     "log": {(REAL,): "log"},
     "sqrt": {(REAL,): "sqrt"},
@@ -233,6 +257,21 @@ _ROWWISE: Mapping[str, RowwiseOperator] = {
     "normalize": "normalize",
 }
 
+#: Builtins that rebuild the last axis of their tensor arguments, which
+#: the checked lowering writes out in terms of selections, tensor
+#: literals, comprehensions, and other builtins: ``concat`` joins tensors
+#: along it and ``slice`` keeps a window of it (a tensor of entries
+#: chosen at literal positions under one comprehension per leading
+#: axis); ``matmul`` contracts it against the first axis of a vector or
+#: matrix; ``layer_norm`` and ``rms_norm`` normalize each row of it.
+_SHAPE_BUILTINS: Mapping[str, frozenset[int]] = {
+    "concat": frozenset(range(2, 65)),
+    "slice": frozenset({3}),
+    "matmul": frozenset({2}),
+    "layer_norm": frozenset({1, 2}),
+    "rms_norm": frozenset({1, 2}),
+}
+
 #: Higher-order operations whose types are determined by their collection and
 #: lambda arguments rather than by one first-order primitive signature.
 _COLLECTION_BUILTINS: frozenset[str] = frozenset(
@@ -241,7 +280,13 @@ _COLLECTION_BUILTINS: frozenset[str] = frozenset(
 
 
 type QiecBuiltinForm = Literal[
-    "primitive", "reduction", "rowwise", "collection", "unsupported", "host-only"
+    "primitive",
+    "reduction",
+    "rowwise",
+    "shape",
+    "collection",
+    "unsupported",
+    "host-only",
 ]
 
 
@@ -297,6 +342,8 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
         return "reduction"
     if name in _ROWWISE:
         return "rowwise"
+    if name in _SHAPE_BUILTINS:
+        return "shape"
     if name == "filter":
         return "unsupported"
     if name in _COLLECTION_BUILTINS:
@@ -312,6 +359,8 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
         if name in _BUILTIN_PRIMITIVES:
             arities.update(len(signature) for signature in _BUILTIN_PRIMITIVES[name])
         return frozenset(arities)
+    if form == "shape":
+        return _SHAPE_BUILTINS[name]
     if name in _COLLECTION_ARITIES:
         return _COLLECTION_ARITIES[name]
     return frozenset()
@@ -324,6 +373,8 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
         return "last-axis-reduction"
     if form == "rowwise":
         return "last-axis-transform"
+    if form == "shape":
+        return "last-axis-rebuild"
     if name == "length":
         return "leading-extent"
     if name == "filter":
@@ -344,6 +395,8 @@ BUILTIN_REGISTRY: Mapping[str, BuiltinSpec] = {
         eager_arities=(
             _COLLECTION_ARITIES[name]
             if name in _COLLECTION_ARITIES
+            else _SHAPE_BUILTINS[name]
+            if name in _SHAPE_BUILTINS
             else _eager_arities(EAGER_BUILTINS.get(name))
         ),
         qiec_arities=_qiec_arities(name, form := _qiec_form(name)),
@@ -381,6 +434,9 @@ PRIMITIVE_OPERATORS: Mapping[str, LetBinaryOperator] = {
     for operator, by_type in _BINARY_PRIMITIVES.items()
     for primitive in by_type.values()
 }
+
+#: The builtins that rebuild the last axis of their arguments.
+SHAPE_BUILTINS: frozenset[str] = frozenset(_SHAPE_BUILTINS)
 
 #: The builtin each call primitive reads back as.
 PRIMITIVE_BUILTINS: Mapping[str, str] = {

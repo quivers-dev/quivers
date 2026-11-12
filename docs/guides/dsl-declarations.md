@@ -250,7 +250,14 @@ An explicit all-literal family call fixes the family instead:
 `morphism prior : A -> R ~ Normal(loc=0.0, scale=1.0)` ignores its input and draws
 from that Normal for every element of `A`. It has no learned parameter
 table. Leave the arguments off, as in `~ Normal`, when the input should
-select parameters through the kernel's parameter source.
+select parameters through the kernel's parameter source. A literal may be a
+number, a vector, or a matrix, as in
+`~ Dirichlet(concentration=[1.0, 2.0, 3.0])`. Every path refuses a family
+argument that reads a name, such as `~ Normal(scale=q)`, at that argument: a
+declaration binds no value for it to read, and a kernel does not mix learned
+and given parameters. A draw that needs a given scale around a computed mean
+says so in a program step, `sample s <- Normal(loc=m, scale=q)`, where both
+values are bound.
 
 <!-- compile: false -->
 ```qvr
@@ -274,6 +281,47 @@ continuous or stochastic (parametric `Family`) cases under one declaration;
 the runtime branches on whether the codomain is a
 [`FinSet`](../api/core/objects.md) or a
 [`ContinuousSpace`](../api/continuous/spaces.md).
+
+### Latent weights
+
+By default a network's weights, whether a network kernel's
+(`[param_source=mlp(...)] ~ Normal`) or a [learned function's](#function),
+are point estimates. `[weights=latent]` makes every weight and bias a latent
+sample site with an independent `Normal(0, prior_scale)` prior
+(`prior_scale` defaults to 1), drawn once per run and shared by every row and
+position that applies the network. A Bayesian neural network regression is
+then one kernel:
+
+```qvr
+object Feature : Real 2
+object Target : Real 1
+object Row : FinSet 6
+
+morphism net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal
+
+program bnn : Row -> Target
+    observe y : Row <- net(x)
+    return y
+
+export bnn
+```
+
+- **Sites.** Each program without value parameters that uses the network
+  draws its weights at its head, named as the checked elaboration names a
+  network's inputs: `net_param_layer0_weight` (rows by columns),
+  `net_param_layer0_bias`, ..., `net_param_weight`, `net_param_bias`. A
+  scan's cell and a called program read the weights their caller draws.
+  Guides, MCMC, and `Predictive` treat them as they treat any latent site,
+  and the compiled program has no parameters of its own for them.
+- **Where it applies.** A kernel over a family a network parameterizes, or a
+  learned function, with a `linear` or `mlp` network. A draw through a
+  latent-weight kernel names its inputs (`net(x)`), and a latent-weight
+  morphism composes in program steps or a scan, not in a `define` chain
+  without one.
+- **Transpilation.** Every target refuses it as `param-source:<kind>:latent`:
+  the weights are sites, but no target has a form for the network's layers
+  applied to them. Writing the layers as `factor` comprehensions over
+  sampled weight matrices gives a model every target renders.
 
 ## Discretize
 
@@ -304,6 +352,180 @@ morphism e : X -> R3 [role=embed]
 
 The runtime realization is
 [`Embed`](../api/continuous/boundaries.md#quivers.continuous.boundaries.Embed).
+
+## Function
+
+A neural network layer is a learned function with no noise: a projection
+`z = W x + b`, a recurrent update `h_t = tanh(W [x_t; h_{t-1}] + b)`, a
+feature map. `role=function` declares one between continuous spaces:
+
+```qvr
+object Feature : Real 3
+object Hidden : Real 4
+object Score : Real 2
+
+# Affine by default: W x + b.
+morphism proj : Feature -> Score [role=function]
+# Two hidden layers of 16 under ReLU, then a tanh on the output.
+morphism cell : Feature * Hidden -> Hidden [role=function, param_source=mlp(16, 16), activation=relu, output=tanh]
+```
+
+- **Network.** `param_source` selects it: `linear` (the default), `mlp`
+  with optional hidden widths (`mlp(16, 16)`; bare `mlp` is two layers of
+  64), or `identity`, which has no weights and needs a one-factor domain as
+  wide as the codomain. `activation` names the nonlinearity between an
+  `mlp`'s hidden layers (`tanh` by default, or `relu`, `sigmoid`,
+  `softplus`), and `output` the one applied to the network's output
+  (`identity` by default, or `tanh`, `sigmoid`, `softplus`, `relu`).
+- **No site.** The function is the Dirac kernel at its output. A program
+  calls it as a value, `let z = proj(x)`, with one argument per factor of
+  its domain, and never draws from it: `sample z <- proj(x)` is refused.
+  In a chain it composes like any morphism, and as the cell of a scan it
+  is a deterministic recurrence.
+- **Point-estimated weights.** Its weights are parameters of the compiled
+  program, fit by whatever objective trains the model around it, as a
+  network kernel's are. The checked elaboration reads them as typed program
+  inputs (`proj_param_weight`, `proj_param_bias`, and
+  `cell_param_layer<k>_weight` and `_bias` for hidden layers), as the
+  [learned functions reference](../reference/qvr/probabilistic-programs.md#learned-functions)
+  states.
+
+The runtime realization is
+[`LearnedFunction`](../api/continuous/deterministic.md#quivers.continuous.deterministic.LearnedFunction).
+A constant-noise transition around a learned mean, the form a linear
+Gaussian state-space model takes, draws from a family around the
+function's value, with the noise scale a site of the scanning program:
+
+```qvr
+object Driver : Real 2
+object State : Real 3
+object Obs : Real 2
+
+morphism transition : Driver * State -> State [role=function]
+morphism emission : State -> Obs [role=function]
+
+program step(u_t, s_prev) : Driver * State -> State
+    let mean = transition(u_t, s_prev)
+    sample s <- Normal(loc=mean, scale=q)
+    let center = emission(s)
+    observe o <- Normal(loc=center, scale=r)
+    return s
+
+define run_all = scan(step)
+
+program ssm : Driver -> State
+    sample q <- HalfNormal(scale=1.0)
+    sample r <- HalfNormal(scale=1.0)
+    sample last <- run_all
+    return last
+
+export ssm
+```
+
+### Sequence functions: self-attention and position tables
+
+Two networks read a whole sequence at once instead of one row at a time.
+A function declared with `param_source=self_attention` is multi-head
+scaled dot-product self-attention [@vaswani2017attention]: it maps a
+sequence of `T` rows to a sequence of `T` rows, and the row at position `i`
+is a weighted sum of value projections of every row it attends to. A
+function declared with `param_source=positions(N)` adds a learned vector to
+each row, the `t`-th row of an `N`-row table to position `t`, which is how
+a model that attends tells positions apart.
+
+```qvr
+object Model : Real 16
+
+# Two heads of width 8; position i attends to positions 0 through i.
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+# One learned vector per position, for sequences of up to 64 positions.
+morphism positions : Model -> Model [role=function, param_source=positions(64)]
+```
+
+- **Options.** `heads` (one by default) must divide the codomain's width,
+  the model width `m`; each head reads `m / heads` coordinates of the query,
+  key, and value projections. `causal` is required, since the mask decides
+  what the model may read: `causal=true` lets position `i` attend to
+  positions `j <= i` only, which a language model scoring the next token
+  needs, and `causal=false` lets every position attend to every position.
+  The domain is one space, not a product; a position table's codomain is
+  its domain. Neither network takes `activation` or `output`, and
+  `weights=latent` is refused for both: their weights are point estimates.
+- **Sequences, not rows.** A program calls a sequence function in a `let`
+  on a table `Tensor[Real]([T, d])`, the every-state binding of a scan with
+  `outputs=all`, a `let` over one, or a host table, and the value is a
+  table of the same length. `T` is open: one program reads sequences of
+  any length, up to `N` for a position table. A sequence function is not a
+  link of a chain or the cell of a scan, which apply their morphisms one
+  position at a time; such a chain is refused where it is drawn.
+- **Composition by `let`.** A residual connection is an addition of
+  tables, `let h = u + attn(layer_norm(u))`, and
+  [`layer_norm`](../reference/qvr/types-and-indexed-families.md#pure-expressions)
+  normalizes each row.
+
+A scan whose cell ignores its state runs a morphism at every position, so a
+decoder-only language model embeds each token in one scan, attends across
+the sequence in a `let`, and scores each next token in a second scan:
+
+```qvr
+object Vocab : Real 8
+object Model : Real 16
+object Logits : Real 8
+
+morphism embed : Vocab -> Model [role=function]
+morphism positions : Model -> Model [role=function, param_source=positions(32)]
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+morphism ff : Model -> Model [role=function, param_source=mlp(32), activation=relu]
+morphism lm_head : Model -> Logits [role=function]
+
+program embed_step(x_t, s_prev) : Vocab * Model -> Model
+    let e = embed(x_t)
+    return e
+
+program head_step(h_t, s_prev) : Model * Model -> Model
+    let z = h_t + ff(layer_norm(h_t))
+    let logits = lm_head(layer_norm(z))
+    observe next_token <- Categorical(logits=logits)
+    return z
+
+define embedded = scan(embed_step, outputs=all)
+define scored = scan(head_step, outputs=all)
+
+program transformer_lm : Vocab -> Model
+    sample e <- embedded
+    let u = positions(e)
+    let h = u + attn(layer_norm(u))
+    sample out <- scored(h)
+    return out
+
+export transformer_lm
+```
+
+Each input row is one sequence of one-hot tokens, shape `(batch, T, 8)`,
+and the observation `next_token`, shape `(batch, T)`, holds the token after
+each position. With the source above saved as `transformer_lm.qvr`:
+
+```python
+import torch
+from quivers.dsl import load
+
+model = load("transformer_lm.qvr").morphism
+tokens = torch.randint(0, 8, (4, 9))
+x = torch.nn.functional.one_hot(tokens, 8).float()
+next_token = torch.randint(0, 8, (4, 9))
+log_joint = model.log_joint(x, {"next_token": next_token})  # shape (4,)
+```
+
+The runtime realization is
+[`SequenceFunction`](../api/continuous/deterministic.md#quivers.continuous.deterministic.SequenceFunction)
+over a
+[`SelfAttentionSource`](../api/continuous/param_source.md#quivers.continuous.param_source.SelfAttentionSource)
+or a
+[`PositionSource`](../api/continuous/param_source.md#quivers.continuous.param_source.PositionSource).
+The checked elaboration builds the same map from comprehensions over the
+open extent, with the weights as typed program inputs, as the
+[sequence functions reference](../reference/qvr/probabilistic-programs.md#sequence-functions)
+states.
 
 ## Deduction
 
@@ -561,6 +783,10 @@ define rnn = tok_embed >> scan(cell) >> output_proj
 
 # With learned initial state (default is zeros)
 define rnn_learned = tok_embed >> scan(cell, init=learned) >> output_proj
+
+# Every state rather than the last, and a scan from the last position to the first
+define states = tok_embed >> scan(cell, outputs=all)
+define backward = tok_embed >> scan(cell, reverse=true)
 ```
 
 The `scan` combinator implements temporal recurrence by threading
@@ -573,14 +799,27 @@ hidden state `H` across a sequence:
 - **Execution.** Given a sequence of inputs `[x_0, x_1, ..., x_T]`
   (implicit in batch-first tensor shape `[batch, seq_len,
   input_dim]`), scan computes:
-  - `h_0 = zeros(H)` or a learned initial state (if `init=learned`)
+  - `h_0 = zeros(H)`, a learned initial state (if `init=learned`), or,
+    for a scan inside a program, a binding the program makes before the
+    scan (`init=h0`)
   - `h_t = cell(x_t, h_{t-1})` for `t = 1..T`
-  - Returns the final hidden state `h_T`
+  - Returns the final hidden state `h_T`, or, with `outputs=all`, every
+    state `h_1, ..., h_T`
+- **Options.** `scan(cell, ...)` takes `init`, `outputs`, and `reverse`
+  in any order, each at most once. `outputs=last` (the default) returns
+  the final state and `outputs=all` the sequence of states, one per
+  position. `reverse=true` visits the positions from the last to the
+  first, so `h_t = cell(x_t, h_{t+1})` and the final state is the one
+  after position 0; a reversed scan's sequence of states is still laid
+  out in input order, its entry `t` being the state after reading
+  `x_t`.
 - **Type.** If `cell : A * H -> H`, then `scan(cell) : A -> H`.
   The sequence dimension is implicit in the tensor's second
   dimension.
-- **Works with both forms.** Parametric kernels (`morphism cell : A *
-  H -> H ~ Normal`) and programs (`program cell(x, h) : A * H -> H`).
+- **Works with every form.** Parametric kernels (`morphism cell : A *
+  H -> H ~ Normal`), [learned functions](#function) (`morphism cell : A
+  * H -> H [role=function]`, a deterministic recurrence with no site), and
+  programs (`program cell(x, h) : A * H -> H`).
   Inside a program, a scan's step runs once per position: a morphism
   cell is drawn at the scan's binding, `h@0`, `h@1`, ..., for
   `sample h <- scan(cell)`, and a program cell's steps read the
@@ -608,14 +847,99 @@ define rnn = tok_embed >> scan(cell) >> output_proj
 export rnn
 ```
 
-For deeper temporal models, stack multiple scans:
+For deeper temporal models, stack scans. A scan runs over a sequence,
+so every scan but the last returns its every state with `outputs=all`,
+and the next scan reads that sequence one state per position:
 
 <!-- compile: false -->
 ```qvr
-define deep_rnn = tok_embed >> scan(cell_1) >> scan(cell_2) >> output_proj
+define deep_rnn = tok_embed >> scan(cell_1, outputs=all) >> scan(cell_2) >> output_proj
 ```
 
-Each `scan` threads its own hidden state independently.
+Each `scan` threads its own hidden state independently. A morphism
+between two scans, `scan(cell_1, outputs=all) >> proj >> scan(cell_2)`,
+runs at every position inside the second scan's step. A scan over the
+final state of another, `scan(cell_1) >> scan(cell_2)`, is refused,
+since one state is not a sequence, and so is a morphism applied to a
+whole sequence of states outside a scan.
+
+`fan` and `@` pair two sequences of states position by position: the
+entry at a position lays the branches' states there end to end, as a
+`fan` of two vectors does. A bidirectional recurrence runs a forward
+and a reversed scan over the same tokens and reads both at every
+position with a third scan:
+
+```qvr
+object Token : FinSet 16
+object Embedded : Real 4
+object Forward, Backward : Real 3
+object Both : Real 6
+object Tag : Real 2
+
+morphism tok_embed : Token -> Embedded [role=embed]
+morphism forward_cell : Embedded * Forward -> Forward ~ Normal
+morphism backward_cell : Embedded * Backward -> Backward ~ Normal
+morphism tag_cell : Both * Tag -> Tag ~ Normal
+
+define forward_states = tok_embed >> scan(forward_cell, outputs=all)
+define backward_states = tok_embed >> scan(backward_cell, outputs=all, reverse=true)
+define tagger = fan(forward_states, backward_states) >> scan(tag_cell, outputs=all)
+
+program tag_sequence : Token -> Tag
+    sample tags <- tagger
+    return tags
+
+export tag_sequence
+```
+
+At position `t` the tag cell reads the forward state after `x_0, ...,
+x_t` and the backward state after `x_{T-1}, ..., x_t`. The two
+sequences pair by input position, so a reversed scan's states need no
+reindexing. Sites are numbered in the order the run reaches them, so
+the reversed scan's occurrence `@0` is its draw at the last position.
+The [scans reference](../reference/qvr/probabilistic-programs.md#scans)
+states how each site is addressed.
+
+**Marginalized chains.** A program cell whose state is a finite latent
+that it marginalizes and returns is a step of a discrete Markov chain, and
+`scan(cell, init=p)` sums every path of states out with the forward
+algorithm [@rabiner1989hmm], in `O(T K^2)` for `T` positions and `K`
+states. This is a hidden Markov model whose emissions observe the scanned
+symbols:
+
+```qvr
+object State : FinSet 2
+object Symbol : FinSet 4
+object StartProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(hmm_step, init=start)
+
+program hmm : Symbol -> StartProbs
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+
+export hmm
+```
+
+`start` is the distribution of the state before the first position,
+`transition[z_prev]` moves the chain, and the block scores each position's
+symbol at the new state. The chain adds its log marginal likelihood to the
+joint under the name `path`, which holds no state and is not read again.
+The cell's lets may read the entry, as an input-output model's transitions
+do, and an observation under another name than the entry is one observation
+per position. The
+[marginalized chains reference](../reference/qvr/probabilistic-programs.md#marginalized-chains)
+states the rules and the forms that are refused, and
+[chapter 5 of the tutorial](../tutorials/qvr/05-time-series.md#hidden-markov-models)
+checks the marginal against a forward recursion written in torch.
 
 ### Backward composition
 

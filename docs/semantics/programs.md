@@ -455,6 +455,31 @@ The statistical operation is summing out a discrete latent variable, as in
 mixture models [@bishop2006pattern]. The grouping below specifies which
 likelihood factors must be combined before that sum.
 
+#### 2.6.1 A marginalized latent carried by a scan
+
+A scan cell `cell(x, z') : X * C -> C` that ends with a block over
+$z \in C$ and returns $z$ does not close the block's scope at the cell's end:
+the continuation of the scan, every later position, reads $z$ as its previous
+state, so the pushforward $\pi_{\Phi *}$ is taken only after the last position.
+For a chain of $T$ positions with first state $z_0 \sim p$, the scan's
+contribution to the program's measure is thus the sum over every path,
+
+$$
+\sum_{z_0, \ldots, z_T} p(z_0) \prod_{t=1}^{T} w_t(z_{t-1}, z_t),
+\qquad
+w_t(i, j) = p_{F}(j ; \theta(x_t, i)) \, \exp \sigma_t(j),
+$$
+
+where $F(\theta(x_t, i))$ is the block's family at the entry $x_t$ and the
+previous state $i$, and $\sigma_t(j)$ is the scope's accumulated log weight at
+$z_t = j$. The sum factors from the left as the forward recursion
+$\alpha_t(j) = \sum_i \alpha_{t-1}(i)\, w_t(i, j)$ with $\alpha_0 = p$, whose
+total $\sum_j \alpha_T(j)$ is the chain's marginal likelihood
+[@rabiner1989hmm]. Each $z_t$ is summed out, so the name the scan binds
+denotes no state. The
+[marginalized chains reference](../reference/qvr/probabilistic-programs.md#marginalized-chains)
+states the admitted forms.
+
 ### 2.7 Grouped marginalize with multi-observe fibration
 
 Grouping determines [which observations share a hidden choice](https://pyro.ai/examples/enumeration.html#Dependencies-among-plates) [@pyroEnumeration].
@@ -557,6 +582,8 @@ $$
 \;=\;
 \delta_{(\phi,\, \phi.\mathit{arr}[\phi.\mathit{idx}])}.
 $$
+
+A subscript of several index arrays, $\mathit{arr}[\iota_1, \ldots, \iota_k]$ for $v : A_1 \times \cdots \times A_k \to B$ and fibrations $\iota_j : N \to A_j$ over one $N$, pulls $v$ back along their pairing $\langle \iota_1, \ldots, \iota_k \rangle : N \to A_1 \times \cdots \times A_k$, so its entry at $n$ is $v(\iota_1(n), \ldots, \iota_k(n))$. A fixed index stands for the constant fibration at its value. The fibrations share their domain $N$, and a subscript whose index arrays range over different domains has no pairing and is refused.
 
 ### 2.10 Score (factor)
 

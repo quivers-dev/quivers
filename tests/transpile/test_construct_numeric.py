@@ -23,6 +23,7 @@ import pathlib
 import pytest
 import torch
 import torch.distributions as D
+import torch.nn.functional as F
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.checked_program import CheckedProgram
@@ -304,6 +305,134 @@ def _row_gather_sampled(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _tensor_builtins(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A matrix-vector product, a dot product, and two normalizations.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    w, x = v["W"], v["x"]
+    z = torch.matmul(w, x)
+    d = torch.dot(x, x)
+    ln = F.layer_norm(x, (3,), eps=1e-5)
+    rn = z / torch.sqrt((z * z).mean() + 1e-3)
+    return (
+        D.Normal(0.0, 1.0).log_prob(w).sum()
+        + D.Normal(0.0, 1.0).log_prob(x).sum()
+        + D.Normal(d, 1.0).log_prob(v["y"]).sum()
+        + z.sum()
+        + (ln * x).sum()
+        + rn.sum()
+    )
+
+
+def _select(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A clipped vector, a hinge, an indicator, and a binder mask, by `where`.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    vec, s = v["v"], v["s"]
+    clipped = torch.where(vec > 0.0, vec, 0.1 * vec)
+    hinge = torch.where(s < 0.5, s, 1.0 - s)
+    positive = (vec > 0.2).to(vec.dtype)
+    lower = torch.stack([(1.0 if j <= 1 else 0.0) * vec[j] for j in range(3)])
+    return (
+        D.Normal(0.0, 1.0).log_prob(vec).sum()
+        + D.Normal(0.0, 1.0).log_prob(s)
+        + D.Normal(hinge, 1.0).log_prob(v["y"]).sum()
+        + clipped.sum()
+        + positive.sum() * s
+        + lower.sum() * s * s
+    )
+
+
+def _concat_slice(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A packed state of two vectors and a number, split by windows.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    h, c, s = v["h"], v["c"], v["s"]
+    packed = torch.cat([h, c, s.reshape(1)])
+    return (
+        D.Normal(0.0, 1.0).log_prob(h).sum()
+        + D.Normal(0.0, 1.0).log_prob(c).sum()
+        + D.Normal(0.0, 1.0).log_prob(s)
+        + D.Normal(s, 1.0).log_prob(v["y"]).sum()
+        + (packed[3:6] * packed[1:4]).sum()
+        + s * packed.sum()
+    )
+
+
+def _concat_slice_matrix(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Each row of a table joined to itself and cut to two entries.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    h = v["h"]
+    table = torch.stack([(k + 1.0) * h for k in range(2)])
+    window = torch.cat([table, table], dim=-1)[:, 2:4]
+    return (
+        D.Normal(0.0, 1.0).log_prob(h).sum()
+        + D.Normal(window.sum(-1), 1.0).log_prob(v["y"]).sum()
+    )
+
+
+def _pairwise_gather(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """Means for row `n` of `M[r[n], c[n]]` and `a[r[n]] * b[c[n]]`, by loops.
+
+    Parameters
+    ----------
+    v : Mapping[str, torch.Tensor]
+        The point's values at their declared shapes.
+
+    Returns
+    -------
+    torch.Tensor
+        The log joint.
+    """
+    a, b, matrix, rows, cols = v["a"], v["b"], v["M"], v["r_idx"], v["c_idx"]
+    pairs = [(int(rows[n]), int(cols[n])) for n in range(int(rows.shape[0]))]
+    host = torch.stack([matrix[i, j] for i, j in pairs])
+    built = torch.stack([a[i] * b[j] for i, j in pairs])
+    return (
+        D.Normal(0.0, 1.0).log_prob(a).sum()
+        + D.Normal(0.0, 1.0).log_prob(b).sum()
+        + D.Normal(host, 1.0).log_prob(v["y"]).sum()
+        + D.Normal(built, 1.0).log_prob(v["z"]).sum()
+    )
+
+
 def _host_matrix_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     """A regression whose mean for row `n` is `sum_k X[n, k] w[design_idx[n], k]`.
 
@@ -478,6 +607,17 @@ _DATA: dict[str, dict[str, Host]] = {
         "group_idx": [0, 1, 1, 0],
         "y": [0, 2, 1, 1],
     },
+    "let_expressions/let_concat_slice": {"y": [0.3, -1.1]},
+    "let_expressions/let_select": {"y": [0.2, -0.6]},
+    "let_expressions/let_tensor_builtins": {"y": [0.9, 1.6]},
+    "let_expressions/let_concat_slice_matrix": {"y": [0.6, -0.4]},
+    "let_expressions/let_pairwise_gather": {
+        "M": [1.0, -2.0, 0.5, 4.0, -3.0, 6.0],
+        "r_idx": [0, 2, 1, 2],
+        "c_idx": [1, 0, 1, 1],
+        "y": [0.2, -0.7, 1.1, 0.4],
+        "z": [-0.3, 0.9, 0.1, -1.2],
+    },
     "let_expressions/let_host_matrix_row": {
         "design_idx": [0, 0, 0, 0],
         "X": [0.1, 0.4, -0.3, 0.7, -0.2, 0.5, 0.0, 0.3, 0.9, -0.6, 0.2, 0.1],
@@ -547,6 +687,31 @@ _POINTS: dict[str, list[dict[str, Host]]] = {
         {"table": [0.5, 0.25, 0.25, 0.1, 0.1, 0.8]},
         {"table": [0.3, 0.4, 0.3, 0.2, 0.5, 0.3]},
     ],
+    "let_expressions/let_concat_slice": [
+        {"h": [0.4, -1.2, 0.7], "c": [-0.8, 0.2, 1.5], "s": 0.9},
+        {"h": [1.1, 0.3, -0.5], "c": [0.6, -0.9, 0.1], "s": -0.3},
+        {"h": [-0.2, 0.8, 1.3], "c": [0.0, 1.4, -0.6], "s": 0.5},
+    ],
+    "let_expressions/let_tensor_builtins": [
+        {"W": [0.3, -1.1, 0.8, 1.2, 0.4, -0.6], "x": [0.4, -1.2, 0.7]},
+        {"W": [-0.7, 0.5, 0.2, 0.1, -0.3, 0.9], "x": [1.1, 0.3, -0.5]},
+        {"W": [0.6, 0.6, -1.4, -0.2, 1.0, 0.3], "x": [-0.4, 0.9, 1.3]},
+    ],
+    "let_expressions/let_select": [
+        {"v": [0.4, -1.2, 0.1], "s": 0.3},
+        {"v": [-0.5, 0.9, 0.25], "s": 0.8},
+        {"v": [1.3, 0.15, -0.7], "s": -0.4},
+    ],
+    "let_expressions/let_concat_slice_matrix": [
+        {"h": [0.4, -1.2, 0.7]},
+        {"h": [1.1, 0.3, -0.5]},
+        {"h": [-0.2, 0.8, 1.3]},
+    ],
+    "let_expressions/let_pairwise_gather": [
+        {"a": [0.3, -1.1, 0.8], "b": [-0.4, 1.5]},
+        {"a": [-0.9, 0.2, 1.4], "b": [0.7, -0.6]},
+        {"a": [1.2, 0.5, -0.3], "b": [1.1, 0.4]},
+    ],
     "let_expressions/let_host_matrix_row": [
         {"sigma": 0.8, "w": [0.5, -0.3, 0.2]},
         {"sigma": 1.3, "w": [-0.2, 0.9, 0.4]},
@@ -576,6 +741,19 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "group_idx": [4],
         "y": [4],
     },
+    "let_expressions/let_concat_slice": {"h": [3], "c": [3], "s": [], "y": [2]},
+    "let_expressions/let_concat_slice_matrix": {"h": [3], "y": [2]},
+    "let_expressions/let_select": {"v": [3], "s": [], "y": [2]},
+    "let_expressions/let_tensor_builtins": {"W": [2, 3], "x": [3], "y": [2]},
+    "let_expressions/let_pairwise_gather": {
+        "a": [3],
+        "b": [2],
+        "M": [3, 2],
+        "r_idx": [4],
+        "c_idx": [4],
+        "y": [4],
+        "z": [4],
+    },
     "let_expressions/let_host_matrix_row": {
         "sigma": [],
         "w": [1, 3],
@@ -583,6 +761,12 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "X": [4, 3],
         "y": [4],
     },
+}
+
+#: Data one target alone reads: Stan declares a host table of open
+#: extents at sizes it reads as integer data.
+_TARGET_DATA: dict[tuple[str, str], dict[str, int]] = {
+    ("let_expressions/let_pairwise_gather", "stan"): {"M_extent0": 3, "M_extent1": 2},
 }
 
 #: The integer-valued names of each fixture; every other name is real.
@@ -599,6 +783,7 @@ _INTEGERS: dict[str, frozenset[str]] = {
     "let_expressions/let_row_gather": frozenset({"group_idx", "y"}),
     "let_expressions/let_row_gather_sampled": frozenset({"group_idx", "y"}),
     "let_expressions/let_host_matrix_row": frozenset({"design_idx"}),
+    "let_expressions/let_pairwise_gather": frozenset({"r_idx", "c_idx"}),
 }
 
 #: Each fixture's independent joint.
@@ -619,6 +804,11 @@ _ORACLES: dict[str, Oracle] = {
     "let_expressions/let_row_gather": _row_gather,
     "let_expressions/let_row_gather_sampled": _row_gather_sampled,
     "let_expressions/let_host_matrix_row": _host_matrix_row,
+    "let_expressions/let_pairwise_gather": _pairwise_gather,
+    "let_expressions/let_concat_slice": _concat_slice,
+    "let_expressions/let_select": _select,
+    "let_expressions/let_tensor_builtins": _tensor_builtins,
+    "let_expressions/let_concat_slice_matrix": _concat_slice_matrix,
     "let_expressions/let_plated_list_operand": _plated_list_operand,
 }
 
@@ -638,6 +828,8 @@ _REFUSED: dict[tuple[str, str], str] = {
         for backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing")
     },
     ("let_expressions/let_host_matrix_row", "bugs"): "let-expr:axis-reduction",
+    ("let_expressions/let_concat_slice_matrix", "bugs"): "let-expr:LetExprFactor:wide",
+    ("let_expressions/let_concat_slice_matrix", "jags"): "let-expr:LetExprFactor:wide",
     ("let_expressions/let_host_matrix_row", "jags"): "let-expr:axis-reduction",
     ("let_expressions/let_row_gather", "bugs"): "observe:class-code",
     ("let_expressions/let_row_gather_sampled", "bugs"): "observe:class-code",
@@ -810,15 +1002,16 @@ def test_target_scores_the_reference_joint(
     points = _points(fixture)
     source = transpile(parse(_source(fixture)), target=backend)
     script = pathlib.Path(__file__).parent / "probes" / "_scripts" / script_name
+    extra = _TARGET_DATA.get((fixture, backend), {})
     raw = _docker.run_probe(
         image=image,
         script=script,
         source=source,
         source_ext=ext,
-        points=[{"params": pt.params, "data": pt.data} for pt in points],
+        points=[{"params": pt.params, "data": {**pt.data, **extra}} for pt in points],
         scratch=scratch / fixture.replace("/", "-") / backend,
-        shapes=_SHAPES[fixture],
-        dtypes=_dtypes(fixture),
+        shapes={**_SHAPES[fixture], **{name: [] for name in extra}},
+        dtypes={**_dtypes(fixture), **{name: "int" for name in extra}},
     )
     _equivalence.assert_log_density_match(
         _reference(fixture),

@@ -3,7 +3,7 @@
 Markov chain Monte Carlo (MCMC) generates correlated draws targeting a posterior.
 [Hamiltonian Monte Carlo (HMC)](../../guides/inference-mcmc.md#mcmc-hmc-and-nuts) uses gradients and simulated momentum; the No-U-Turn
 Sampler (NUTS) adapts the trajectory length [@neal2011mcmc; @hoffman2014nuts]. Warmup tunes the algorithm before draws are
-retained. Compare chains for unexplored regions and inspect [effective sample sizes](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes) to
+retained; [windowed warmup](../../guides/inference-mcmc.md#windowed-warmup) follows Stan's schedule. Compare chains for unexplored regions and inspect [effective sample sizes](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes) to
 assess the precision of posterior summaries.
 
 The acceptance rate discussed below comes from an asymptotic analysis of
@@ -28,6 +28,15 @@ that first element to the runner.
 and the type aliases that parameterize the kernels and the runner.
 
 ::: quivers.inference.mcmc
+
+## Sequential Monte Carlo
+
+[Tempered sequential Monte Carlo](../../guides/inference-mcmc.md#tempered-sequential-monte-carlo)
+moves a population from the prior to the posterior, rejuvenating it with
+any of the kernels above, and estimates the evidence
+[@delmoral2006sequential].
+
+::: quivers.inference.smc
 
 ## Variational warmup
 

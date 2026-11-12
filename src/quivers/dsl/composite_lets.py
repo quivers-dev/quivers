@@ -45,9 +45,12 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprCall,
     LetExprList,
     LetExprNode,
+    LetExprString,
     LetExprVar,
 )
-from quivers.dsl.step_resolution import StepResolutionError
+from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
+from quivers.dsl.sequence_functions import sequence_source_kind
+from quivers.dsl.step_resolution import StepResolutionError, _step_value_names
 from quivers.dsl.ast_nodes import atom_to_draw_arg
 
 
@@ -80,11 +83,14 @@ class _DeterministicLeaf(_ChainElem):
 class _ScanLeaf(_ChainElem):
     """A `scan(cell)` higher-order combinator; emits a `LetStep`
     whose RHS is `scan(step, input)` over a step program built from
-    the cell, with the learned initial state's name as a third
-    argument when the scan declares one."""
+    the cell, with the initial state's name as a third argument when
+    the scan declares one and its `outputs` and `reverse` options as
+    trailing flags (see `scan_let_call`)."""
 
     name: str
     init: str = "zeros"
+    outputs: Literal["last", "all"] = "last"
+    reverse: bool = False
     kind: Literal["scan"] = "scan"
 
 
@@ -152,7 +158,9 @@ def expand_composite_lets(
                 _domain_names(stmt),
                 _domain_factors(stmt.domain),
             )
+            _refuse_cell_uses(stmt.draws, program_table)
             new_draws = _expand_draws(stmt.draws, program)
+            refuse_marginal_chain_reads(tuple(new_draws), stmt.return_vars)
             # A scan's step program is declared before the program that
             # scans with it, so a consumer reading in order sees it.
             for name, declaration in program.programs.items():
@@ -364,6 +372,7 @@ def expand_program_scans(
         if isinstance(statement, ProgramDecl)
     }
     declared = set(programs)
+    _refuse_cell_uses(declaration.draws, programs)
     if not _selects(declaration.draws, morphisms, lets, _scans):
         return declaration.draws, {}
     program = _Program(
@@ -378,6 +387,7 @@ def expand_program_scans(
         program,
         select=_scans,
     )
+    refuse_marginal_chain_reads(draws, declaration.return_vars)
     steps = {
         name: decl for name, decl in program.programs.items() if name not in declared
     }
@@ -685,7 +695,14 @@ def _flatten_compose(
             cell_name = _expr_to_name(e.expr)
             if cell_name is None:
                 return False
-            out.append(_ScanLeaf(name=cell_name, init=e.init))
+            out.append(
+                _ScanLeaf(
+                    name=cell_name,
+                    init=e.init,
+                    outputs=e.outputs,
+                    reverse=e.reverse,
+                )
+            )
             return True
         return False
 
@@ -894,6 +911,56 @@ def _refuse_program_leaves(
             )
 
 
+def _refuse_sequence_function_leaves(
+    chain: tuple[_ChainElem, ...],
+    program: _Program,
+    step: SampleStep | ObserveStep,
+) -> None:
+    """Refuse a chain that composes a sequence function.
+
+    A learned function over whole sequences (``param_source`` of
+    ``self_attention`` or ``positions``) reads every position of a
+    sequence at once. A chain applies its links one value at a time, a
+    scan's cell and the links before it at every position, so neither
+    can apply it; a program applies it in a ``let`` to the sequence a
+    scan with ``outputs=all`` binds.
+
+    Parameters
+    ----------
+    chain : tuple[_ChainElem, ...]
+        The chain, searched through parallel branches.
+    program : _Program
+        The enclosing program's expansion.
+    step : SampleStep | ObserveStep
+        The step being expanded.
+
+    Raises
+    ------
+    StepResolutionError
+        If a link or a scan's cell names a sequence function.
+    """
+    for elem in chain:
+        if isinstance(elem, _ParallelLeaf):
+            for branch in elem.branches:
+                _refuse_sequence_function_leaves(branch, program, step)
+            continue
+        name = getattr(elem, "name", None)
+        decl = program.morphisms.get(name) if isinstance(name, str) else None
+        if decl is None or sequence_source_kind(decl) is None:
+            continue
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"chain:sequence-function:{name}",
+                f"the morphism {step.morphism!r} drawn at line {step.line} "
+                f"composes {name!r}, which reads a whole sequence at once, in "
+                f"a chain or a scan that applies it one position at a time; "
+                f"bind the sequence and apply it in a let, as in "
+                f"`sample xs <- states` then `let ys = {name}(xs)`",
+            ],
+        )
+
+
 def _expand_step(
     step: SampleStep | ObserveStep,
     chain: tuple[_ChainElem, ...],
@@ -937,6 +1004,8 @@ def _expand_step(
     if len(chain) < 1:
         return [step]
     _refuse_program_leaves(chain, program, step)
+    if len(chain) > 1 or not isinstance(chain[0], _DeterministicLeaf):
+        _refuse_sequence_function_leaves(chain, program, step)
     base_name = step.vars[0] if step.vars else "tmp"
     if len(chain) == 1 and isinstance(chain[0], _StochasticLeaf):
         elem = chain[0]
@@ -991,12 +1060,16 @@ def _emit_chain(
     original: SampleStep | ObserveStep,
     program: _Program,
     keep_last: bool,
+    prev_sequence: bool = False,
 ) -> list[ProgramStep]:
     """Emit the steps of a chain, threading each output into the next.
 
     A scan in the chain absorbs the elements before it: they and the
     scan's cell form a step program applied at every position of the
-    chain's input, and the chain resumes from the scan's final state.
+    chain's input, and the chain resumes from the scan's value, its
+    final state or, for ``outputs=all``, its every state. A ``fan`` or
+    ``@`` whose branches scan is not absorbed: it runs first, and the
+    scan after it runs over the sequence its branches pair.
 
     Parameters
     ----------
@@ -1019,54 +1092,41 @@ def _emit_chain(
         Whether the last element keeps the original step's shape (an
         observation, its annotations); a branch of a parallel element
         never does.
+    prev_sequence
+        Whether ``prev_var`` holds a sequence, one entry per position,
+        as a scan with ``outputs=all`` leaves.
 
     Returns
     -------
     list[ProgramStep]
         The emitted steps.
+
+    Raises
+    ------
+    StepResolutionError
+        If a scan runs over a value that is not a sequence, or an
+        element other than a scan or a ``fan`` of scans reads a
+        sequence.
     """
     out: list[ProgramStep] = []
     elements = list(chain)
-    while elements:
-        scan_index = next(
-            (
-                index
-                for index, elem in enumerate(elements)
-                if isinstance(elem, _ScanLeaf)
-            ),
-            None,
-        )
-        if scan_index is not None:
-            scan = elements[scan_index]
-            assert isinstance(scan, _ScanLeaf)
-            prefix = tuple(elements[:scan_index])
-            rest = elements[scan_index + 1 :]
-            source = _scan_input(prev_var, head_args, program, original)
-            var = terminal_var if not rest else program.fresh(f"{base_name}_chain")
-            step_name = _scan_step_program(
-                scan.name, prefix, program, original, _scan_label(var, original)
-            )
-            arguments: tuple[LetExprNode, ...] = (
-                LetExprVar(name=step_name),
-                LetExprVar(name=source),
-            )
-            if scan.init == "learned":
-                arguments = (*arguments, LetExprVar(name=f"{scan.name}_scan_init"))
-            out.append(
-                LetStep(
-                    name=var,
-                    value=LetExprCall(func="scan", args=arguments),
-                    line=original.line,
-                    col=original.col,
-                )
-            )
-            prev_var = var
-            head_args = None
-            elements = rest
-            continue
-        last_index = len(elements) - 1
-        for index, elem in enumerate(elements):
-            is_last = index == last_index
+
+    def emit_plain(segment: list[_ChainElem], ends_chain: bool) -> None:
+        """Emit elements that are not scans, one after another.
+
+        Parameters
+        ----------
+        segment : list[_ChainElem]
+            The elements.
+        ends_chain : bool
+            Whether the segment's last element is the chain's.
+        """
+        nonlocal prev_var, prev_sequence
+        last_index = len(segment) - 1
+        for index, elem in enumerate(segment):
+            if prev_var is not None and prev_sequence:
+                _refuse_sequence_reader(elem, original)
+            is_last = ends_chain and index == last_index
             var = terminal_var if is_last else program.fresh(f"{base_name}_chain")
             out.extend(
                 _emit_chain_elem(
@@ -1077,11 +1137,393 @@ def _emit_chain(
                     original=original,
                     program=program,
                     head_args=head_args,
+                    prev_sequence=prev_sequence,
                 )
             )
+            prev_sequence = _sequence_valued((elem,), prev_sequence)
             prev_var = var
-        elements = []
+
+    while elements:
+        scan_index = next(
+            (
+                index
+                for index, elem in enumerate(elements)
+                if isinstance(elem, _ScanLeaf)
+            ),
+            None,
+        )
+        if scan_index is None:
+            emit_plain(elements, ends_chain=True)
+            break
+        # A parallel element whose branches scan runs before the scan
+        # rather than inside its step: its branches each run along the
+        # whole sequence, and the scan reads what they pair.
+        hoisted = max(
+            (
+                index
+                for index, elem in enumerate(elements[:scan_index])
+                if isinstance(elem, _ParallelLeaf) and _scans((elem,))
+            ),
+            default=None,
+        )
+        if hoisted is not None:
+            emit_plain(elements[: hoisted + 1], ends_chain=False)
+            head_args = None
+            elements = elements[hoisted + 1 :]
+            continue
+        scan = elements[scan_index]
+        assert isinstance(scan, _ScanLeaf)
+        prefix = tuple(elements[:scan_index])
+        rest = elements[scan_index + 1 :]
+        if prev_var is not None and not prev_sequence:
+            raise StepResolutionError(
+                "qvr-expand",
+                [
+                    f"scan:input:{scan.name}",
+                    f"the scan over {scan.name!r} drawn at line {original.line} "
+                    f"runs over {prev_var!r}, one value rather than a sequence; "
+                    f"a scan before it returns every state with `outputs=all`",
+                ],
+            )
+        source = _scan_input(prev_var, head_args, program, original)
+        var = terminal_var if not rest else program.fresh(f"{base_name}_chain")
+        cell_program = program.programs.get(scan.name)
+        if cell_program is not None and returns_marginalized_latent(cell_program):
+            out.append(
+                _marginal_scan(
+                    scan, cell_program, source, var, bool(prefix), bool(rest), original
+                )
+            )
+            break
+        step_name = _scan_step_program(
+            scan.name, prefix, program, original, _scan_label(var, original)
+        )
+        out.append(
+            LetStep(
+                name=var,
+                value=scan_let_expression(
+                    ScanCall(
+                        step=step_name,
+                        sequence=source,
+                        init=(
+                            None
+                            if scan.init == "zeros"
+                            else f"{scan.name}{LEARNED_SCAN_INIT_SUFFIX}"
+                            if scan.init == "learned"
+                            # Any other name is a binding of the
+                            # scanning program the scan starts from.
+                            else scan.init
+                        ),
+                        outputs=scan.outputs,
+                        reverse=scan.reverse,
+                    )
+                ),
+                line=original.line,
+                col=original.col,
+            )
+        )
+        prev_var = var
+        prev_sequence = scan.outputs == "all"
+        head_args = None
+        elements = rest
     return out
+
+
+def _marginal_scan(
+    scan: _ScanLeaf,
+    cell: ProgramDecl,
+    source: str,
+    var: str,
+    prefixed: bool,
+    followed: bool,
+    original: SampleStep | ObserveStep,
+) -> LetStep:
+    """Bind a scan whose cell marginalizes and returns its state.
+
+    The scan sums the chain's states out, so it is the whole chain a
+    ``sample`` step draws: it reads its sequence directly, names the
+    distribution of the state before the first position with ``init``,
+    and its value is that of no state. The cell is checked here, for
+    every consumer of the expansion.
+
+    Parameters
+    ----------
+    scan : _ScanLeaf
+        The scan.
+    cell : ProgramDecl
+        Its cell, which returns the latent it marginalizes.
+    source : str
+        The sequence the scan runs over.
+    var : str
+        The name the scan binds.
+    prefixed : bool
+        Whether the chain applies other elements before the scan.
+    followed : bool
+        Whether the chain applies other elements after the scan.
+    original : SampleStep | ObserveStep
+        The step being expanded.
+
+    Returns
+    -------
+    LetStep
+        ``let var = scan(cell, xs, init, ..., "marginal")``.
+
+    Raises
+    ------
+    StepResolutionError
+        If the cell is not a chain step the forward algorithm sums out,
+        or the scan is composed with other elements, observed, started
+        from no distribution, or asked for every state.
+    """
+    markov_cell(cell)
+    name = cell.name
+    if prefixed or followed:
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"scan:marginal:chain:{name}",
+                f"the marginalized chain over {name!r} drawn at line "
+                f"{original.line} is composed with other elements; it reads its "
+                f"sequence directly and is the whole of what the step draws",
+            ],
+        )
+    if isinstance(original, ObserveStep):
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"scan:marginal:observe:{name}",
+                f"the marginalized chain over {name!r} is observed at line "
+                f"{original.line}; its states are summed out and its "
+                f"observations are the cell's, so draw it with `sample`",
+            ],
+        )
+    if scan.init in ("zeros", "learned"):
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"scan:marginal:init:{name}",
+                f"the marginalized chain over {name!r} drawn at line "
+                f"{original.line} names no distribution of its first state; "
+                f"write `scan({name}, init=p)` with `p` a probability vector "
+                f"over the states bound before the scan",
+            ],
+        )
+    if scan.outputs == "all":
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"scan:marginal:outputs:{name}",
+                f"the marginalized chain over {name!r} drawn at line "
+                f"{original.line} sums its states out, so it has no state per "
+                f"position to return with `outputs=all`",
+            ],
+        )
+    return LetStep(
+        name=var,
+        value=scan_let_expression(
+            ScanCall(
+                step=name,
+                sequence=source,
+                init=scan.init,
+                reverse=scan.reverse,
+                marginal=True,
+            )
+        ),
+        line=original.line,
+        col=original.col,
+    )
+
+
+def refuse_marginal_chain_reads(
+    draws: tuple[ProgramStep, ...], returned: tuple[str, ...]
+) -> None:
+    """Refuse a read of the name a marginalized chain binds.
+
+    The chain sums its states out, so the name its ``sample`` step binds
+    holds no state: no later step reads it and the program does not
+    return it. A marginalized chain inside a ``marginalize`` block is
+    refused too, since the block's weight is a single number per atom.
+
+    Parameters
+    ----------
+    draws : tuple[ProgramStep, ...]
+        A program's expanded steps.
+    returned : tuple[str, ...]
+        The names it returns.
+
+    Raises
+    ------
+    StepResolutionError
+        If a later step or the return reads such a name, or such a
+        chain lies inside a ``marginalize`` block.
+    """
+    for index, step in enumerate(draws):
+        if isinstance(step, MarginalizeStep):
+            for inner in step.scope:
+                scan = (
+                    scan_let_call(inner.value) if isinstance(inner, LetStep) else None
+                )
+                if scan is not None and scan.marginal:
+                    raise StepResolutionError(
+                        "qvr-expand",
+                        [
+                            f"scan:marginal:scope:{scan.step}",
+                            f"the marginalized chain over {scan.step!r} at line "
+                            f"{inner.line} lies inside the block over "
+                            f"{step.var!r}; draw it in the program's body",
+                        ],
+                    )
+            continue
+        if not isinstance(step, LetStep):
+            continue
+        scan = scan_let_call(step.value)
+        if scan is None or not scan.marginal:
+            continue
+        readers = [
+            later
+            for later in draws[index + 1 :]
+            if step.name in _step_value_names(later)
+        ]
+        if readers or step.name in returned:
+            where = f"line {readers[0].line}" if readers else "the program's return"
+            raise StepResolutionError(
+                "qvr-expand",
+                [
+                    f"scan:marginal:read:{step.name}",
+                    f"{step.name!r} binds the marginalized chain over "
+                    f"{scan.step!r}, whose states are summed out, so it holds "
+                    f"no state for {where} to read; the chain contributes its "
+                    f"log marginal likelihood to the joint",
+                ],
+            )
+
+
+def _refuse_cell_uses(
+    draws: tuple[ProgramStep, ...], programs: dict[str, ProgramDecl]
+) -> None:
+    """Refuse every draw or call of a cell that returns a marginalized latent.
+
+    Parameters
+    ----------
+    draws : tuple[ProgramStep, ...]
+        A program body, searched through marginalization scopes.
+    programs : dict[str, ProgramDecl]
+        The module's programs by name.
+
+    Raises
+    ------
+    StepResolutionError
+        If a step draws from or calls such a cell other than as the cell
+        of a scan.
+    """
+    for step in draws:
+        if isinstance(step, MarginalizeStep):
+            _refuse_cell_uses(step.scope, programs)
+        else:
+            _refuse_cell_use(step, programs)
+
+
+def _refuse_cell_use(step: ProgramStep, programs: dict[str, ProgramDecl]) -> None:
+    """Refuse a draw or call of a cell that returns a marginalized latent.
+
+    Parameters
+    ----------
+    step : ProgramStep
+        A step of a program body.
+    programs : dict[str, ProgramDecl]
+        The module's programs by name.
+
+    Raises
+    ------
+    StepResolutionError
+        If the step draws from or calls such a cell other than as the
+        cell of a scan.
+    """
+    name: str | None = None
+    if isinstance(step, SampleStep | ObserveStep):
+        name = step.morphism
+    elif isinstance(step, CallStep):
+        name = step.call.callee
+    cell = programs.get(name) if name is not None else None
+    if cell is not None and returns_marginalized_latent(cell):
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                f"scan:marginal:entry:{cell.name}",
+                f"the step at line {step.line} runs {cell.name!r}, which returns "
+                f"the latent it marginalizes and so has no value of its own; it "
+                f"runs only as the cell of `scan({cell.name}, init=p)`",
+            ],
+        )
+
+
+def _sequence_valued(chain: tuple[_ChainElem, ...], incoming: bool) -> bool:
+    """Whether a chain's value is a sequence, one entry per position.
+
+    Parameters
+    ----------
+    chain : tuple[_ChainElem, ...]
+        The chain.
+    incoming : bool
+        Whether the value the chain reads is a sequence.
+
+    Returns
+    -------
+    bool
+        ``True`` when the chain ends in a scan with ``outputs=all`` or
+        in a parallel element all of whose branches are sequences; the
+        incoming answer for an empty chain.
+    """
+    valued = incoming
+    for elem in chain:
+        if isinstance(elem, _ScanLeaf):
+            valued = elem.outputs == "all"
+        elif isinstance(elem, _ParallelLeaf):
+            branches = [branch for branch in elem.branches if branch]
+            valued = bool(branches) and all(
+                _sequence_valued(branch, valued) for branch in branches
+            )
+        else:
+            valued = False
+    return valued
+
+
+def _refuse_sequence_reader(
+    elem: _ChainElem, original: SampleStep | ObserveStep
+) -> None:
+    """Refuse an element that would read a whole sequence as one value.
+
+    A scan with ``outputs=all`` leaves one state per position. What
+    follows it in a chain runs at every position only inside another
+    scan's step, so a morphism after it, outside a scan, would read
+    the sequence as one value.
+
+    Parameters
+    ----------
+    elem : _ChainElem
+        The element after the sequence.
+    original : SampleStep | ObserveStep
+        The step being expanded.
+
+    Raises
+    ------
+    StepResolutionError
+        Unless the element is a parallel element, whose branches are
+        checked in turn.
+    """
+    if isinstance(elem, _ParallelLeaf):
+        return
+    name = getattr(elem, "name", type(elem).__name__)
+    raise StepResolutionError(
+        "qvr-expand",
+        [
+            f"scan:outputs:{name}",
+            f"the morphism {original.morphism!r} drawn at line {original.line} "
+            f"applies {name!r} to the every-state sequence of a scan with "
+            f"`outputs=all`; a morphism reads each state only inside a later "
+            f"scan, as in `scan(cell, outputs=all) >> {name} >> scan(next)`",
+        ],
+    )
 
 
 def _scan_input(
@@ -1360,6 +1802,7 @@ def _emit_chain_elem(
     original: SampleStep | ObserveStep,
     program: _Program,
     head_args: tuple[DrawArg, ...] | None,
+    prev_sequence: bool = False,
 ) -> list[ProgramStep]:
     """Emit the program steps for one chain element.
 
@@ -1381,6 +1824,8 @@ def _emit_chain_elem(
     head_args
         The row the chain's head conditions on: the original step's
         arguments, or a branch's factor of them.
+    prev_sequence
+        Whether ``prev_var`` holds a sequence, one entry per position.
 
     Returns
     -------
@@ -1453,6 +1898,7 @@ def _emit_chain_elem(
             original=original,
             program=program,
             head_args=head_args,
+            prev_sequence=prev_sequence,
         )
     raise AssertionError(
         f"_emit_chain_elem: unhandled chain-elem variant {type(elem).__name__!r}"
@@ -1467,10 +1913,16 @@ def _emit_parallel(
     original: SampleStep | ObserveStep,
     program: _Program,
     head_args: tuple[DrawArg, ...] | None,
+    prev_sequence: bool = False,
 ) -> list[ProgramStep]:
     """Emit each parallel branch's steps against the same upstream
     input, then bundle the branch tails into a list literal bound to
     `terminal_var`.
+
+    Branches that each end in a scan with ``outputs=all`` are paired
+    position by position instead: the bundle is the sequence whose
+    entry at a position lays the branches' entries there end to end,
+    ``positions(a, b)`` (see `POSITIONS_BUNDLE`).
 
     A fan's branches all read the upstream input; a tensor product's
     each read their own factor of it, which at the head of a chain is
@@ -1498,14 +1950,36 @@ def _emit_parallel(
         The enclosing program's expansion.
     head_args
         The row the chain's head conditions on.
+    prev_sequence
+        Whether ``prev_var`` holds a sequence, one entry per position.
 
     Returns
     -------
     list[ProgramStep]
         The emitted steps.
+
+    Raises
+    ------
+    StepResolutionError
+        If some branches end in a sequence and others in one value.
     """
     out: list[ProgramStep] = []
     branch_tails: list[str] = []
+    valued = [
+        _sequence_valued(branch, prev_sequence) for branch in elem.branches if branch
+    ]
+    paired = bool(valued) and all(valued)
+    if any(valued) and not paired:
+        raise StepResolutionError(
+            "qvr-expand",
+            [
+                "scan:outputs:fan",
+                f"the morphism {original.morphism!r} drawn at line "
+                f"{original.line} pairs branches of which some return every "
+                f"state of a scan (`outputs=all`) and others one value; pair "
+                f"sequences with sequences, position by position",
+            ],
+        )
     for branch_idx, branch in enumerate(elem.branches):
         branch_head = head_args
         if elem.product and prev_var is None:
@@ -1530,6 +2004,7 @@ def _emit_parallel(
                 original=original,
                 program=program,
                 keep_last=False,
+                prev_sequence=prev_sequence,
             )
         )
         branch_tails.append(tail)
@@ -1543,11 +2018,14 @@ def _emit_parallel(
             )
         )
         return out
+    items = tuple(LetExprVar(name=t) for t in branch_tails)
     out.append(
         LetStep(
             name=terminal_var,
-            value=LetExprList(
-                items=tuple(LetExprVar(name=t) for t in branch_tails),
+            value=(
+                LetExprCall(func=POSITIONS_BUNDLE, args=items)
+                if paired
+                else LetExprList(items=items)
             ),
             line=original.line,
             col=original.col,
@@ -1635,8 +2113,110 @@ def _derive_chain_args(
     return (atom_to_draw_arg(prev_var),)
 
 
-def scan_let_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
-    """Read ``scan(step, xs)`` or ``scan(step, xs, init)`` off a let expression.
+LEARNED_SCAN_INIT_SUFFIX = "_scan_init"
+"""The suffix of the input a scan with ``init=learned`` starts from."""
+
+
+def is_learned_scan_init(name: str) -> bool:
+    """Whether a scan's initial-state name is a learned initial state.
+
+    Parameters
+    ----------
+    name : str
+        The third argument of ``scan(step, xs, init)``.
+
+    Returns
+    -------
+    bool
+        True for the ``<cell>_scan_init`` input ``init=learned``
+        introduces; false for a binding of the scanning program.
+    """
+    return name.endswith(LEARNED_SCAN_INIT_SUFFIX)
+
+
+POSITIONS_BUNDLE = "$positions"
+"""The let function pairing sequences position by position.
+
+``$positions(a, b)`` over sequences of one length is the sequence whose
+entry at each position lays the entries of ``a`` and ``b`` there end to
+end. The expansion of a ``fan`` or ``@`` whose branches each return
+every state of a scan binds it; the ``$`` keeps it apart from every
+function a source can call.
+"""
+
+
+class ScanCall(dx.Model):
+    """A scan as the expansion binds it: ``let h = scan(step, xs, ...)``.
+
+    Parameters
+    ----------
+    step : str
+        The step program's name.
+    sequence : str
+        The name of the sequence the scan runs over.
+    init : str | None
+        The initial state's name: a binding of the scanning program,
+        or the ``<cell>_scan_init`` input of a learned initial state;
+        ``None`` to start from zero.
+    outputs : Literal["last", "all"]
+        Whether the scan's value is its final state or every state.
+    reverse : bool
+        Whether the scan visits the positions from the last to the
+        first.
+    marginal : bool
+        Whether the scan sums out a finite state its cell marginalizes
+        and returns (a marginalized chain); ``step``
+        then names the cell itself and ``init`` the distribution of the
+        state before the first position.
+    """
+
+    step: str
+    sequence: str
+    init: str | None = None
+    outputs: Literal["last", "all"] = "last"
+    reverse: bool = False
+    marginal: bool = False
+
+
+_SCAN_ALL_FLAG = "outputs=all"
+_SCAN_REVERSE_FLAG = "reverse"
+_SCAN_MARGINAL_FLAG = "marginal"
+_SCAN_FLAGS = (_SCAN_ALL_FLAG, _SCAN_REVERSE_FLAG, _SCAN_MARGINAL_FLAG)
+
+
+def scan_let_expression(call: ScanCall) -> LetExprCall:
+    """The let expression binding a scan.
+
+    Parameters
+    ----------
+    call : ScanCall
+        The scan.
+
+    Returns
+    -------
+    LetExprCall
+        ``scan(step, xs)``, with the initial state's name as a third
+        argument when there is one, then the string flags
+        ``"outputs=all"``, ``"reverse"``, and ``"marginal"`` for the
+        options that differ from their defaults.
+    """
+    arguments: list[LetExprNode] = [
+        LetExprVar(name=call.step),
+        LetExprVar(name=call.sequence),
+    ]
+    if call.init is not None:
+        arguments.append(LetExprVar(name=call.init))
+    if call.outputs == "all":
+        arguments.append(LetExprString(value=_SCAN_ALL_FLAG))
+    if call.reverse:
+        arguments.append(LetExprString(value=_SCAN_REVERSE_FLAG))
+    if call.marginal:
+        arguments.append(LetExprString(value=_SCAN_MARGINAL_FLAG))
+    return LetExprCall(func="scan", args=tuple(arguments))
+
+
+def scan_let_call(expr: LetExprNode) -> ScanCall | None:
+    """Read a scan off a let expression `scan_let_expression` built.
 
     Parameters
     ----------
@@ -1645,21 +2225,56 @@ def scan_let_call(expr: LetExprNode) -> tuple[str, str, str | None] | None:
 
     Returns
     -------
-    tuple[str, str, str | None] | None
-        The step program's name, the sequence's name, and the learned
-        initial state's name when there is one; ``None`` when the
-        expression is not a scan of names.
+    ScanCall | None
+        The scan; ``None`` when the expression is not a scan of names.
     """
     if not isinstance(expr, LetExprCall) or expr.func != "scan":
-        return None
-    if len(expr.args) not in (2, 3) or not all(
-        isinstance(argument, LetExprVar) for argument in expr.args
-    ):
         return None
     names = [
         argument.name for argument in expr.args if isinstance(argument, LetExprVar)
     ]
-    return names[0], names[1], names[2] if len(names) == 3 else None
+    flags = [
+        argument.value for argument in expr.args if isinstance(argument, LetExprString)
+    ]
+    if (
+        len(names) not in (2, 3)
+        or len(names) + len(flags) != len(expr.args)
+        or not all(
+            isinstance(argument, LetExprVar) for argument in expr.args[: len(names)]
+        )
+        or any(flag not in _SCAN_FLAGS for flag in flags)
+        or len(set(flags)) != len(flags)
+    ):
+        return None
+    return ScanCall(
+        step=names[0],
+        sequence=names[1],
+        init=names[2] if len(names) == 3 else None,
+        outputs="all" if _SCAN_ALL_FLAG in flags else "last",
+        reverse=_SCAN_REVERSE_FLAG in flags,
+        marginal=_SCAN_MARGINAL_FLAG in flags,
+    )
+
+
+def positions_let_call(expr: LetExprNode) -> tuple[str, ...] | None:
+    """Read ``$positions(a, b, ...)`` off a let expression.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    tuple[str, ...] | None
+        The paired sequences' names, in order; ``None`` when the
+        expression is not such a call of names.
+    """
+    if not isinstance(expr, LetExprCall) or expr.func != POSITIONS_BUNDLE:
+        return None
+    if not expr.args or not all(isinstance(a, LetExprVar) for a in expr.args):
+        return None
+    return tuple(a.name for a in expr.args if isinstance(a, LetExprVar))
 
 
 __all__ = []

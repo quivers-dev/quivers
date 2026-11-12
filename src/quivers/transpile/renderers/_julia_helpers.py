@@ -271,8 +271,9 @@ _AXIS_REDUCING_CALLS: dict[str, str] = {
 
 
 #: Let calls Julia spells under another name: integer division and
-#: remainder truncate toward zero, as Julia's `div` and `rem` do.
-_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem"}
+#: remainder truncate toward zero, as Julia's `div` and `rem` do, and
+#: `select(c, a, b)` is Julia's `ifelse`, which evaluates both branches.
+_JULIA_CALL_NAMES: dict[str, str] = {"quot": "div", "rem": "rem", "select": "ifelse"}
 
 #: QVR builtins whose two-argument form is pointwise, which Julia spells
 #: as a broadcast call.
@@ -310,9 +311,8 @@ def render_let_expr_julia(
 
 def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """True iff ``expr`` contracts an axis anywhere in its tree:
-    either a reduction along the last axis of an array with an event
-    axis or with two or more axes, or the matrix-vector product an
-    affine parameter map denotes.
+    a reduction of an argument with one or more axes, or the
+    matrix-vector product an affine parameter map denotes.
 
     A binding whose body contracts an axis cannot be wrapped in
     Julia's ``@.`` macro: the macro broadcasts the contraction
@@ -323,6 +323,14 @@ def let_expr_has_axis_reduction(ctx: _JlShapeView, expr: LetExprNode) -> bool:
     """
     if isinstance(expr, LetExprCall):
         if _reduces_named_axis(ctx, expr.func, expr.args):
+            return True
+        if (
+            expr.func in _AXIS_REDUCING_CALLS
+            and len(expr.args) == 1
+            and infer_array_rank(ctx, expr.args[0]) >= 1
+        ):
+            # Under `@.` a reduction of a vector, a list literal
+            # included, would reduce each entry alone.
             return True
         return any(let_expr_has_axis_reduction(ctx, a) for a in expr.args)
     if isinstance(expr, LetExprBinOp):
@@ -396,7 +404,15 @@ def infer_array_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
             default=0,
         )
     if isinstance(expr, LetExprFactor):
-        return len(expr.binders)
+        # One axis per binder, then whatever axes each entry carries.
+        entries = (
+            (expr.body,)
+            if expr.body is not None
+            else tuple(c.value for c in expr.cases)
+        )
+        return len(expr.binders) + max(
+            (infer_array_rank(ctx, entry) for entry in entries), default=0
+        )
     if isinstance(expr, LetExprAffineMap):
         # One head's row block is a length-`rows` vector.
         return 1
@@ -721,8 +737,9 @@ def _emit_call(
     `_emit_axis_reduction`, which names that axis; a nested tower
     reduces each of its rows; a vector reduces whole, which is the
     same.
-    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`;
-    `pow(a, b)` emits the broadcast power `a .^ b`.
+    A two-argument `max` or `min` is pointwise and emits `f.(a, b)`,
+    and `select(c, a, b)` emits `ifelse.(c, a, b)`; `pow(a, b)` emits
+    the broadcast power `a .^ b`.
     Every other call emits `f.(args)` under `ctx.dotted` and `f(args)`
     otherwise.
     """
@@ -752,7 +769,9 @@ def _emit_call(
     # QVR's two-argument `max` / `min` are pointwise. Julia's undotted
     # `max(a, b)` of two arrays compares them as wholes and returns one,
     # so the binary form always broadcasts.
-    pointwise = func in _BINARY_POINTWISE_CALLS and len(args) == 2
+    pointwise = (func in _BINARY_POINTWISE_CALLS and len(args) == 2) or (
+        func == "select" and len(args) == 3
+    )
     kind = "broadcast_call_expression" if ctx.dotted or pointwise else "call_expression"
     vid = ctx.v(ctx.fresh("ce"), kind)
     ctx.constraint(vid, "chose-alt-child-kinds", f"{callee_kind} argument_list")
@@ -1599,8 +1618,9 @@ def nested_tower_names(ir: IRProgram) -> frozenset[str]:
     than one binder unrolls into `vector_expression` literals nested
     one level per binder, because the Julia grammar's dense
     `matrix_expression` separates its columns with whitespace alone
-    and a synthesised schema carries no interstitial text to place it.
-    A subscript into such a name thus reads one axis at a time.
+    and a synthesised schema carries no interstitial text to place it;
+    a one-binder factor whose entry is a list literal nests the same
+    way. A subscript into such a name thus reads one axis at a time.
     """
     out: set[str] = set()
     _walk_for_towers(ir.body, out)
@@ -1608,10 +1628,17 @@ def nested_tower_names(ir: IRProgram) -> frozenset[str]:
 
 
 def _walk_for_towers(body: tuple[IRNode, ...], out: set[str]) -> None:
-    """Collect multi-binder factor bindings over an IR body."""
+    """Collect factor bindings an emit nests over an IR body.
+
+    A factor over several binders nests one level per binder, and a
+    factor whose entry is a list literal (a row per binder value, as
+    `concat` and `slice` of a table elaborate) nests the list inside.
+    """
     for node in body:
         if isinstance(node, IRDeterministic) and isinstance(node.expr, LetExprFactor):
-            if len(node.expr.binders) > 1 and node.expr.body is not None:
+            if node.expr.body is not None and (
+                len(node.expr.binders) > 1 or isinstance(node.expr.body, LetExprList)
+            ):
                 out.add(node.name)
         elif isinstance(node, IRMarginalize):
             _walk_for_towers(node.scope, out)

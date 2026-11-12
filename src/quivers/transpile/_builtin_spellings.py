@@ -20,6 +20,12 @@ target, that settles each builtin for each target in one of four ways:
   target cannot express the builtin, and rendering it raises
   [`UnsupportedConstruct`][quivers.transpile._api.UnsupportedConstruct]
   naming the builtin and the target.
+* [`Elaborated`][quivers.transpile._builtin_spellings.Elaborated]: the
+  checked elaboration writes the builtin in terms of selections, tensor
+  literals, comprehensions, and other builtins before any plan is
+  drawn (``concat``, ``slice``, ``matmul``, ``layer_norm``, ``rms_norm``),
+  so no renderer meets the call and the
+  target spells what it was written in.
 
 Every target's table has an entry for every surface builtin, so adding
 a builtin to the registry forces a decision for every target. The
@@ -59,9 +65,21 @@ MATH_BUILTINS: Mapping[str, int] = {
 }
 
 
+#: The builtins the checked elaboration writes out before planning:
+#: every builtin of the registry that rebuilds the last axis of its
+#: arguments.
+ELABORATED_BUILTINS: frozenset[str] = frozenset(
+    name for name, spec in BUILTIN_REGISTRY.items() if spec.qiec_form == "shape"
+)
+
+
 #: The planner's target-neutral lowering, which no renderer reads: it
 #: keeps every builtin under its QVR name.
 NEUTRAL_TARGET = "ir"
+
+#: The compiled runtime, which reads let expressions under their QVR
+#: names, as the source writes them.
+RUNTIME_TARGET = "runtime"
 
 
 class BuiltinSpelling(dx.TaggedUnion, discriminator="kind"):
@@ -97,7 +115,7 @@ class ClosedForm(BuiltinSpelling):
     ----------
     body
         The definition, reading its arguments as the variables
-        ``__arg0`` and ``__arg1``. A call to a math builtin inside it is
+        ``__arg0``, ``__arg1``, and ``__arg2``. A call to a math builtin inside it is
         spelled by the same target's table in turn; a call to any other
         name is a function of the target's own.
     kind
@@ -123,6 +141,21 @@ class Dedicated(BuiltinSpelling):
     kind: Literal["dedicated"] = "dedicated"
 
 
+class Elaborated(BuiltinSpelling):
+    """The checked elaboration writes the builtin out before planning.
+
+    Parameters
+    ----------
+    reason
+        What the builtin is written in, which the target spells.
+    kind
+        The discriminator; always ``"elaborated"``.
+    """
+
+    reason: str
+    kind: Literal["elaborated"] = "elaborated"
+
+
 class Refusal(BuiltinSpelling):
     """The target cannot express the builtin.
 
@@ -144,6 +177,7 @@ class Refusal(BuiltinSpelling):
 
 _X = LetExprVar(name="__arg0")
 _Y = LetExprVar(name="__arg1")
+_Z = LetExprVar(name="__arg2")
 
 
 def _lit(value: float) -> LetExprLiteral:
@@ -314,6 +348,7 @@ _PYRO: dict[str, BuiltinSpelling] = {
     "max": _native("torch", "maximum"),
     "min": _native("torch", "minimum"),
     "pow": _native("torch", "pow"),
+    "select": _native("torch", "where"),
 }
 
 _NUMPYRO: dict[str, BuiltinSpelling] = {
@@ -368,6 +403,7 @@ _NUMPYRO: dict[str, BuiltinSpelling] = {
     "max": _native("jnp", "maximum"),
     "min": _native("jnp", "minimum"),
     "pow": _native("jnp", "power"),
+    "select": _native("jnp", "where"),
 }
 
 
@@ -423,6 +459,7 @@ _PYMC: dict[str, BuiltinSpelling] = {
     "max": _pmath("maximum"),
     "min": _pmath("minimum"),
     "pow": _pt("pow"),
+    "select": _pmath("switch"),
 }
 
 
@@ -483,6 +520,7 @@ _EDWARD2: dict[str, BuiltinSpelling] = {
     "max": _tfmath("maximum"),
     "min": _tfmath("minimum"),
     "pow": _tfmath("pow"),
+    "select": _native("tf", "where"),
 }
 
 
@@ -542,6 +580,7 @@ _STAN: dict[str, BuiltinSpelling] = {
     **_common(*_ACTIVATIONS),
     "max": Dedicated(reason="`max` of two integers, `fmax` of reals"),
     "min": Dedicated(reason="`min` of two integers, `fmin` of reals"),
+    "select": Dedicated(reason="the conditional operator `c ? a : b`"),
 }
 
 
@@ -594,6 +633,7 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
         "pow": Dedicated(reason="the broadcast power `.^`"),
         "max": Dedicated(reason="the broadcast `max.(a, b)`"),
         "min": Dedicated(reason="the broadcast `min.(a, b)`"),
+        "select": Dedicated(reason="the broadcast `ifelse.(c, a, b)`"),
     }
 
 
@@ -626,6 +666,7 @@ WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "log1p",
         "log2",
         "round",
+        "select",
         "sign",
         "sin",
         "sinh",
@@ -683,6 +724,7 @@ CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "max",
         "min",
         "pow",
+        "select",
     }
 )
 
@@ -764,6 +806,9 @@ _BUGS: dict[str, BuiltinSpelling] = {
         )
     ),
     **_refuse("BUGS and JAGS have no digamma function", "digamma"),
+    # OpenBUGS has no conditional function; `b + c * (a - b)` is `select`
+    # wherever both branches are finite.
+    "select": _form(_op("+", _Z, _op("*", _X, _op("-", _Y, _Z)))),
     **_common(
         "ceil",
         "expm1",
@@ -780,19 +825,47 @@ _BUGS: dict[str, BuiltinSpelling] = {
 }
 
 
-#: Every target's spelling of every math builtin.
+#: How every target meets each builtin the elaboration writes out.
+_ELABORATED: dict[str, BuiltinSpelling] = {
+    "concat": Elaborated(
+        reason="a tensor literal of entries selected at literal positions of "
+        "each operand's last axis, under a comprehension per leading axis"
+    ),
+    "slice": Elaborated(
+        reason="a tensor literal of the window's entries selected at literal "
+        "positions of the last axis, under a comprehension per leading axis"
+    ),
+    "matmul": Elaborated(
+        reason="a sum over a comprehension of products along the shared axis, "
+        "under a comprehension per leading axis and per column"
+    ),
+    "layer_norm": Elaborated(
+        reason="row means and variances bound once, and a comprehension of "
+        "each centered entry over the square root of its row's variance"
+    ),
+    "rms_norm": Elaborated(
+        reason="row mean squares bound once, and a comprehension of each "
+        "entry over the square root of its row's mean square"
+    ),
+}
+
+#: Every target's spelling of every math builtin and every builtin the
+#: elaboration writes out.
 BUILTIN_SPELLINGS: Mapping[str, Mapping[str, BuiltinSpelling]] = {
-    "pyro": _PYRO,
-    "numpyro": _NUMPYRO,
-    "pymc": _PYMC,
-    "edward2": _EDWARD2,
-    "stan": _STAN,
-    "turing": _julia("Turing"),
-    "gen": _julia("Gen"),
-    "webppl": _WEBPPL,
-    "church": _CHURCH,
-    "bugs": _BUGS,
-    "jags": _BUGS,
+    target: {**table, **_ELABORATED}
+    for target, table in {
+        "pyro": _PYRO,
+        "numpyro": _NUMPYRO,
+        "pymc": _PYMC,
+        "edward2": _EDWARD2,
+        "stan": _STAN,
+        "turing": _julia("Turing"),
+        "gen": _julia("Gen"),
+        "webppl": _WEBPPL,
+        "church": _CHURCH,
+        "bugs": _BUGS,
+        "jags": {**_BUGS, "select": _native("ifelse")},
+    }.items()
 }
 
 
@@ -823,7 +896,7 @@ def builtin_spelling(target: str, func: str, arity: int) -> BuiltinSpelling | No
         If the target has no table, or its table has no entry for the
         builtin.
     """
-    if MATH_BUILTINS.get(func) != arity or target == NEUTRAL_TARGET:
+    if MATH_BUILTINS.get(func) != arity or target in (NEUTRAL_TARGET, RUNTIME_TARGET):
         return None
     table = BUILTIN_SPELLINGS.get(target)
     if table is None or func not in table:
@@ -854,6 +927,8 @@ def _instantiate(
             return args[0]
         if body.name == _Y.name:
             return args[1]
+        if body.name == _Z.name:
+            return args[2]
         return body
     if isinstance(body, LetExprBinOp):
         return LetExprBinOp(
@@ -979,12 +1054,15 @@ def native_import(
 __all__ = [
     "BUILTIN_SPELLINGS",
     "CHURCH_RUNTIME_BUILTINS",
+    "ELABORATED_BUILTINS",
     "MATH_BUILTINS",
     "NEUTRAL_TARGET",
+    "RUNTIME_TARGET",
     "WEBPPL_RUNTIME_BUILTINS",
     "BuiltinSpelling",
     "ClosedForm",
     "Dedicated",
+    "Elaborated",
     "NativeCall",
     "Refusal",
     "builtin_spelling",

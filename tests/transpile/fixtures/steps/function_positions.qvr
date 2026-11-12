@@ -1,0 +1,14 @@
+# Exercises a learned position table called in a let on a host
+# sequence; its table is model-internal, so every target refuses it.
+object Model : Real 4
+object Val : Real 1
+
+morphism pos : Model -> Model [role=function, param_source=positions(8)]
+
+program p : Val -> Val
+    let h = pos(seq)
+    let s = sum(sum(h))
+    observe y <- Normal(loc=s, scale=1.0)
+    return y
+
+export p

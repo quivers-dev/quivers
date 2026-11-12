@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Callable
+from typing import cast
 
 import torch
 
@@ -31,9 +32,24 @@ from quivers.core.algebras import (
     Semigroupoid,
 )
 from quivers.continuous.boundaries import Discretize, Embed
+from quivers.continuous.deterministic import (
+    FUNCTION_OUTPUTS,
+    FunctionOutput,
+    LearnedFunction,
+    SequenceFunction,
+)
 from quivers.continuous.flows import ConditionalFlow
 from quivers.continuous.inline import make_inline_distribution
-from quivers.continuous.spaces import ContinuousSpace
+from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.continuous.param_source import (
+    FUNCTION_ACTIVATIONS,
+    SEQUENCE_SOURCE_KINDS,
+    FunctionActivation,
+    PositionSource,
+    SelfAttentionSource,
+    function_source,
+)
+from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.core.morphisms import (
     ObservedMorphism,
     morphism as make_latent,
@@ -51,9 +67,10 @@ from quivers.dsl.ast_nodes import (
     CategoryDecl,
     CompositionDecl,
     CompositionRuleEntry,
+    DrawArg,
     DrawArgNamed,
-    DrawArgScalar,
     ExprIdent,
+    OptionEntry,
     MorphismDecl,
     RuleDecl,
     SchemaDecl,
@@ -90,6 +107,9 @@ from quivers.dsl.compiler._prelude import (
     _wrap_join_dim,
 )
 from quivers.dsl.compiler.programs import _ProgramsMixin
+from quivers.dsl.latent_weights import network_kind
+from quivers.dsl.program_elaboration import LATENT_WEIGHT_HEADS
+from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.stochastic import StochasticMorphism
 from quivers.stochastic.categories import (
     BUILTIN_CONSTRUCTOR_NAMES,
@@ -103,7 +123,7 @@ from quivers.stochastic.schema import (
 
 
 _VALID_ROLES: frozenset[str] = frozenset(
-    {"latent", "observed", "kernel", "embed", "discretize", "let"}
+    {"latent", "observed", "kernel", "embed", "discretize", "let", "function"}
 )
 
 
@@ -183,6 +203,12 @@ _MORPHISM_OPTION_KEYS: frozenset[str] = frozenset(
         "param_source",
         "rank",
         "temperature",
+        "activation",
+        "output",
+        "weights",
+        "prior_scale",
+        "heads",
+        "causal",
     }
 )
 
@@ -212,12 +238,97 @@ _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
             "temperature",
             "over",
             "iid",
+            "weights",
+            "prior_scale",
         }
     ),
     "embed": frozenset(),
     "discretize": frozenset({"bins"}),
     "let": frozenset({"over", "iid"}),
+    # `_compile_function_role` builds the network and its output map.
+    "function": frozenset(
+        {
+            "param_source",
+            "activation",
+            "output",
+            "weights",
+            "prior_scale",
+            "heads",
+            "causal",
+        }
+    ),
 }
+
+
+def _function_option_at_fault(
+    kind: str,
+    source_text: str | None,
+    *,
+    activation: str | None,
+    heads: int | None,
+    causal: bool | None,
+) -> str:
+    """The option a refused learned-function network is reported at.
+
+    Parameters
+    ----------
+    kind : str
+        The network kind ``param_source`` names.
+    source_text : str | None
+        The ``param_source`` text, with any arguments.
+    activation : str | None
+        The ``activation`` option, when given.
+    heads : int | None
+        The ``heads`` option, when given.
+    causal : bool | None
+        The ``causal`` option, when given.
+
+    Returns
+    -------
+    str
+        ``activation`` when it is given to a source other than ``mlp`` or
+        names no activation; ``heads`` or ``causal`` when given to a
+        source other than ``self_attention``; ``heads`` when a
+        self-attention network with an argument-free source refuses its
+        head count; otherwise ``param_source``.
+    """
+    if activation is not None and (
+        kind != "mlp" or activation not in FUNCTION_ACTIVATIONS
+    ):
+        return "activation"
+    if kind != "self_attention":
+        if heads is not None:
+            return "heads"
+        if causal is not None:
+            return "causal"
+        return "param_source"
+    if heads is not None and causal is not None and "(" not in (source_text or ""):
+        return "heads"
+    return "param_source"
+
+
+def _draw_arg_location(arg: DrawArg, decl: MorphismDecl) -> tuple[int, int]:
+    """The source position to blame for one of a declaration's arguments.
+
+    Parameters
+    ----------
+    arg : DrawArg
+        An argument of the declaration's ``~ Family(...)`` initializer.
+    decl : MorphismDecl
+        The declaration.
+
+    Returns
+    -------
+    tuple[int, int]
+        The argument's line and column when the parser recorded them,
+        else the initializer's, else the declaration's.
+    """
+    if isinstance(arg, DrawArgNamed) and arg.line:
+        return arg.line, arg.col
+    init = decl.init_family
+    if init is not None and init.line:
+        return init.line, init.col
+    return decl.line, decl.col
 
 
 def _signature_params(cls) -> frozenset[str]:
@@ -306,6 +417,9 @@ class _DeclarationsMixin:
     _morphisms: dict
     _groups: dict[str, list[str]]
     _module: Module
+    # Supplied by `_ProgramsMixin`: splits a latent-weight kernel into
+    # the network a draw applies and the family it draws from.
+    _register_latent_kernel: Callable[[str, ContinuousMorphism], None]
 
     # ``_resolve_type``, ``_resolve_any_space``, ``_compile_expr``
     # come from `_ResolutionMixin` and
@@ -808,6 +922,9 @@ class _DeclarationsMixin:
         * ``role=let``     : deterministic morphism whose value is
           ``~ <expr>`` (composition pipeline, contraction call,
           transformation invocation, etc.).
+        * ``role=function``: learned deterministic map between
+          continuous spaces, a `LearnedFunction` whose network the
+          ``param_source`` option selects.
 
         When ``role`` is absent the morphism is a kernel: programs
         draw from kernels, so the parametric-Markov-kernel lowering
@@ -835,6 +952,7 @@ class _DeclarationsMixin:
             )
         role = self._resolve_morphism_role(decl, name)
         self._check_role_options(decl, name, role)
+        self._check_weights_options(decl, name, role)
         replicate = get_option_int(
             decl.options,
             "replicate",
@@ -856,6 +974,8 @@ class _DeclarationsMixin:
             self._compile_embed_role(decl, name, names)
         elif role == "discretize":
             self._compile_discretize_role(decl, name, names)
+        elif role == "function":
+            self._compile_function_role(decl, name, names)
         else:
             self._compile_let_role(decl, name, names)
         if replicate is not None:
@@ -888,6 +1008,88 @@ class _DeclarationsMixin:
                 f"morphism under a role that reads it.",
                 entry.line or decl.line,
                 entry.col or decl.col,
+            )
+
+    def _check_weights_options(self, decl: MorphismDecl, name: str, role: str) -> None:
+        """Validate the ``weights`` and ``prior_scale`` options.
+
+        Parameters
+        ----------
+        decl : MorphismDecl
+            The declaration.
+        name : str
+            The declared name.
+        role : str
+            Its resolved role.
+
+        Raises
+        ------
+        CompileError
+            If ``weights`` is not ``point`` or ``latent``, ``prior_scale``
+            is not a positive number or is given without latent weights,
+            or latent weights are declared on a morphism whose network has
+            no weights to draw: an identity network, a lookup table, an
+            attention or embedding source, or a kernel without a family.
+        """
+        weights_entry = find_option(decl.options, "weights")
+        scale_entry = find_option(decl.options, "prior_scale")
+        if weights_entry is None and scale_entry is None:
+            return
+
+        def at(entry: OptionEntry | None) -> tuple[int, int]:
+            if entry is not None and entry.line:
+                return entry.line, entry.col
+            return decl.line, decl.col
+
+        mode = get_option_name(
+            decl.options, "weights", line=decl.line, col=decl.col, default="point"
+        )
+        if mode not in ("point", "latent"):
+            raise CompileError(
+                f"morphism {name!r}: weights={mode} is neither ``point`` (fit "
+                f"as estimates) nor ``latent`` (drawn as sites)",
+                *at(weights_entry),
+            )
+        if scale_entry is not None:
+            scale = get_option_float(
+                decl.options, "prior_scale", line=decl.line, col=decl.col
+            )
+            if mode != "latent":
+                raise CompileError(
+                    f"morphism {name!r}: prior_scale is the scale of the prior "
+                    f"on latent weights; declare weights=latent to use it",
+                    *at(scale_entry),
+                )
+            if scale is None or not float(scale) > 0.0:
+                raise CompileError(
+                    f"morphism {name!r}: prior_scale must be a positive number",
+                    *at(scale_entry),
+                )
+        if mode != "latent":
+            return
+        kind = network_kind(decl)
+        if kind not in ("linear", "mlp"):
+            raise CompileError(
+                f"morphism {name!r}: weights=latent draws the weights of a linear "
+                f"or mlp network, and a {kind!r} source has none to draw",
+                *at(weights_entry),
+            )
+        family = decl.init_family.family if decl.init_family is not None else None
+        if family is None and isinstance(decl.init_expr, ExprIdent):
+            family = decl.init_expr.name
+        if role == "kernel" and family not in LATENT_WEIGHT_HEADS:
+            raise CompileError(
+                f"morphism {name!r}: weights=latent draws a network's weights, "
+                f"and a kernel's network supplies the parameters of a family; "
+                f"declare it ``~ Family`` with one of "
+                f"{', '.join(sorted(LATENT_WEIGHT_HEADS))}",
+                *at(weights_entry),
+            )
+        if role not in ("kernel", "function"):
+            raise CompileError(
+                f"morphism {name!r}: weights=latent applies to a network kernel or "
+                f"a learned function, not role={role}",
+                *at(weights_entry),
             )
 
     def _resolve_morphism_role(self, decl: MorphismDecl, name: str) -> str:
@@ -1094,10 +1296,12 @@ class _DeclarationsMixin:
         domain = self._resolve_any_space(decl.domain)
         codomain = self._resolve_any_space(decl.codomain)
         explicit_args = decl.init_family.args if decl.init_family is not None else ()
-        if explicit_args and all(
-            isinstance(arg, DrawArgNamed) and isinstance(arg.value, DrawArgScalar)
-            for arg in explicit_args
-        ):
+        refusal = kernel_argument_refusal(name, family, explicit_args)
+        if refusal is not None:
+            offending, message = refusal
+            ln, cl = _draw_arg_location(offending, decl)
+            raise CompileError(message, ln, cl)
+        if explicit_args:
             network_options = {
                 entry.key
                 for entry in decl.options
@@ -1124,8 +1328,7 @@ class _DeclarationsMixin:
                 raise CompileError(
                     f"kernel morphism {name!r}: cannot construct fixed "
                     f"{family} family from its literal arguments: {exc}",
-                    decl.line,
-                    decl.col,
+                    *_draw_arg_location(explicit_args[0], decl),
                 ) from exc
             if inputs is not None:
                 raise CompileError(
@@ -1138,6 +1341,7 @@ class _DeclarationsMixin:
             for member in names:
                 self._morphisms[member] = fixed
             return
+        latent = get_option_name(decl.options, "weights", default="point") == "latent"
         for member in names:
             morph = self._make_continuous_morphism(
                 domain,
@@ -1146,6 +1350,8 @@ class _DeclarationsMixin:
                 decl,
             )
             self._morphisms[member] = morph
+            if latent:
+                self._register_latent_kernel(member, morph)
 
     def _compile_embed_role(
         self,
@@ -1216,6 +1422,163 @@ class _DeclarationsMixin:
             )
         for member in names:
             self._morphisms[member] = self._compile_expr(decl.init_expr)
+
+    def _compile_function_role(
+        self,
+        decl: MorphismDecl,
+        name: str,
+        names: list[str],
+    ) -> None:
+        """Compile ``[role=function]``: a learned deterministic map.
+
+        Parameters
+        ----------
+        decl : MorphismDecl
+            The declaration.
+        name : str
+            The declared name.
+        names : list[str]
+            The members to bind, one per replica.
+
+        Raises
+        ------
+        CompileError
+            If the declaration has an initializer, a side is not a
+            continuous space, or the options name no learned-function
+            network.
+        """
+        if decl.init_family is not None or decl.init_expr is not None:
+            init = decl.init_family if decl.init_family is not None else decl.init_expr
+            line = getattr(init, "line", 0)
+            col = getattr(init, "col", 0)
+            raise CompileError(
+                f"function morphism {name!r}: a learned function takes no "
+                f"``~`` initializer; its network comes from ``param_source`` "
+                f"and its output from ``output``",
+                line if isinstance(line, int) and line else decl.line,
+                col if isinstance(col, int) and line else decl.col,
+            )
+        domain = self._resolve_any_space(decl.domain)
+        codomain = self._resolve_any_space(decl.codomain)
+        for side, space in (("domain", domain), ("codomain", codomain)):
+            factors = space.components if isinstance(space, ProductSpace) else (space,)
+            if not all(isinstance(factor, ContinuousSpace) for factor in factors):
+                raise CompileError(
+                    f"function morphism {name!r}: its {side} {space!s} is not a "
+                    f"continuous space or a product of them; a learned function "
+                    f"maps real coordinates (a finite domain is read through "
+                    f"``role=embed``)",
+                    decl.line,
+                    decl.col,
+                )
+        if isinstance(codomain, ProductSpace):
+            raise CompileError(
+                f"function morphism {name!r}: its codomain {codomain!s} is a "
+                f"product; a learned function writes one space",
+                decl.line,
+                decl.col,
+            )
+        source_text = get_option_call_text(
+            decl.options, "param_source", line=decl.line, col=decl.col
+        )
+        if (
+            source_text is not None
+            and source_text.strip() == "identity"
+            and isinstance(domain, ProductSpace)
+        ):
+            entry = find_option(decl.options, "param_source")
+            raise CompileError(
+                f"function morphism {name!r}: an identity function passes one "
+                f"input through, but its domain {domain!s} is a product; select "
+                f"a learned source (linear or mlp) to read several inputs",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        activation = get_option_name(
+            decl.options, "activation", line=decl.line, col=decl.col
+        )
+        output = get_option_name(
+            decl.options, "output", line=decl.line, col=decl.col, default="identity"
+        )
+        if output not in FUNCTION_OUTPUTS:
+            entry = find_option(decl.options, "output")
+            raise CompileError(
+                f"function morphism {name!r}: unknown output {output!r}; "
+                f"expected one of {sorted(FUNCTION_OUTPUTS)}",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        width = _shape_size(codomain)
+        heads = get_option_int(decl.options, "heads", line=decl.line, col=decl.col)
+        causal_text = get_option_name(
+            decl.options, "causal", line=decl.line, col=decl.col
+        )
+        if causal_text is not None and causal_text not in ("true", "false"):
+            entry = find_option(decl.options, "causal")
+            raise CompileError(
+                f"function morphism {name!r}: causal={causal_text} is neither "
+                f"``true`` nor ``false``",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        causal = None if causal_text is None else causal_text == "true"
+        kind = network_kind(decl)
+        if kind in SEQUENCE_SOURCE_KINDS and isinstance(domain, ProductSpace):
+            raise CompileError(
+                f"function morphism {name!r}: a {kind} function reads one "
+                f"sequence, but its domain {domain!s} is a product",
+                decl.line,
+                decl.col,
+            )
+        if kind in SEQUENCE_SOURCE_KINDS and find_option(decl.options, "output"):
+            entry = find_option(decl.options, "output")
+            raise CompileError(
+                f"function morphism {name!r}: a {kind} function applies no "
+                f"output nonlinearity; apply one in the let that reads it",
+                entry.line if entry is not None and entry.line else decl.line,
+                entry.col if entry is not None and entry.line else decl.col,
+            )
+        for member in names:
+            try:
+                source = function_source(
+                    domain,
+                    width,
+                    source_text,
+                    activation=cast(FunctionActivation | None, activation),
+                    heads=heads,
+                    causal=causal,
+                )
+            except ValueError as error:
+                entry = find_option(
+                    decl.options,
+                    _function_option_at_fault(
+                        kind,
+                        source_text,
+                        activation=activation,
+                        heads=heads,
+                        causal=causal,
+                    ),
+                )
+                raise CompileError(
+                    f"function morphism {name!r}: {error}",
+                    entry.line if entry is not None and entry.line else decl.line,
+                    entry.col if entry is not None and entry.line else decl.col,
+                ) from error
+            if isinstance(source, SelfAttentionSource | PositionSource):
+                self._morphisms[member] = SequenceFunction(domain, codomain, source)
+                continue
+            latent = (
+                member
+                if get_option_name(decl.options, "weights", default="point") == "latent"
+                else None
+            )
+            self._morphisms[member] = LearnedFunction(
+                domain,
+                codomain,
+                source,
+                output=cast(FunctionOutput, output),
+                latent=latent,
+            )
 
     # family-construction plumbing ------------------------------------
 

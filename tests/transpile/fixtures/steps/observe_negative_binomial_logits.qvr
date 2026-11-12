@@ -1,0 +1,9 @@
+# A NegativeBinomial observation written with logits, the log-odds a sampled
+# linear predictor gives.
+object Row : FinSet 4
+object One : FinSet 1
+program negative_binomial_logits : One -> One
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    observe y : Row <- NegativeBinomial(total_count=3.0, logits=eta)
+    return eta
+export negative_binomial_logits

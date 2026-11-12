@@ -37,6 +37,7 @@ from quivers.continuous import (
 )
 from quivers.continuous.program_steps import Score, reading
 from quivers.core import Unit
+from quivers.diagnostics import ess, rhat
 from quivers.dsl import loads
 from quivers.inference.mcmc.adapt import (
     DualAveraging,
@@ -205,8 +206,14 @@ def test_mcmc_result_carries_diagnostics() -> None:
     driver = MCMC(kernel=kernel, num_warmup=100, num_samples=200, num_chains=2)
     result = driver.run(model, torch.zeros(1, 1), {"y": y})
     assert result.samples["mu"].shape[:2] == (2, 200)
-    assert "mu" in result.r_hat
-    assert "mu" in result.ess
+    draws = result.samples["mu"]
+    for reported, computed in (
+        (result.r_hat["mu"], rhat(draws)),
+        (result.ess["mu"], ess(draws, method="bulk")),
+        (result.ess_tail["mu"], ess(draws, method="tail")),
+    ):
+        torch.testing.assert_close(reported, computed, rtol=0.0, atol=0.0)
+    assert torch.isfinite(result.r_hat["mu"]) and torch.isfinite(result.ess_tail["mu"])
     assert result.acceptance_rates.shape == (2,)
     assert result.divergence_counts.shape == (2,)
     assert result.divergence_counts.dtype == torch.int64

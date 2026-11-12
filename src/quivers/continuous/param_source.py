@@ -53,8 +53,10 @@ is parsed by
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 import torch
 from torch import Tensor, nn
@@ -244,6 +246,228 @@ class AttentionSource(ParamSource):
         attended, _ = self.attn(x, x, x, need_weights=False)
         pooled = attended.mean(dim=1)
         return self.head(pooled)
+
+
+class SelfAttentionSource(ParamSource):
+    """Multi-head scaled dot-product self-attention over a sequence.
+
+    The source maps a sequence of ``T`` rows to a sequence of ``T`` rows,
+    keeping the position axis, which is the one before the coordinate
+    axis. Each row is projected to a query, a key, and a value of the
+    model width ``m``; each of ``heads`` heads reads a block of
+    ``e = m / heads`` coordinates of them and weighs the value at every
+    position ``j`` by
+
+    .. math::
+
+        a_{ij} = \\frac{\\exp(q_i \\cdot k_j / \\sqrt{e})}
+                      {\\sum_{j'} \\exp(q_i \\cdot k_{j'} / \\sqrt{e})},
+
+    with the sum over ``j' <= i`` only, and ``a_{ij} = 0`` for ``j > i``,
+    when the attention is causal. The heads' weighted values, laid end
+    to end, pass through an output projection.
+
+    Parameters
+    ----------
+    domain_dim : int
+        The width ``d`` of an input row.
+    model_dim : int
+        The model width ``m``: of the queries, keys, values, and output.
+    heads : int
+        The number of heads; it divides ``model_dim``.
+    causal : bool
+        Whether position ``i`` attends only to positions ``j <= i``.
+
+    Raises
+    ------
+    ValueError
+        If a width or the head count is not positive, or the head count
+        does not divide the model width.
+    """
+
+    def __init__(
+        self, domain_dim: int, model_dim: int, heads: int, causal: bool
+    ) -> None:
+        super().__init__()
+        if domain_dim < 1 or model_dim < 1 or heads < 1:
+            raise ValueError(
+                f"self-attention takes positive widths and a positive head "
+                f"count, got domain {domain_dim}, model {model_dim}, heads {heads}"
+            )
+        if model_dim % heads != 0:
+            raise ValueError(
+                f"self-attention splits its model width {model_dim} into heads "
+                f"of equal width, which {heads} heads do not divide"
+            )
+        self._domain_dim = int(domain_dim)
+        self._param_dim = int(model_dim)
+        self._heads = int(heads)
+        self._causal = bool(causal)
+        self.query = nn.Linear(domain_dim, model_dim)
+        self.key = nn.Linear(domain_dim, model_dim)
+        self.value = nn.Linear(domain_dim, model_dim)
+        self.output = nn.Linear(model_dim, model_dim)
+
+    @property
+    def param_dim(self) -> int:
+        """The model width, the width of an output row.
+
+        Returns
+        -------
+        int
+            The width.
+        """
+        return self._param_dim
+
+    @property
+    def heads(self) -> int:
+        """The number of attention heads.
+
+        Returns
+        -------
+        int
+            The count.
+        """
+        return self._heads
+
+    @property
+    def causal(self) -> bool:
+        """Whether each position attends only to itself and those before it.
+
+        Returns
+        -------
+        bool
+            The flag.
+        """
+        return self._causal
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Attend over the position axis of a sequence.
+
+        Parameters
+        ----------
+        x : Tensor
+            Shape ``(..., T, domain_dim)``.
+
+        Returns
+        -------
+        Tensor
+            Shape ``(..., T, model_dim)``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` has no position axis or its rows are not
+            ``domain_dim`` wide.
+        """
+        if x.dim() < 2 or int(x.shape[-1]) != self._domain_dim:
+            raise ValueError(
+                f"self-attention reads a sequence of {self._domain_dim}-wide "
+                f"rows, shape (..., T, {self._domain_dim}), got {tuple(x.shape)}"
+            )
+        width = self._param_dim // self._heads
+
+        def split(projected: Tensor) -> Tensor:
+            return projected.unflatten(-1, (self._heads, width)).transpose(-3, -2)
+
+        query = split(self.query(x))
+        key = split(self.key(x))
+        value = split(self.value(x))
+        scores = query @ key.transpose(-1, -2) / math.sqrt(width)
+        if self._causal:
+            length = int(x.shape[-2])
+            later = torch.ones(length, length, dtype=torch.bool, device=x.device)
+            scores = scores.masked_fill(later.triu(1), float("-inf"))
+        weights = torch.softmax(scores, dim=-1)
+        context = (weights @ value).transpose(-3, -2).flatten(-2)
+        return self.output(context)
+
+
+class PositionSource(ParamSource):
+    """A learned table of position vectors added to a sequence's rows.
+
+    Row ``t`` of a sequence gains row ``t`` of the table, so a sequence
+    of ``T`` positions reads the table's first ``T`` rows. The table's
+    entries start as draws from a Normal of standard deviation 0.02.
+
+    Parameters
+    ----------
+    dim : int
+        The width of a row.
+    max_length : int
+        The number of positions the table holds, the longest sequence
+        the source reads.
+
+    Raises
+    ------
+    ValueError
+        If a size is not positive.
+    """
+
+    def __init__(self, dim: int, max_length: int) -> None:
+        super().__init__()
+        if dim < 1 or max_length < 1:
+            raise ValueError(
+                f"a position table takes a positive width and length, got "
+                f"width {dim} and length {max_length}"
+            )
+        self._param_dim = int(dim)
+        self._max_length = int(max_length)
+        self.table = nn.Parameter(torch.randn(max_length, dim) * 0.02)
+
+    @property
+    def param_dim(self) -> int:
+        """The width of a row.
+
+        Returns
+        -------
+        int
+            The width.
+        """
+        return self._param_dim
+
+    @property
+    def max_length(self) -> int:
+        """The number of positions the table holds.
+
+        Returns
+        -------
+        int
+            The count.
+        """
+        return self._max_length
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Add each position's vector to the row at that position.
+
+        Parameters
+        ----------
+        x : Tensor
+            Shape ``(..., T, dim)``.
+
+        Returns
+        -------
+        Tensor
+            ``x`` plus the table's first ``T`` rows.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` has no position axis, its rows are not ``dim`` wide,
+            or it is longer than the table.
+        """
+        if x.dim() < 2 or int(x.shape[-1]) != self._param_dim:
+            raise ValueError(
+                f"a position table reads a sequence of {self._param_dim}-wide "
+                f"rows, shape (..., T, {self._param_dim}), got {tuple(x.shape)}"
+            )
+        length = int(x.shape[-2])
+        if length > self._max_length:
+            raise ValueError(
+                f"a sequence of {length} positions is longer than the "
+                f"{self._max_length} positions the table holds"
+            )
+        return x + self.table[:length].to(x.dtype)
 
 
 class IdentitySource(ParamSource):
@@ -470,8 +694,148 @@ def param_source_from_option(
     return make_param_source(domain, param_dim, kind=kind, **kwargs)
 
 
+type FunctionActivation = Literal["tanh", "relu", "sigmoid", "softplus"]
+"""The nonlinearity between the hidden layers of a learned function's network."""
+
+#: The module each hidden-layer activation name builds.
+FUNCTION_ACTIVATIONS: dict[str, type[nn.Module]] = {
+    "tanh": nn.Tanh,
+    "relu": nn.ReLU,
+    "sigmoid": nn.Sigmoid,
+    "softplus": nn.Softplus,
+}
+
+#: The source kinds a learned function may use.
+FUNCTION_SOURCE_KINDS: frozenset[str] = frozenset(
+    {"linear", "mlp", "identity", "self_attention", "positions"}
+)
+
+#: The learned-function sources that map a whole sequence of rows to a
+#: sequence of rows, rather than one row to one row.
+SEQUENCE_SOURCE_KINDS: frozenset[str] = frozenset({"self_attention", "positions"})
+
+
+def function_source(
+    domain: AnySpace,
+    param_dim: int,
+    option_value: str | None,
+    *,
+    activation: FunctionActivation | None = None,
+    heads: int | None = None,
+    causal: bool | None = None,
+) -> ParamSource:
+    """Build the network of a learned function from its options.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The function's input space.
+    param_dim : int
+        The width of its output.
+    option_value : str | None
+        The ``[param_source=...]`` text: ``"linear"`` (the default when
+        ``None``), ``"mlp"``, ``"mlp(64, 32)"``, ``"identity"``,
+        ``"self_attention"``, or ``"positions(<max_length>)"``.
+    activation : FunctionActivation | None
+        The nonlinearity between hidden layers, read only by ``mlp``;
+        ``tanh`` when ``None``.
+    heads : int | None
+        The number of attention heads, read only by ``self_attention``;
+        one when ``None``.
+    causal : bool | None
+        Whether self-attention is causally masked, which
+        ``self_attention`` requires and no other source reads.
+
+    Returns
+    -------
+    ParamSource
+        A `LinearSource`, `MLPSource`, `IdentitySource`,
+        `SelfAttentionSource`, or `PositionSource`.
+
+    Raises
+    ------
+    ValueError
+        If the kind is not a learned-function source, an option is given
+        to a source that does not read it, the activation is unknown, an
+        identity or position source changes the width, self-attention
+        is not told whether it is causal, or a position source does not
+        name its length.
+    """
+    kind, kwargs = _split_source_option(option_value)
+    if kind not in FUNCTION_SOURCE_KINDS:
+        raise ValueError(
+            f"a learned function's param_source is one of "
+            f"{sorted(FUNCTION_SOURCE_KINDS)}, not {kind!r}"
+        )
+    if activation is not None and kind not in _HIDDEN_LAYER_KINDS:
+        raise ValueError(
+            f"activation is read by the hidden layers of an mlp source; the "
+            f"{kind!r} source has none, so select param_source=mlp or drop "
+            f"the activation"
+        )
+    if activation is not None and activation not in FUNCTION_ACTIVATIONS:
+        raise ValueError(
+            f"unknown activation {activation!r}; expected one of "
+            f"{sorted(FUNCTION_ACTIVATIONS)}"
+        )
+    for option, given in (("heads", heads), ("causal", causal)):
+        if given is not None and kind != "self_attention":
+            raise ValueError(
+                f"{option} is read by a self_attention source; the {kind!r} "
+                f"source does not attend, so drop {option}"
+            )
+    if not isinstance(domain, ContinuousSpace):
+        raise ValueError(
+            f"a learned function maps real coordinates, but its domain "
+            f"{domain!s} is not a continuous space"
+        )
+    if kind == "identity" and int(domain.dim) != int(param_dim):
+        raise ValueError(
+            f"an identity source passes its {domain.dim} input coordinates "
+            f"through unchanged, so it cannot write {param_dim}; select a "
+            f"learned source (linear or mlp)"
+        )
+    if kind == "self_attention":
+        if kwargs:
+            raise ValueError(
+                "self_attention takes no arguments; give the head count as "
+                "the heads option, as in heads=4"
+            )
+        if causal is None:
+            raise ValueError(
+                "self_attention is causal or not by declaration: add "
+                "causal=true for each position to attend to itself and the "
+                "positions before it, or causal=false for every position"
+            )
+        return SelfAttentionSource(
+            int(domain.dim), int(param_dim), 1 if heads is None else int(heads), causal
+        )
+    if kind == "positions":
+        length = kwargs.get("hidden_dims")
+        if (
+            set(kwargs) != {"hidden_dims"}
+            or not isinstance(length, tuple)
+            or (len(length) != 1)
+        ):
+            raise ValueError(
+                "positions takes the number of positions its table holds, the "
+                "longest sequence it reads, as in positions(64)"
+            )
+        if int(domain.dim) != int(param_dim):
+            raise ValueError(
+                f"a position table adds to the {domain.dim} coordinates of each "
+                f"row, so it cannot write {param_dim}"
+            )
+        return PositionSource(int(domain.dim), int(length[0]))
+    if kind == "mlp":
+        kwargs["activation"] = FUNCTION_ACTIVATIONS[activation or "tanh"]
+    return make_param_source(domain, param_dim, kind=kind, **kwargs)
+
+
 __all__ = [
     "AttentionSource",
+    "FunctionActivation",
+    "function_source",
     "ComposeSource",
     "EmbeddingSource",
     "FunctionSource",
@@ -480,6 +844,8 @@ __all__ = [
     "LookupSource",
     "MLPSource",
     "ParamSource",
+    "PositionSource",
+    "SelfAttentionSource",
     "make_param_source",
     "param_source_from_option",
 ]

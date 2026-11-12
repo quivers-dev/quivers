@@ -68,6 +68,7 @@ import torch
 import torch.nn as nn
 
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.subsample import active_subsets
 from quivers.inference.estimators import (
     DoublyReparameterized,
     GradientEstimator,
@@ -118,6 +119,45 @@ class Objective(nn.Module, ABC):
 # ---------------------------------------------------------------------------
 # Multi-particle bookkeeping
 # ---------------------------------------------------------------------------
+
+
+def _check_subsampling(objective: str, power: float | None, guide: Guide) -> None:
+    """Admit a subsampled plate only where the estimate stays unbiased.
+
+    Under a [`subsample`][quivers.effects.subsample] block the model's
+    log joint, and the guide's density of a latent in the plate, are
+    unbiased estimates of their full-data values. An objective linear in
+    them, the ELBO, inherits the unbiasedness for any number of
+    particles; a bound that exponentiates the log weights (IWAE, Renyi,
+    the CUBO) or self-normalises them (RWS) does not.
+
+    Parameters
+    ----------
+    objective : str
+        The objective's name, for the diagnostic.
+    power : float | None
+        The bound's exponent, ``0`` for the ELBO; ``None`` for an
+        objective that is not a power-mean bound.
+    guide : Guide
+        The guide, which must score a subsampled plate's latents by rows.
+
+    Raises
+    ------
+    ValueError
+        If a plate is subsampled and the objective is not the ELBO, or
+        the guide cannot score the subsampled plate's latents by rows.
+    """
+    subsets = active_subsets()
+    if not subsets:
+        return
+    if power != 0.0:
+        plates = ", ".join(repr(name) for name in sorted(subsets))
+        raise ValueError(
+            f"{objective}: the plate(s) {plates} are subsampled, and only an "
+            "objective linear in the log joint stays unbiased under a "
+            "subsampled plate; use ELBO for minibatched SVI"
+        )
+    guide.check_subsampling()
 
 
 def _draw_particles(
@@ -180,6 +220,9 @@ def _draw_particles(
             parameter.requires_grad_(False)
     needs_fixed_log_p = estimator.needs_fixed_log_p(power)
     num_strata: int | None = None
+    guide.observe(observations)
+    if detached_guide is not None:
+        detached_guide.observe(observations)
     for _ in range(num_particles):
         if estimator.fixed_draws:
             fixed = {name: value.detach() for name, value in guide.rsample(x).items()}
@@ -277,6 +320,7 @@ class _PowerMeanBound(Objective):
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
+        _check_subsampling(type(self).__name__, self.power, guide)
         particles = _draw_particles(
             model,
             guide,
@@ -645,6 +689,7 @@ class ChiVI(Objective):
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
+        _check_subsampling("ChiVI", None, guide)
         particles = _draw_particles(
             model,
             guide,
@@ -720,9 +765,11 @@ class RWS(Objective):
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
     ) -> torch.Tensor:
+        _check_subsampling("RWS", None, guide)
         log_p_parts: list[torch.Tensor] = []
         log_q_parts: list[torch.Tensor] = []
         log_weight_parts: list[torch.Tensor] = []
+        guide.observe(observations)
         for _ in range(self.num_particles):
             for draw in guide.rsample_strata(x):
                 stratum_log_weight = draw.log_weight

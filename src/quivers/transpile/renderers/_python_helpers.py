@@ -467,14 +467,18 @@ _LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
     },
 }
 
-#: ``(stack, convert)``: how a list literal becomes an array on the
-#: targets whose arithmetic reads a Python list as a sequence rather
-#: than a vector (`[1.0, 2.0] * mu` repeats or raises on torch and JAX):
-#: each entry is converted to an array and the entries stacked. PyMC
-#: and TensorFlow convert a list operand of their arithmetic themselves.
-_LIST_STACK_SYMBOLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+#: ``(stack, convert)``: how a list literal becomes an array. Python
+#: arithmetic reads a list as a sequence rather than a vector (`[1.0,
+#: 2.0] * mu` repeats or raises, and the product of two lists raises on
+#: every target), so the entries are stacked into the target's array,
+#: each first converted where the stack refuses a Python number
+#: (`convert`); PyTensor's and TensorFlow's stacks promote a number
+#: themselves.
+_LIST_STACK_SYMBOLS: dict[str, tuple[tuple[str, ...], tuple[str, ...] | None]] = {
     "pyro": (("torch", "stack"), ("torch", "as_tensor")),
     "numpyro": (("jnp", "stack"), ("jnp", "asarray")),
+    "pymc": (("pymc", "math", "stack"), None),
+    "edward2": (("tf", "stack"), None),
 }
 
 #: The array constructor each target's pointwise binary call converts its
@@ -491,6 +495,35 @@ _POINTWISE_OPERAND_SYMBOLS: dict[str, tuple[str, ...]] = {
 #: symbolic expression, such as a pointwise ``max`` in index arithmetic:
 #: a Python list or a NumPy array cannot be indexed by a tensor.
 _PYMC_TENSOR: tuple[str, ...] = ("pymc", "pytensorf", "pt", "as_tensor_variable")
+
+
+def _reads_a_name(expr: LetExprNode) -> bool:
+    """Whether an expression reads a bound name anywhere.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        ``False`` for an expression of literals alone, which the
+        emitted program computes as a Python number or Boolean.
+    """
+    if isinstance(expr, LetExprVar):
+        return True
+    if isinstance(expr, LetExprBinOp):
+        return _reads_a_name(expr.left) or _reads_a_name(expr.right)
+    if isinstance(expr, LetExprUnaryOp):
+        return _reads_a_name(expr.operand)
+    if isinstance(expr, LetExprCall):
+        return any(_reads_a_name(argument) for argument in expr.args)
+    if isinstance(expr, LetExprIndex):
+        return True
+    if isinstance(expr, LetExprList):
+        return any(_reads_a_name(item) for item in expr.items)
+    return False
 
 
 def _symbolic_index(expr: LetExprNode) -> bool:
@@ -518,6 +551,12 @@ def _symbolic_index(expr: LetExprNode) -> bool:
         )
     return False
 
+
+#: The comparison operators, which Python spells as QVR does.
+_PY_COMPARISONS: frozenset[str] = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+#: QVR's Boolean connectives as the elementwise Python operators.
+_PY_LOGICAL: dict[str, str] = {"&&": "&", "||": "|"}
 
 #: Eager builtin names come from the same capability registry as the compiler.
 _MATH_BUILTIN_NAMES = EAGER_BUILTIN_NAMES
@@ -800,14 +839,33 @@ def render_let_expr_python(
         v = ctx.v(ctx.fresh("str"), "string")
         ctx.literal(v, json.dumps(expr.value))
         return v
+    if isinstance(expr, LetExprBinOp) and expr.op in _PY_COMPARISONS:
+        # A comparison is Python's `comparison_operator`, whose operator
+        # field is plural (`operators`) because Python chains them; each
+        # array library compares entry by entry.
+        c = ctx.v(ctx.fresh("cmp"), "comparison_operator")
+        ctx.constraint(c, "field:operators", expr.op)
+        ctx.constraint(c, "chose-alt-fingerprint", expr.op)
+        ctx.e(
+            c, _render_python_operand(ctx, expr.left, index_slot=index_slot), "child_of"
+        )
+        ctx.e(
+            c,
+            _render_python_operand(ctx, expr.right, index_slot=index_slot),
+            "child_of",
+        )
+        return c
     if isinstance(expr, LetExprBinOp):
         # Python tree-sitter's `binary_operator` has CHOICE alts per
         # operator (`+`, `-`, `*`, `**`, etc.). The walker discriminates
         # via the `field:operator` constraint on the binary_operator
-        # vertex itself; no separate operator vertex is needed.
+        # vertex itself; no separate operator vertex is needed. QVR's
+        # `&&` and `||` act entry by entry, which on Booleans and on
+        # Boolean arrays alike is Python's `&` and `|`.
+        op: str = _PY_LOGICAL[expr.op] if expr.op in _PY_LOGICAL else expr.op
         b = ctx.v(ctx.fresh("bop"), "binary_operator")
-        ctx.constraint(b, "field:operator", expr.op)
-        ctx.constraint(b, "chose-alt-fingerprint", expr.op)
+        ctx.constraint(b, "field:operator", op)
+        ctx.constraint(b, "chose-alt-fingerprint", op)
         ctx.e(
             b,
             _render_python_operand(ctx, expr.left, index_slot=index_slot),
@@ -887,10 +945,23 @@ def render_let_expr_python(
             or (pointwise and len(expr.args) == 2)
             else None
         )
-        for a in expr.args:
+        for position, a in enumerate(expr.args):
             rendered = render_let_expr_python(ctx, a)
             if operand is not None:
                 rendered = call(ctx, attribute(ctx, operand), positional=(rendered,))
+            elif (
+                ctx.target == "pymc"
+                and expr.func == "select"
+                and position == 0
+                and not _reads_a_name(a)
+            ):
+                # PyTensor refuses a Python Boolean as a tensor, and a
+                # comparison of numbers alone (a factor binder, unrolled,
+                # against a bound) is one; NumPy's array of it is
+                # accepted.
+                rendered = call(
+                    ctx, attribute(ctx, ("np", "asarray")), positional=(rendered,)
+                )
             ctx.e(args, rendered, "child_of")
         # A reducing primitive (``sum``, ``mean``, ...) collapses the
         # last axis of its argument. The renamed callee already targets
@@ -968,7 +1039,7 @@ def render_let_expr_python(
         stack = _LIST_STACK_SYMBOLS.get(ctx.target)
         for item in expr.items:
             rendered = render_let_expr_python(ctx, item)
-            if stack is not None:
+            if stack is not None and stack[1] is not None:
                 rendered = call(ctx, attribute(ctx, stack[1]), positional=(rendered,))
             ctx.e(lst, rendered, "child_of")
         if stack is None or not expr.items:
@@ -1431,9 +1502,13 @@ def _build_stacked_python(
 
 
 def _render_factor_python(ctx: PyCtx, expr: LetExprFactor) -> str:
-    """Unroll a `LetExprFactor` into a Python list literal.
+    """Unroll a `LetExprFactor` into the target's array.
 
-    Cases form (single binder, body=None): emit `[case_0, case_1,
+    A factor denotes a tensor wherever it appears, an operand of
+    arithmetic included, so it is stacked into the target's array rather
+    than left a Python list, which ``+`` would concatenate.
+
+    Cases form (single binder, body=None): stack `[case_0, case_1,
     ...]` in label order. Uniform-body form (one or more binders):
     substitute each binder for its 0-indexed integer value (Python
     arrays are 0-based, matching QVR's surface convention) and
@@ -1453,11 +1528,20 @@ def _render_factor_python(ctx: PyCtx, expr: LetExprFactor) -> str:
                 ],
             )
         ordered = sorted(expr.cases, key=lambda c: c.label)
-        items = tuple(render_let_expr_python(ctx, c.value) for c in ordered)
-        return _emit_python_list(ctx, items)
+        element = _PY_STACK_ELEMENT_SYMBOLS.get(ctx.target)
+        items: list[str] = []
+        for case in ordered:
+            vid = render_let_expr_python(ctx, case.value)
+            if element is not None:
+                vid = call(ctx, attribute(ctx, element), positional=(vid,))
+            items.append(vid)
+        stack = _target_stack_symbol(ctx, expr.binders[0].var)
+        return call(
+            ctx, attribute(ctx, stack), positional=(python_list(ctx, tuple(items)),)
+        )
     if expr.body is not None and not expr.cases:
         sizes = tuple(_card_for(ctx, b) for b in expr.binders)
-        return _build_nested_python(ctx, expr.binders, sizes, expr.body, ())
+        return _build_stacked_python(ctx, expr.binders, sizes, expr.body, ())
     raise UnsupportedConstruct(
         "qvr-python-helper",
         [
@@ -1498,34 +1582,6 @@ def _card_for(ctx: PyCtx, binder: LetFactorBinder) -> int:
             f"{type(idx).__name__}; only TypeName binders unroll"
         ],
     )
-
-
-def _build_nested_python(
-    ctx: PyCtx,
-    binders: tuple[LetFactorBinder, ...],
-    sizes: tuple[int, ...],
-    body: LetExprNode,
-    fixed: tuple[int, ...],
-) -> str:
-    """Recursively materialise the nested Python list tower for the
-    uniform-body factor form."""
-    if len(fixed) == len(binders):
-        subst = body
-        for binder, value in zip(binders, fixed, strict=True):
-            literal = LetExprLiteral(value=value, integral=True)
-            subst = _substitute_let_expr(
-                subst,
-                binder.var,
-                index_value=literal,
-                scalar_value=literal,
-            )
-        return render_let_expr_python(ctx, subst)
-    level = len(fixed)
-    items = tuple(
-        _build_nested_python(ctx, binders, sizes, body, fixed + (i,))
-        for i in range(sizes[level])
-    )
-    return _emit_python_list(ctx, items)
 
 
 # ---------------------------------------------------------------------------

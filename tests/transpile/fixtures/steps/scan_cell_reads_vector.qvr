@@ -1,0 +1,20 @@
+# Exercises a scan over a program cell that reads a plated vector the
+# scanning program draws before the scan: the cell reads the binding at
+# its own type, one entry per hidden unit.
+object In : Real 2
+object Hid : FinSet 2
+object State : Real 2
+
+program cell(x_t, h_prev) : In * State -> State
+    let m = b * h_prev + x_t
+    sample s <- Normal(loc=m, scale=0.5)
+    observe o <- Normal(loc=s, scale=0.3)
+    return s
+
+define run_all = scan(cell)
+
+program prog : In -> State
+    sample b : Hid <- Normal(loc=0.0, scale=0.5)
+    sample h <- run_all
+    return h
+export prog

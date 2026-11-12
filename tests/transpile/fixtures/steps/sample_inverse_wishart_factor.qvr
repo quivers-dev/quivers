@@ -1,0 +1,8 @@
+# An inverse Wishart whose draw is the inverse of a Wishart with a
+# non-identity scale factor.
+object Dim : FinSet 2
+object One : FinSet 1
+program inverse_wishart_factor : One -> One
+    sample sigma : Dim <- InverseWishart(df=5.0, scale_tril=[[1.0, 0.0], [0.3, 0.8]])
+    return sigma
+export inverse_wishart_factor

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import torch.nn as nn
+from quivers.dsl.markov_chains import chain_cells
+from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.continuous.morphisms import AnySpace
 from quivers.continuous.programs import MonadicProgram
@@ -32,6 +34,8 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     ObjectExpr,
 )
+from quivers.dsl.latent_weights import LatentWeightsError, expand_latent_weights
+from quivers.dsl.program_elaboration import LATENT_WEIGHT_HEADS
 from quivers.dsl.compiler._prelude import (
     CompileError,
     _CompiledContraction,
@@ -52,8 +56,38 @@ from quivers.dsl.qiec_lowering import (
     non_qiec_projection,
 )
 from quivers.qiec import QiecModule
+from quivers.qiec.terms import PlateAxis
+from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
+
+
+def _plate_axes(
+    batch: tuple[PlateAxis, ...],
+) -> tuple[tuple[str, int | None], ...]:
+    """A checked site's batch axes as ``(plate, extent)`` pairs.
+
+    Parameters
+    ----------
+    batch : tuple[PlateAxis, ...]
+        The site's batch axes, outermost first.
+
+    Returns
+    -------
+    tuple[tuple[str, int | None], ...]
+        One pair per axis: its extent when the program fixes it as a
+        number, ``None`` when the program leaves it to its data or its
+        static arguments.
+    """
+    return tuple(
+        (
+            axis.name,
+            axis.size.value
+            if isinstance(axis.size, IndexLiteral) and isinstance(axis.size.value, int)
+            else None,
+        )
+        for axis in batch
+    )
 
 
 class Compiler(
@@ -100,6 +134,10 @@ class Compiler(
         self._qiec_source: Module | None = None
         self._qiec_module_name = module_name
         self._qiec_file_path = file_path
+        try:
+            module = expand_latent_weights(module, LATENT_WEIGHT_HEADS)
+        except LatentWeightsError as error:
+            raise CompileError(str(error), error.line, error.col) from error
         if lower_qiec and has_qiec_surface(module):
             self._qiec_source = module
             module = non_qiec_projection(module)
@@ -153,6 +191,9 @@ class Compiler(
         self._scan_step_declarations: dict[str, ProgramDecl] = {}
         self._scan_step_programs: dict[str, MonadicProgram] = {}
         self._scan_initial_states: dict[str, nn.Parameter] = {}
+        # The network of each latent-weight kernel, which a draw through
+        # the kernel applies at the run's drawn weights.
+        self._latent_networks: dict[str, LearnedFunction] = {}
 
     @property
     def categories(self) -> list[str]:
@@ -465,6 +506,9 @@ class Compiler(
             target.host_data_shared = frozenset(
                 parameter.name for parameter in entry.parameters if parameter.per_row
             )
+            target.site_plates = {
+                site.name: _plate_axes(site.batch) for site in entry.sites
+            }
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.
@@ -564,6 +608,10 @@ class Compiler(
             self._compile_morphism(stmt)
         elif isinstance(stmt, ProgramDecl):
             self._program_decls[stmt.name] = stmt
+            if stmt.name in chain_cells(self._module):
+                # The cell of a marginalized chain has no value of its
+                # own; the scan that runs it compiles it.
+                return
             self._compile_program(stmt)
         elif isinstance(stmt, ContractionDecl):
             self._compile_contraction(stmt)

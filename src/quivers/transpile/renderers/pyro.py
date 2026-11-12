@@ -47,6 +47,7 @@ from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprBinOp,
     LetExprCall,
+    LetExprFactor,
     LetExprIndex,
     LetExprList,
     LetExprNode,
@@ -1635,10 +1636,21 @@ def _walk_let_expr_for_indices(
 ) -> None:
     if isinstance(expr, LetExprIndex):
         for idx in expr.indices:
-            if isinstance(idx, LetExprVar) and idx.name in host_ints:
-                found.add(idx.name)
+            # An index is the input itself (`a[idx]`) or an entry of it
+            # (`M[r_idx[n], c_idx[n]]`, a pairwise subscript unrolled).
+            root = idx
+            while isinstance(root, LetExprIndex):
+                root = root.array
+            if isinstance(root, LetExprVar) and root.name in host_ints:
+                found.add(root.name)
             _walk_let_expr_for_indices(idx, host_ints, found)
         _walk_let_expr_for_indices(expr.array, host_ints, found)
+        return
+    if isinstance(expr, LetExprFactor):
+        if expr.body is not None:
+            _walk_let_expr_for_indices(expr.body, host_ints, found)
+        for case in expr.cases:
+            _walk_let_expr_for_indices(case.value, host_ints, found)
         return
     if isinstance(expr, LetExprBinOp):
         _walk_let_expr_for_indices(expr.left, host_ints, found)
@@ -1864,6 +1876,17 @@ _PYRO_TENSOR_SCALARS: frozenset[tuple[str, str]] = frozenset(
 _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
     "Categorical": {
         "logits": "logits",
+    },
+    **{
+        family: {"logits": "logits"}
+        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
+    },
+    **{
+        family: {
+            "precision_matrix": "precision_matrix",
+            "scale_tril": "scale_tril",
+        }
+        for family in ("MultivariateNormal", "Wishart")
     },
     "BetaBinomial": {
         "total_count": "total_count",

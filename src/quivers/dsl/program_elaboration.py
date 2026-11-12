@@ -21,10 +21,12 @@ back to the groups.
 
 from __future__ import annotations
 
+import didactic.api as dx
+
 import math
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from quivers.dsl.ast_nodes import (
@@ -41,12 +43,14 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprBinOp,
     LetExprCall,
+    LetExprFactor,
     LetExprIndex,
     LetExprLambda,
     LetExprLiteral,
     LetExprMethodCall,
     LetExprNode,
     LetExprString,
+    LetExprTuple,
     LetExprUnaryOp,
     LetExprVar,
     LetStep,
@@ -106,6 +110,7 @@ from quivers.qiec.identifiers import (
     ComputationId,
     HandlerId,
     SiteProvenance,
+    SourceOrigin,
 )
 from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder
 from quivers.qiec.module import NamedComputation, NamedEffectInstance
@@ -119,8 +124,12 @@ from quivers.qiec.substitution import (
     StaticSubstitution,
     instantiate_operation,
     instantiate_telescope,
+    substitute_computation,
+    substitute_index,
+    substitute_plate,
     substitute_row,
     substitute_type,
+    substitute_value,
 )
 from quivers.qiec.terms import (
     AffineMap,
@@ -168,7 +177,13 @@ from quivers.qiec.types import (
     product_type,
     render_static,
 )
-from quivers.dsl.composite_lets import expand_composite_lets, scan_let_call
+from quivers.dsl.composite_lets import (
+    expand_composite_lets,
+    ScanCall,
+    is_learned_scan_init,
+    positions_let_call,
+    scan_let_call,
+)
 from quivers.dsl.family_schemas import (
     PARAMETER_ALIASES,
     family_parameterizations,
@@ -177,9 +192,12 @@ from quivers.dsl.family_schemas import (
 from quivers.dsl.let_expr_traversal import (
     free_let_names,
     let_expr_children,
+    map_let_expr,
     walk_let_expr,
 )
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
+from quivers.continuous.deterministic import learned_function_draw_message
+from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
     instantiate_program,
@@ -190,11 +208,18 @@ from quivers.dsl.pure_builtins import (
     _ROWWISE,
     HOST_ONLY_BUILTINS,
     PURE_BUILTINS,
+    SHAPE_BUILTINS,
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.dsl.markov_chains import chain_cells, markov_cell
+from quivers.dsl.sequence_functions import (
+    _SequenceFunctionElaboration,
+    sequence_source_kind,
+)
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
+    _step_value_names,
     build_let_table,
     morphism_table,
     resolve_step_dist,
@@ -220,6 +245,9 @@ MARGINAL_HANDLERS: dict[tuple[bool, str], str] = {
     for grouped in (False, True)
     for reduction in MARGINAL_REDUCTIONS
 }
+#: The name of the handler enumerating a marginalized chain's next state,
+#: which answers the weighted shots one per support value.
+ENUMERATE_TABLE_HANDLER = f"{ENUMERATE_HANDLER}_table"
 #: The name of the handler collecting a marginalization scope's weights.
 COLLECT_HANDLER = "collect_marginal"
 #: The canonical instance names a program's requests address.
@@ -292,6 +320,8 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     ),
     "Exponential": (("rate", "softplus"),),
     "Gamma": (("concentration", "softplus_shifted"), ("rate", "softplus")),
+    "LogGamma": (("concentration", "softplus"), ("rate", "softplus")),
+    "LogitBeta": (("concentration1", "softplus"), ("concentration0", "softplus")),
     "Chi2": (("df", "softplus_shifted"),),
     "HalfCauchy": (("scale", "softplus"),),
     "HalfNormal": (("scale", "softplus"),),
@@ -312,6 +342,12 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "Categorical": (("logits", "identity"),),
 }
 
+#: The number of parameter heads of each family whose kernel a network
+#: supplies, which sizes a latent-weight network's output layer.
+LATENT_WEIGHT_HEADS: dict[str, int] = {
+    family: len(heads) for family, heads in _CONDITIONAL_HEADS.items()
+}
+
 #: Families whose kernel head is one row of logits over the codomain's
 #: elements rather than one coordinate per real dimension.
 _LOGIT_HEAD_FAMILIES: frozenset[str] = frozenset({"Bernoulli", "Categorical"})
@@ -319,6 +355,11 @@ _LOGIT_HEAD_FAMILIES: frozenset[str] = frozenset({"Bernoulli", "Categorical"})
 #: Families whose sample is an index into their own alphabet, with the
 #: argument naming the alphabet.
 _CLASS_INDEX_FAMILIES: dict[str, str] = {"Categorical": "probs"}
+
+_MATRIX_CONSTRAINTS: frozenset[str] = frozenset({"lower_cholesky", "positive_definite"})
+"""Parameter constraints a matrix meets only as a whole: a broadcast scalar
+is no Cholesky factor or covariance, so a free name filling such a
+parameter is a matrix even beside a plate's event axes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,8 +487,34 @@ def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.add(scan[1])
+                found.add(scan.sequence)
     return frozenset(found)
+
+
+def _bound_names(step: ProgramStep) -> frozenset[str]:
+    """The names a step binds, with those its scope binds.
+
+    Parameters
+    ----------
+    step : ProgramStep
+        The step.
+
+    Returns
+    -------
+    frozenset[str]
+        The variables of a draw or observation, the name of a let, call,
+        or score, and a block's latent with every name its scope binds.
+    """
+    if isinstance(step, SampleStep | ObserveStep):
+        return frozenset(step.vars)
+    if isinstance(step, LetStep | CallStep | ScoreStep):
+        return frozenset({step.name})
+    if isinstance(step, MarginalizeStep):
+        found = {step.var}
+        for inner in step.scope:
+            found |= _bound_names(inner)
+        return frozenset(found)
+    return frozenset()
 
 
 def _own_site_labels(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
@@ -536,7 +603,7 @@ def _callees(steps: tuple[ProgramStep, ...]) -> tuple[str, ...]:
         elif isinstance(step, LetStep):
             scan = scan_let_call(step.value)
             if scan is not None:
-                found.append(scan[0])
+                found.append(scan.step)
     return tuple(found)
 
 
@@ -737,6 +804,28 @@ def _option_entry(options: tuple[OptionEntry, ...], key: str) -> OptionValue | N
     return None
 
 
+def _source_kind(morphism: MorphismDecl) -> str:
+    """The network kind a morphism's ``param_source`` option names.
+
+    Parameters
+    ----------
+    morphism : MorphismDecl
+        The morphism.
+
+    Returns
+    -------
+    str
+        The kind (``linear``, ``mlp``, ``identity``, ...), ``linear``
+        when the option is absent.
+    """
+    source = _option_entry(morphism.options, "param_source")
+    if isinstance(source, OptionCall):
+        return source.func
+    if isinstance(source, OptionName):
+        return source.value
+    return "linear"
+
+
 def _option_value(options: tuple[OptionEntry, ...], key: str) -> str | float | None:
     """Read a scalar option off an option block.
 
@@ -915,15 +1004,21 @@ def _index_names(expr: LetExprNode) -> list[str]:
     Returns
     -------
     list[str]
-        Names appearing directly as an index, in order.
+        Names whose elements serve as an index, in order: a name
+        written as an index (``E[tokens]``), and a name gathered from in
+        an index position (``E[tokens[q], k]``), whose gathered entries
+        are the index values.
     """
     found: list[str] = []
     for node in walk_let_expr(expr):
         if not isinstance(node, LetExprIndex):
             continue
         for index in node.indices:
-            if isinstance(index, LetExprVar) and index.name not in found:
-                found.append(index.name)
+            source = index
+            while isinstance(source, LetExprIndex):
+                source = source.array
+            if isinstance(source, LetExprVar) and source.name not in found:
+                found.append(source.name)
     return found
 
 
@@ -996,6 +1091,814 @@ type _Shape = tuple[IndexTerm, ...]
 """The dimensions of a value, outermost first; empty for a scalar."""
 
 
+def _tie_extents(
+    parameter: TypeExpr, bound: TypeExpr, extents: dict[str, IndexTerm]
+) -> None:
+    """Tie a callee's open extents to the extents of a value passed to it.
+
+    Parameters
+    ----------
+    parameter : TypeExpr
+        The callee's parameter type, which may mention its index
+        variables.
+    bound : TypeExpr
+        The type of the value the caller passes.
+    extents : dict[str, IndexTerm]
+        The callee's index variables tied so far, extended in place with
+        each variable the parameter's dimensions name, taken from the
+        passed value's dimension at the same position.
+    """
+    expected = tensor_shape(parameter)
+    actual = tensor_shape(bound)
+    if expected is None or actual is None or len(expected[1]) != len(actual[1]):
+        return
+    for wanted, given in zip(expected[1], actual[1], strict=True):
+        if isinstance(wanted, IndexVariable) and wanted.name not in extents:
+            extents[wanted.name] = given
+
+
+def _specialized_scan_step(
+    elaborator: _Elaborator,
+    step_name: str,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> str:
+    """The scan step specialized to the bindings its cell reads.
+
+    A program cell is elaborated on its own, so a name it reads
+    without binding it is typed from its uses there, as host data: a
+    scalar for a bare use, a table of open extents for a subscripted
+    one. When the scanning program binds that name before the scan,
+    the cell reads the binding, so it is elaborated again with each
+    such name at its binding's type, under a name of its own, and the
+    step program calls that specialization.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    step_name : str
+        The step program the scan runs.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's state, whose helpers gain the
+        specialized step and cell.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    str
+        The specialized step program's name, or ``step_name`` when no
+        binding of the scanning program differs from the type the
+        cell reads its name at.
+    """
+    step_decl = elaborator._program_declarations.get(step_name)
+    if step_decl is None:
+        return step_name
+    suffix = f"__in_{state.declaration.name}_{node.name}"
+    draws = list(step_decl.draws)
+    changed = False
+    for index, draw in enumerate(step_decl.draws):
+        if not isinstance(draw, CallStep):
+            continue
+        cell_decl = elaborator._program_declarations.get(draw.call.callee)
+        cell_entry = next(
+            (item for item in elaborator.entries if item.name == draw.call.callee), None
+        )
+        if cell_decl is None or cell_entry is None:
+            continue
+        pins: dict[str, TypeExpr] = {}
+        for parameter in cell_entry.parameters:
+            if parameter.role in ("domain", "observation"):
+                continue
+            binding = scope.lookup(parameter.name)
+            if binding is not None and binding.type != parameter.type:
+                pins[parameter.name] = binding.type
+        if not pins:
+            continue
+        cell_name = f"{cell_decl.name}{suffix}"
+        state.helpers.extend(
+            _elaborate_nested_program(elaborator, cell_decl.with_(name=cell_name), pins)
+        )
+        draws[index] = draw.with_(call=draw.call.with_(callee=cell_name))
+        changed = True
+    if not changed:
+        return step_name
+    specialized = step_decl.with_(name=f"{step_name}{suffix}", draws=tuple(draws))
+    state.helpers.extend(_elaborate_nested_program(elaborator, specialized, {}))
+    return specialized.name
+
+
+def _elaborate_nested_program(
+    elaborator: _Elaborator, declaration: ProgramDecl, pins: Mapping[str, TypeExpr]
+) -> tuple[NamedComputation, ...]:
+    """Elaborate a program while another program is being elaborated.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    declaration : ProgramDecl
+        The program.
+    pins : Mapping[str, TypeExpr]
+        Types fixed for free names the program reads.
+
+    Returns
+    -------
+    tuple[NamedComputation, ...]
+        The program's computation and its helpers.
+    """
+    saved_state = elaborator._program_state
+    saved_macros = elaborator._lambda_macros
+    saved_pins = elaborator._pinned_types
+    elaborator._lambda_macros = {}
+    elaborator._pinned_types = dict(pins)
+    elaborator._program_declarations[declaration.name] = declaration
+    try:
+        return elaborator._elaborate_program(declaration)
+    finally:
+        elaborator._program_state = saved_state
+        elaborator._lambda_macros = saved_macros
+        elaborator._pinned_types = saved_pins
+
+
+def _scan_step_inputs(
+    elaborator: _Elaborator,
+    step_name: str,
+    step_entry: ProgramEntry,
+    signature: ComputationSignature,
+    extent: IndexTerm,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> tuple[list[Local], list[bool], tuple[StaticArgument, ...], StaticSubstitution]:
+    """The inputs a scan passes its step after the entry and the state.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    step_name : str
+        The step program the scan runs at every position.
+    step_entry : ProgramEntry
+        Its entry, whose parameters after the first two are passed.
+    signature : ComputationSignature
+        Its signature, whose telescope the passed inputs fix.
+    extent : IndexTerm
+        The number of positions the scan runs over.
+    scope : _Scope
+        The scanning program's scope at the scan, which gains the
+        inputs it declares.
+    state : _ProgramState
+        The scanning program's state.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    tuple[list[Local], list[bool], tuple[StaticArgument, ...], StaticSubstitution]
+        The scanning program's local passed for each parameter; for
+        each, whether it is a sequence of observations read at the
+        position; the step's static arguments; and the substitution
+        fixing the step's open extents.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If the scanning program binds a name the step observes at
+        every position, or no input fixes one of the step's open
+        extents.
+    """
+    # The step's remaining inputs pass through the recurrence from
+    # the scanning program. A name the step reads without binding
+    # it is the scanning program's binding of that name before the
+    # scan, else an input of the scanning program. An observation
+    # the step scores is one observation per position: the scanning
+    # program takes the sequence of them, and position ``t`` reads
+    # its ``t``-th entry.
+    # The step's own open extents (a table it reads as host data) are
+    # tied to extents of the scanning program, from the binding the
+    # scanning program passes or from a fresh input of its own.
+    extents: dict[str, IndexTerm] = {}
+    passed: list[Local] = []
+    positional: list[bool] = []
+    for parameter in step_entry.parameters[2:]:
+        existing = scope.lookup(parameter.name)
+        if existing is not None:
+            _tie_extents(parameter.type, existing.type, extents)
+        if parameter.role == "observation":
+            if scope.lookup(parameter.name) is not None:
+                elaborator._fail(
+                    node,
+                    f"the scan step {step_name!r} observes "
+                    f"{parameter.name!r} at every position, so the "
+                    f"scanning program cannot also bind {parameter.name!r}",
+                    code="qiec-program",
+                )
+            observed = elaborator._passed_input_type(
+                parameter.name, parameter.type, state, extents
+            )
+            observed_shape = tensor_shape(observed)
+            sequence_type: TypeExpr = (
+                tensor_type(observed, (extent,))
+                if observed_shape is None
+                else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
+            )
+            passed.append(
+                elaborator._declare_parameter(
+                    parameter.name,
+                    sequence_type,
+                    parameter.role,
+                    scope,
+                    state,
+                    node,
+                )
+            )
+            positional.append(True)
+            continue
+        if existing is None:
+            existing = elaborator._declare_parameter(
+                parameter.name,
+                elaborator._passed_input_type(
+                    parameter.name, parameter.type, state, extents
+                ),
+                parameter.role,
+                scope,
+                state,
+                node,
+            )
+        passed.append(existing)
+        positional.append(False)
+    unresolved = [
+        binder.name for binder in signature.telescope if binder.name not in extents
+    ]
+    if unresolved:
+        elaborator._fail(
+            node,
+            f"scan steps with {step_name!r}, whose open extents "
+            f"{', '.join(unresolved)} no input of the scanning program fixes",
+            code="qiec-program",
+        )
+    step_statics: tuple[StaticArgument, ...] = tuple(
+        extents[binder.name] for binder in signature.telescope
+    )
+    substitution = StaticSubstitution(
+        indices=tuple(
+            (binder.name, extents[binder.name]) for binder in signature.telescope
+        )
+    )
+    return passed, positional, step_statics, substitution
+
+
+def _elaborate_marginal_chain(
+    elaborator: _Elaborator,
+    scan: ScanCall,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> None:
+    """Elaborate a marginalized chain to its log marginal likelihood.
+
+    The scan's cell returns the latent it marginalizes, so the chain
+    ``z_0 ~ init``, ``z_t ~ cell's transition from z_{t-1}``, with
+    each position's observations scored at ``z_t``, has every state
+    summed out. The cell elaborates to a row: the program that, at
+    an entry and a previous state, binds its block's latent to the
+    block's weighted shots, ``log p(z_t = j | z_{t-1}) + log p(obs_t
+    | z_t = j)`` for every state ``j``, enumerated under the table
+    handler. A recursion over the positions carries the log filtering
+    distribution ``log p(z_t | obs_{1..t})`` and adds each position's
+    evidence, which is the forward algorithm in log space::
+
+        table_t[j] = logsumexp_i(carried[i] + row(x_t, i)[j])
+        evidence_t = logsumexp_j(table_t[j])
+        carried'   = table_t - evidence_t
+
+    starting from ``log init``, and the sum of the evidences is the
+    log marginal likelihood, bound to the step's name and scored.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    scan : ScanCall
+        The marginalized scan: its cell, its sequence, and the name
+        of the first state's distribution.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's accumulating state.
+    node : LetStep
+        The scan's step.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If the cell is not a chain step the forward algorithm sums
+        out, its state object has no literal extent, the sequence or
+        the first state's distribution is not bound, or the entries
+        are not what the cell reads.
+    """
+    cell_decl = elaborator._program_declarations.get(scan.step)
+    if cell_decl is None:
+        elaborator._fail(
+            node,
+            f"the marginalized chain runs {scan.step!r}, which is not a program",
+            code="qiec-program",
+        )
+    try:
+        cell = markov_cell(cell_decl)
+    except StepResolutionError as error:
+        elaborator._fail(node, "; ".join(error.kinds), code="qiec-program")
+    states = elaborator._object_axis(cell.state_object, node)
+    if not isinstance(states.size, IndexLiteral):
+        elaborator._fail(
+            node,
+            f"the marginalized chain over {cell.name!r} sums states of an "
+            "object with no literal extent",
+            code="qiec-program",
+        )
+    count = int(states.size.value)
+    if scan.init is None or scope.lookup(scan.init) is None:
+        elaborator._fail(
+            node,
+            f"the marginalized chain over {cell.name!r} starts from "
+            f"{scan.init!r}, which the program does not bind before the scan",
+            code="qiec-program",
+        )
+    # The cell reads the scanning program's bindings at their types.
+    own = {cell.entry, cell.previous, cell.latent}
+    for step in cell_decl.draws:
+        own |= _bound_names(step)
+    reads: set[str] = set()
+    for step in cell_decl.draws:
+        reads |= _step_value_names(step)
+    pins = {
+        name: local.type
+        for name in sorted(reads - own)
+        if (local := scope.lookup(name)) is not None
+    }
+    row_name = f"{cell.name}__row__in_{state.declaration.name}_{node.name}"
+    elaborator._markov_rows[row_name] = (cell.latent, cell.entry)
+    try:
+        state.helpers.extend(
+            _elaborate_nested_program(elaborator, cell_decl.with_(name=row_name), pins)
+        )
+    finally:
+        del elaborator._markov_rows[row_name]
+    signature = elaborator.computation_signatures[row_name]
+    row_entry = next(item for item in elaborator.entries if item.name == row_name)
+    table_type = tensor_type(LOG_WEIGHT, (states.size,))
+    if (
+        len(signature.parameters) < 2
+        or signature.parameters[1] != INT
+        or signature.result != table_type
+    ):
+        elaborator._fail(
+            node,
+            f"the cell {cell.name!r} of a marginalized chain does not take "
+            "an entry and a state and weigh each next state",
+            code="qiec-program",
+        )
+    entry_type = signature.parameters[0]
+    local = scope.lookup(scan.sequence)
+    if local is None:
+        elaborator._fail(
+            node,
+            f"the marginalized chain runs over {scan.sequence!r}, which is "
+            "neither bound nor a program input",
+            code="qiec-program",
+        )
+    shape = tensor_shape(local.type)
+    if shape is None or not shape[1]:
+        elaborator._fail(
+            node,
+            f"the marginalized chain runs over {scan.sequence!r}, which is "
+            "not a sequence",
+            code="qiec-program",
+        )
+    extent = shape[1][0]
+    per_position: TypeExpr = (
+        shape[0] if len(shape[1]) == 1 else tensor_type(shape[0], shape[1][1:])
+    )
+    if per_position != entry_type:
+        elaborator._fail(
+            node,
+            f"the marginalized chain feeds {cell.name!r} entries of "
+            f"{render_static(per_position)}, not the "
+            f"{render_static(entry_type)} it reads",
+            code="qiec-program",
+        )
+    passed, positional, row_statics, substitution = _scan_step_inputs(
+        elaborator, row_name, row_entry, signature, extent, scope, state, node
+    )
+    name = f"{state.declaration.name}__{node.name}_chain"
+    if name in elaborator.computation_signatures:
+        elaborator._fail(
+            node,
+            f"chain helper {name!r} is declared twice",
+            code="qiec-program",
+        )
+    mentioned = _index_variables_in((local.type, *(item.type for item in passed)))
+    telescope = tuple(
+        binder for name_, binder in state.extents.items() if name_ in mentioned
+    )
+    statics: tuple[StaticArgument, ...] = tuple(
+        IndexVariable(binder.name, binder.sort) for binder in telescope
+    )
+    filter_type = tensor_type(REAL, (states.size,))
+    visited = Local("__chain_t", INT)
+    sequence = Local("__chain_xs", local.type)
+    carried = Local("__chain_log_filter", filter_type)
+    passed_locals = tuple(Local(f"__chain_{item.name}", item.type) for item in passed)
+    identity = ComputationId.derive(elaborator.source.module_name, "computation", name)
+    helper = ComputationSignature(
+        identity,
+        name,
+        telescope,
+        (INT, local.type, filter_type, *(item.type for item in passed_locals)),
+        REAL,
+        signature.effects,
+    )
+    try:
+        elaborator.registry.register_computation(helper)
+    except (KernelError, TypeError, ValueError) as error:
+        elaborator._fail_kernel(node, error, fallback="qiec-program")
+    elaborator.computation_signatures[name] = helper
+    path = ("programs", state.declaration.name, "chains", node.name)
+    counter = Local("__chain_k", INT)
+    length: Value = Reduction(
+        "sum",
+        Comprehension(
+            counter, extent, LiteralValue(1, INT), tensor_type(INT, (extent,))
+        ),
+        INT,
+    )
+    position = Local("__chain_p", INT)
+    position_value: Value = (
+        elaborator._primitive(
+            "sub_int",
+            (
+                elaborator._primitive(
+                    "sub_int", (length, LiteralValue(1, INT)), node, (*path, "last")
+                ),
+                Var(visited),
+            ),
+            node,
+            (*path, "position"),
+        )
+        if scan.reverse
+        else Var(visited)
+    )
+    entry = Local("__chain_x", entry_type)
+    rows = tuple(Local(f"__chain_row_{index}", table_type) for index in range(count))
+    table = Local("__chain_table", filter_type)
+    evidence = Local("__chain_evidence", REAL)
+    following = Local("__chain_next", filter_type)
+    rest = Local("__chain_rest", REAL)
+    column = Local("__chain_j", INT)
+    # The weight of moving from state i to state j and scoring j's
+    # observations, after the filtered weight of i.
+    moves = TensorValue(
+        tuple(
+            elaborator._primitive(
+                "add_real",
+                (
+                    Gather(Var(carried), LiteralValue(index, INT), REAL),
+                    elaborator._primitive(
+                        "weight_value",
+                        (Gather(Var(row), Var(column), LOG_WEIGHT),),
+                        node,
+                        (*path, "rows", index, "weight"),
+                    ),
+                ),
+                node,
+                (*path, "rows", index, "move"),
+            )
+            for index, row in enumerate(rows)
+        ),
+        filter_type,
+    )
+    recur = Call(
+        identity,
+        name,
+        statics,
+        (
+            elaborator._primitive(
+                "add_int",
+                (Var(visited), LiteralValue(1, INT)),
+                node,
+                (*path, "successor"),
+            ),
+            Var(sequence),
+            Var(following),
+            *(Var(item) for item in passed_locals),
+        ),
+        REAL,
+        signature.effects,
+        _origin_at(elaborator, path, "call", node),
+    )
+    continuation: Computation = Bind(
+        table,
+        Return(
+            Comprehension(
+                column,
+                states.size,
+                Reduction("logsumexp", moves, REAL),
+                filter_type,
+            )
+        ),
+        Bind(
+            evidence,
+            Return(Reduction("logsumexp", Var(table), REAL)),
+            Bind(
+                following,
+                Return(
+                    Comprehension(
+                        column,
+                        states.size,
+                        elaborator._primitive(
+                            "sub_real",
+                            (
+                                Gather(Var(table), Var(column), REAL),
+                                Var(evidence),
+                            ),
+                            node,
+                            (*path, "normalize"),
+                        ),
+                        filter_type,
+                    )
+                ),
+                Bind(
+                    rest,
+                    recur,
+                    Return(
+                        elaborator._primitive(
+                            "add_real",
+                            (Var(evidence), Var(rest)),
+                            node,
+                            (*path, "accumulate"),
+                        )
+                    ),
+                ),
+            ),
+        ),
+    )
+    passed_arguments = tuple(
+        Gather(
+            Var(item),
+            Var(position),
+            substitute_type(parameter.type, substitution),
+        )
+        if per_step
+        else Var(item)
+        for item, per_step, parameter in zip(
+            passed_locals, positional, row_entry.parameters[2:], strict=True
+        )
+    )
+    for index, row in reversed(tuple(enumerate(rows))):
+        continuation = Bind(
+            row,
+            Call(
+                signature.id,
+                signature.name,
+                row_statics,
+                (Var(entry), LiteralValue(index, INT), *passed_arguments),
+                table_type,
+                signature.effects,
+                _origin_at(elaborator, (*path, "rows", index), "call", node),
+            ),
+            continuation,
+        )
+    body: Computation = If(
+        elaborator._primitive(
+            "eq_int", (Var(visited), length), node, (*path, "finished")
+        ),
+        Return(LiteralValue(0.0, REAL)),
+        Bind(
+            position,
+            Return(position_value),
+            Bind(
+                entry,
+                Return(Gather(Var(sequence), Var(position), entry_type)),
+                continuation,
+            ),
+        ),
+    )
+    state.helpers.append(
+        elaborator._checked_computation(
+            helper, (visited, sequence, carried, *passed_locals), body, node, path
+        )
+    )
+    # The log filtering distribution before the first position is the
+    # log of the first state's distribution, minus infinity where it
+    # puts no mass.
+    start = elaborator._step_distribution(
+        SampleStep(
+            vars=(f"{node.name}$start",),
+            morphism="Categorical",
+            args=(DrawArgNamed(parameter="probs", value=DrawArgName(text=scan.init)),),
+            line=node.line,
+            col=node.col,
+        ),
+        scope,
+        state,
+        f"{node.name}$start",
+    )
+    initial = Comprehension(
+        column,
+        states.size,
+        elaborator._primitive(
+            "weight_value",
+            (
+                LogDensity(
+                    start,
+                    Var(column),
+                    _origin_at(elaborator, (*path, "start"), "log-density", node),
+                ),
+            ),
+            node,
+            (*path, "start"),
+        ),
+        filter_type,
+    )
+    marginal = Call(
+        identity,
+        name,
+        statics,
+        (
+            LiteralValue(0, INT),
+            Var(local),
+            initial,
+            *(Var(item) for item in passed),
+        ),
+        REAL,
+        signature.effects,
+        _origin_at(elaborator, path, "call", node),
+    )
+    binder = elaborator._bind_step(scope, node.name, REAL, marginal, node)
+    weight = elaborator._primitive("as_weight", (Var(binder),), node, (*path, "weight"))
+    assert state.score is not None
+    elaborator._add_score(state.score, weight, scope, state, node)
+
+
+def _positions_value(
+    elaborator: _Elaborator,
+    names: tuple[str, ...],
+    scope: _Scope,
+    node: LetStep,
+) -> Comprehension:
+    """Pair sequences position by position: ``$positions(a, b, ...)``.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The elaborator, which reports a refusal.
+    names : tuple[str, ...]
+        The sequences, each bound to a tensor of reals whose leading
+        axis is the positions and whose entries have a literal width
+        (or are scalars).
+    scope : _Scope
+        The scope.
+    node : LetStep
+        The step.
+
+    Returns
+    -------
+    Comprehension
+        The sequence whose entry at each position lays the entries
+        of the sequences there end to end, ``Tensor[Real]([E, w])``
+        for the shared positions ``E`` and the summed width ``w``.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If a name is unbound, is not such a sequence, or the
+        sequences do not share their positions.
+    """
+    extent: IndexTerm | None = None
+    position = Local("__positions_t", INT)
+    entries: list[Value] = []
+    for name in names:
+        local = scope.lookup(name)
+        shape = None if local is None else tensor_shape(local.type)
+        if (
+            local is None
+            or shape is None
+            or shape[0] != REAL
+            or not 1 <= len(shape[1]) <= 2
+            or (len(shape[1]) == 2 and not isinstance(shape[1][1], IndexLiteral))
+        ):
+            elaborator._fail(
+                node,
+                f"the branches paired position by position must each be a "
+                f"sequence of real states; {name!r} is not",
+                code="qiec-program",
+            )
+        assert local is not None and shape is not None
+        if extent is None:
+            extent = shape[1][0]
+        elif shape[1][0] != extent:
+            elaborator._fail(
+                node,
+                f"the branches paired position by position run over "
+                f"{render_static(extent)} and {render_static(shape[1][0])} "
+                f"positions; pair sequences over one input",
+                code="qiec-program",
+            )
+        if len(shape[1]) == 1:
+            entries.append(Gather(Var(local), Var(position), REAL))
+            continue
+        width = shape[1][1]
+        assert isinstance(width, IndexLiteral)
+        row = Gather(Var(local), Var(position), tensor_type(REAL, (width,)))
+        entries.extend(
+            Gather(row, LiteralValue(index, INT), REAL)
+            for index in range(int(width.value))
+        )
+    assert extent is not None
+    entry_type = tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+    return Comprehension(
+        position,
+        extent,
+        TensorValue(tuple(entries), entry_type),
+        tensor_type(REAL, (extent, IndexLiteral(len(entries), NAT))),
+    )
+
+
+def _scan_initial_state(
+    elaborator: _Elaborator,
+    init: str,
+    state_type: TypeExpr,
+    scope: _Scope,
+    state: _ProgramState,
+    node: LetStep,
+) -> Value:
+    """The state a scan starts from, named by its ``init``.
+
+    Parameters
+    ----------
+    elaborator : _Elaborator
+        The module's elaborator.
+    init : str
+        The name ``scan(cell, init=...)`` gives: a binding of the
+        scanning program made before the scan, or the input a learned
+        initial state is read from.
+    state_type : TypeExpr
+        The scan's state type.
+    scope : _Scope
+        The scanning program's scope at the scan.
+    state : _ProgramState
+        The scanning program's state.
+    node : LetStep
+        The scan's step.
+
+    Returns
+    -------
+    Value
+        The binding, a scalar binding wrapped as the one entry of a
+        one-wide state, or the learned initial state's input.
+
+    Raises
+    ------
+    QiecDiagnosticError
+        If the name is neither bound before the scan nor a learned
+        initial state, or the binding's type is not the state's.
+    """
+    bound = scope.lookup(init)
+    if bound is None:
+        if not is_learned_scan_init(init):
+            elaborator._fail(
+                node,
+                f"the scan starts from {init!r} (init={init}), which the "
+                "program does not bind before the scan",
+                code="qiec-program",
+            )
+        learned = elaborator._declare_parameter(
+            init, state_type, "weight", scope, state, node
+        )
+        return Var(learned)
+    if bound.type == state_type:
+        return Var(bound)
+    shape = tensor_shape(state_type)
+    if (
+        shape is not None
+        and shape[1] == (IndexLiteral(1, NAT),)
+        and bound.type == shape[0]
+    ):
+        counter = Local("__scan_init_k", INT)
+        return Comprehension(counter, IndexLiteral(1, NAT), Var(bound), state_type)
+    elaborator._fail(
+        node,
+        f"the scan starts from {init!r}, of type {render_static(bound.type)}, "
+        f"but its state has type {render_static(state_type)}",
+        code="qiec-program",
+    )
+
+
 def _unify_free_shapes(
     expr: LetExprNode,
     free: frozenset[str],
@@ -1057,6 +1960,7 @@ def _unify_free_shapes(
         if (
             isinstance(node, LetExprCall)
             and node.func not in _REDUCTIONS
+            and node.func not in SHAPE_BUILTINS
             and node.func in PURE_BUILTINS
         ):
             return set().union(*(bare(argument) for argument in node.args))
@@ -1152,6 +2056,13 @@ def _unify_free_shapes(
                 if shapes[0] is None:
                     reduced.update(bare(node.args[0]))
                 return shapes[0]
+            if node.func in SHAPE_BUILTINS:
+                # The plates lead every operand and are kept; the last
+                # axis is rebuilt, so no free operand takes a shape here.
+                tensors = shapes if node.func == "concat" else shapes[:1]
+                if any(item is None for item in tensors) or len(set(tensors)) != 1:
+                    return None
+                return tensors[0]
             if node.func in PURE_BUILTINS:
                 known = [item for item in shapes if item is not None]
                 if len(known) < len(shapes):
@@ -1288,7 +2199,7 @@ def _element_of(parameter: FamilyParameter | _ScalarParameter) -> TypeApplicatio
     return REAL
 
 
-class _ProgramElaboration:
+class _ProgramElaboration(_SequenceFunctionElaboration):
     """Program elaboration, mixed into the QIEC elaborator.
 
     The methods read and extend the elaborator's declaration tables, so
@@ -1330,6 +2241,7 @@ class _ProgramElaboration:
                 "; ".join(error.kinds),
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
+        self._refuse_kernel_arguments()
         self._program_lets = build_let_table(expanded)
         self._program_declarations = {
             declaration.name: declaration
@@ -1337,14 +2249,51 @@ class _ProgramElaboration:
             if isinstance(declaration, ProgramDecl)
         }
         computations: list[NamedComputation] = []
+        # The cell of a marginalized chain returns the latent it
+        # marginalizes; it elaborates only as the row of the scan that
+        # runs it.
+        cells = chain_cells(self.source.syntax)
         for declaration in expanded.statements:
-            if isinstance(declaration, ProgramDecl) and _is_entry_point(declaration):
+            if (
+                isinstance(declaration, ProgramDecl)
+                and _is_entry_point(declaration)
+                and declaration.name not in cells
+            ):
                 try:
                     computations.extend(self._elaborate_program(declaration))
                 except QiecDiagnosticError as error:
                     error.program = declaration.name
                     raise
         return tuple(computations)
+
+    def _refuse_kernel_arguments(self: _Elaborator) -> None:
+        """Refuse a kernel declaration whose family arguments read values.
+
+        A kernel's ``~ Family(...)`` arguments are literals or absent; a
+        name or reference among them has nothing to read, since a
+        declaration binds no value. The declaration compiler refuses the
+        same declarations with the same message.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            At the first such argument, in source order.
+        """
+        for name, morphism in self._program_morphisms.items():
+            init = morphism.init_family
+            if init is None or not init.args:
+                continue
+            role = _option_entry(morphism.options, "role")
+            if role is not None and not (
+                isinstance(role, OptionName) and role.value == "kernel"
+            ):
+                continue
+            refusal = kernel_argument_refusal(name, init.family, init.args)
+            if refusal is None:
+                continue
+            offending, message = refusal
+            node = offending if getattr(offending, "line", 0) else init
+            self._fail(node, message, code="qiec-program")
 
     # ------------------------------------------------------------------
     # module-level scaffolding
@@ -1426,9 +2375,12 @@ class _ProgramElaboration:
             output is the marginal ``LogWeight``; the
             ``enumerate_grouped_marginal[w]`` handlers, alike but
             answering the collected weight's type ``w`` itself, one
-            marginal per group position; and the ``collect_marginal[w]``
-            handler over ``Weight[w]``, which pairs the scope's unit
-            answer with its total.
+            marginal per group position; the ``enumerate_marginal_table[w]``
+            handler, whose input is a unit answer paired with a
+            ``LogWeight`` and whose output ``w`` is the tensor of the
+            weighted shots, one per support value; and the
+            ``collect_marginal[w]`` handler over ``Weight[w]``, which
+            pairs the scope's unit answer with its total.
 
         Raises
         ------
@@ -1436,7 +2388,7 @@ class _ProgramElaboration:
             If the module declares a handler under one of the reserved
             names.
         """
-        names = (*MARGINAL_HANDLERS.values(), COLLECT_HANDLER)
+        names = (*MARGINAL_HANDLERS.values(), ENUMERATE_TABLE_HANDLER, COLLECT_HANDLER)
         for name in names:
             declared = self.handlers.get(name)
             if declared is not None and declared.implementation != "foreign":
@@ -1468,6 +2420,20 @@ class _ProgramElaboration:
                 telescope=(weight_binder,),
                 implementation="foreign",
             )
+        declared_handlers[ENUMERATE_TABLE_HANDLER] = HandlerDef(
+            HandlerId.derive(
+                self.source.module_name, "handler", ENUMERATE_TABLE_HANDLER
+            ),
+            ENUMERATE_TABLE_HANDLER,
+            random.ref,
+            (HandlerClauseDef(sample.id, ResumptionGrade.UNRESTRICTED),),
+            product_type(UNIT, LOG_WEIGHT),
+            weight,
+            EffectRow(),
+            total=True,
+            telescope=(weight_binder,),
+            implementation="foreign",
+        )
         declared_handlers[COLLECT_HANDLER] = HandlerDef(
             HandlerId.derive(self.source.module_name, "handler", COLLECT_HANDLER),
             COLLECT_HANDLER,
@@ -1515,6 +2481,9 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         state = _ProgramState(declaration)
+        row = self._markov_rows.get(declaration.name)
+        if row is not None:
+            state.markov_row, state.markov_entry = row
         self._program_state = state
         random = self._program_instance(RANDOM_INSTANCE, "Random")
         score = self._program_instance(SCORE_INSTANCE, "Score")
@@ -1526,8 +2495,28 @@ class _ProgramElaboration:
         state.tables = _gathered_tables(declaration.draws)
         state.table_events = self._table_event_ranks(declaration, state.tables)
         self._elaborate_steps(declaration.draws, scope, state)
+        self._unify_result_extents(declaration, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
         body = self._fold_steps(scope, Return(result))
+        if state.extent_solution:
+            # Steps elaborated before an extent was fixed read it open;
+            # the body, its sites, and the telescope take the fixed one.
+            substitution = self._extent_substitution(state)
+            body = substitute_computation(body, substitution)
+            result_type = substitute_type(result_type, substitution)
+            for name in state.extent_solution:
+                state.extents.pop(name, None)
+            state.sites = [
+                replace(
+                    site,
+                    batch=fixed.batch,
+                    event=fixed.event,
+                )
+                for site in state.sites
+                for fixed in (
+                    substitute_plate(PlateShape(site.batch, site.event), substitution),
+                )
+            ]
         row_entries: list[RowEntry] = []
         if state.uses_random:
             row_entries.append(random.entry)
@@ -1644,6 +2633,10 @@ class _ProgramElaboration:
                     type_: TypeExpr = tensor_type(REAL, (_extent(info.real_width),))
                 elif info.finite:
                     type_ = INT
+                    if info.extent is not None:
+                        # A class-valued parameter indexes an input by its
+                        # object, as a class-valued step does.
+                        state.alphabets[name] = self._object_axis(factor, declaration)
                 else:
                     type_ = REAL
                 if name in scanned:
@@ -1790,7 +2783,9 @@ class _ProgramElaboration:
             root = root.outer
         existing = root.locals.get(name)
         if existing is not None:
-            if existing.type != type_:
+            if existing.type != type_ and not self._unify_types(
+                existing.type, type_, scope, state
+            ):
                 self._fail(
                     node,
                     f"program input {name!r} is read as {self._render(type_)} "
@@ -1799,7 +2794,7 @@ class _ProgramElaboration:
                 )
             if scope is not root:
                 scope.referenced.add(name)
-            return existing
+            return root.locals[name]
         if scope.lookup(name) is not None:
             self._fail(
                 node,
@@ -2212,18 +3207,33 @@ class _ProgramElaboration:
             step, scope, state, name, via=via, group=group
         )
         observed_type = self._sampled_type(distribution)
-        observed = self._declare_parameter(
-            name,
-            observed_type,
-            "observation",
-            scope,
-            state,
-            step,
-            axes=tuple(
-                axis.name
-                for axis in (*distribution.plate.batch, *distribution.plate.event)
-            ),
-        )
+        if state.markov_row is not None and name == state.markov_entry:
+            # The row of a marginalized chain's cell scores the entry it
+            # reads as the observation its next state emits.
+            entry = scope.lookup(name)
+            assert entry is not None
+            if entry.type != observed_type:
+                self._fail(
+                    step,
+                    f"the cell observes its entry {name!r} of type "
+                    f"{render_static(entry.type)} from a family over "
+                    f"{render_static(observed_type)}",
+                    code="qiec-program",
+                )
+            observed = entry
+        else:
+            observed = self._declare_parameter(
+                name,
+                observed_type,
+                "observation",
+                scope,
+                state,
+                step,
+                axes=tuple(
+                    axis.name
+                    for axis in (*distribution.plate.batch, *distribution.plate.event)
+                ),
+            )
         state.sites.append(
             ProgramSite(
                 name,
@@ -2411,72 +3421,136 @@ class _ProgramElaboration:
                 )
             self._lambda_macros[step.name] = step.value
             return
-        deduction = self._parse_call(step.value)
+        deduction = self._parse_call(step.value, step)
         if deduction is not None:
             call = self._deduction_call(deduction, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
             return
         scan = scan_let_call(step.value)
+        if scan is not None and scan.marginal:
+            _elaborate_marginal_chain(self, scan, scope, state, step)
+            return
         if scan is not None:
             call = self._scan_call(scan, scope, state, step)
             self._bind_step(scope, step.name, call.result_type, call, step)
+            return
+        paired = positions_let_call(step.value)
+        if paired is not None:
+            value = _positions_value(self, paired, scope, step)
+            self._bind_step(scope, step.name, value.result_type, Return(value), step)
             return
         value = self._let_value(step.value, scope, state, step)
         type_ = self._value_type(value, scope.context(), step.value)
         self._bind_step(scope, step.name, type_, Return(value), step)
         self._record_batch(step.name, step.value, scope, state)
 
-    def _parse_call(self: _Elaborator, expr: LetExprNode) -> tuple[str, str] | None:
-        """Read ``parse(D, x)``, a deduction applied to a program input.
+    def _parse_call(
+        self: _Elaborator, expr: LetExprNode, node: object
+    ) -> _ParseCall | None:
+        """Read ``parse(D, x[, Plate][, ("A", p)...])``.
 
         Parameters
         ----------
         expr : LetExprNode
             The expression.
+        node : object
+            The step, blamed for a malformed call.
 
         Returns
         -------
-        tuple[str, str] | None
-            The deduction's name and the input's name when the
-            expression is such a call, else ``None``.
+        _ParseCall | None
+            The call's parts when the expression applies ``parse`` to a
+            declared deduction, else ``None``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a call of ``parse`` on a deduction does not name its input
+            by a variable, or an argument after the input and the
+            optional plate is not a pair of a string label and a value.
         """
         if not isinstance(expr, LetExprCall) or expr.func != "parse":
             return None
-        if len(expr.args) != 2 or not all(
-            isinstance(argument, LetExprVar) for argument in expr.args
-        ):
+        if len(expr.args) < 2 or not isinstance(expr.args[0], LetExprVar):
             return None
-        target, source = expr.args
-        assert isinstance(target, LetExprVar) and isinstance(source, LetExprVar)
+        target = expr.args[0]
         if target.name not in getattr(self, "_deductions", {}):
             return None
-        return target.name, source.name
+        source = expr.args[1]
+        if not isinstance(source, LetExprVar):
+            self._fail(
+                node,
+                f"parse reads the input of {target.name!r} from a program input "
+                "named by a variable",
+                code="qiec-program",
+            )
+        rest = list(expr.args[2:])
+        plate: str | None = None
+        if rest and isinstance(rest[0], LetExprVar):
+            plate = rest[0].name
+            rest = rest[1:]
+        bindings: list[_ParseBinding] = []
+        for argument in rest:
+            if not (
+                isinstance(argument, LetExprTuple)
+                and len(argument.items) == 2
+                and isinstance(argument.items[0], LetExprString)
+            ):
+                self._fail(
+                    argument,
+                    "parse binds production probabilities as "
+                    '("<left-hand side>", <probabilities>) pairs after its input '
+                    "and optional plate",
+                    code="qiec-program",
+                )
+            label = argument.items[0]
+            assert isinstance(label, LetExprString)
+            bindings.append(
+                _ParseBinding(
+                    label=label.value,
+                    value=argument.items[1],
+                    line=argument.line,
+                    col=argument.col,
+                )
+            )
+        return _ParseCall(
+            deduction=target.name,
+            source=source.name,
+            plate=plate,
+            bindings=tuple(bindings),
+        )
 
     def _deduction_call(
         self: _Elaborator,
-        parse: tuple[str, str],
+        parse: _ParseCall,
         scope: _Scope,
         state: _ProgramState,
-        node: object,
+        node: LetStep,
     ) -> Call:
-        """Call a deduction's entry on a sentence the program takes as input.
+        """Call a deduction's entry on a sentence or a corpus the program takes.
 
-        The sentence is a program input of tokens whose length is one of
-        the program's open extents; the call returns the inside weight
-        of the deduction's goal in its semiring, and the program's row
-        gains the module's ``params`` instance, through which the
-        deduction reads its learned weights.
+        The input is a program input of tokens: a sentence, whose length
+        is one of the program's open extents, or with a plate, a corpus of
+        one sentence per object of the plate, all of one open length,
+        whose answer is the semiring product of the sentences' inside
+        weights (their joint weight, the sentences being independent).
+        Without bindings the deduction reads its learned weights through
+        the module's ``params`` instance, which the program's row gains.
+        With bindings, the deduction must be normalized per left-hand
+        side and each binding gives one left-hand side's production
+        probabilities: the call goes to the deduction's weighted variant
+        with the table of the probabilities' logarithms.
 
         Parameters
         ----------
-        parse : tuple[str, str]
-            The deduction's name and the input's name.
+        parse : _ParseCall
+            The call's parts.
         scope : _Scope
             The scope.
         state : _ProgramState
             The program's accumulating state.
-        node : object
-            The source node.
+        node : LetStep
+            The step.
 
         Returns
         -------
@@ -2486,10 +3560,12 @@ class _ProgramElaboration:
         Raises
         ------
         QiecDiagnosticError
-            If the deduction takes its axioms rather than a sentence, or
-            the input is bound by a step.
+            If the deduction takes its axioms rather than a sentence, the
+            input is bound by a step, the plate names no object with a
+            static extent, or the bindings do not fit the deduction (see
+            `_production_table`).
         """
-        name, source = parse
+        name, source = parse.deduction, parse.source
         signature = self.computation_signatures[f"{name}__run"]
         if len(signature.parameters) != 1:
             self._fail(
@@ -2505,13 +3581,24 @@ class _ProgramElaboration:
                 "deduction parses is a program input",
                 code="qiec-program",
             )
+        table: TensorValue | None = None
+        if parse.bindings:
+            table = self._production_table(parse, scope, state, node)
+            signature = self.computation_signatures[f"{name}__weighted_run"]
         binder = state.extents.get(f"{source}_extent")
         if binder is None:
             binder = IndexBinder(f"{source}_extent", NAT)
             state.extents[binder.name] = binder
         extent = IndexVariable(binder.name, binder.sort)
+        sentence_type = tensor_type(STRING, (extent,))
+        rows = None if parse.plate is None else self._axis(parse.plate, node).size
         tokens = self._declare_parameter(
-            source, tensor_type(STRING, (extent,)), "data", scope, state, node
+            source,
+            sentence_type if rows is None else tensor_type(STRING, (rows, extent)),
+            "data",
+            scope,
+            state,
+            node,
         )
         params = self.instances.get(PARAMS_INSTANCE)
         if params is not None and any(
@@ -2519,13 +3606,8 @@ class _ProgramElaboration:
             for entry in signature.effects.entries
         ):
             state.uses_params = True
-        return Call(
-            signature.id,
-            signature.name,
-            (extent,),
-            (Var(tokens),),
-            signature.result,
-            signature.effects,
+        origin = cast(
+            SourceOrigin,
             _origin_at(
                 self,
                 ("programs", state.declaration.name, "parses", name),
@@ -2533,9 +3615,391 @@ class _ProgramElaboration:
                 node,
             ),
         )
+        extra = () if table is None else (table,)
+        if rows is None:
+            return Call(
+                signature.id,
+                signature.name,
+                (extent,),
+                (Var(tokens), *extra),
+                signature.result,
+                signature.effects,
+                origin,
+            )
+        return self._corpus_call(
+            signature, tokens, rows, extent, extra, state, node, origin
+        )
+
+    def _production_table(
+        self: _Elaborator,
+        parse: _ParseCall,
+        scope: _Scope,
+        state: _ProgramState,
+        node: LetStep,
+    ) -> TensorValue:
+        """The table of production log-weights a call's bindings give.
+
+        Each binding names a left-hand side of several productions and a
+        probability vector over them, in the order
+        `DeductionSystem.production_groups` lists; the table holds each
+        entry's log-probability once the vector is renormalized,
+        ``log p_q - log sum p``, groups in order. A value drawn at a
+        sample site must come from a family whose support is the simplex.
+
+        Parameters
+        ----------
+        parse : _ParseCall
+            The call's parts.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : LetStep
+            The step.
+
+        Returns
+        -------
+        Value
+            The table, a vector of reals: log-probabilities.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the deduction is not normalized per left-hand side, a
+            label names no left-hand side of several productions or is
+            bound twice, a left-hand side of several productions is not
+            bound, a value is not a vector of reals of its group's size,
+            or a sample site's family's support is not the simplex.
+        """
+        system = self._deductions[parse.deduction]
+        if not system.normalized:
+            self._fail(
+                node,
+                f"parse binds production probabilities to {parse.deduction!r}, "
+                "whose weights are free log-weights; probabilities replace the "
+                "weights of a grammar normalized per left-hand side, so "
+                "declare normalize=lhs",
+                code="qiec-program",
+            )
+        bound = {
+            group.label: group for group in system.groups if len(group.productions) > 1
+        }
+        values: dict[str, Value] = {}
+        for binding in parse.bindings:
+            group = bound.get(binding.label)
+            if group is None:
+                single = any(item.label == binding.label for item in system.groups)
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r}, "
+                    + (
+                        f"which has one production in {parse.deduction!r}, whose "
+                        "probability is one"
+                        if single
+                        else f"which is no left-hand side of {parse.deduction!r}"
+                    )
+                    + f"; the left-hand sides of several productions are "
+                    f"{', '.join(bound)}",
+                    code="qiec-program",
+                )
+            if binding.label in values:
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} twice",
+                    code="qiec-program",
+                )
+            size = len(group.productions)
+            value = self._let_value(binding.value, scope, state, node)
+            type_ = self._value_type(value, scope.context(), binding)
+            if type_ != tensor_type(REAL, (IndexLiteral(size, NAT),)):
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} to a value of type "
+                    f"{render_static(type_)}, but {binding.label!r} has {size} "
+                    f"productions ({', '.join(item.label for item in group.productions)}) "
+                    f"and takes a probability vector of type "
+                    f"{render_static(tensor_type(REAL, (IndexLiteral(size, NAT),)))}",
+                    code="qiec-program",
+                )
+            support = _sampled_support(binding.value, state.declaration)
+            if support is not None and support[1] != "simplex":
+                self._fail(
+                    binding,
+                    f"parse binds {binding.label!r} to {support[0]!r}, drawn from a "
+                    f"family whose support is {support[1]}; production "
+                    "probabilities lie on the simplex, as a Dirichlet draw does",
+                    code="qiec-program",
+                )
+            values[binding.label] = value
+        missing = [label for label in bound if label not in values]
+        if missing:
+            self._fail(
+                node,
+                f"parse binds no probabilities for {', '.join(missing)} of "
+                f"{parse.deduction!r}; every left-hand side of several "
+                "productions takes one",
+                code="qiec-program",
+            )
+        entries: list[Value] = []
+        path = ("programs", state.declaration.name, "parses", parse.deduction)
+        for label, group in bound.items():
+            size = len(group.productions)
+            probabilities = [
+                Gather(values[label], LiteralValue(position, INT), REAL)
+                for position in range(size)
+            ]
+            total: Value = probabilities[0]
+            for item in probabilities[1:]:
+                total = self._primitive(
+                    "add_real", (total, item), node, (*path, "table", label, "total")
+                )
+            normalizer = self._primitive(
+                "log", (total,), node, (*path, "table", label, "normalizer")
+            )
+            for position, item in enumerate(probabilities):
+                entries.append(
+                    self._primitive(
+                        "sub_real",
+                        (
+                            self._primitive(
+                                "log", (item,), node, (*path, "table", label, position)
+                            ),
+                            normalizer,
+                        ),
+                        node,
+                        (*path, "table", label, position, "normalized"),
+                    )
+                )
+        return TensorValue(
+            tuple(entries), tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+        )
+
+    def _corpus_call(
+        self: _Elaborator,
+        signature: ComputationSignature,
+        tokens: Local,
+        rows: IndexTerm,
+        extent: IndexVariable,
+        extra: tuple[TensorValue, ...],
+        state: _ProgramState,
+        node: LetStep,
+        origin: SourceOrigin,
+    ) -> Call:
+        """Call a deduction's entry on every sentence of a corpus.
+
+        A helper computation recurs over the corpus's rows, calls the
+        entry on each sentence, and multiplies the answers in the
+        semiring, starting from its one.
+
+        Parameters
+        ----------
+        signature : ComputationSignature
+            The entry's signature.
+        tokens : Local
+            The corpus, a table of tokens with one sentence per row.
+        rows : IndexTerm
+            The number of sentences.
+        extent : IndexVariable
+            The sentences' length.
+        extra : tuple[Value, ...]
+            The production table the entry takes after the sentence, if
+            any.
+        state : _ProgramState
+            The program's accumulating state, which gains the helper.
+        node : LetStep
+            The step.
+        origin : SourceOrigin
+            The call's origin.
+
+        Returns
+        -------
+        Call
+            The call of the helper at the first row.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the helper is declared twice.
+        """
+        carrier = signature.result
+        name = f"{state.declaration.name}__{node.name}_corpus"
+        if name in self.computation_signatures:
+            self._fail(
+                node,
+                f"corpus helper {name!r} is declared twice",
+                code="qiec-program",
+            )
+        path = ("programs", state.declaration.name, "corpora", node.name)
+        position = Local("__corpus_r", INT)
+        corpus = Local("__corpus_tokens", tokens.type)
+        total = Local("__corpus_total", carrier)
+        carried = tuple(
+            Local(f"__corpus_table_{index}", value.result_type)
+            for index, value in enumerate(extra)
+        )
+        telescope = (IndexBinder(extent.name, extent.sort),)
+        identity = ComputationId.derive(self.source.module_name, "computation", name)
+        helper = ComputationSignature(
+            identity,
+            name,
+            telescope,
+            (INT, tokens.type, carrier, *(item.type for item in carried)),
+            carrier,
+            signature.effects,
+        )
+        try:
+            self.registry.register_computation(helper)
+        except (KernelError, TypeError, ValueError) as error:
+            self._fail_kernel(node, error, fallback="qiec-program")
+        self.computation_signatures[name] = helper
+        statics: tuple[StaticArgument, ...] = (extent,)
+        counter = Local("__corpus_k", INT)
+        count: Value = Reduction(
+            "sum",
+            Comprehension(
+                counter, rows, LiteralValue(1, INT), tensor_type(INT, (rows,))
+            ),
+            INT,
+        )
+        sentence = Local("__corpus_sentence", tensor_type(STRING, (extent,)))
+        weight = Local("__corpus_weight", carrier)
+        product = self._semiring_times(Var(total), Var(weight), carrier, node, path)
+        recur = Call(
+            identity,
+            name,
+            statics,
+            (
+                self._primitive(
+                    "add_int",
+                    (Var(position), LiteralValue(1, INT)),
+                    node,
+                    (*path, "next"),
+                ),
+                Var(corpus),
+                product,
+                *(Var(item) for item in carried),
+            ),
+            carrier,
+            signature.effects,
+            origin,
+        )
+        body: Computation = If(
+            self._primitive(
+                "eq_int", (Var(position), count), node, (*path, "finished")
+            ),
+            Return(Var(total)),
+            Bind(
+                sentence,
+                Return(Gather(Var(corpus), Var(position), sentence.type)),
+                Bind(
+                    weight,
+                    Call(
+                        signature.id,
+                        signature.name,
+                        (extent,),
+                        (Var(sentence), *(Var(item) for item in carried)),
+                        carrier,
+                        signature.effects,
+                        cast(
+                            SourceOrigin,
+                            _origin_at(self, (*path, "sentence"), "call", node),
+                        ),
+                    ),
+                    recur,
+                ),
+            ),
+        )
+        state.helpers.append(
+            self._checked_computation(
+                helper, (position, corpus, total, *carried), body, node, path
+            )
+        )
+        return Call(
+            identity,
+            name,
+            statics,
+            (
+                LiteralValue(0, INT),
+                Var(tokens),
+                self._semiring_one(carrier, node, path),
+                *extra,
+            ),
+            carrier,
+            signature.effects,
+            origin,
+        )
+
+    def _semiring_one(
+        self: _Elaborator, carrier: TypeExpr, node: object, path: tuple[str | int, ...]
+    ) -> Value:
+        """The multiplicative identity of a deduction's carrier.
+
+        Parameters
+        ----------
+        carrier : TypeExpr
+            ``LogWeight``, ``Bool``, or ``Int``.
+        node : object
+            The source node.
+        path : tuple[str | int, ...]
+            The origin path.
+
+        Returns
+        -------
+        Value
+            Log-weight zero, ``true``, or one.
+        """
+        if carrier == LOG_WEIGHT:
+            return self._primitive(
+                "as_weight", (LiteralValue(0.0, REAL),), node, (*path, "one")
+            )
+        if carrier == BOOL:
+            return LiteralValue(True, BOOL)
+        return LiteralValue(1, INT)
+
+    def _semiring_times(
+        self: _Elaborator,
+        left: Value,
+        right: Value,
+        carrier: TypeExpr,
+        node: object,
+        path: tuple[str | int, ...],
+    ) -> Value:
+        """The semiring product of two carrier values.
+
+        Parameters
+        ----------
+        left : Value
+            A value of the carrier.
+        right : Value
+            A value of the carrier.
+        carrier : TypeExpr
+            ``LogWeight``, ``Bool``, or ``Int``.
+        node : object
+            The source node.
+        path : tuple[str | int, ...]
+            The origin path.
+
+        Returns
+        -------
+        Value
+            Their product: the sum of log-weights, the conjunction, or
+            the integer product.
+        """
+        operation = (
+            "add_weight"
+            if carrier == LOG_WEIGHT
+            else "and"
+            if carrier == BOOL
+            else "mul_int"
+        )
+        return self._primitive(operation, (left, right), node, (*path, "times"))
 
     def _check_scan_site_labels(
-        self: _Elaborator, step_name: str, state: _ProgramState, node: LetStep
+        self: _Elaborator,
+        step_name: str,
+        state: _ProgramState,
+        node: LetStep,
+        written: str,
     ) -> None:
         """Refuse a scan whose step shares a site label with another site.
 
@@ -2556,6 +4020,10 @@ class _ProgramElaboration:
             The scanning program's accumulating state.
         node : LetStep
             The scan's step.
+        written : str
+            The step program the source's scan names, which ``step_name``
+            specializes when the cell reads bindings of the scanning
+            program; it is the same scan, not another one.
 
         Raises
         ------
@@ -2575,7 +4043,7 @@ class _ProgramElaboration:
                 reached_site_labels(callee, self._program_declarations),
             )
             for callee in _callees(state.declaration.draws)
-            if callee != step_name
+            if callee not in (step_name, written)
         )
         for owner, labels in others:
             shared = sorted(reached & labels)
@@ -2592,7 +4060,7 @@ class _ProgramElaboration:
 
     def _scan_call(
         self: _Elaborator,
-        scan: tuple[str, str, str | None],
+        scan: ScanCall,
         scope: _Scope,
         state: _ProgramState,
         node: LetStep,
@@ -2600,20 +4068,24 @@ class _ProgramElaboration:
         """Elaborate ``let h = scan(step, xs)`` to a call of a recurrence.
 
         The recurrence is a helper computation over the sequence's
-        positions: at position ``t`` it reads the sequence's entry,
-        calls the step program with the entry and the state, and
-        recurs at ``t + 1`` with the step's result, answering the state
-        once ``t`` reaches the sequence's length. The initial state is
-        zero, or a learned state read as a ``weight`` input when the
+        positions: after visiting ``k`` positions it reads the entry at
+        position ``p`` (``k`` itself, or ``length - 1 - k`` for a
+        reversed scan), calls the step program with the entry and the
+        state, and recurs at ``k + 1`` with the step's result, answering
+        the state once ``k`` reaches the sequence's length. A scan with
+        ``outputs=all`` also carries the states so far, a tensor over
+        the positions whose entry at ``p`` the step's result replaces,
+        and answers it: every state, in input order. The initial state
+        is zero, or a learned state read as a ``weight`` input when the
         scan names one. A sequence that is a program input was typed
         over an open extent when the program's parameters were
         declared, an entry per position of the domain factor it reads.
 
         Parameters
         ----------
-        scan : tuple[str, str, str | None]
-            The step program's name, the sequence's name, and the
-            learned initial state's name when there is one.
+        scan : ScanCall
+            The step program's name, the sequence's name, the initial
+            state's name when there is one, and the scan's options.
         scope : _Scope
             The scope.
         state : _ProgramState
@@ -2634,7 +4106,8 @@ class _ProgramElaboration:
             input nor a tensor with a leading axis of entries the step
             reads.
         """
-        step_name, source, init = scan
+        written, source, init = scan.step, scan.sequence, scan.init
+        step_name = _specialized_scan_step(self, written, scope, state, node)
         signature = self.computation_signatures.get(step_name)
         step_entry = next(
             (item for item in self.entries if item.name == step_name), None
@@ -2643,7 +4116,6 @@ class _ProgramElaboration:
             signature is None
             or step_entry is None
             or len(signature.parameters) < 2
-            or signature.telescope
             or signature.parameters[1] != signature.result
             or [parameter.role for parameter in step_entry.parameters[:2]]
             != ["domain", "domain"]
@@ -2655,6 +4127,13 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         entry_type, state_type = signature.parameters[:2]
+        if _index_variables_in((entry_type, state_type)):
+            self._fail(
+                node,
+                f"scan steps with {step_name!r}, whose input or state has an "
+                "open extent",
+                code="qiec-program",
+            )
         local = scope.lookup(source)
         if local is None:
             self._fail(
@@ -2681,51 +4160,10 @@ class _ProgramElaboration:
                 f"not the {render_static(entry_type)} it reads",
                 code="qiec-program",
             )
-        self._check_scan_site_labels(step_name, state, node)
-        # The step's remaining inputs pass through the recurrence from
-        # the scanning program. A name the step reads without binding
-        # it is the scanning program's binding of that name before the
-        # scan, else an input of the scanning program. An observation
-        # the step scores is one observation per position: the scanning
-        # program takes the sequence of them, and position ``t`` reads
-        # its ``t``-th entry.
-        passed: list[Local] = []
-        positional: list[bool] = []
-        for parameter in step_entry.parameters[2:]:
-            if parameter.role == "observation":
-                if scope.lookup(parameter.name) is not None:
-                    self._fail(
-                        node,
-                        f"the scan step {step_name!r} observes "
-                        f"{parameter.name!r} at every position, so the "
-                        f"scanning program cannot also bind {parameter.name!r}",
-                        code="qiec-program",
-                    )
-                observed_shape = tensor_shape(parameter.type)
-                sequence_type: TypeExpr = (
-                    tensor_type(parameter.type, (extent,))
-                    if observed_shape is None
-                    else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
-                )
-                passed.append(
-                    self._declare_parameter(
-                        parameter.name,
-                        sequence_type,
-                        parameter.role,
-                        scope,
-                        state,
-                        node,
-                    )
-                )
-                positional.append(True)
-                continue
-            existing = scope.lookup(parameter.name)
-            if existing is None:
-                existing = self._declare_parameter(
-                    parameter.name, parameter.type, parameter.role, scope, state, node
-                )
-            passed.append(existing)
-            positional.append(False)
+        self._check_scan_site_labels(step_name, state, node, written)
+        passed, positional, step_statics, substitution = _scan_step_inputs(
+            self, step_name, step_entry, signature, extent, scope, state, node
+        )
         name = f"{state.declaration.name}__{node.name}_scan"
         if name in self.computation_signatures:
             self._fail(
@@ -2733,24 +4171,40 @@ class _ProgramElaboration:
                 f"scan helper {name!r} is declared twice",
                 code="qiec-program",
             )
-        mentioned = _index_variables_in((local.type,))
+        mentioned = _index_variables_in((local.type, *(item.type for item in passed)))
         telescope = tuple(
             binder for name_, binder in state.extents.items() if name_ in mentioned
         )
         statics: tuple[StaticArgument, ...] = tuple(
             IndexVariable(binder.name, binder.sort) for binder in telescope
         )
-        position = Local("__scan_t", INT)
+        visited = Local("__scan_t", INT)
         sequence = Local("__scan_xs", local.type)
         current = Local("__scan_h", state_type)
+        gathers = scan.outputs == "all"
+        state_shape = tensor_shape(state_type)
+        states_type: TypeExpr = (
+            tensor_type(state_type, (extent,))
+            if state_shape is None
+            else tensor_type(state_shape[0], (extent, *state_shape[1]))
+        )
+        result_type = states_type if gathers else state_type
+        states = Local("__scan_states", states_type)
+        gathered = (states,) if gathers else ()
         carried = tuple(Local(f"__scan_{item.name}", item.type) for item in passed)
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
             identity,
             name,
             telescope,
-            (INT, local.type, state_type, *(item.type for item in carried)),
-            state_type,
+            (
+                INT,
+                local.type,
+                state_type,
+                *(item.type for item in gathered),
+                *(item.type for item in carried),
+            ),
+            result_type,
             signature.effects,
         )
         try:
@@ -2767,8 +4221,30 @@ class _ProgramElaboration:
             ),
             INT,
         )
+        # The position the scan visits after ``visited`` others: the same
+        # number left to right, that many from the end right to left.
+        position = Local("__scan_p", INT)
+        position_value: Value = (
+            self._primitive(
+                "sub_int",
+                (
+                    self._primitive(
+                        "sub_int",
+                        (length, LiteralValue(1, INT)),
+                        node,
+                        (*path, "last"),
+                    ),
+                    Var(visited),
+                ),
+                node,
+                (*path, "position"),
+            )
+            if scan.reverse
+            else Var(visited)
+        )
         entry = Local("__scan_x", entry_type)
         following = Local("__scan_next", state_type)
+        following_states = Local("__scan_states_next", states_type)
         origin = _origin_at(self, path, "call", node)
         recur = Call(
             identity,
@@ -2777,58 +4253,136 @@ class _ProgramElaboration:
             (
                 self._primitive(
                     "add_int",
-                    (Var(position), LiteralValue(1, INT)),
+                    (Var(visited), LiteralValue(1, INT)),
                     node,
                     (*path, "successor"),
                 ),
                 Var(sequence),
                 Var(following),
+                *((Var(following_states),) if gathers else ()),
                 *(Var(item) for item in carried),
             ),
-            state_type,
+            result_type,
             signature.effects,
             origin,
         )
-        body: Computation = If(
-            self._primitive(
-                "eq_int", (Var(position), length), node, (*path, "finished")
-            ),
-            Return(Var(current)),
-            Bind(
-                entry,
-                Return(Gather(Var(sequence), Var(position), entry_type)),
-                Bind(
-                    following,
-                    Call(
-                        signature.id,
-                        signature.name,
-                        (),
+        continuation: Computation = recur
+        if gathers:
+            # The states after this position replace the states' entry at
+            # it: at each index ``j`` the entry is chosen from the pair
+            # (old entry, new state) by ``max(0, 1 - |j - p|)``, which is
+            # one at ``p`` and zero elsewhere.
+            index = Local("__scan_j", INT)
+            pair_type = (
+                tensor_type(state_type, (IndexLiteral(2, NAT),))
+                if state_shape is None
+                else tensor_type(
+                    state_shape[0], (IndexLiteral(2, NAT), *state_shape[1])
+                )
+            )
+            here = self._primitive(
+                "max_int",
+                (
+                    LiteralValue(0, INT),
+                    self._primitive(
+                        "sub_int",
                         (
-                            Var(entry),
-                            Var(current),
-                            *(
-                                Gather(Var(item), Var(position), parameter.type)
-                                if per_step
-                                else Var(item)
-                                for item, per_step, parameter in zip(
-                                    carried,
-                                    positional,
-                                    step_entry.parameters[2:],
-                                    strict=True,
-                                )
+                            LiteralValue(1, INT),
+                            self._primitive(
+                                "abs_int",
+                                (
+                                    self._primitive(
+                                        "sub_int",
+                                        (Var(index), Var(position)),
+                                        node,
+                                        (*path, "offset"),
+                                    ),
+                                ),
+                                node,
+                                (*path, "distance"),
                             ),
                         ),
-                        state_type,
-                        signature.effects,
-                        _origin_at(self, (*path, "step"), "call", node),
+                        node,
+                        (*path, "nearness"),
                     ),
-                    recur,
+                ),
+                node,
+                (*path, "here"),
+            )
+            continuation = Bind(
+                following_states,
+                Return(
+                    Comprehension(
+                        index,
+                        extent,
+                        Gather(
+                            TensorValue(
+                                (
+                                    Gather(Var(states), Var(index), state_type),
+                                    Var(following),
+                                ),
+                                pair_type,
+                            ),
+                            here,
+                            state_type,
+                        ),
+                        states_type,
+                    )
+                ),
+                recur,
+            )
+        body: Computation = If(
+            self._primitive(
+                "eq_int", (Var(visited), length), node, (*path, "finished")
+            ),
+            Return(Var(states if gathers else current)),
+            Bind(
+                position,
+                Return(position_value),
+                Bind(
+                    entry,
+                    Return(Gather(Var(sequence), Var(position), entry_type)),
+                    Bind(
+                        following,
+                        Call(
+                            signature.id,
+                            signature.name,
+                            step_statics,
+                            (
+                                Var(entry),
+                                Var(current),
+                                *(
+                                    Gather(
+                                        Var(item),
+                                        Var(position),
+                                        substitute_type(parameter.type, substitution),
+                                    )
+                                    if per_step
+                                    else Var(item)
+                                    for item, per_step, parameter in zip(
+                                        carried,
+                                        positional,
+                                        step_entry.parameters[2:],
+                                        strict=True,
+                                    )
+                                ),
+                            ),
+                            state_type,
+                            signature.effects,
+                            _origin_at(self, (*path, "step"), "call", node),
+                        ),
+                        continuation,
+                    ),
                 ),
             ),
         )
         state.helpers.append(
             self._checked_computation(
-                helper, (position, sequence, current, *carried), body, node, path
+                helper,
+                (visited, sequence, current, *gathered, *carried),
+                body,
+                node,
+                path,
             )
         )
         params = self.instances.get(PARAMS_INSTANCE)
@@ -2842,12 +4396,19 @@ class _ProgramElaboration:
                 state.uses_params = True
         initial: Value = _zero_of(state_type)
         if init is not None:
-            learned = scope.lookup(init)
-            if learned is None:
-                learned = self._declare_parameter(
-                    init, state_type, "weight", scope, state, node
-                )
-            initial = Var(learned)
+            initial = _scan_initial_state(self, init, state_type, scope, state, node)
+        zero_states: tuple[Value, ...] = (
+            (
+                Comprehension(
+                    Local("__scan_zero_j", INT),
+                    extent,
+                    _zero_of(state_type),
+                    states_type,
+                ),
+            )
+            if gathers
+            else ()
+        )
         return Call(
             identity,
             name,
@@ -2856,9 +4417,10 @@ class _ProgramElaboration:
                 LiteralValue(0, INT),
                 Var(local),
                 initial,
+                *zero_states,
                 *(Var(item) for item in passed),
             ),
-            state_type,
+            result_type,
             signature.effects,
             origin,
         )
@@ -3253,6 +4815,7 @@ class _ProgramElaboration:
         Value
             The lowered value.
         """
+        expr = self._hoist_function_calls(expr, scope, state, node)
         chart = _chart_construct(expr)
         if chart is not None:
             self._fail(
@@ -3345,6 +4908,343 @@ class _ProgramElaboration:
             ("programs", state.declaration.name, "lets"),
         )
 
+    def _function_morphism(self: _Elaborator, name: str) -> MorphismDecl | None:
+        """The learned-function declaration a name denotes, if any.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        MorphismDecl | None
+            The ``[role=function]`` morphism of that name, else ``None``.
+        """
+        morphism = self._program_morphisms.get(name)
+        if morphism is None or _option_value(morphism.options, "role") != "function":
+            return None
+        return morphism
+
+    def _hoist_function_calls(
+        self: _Elaborator,
+        expr: LetExprNode,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> LetExprNode:
+        """Bind every learned-function call in a let expression on its own.
+
+        Each call ``f(a, b)`` of a ``[role=function]`` morphism is
+        elaborated, innermost first, to its network applied to its
+        arguments and bound to a fresh name in the scope, and the
+        expression reads that name in its place.
+
+        Parameters
+        ----------
+        expr : LetExprNode
+            The expression.
+        scope : _Scope
+            The scope the calls bind in.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        LetExprNode
+            The expression with every learned-function call replaced.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If a call lies under a ``factor`` or lambda binder, or its
+            arguments do not fit the function's domain.
+        """
+        calls = [
+            candidate
+            for candidate in walk_let_expr(expr)
+            if isinstance(candidate, LetExprCall)
+            and self._function_morphism(candidate.func) is not None
+        ]
+        if not calls:
+            return expr
+        for binder in walk_let_expr(expr):
+            if not isinstance(binder, LetExprFactor | LetExprLambda):
+                continue
+            inner = next(
+                (
+                    candidate.func
+                    for candidate in walk_let_expr(binder)
+                    if isinstance(candidate, LetExprCall)
+                    and self._function_morphism(candidate.func) is not None
+                ),
+                None,
+            )
+            if inner is not None:
+                self._fail(
+                    node,
+                    f"the learned function {inner!r} is called inside a factor or "
+                    "lambda body; call it in a let of its own and read the result "
+                    "there",
+                    code="qiec-program",
+                )
+
+        def hoist(candidate: LetExprNode) -> LetExprNode:
+            if not isinstance(candidate, LetExprCall):
+                return candidate
+            morphism = self._function_morphism(candidate.func)
+            if morphism is None:
+                return candidate
+            value, type_ = self._function_call(morphism, candidate, scope, state, node)
+            serial = state.function_calls
+            state.function_calls += 1
+            name = f"{candidate.func}__call{serial}"
+            self._bind_step(scope, name, type_, Return(value), node)
+            return LetExprVar(name=name)
+
+        return map_let_expr(expr, hoist)
+
+    def _function_call(
+        self: _Elaborator,
+        morphism: MorphismDecl,
+        call: LetExprCall,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> tuple[Value, TypeExpr]:
+        """Elaborate one call of a learned function to its network.
+
+        The network's layers are affine maps whose weights and biases
+        are program inputs named after the function, as a network
+        kernel's are: ``<f>_param_layer<k>_weight`` and
+        ``<f>_param_layer<k>_bias`` for each hidden layer, under the
+        declared activation, then ``<f>_param_weight`` and
+        ``<f>_param_bias`` for the output layer, under the declared
+        output nonlinearity. An identity network applies only the
+        output nonlinearity.
+
+        Parameters
+        ----------
+        morphism : MorphismDecl
+            The ``[role=function]`` declaration.
+        call : LetExprCall
+            The call, its arguments already free of learned-function
+            calls.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        tuple[Value, TypeExpr]
+            The image and its type: ``Real`` for a one-wide codomain,
+            else ``Tensor[Real]([width])``.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the call's arity or an argument's width differs from the
+            domain's factors, an argument is not a real scalar or vector,
+            or a side has no fixed real width.
+        """
+        name = call.func
+        widths: list[int] = []
+        for factor in _factors(morphism.domain):
+            info = (
+                self._program_objects.get(factor.name)
+                if isinstance(factor, TypeName)
+                else None
+            )
+            width = (
+                None
+                if info is None or info.real_width is None
+                else _fixed_extent(info.real_width)
+            )
+            if width is None:
+                self._fail(
+                    node,
+                    f"the learned function {name!r} has a domain factor with no "
+                    "fixed real width",
+                    code="qiec-program",
+                )
+            widths.append(width)
+        codomain = morphism.codomain
+        info = (
+            self._program_objects.get(codomain.name)
+            if isinstance(codomain, TypeName)
+            else None
+        )
+        out_width = (
+            None
+            if info is None or info.real_width is None
+            else _fixed_extent(info.real_width)
+        )
+        if out_width is None:
+            self._fail(
+                node,
+                f"the learned function {name!r} has a codomain with no fixed real "
+                "width",
+                code="qiec-program",
+            )
+        if len(call.args) != len(widths):
+            self._fail(
+                node,
+                f"the learned function {name!r} takes {len(widths)} argument(s), "
+                f"one per factor of its domain, but is called with "
+                f"{len(call.args)}",
+                code="qiec-program",
+            )
+        sequence_kind = sequence_source_kind(morphism)
+        if sequence_kind is not None:
+            return self._sequence_function_call(
+                morphism,
+                sequence_kind,
+                call,
+                widths[0],
+                out_width,
+                scope,
+                state,
+                node,
+            )
+        sources: list[Value] = []
+        for position, (argument, width) in enumerate(
+            zip(call.args, widths, strict=True)
+        ):
+            if (
+                isinstance(argument, LetExprVar)
+                and scope.lookup(argument.name) is None
+                and argument.name not in self._lambda_macros
+            ):
+                # A host datum passed straight to the function takes the
+                # type of the domain factor it fills.
+                self._declare_parameter(
+                    argument.name,
+                    REAL if width == 1 else tensor_type(REAL, (_extent(width),)),
+                    "data",
+                    scope,
+                    state,
+                    node,
+                )
+            value = self._let_value(argument, scope, state, node)
+            type_ = self._value_type(value, scope.context(), argument)
+            shape = tensor_shape(type_)
+            if type_ == REAL:
+                given: int | None = 1
+            elif (
+                shape is not None
+                and shape[0] == REAL
+                and len(shape[1]) == 1
+                and isinstance(shape[1][0], IndexLiteral)
+            ):
+                given = int(shape[1][0].value)
+            else:
+                given = None
+            if given != width:
+                self._fail(
+                    node,
+                    f"argument {position} of the learned function {name!r} has "
+                    f"type {self._render(type_)}, but its domain factor is a "
+                    f"{width}-wide real vector",
+                    code="qiec-program",
+                )
+            sources.append(value)
+        output = _option_value(morphism.options, "output") or "identity"
+        result: TypeExpr = (
+            REAL if out_width == 1 else tensor_type(REAL, (_extent(out_width),))
+        )
+        result_shape: tuple[IndexTerm, ...] | None = (
+            None if out_width == 1 else (_extent(out_width),)
+        )
+        path = ("programs", state.declaration.name, "functions", name)
+        if _source_kind(morphism) == "identity":
+            if len(sources) != 1:
+                self._fail(
+                    node,
+                    f"the identity function {name!r} has a product domain",
+                    code="qiec-program",
+                )
+            image: Value = sources[0]
+        else:
+            activation = str(_option_value(morphism.options, "activation") or "tanh")
+            fan_in = sum(widths)
+            for depth, hidden in enumerate(self._hidden_widths(morphism, node)):
+                layer_weight = self._declare_parameter(
+                    f"{name}_param_layer{depth}_weight",
+                    tensor_type(REAL, (_extent(hidden), _extent(fan_in))),
+                    "weight",
+                    scope,
+                    state,
+                    node,
+                    axes=(f"{name}_layer{depth}_row", f"{name}_layer{depth}_col"),
+                )
+                layer_bias = self._declare_parameter(
+                    f"{name}_param_layer{depth}_bias",
+                    tensor_type(REAL, (_extent(hidden),)),
+                    "bias",
+                    scope,
+                    state,
+                    node,
+                    axes=(f"{name}_layer{depth}_row",),
+                )
+                hidden_type = tensor_type(REAL, (_extent(hidden),))
+                sources = [
+                    self._primitive(
+                        activation,
+                        (
+                            AffineMap(
+                                Var(layer_weight),
+                                Var(layer_bias),
+                                tuple(sources),
+                                0,
+                                hidden,
+                                "identity",
+                                hidden_type,
+                            ),
+                        ),
+                        node,
+                        (*path, "layers", depth),
+                        (_extent(hidden),),
+                    )
+                ]
+                fan_in = hidden
+            weight = self._declare_parameter(
+                f"{name}_param_weight",
+                tensor_type(REAL, (_extent(out_width), _extent(fan_in))),
+                "weight",
+                scope,
+                state,
+                node,
+                axes=(f"{name}_param_row", f"{name}_param_col"),
+            )
+            bias = self._declare_parameter(
+                f"{name}_param_bias",
+                tensor_type(REAL, (_extent(out_width),)),
+                "bias",
+                scope,
+                state,
+                node,
+                axes=(f"{name}_param_row",),
+            )
+            image = AffineMap(
+                Var(weight),
+                Var(bias),
+                tuple(sources),
+                0,
+                out_width,
+                "identity",
+                result,
+            )
+        if output != "identity":
+            image = self._primitive(
+                str(output), (image,), node, (*path, "output"), result_shape
+            )
+        return image, result
+
     def _batch_of(self: _Elaborator, name: str, state: _ProgramState) -> _Shape:
         """The plate extents a bound name ranges over.
 
@@ -3419,23 +5319,17 @@ class _ProgramElaboration:
             family parameter, each a static binder of the program that a
             run reads off the data. Otherwise ``Int`` or ``Real`` when the name reaches no
             plated step, else the tensor of that element over the
-            plate's first batch axis.
+            plate's first batch axis. A name pinned for a scan cell
+            specialized to its scanning program has the pinned type.
         """
+        pinned = self._pinned_types.get(name)
+        if pinned is not None:
+            return pinned
         element, axis = state.input_shapes.get(name, (REAL, None))
         rank = state.tables.get(name)
         if rank is not None:
             rank += state.table_events.get(name, 0)
-            dimensions: list[IndexTerm] = []
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions.append(IndexVariable(extent_name, NAT))
-            return tensor_type(element, tuple(dimensions))
+            return tensor_type(element, self._open_extents(name, rank, state))
         if axis is None:
             return element
         return tensor_type(element, (axis.size,))
@@ -3675,6 +5569,47 @@ class _ProgramElaboration:
             for name in set(elements) | set(axes)
         }
 
+    def _unify_result_extents(
+        self: _Elaborator, declaration: ProgramDecl, scope: _Scope, state: _ProgramState
+    ) -> None:
+        """Fix the open extents of a returned value to the program's codomain.
+
+        A program declared ``p : A -> D`` with ``D`` a ``Real N`` object
+        returns a value of ``D``: each axis of a returned real vector, or
+        of a returned square matrix, whose extent only the data would fix,
+        such as a draw whose mean is a host vector, has ``N`` entries.
+
+        Parameters
+        ----------
+        declaration : ProgramDecl
+            The program.
+        scope : _Scope
+            The body's scope.
+        state : _ProgramState
+            The program's accumulating state.
+        """
+        if len(declaration.return_vars) != 1:
+            return
+        local = scope.lookup(declaration.return_vars[0])
+        info = _object_expr_info(declaration.codomain, self._program_objects)
+        if local is None or info is None or info.real_width is None:
+            return
+        shape = tensor_shape(local.type)
+        if shape is None or shape[0] != REAL:
+            return
+        own = [self._resolved_extent(item, state) for item in shape[1]]
+        if len(own) > 2 or (len(own) == 2 and own[0] != own[1]):
+            # A ``Real N`` codomain sizes a vector, or a square matrix over
+            # it; it says nothing of a matrix of two shapes.
+            return
+        width = _extent(info.real_width)
+        open_sizes = [
+            size
+            for size in (self._resolved_extent(item, state) for item in shape[1])
+            if isinstance(size, IndexVariable) and size.name in state.open_extents
+        ]
+        self._unify_extents([(size, width) for size in open_sizes], scope, state)
+
     def _program_return(
         self: _Elaborator, declaration: ProgramDecl, scope: _Scope, state: _ProgramState
     ) -> tuple[Value, TypeExpr]:
@@ -3851,6 +5786,15 @@ class _ProgramElaboration:
         # marginal per group position for the enclosing group's weights.
         result_type: TypeExpr = LOG_WEIGHT if outer_group is None else weight_type
         chooser = handlers[MARGINAL_HANDLERS[(outer_group is not None, reduction)]]
+        # The row of a marginalized chain's cell keeps the block's weighted
+        # shots, one per state, which the forward algorithm reduces.
+        table = (
+            state.markov_row == latent_name and weight_scope is None and group is None
+        )
+        if table:
+            states = self._object_axis(state.declaration.codomain, step)
+            result_type = tensor_type(LOG_WEIGHT, (states.size,))
+            chooser = handlers[ENUMERATE_TABLE_HANDLER]
         path = ("programs", state.declaration.name, "marginals", latent_name)
         choice = self._local_instance(
             f"{latent_name}_choice", "Random", (), (*path, "choice")
@@ -3903,7 +5847,7 @@ class _ProgramElaboration:
                     _origin_at(self, (*path, "weight"), "local-instance", step),
                 ),
             ),
-            (weight_type,),
+            (result_type if table else weight_type,),
         )
         body = NewInstance(
             choice.entry.instance,
@@ -3912,6 +5856,9 @@ class _ProgramElaboration:
             _origin_at(self, (*path, "choice"), "local-instance", step),
         )
         helper = self._marginal_helper(step, inner, body, scope, state, result_type)
+        if table:
+            self._bind_step(scope, latent_name, result_type, helper, step)
+            return
         weight_local = self._bind_step(scope, None, result_type, helper, step)
         if weight_scope is None:
             self._add_score(state.score, Var(weight_local), scope, state, step)
@@ -4312,6 +6259,10 @@ class _ProgramElaboration:
             If the morphism cannot be resolved to a family, or the
             arguments and plate do not type.
         """
+        if self._function_morphism(step.morphism) is not None:
+            self._fail(
+                step, learned_function_draw_message(step.morphism), code="qiec-program"
+            )
         if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.
@@ -4397,6 +6348,9 @@ class _ProgramElaboration:
                 for name, value in arguments
             ]
         arguments = self._widen_alphabet(record, morphism, arguments, scope, step)
+        arguments, plate = self._unify_event_shape(
+            record, arguments, plate, scope, state, step
+        )
         path = ("programs", state.declaration.name, "sites", site, "distribution")
         value = DistributionValue(
             record.id,
@@ -4416,6 +6370,72 @@ class _ProgramElaboration:
         )
         self._value_type(value, scope.context(), step)
         return value
+
+    def _unify_event_shape(
+        self: _Elaborator,
+        record: DistributionFamily,
+        arguments: list[tuple[str, Value]],
+        plate: PlateShape,
+        scope: _Scope,
+        state: _ProgramState,
+        node: object,
+    ) -> tuple[list[tuple[str, Value]], PlateShape]:
+        """Fix the open extents of a draw's event source to its event axes.
+
+        A family whose plate names its event axes samples over them, so
+        the argument its event shape comes from has their extents: an
+        open extent of that argument, a host datum's size the data would
+        otherwise fix, is fixed to the axis's size. Extents that are not
+        open and differ are left for the kernel to report.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        arguments : list[tuple[str, Value]]
+            The lowered arguments.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        node : object
+            The source node.
+
+        Returns
+        -------
+        tuple[list[tuple[str, Value]], PlateShape]
+            The arguments and plate at every extent fixed so far.
+        """
+        supplied = record.event_argument(arguments)
+        if (
+            supplied is not None
+            and record.event_rank
+            and len(plate.event) >= record.event_rank
+        ):
+            shape = tensor_shape(self._value_type(supplied[1], scope.context(), node))
+            if shape is not None and len(shape[1]) >= record.event_rank:
+                natural = shape[1][len(shape[1]) - record.event_rank :]
+                trailing = plate.event[len(plate.event) - record.event_rank :]
+                self._unify_extents(
+                    [
+                        (size, axis.size)
+                        for size, axis in zip(natural, trailing, strict=True)
+                    ],
+                    scope,
+                    state,
+                )
+        if not state.extent_solution:
+            return arguments, plate
+        substitution = self._extent_substitution(state)
+        return (
+            [
+                (name, substitute_value(value, substitution))
+                for name, value in arguments
+            ],
+            substitute_plate(plate, substitution),
+        )
 
     def _plated_type(
         self: _Elaborator, value: DistributionValue, scope: _Scope, node: object
@@ -4948,13 +6968,16 @@ class _ProgramElaboration:
                 f"parameters ({', '.join(record.parameter_names)})",
                 code="qiec-program",
             )
-        arguments: list[tuple[str, Value]] = []
-        for parameter, argument in zip(record.parameters, raw, strict=False):
-            value = self._draw_argument(argument, parameter, plate, scope, state, step)
-            if via is not None and group is not None:
-                value = self._fibred(value, via, group, plate, scope, state, step)
-            arguments.append((parameter.name, value))
-        return arguments
+        return self._lower_family_parameters(
+            record,
+            list(zip(record.parameters, raw, strict=False)),
+            step,
+            plate,
+            scope,
+            state,
+            via,
+            group,
+        )
 
     def _named_family_arguments(
         self: _Elaborator,
@@ -5001,7 +7024,7 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
 
-        arguments: list[tuple[str, Value]] = []
+        pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]] = []
         for parameter_name in selected:
             try:
                 parameter = _semantic_family_parameter(
@@ -5021,11 +7044,271 @@ class _ProgramElaboration:
                     record, [argument], step, plate, state
                 )
                 argument = bundled[0]
+            pairs.append((parameter, argument))
+        return self._lower_family_parameters(
+            record, pairs, step, plate, scope, state, via, group
+        )
+
+    def _lower_family_parameters(
+        self: _Elaborator,
+        record: DistributionFamily,
+        pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]],
+        step: SampleStep | ObserveStep | MarginalizeStep,
+        plate: PlateShape,
+        scope: _Scope,
+        state: _ProgramState,
+        via: tuple[str, ...] | None,
+        group: PlateAxis | None,
+    ) -> list[tuple[str, Value]]:
+        """Lower each argument against its parameter, sizing free names by the draw.
+
+        A free name filling a tensor parameter whose axes the family ties
+        to its sample's (a multivariate normal's mean and Cholesky
+        factor, a Wishart's scale) takes those axes' extents from the
+        draw: the plate's trailing event axes when it names enough, else
+        the arguments already typed. An axis nothing in the draw fixes is
+        one open extent, shared by every free name the family ties to it.
+        Free names are therefore lowered after the arguments that may fix
+        their extents.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        pairs : list[tuple[FamilyParameter, DrawArg | str | float | _Spread]]
+            Each parameter with the argument filling it, in order.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+        via : str | None
+            The fibration of a grouped observation.
+        group : PlateAxis | None
+            The grouping axis in force.
+
+        Returns
+        -------
+        list[tuple[str, Value]]
+            The named arguments, in the order of ``pairs``.
+        """
+        event: dict[int, IndexTerm] = {}
+        if (
+            record.event_rank
+            and len(plate.event) >= record.event_rank
+            and not self._provisional_event(record, step)
+        ):
+            trailing = plate.event[len(plate.event) - record.event_rank :]
+            event = {position: axis.size for position, axis in enumerate(trailing)}
+        values: dict[int, Value] = {}
+        tied: list[int] = []
+        for position, (parameter, argument) in enumerate(pairs):
+            if self._tied_free_name(parameter, argument, plate, scope) is not None:
+                tied.append(position)
+                continue
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
+            values[position] = value
+            if parameter.event_dims:
+                self._tie_event_extents(
+                    record, parameter, value, event, step, scope, state
+                )
+        for position in tied:
+            parameter, argument = pairs[position]
+            name = self._tied_free_name(parameter, argument, plate, scope)
+            assert name is not None
+            extents: list[IndexTerm] = []
+            for axis, dim in enumerate(parameter.event_dims):
+                if dim is not None and dim in event:
+                    extents.append(event[dim])
+                    continue
+                extent = self._open_extent(
+                    f"{name}_extent" if parameter.rank == 1 else f"{name}_extent{axis}",
+                    state,
+                )
+                if dim is not None:
+                    event[dim] = extent
+                extents.append(extent)
+            values[position] = self._draw_argument(
+                argument,
+                parameter,
+                plate,
+                scope,
+                state,
+                step,
+                extents=tuple(extents),
+            )
+        if state.extent_solution:
+            # A free name's typing may fix an extent an argument lowered
+            # before it reads.
+            substitution = self._extent_substitution(state)
+            values = {
+                position: substitute_value(value, substitution)
+                for position, value in values.items()
+            }
+        arguments: list[tuple[str, Value]] = []
+        for position, (parameter, _) in enumerate(pairs):
+            value = values[position]
             if via is not None and group is not None:
                 value = self._fibred(value, via, group, plate, scope, state, step)
             arguments.append((parameter.name, value))
         return arguments
+
+    def _provisional_event(
+        self: _Elaborator,
+        record: DistributionFamily,
+        step: SampleStep | ObserveStep | MarginalizeStep,
+    ) -> bool:
+        """Whether a draw's event axes come from an annotation its arguments may override.
+
+        A vector family's ``: Axis`` annotation, with no axis-role
+        clause, names the event axis only when the arguments fix no other
+        event size; otherwise it is the plate the draws repeat over.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step.
+
+        Returns
+        -------
+        bool
+            Whether the plate's event axes are such an annotation.
+        """
+        if (
+            step.index is None
+            or isinstance(step, MarginalizeStep)
+            or step.axes is not None
+            or record.event_rank == 0
+            or not record.event_sources
+            or _option_axes(step.options, "over")
+            or _option_axes(step.options, "iid_over")
+        ):
+            return False
+        morphism = self._program_morphisms.get(step.morphism)
+        return morphism is None or not _option_axes(morphism.options, "over")
+
+    def _tie_event_extents(
+        self: _Elaborator,
+        record: DistributionFamily,
+        parameter: FamilyParameter,
+        value: Value,
+        event: dict[int, IndexTerm],
+        step: SampleStep | ObserveStep | MarginalizeStep,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> None:
+        """Read a typed argument's tied axes against the draw's event extents.
+
+        Each axis the family ties to a sample axis either fixes that
+        axis's extent, when nothing has yet, or must equal it: an open
+        extent on either side is fixed to the other, and two different
+        fixed extents are refused.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            The family.
+        parameter : FamilyParameter
+            The parameter the argument fills.
+        value : Value
+            The lowered argument.
+        event : dict[int, IndexTerm]
+            The extents of the sample's axes fixed so far, extended in
+            place.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            The step, where a mismatch is reported.
+        scope : _Scope
+            The scope.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If an axis of the argument has a fixed extent other than the
+            sample axis's.
+        """
+        shape = tensor_shape(self._value_type(value, scope.context(), step))
+        if shape is None or len(shape[1]) < parameter.rank:
+            return
+        own = shape[1][len(shape[1]) - parameter.rank :]
+        for size, dim in zip(own, parameter.event_dims, strict=True):
+            if dim is None:
+                continue
+            if dim not in event:
+                event[dim] = self._resolved_extent(size, state)
+                continue
+            if not self._unify_extents([(size, event[dim])], scope, state):
+                source = f"{value.local.name!r}, " if isinstance(value, Var) else ""
+                self._fail(
+                    step,
+                    f"family {record.name!r} reads its {parameter.name!r} from "
+                    f"{source}an axis of extent "
+                    f"{render_static(self._resolved_extent(size, state))}, but "
+                    f"the sample's axis it spans has extent "
+                    f"{render_static(self._resolved_extent(event[dim], state))}",
+                    code="qiec-program",
+                )
+            event[dim] = self._resolved_extent(event[dim], state)
+
+    def _tied_free_name(
+        self: _Elaborator,
+        parameter: FamilyParameter,
+        argument: DrawArg | str | float | _Spread,
+        plate: PlateShape,
+        scope: _Scope,
+    ) -> str | None:
+        """The free name filling a parameter whose axes the draw sizes.
+
+        Parameters
+        ----------
+        parameter : FamilyParameter
+            The parameter.
+        argument : DrawArg | str | float | _Spread
+            The argument filling it.
+        plate : PlateShape
+            The distribution's plate.
+        scope : _Scope
+            The scope.
+
+        Returns
+        -------
+        str | None
+            The name, when the argument is a name nothing binds, the
+            family ties the parameter's axes to its sample's, and the
+            draw reads the name as a tensor over those axes: with no
+            plate, one value per row of a plate with no event axes, or
+            beside event axes a matrix, which no scalar broadcast stands
+            in for. ``None`` otherwise.
+        """
+        if not parameter.event_dims:
+            return None
+        if isinstance(argument, DrawArgNamed):
+            argument = argument.value
+        if isinstance(argument, DrawArgName):
+            name = argument.text
+        elif (
+            isinstance(argument, str)
+            and not _is_number_text(argument)
+            and "[" not in argument
+        ):
+            name = argument
+        else:
+            return None
+        if scope.lookup(name) is not None or name in self._program_morphisms:
+            return None
+        if (
+            plate.event
+            and parameter.constraint not in _MATRIX_CONSTRAINTS
+            and parameter.rank < 2
+        ):
+            return None
+        return name
 
     def _bundle_vector_argument(
         self: _Elaborator,
@@ -5123,6 +7406,7 @@ class _ProgramElaboration:
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        extents: tuple[IndexTerm, ...] | None = None,
     ) -> Value:
         """Lower one draw argument against the parameter it fills.
 
@@ -5141,6 +7425,9 @@ class _ProgramElaboration:
             The program's accumulating state.
         node : object
             The source node.
+        extents : tuple[IndexTerm, ...] | None
+            The extents the draw fixes for each axis of a free name
+            filling the parameter; ``None`` when it fixes none.
 
         Returns
         -------
@@ -5175,11 +7462,19 @@ class _ProgramElaboration:
             return _literal(argument.value, integral)
         if isinstance(argument, DrawArgNamed):
             return self._draw_argument(
-                argument.value, parameter, plate, scope, state, node
+                argument.value, parameter, plate, scope, state, node, extents
             )
         elif isinstance(argument, DrawArgName):
             return self._named_argument(
-                argument.text, element, rank, constraint, plate, scope, state, node
+                argument.text,
+                element,
+                rank,
+                constraint,
+                plate,
+                scope,
+                state,
+                node,
+                extents,
             )
         if isinstance(argument, DrawArgIndex):
             return self._indexed_argument(
@@ -5206,7 +7501,7 @@ class _ProgramElaboration:
             indices = tuple(item.rstrip("]") for item in rest.split("["))
             return self._indexed_argument(base, indices, element, scope, state, node)
         return self._named_argument(
-            text, element, rank, constraint, plate, scope, state, node
+            text, element, rank, constraint, plate, scope, state, node, extents
         )
 
     def _named_argument(
@@ -5219,6 +7514,7 @@ class _ProgramElaboration:
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        extents: tuple[IndexTerm, ...] | None = None,
     ) -> Value:
         """Lower a bare name in argument position.
 
@@ -5226,13 +7522,16 @@ class _ProgramElaboration:
         is that distribution when a sampleable is expected; any other
         name is a data input. Filling a parameter of a plated draw whose
         plate names no event axes, it holds one value per row: its type is
-        the plate's first batch axis, then one open extent per axis of the
-        parameter, and a datum without the plate axis is a value every row
-        shares. Filling a parameter of a draw whose plate names event axes
-        (`[over=...]`), it is one value of the parameter's element type,
-        which the plate broadcasts. Filling a tensor parameter of a draw
-        with no plate, it is a tensor of open extents; filling a scalar
-        parameter of such a draw, one value of its element type.
+        the plate's first batch axis, then the parameter's own axes, and a
+        datum without the plate axis is a value every row shares. Filling
+        a tensor parameter of a draw with no batch axes, it is one tensor
+        over the parameter's own axes. A parameter's own axes are the
+        ``extents`` the draw fixes, when given, and otherwise one open
+        extent each. Filling any other parameter of a draw whose plate
+        names event axes (`[over=...]`), it is one value of the
+        parameter's element type, which the plate broadcasts; filling a
+        scalar parameter of a draw with no plate, one value of its
+        element type.
 
         Parameters
         ----------
@@ -5252,6 +7551,9 @@ class _ProgramElaboration:
             The program's accumulating state.
         node : object
             The source node.
+        extents : tuple[IndexTerm, ...] | None
+            The extent of each of the parameter's own axes, as the draw
+            fixes them; ``None`` when the draw fixes none.
 
         Returns
         -------
@@ -5264,26 +7566,21 @@ class _ProgramElaboration:
         morphism = self._program_morphisms.get(name)
         if morphism is not None and constraint == "sampleable":
             return self._morphism_distribution(morphism, name, scope, state, node)
-        if rank > 0 and plate.empty:
-            # Nothing in the step fixes the input's extents, so each one
-            # is a static index parameter of the program: the input is
-            # typed over fresh index variables the program's telescope
-            # binds, and a run reads their values off the data it is
-            # given.
-            dimensions: list[IndexVariable] = []
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions.append(IndexVariable(extent_name, NAT))
+        if rank > 0 and not plate.batch and (plate.empty or extents is not None):
+            # A draw with no batch axes reads the input as one tensor over
+            # the parameter's own axes. An axis the draw does not fix is a
+            # static index parameter of the program: the input is typed
+            # over a fresh index variable the program's telescope binds,
+            # and a run reads its value off the data it is given.
+            own = (
+                extents
+                if extents is not None
+                else self._open_extents(name, rank, state)
+            )
             return Var(
                 self._declare_parameter(
                     name,
-                    tensor_type(element, tuple(dimensions)),
+                    tensor_type(element, own),
                     "data",
                     scope,
                     state,
@@ -5294,21 +7591,19 @@ class _ProgramElaboration:
             # A parameter of a plated draw takes one value per row, as a
             # name a let feeds to the draw does: the host datum ranges over
             # the plate's first batch axis, then over the parameter's own
-            # axes, each an open extent the data fix. A datum without the
-            # plate axis is one value every row shares.
+            # axes. A datum without the plate axis is one value every row
+            # shares.
             axis = plate.batch[0]
-            dimensions_per_row: list[IndexTerm] = [axis.size]
-            axes_per_row: list[str] = [axis.name]
-            for position in range(rank):
-                extent_name = (
-                    f"{name}_extent" if rank == 1 else f"{name}_extent{position}"
-                )
-                binder = state.extents.get(extent_name)
-                if binder is None:
-                    binder = IndexBinder(extent_name, NAT)
-                    state.extents[extent_name] = binder
-                dimensions_per_row.append(IndexVariable(extent_name, NAT))
-                axes_per_row.append(extent_name)
+            own = (
+                extents
+                if extents is not None
+                else self._open_extents(name, rank, state)
+            )
+            dimensions_per_row: list[IndexTerm] = [axis.size, *own]
+            axes_per_row: list[str] = [
+                axis.name,
+                *self._axes_of_type(tensor_type(element, own))[:rank],
+            ]
             local = self._declare_parameter(
                 name,
                 tensor_type(element, tuple(dimensions_per_row)),
@@ -5321,7 +7616,224 @@ class _ProgramElaboration:
             state.per_row.add(name)
             state.batch_shapes[name] = (axis.size,)
             return Var(local)
+        if rank > 0 and extents is not None:
+            # A tensor parameter whose axes the draw's event fixes, such
+            # as a Cholesky factor beside an ``[over=...]`` plate, is one
+            # tensor every row shares.
+            return Var(
+                self._declare_parameter(
+                    name,
+                    tensor_type(element, extents),
+                    "data",
+                    scope,
+                    state,
+                    node,
+                )
+            )
         return Var(self._declare_parameter(name, element, "data", scope, state, node))
+
+    def _open_extents(
+        self: _Elaborator, name: str, rank: int, state: _ProgramState
+    ) -> tuple[IndexTerm, ...]:
+        """Fresh open extents for each axis of a free name's value.
+
+        Parameters
+        ----------
+        name : str
+            The free name.
+        rank : int
+            How many axes its value has.
+        state : _ProgramState
+            The program's accumulating state, whose telescope binds each
+            extent.
+
+        Returns
+        -------
+        tuple[IndexTerm, ...]
+            One index variable per axis, named after the name and the
+            axis's position, or the term a later use fixed it to.
+        """
+        return tuple(
+            self._open_extent(
+                f"{name}_extent" if rank == 1 else f"{name}_extent{position}", state
+            )
+            for position in range(rank)
+        )
+
+    def _open_extent(self: _Elaborator, name: str, state: _ProgramState) -> IndexTerm:
+        """The open extent of a given name, bound by the program's telescope.
+
+        Parameters
+        ----------
+        name : str
+            The extent's name.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        IndexTerm
+            The extent's index variable, or the term a use has fixed it
+            to.
+        """
+        if name in state.extent_solution:
+            return state.extent_solution[name]
+        if name not in state.extents:
+            state.extents[name] = IndexBinder(name, NAT)
+            state.open_extents.add(name)
+        return IndexVariable(name, NAT)
+
+    @staticmethod
+    def _resolved_extent(term: IndexTerm, state: _ProgramState) -> IndexTerm:
+        """An extent with every open extent a use has fixed replaced.
+
+        Parameters
+        ----------
+        term : IndexTerm
+            The extent.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        IndexTerm
+            The term the extent equals.
+        """
+        if isinstance(term, IndexVariable) and term.identity is None:
+            return state.extent_solution.get(term.name, term)
+        return term
+
+    def _unify_extents(
+        self: _Elaborator,
+        pairs: Sequence[tuple[IndexTerm, IndexTerm]],
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> bool:
+        """Fix open extents so that each pair of extents is one extent.
+
+        An open extent a free name's typing introduced equals whatever it
+        meets: a declared object's size, a literal, or another extent.
+        Two extents neither of which is open, such as two different
+        literals, do not unify. Each fix is applied to every name bound
+        so far, so later uses read the fixed types.
+
+        Parameters
+        ----------
+        pairs : Sequence[tuple[IndexTerm, IndexTerm]]
+            The extents that must be equal.
+        scope : _Scope
+            The scope in force, whose bindings and enclosing ones take
+            the fixed types.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        bool
+            Whether every pair unifies. Fixes found before a pair that
+            does not unify are kept.
+        """
+        changed = False
+        unified = True
+        for left, right in pairs:
+            left = self._resolved_extent(left, state)
+            right = self._resolved_extent(right, state)
+            if left == right:
+                continue
+            if isinstance(left, IndexVariable) and left.name in state.open_extents:
+                variable, term = left, right
+            elif isinstance(right, IndexVariable) and right.name in state.open_extents:
+                variable, term = right, left
+            else:
+                unified = False
+                continue
+            fixed = StaticSubstitution((), ((variable.name, term),), ())
+            state.extent_solution = {
+                name: substitute_index(value, fixed)
+                for name, value in state.extent_solution.items()
+            }
+            state.extent_solution[variable.name] = term
+            changed = True
+        if changed:
+            self._apply_extent_solution(scope, state)
+        return unified
+
+    def _unify_types(
+        self: _Elaborator,
+        left: TypeExpr,
+        right: TypeExpr,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> bool:
+        """Fix open extents so that two tensor types are one type.
+
+        Parameters
+        ----------
+        left : TypeExpr
+            One type.
+        right : TypeExpr
+            The other.
+        scope : _Scope
+            The scope in force.
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        bool
+            Whether the types are equal once their open extents are
+            fixed: tensors of one element and rank whose extents unify.
+        """
+        left_shape = tensor_shape(left)
+        right_shape = tensor_shape(right)
+        if (
+            left_shape is None
+            or right_shape is None
+            or left_shape[0] != right_shape[0]
+            or len(left_shape[1]) != len(right_shape[1])
+        ):
+            return False
+        return self._unify_extents(
+            list(zip(left_shape[1], right_shape[1], strict=True)), scope, state
+        )
+
+    def _extent_substitution(
+        self: _Elaborator, state: _ProgramState
+    ) -> StaticSubstitution:
+        """The substitution fixing every open extent a use has fixed.
+
+        Parameters
+        ----------
+        state : _ProgramState
+            The program's accumulating state.
+
+        Returns
+        -------
+        StaticSubstitution
+            Each fixed extent to its term.
+        """
+        return StaticSubstitution((), tuple(state.extent_solution.items()), ())
+
+    def _apply_extent_solution(
+        self: _Elaborator, scope: _Scope, state: _ProgramState
+    ) -> None:
+        """Retype every name bound so far at the fixed extents.
+
+        Parameters
+        ----------
+        scope : _Scope
+            The scope in force; it and every enclosing scope are retyped.
+        state : _ProgramState
+            The program's accumulating state.
+        """
+        substitution = self._extent_substitution(state)
+        current: _Scope | None = scope
+        while current is not None:
+            for name, local in list(current.locals.items()):
+                fixed = substitute_type(local.type, substitution)
+                if fixed != local.type:
+                    current.locals[name] = Local(local.name, fixed)
+            current = current.outer
 
     def _indexed_argument(
         self: _Elaborator,
@@ -5374,6 +7886,9 @@ class _ProgramElaboration:
                 )
             index_values.append(Var(local))
         source = scope.lookup(base)
+        pinned = self._pinned_types.get(base) if source is None else None
+        if pinned is not None:
+            source = self._declare_parameter(base, pinned, "data", scope, state, node)
         if source is None:
             alphabet = state.alphabets.get(indices[0])
             if alphabet is None:
@@ -6589,7 +9104,7 @@ class _ProgramElaboration:
             return None
         if f"embed:{step.morphism}" in kinds:
             return ResolvedDist("Normal", (), step.morphism)
-        if "param-source:mlp" not in kinds:
+        if "param-source:mlp" not in kinds and "param-source:linear" not in kinds:
             return None
         family = _bare_init_family(morphism)
         if family is None or family not in _CONDITIONAL_HEADS:
@@ -7063,6 +9578,77 @@ class _ScalarParameter:
         )
 
 
+class _ParseBinding(dx.Model):
+    """One ``("A", p)`` binding of a ``parse`` call.
+
+    Parameters
+    ----------
+    label : str
+        The left-hand side.
+    value : LetExprNode
+        The probability vector's expression.
+    line : int
+        The binding's source line.
+    col : int
+        The binding's source column.
+    """
+
+    label: str
+    value: LetExprNode
+    line: int
+    col: int
+
+
+class _ParseCall(dx.Model):
+    """The parts of ``parse(D, x[, Plate][, ("A", p)...])``.
+
+    Parameters
+    ----------
+    deduction : str
+        The deduction.
+    source : str
+        The program input the deduction parses.
+    plate : str | None
+        The object whose elements index the corpus's sentences, when the
+        input is a corpus.
+    bindings : tuple[_ParseBinding, ...]
+        The production probabilities, by left-hand side.
+    """
+
+    deduction: str
+    source: str
+    plate: str | None
+    bindings: tuple[_ParseBinding, ...]
+
+
+def _sampled_support(
+    expr: LetExprNode, declaration: ProgramDecl
+) -> tuple[str, str] | None:
+    """The support of the family a variable is drawn from, if it is a draw.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        A binding's value.
+    declaration : ProgramDecl
+        The program.
+
+    Returns
+    -------
+    tuple[str, str] | None
+        The variable and its family's support when the value is a
+        variable a ``sample`` step of a known family draws, else
+        ``None``.
+    """
+    if not isinstance(expr, LetExprVar):
+        return None
+    for step in declaration.draws:
+        if isinstance(step, SampleStep) and expr.name in step.vars:
+            record = FAMILIES.get(step.morphism)
+            return None if record is None else (expr.name, record.support)
+    return None
+
+
 @dataclass(slots=True)
 class _ProgramState:
     """What accumulates while one program elaborates.
@@ -7108,9 +9694,26 @@ class _ProgramState:
     per_row
         The inputs that fill a family parameter of a plated draw
         directly, whose leading axis is that draw's plate.
+    function_calls
+        The number of learned-function calls bound so far, which numbers
+        the binding of the next one.
+    markov_row
+        For the row of a marginalized chain's cell, the latent its block
+        marginalizes, which the row binds to the block's weighted shots
+        (one per state) rather than scoring their marginal; else
+        ``None``.
+    markov_entry
+        For such a row, the parameter holding one position's entry,
+        which an observation of that name scores in place.
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
+    open_extents
+        The open extents a free name's typing introduced, which a later
+        use may fix: a declared object, or another extent.
+    extent_solution
+        Each open extent a use has fixed, to the term it equals, with no
+        solved extent on any right-hand side.
     template_objects
         The object parameters bound as objects of the body while the
         program elaborates.
@@ -7131,6 +9734,8 @@ class _ProgramState:
     pending_alphabet: PlateAxis | None = None
     current_site: str = ""
     extents: dict[str, IndexBinder] = field(default_factory=dict)
+    open_extents: set[str] = field(default_factory=set)
+    extent_solution: dict[str, IndexTerm] = field(default_factory=dict)
     template_objects: list[str] = field(default_factory=list)
     input_shapes: dict[str, tuple[TypeApplication, PlateAxis | None]] = field(
         default_factory=dict
@@ -7140,6 +9745,9 @@ class _ProgramState:
     batch_shapes: dict[str, tuple[IndexTerm, ...]] = field(default_factory=dict)
     parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
     per_row: set[str] = field(default_factory=set)
+    function_calls: int = 0
+    markov_row: str | None = None
+    markov_entry: str | None = None
     random: NamedEffectInstance | None = None  # type: ignore[assignment]
     score: NamedEffectInstance | None = None  # type: ignore[assignment]
 
@@ -7603,7 +10211,7 @@ def _origin_at(
     path: tuple[str | int, ...],
     role: str,
     node: object | None = None,
-) -> object:
+) -> SourceOrigin:
     """A source origin at a structural path.
 
     Parameters
@@ -7619,7 +10227,7 @@ def _origin_at(
 
     Returns
     -------
-    object
+    SourceOrigin
         The origin.
     """
     return elaborator._origin(

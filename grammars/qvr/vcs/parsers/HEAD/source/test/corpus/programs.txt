@@ -209,7 +209,9 @@ program marg : A -> B
       (object_atom
         (identifier))
       (identifier)
-      (identifier)
+      (named_draw_arg
+        (identifier)
+        (identifier))
       (observe_step
         (identifier)
         (identifier)
