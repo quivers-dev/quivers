@@ -18,7 +18,6 @@ import torch
 
 from quivers.continuous import MonadicProgram
 from quivers.dsl import loads
-from quivers.dsl.compiler._prelude import CompileError
 from quivers.inference import MCMC, NUTSKernel
 from quivers.diagnostics import ess as effective_sample_size
 from quivers.inference.trace import trace

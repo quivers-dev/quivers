@@ -834,7 +834,12 @@ def _bound_names(term: Computation | Value) -> set[str]:
 
 
 def _select(
-    condition: Value, then: Value, otherwise: Value, result_type: TypeExpr, owner: str, term: If
+    condition: Value,
+    then: Value,
+    otherwise: Value,
+    result_type: TypeExpr,
+    owner: str,
+    term: If,
 ) -> Value:
     """A conditional between two pure values, as ``select``.
 
@@ -1029,12 +1034,16 @@ def computation_value(
         if isinstance(first, Bind):
             # A nested sequence associates into the enclosing one; its
             # binder is fresh to the continuation.
-            node = Bind(first.binder, first.first, Bind(node.binder, first.then, node.then))
+            node = Bind(
+                first.binder, first.first, Bind(node.binder, first.then, node.then)
+            )
             continue
         bindings.append(
             LetBinding(
                 node.binder,
-                _step_value(first, replaced, node.binder.type, owner, computations, active),
+                _step_value(
+                    first, replaced, node.binder.type, owner, computations, active
+                ),
             )
         )
         node = node.then
@@ -1164,7 +1173,9 @@ def handled_reason(owner: NamedComputation, term: Computation) -> str:
         The reason clause.
     """
     effect = (
-        f"the effect `{term.effect.name}`" if isinstance(term, NewInstance) else "an effect"
+        f"the effect `{term.effect.name}`"
+        if isinstance(term, NewInstance)
+        else "an effect"
     )
     return (
         f"handles {effect} inside `{owner.name}`{origin_line(term)}, and the "

@@ -861,26 +861,6 @@ def passed_data_notes(module: QiecModule, name: str) -> dict[str, str]:
     return notes
 
 
-def _host_rank(value: object) -> int:
-    """How many axes a host value's nesting has.
-
-    Parameters
-    ----------
-    value : object
-        A number, or tuples of numbers however nested.
-
-    Returns
-    -------
-    int
-        Zero for a number, one more than its first item's for a tuple.
-    """
-    rank = 0
-    while isinstance(value, tuple) and value:
-        rank += 1
-        value = value[0]
-    return rank
-
-
 def _refuse_unmapped_data(
     module: QiecModule, entry: ProgramEntry, data: Mapping[str, object]
 ) -> None:

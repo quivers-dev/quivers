@@ -168,7 +168,6 @@ from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
-from quivers.qiec.terms import Var as QiecVar
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
@@ -1002,9 +1001,7 @@ def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
     parameters: dict[str, torch.Tensor] = {}
     for position in range(0, len(pairs), 2):
         name = str(pairs[position])
-        tensor = torch.as_tensor(
-            pairs[position + 1], dtype=torch.get_default_dtype()
-        )
+        tensor = torch.as_tensor(pairs[position + 1], dtype=torch.get_default_dtype())
         try:
             parameters[name] = clamp_param(spec, name, tensor)
         except KeyError as error:

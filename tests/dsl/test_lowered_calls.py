@@ -254,7 +254,9 @@ def test_a_conditional_lowers_to_select() -> None:
     assert isinstance(program, MonadicProgram)
 
 
-@pytest.mark.parametrize(("a", "b"), [(0.7, 0.2), (-0.6, -1.3), (1.4, 0.9), (-2.0, 0.1)])
+@pytest.mark.parametrize(
+    ("a", "b"), [(0.7, 0.2), (-0.6, -1.3), (1.4, 0.9), (-2.0, 0.1)]
+)
 def test_select_agrees_with_the_oracle_on_both_paths(a: float, b: float) -> None:
     oracle = float(
         _leaky_oracle(torch.tensor(a, dtype=_F64), torch.tensor(b, dtype=_F64), False)
@@ -552,7 +554,11 @@ def test_a_traverse_agrees_with_the_oracle_on_both_paths(seed: int) -> None:
     reference = _reference(
         TRAVERSE,
         "traversed",
-        {"a": a, "theta": tuple(theta), **{f"noise@{k}": v for k, v in enumerate(noise)}},
+        {
+            "a": a,
+            "theta": tuple(theta),
+            **{f"noise@{k}": v for k, v in enumerate(noise)},
+        },
         {"y": _Y4},
     )
     compiled = _compiled(
@@ -806,12 +812,17 @@ _REMEDY = (
 )
 
 
-def test_a_column_passed_to_a_scalar_parameter_is_refused_on_the_compiled_runtime() -> None:
+def test_a_column_passed_to_a_scalar_parameter_is_refused_on_the_compiled_runtime() -> (
+    None
+):
     program = loads(SCALAR_PARAMETER).morphism
     assert isinstance(program, MonadicProgram)
-    line = SCALAR_PARAMETER.splitlines().index(
-        "    let z <- standardize(x, location, scale)"
-    ) + 1
+    line = (
+        SCALAR_PARAMETER.splitlines().index(
+            "    let z <- standardize(x, location, scale)"
+        )
+        + 1
+    )
     with pytest.raises(ValueError) as raised:
         trace(
             program,
@@ -824,10 +835,15 @@ def test_a_column_passed_to_a_scalar_parameter_is_refused_on_the_compiled_runtim
     assert _REMEDY in message
 
 
-def test_a_column_passed_to_a_scalar_parameter_is_refused_on_the_reference_machine() -> None:
-    line = SCALAR_PARAMETER.splitlines().index(
-        "    let z <- standardize(x, location, scale)"
-    ) + 1
+def test_a_column_passed_to_a_scalar_parameter_is_refused_on_the_reference_machine() -> (
+    None
+):
+    line = (
+        SCALAR_PARAMETER.splitlines().index(
+            "    let z <- standardize(x, location, scale)"
+        )
+        + 1
+    )
     with pytest.raises(ExecutionFailure) as raised:
         loads(SCALAR_PARAMETER).run(
             "standardized",

@@ -35,7 +35,6 @@ from quivers.dsl.ast_nodes import (
     LetExprFactor,
     LetExprIndex,
     LetExprLambda,
-    LetExprLiteral,
     LetExprNode,
     LetExprString,
     LetExprVar,
@@ -67,7 +66,6 @@ from quivers.qiec.terms import (
     LogDensity,
     NewInstance,
     Perform,
-    PrimitiveApplication,
     Resume,
     Return,
     SiteValue,
@@ -275,9 +273,8 @@ class _Lowering:
             True on a plated lowering when the value reads the
             iteration's index.
         """
-        return (
-            self.plate is not None
-            and self.plate.index.name in free_local_names(value)
+        return self.plate is not None and self.plate.index.name in free_local_names(
+            value
         )
 
     def bound(self, hint: str, value: Value, type_: TypeExpr) -> Value:
@@ -349,7 +346,9 @@ class _Lowering:
             If the callee cannot run as steps of the program.
         """
         try:
-            return inline_call(callee, arguments, result_type, self.computations, active)
+            return inline_call(
+                callee, arguments, result_type, self.computations, active
+            )
         except CallNotLowered as error:
             if not error.effects:
                 raise
@@ -363,9 +362,7 @@ class _Lowering:
                 f"passes {len(arguments)} argument(s) to `{callee.name}`, "
                 f"which takes {len(callee.parameters)}"
             )
-        env: dict[Local, Value] = dict(
-            zip(callee.parameters, arguments, strict=True)
-        )
+        env: dict[Local, Value] = dict(zip(callee.parameters, arguments, strict=True))
         inner = (*active, callee.name)
         node: Computation = callee.body
         while isinstance(node, Bind):
@@ -373,7 +370,9 @@ class _Lowering:
             if isinstance(first, Bind):
                 # A nested sequence associates into the enclosing one; its
                 # binder is fresh to the continuation.
-                node = Bind(first.binder, first.first, Bind(node.binder, first.then, node.then))
+                node = Bind(
+                    first.binder, first.first, Bind(node.binder, first.then, node.then)
+                )
                 continue
             env[node.binder] = self.statement(
                 first, node.binder, callee, env, prefix, inner
@@ -554,16 +553,15 @@ class _Lowering:
             twice in one call, or the distribution has no step form.
         """
         arguments = term.request.arguments
+        site = arguments[0] if len(arguments) == 2 else None
+        distribution = arguments[1] if len(arguments) == 2 else None
         if not (
-            len(arguments) == 2
-            and isinstance(arguments[0], SiteValue)
-            and isinstance(arguments[1], DistributionValue)
+            isinstance(site, SiteValue) and isinstance(distribution, DistributionValue)
         ):
             raise CallNotLowered(
                 f"draws in `{owner.name}`{origin_line(term)} from a value that "
                 f"is not a family construction at a named site"
             )
-        site, distribution = arguments
         name = f"{prefix}${site.label}"
         if name in self.sites or (name in self.occupied and name not in self.sites):
             raise CallNotLowered(
@@ -754,8 +752,7 @@ class _Lowering:
         sampleable = density.sampleable
         if not isinstance(sampleable, DistributionValue):
             raise CallNotLowered(
-                "scores the log density of a value that is not a family "
-                "construction"
+                "scores the log density of a value that is not a family construction"
             )
         if sampleable.plate.batch and self.plate is not None:
             raise CallNotLowered(
@@ -768,9 +765,7 @@ class _Lowering:
         ]
         for parameter, value in sampleable.arguments:
             arguments.append(LetExprString(value=parameter))
-            arguments.append(
-                self.expression(self.lifted(value, f"{hint}_{parameter}"))
-            )
+            arguments.append(self.expression(self.lifted(value, f"{hint}_{parameter}")))
         call = LetExprCall(func=LOG_PROB_CALL, args=tuple(arguments))
         if sampleable.plate.batch or sampleable.plate.event:
             return LetExprCall(func="sum", args=(call,))
@@ -944,8 +939,7 @@ class CallLowering:
         callee = self.computations.get(step.call.callee)
         if callee is None:
             raise CallNotLowered(
-                f"names `{step.call.callee}`, which is not a computation of "
-                f"the module"
+                f"names `{step.call.callee}`, which is not a computation of the module"
             )
         if step.call.static_arguments or callee.telescope:
             raise CallNotLowered(
@@ -1038,9 +1032,7 @@ class CallLowering:
                 "does not fix"
             )
         extent = int(shape[1][0].value)
-        axis = next(
-            (name for name, size in self.cards.items() if size == extent), None
-        )
+        axis = next((name for name, size in self.cards.items() if size == extent), None)
         if axis is None:
             raise CallNotLowered(
                 f"traverses {extent} items, and no object of the module has "
