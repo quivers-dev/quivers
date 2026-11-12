@@ -166,7 +166,7 @@ cokleisli = CoKleisliCategory(comonad)
 first projection $(a, b) \mapsto a$, and its `comultiply` copies the pair,
 $(a, b) \mapsto ((a, b), (a, b))$. With these maps the first counit law holds, but
 $W\varepsilon \circ \delta$ sends $(a, b)$ to $(a, a)$, so the second counit law
-fails whenever $a \neq b$. The class therefore does not define a comonad, and its
+fails whenever $a \neq b$. The class thus does not define a comonad, and its
 coKleisli composite need not be associative or unital.
 
 ```python
