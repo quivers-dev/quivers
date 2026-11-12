@@ -1,37 +1,46 @@
-# Conditionally Factorized Stochastic Volatility
+# Stochastic Volatility
 #
-# A one-step-factorized version of the canonical log-volatility
-# model. Returns are mean-zero Normal with scale exp(h_t / 2),
-# while each h_t is conditioned on a lag h_prev supplied through
-# host data. Because the lag is external rather than the previous
-# sampled h, this program does not infer one recursively coupled
-# latent trajectory.
+# The canonical log-volatility model of Kim, Shephard, and Chib. Returns
+# are mean-zero Normal with scale exp(h_t / 2), and the log-volatility
+# h_t is a stationary AR(1) process around mu. The trajectory starts at
+# h_0, drawn from the chain's stationary distribution, and every later
+# h_t is drawn given the one before it, so the program infers one
+# coupled latent trajectory.
 #
 # Generative structure:
 #
-#   mu       ~ Normal(0, 10)                      log-vol mean
-#   phi      ~ Uniform(-1, 1)                     AR(1) coefficient
-#   sigma_h  ~ HalfCauchy(2.5)                    log-vol noise
+#   mu       ~ Normal(0, 10)                          log-vol mean
+#   phi      ~ Uniform(-1, 1)                         AR(1) coefficient
+#   sigma_h  ~ HalfCauchy(2.5)                        log-vol noise
+#   h_0      ~ Normal(mu, sigma_h / sqrt(1 - phi^2))  stationary start
 #   h_t      ~ Normal(mu + phi * (h_{t-1} - mu), sigma_h)
-#   r_t      ~ Normal(0, exp(h_t / 2))            observed return
+#   r_t      ~ Normal(0, exp(h_t / 2))                observed return
+#
+# scan(sv_step, init=h0) runs the step at every position of the input
+# sequence (one entry per return; the entries themselves are unused),
+# starting from h_0. The step draws h at every position, addressed h@0,
+# h@1, ..., and observes the return r there.
 #
 # Reference: [Kim, Shephard, and Chib 1998](https://doi.org/10.1111/1467-937X.00050).
 
-object Step : FinSet 200
 object Val : Real 1
 
-program stochastic_volatility : Step -> Val
+program sv_step(u_t, h_prev) : Val * Val -> Val
+    let h_mean = mu + phi * (h_prev - mu)
+    sample h <- Normal(loc=h_mean, scale=sigma_h)
+    let scale = exp(0.5 * h)
+    observe r <- Normal(loc=0.0, scale=scale)
+    return h
+
+define run_all = scan(sv_step, init=h0)
+
+program stochastic_volatility : Val -> Val
     sample mu <- Normal(loc=0.0, scale=10.0)
     sample phi <- Uniform(low=-1.0, high=1.0)
     sample sigma_h <- HalfCauchy(scale=2.5)
-
-    let h_mean = mu + phi * (h_prev - mu)
-
-    sample h : Step <- Normal(loc=h_mean, scale=sigma_h)
-
-    let scale = exp(0.5 * h)
-
-    observe r : Step <- Normal(loc=0.0, scale=scale)
-    return phi
+    let stationary_scale = sigma_h / sqrt(1.0 - phi * phi)
+    sample h0 <- Normal(loc=mu, scale=stationary_scale)
+    sample h_last <- run_all
+    return h_last
 
 export stochastic_volatility
