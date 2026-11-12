@@ -130,43 +130,47 @@ def test_lda_numpyro_integrates_the_topic_over_its_three_atoms() -> None:
     assert 'numpyro.plate("Doc",20)' in emitted
 
 
-def test_lda_numpyro_gathers_latent_through_the_via_fibration() -> None:
-    """`observe w ... [via=word_idx]` gathers the mixture weights.
+def test_lda_numpyro_scatters_the_words_into_their_documents() -> None:
+    """`observe w ... [via=word_idx]` sums each document's words.
 
-    `theta` carries the 20-document batch shape while `w` carries the
-    200-word one, so the per-topic weights must be gathered to the word
-    axis before they can be added to the per-branch likelihood.
+    The block's topic is one per document, shared by the words
+    `word_idx` sends to it, so the per-word per-topic log-likelihoods
+    are scatter-summed into a `(Doc, Topic)` accumulator and weighted by
+    `theta` as it stands, one row per document.
     """
     emitted = _nospace(_emit("lda", "numpyro"))
-    assert "__marg_z_w=jnp.log(theta[word_idx])" in emitted
+    assert "__marg_z_w=jnp.log(theta)" in emitted
+    assert (
+        "__marg_z=jnp.zeros((20,__marg_z.shape[-1]),dtype=__marg_z.dtype)"
+        ".at[word_idx].add(__marg_z)" in emitted
+    )
+    assert "theta[word_idx]" not in emitted
 
 
-def test_lda_pymc_mixes_over_topics_with_document_weights() -> None:
-    """PyMC integrates the topic out as a `Mixture` over three atoms.
-
-    The mixture weights are `theta` gathered through the `via=word_idx`
-    fibration, so each word is scored under its own document's topic
-    mixture.
-    """
+def test_lda_pymc_scores_each_document_under_one_topic() -> None:
+    """PyMC sums each document's words into its row before the mixture."""
     emitted = _nospace(_emit("lda", "pymc"))
     for atom in range(3):
-        assert f"__marg_z_{atom}=pymc.Categorical.dist(p=phi[{atom}])" in emitted, atom
-    assert (
-        'pymc.Mixture("w",w=theta[word_idx],'
-        "comp_dists=[__marg_z_0,__marg_z_1,__marg_z_2],observed=w)" in emitted
-    )
+        assert (
+            f"__marg_z_{atom}=pymc.logp(pymc.Categorical.dist(p=phi[{atom}]),w)"
+            in emitted
+        ), atom
+    assert "__marg_z_w=pymc.math.log(theta)" in emitted
+    assert "__marg_z=pymc.math.dot(pymc.math.eye(20)[word_idx].T,__marg_z)" in emitted
     assert 'pymc.Categorical("z"' not in emitted
 
 
 def test_lda_pyro_integrates_the_topic_over_its_three_atoms() -> None:
-    """Pyro scores one branch per topic and reduces them with a factor."""
+    """Pyro scores one branch per topic, sums each document's words, and
+    reduces with a factor."""
     emitted = _nospace(_emit("lda", "pyro"))
     for atom in range(3):
         assert (
             f"__marg_z_{atom}=pyro.distributions."
             f"Categorical(phi[{atom}]).log_prob(w)" in emitted
         ), atom
-    assert "__marg_z_w=torch.log(theta[word_idx])" in emitted
+    assert "__marg_z_w=torch.log(theta)" in emitted
+    assert ".index_add(0,word_idx,__marg_z)" in emitted
     assert (
         'pyro.factor("z",torch.sum(torch.logsumexp(__marg_z_w+__marg_z,dim=-1)))'
         in emitted
@@ -175,23 +179,22 @@ def test_lda_pyro_integrates_the_topic_over_its_three_atoms() -> None:
     assert 'pyro.plate("Doc",20)' in emitted
 
 
-def test_lda_stan_enumerates_topics_per_word() -> None:
-    """Stan keeps a three-topic accumulator per word and logsumexps it.
+def test_lda_stan_enumerates_topics_per_document() -> None:
+    """Stan keeps a three-topic accumulator per document and logsumexps it.
 
-    The closed-form marginal `p(w_n) = sum_k theta[doc(n), k] *
-    phi[k, w_n]` factorises per word, so the accumulator is sized by the
-    200-position observation axis `object Token : FinSet 200`, whose
-    loop variable is `n_Token`; `theta` reaches it through the
-    `via=word_idx` gather that carries each token position to its
-    document.
+    The block declares one topic per document, shared by the words
+    `word_idx` sends to it, so the accumulator is sized by `Doc`, seeded
+    with `theta`'s row for the document, and each word adds its
+    per-topic log-likelihood to its document's row.
     """
     emitted = _nospace(_emit("lda", "stan"))
-    assert "array[200]vector[3]lps_z=rep_array(rep_vector(0,3),200);" in emitted
+    assert "array[20]vector[3]lps_z=rep_array(rep_vector(0,3),20);" in emitted
+    assert "lps_z[g_Doc,k]=categorical_lpmf(k|theta[g_Doc]);" in emitted
     assert (
-        "lps_z[n_Token,k]=categorical_lpmf(k|theta[word_idx[n_Token]+1]);"
-    ) in emitted
-    assert "lps_z[n_Token,k]+=categorical_lpmf(w[n_Token]+1|phi[k]);" in emitted
-    assert "target+=log_sum_exp(lps_z[n_Token]);" in emitted
+        "lps_z[word_idx[n_Token]+1,k]+=categorical_lpmf(w[n_Token]+1|phi[k]);"
+        in emitted
+    )
+    assert "target+=log_sum_exp(lps_z[g_Doc]);" in emitted
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +263,8 @@ def test_zip_stan_indexes_the_rate_inside_the_response_loop() -> None:
     which is data-dependent and part of the QVR measure.
     """
     emitted = _nospace(_emit("zip_regression", "stan"))
-    assert "lps_z[n_Resp,1]+=poisson_lpmf(y[n_Resp]|0);" in emitted
-    assert "lps_z[n_Resp,2]+=poisson_lpmf(y[n_Resp]|rate[n_Resp]);" in emitted
+    assert "lps_z[n_Resp,1]+=poisson_lpmf(y[n_Resp]|0.0);" in emitted
+    assert "lps_z[n_Resp,2]+=poisson_lpmf(y[n_Resp]|1.0*rate[n_Resp]);" in emitted
     assert "(k-1)*rate[n_Resp]" not in emitted
     assert "y[m_Resp]~poisson(" not in emitted
     assert "y[n_Resp]~poisson(" not in emitted

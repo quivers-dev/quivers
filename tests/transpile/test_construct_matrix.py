@@ -383,6 +383,18 @@ for _backend in (
 _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "marginalize_bernoulli_logits")] = (
     "marginalize:no-collapse"
 )
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("bugs", "steps", "marginalize_shared_prior_scalar_let")
+] = "marginalize:no-collapse"
+# A grouped block sums each group's rows before the reduction: BUGS has no
+# statement that adds the per-group log-density to the joint, and JAGS
+# cannot write the per-group sum as one expression.
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("bugs", "steps", "marginalize_per_group_prior_shared_class")
+] = "marginalize:grouped-fibration"
+_EXPECTED_ORTHOGONAL_RAISES[
+    ("jags", "steps", "marginalize_per_group_prior_shared_class")
+] = "let-expr:elementwise-axis-operator"
 
 # The ordered probit, inverse Wishart, and matrix normal are refused by
 # name where a target has no class or literal form for them.

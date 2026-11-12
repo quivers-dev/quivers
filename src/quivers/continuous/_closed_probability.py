@@ -16,8 +16,8 @@ distribution built from ``probs`` from the probability itself:
   ``r``-th failure): ``log Gamma(r + k) - log Gamma(k + 1)
   - log Gamma(r) + r log(1 - p) + k log p``.
 
-Each product of a count and a log probability is computed with
-`torch.xlogy` / `torch.special.xlog1py`, so ``0 log 0 = 0``, which is the
+Each product of a count and a log probability is taken as zero where
+the count is zero, with a zero gradient there, so ``0 log 0 = 0``, the
 convention that makes the masses at the boundary probabilities the
 point masses the families tend to there. A distribution built from ``logits``
 is scored by torch's own logit path, which is exact for every finite
@@ -55,6 +55,56 @@ def _out_of_support(value: torch.Tensor, total: torch.Tensor) -> torch.Tensor:
         A Boolean mask.
     """
     return (value < 0) | (value > total)
+
+
+def _count_log(count: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+    """``count * log(probs)``: zero where the count is, ``-inf`` where a
+    positive count meets a zero probability.
+
+    Both boundary cases are constants, so the logarithm is taken of a
+    probability replaced by one there, and the gradient through them is
+    zero rather than the ``0 * inf`` of differentiating the logarithm
+    at zero (which a reduction that weighs an impossible branch by zero
+    would otherwise turn into ``nan``).
+
+    Parameters
+    ----------
+    count : torch.Tensor
+        Nonnegative counts.
+    probs : torch.Tensor
+        Nonnegative values, broadcast against ``count``.
+
+    Returns
+    -------
+    torch.Tensor
+        The products.
+    """
+    count, probs = torch.broadcast_tensors(count, probs)
+    absent = count == 0
+    impossible = ~absent & (probs == 0)
+    safe = torch.where(absent | impossible, torch.ones_like(probs), probs)
+    product = count * torch.log(safe)
+    product = torch.where(impossible, torch.full_like(product, -torch.inf), product)
+    return torch.where(absent, torch.zeros_like(product), product)
+
+
+def _count_log_complement(count: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+    """``count * log(1 - probs)``, with the boundary cases of `_count_log`.
+
+    Parameters
+    ----------
+    count : torch.Tensor
+        Nonnegative counts.
+    probs : torch.Tensor
+        Probabilities, broadcast against ``count``.
+
+    Returns
+    -------
+    torch.Tensor
+        The products.
+    """
+    count, probs = torch.broadcast_tensors(count, probs)
+    return _count_log(count, 1.0 - probs)
 
 
 def _require_counts(value: torch.Tensor) -> None:
@@ -122,7 +172,7 @@ class ClosedBernoulli(D.Bernoulli):
         if self._validate_args:
             self._validate_sample(value)
         value, probs = torch.broadcast_tensors(value.to(probs.dtype), probs)
-        return torch.xlogy(value, probs) + torch.special.xlog1py(1.0 - value, -probs)
+        return _count_log(value, probs) + _count_log_complement(1.0 - value, probs)
 
 
 class ClosedBinomial(D.Binomial):
@@ -194,8 +244,8 @@ class ClosedBinomial(D.Binomial):
         )
         log_mass = (
             log_choose
-            + torch.xlogy(inside_value, probs)
-            + torch.special.xlog1py(inside_total - inside_value, -probs)
+            + _count_log(inside_value, probs)
+            + _count_log_complement(inside_total - inside_value, probs)
         )
         return torch.where(outside, torch.full_like(log_mass, -torch.inf), log_mass)
 
@@ -273,10 +323,50 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
         )
         log_mass = (
             log_normalizer
-            + torch.special.xlog1py(total, -probs)
-            + torch.xlogy(count, probs)
+            + _count_log_complement(total, probs)
+            + _count_log(count, probs)
         )
         return torch.where(negative, torch.full_like(log_mass, -torch.inf), log_mass)
 
 
-__all__ = ["ClosedBernoulli", "ClosedBinomial", "ClosedNegativeBinomial"]
+class ClosedPoisson(D.Poisson):
+    """A Poisson that scores a rate of zero as the point mass at zero.
+
+    ``log p(k) = k log(rate) - rate - log k!``, with the count's
+    logarithm term taken by `_count_log`, so a positive count under a
+    zero rate is ``-inf`` with a zero gradient, and a zero count under
+    it is ``0``.
+
+    Parameters
+    ----------
+    rate : torch.Tensor
+        The rate, nonnegative.
+    validate_args : bool, optional
+        Whether to validate arguments and samples.
+    """
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        """The log mass at a count.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The counts.
+
+        Returns
+        -------
+        torch.Tensor
+            The log masses.
+        """
+        if self._validate_args:
+            self._validate_sample(value)
+        value, rate = torch.broadcast_tensors(value.to(self.rate.dtype), self.rate)
+        return _count_log(value, rate) - rate - torch.lgamma(value + 1.0)
+
+
+__all__ = [
+    "ClosedBernoulli",
+    "ClosedBinomial",
+    "ClosedNegativeBinomial",
+    "ClosedPoisson",
+]

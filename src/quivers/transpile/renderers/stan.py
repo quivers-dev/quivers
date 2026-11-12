@@ -3382,8 +3382,18 @@ class StanRenderer(RendererBase):
         rejects every initial value it tries. Folded, the rate is a
         constant the gradient does not run through, which is what the
         model means: the off state of a zero-inflated count carries no
-        rate at all.
+        rate at all. A choice on a literal condition (`real(z)` is
+        `select(z, 1.0, 0.0)`) is decided first, so the gate's atom
+        reaches the product as the number it stands for.
         """
+        if (
+            isinstance(expr, LetExprCall)
+            and expr.func == "select"
+            and len(expr.args) == 3
+            and isinstance(expr.args[0], LetExprLiteral)
+        ):
+            chosen = expr.args[1] if expr.args[0].value != 0.0 else expr.args[2]
+            return self._fold_constant_products(chosen)
         if not isinstance(expr, LetExprBinOp):
             return expr
         left = self._fold_constant_products(expr.left)

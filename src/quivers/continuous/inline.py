@@ -38,7 +38,7 @@ import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
-from quivers.continuous._closed_probability import ClosedBernoulli
+from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous.log_space import LogGamma, LogitBeta
@@ -2304,7 +2304,7 @@ _BASE_DISTRIBUTION_BUILDERS: dict = {
         torch.as_tensor(a[1]),
         validate_args=True,
     ),
-    "Poisson": lambda a: D.Poisson(torch.as_tensor(a[0])),
+    "Poisson": lambda a: ClosedPoisson(torch.as_tensor(a[0])),
     "Bernoulli": lambda a: ClosedBernoulli(probs=torch.as_tensor(a[0])),
     "Uniform": lambda a: D.Uniform(
         torch.as_tensor(a[0]),

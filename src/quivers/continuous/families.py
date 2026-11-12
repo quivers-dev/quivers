@@ -39,6 +39,7 @@ from quivers.continuous._closed_probability import (
     ClosedBernoulli,
     ClosedBinomial,
     ClosedNegativeBinomial,
+    ClosedPoisson,
 )
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._ordered import OrderedLogistic
@@ -1045,7 +1046,7 @@ ConditionalFisherSnedecor = _make_family(
 
 ConditionalPoisson = _make_family(
     "ConditionalPoisson",
-    D.Poisson,
+    ClosedPoisson,
     [("rate", "softplus")],
     "Conditional Poisson(rate(x)). Discrete, non-negative integer counts.",
     # A rate of zero is the point mass at zero.

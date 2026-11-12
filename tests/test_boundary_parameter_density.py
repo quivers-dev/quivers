@@ -729,3 +729,63 @@ def test_a_zero_mixture_weight_has_a_finite_gradient() -> None:
         float(D.Poisson(_f64(2.0)).log_prob(_f64(1.0)))
     )
     assert bool(torch.isfinite(grad).all())
+
+
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+def test_a_saturated_probability_has_a_finite_gradient_where_the_mass_is(
+    probability: float,
+) -> None:
+    # A sigmoid that rounds to exactly zero or one scores the outcome it
+    # is certain of at log mass zero, and the gradient through it stays
+    # finite rather than the 0 * inf of differentiating 0 log 0.
+    spec = get_family_spec("Bernoulli")
+    assert spec is not None
+    probs = torch.tensor([probability], requires_grad=True)
+    outcome = torch.tensor([probability])
+    log_mass = spec.dist_class(probs=probs).log_prob(outcome).sum()
+    (grad,) = torch.autograd.grad(log_mass, probs)
+    assert float(log_mass) == 0.0
+    assert bool(torch.isfinite(grad).all())
+
+
+_GATED = """\
+object Resp : FinSet 3
+object Val : Real 1
+program zip : Resp -> Val
+    sample a <- Normal(loc=0.0, scale=1.0)
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let pi_z = sigmoid(a + x)
+    let rate = exp(b)
+    marginalize z : Resp <- Bernoulli(probs=pi_z)
+        let gated_rate = real(z) * rate
+        observe y : Resp <- Poisson(rate=gated_rate)
+    return a
+export zip
+"""
+
+
+def test_the_gated_rate_s_off_branch_leaves_the_gradient_finite() -> None:
+    # The off branch scores a positive count under a rate of zero, -inf
+    # with weight zero in the reduction: its gradient is zero, so the
+    # gradient in the rate's coefficient is the active branch's alone,
+    # against the closed form differentiated in double precision.
+    x, y = [0.0, 1.0, -1.0], [0.0, 2.0, 1.0]
+    a = torch.tensor([0.3], requires_grad=True)
+    b = torch.tensor([0.2], requires_grad=True)
+    values = {"a": a, "b": b, "x": torch.tensor(x), "y": torch.tensor(y)}
+    loads(_GATED).morphism.log_joint(torch.zeros(1, 1), values).sum().backward()
+    a64 = torch.tensor(0.3, dtype=torch.float64, requires_grad=True)
+    b64 = torch.tensor(0.2, dtype=torch.float64, requires_grad=True)
+    pi = torch.sigmoid(a64 + _f64(x))
+    counts = _f64(y)
+    on = torch.log(pi) + D.Poisson(torch.exp(b64)).log_prob(counts)
+    off = torch.where(counts == 0, torch.log1p(-pi), _f64(-math.inf))
+    rows = torch.where(counts == 0, torch.logaddexp(on, off), on)
+    exact = (
+        rows.sum()
+        + D.Normal(_f64(0.0), _f64(1.0)).log_prob(a64)
+        + D.Normal(_f64(0.0), _f64(1.0)).log_prob(b64)
+    )
+    grad_a, grad_b = torch.autograd.grad(exact, (a64, b64))
+    assert float(a.grad[0]) == pytest.approx(float(grad_a), rel=1e-4)
+    assert float(b.grad[0]) == pytest.approx(float(grad_b), rel=1e-4)
