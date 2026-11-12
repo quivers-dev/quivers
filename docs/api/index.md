@@ -2,9 +2,9 @@
 
 The public API of quivers, by subpackage, with each module page generated from its docstrings.
 
-| Task | Start here | What it gives you |
+| Task | Start here | Result |
 |---|---|---|
-| Read the basic concepts | [Concepts by example](../getting-started/concepts.md) | Composition of weighted tables and Bayesian inference, with the terms the library uses |
+| Read the basic concepts | [Concepts](../getting-started/concepts.md) | Composition of weighted relations, the choice of `Algebra`, and the steps of a program |
 | Load a `.qvr` model | [DSL entry points](dsl/index.md) | Parsed or compiled source, depending on the entry point |
 | Build a weighted computation in Python | [Objects](core/objects.md), [morphisms](core/morphisms.md), and [algebras](core/algebras.md) | Finite sets, weighted tables between them, and the rules that combine their weights |
 | Fit a model to data | [Stochastic variational inference](inference/svi.md) (SVI) or [Markov chain Monte Carlo](inference/mcmc.md) (MCMC) | An approximation to the posterior, with different computational tradeoffs |
