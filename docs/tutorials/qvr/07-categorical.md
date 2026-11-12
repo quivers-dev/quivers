@@ -54,7 +54,7 @@ An [`Algebra`](../../api/core/algebras.md) gives $\otimes$, $\oplus$ (the method
 
 | Name | $\otimes$ | $\oplus$ | Unit | Structure |
 |---|---|---|---|---|
-| `Boolean` | AND | OR | true | Boolean semiring; its matrices are relations. |
+| `Boolean` | AND | OR | true | Boolean semiring. Its matrices are relations. |
 | `ProductFuzzy` | $a b$ | $1 - \prod_i (1 - x_i)$ | 1 | [Product t-norm](https://en.wikipedia.org/wiki/T-norm) with the probabilistic sum (noisy-OR) [@klement2000triangular; @pearl1988probabilistic]. Not a semiring. |
 | `Lukasiewicz` | $\max(0, a + b - 1)$ | $\min(1, \sum_i x_i)$ | 1 | Łukasiewicz t-norm with the bounded sum [@klement2000triangular]. Not a semiring. |
 | `Godel` | $\min(a, b)$ | $\max_i x_i$ | 1 | Minimum (Gödel) t-norm with the maximum, a semiring on $[0, 1]$. |
