@@ -37,6 +37,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.dsl.pure_builtins import EAGER_BUILTIN_NAMES
+from quivers.transpile._python_calls import LET_CALL_SYMBOLS
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.family_meta import FAMILY_META, marginalize_support
 from quivers.transpile.ir import (
@@ -402,17 +403,10 @@ def with_statement(
     return ws
 
 
-#: A non-pointwise builtin's per-target lowering: the symbol path to
-#: emit as a dotted attribute, plus the import it needs (``None`` when the
-#: symbol lives on a namespace the target already has in scope). The
-#: pointwise math builtins are spelled by
-#: [`BUILTIN_SPELLINGS`][quivers.transpile._builtin_spellings.BUILTIN_SPELLINGS].
-_CallEntry = tuple[tuple[str, ...], "tuple[tuple[str, ...], str] | None"]
-
 #: QVR primitives whose semantics is per-axis reduction over the event
 #: axis. When one of these calls sees a single argument of positive
 #: inferred event rank, the emit routes to the target's array-aware
-#: aggregator (mapped in ``_LET_CALL_SYMBOLS`` below) and appends the
+#: aggregator (mapped in ``LET_CALL_SYMBOLS``) and appends the
 #: reduction-axis keyword. A scalar argument keeps the Python builtin.
 _AXIS_REDUCING_CALLS: frozenset[str] = frozenset({"sum", "mean", "prod", "max", "min"})
 
@@ -426,45 +420,6 @@ _AXIS_KEYWORD_BY_TARGET: dict[str, str] = {
     "numpyro": "axis",
     "pymc": "axis",
     "edward2": "axis",
-}
-
-#: ``target -> {reduction name -> lowering}`` for the one-argument
-#: reductions and ``softmax``. A one-argument ``max`` / ``min`` routes to
-#: the reduction that returns a bare array (torch's ``amax`` / ``amin``
-#: rather than the ``(values, indices)`` pair).
-_LET_CALL_SYMBOLS: dict[str, dict[str, _CallEntry]] = {
-    "pyro": {
-        "sum": (("torch", "sum"), None),
-        "mean": (("torch", "mean"), None),
-        "prod": (("torch", "prod"), None),
-        "max": (("torch", "amax"), None),
-        "min": (("torch", "amin"), None),
-        "softmax": (("torch", "softmax"), None),
-    },
-    "numpyro": {
-        "sum": (("jnp", "sum"), None),
-        "mean": (("jnp", "mean"), None),
-        "prod": (("jnp", "prod"), None),
-        "max": (("jnp", "max"), None),
-        "min": (("jnp", "min"), None),
-        "softmax": (("jnn", "softmax"), (("jax", "nn"), "jnn")),
-    },
-    "pymc": {
-        "sum": (("pymc", "math", "sum"), None),
-        "mean": (("pymc", "math", "mean"), None),
-        "prod": (("pymc", "math", "prod"), None),
-        "max": (("pymc", "math", "max"), None),
-        "min": (("pymc", "math", "min"), None),
-        "softmax": (("pymc", "math", "softmax"), None),
-    },
-    "edward2": {
-        "sum": (("tf", "reduce_sum"), None),
-        "mean": (("tf", "reduce_mean"), None),
-        "prod": (("tf", "reduce_prod"), None),
-        "max": (("tf", "reduce_max"), None),
-        "min": (("tf", "reduce_min"), None),
-        "softmax": (("tf", "nn", "softmax"), None),
-    },
 }
 
 #: ``(stack, convert)``: how a list literal becomes an array. Python
@@ -605,7 +560,7 @@ def _resolve_python_call(ctx: PyCtx, func: str, arity: int = 1) -> str:
         if len(path) == 1:
             return identifier(ctx, path[0])
         return attribute(ctx, path)
-    entry = _LET_CALL_SYMBOLS.get(ctx.target, {}).get(func)
+    entry = LET_CALL_SYMBOLS.get(ctx.target, {}).get(func)
     if entry is not None:
         segments, import_spec = entry
         if import_spec is not None:
@@ -940,7 +895,7 @@ def render_let_expr_python(
             _POINTWISE_OPERAND_SYMBOLS.get(ctx.target)
             if (
                 ctx.target == "pyro"
-                and (pointwise or expr.func in _LET_CALL_SYMBOLS["pyro"])
+                and (pointwise or expr.func in LET_CALL_SYMBOLS["pyro"])
             )
             or (pointwise and len(expr.args) == 2)
             else None

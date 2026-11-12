@@ -47,6 +47,7 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.dsl.ast_nodes.let_expressions import (
+    LetExprCall,
     LetExprFactor,
     LetExprNode,
     LetExprString,
@@ -54,7 +55,9 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorBinder,
     LetFactorCase,
 )
+from quivers.dsl.let_expr_traversal import walk_let_expr
 from quivers.transpile._resolve import build_let_table, build_morphism_table
+from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
 from quivers.qiec.effects import EffectRequest
 from quivers.qiec.module import NamedComputation
@@ -856,11 +859,50 @@ class _ProgramWalk:
             return None
         hoisted, result = found
         try:
-            for binding in hoisted:
-                self._expr(binding.value)
-            return hoisted, self._expr(result)
+            expressions = [self._expr(binding.value) for binding in hoisted]
+            spelled = self._expr(result)
         except UnsupportedConstruct:
             return None
+        if not all(self._renderable(item) for item in (*expressions, spelled)):
+            return None
+        return hoisted, spelled
+
+    def _renderable(self, expression: LetExprNode) -> bool:
+        """Whether the target renders an inlined expression as a statement.
+
+        An inlined call is stated only when every comprehension in it
+        runs over a declared object, whose cardinality every renderer
+        resolves, and every call in it is one the target spells; any
+        other call is made through the target's host runtime instead.
+
+        Parameters
+        ----------
+        expression : LetExprNode
+            The expression.
+
+        Returns
+        -------
+        bool
+            Whether every comprehension axis is an object of the source
+            and, on a Python target, every call has a spelling.
+        """
+        for node in walk_let_expr(expression):
+            if isinstance(node, LetExprFactor):
+                for binder in node.binders:
+                    index = binder.index
+                    if not (
+                        isinstance(index, TypeName) and index.name in self.planner.cards
+                    ):
+                        return False
+            if (
+                isinstance(node, LetExprCall)
+                and self.planner.target in PYTHON_TARGETS
+                and not python_call_renderable(
+                    self.planner.target, node.func, len(node.args)
+                )
+            ):
+                return False
+        return True
 
     def _marginalize(self, call: Call) -> IRMarginalize:
         """The scope a marginalization helper's call denotes.
