@@ -1,190 +1,196 @@
-# Schemas, Rules, Categories, and Bundles
+# Categorial types, rules, schemas, and bundles
 
-This page covers the grammar-supporting declarations `category`, `rule`, `schema`, and `bundle`, together with `object` bindings used by the deduction surface. The current grammar has no separate top-level `alias` or `type` declaration.
+The declarations `category`, `rule`, `schema`, and `bundle` give the grammar of a chart parser in
+the style of [categorial grammar](https://en.wikipedia.org/wiki/Categorial_grammar), in which a
+syntactic category is either atomic, such as `NP` or `S`, or built with slashes, such as `S / NP`
+[@lambek1958mathematics]. A `category` declaration adds atomic categories, a `rule` is an inference
+rule over categories with variables, a `schema` is a family of morphisms indexed by categories, and
+a `bundle` names a list of rules and schemata. On these pages "category" alone means a category in
+category theory, and the grammatical sense is always "syntactic category".
 
-These declarations describe reusable grammar patterns. A `category` names a
-basic grammatical type, a `rule` connects premise patterns to a conclusion,
-a `schema` supplies a parameterized morphism pattern, and a `bundle` collects
-rules or schemas for use together. Here *category* often means a grammatical
-type such as `NP` or `S`. In category theory, a category is the larger
-structure of objects and arrows equipped with composition laws.
+A rule with the pattern `X / Y, Y |- X` combines a category that seeks a `Y` on its right with an
+adjacent `Y` to give an `X`. Substituting `S` for `X` and `NP` for `Y` gives one instance of it.
 
-For instance, a rule with pattern `X / Y, Y |- X` says that something seeking
-a `Y` to its right can combine with that `Y` and produce an `X`. Substituting
-`S` for `X` and `NP` for `Y` yields one concrete instance. The formal
-variables let one rule describe many such applications.
-
-## 1. Category atoms
-
-A `category` declaration introduces one or more atomic category names:
+## 1. Atomic categories {#1-category-atoms}
 
 ```
 category NP, S, VP
 ```
 
-Category names are registered in a *category-atom set* $\rho_{\mathrm{cat}}$ which is *separate* from the object environment $\rho_{\mathrm{obj}}$ and the space environment $\rho_{\mathrm{spc}}$:
+adds atomic syntactic categories to the environment $\rho_{\mathrm{cat}}$, which is separate from
+the object environment $\rho_{\mathrm{obj}}$ and the space environment $\rho_{\mathrm{spc}}$:
 
 $$
-\llbracket \mathrm{category}\ C_1, \dots, C_n \rrbracket
-\;:\;\;
-\rho_{\mathrm{cat}}\ \longmapsto\ \rho_{\mathrm{cat}}\ \cup\ \{C_1, \dots, C_n\}.
+\llbracket \mathrm{category}\ C_1, \dots, C_n \rrbracket : \rho_{\mathrm{cat}} \longmapsto \rho_{\mathrm{cat}} \cup \{C_1, \dots, C_n\}.
 $$
 
-The atom set serves as the generator alphabet of the residuated category universe consumed by chart parsers (§4) and by rule / schema declarations (§5 / §6). Category atoms are *not* finite-set objects: they cannot be used directly as morphism domains or codomains. To make their residuated closure available as a type, declare a `FreeResiduated` object over them (§4) or pass them via `parser(categories=[…])` at the call site.
+The atoms generate the categorial types of chart parsers (§4) and of rule and schema declarations
+(§5, §6). An atom is not a finite set and cannot be the domain or codomain of a morphism: such a
+use is the compile error "undefined object or space". To use the categorial types over some atoms
+as a finite set, declare a `FreeResiduated` object over them (§4), or pass the atoms to
+`parser(categories=[...])`.
 
-## 2. Object-level name bindings
+## 2. Object declarations with categorial types
 
-A single declaration form binds a name to an object or space expression:
+The declaration `object N : τ` binds $N$ according to what $\tau$ is:
 
-$$
-\llbracket \mathrm{object}\ N : \tau \rrbracket
-\;:\;\;
-\rho_{\mathrm{obj}}\ \longmapsto\ \rho_{\mathrm{obj}}\bigl[N \mapsto \llbracket \tau \rrbracket_{\rho_{\mathrm{obj}}}\bigr].
-$$
+- When $\tau$ is a finite set expression, such as `FinSet 16`, `A * B`, `A + B`, or a name bound to
+  a finite set, $N$ is bound in $\rho_{\mathrm{obj}}$ and may be the domain or codomain of a later
+  morphism.
+- When $\tau$ is a space, such as `Real D`, `Simplex K`, or `Covariance D`, $N$ is bound in
+  $\rho_{\mathrm{spc}}$.
+- When $\tau$ contains a slash or an effect application, and is neither a finite set nor a space,
+  $N$ is bound as an abbreviation for the expression $\tau$, which the matcher of rule and schema
+  patterns expands wherever $N$ occurs. Such an abbreviation is not an object and may appear only in
+  `rule` and `schema` patterns.
 
-The behavior depends on whether $\tau$ resolves as a `SetObject`:
+In every case later occurrences of $N$ mean what $N$ abbreviates, and the
+[program-shape protocol](program-theory.md) records no separate entry for the binding.
 
-- *Finite-set binding.* When $\tau$ has no residuated slashes or effect applications and resolves cleanly to a finite-set object (for instance `FinSet 16`, `A * B`, `A + B`, or a previously-bound finite-set name), $N$ is bound in $\rho_{\mathrm{obj}}$ to the resulting object. It may appear as the domain or codomain of any later morphism.
+## 3. Slashes and effect application {#3-residuated-type-formers}
 
-- *Continuous-space binding.* When $\tau$ is a supported continuous constructor such as `Real D`, `Simplex K`, or `Covariance D`, $N$ is bound in $\rho_{\mathrm{spc}}$ to the corresponding continuous space.
-
-- *Syntactic binding.* When $\tau$ contains a residuated slash, an effect application, or otherwise fails `SetObject` and `ContinuousSpace` resolution, the binding is recorded as a textual substitution rule $\rho_{\mathrm{alias}}[N \mapsto \tau]$ that the schema-pattern matcher inlines at every use site. Syntactic bindings are not first-class objects: they cannot appear as morphism domains or codomains, only inside `schema` / `rule` patterns.
-
-Bindings are transparent: every later occurrence of $N$ resolves to the underlying object / space, and the schema-level interpretation of [The Program Theory](program-theory.md) records no new vertex for the binding itself.
-
-## 3. Residuated type formers
-
-The `ObjectExpr` grammar admits two formers beyond products / coproducts:
-
-$$
-\tau \;::=\; \dots \;\big|\; \tau_1 \,/\, \tau_2 \;\big|\; \tau_1 \,\backslash\, \tau_2 \;\big|\; T(\tau_1, \dots, \tau_k).
-$$
-
-### 3.1 Residuation slashes
-
-Read `S / NP` as “produces `S` when an `NP` arrives on the right.” In QVR,
-`S \ NP` similarly produces `S` when an `NP` arrives on the left. Thus both
-forms put the result type first; the slash direction selects the side of
-the missing argument. The adjunctions below express that supplying the
-missing argument and treating it as a pending input are two equivalent ways
-to describe the same composition, under the residuated-category hypotheses.
-The [residuation witnesses](expressions.md#210-residuation-witnesses) implement
-this rearrangement of arguments.
-
-QVR uses a *biclosed* slash convention: in both $\tau_1 / \tau_2$ and $\tau_1 \backslash \tau_2$, the lexical-left operand $\tau_1$ is the *result* and the lexical-right operand $\tau_2$ is the *argument*. The direction indicates *where the argument is sought* in a chart firing: $/$ seeks the argument on the right, $\backslash$ seeks it on the left. This is opposite to the standard Lambek convention (where `A\B` reads "needs A on the left to give B"); see the runtime documentation of `SlashCategory` for confirmation.
-
-Under this convention, the right and left residuals are the unique objects characterized by the adjunctions
+Object expressions have two forms beyond products and coproducts:
 
 $$
-\mathcal{C}(X \otimes \llbracket \tau_2 \rrbracket,\ \llbracket \tau_1 \rrbracket)
-\;\cong\;
-\mathcal{C}(X,\ \llbracket \tau_1 / \tau_2 \rrbracket),
+\tau ::= \dots \;\big|\; \tau_1 / \tau_2 \;\big|\; \tau_1 \backslash \tau_2 \;\big|\; T(\tau_1, \dots, \tau_k).
+$$
+
+### 3.1 Slashes {#31-residuation-slashes}
+
+QVR writes slashes in Steedman's notation, with the result first
+[@steedman2000syntactic]: `S / NP` yields `S` from an `NP` on its right, and `S \ NP` yields `S`
+from an `NP` on its left. In $\tau_1 / \tau_2$ and in $\tau_1 \backslash \tau_2$, $\tau_1$ is the
+result and $\tau_2$ the argument, and the slash says on which side the argument is found. Lambek's
+notation writes the backward slash the other way, with the argument under the slash, so that his
+`NP\S` is QVR's `S \ NP` [@lambek1958mathematics]. The runtime class `SlashCategory` stores the result
+and the argument as separate fields.
+
+A [*biclosed monoidal category*](https://ncatlab.org/nlab/show/closed+monoidal+category) has, for
+each object, a right and a left internal hom, characterized by natural bijections
+
+$$
+\mathcal{C}(X \otimes B, A) \cong \mathcal{C}(X, A / B),
 \qquad
-\mathcal{C}(\llbracket \tau_2 \rrbracket \otimes X,\ \llbracket \tau_1 \rrbracket)
-\;\cong\;
-\mathcal{C}(X,\ \llbracket \tau_1 \backslash \tau_2 \rrbracket).
+\mathcal{C}(B \otimes X, A) \cong \mathcal{C}(X, A \backslash B),
 $$
 
-In a *free* residuated category over an atom set (the standard case for QVR grammar declarations; see §4), the slashes are *constructors*: $\llbracket \tau_1 / \tau_2 \rrbracket$ and $\llbracket \tau_1 \backslash \tau_2 \rrbracket$ are formal terms, not derived objects. The witnesses of the adjunctions are the schema instances of `curry_right` / `curry_left` on $\mathcal{V}\text{-}\mathbf{Rel}$ ([Expressions §2.10](expressions.md#210-residuation-witnesses)).
+written here in QVR's notation, with $A$ the result and $B$ the argument
+[@lambek1969deductive]. These are the two residuations of the
+[residuated lattice](https://en.wikipedia.org/wiki/Residuated_lattice) that the Lambek calculus
+describes when only provability, and not proofs, is kept. In the free biclosed monoidal category
+on a set of atoms, the slashes are constructors: $A / B$ and $A \backslash B$ are formal terms. Its
+morphisms are the proofs of the Lambek calculus [@lambek1969deductive]. QVR uses only its objects,
+the categorial types, as syntactic categories, and the rules of §5 play the part of its proofs.
 
 ### 3.2 Effect application
 
-The form $T(\tau_1, \dots, \tau_k)$ is the application of an effect functor $T$ to a tuple of object arguments; the denotation is $T(\llbracket \tau_1 \rrbracket, \dots, \llbracket \tau_k \rrbracket)$ in the effect-extended universe of [Effects §1](effects.md#1-setting). The effect $T$ must be a fully-instantiated effect name; parametric effects $T[\pi]$ must be fully baked into a concrete identifier before they may appear in a type expression.
+$T(\tau_1, \dots, \tau_k)$ applies an effect $T$, such as a continuation or a set of alternatives,
+to categorial types, giving the categorial type of an expression with that effect
+([Effects and type classes §1](effects.md#1-setting)) [@charlow2025scope]. $T$ must be a declared
+effect with all its parameters filled in: a parametric effect $T[\pi]$ must be instantiated to a
+concrete name before it appears in a type.
 
-## 4. The free residuated universe
+## 4. Categorial types of bounded depth {#4-the-free-residuated-universe}
 
-A `FreeResiduated(G, depth = d, ops = O)` initializer, used in `object Cat : FreeResiduated(Atoms, …)`, denotes the *bounded free residuated category*
+The declaration `object Cat : FreeResiduated(G, depth = d, ops = O)` binds `Cat` to the finite set
 
 $$
-\llbracket \mathrm{FreeResiduated}(G, d, O) \rrbracket
-\;=\;
-\Bigl\{\, \text{well-formed expressions over $\llbracket G \rrbracket$ using ops from $O$, of formation depth $\le d$}\,\Bigr\},
+\llbracket \mathrm{FreeResiduated}(G, d, O) \rrbracket = \bigl\{\text{categorial types over the atoms } \llbracket G \rrbracket \text{ built with the connectives } O \text{, of depth at most } d\bigr\},
 $$
 
-where $\llbracket G \rrbracket$ is the underlying generator set (typically an `EnumSet` from a `category` declaration or an `object Atoms : {…}` form), and $O \subseteq \{\,/,\ \backslash,\ \otimes,\ \diamondsuit\,\}$ is the chosen operator pool. Formation depth is the height of the syntax tree. As a finite-set object this is a finite enumeration of category expressions. A depth bound limits further type formation: if $A/B$ already has the maximum depth, forming $(A/B)/C$ leaves the inventory. The universal property of the unbounded free residuated category applies to its full syntax; the finite enumeration contains only the terms within the chosen bound.
+where $\llbracket G \rrbracket$ is the set of atoms, usually from a `category` declaration or an
+`object Atoms : {...}` declaration, and $O$ names connectives among `slash` (both $/$ and
+$\backslash$), `product` ($\otimes$), `unit`, `diamond` ($\diamondsuit$), and `box` ($\square$). The depth
+of a type is the height of its syntax tree, so atoms have depth $0$. The runtime class is
+[`FreeResiduated`](../api/core/objects.md), which enumerates the types as strings.
 
-The operator choice $O = \{/, \backslash\}$ supplies the slash syntax used in *bi-closed* presentations of Lambek calculus [@lambek1958mathematics]; when $O = \{/, \backslash, \otimes\}$ it also supplies product syntax; the selected rules determine the associated deductive behavior; the diamond modality $\diamondsuit$ adds the multimodal extension.
+This set is a finite set of objects of the free biclosed monoidal category of §3.1, not a category:
+it has no morphisms, and it is not closed under the connectives, since $(A / B) / C$ is outside it
+when $A / B$ already has depth $d$. A statement that uses the universal property of the free
+category holds for the unbounded set of types, not for this truncation. With
+$O = \{/, \backslash\}$ the types are those of the Lambek calculus without product
+[@lambek1958mathematics], with $\otimes$ they include products, and with $\diamondsuit$ and $\square$ they
+include the unary modalities of multimodal type-logical grammar [@moortgat1997categorial]. Which
+inferences hold among the types is fixed by the rules a parser is given, not by $O$.
 
-## 5. Rule declarations
-
-A `rule` declaration
+## 5. Rule declarations {#5-rule-declarations}
 
 ```
-rule R(X_1, …, X_k) : π_1, …, π_m |- π
+rule R(X_1, ..., X_k) : π_1, ..., π_m |- π
 ```
 
-introduces a typed inference rule over the residuated universe. The variables $X_1, \dots, X_k$ are universally quantified meta-variables ranging over $\llbracket \mathrm{Cat} \rrbracket$; the patterns $\pi_1, \dots, \pi_m, \pi$ are `ObjectExpr`s built from the meta-variables and any atoms in scope. The compiler accepts $m \in \{1, 2\}$ (unary and binary chart rules); declaring a rule with $m \ge 3$ raises `CompileError`.
+declares an inference rule over categorial types. The variables $X_1, \dots, X_k$ range over the
+categorial types $\llbracket \mathrm{Cat} \rrbracket$, and the patterns $\pi_1, \dots, \pi_m, \pi$ are object
+expressions built from the variables and the atoms in scope. The compiler accepts one or two
+premises, and a rule with three or more is a compile error.
 
-The denotation is a family of hyperedges in the multicategory of items: for each substitution $\sigma : \{X_1, \dots, X_k\} \to \llbracket \mathrm{Cat} \rrbracket$, the rule contributes the hyperedge
+For each substitution $\sigma : \{X_1, \dots, X_k\} \to \llbracket \mathrm{Cat} \rrbracket$, the rule
+contributes the rule instance
 
 $$
-\llbracket R \rrbracket_\sigma \;:\; \llbracket \pi_1 \rrbracket_\sigma,\, \dots,\, \llbracket \pi_m \rrbracket_\sigma \;\longrightarrow\; \llbracket \pi \rrbracket_\sigma,
+\llbracket R \rrbracket_\sigma : \llbracket \pi_1 \rrbracket_\sigma, \dots, \llbracket \pi_m \rrbracket_\sigma \longrightarrow \llbracket \pi \rrbracket_\sigma,
 $$
 
-a generic element of the item algebra's multicategory in the sense of [Weighted Deduction Fragment §2](grammar.md#2-rules). Concretely, in a chart parser whose item algebra is a residuated category $\mathcal{C}$, the rule fires whenever the chart contains cells whose categories unify with the premise patterns; the conclusion cell is the corresponding substituted category.
+a hyperedge in the sense of [Weighted deduction §2](grammar.md#2-rules). A chart parser fires it
+whenever cells adjacent in the input have categories that unify with the premises, and the new
+cell has the conclusion under the unifying substitution.
 
-Standard CCG / Lambek combinators are direct instances under QVR's biclosed slash convention (§3.1):
+The rules of [combinatory categorial grammar](https://en.wikipedia.org/wiki/Combinatory_categorial_grammar)
+(CCG) [@steedman2000syntactic] and of the Lambek calculus are instances, in QVR's notation:
 
-| Rule | Surface | Denotation |
+| Rule | Declaration | Biclosed reading |
 |---|---|---|
-| Forward application | `fwd_app(X, Y) : X / Y, Y |- X` | $(X / Y) \otimes Y \to X$, the counit of the right residuation |
-| Backward application | `bwd_app(X, Y) : X, Y \ X |- Y` | $X \otimes (Y \backslash X) \to Y$, the counit of the left residuation |
-| Forward composition | `fwd_comp(X, Y, Z) : X / Y, Y / Z |- X / Z` | $(X / Y) \otimes (Y / Z) \to X / Z$, composition of right residuals |
+| Forward application | `fwd_app(X, Y) : X / Y, Y |- X` | $(X / Y) \otimes Y \to X$, evaluation of the right internal hom |
+| Backward application | `bwd_app(X, Y) : X, Y \ X |- Y` | $X \otimes (Y \backslash X) \to Y$, evaluation of the left internal hom |
+| Forward composition | `fwd_comp(X, Y, Z) : X / Y, Y / Z |- X / Z` | $(X / Y) \otimes (Y / Z) \to X / Z$, composition of right internal homs |
 
-## 6. Schema declarations
+## 6. Schema declarations {#6-schema-declarations}
 
-The [schema-lifting guide](../guides/effects.md#class-driven-schema-lifting) shows a concrete rule being lifted through an effect. Its [formal lifted denotation](effects.md#3-effect-typed-schema-denotations) states the typeclass laws assumed by that construction.
-
-A schema separates a structural pattern from its instantiation. Instead of
-writing a separate application morphism for every pair of grammatical types,
-the author writes one pattern and the matcher supplies the types at a firing
-site. The parameter space $\Theta$ below is the collection of all
-allowed assignments to those pattern variables.
-
-A `schema` declaration
+The [schema lifting guide](../guides/effects.md#class-driven-schema-lifting) lifts a rule through an
+effect, and [Effects and type classes §3](effects.md#3-effect-typed-schema-denotations) states its
+denotation. A schema states one pattern for many categories, and the matcher fills in the categories
+where it fires.
 
 ```
-schema R(X_{1,1}, …, X_{1,k_1} : τ_1, …, X_{g,1}, …, X_{g,k_g} : τ_g) : Dom -> Cod
+schema R(X_{1,1}, ..., X_{1,k_1} : τ_1, ..., X_{g,1}, ..., X_{g,k_g} : τ_g) : Dom -> Cod
 ```
 
-is the type-polymorphic morphism analogue of a `rule`. Where a rule is a *generic* hyperedge (no further structure), a schema is a *family of morphisms* parameterized by typed meta-variables. Each parameter group $X_{i,1}, \dots, X_{i,k_i} : \tau_i$ declares $k_i$ meta-variables ranging over $\llbracket \tau_i \rrbracket$ (typically $\tau_i = \mathrm{Cat}$).
-
-Let $\bar X = (X_{i,j})_{i, j}$ be the flat tuple of parameters, and let
-
-$$
-\Theta \;=\; \prod_i \llbracket \tau_i \rrbracket^{k_i}
-$$
-
-be the parameter-space product. The denotation is the parameterized family
+declares a family of morphisms indexed by its typed variables. Each group
+$X_{i,1}, \dots, X_{i,k_i} : \tau_i$ declares $k_i$ variables ranging over $\llbracket \tau_i \rrbracket$, usually
+$\tau_i = \mathrm{Cat}$. With $\Theta = \prod_i \llbracket \tau_i \rrbracket^{k_i}$ the set of assignments
+to all variables, the schema denotes
 
 $$
-\llbracket R \rrbracket \;:\;\; \prod_{\sigma \in \Theta}\;\mathcal{V}\text{-}\mathbf{Rel}\bigl(\llbracket \mathrm{Dom} \rrbracket_\sigma,\, \llbracket \mathrm{Cod} \rrbracket_\sigma\bigr),
+\llbracket R \rrbracket \in \prod_{\sigma \in \Theta} \mathbf{Mat}(\mathcal{V})\bigl(\llbracket \mathrm{Dom} \rrbracket_\sigma, \llbracket \mathrm{Cod} \rrbracket_\sigma\bigr),
 $$
 
-i.e. for every concrete substitution $\sigma \in \Theta$ of the parameters, a $\mathcal{V}$-relation between the substituted domain and codomain types. The family is *uniform* in $\sigma$: the morphism at each $\sigma$ is determined by the same syntactic specification, and substitution commutes with composition and tensor.
+a $\mathcal V$-matrix from the substituted domain to the substituted codomain for each assignment
+$\sigma$. One declaration gives the matrix at every $\sigma$.
 
-The arity of a schema (binary vs. unary at the chart level) is derived from the domain shape:
+The number of premises of a schema in a chart follows from the shape of its domain:
 
-- A top-level `ObjectProduct` $\mathrm{Dom} = D_1 \times D_2$ yields a *binary* schema: a chart hyperedge $D_1 \times D_2 \to \mathrm{Cod}$ that fires on adjacent cells at substituted categories $\sigma D_1, \sigma D_2$.
-- Any other domain shape yields a *unary* schema: a hyperedge on a single cell at the substituted domain category.
+- a product domain $\mathrm{Dom} = D_1 \times D_2$ gives a binary rule $D_1 \times D_2 \to \mathrm{Cod}$,
+  which fires on adjacent cells with categories $\sigma D_1$ and $\sigma D_2$;
+- any other domain gives a unary rule on one cell with category $\sigma \mathrm{Dom}$.
 
-Schemas are first-class citizens of the chart-parser API: `parser(rules = [R_1, …, R_n])` accepts schemas by name; the chart's joint dispatch ([Effects §4](effects.md#4-joint-type-and-effect-dispatch)) treats them as type-polymorphic firing entries with substitutions inferred from the cells at the firing site.
+`parser(rules = [R_1, ..., R_n])` accepts schemata by name, and the chart treats each as a rule whose
+substitution is found from the cells where it fires
+([Effects and type classes §4](effects.md#4-joint-type-and-effect-dispatch)).
 
-## 7. Bundles
+## 7. Bundles {#7-bundles}
 
-A `bundle B : [r_1, …, r_n]` declaration is a first-class set binding:
+```
+bundle B : [r_1, ..., r_n]
+```
 
-$$
-\llbracket B \rrbracket \;=\; \{\,\llbracket r_1 \rrbracket,\, \dots,\, \llbracket r_n \rrbracket\,\},
-$$
-
-an ordered collection of schema / rule references. Bundles are accepted at parser and chart-fold rule positions; expansion splices the members at the call site.
-
-The denotation is invariant under bundling: a schema set $\{r_1, \dots, r_n\}$ may be passed as a literal list `[r_1, …, r_n]` or via a bundle name with the same parse result.
+binds $B$ to the list of rules and schemata $r_1, \dots, r_n$, in order. A bundle may be given wherever
+`parser` and `chart_fold` take rules, and it is replaced by its members there, so passing `B` and
+passing the list `[r_1, ..., r_n]` give the same parser.
 
 ## 8. Vertex and edge kinds in graph signatures
 
-A `signature` block may, alongside its `sorts` / `constructors` / `binders`, declare typed vertex and edge kinds for graph-shaped algebras:
+A `signature` may declare kinds of vertices and edges for graphs, beside its sorts, constructors, and
+binders:
 
 ```
 signature Mol
@@ -196,8 +202,8 @@ signature Mol
         in_bond : Atom -> Bond
 ```
 
-These declarations extend the signature's *theory*. The QVR protocol records the declaration syntax, while the signature theory records its vertex and edge kinds. A `vertex_kind_decl` $K : k\,[\mathrm{dim}\,d]$ extends the signature's kind set with a typed vertex kind whose sort role is $k$ and whose declared embedding dimension is $d$; an `edge_kind_decl` $\varepsilon : K_s\,\mathrm{arrow}\,K_t$ extends the signature's edge set with a typed binary relation between vertex kinds, directed iff `arrow == '->'`. The denotation of a graph signature equipped with these declarations is the category $\mathbf{Graph}_\Sigma$ of finite typed graphs of the prescribed shape; see [Structural Compression §1.3](structural.md#13-graph-signatures) for the formal treatment and §2.4 of the same page for the message-passing encoder that consumes them.
-
-## References
-
-The connection between grammatical composition and directed implication originates in Lambek calculus [@lambek1958mathematics]. QVR’s operand convention is stated in §3.1.
+A vertex kind $K : k\,[\mathrm{dim}\ d]$ has the sort role $k$ and an embedding of dimension $d$. An edge
+kind $\varepsilon : K_s \to K_t$ or $\varepsilon : K_s \mathbin{-\!-} K_t$ is a binary relation between
+vertex kinds, directed when written with `->` and undirected with `--`. Graph signatures and the
+encoders that read them are described on
+[Tree and graph autoencoders §1.3](structural.md#13-graph-signatures).
