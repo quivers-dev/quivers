@@ -138,7 +138,7 @@ class TestRealAlgebra:
 # ---------------------------------------------------------------------------
 
 
-class TestProbabilityAlgebra:
+class TestBoundedSumProductAlgebra:
     def test_name_is_probability(self) -> None:
         assert PROBABILITY.name == "Probability"
 

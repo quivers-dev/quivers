@@ -8513,7 +8513,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 flat = entry
                 continue
             assert isinstance(factor.size, IndexLiteral)
-            path = ("programs", state.declaration.name, "index maps", name)
+            path = ("programs", state.declaration.name, "index_maps", name)
             scaled = self._primitive(
                 "mul_int",
                 (flat, LiteralValue(factor.size.value, INT)),

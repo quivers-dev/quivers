@@ -71,6 +71,7 @@ from quivers.core.algebras import (
 )
 from quivers.core.algebra_morphisms import (
     CarrierMap,
+    AlgebraHomomorphism,
     IdentityHom,
     Embedding,
     MarkovToProductFuzzy,
@@ -139,6 +140,7 @@ from quivers.core.wiring import (
 )
 from quivers.core.tensor_ops import (
     noisy_or_contract,
+    diagonal_reduce,
     noisy_or_reduce,
     noisy_and_reduce,
     componentwise_lift,
@@ -201,6 +203,7 @@ __all__ = [
     "DUAL_GODEL",
     # algebra_morphisms
     "CarrierMap",
+    "AlgebraHomomorphism",
     "IdentityHom",
     "Embedding",
     "MarkovToProductFuzzy",
@@ -264,6 +267,7 @@ __all__ = [
     "einsum_wiring",
     # tensor_ops
     "noisy_or_contract",
+    "diagonal_reduce",
     "noisy_or_reduce",
     "noisy_and_reduce",
     "componentwise_lift",

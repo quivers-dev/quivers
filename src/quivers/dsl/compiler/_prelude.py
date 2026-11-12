@@ -57,7 +57,7 @@ from quivers.core.algebra_morphisms import (
     COUNTING_FROM_REAL,
     COUNTING_TO_REAL,
     MARKOV_TO_PRODUCT_FUZZY,
-    LOG_PROB_MAP as _LOG_PROB_HOM,
+    LOG_PROB_MAP as _LOG_PROB_MAP,
     PRODUCT_FUZZY_TO_GODEL,
     MAX_PLUS_MAP as _MAX_PLUS_HOM,
     PROBABILITY_CLAMP,
@@ -201,7 +201,7 @@ def _build_default_trans_singletons() -> dict:
     """
     return {
         "expectation": MARKOV_TO_PRODUCT_FUZZY,
-        "log_prob": _LOG_PROB_HOM,
+        "log_prob": _LOG_PROB_MAP,
         "max_plus": _MAX_PLUS_HOM,
         "material_implication": PRODUCT_FUZZY_TO_GODEL,
         "threshold": _make_threshold(0.5),
