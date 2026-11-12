@@ -273,10 +273,11 @@ exact applied interface of `i`, and then:
 - a handler with a clause for every operation removes `i` from the row of the body;
 - a handler without one keeps `i` in the row;
 - the effects of the handler's clauses join the remaining row;
-- an open tail keeps its `lacks` constraints.
+- a row variable keeps its `lacks` constraints.
 
 The checker records each clause's grade and rejects an authored clause that visibly resumes more often than
-its grade allows. The reference machine also counts resumptions at run time. Rigid indices, scoped
+its grade allows. The [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC, also
+counts resumptions at run time. Rigid indices, scoped
 instances, and the evidence for them may not occur in the type or row that leaves their scope. The
 separation of requests from their interpretation is that of algebraic effects and handlers
 [@plotkin2009handlers]. QIEC adds named instances, indexed types, and resumption grades.
@@ -319,7 +320,8 @@ variable.
 | reference execution | `quivers.qiec.evaluator`, `quivers.qiec.execution` |
 | analysis of target support | `quivers.transpile.qiec_ir` |
 
-`qvr check` parses, checks the source constraints, builds the compiled runtime where it applies, and checks
+`qvr check` parses, checks the source constraints, builds the
+[compiled runtime](../guides/dsl-overview.md#compilation-pipeline), the module's PyTorch implementation, where it applies, and checks
 the QIEC module. `qvr check --target` also analyzes which QIEC features the target supports. Transpilation
 runs the target's renderer as well, which can report further unsupported constructs.
 

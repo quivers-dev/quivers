@@ -150,7 +150,8 @@ argument: a vector reduces to a number, and a tensor of shape $(n_1, \ldots, n_k
 shape $(n_1, \ldots, n_{k-1})$ of its row reductions. A rowwise operation (`cumsum`, `sort`,
 `softmax`, `log_softmax`, `normalize`) acts along the last axis and keeps the shape. Nested
 reductions collapse one axis each, so `sum(sum(t))` sums the last two axes. The checker, the
-reference machine, the compiled runtime, and every transpilation target read the primitives this
+[reference machine](../developer/qiec.md#reference-evaluator) (the library's interpreter for QIEC), the
+[compiled runtime](../guides/dsl-overview.md#compilation-pipeline) (its PyTorch implementation), and every transpilation target read the primitives this
 way, and a target that cannot express a last-axis reduction of a given argument refuses the
 program. A reduction over a named axis is written as a [`contraction`](composition-rules.md#4-operadic-contractions).
 The [let-expression guide](../guides/dsl-programs-and-lets.md#checked-primitive-reference) lists
@@ -208,7 +209,7 @@ reported as a [`CompileError`](../api/dsl/compiler.md) that names the call.
 ### 2.4 Plates {#24-indexed-bind-plate}
 
 A [plate](https://en.wikipedia.org/wiki/Plate_notation) repeats a variable over an index set as
-conditionally independent copies [@koller2009probabilistic]. A plated draw
+conditionally independent copies [@koller2009probabilistic]. A draw over a plate
 
 ```
 sample v : A <- F(args)
@@ -245,7 +246,8 @@ $$
 $$
 
 An argument written `theta[N]` reads the value of the plate variable `theta` at $n$. The optional
-`via = idx` names an index map into the group of an enclosing grouped `marginalize`
+`via = idx` names an *index map*, a function from the rows to the groups of an enclosing grouped
+`marginalize`
 ([§2.7](#27-grouped-marginalize-with-multi-observe-fibration)).
 
 ### 2.6 Summing out a discrete latent variable {#26-marginalize}

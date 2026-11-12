@@ -36,7 +36,7 @@ $\pi_{F, \mathsf{Edward2}} = \mathrm{id}$ and $c_{F, \mathsf{Edward2}} = 0$.
 ## Emitted constructs
 
 **`sample` and `observe`.** `<name> = edward2.<Family>(<args>, sample_shape=[B0, B1, ...], name="<name>")`
-for a latent variable or an observation. For a [plated draw](../programs.md#24-indexed-bind-plate),
+for a latent variable or an observation. For a [draw over a plate](../programs.md#24-indexed-bind-plate),
 `sample_shape` gives the [batch shape](https://www.tensorflow.org/probability/examples/Understanding_TensorFlow_Distributions_Shapes). An observation also passes `value=<name>`, the
 model argument that holds the data, so its random variable holds the data over the whole plate, and a later
 `let` that reads the observed name reads the data. Without data, a run draws one value for each row. When the

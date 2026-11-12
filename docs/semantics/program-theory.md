@@ -39,7 +39,7 @@ the handlers it installs (`installs`).
 
 A `program` elaborates to a computation and a `program_entry` vertex, whose `body` edge names the
 computation. Its `parameter` children carry the role of each parameter (`domain`, `scalar`, `data`,
-`observation`, `fibration` for an index map, `weight`, `bias`, `table`, or `kernel-input`), its
+`observation`, `fibration` for an index map from observation rows to groups, `weight`, `bias`, `table`, or `kernel-input`), its
 `site` children the kind, family, and plate axes of each probabilistic step, and its `random` and
 `score` edges the built-in instances that its draws and scores address. When the elaboration of a
 module's programs fails, the root carries the diagnostic as a `gap` constraint.

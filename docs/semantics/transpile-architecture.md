@@ -66,7 +66,7 @@ Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run this tree thro
 the QIEC runtime written for each target: free computations, handlers bound to instances, stable
 addresses of requests, constructors, case analysis on indexed families, attachments, and checks of
 resumption grades. Tests parse the source emitted for every target and, where the target's runtime is
-installed, compare its requests and results with the [reference machine](../reference/qvr/index.md).
+installed, compare its requests and results with the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC.
 
 Stan, BUGS, and JAGS accept a static subset, which the analysis checks: each computation has a closed,
 empty row and no static parameters, returns a scalar, and uses only scalar `Return` and `Bind`. Stan
@@ -317,7 +317,7 @@ stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), impleme
    source, whose morphism fixes the values a categorical draw ranges over and the form of a structured
    family's arguments;
 3. walks the computation: a `Random.sample` becomes an `IRSample` named by its site label, a `Score.add` of
-   a density at an observation becomes an `IRObserve` whose `via` is the index map by which a `SegmentSum`
+   a density at an observation becomes an `IRObserve` whose `via` is the index map (a function from observation rows to groups) by which a `SegmentSum`
    regroups the density, a pure binding becomes an `IRDeterministic`, or is absorbed into an `IRScore` when
    the next request scores its value, the call of a helper for summing out a latent variable, whose result is
    scored, becomes an `IRMarginalize` whose scope is the helper's body, and the final `Return` becomes an
@@ -337,7 +337,7 @@ stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), impleme
    parameter maps, and data;
 7. spells every name for the targets. A draw from a program runs the program in place under names of the
    caller: a local `z` of a program drawn as `theta` is the site `theta$z` on the reference machine and the
-   compiled runtime, and since no target admits `$` in a name, the plan spells it `theta__z`.
+   [compiled runtime](../guides/dsl-overview.md#compilation-pipeline), and since no target admits `$` in a name, the plan spells it `theta__z`.
 
 `Lower` does not depend on the target and imports no renderer.
 

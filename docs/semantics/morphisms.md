@@ -361,7 +361,8 @@ The clause states a prior on the entries of the table: the table is a draw from 
 the stated event and batch axes, so that a model using $f$ treats the table as one more latent
 variable.
 
-In the compiled runtime the prior is not applied. The compiler checks the clause's axes against
+In the [compiled runtime](../guides/dsl-overview.md#compilation-pipeline), the PyTorch implementation of a module,
+the prior is not applied. The compiler checks the clause's axes against
 the family and then builds the same `LatentMorphism` as for a declaration without a clause: a free
 table initialized from a Normal with standard deviation `scale` and passed through the sigmoid. The
 compiled runtime thus fits a point estimate of the table where the clause describes a
