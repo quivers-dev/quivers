@@ -768,11 +768,17 @@ class _DeductionsMixin:
             line=decl.line,
             col=decl.col,
         )
-        semiring = (
-            semiring_registry.get(semiring_name, SEMIRING_LOG_PROB)
-            if semiring_name is not None
-            else SEMIRING_LOG_PROB
-        )
+        if semiring_name is None:
+            semiring = SEMIRING_LOG_PROB
+        elif semiring_name in semiring_registry:
+            semiring = semiring_registry[semiring_name]
+        else:
+            raise CompileError(
+                f"deduction {decl.name!r} names the semiring {semiring_name!r}; "
+                f"the semirings are {', '.join(semiring_registry)}",
+                decl.line,
+                decl.col,
+            )
 
         inference_rules: list = []
         # Each rule may carry a ``#[learnable]`` pragma. A learnable
