@@ -5,7 +5,7 @@ logistic function of a linear predictor ``eta`` and its complement. Written
 as ``ContinuousBernoulli(probs=sigmoid(eta))`` at a ``marginalize`` head, the
 compiled runtime forms ``log1p(-sigmoid(eta))`` in single precision, which
 cancels once ``eta`` passes about 10. Written as
-``ContinuousBernoulli(logits=eta)`` (or ``Bernoulli(logits=eta)``), both
+``ContinuousBernoulli(logits=eta)`` or ``Bernoulli(logits=eta)``, both
 execution paths weigh the atoms by ``log sigmoid(-eta)`` and
 ``log sigmoid(eta)``, computed in log space.
 
@@ -47,7 +47,7 @@ _COUNTS = (0, 3, 0, 5)
 _ETAS = (-30.0, -15.0, 0.0, 15.0, 30.0)
 
 
-def _program(head: str, lets: str = "") -> str:
+def _program(head: str, lets: str = "", gate: str = "z") -> str:
     """A zero-inflated Poisson program with one shared predictor.
 
     Parameters
@@ -56,6 +56,8 @@ def _program(head: str, lets: str = "") -> str:
         The marginalized latent's family call.
     lets : str
         Bindings placed before the block.
+    gate : str
+        The latent as the gated rate reads it.
 
     Returns
     -------
@@ -69,7 +71,7 @@ def _program(head: str, lets: str = "") -> str:
         "    sample eta <- Normal(loc=0.0, scale=10.0)\n"
         f"{lets}"
         f"    marginalize z : Resp <- {head}\n"
-        f"        let gated_rate = z * {_RATE}\n"
+        f"        let gated_rate = {gate} * {_RATE}\n"
         "        observe y : Resp <- Poisson(rate=gated_rate)\n"
         "    return eta\n"
         "export p\n"
@@ -164,8 +166,11 @@ def _reference(source: str, eta: float) -> float:
     return loads(source).run("p", data={"y": _COUNTS}, sites={"eta": eta}).log_joint
 
 
+#: Each Bernoulli-family head given by its logits, with the latent as the
+#: gated rate reads it: a Bernoulli's Boolean atoms are read as reals.
 _LOGIT_HEADS = {
-    "continuous-bernoulli": "ContinuousBernoulli(logits=eta)",
+    "bernoulli": ("Bernoulli(logits=eta)", "real(z)"),
+    "continuous-bernoulli": ("ContinuousBernoulli(logits=eta)", "z"),
 }
 
 
@@ -175,7 +180,8 @@ def test_compiled_runtime_scores_the_exact_mixture_from_logits(
     head: str, eta: float
 ) -> None:
     expected = _exact(eta)
-    compiled = _compiled(_program(_LOGIT_HEADS[head]), eta)
+    family, gate = _LOGIT_HEADS[head]
+    compiled = _compiled(_program(family, gate=gate), eta)
     assert compiled == pytest.approx(expected, rel=_FLOAT32_TOLERANCE)
 
 
@@ -185,7 +191,8 @@ def test_reference_machine_scores_the_exact_mixture_from_logits(
     head: str, eta: float
 ) -> None:
     expected = _exact(eta)
-    reference = _reference(_program(_LOGIT_HEADS[head]), eta)
+    family, gate = _LOGIT_HEADS[head]
+    reference = _reference(_program(family, gate=gate), eta)
     assert reference == pytest.approx(expected, rel=_FLOAT64_TOLERANCE)
 
 
