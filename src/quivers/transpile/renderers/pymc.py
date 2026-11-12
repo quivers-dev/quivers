@@ -220,9 +220,14 @@ class PyMCRenderer(RendererBase):
 
         # Graft runtime helpers for families PyMC does not ship, once,
         # as top-level definitions preceding `build_model`.
-        if any(
-            _ir_uses_family(ir.body, family) for family in _PYMC_RUNTIME_HELPER_FAMILIES
-        ) or qiec_helper_families_used(ir, self.target):
+        if (
+            any(
+                _ir_uses_family(ir.body, family)
+                for family in _PYMC_RUNTIME_HELPER_FAMILIES
+            )
+            or _ir_uses_logit_helper(ir.body)
+            or qiec_helper_families_used(ir, self.target)
+        ):
             _graft_runtime_pymc_helpers(py)
 
         # Trailing `return model` inside the function body (outside
@@ -601,7 +606,10 @@ class PyMCRenderer(RendererBase):
         # A family PyMC does not ship (`ContinuousBernoulli`) resolves
         # to a grafted runtime helper called by bare name; the graft
         # is emitted once in `render_with_tables`.
-        if node.family in _PYMC_RUNTIME_HELPER_FAMILIES:
+        logit_helper = _PYMC_LOGIT_HELPERS.get((node.family, tuple(node.arg_names)))
+        if logit_helper is not None:
+            callee = identifier(ctx.py, logit_helper)
+        elif node.family in _PYMC_RUNTIME_HELPER_FAMILIES:
             callee = identifier(ctx.py, _PYMC_RUNTIME_HELPER_FAMILIES[node.family])
         else:
             callee = attribute(ctx.py, ("pymc", dist_class))
@@ -1088,7 +1096,9 @@ class PyMCRenderer(RendererBase):
         dist_class = meta.target_names.get("pymc")
         if dist_class is None:
             raise UnsupportedConstruct(self.target, [f"family:{observe.family}"])
-        helper = _PYMC_RUNTIME_HELPER_FAMILIES.get(observe.family)
+        helper = _PYMC_LOGIT_HELPERS.get(
+            (observe.family, tuple(observe.arg_names))
+        ) or _PYMC_RUNTIME_HELPER_FAMILIES.get(observe.family)
         chain = (helper, "dist") if helper else ("pymc", dist_class, "dist")
         complement_args = _PYMC_COMPLEMENT_ARGS.get(observe.family, frozenset())
         cls_constraints = getattr(
@@ -1777,6 +1787,39 @@ for _root in _RUNTIME_PYMC_ROOTS:
 _RUNTIME_PYMC_SUBTREE: tuple[str, ...] = tuple(
     v.id for v in _RUNTIME_PYMC_SCHEMA.vertices if v.id in _RUNTIME_PYMC_REACHABLE
 )
+
+
+#: The grafted helper of each family call written through an alternative
+#: parameterization PyMC's own family scores inexactly: `pymc.Bernoulli`
+#: with `logit_p` reads the log of the probability's complement, which
+#: loses its digits once the probability is within an ulp of one.
+_PYMC_LOGIT_HELPERS: dict[tuple[str, tuple[str, ...]], str] = {
+    ("Bernoulli", ("logits",)): "BernoulliLogit",
+}
+
+
+def _ir_uses_logit_helper(body: tuple[IRNode, ...]) -> bool:
+    """Whether a site draws or scores through a grafted logit helper.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe calls a family under a
+        parameterization `_PYMC_LOGIT_HELPERS` spells.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and (
+            (node.family, tuple(node.arg_names)) in _PYMC_LOGIT_HELPERS
+        ):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_uses_logit_helper(node.scope):
+            return True
+    return False
 
 
 def _ir_uses_family(body: tuple[IRNode, ...], family: str) -> bool:

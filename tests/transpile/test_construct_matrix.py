@@ -165,21 +165,16 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
             "marginalize:ungrouped-over-plate"
         )
 # A logistic regression written with Bernoulli's logits, one log-odds per
-# row, is refused as its scalar form is by every target whose library has
-# no logit-parameterized Bernoulli.
-for _backend in ("bugs", "church", "gen", "jags", "webppl"):
-    _EXPECTED_ORTHOGONAL_RAISES[
-        (_backend, "steps", "observe_bernoulli_logits_rows")
-    ] = "family:Bernoulli:logits"
+# row, is refused as its scalar form is by BUGS, which has no stable
+# spelling of the parameterization.
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "observe_bernoulli_logits_rows")] = (
+    "family:Bernoulli:logits"
+)
 # A per-token LDA: BUGS cannot shift the observed word codes to `dcat`'s
-# one-based codes, JAGS cannot lift the gather's elementwise operator over
-# an axis in an expression, and Gen and Turing read a marginalization's
-# weights only from a name with a declared plate.
+# one-based codes, and Gen and Turing read a marginalization's weights
+# only from a name with a declared plate.
 _EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "marginalize_gathered_prior_data")] = (
     "observe:class-code"
-)
-_EXPECTED_ORTHOGONAL_RAISES[("jags", "steps", "marginalize_gathered_prior_data")] = (
-    "let-expr:elementwise-axis-operator"
 )
 for _backend in ("gen", "turing"):
     _EXPECTED_ORTHOGONAL_RAISES[
@@ -329,7 +324,7 @@ for _fixture, _family, _backends in (
     (
         "observe_bernoulli_logits",
         "Bernoulli",
-        ("bugs", "church", "gen", "jags", "webppl"),
+        ("bugs",),
     ),
     (
         "observe_binomial_logits",
@@ -500,6 +495,31 @@ for _backend in ("bugs", "jags"):
     ] = "let-expr:LetExprFactor:"
 _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
     "sample:discrete-latent"
+)
+# A fixture that draws a Bernoulli outcome as a latent beside the
+# construct under test asks Stan for a discrete parameter, which its
+# samplers do not carry.
+for _category, _fixture in (
+    ("options", "option_flag"),
+    ("statements", "bundle_decl"),
+    ("statements", "category_decl"),
+    ("statements", "composition_decl"),
+    ("statements", "contraction_decl"),
+    ("statements", "deduction_decl"),
+    ("statements", "export_decl"),
+    ("statements", "object_decl_finset"),
+    ("statements", "rule_decl"),
+    ("statements", "schema_decl"),
+    ("statements", "signature_decl"),
+    ("steps", "sample_bernoulli_logits"),
+):
+    _EXPECTED_ORTHOGONAL_RAISES[("stan", _category, _fixture)] = (
+        "sample:discrete-latent"
+    )
+# BUGS's `dbern` takes a probability, whose complement loses its digits at
+# saturated log-odds, and BUGS has no data block for a zeros-trick carrier.
+_EXPECTED_ORTHOGONAL_RAISES[("bugs", "steps", "sample_bernoulli_logits")] = (
+    "family:Bernoulli:logits"
 )
 # A row gathered by a drawn class draws that class, which Stan cannot
 # carry, from a list-literal probability vector BUGS and JAGS do not take.

@@ -1,0 +1,8 @@
+# A Bernoulli draw written with logits: one latent outcome per row, each
+# at the log-odds a sampled linear predictor gives.
+object Row : FinSet 3
+program draw_logits : Row -> Row
+    sample eta <- Normal(loc=0.0, scale=10.0)
+    sample z : Row <- Bernoulli(logits=eta)
+    return z
+export draw_logits

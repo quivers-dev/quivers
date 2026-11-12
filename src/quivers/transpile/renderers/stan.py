@@ -89,6 +89,10 @@ from quivers.transpile.family_meta import (
     FamilyMeta,
 )
 from quivers.transpile.ir import (
+    CSBoolean,
+    CSIntegerInterval,
+    CSNonnegativeInteger,
+    CSPositiveInteger,
     CSReal,
     ConstraintSpec,
     LetExprAffineMap,
@@ -3660,11 +3664,14 @@ class StanRenderer(RendererBase):
         Raises
         ------
         UnsupportedConstruct
-            If a sample draws a class code, which Stan has no parameter
-            type for, or the node has no Stan form.
+            If a sample draws a class code or any other discrete value,
+            which Stan has no parameter type for, or the node has no
+            Stan form.
         """
         if isinstance(node, IRSample):
-            if is_class_code_family(node.family):
+            if is_class_code_family(node.family) or isinstance(
+                node.constraint, _DISCRETE_SUPPORTS
+            ):
                 raise UnsupportedConstruct(
                     "qvr-stan",
                     [
@@ -4165,6 +4172,16 @@ class StanRenderer(RendererBase):
             elif isinstance(stmt, DefineDecl):
                 lets[stmt.name] = stmt.expr
         return morphisms, lets
+
+
+#: The supports of a discrete draw, which Stan's samplers carry no
+#: parameter of.
+_DISCRETE_SUPPORTS: tuple[type[ConstraintSpec], ...] = (
+    CSBoolean,
+    CSIntegerInterval,
+    CSNonnegativeInteger,
+    CSPositiveInteger,
+)
 
 
 def _vector_argument_slots(

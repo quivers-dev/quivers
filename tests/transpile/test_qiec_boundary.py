@@ -20,7 +20,7 @@ from quivers.transpile.qiec_ir import (
 _OLD_PROGRAM = """\
 object Resp : FinSet 4
 program prog : Resp -> Resp
-    sample x <- Bernoulli(probs=0.5)
+    sample x <- Beta(concentration1=2.0, concentration0=2.0)
     return x
 export prog
 """
