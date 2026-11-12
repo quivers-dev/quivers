@@ -616,7 +616,9 @@ are:
 - `chart.weight(item)`: the weight of one item;
 - `chart.enumerate(pattern)`: the `(item, weight)` pairs matching a pattern with
   variables;
-- `chart.derivations(item)`: the items that contributed to `item`'s weight, as a list;
+- `chart.derivations(item)`: the rule applications that derive `item`, its incoming
+  [hyperedges](https://en.wikipedia.org/wiki/Hypergraph) [@klein2001parsing], as
+  `(rule_name, antecedents)` pairs with the antecedent items in premise order;
 - `chart.goal_weight()`: the weight of the goal.
 
 The weights are tensors, and their gradients reach every learnable rule and lexicon

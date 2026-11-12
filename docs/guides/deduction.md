@@ -124,10 +124,11 @@ probability. A non-idempotent semiring thus gives the same chart under every age
 only if each derivation is counted exactly once, and a system with cycles also needs
 the iteration to converge [@goodman1999semiring]. For an acyclic grammar under
 `LogProb`, the CKY, semi-naive, depth-first, and Earley agendas give the same goal
-weights to within `1e-5`. When one item matches two premises of a rule, as a single
-`NP` matches both premises of `NP, NP ⊢ S`, every agenda fires the rule once for
-each premise position, so under `LogProb` that one derivation contributes $\log 2$
-instead of $0$.
+weights to within `1e-5`. Every agenda counts each derivation once, as in the agenda
+algorithm of Eisner, Goldlust, and Smith [@eisner2005compiling]: when one item fills two premises
+of a rule, as a single `NP` of weight $w$ fills both premises of `NP, NP ⊢ S`, the rule fires once
+for that pair, and `S` receives $w \otimes w$. A rule's `weight_fn` must distribute over the
+semiring sum in each premise weight for this count to hold.
 
 ## Pre-registered stdlib {#pre-registered-stdlib}
 
@@ -135,8 +136,8 @@ instead of $0$.
 
 | System | Items | Semiring | Agenda |
 |----------------|---------------------------|------------|----------------------|
-| `CCG` | categories built with `("slash", dir, X, Y)`, without positions | `LogProb` | CKY |
-| `Lambek` | categories, as for `CCG` | `LogProb` | CKY |
+| `CCG` | `("span", i, j, category)`, with categories built by `("slash", dir, X, Y)`; application and harmonic composition [@steedman2000syntactic] | `LogProb` | CKY |
+| `AB` | as for `CCG`; forward and backward application only, the AB (Ajdukiewicz-Bar-Hillel) grammar | `LogProb` | CKY |
 | `STLC` | checking and synthesis judgments of the simply typed lambda calculus | `Boolean` | depth-first |
 | `MLTT` | typing judgments of dependent type theory, with bounded term depth | `Boolean` | depth-first |
 | `Datalog` | ground facts of transitive closure | `Boolean` | semi-naive |
