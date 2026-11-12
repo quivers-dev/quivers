@@ -437,7 +437,7 @@ class PyroRenderer(RendererBase):
         if len(args) != 2 or not isinstance(args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-pyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = args[1]
         if kernel_arg.kernel != "rbf":

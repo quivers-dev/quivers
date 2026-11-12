@@ -55,7 +55,7 @@ def expand_composite_lets(module: Module, *, target: str) -> Module:
     try:
         expanded = _expand_composite_lets(module, target=target)
     except StepResolutionError as error:
-        raise UnsupportedConstruct(error.target, error.kinds) from error
+        raise UnsupportedConstruct(error.target, error.explained_kinds) from error
     for statement in expanded.statements:
         if isinstance(statement, ProgramDecl):
             _refuse_scans(statement.draws)

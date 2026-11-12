@@ -1413,7 +1413,7 @@ def _elaborate_marginal_chain(
     try:
         cell = markov_cell(cell_decl)
     except StepResolutionError as error:
-        elaborator._fail(node, "; ".join(error.kinds), code="qiec-program")
+        elaborator._fail(node, error.detail, code="qiec-program")
     states = elaborator._object_axis(cell.state_object, node)
     if not isinstance(states.size, IndexLiteral):
         elaborator._fail(
@@ -2239,7 +2239,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         except StepResolutionError as error:
             self._fail(
                 declarations[0],
-                "; ".join(error.kinds),
+                error.detail,
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
         self._refuse_kernel_arguments()
@@ -4821,8 +4821,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if chart is not None:
             self._fail(
                 node,
-                f"{chart} has no elaboration yet; deduction charts are a "
-                "logic-programming construct outside the program calculus",
+                f"let:chart; {chart} has no elaboration yet; deduction charts "
+                "are a logic-programming construct outside the program calculus",
                 code=GAP_CODE,
             )
         host_only = next(
@@ -6297,7 +6297,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 if network is None:
                     self._fail(
                         step,
-                        "; ".join(error.kinds),
+                        error.detail,
                         code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
                     )
                 resolved = network
@@ -8261,7 +8261,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 target="qvr-qiec",
             )
         except StepResolutionError as error:
-            self._fail(node, "; ".join(error.kinds), code="qiec-program")
+            self._fail(node, error.detail, code="qiec-program")
         record = FAMILIES.get(resolved.family)
         if record is None:
             self._fail(

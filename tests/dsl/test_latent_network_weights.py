@@ -323,7 +323,8 @@ def test_every_target_refuses_latent_network_weights_by_name(network: str) -> No
     for target in available_targets():
         with pytest.raises(UnsupportedConstruct) as caught:
             transpile(parse(source), target=target)
-        assert kind in caught.value.kinds, (target, caught.value.kinds)
+        reported = {k.partition(": ")[0] for k in caught.value.kinds}
+        assert kind in reported, (target, caught.value.kinds)
 
 
 POSTERIOR = """\

@@ -1430,7 +1430,7 @@ class BUGSRenderer(RendererBase):
         if not isinstance(family_ref, IRArgFamilyRef):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["truncated:expected IRArgFamilyRef at arg 0"],
+                ["truncated: expected IRArgFamilyRef at arg 0"],
             )
         decl = ctx.morphisms.get(family_ref.name)
         if not isinstance(decl, MorphismDecl):
@@ -1498,7 +1498,7 @@ class BUGSRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -2811,7 +2811,7 @@ class BUGSRenderer(RendererBase):
         if not bounds or len(bounds) > 2:
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                [f"truncation:expected 1 or 2 bounds, got {len(bounds)}"],
+                [f"truncation: expected 1 or 2 bounds, got {len(bounds)}"],
             )
         tr = self._fresh(ctx, "tr")
         ctx.sb.vertex(tr, "truncation")

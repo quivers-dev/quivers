@@ -76,7 +76,7 @@ def resolve_step_dist(
             target=target,
         )
     except StepResolutionError as error:
-        raise UnsupportedConstruct(error.target, error.kinds) from error
+        raise UnsupportedConstruct(error.target, error.explained_kinds) from error
 
 
 def build_morphism_table(module: Module) -> dict[str, MorphismDecl]:
@@ -100,7 +100,7 @@ def build_morphism_table(module: Module) -> dict[str, MorphismDecl]:
     try:
         return _build_morphism_table(module)
     except StepResolutionError as error:
-        raise UnsupportedConstruct(error.target, error.kinds) from error
+        raise UnsupportedConstruct(error.target, error.explained_kinds) from error
 
 
 def param_source_kind(decl: MorphismDecl, *, target: str) -> str | None:
@@ -126,7 +126,7 @@ def param_source_kind(decl: MorphismDecl, *, target: str) -> str | None:
     try:
         return _param_source_kind(decl, target=target)
     except StepResolutionError as error:
-        raise UnsupportedConstruct(error.target, error.kinds) from error
+        raise UnsupportedConstruct(error.target, error.explained_kinds) from error
 
 
 __all__ = [

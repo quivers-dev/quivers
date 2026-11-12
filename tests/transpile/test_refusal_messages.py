@@ -4,17 +4,21 @@ A refusal reaches the user as
 [`UnsupportedConstruct`][quivers.transpile.UnsupportedConstruct], whose
 message is rendered from a structured `kinds` list by
 [`user_facing_message`][quivers.transpile._diagnostics.user_facing_message].
-That renderer ends in a fallback that names the tag and asks for a bug
-report, which is the right behaviour for a tag nobody has seen and the
-wrong thing for a user to hit: it tells them the transpile failed
-without telling them what to do about it.
+A kind no renderer explains raises
+[`UnregisteredRefusalKind`][quivers.transpile._diagnostics.UnregisteredRefusalKind]
+instead of reaching a user as a tag with no account of what to do.
 
-This module holds the line that no kind the transpiler actually emits
-reaches that fallback. The kinds are read off `docs/transpile-support.md`,
-which `test_support_matrix_docs` pins to a fresh measurement over every
-gallery program and construct fixture against every backend, so the set
-checked here is the set the pipeline currently produces rather than a
-list that drifts as backends change.
+This module holds the line that every kind the transpiler can raise has
+an explanation. The kinds are enumerated two ways. Every raise site of
+`UnsupportedConstruct` or
+[`StepResolutionError`][quivers.dsl.step_resolution.StepResolutionError]
+under `src/quivers` is read statically, so a site no example reaches is
+still checked; a site that forwards kinds computed elsewhere is named in
+`FORWARDING_SITES` with where those kinds come from. The kinds quoted
+in `docs/transpile-support.md`, which `test_support_matrix_docs` pins
+to a fresh measurement over every gallery program and construct
+fixture against every backend, cover the forwarded kinds the pipeline
+currently produces.
 """
 
 from __future__ import annotations
@@ -27,12 +31,12 @@ import pytest
 
 import quivers.transpile
 
-from quivers.transpile._diagnostics import user_facing_message
+from quivers.dsl.step_resolution import StepResolutionError
+from quivers.transpile._diagnostics import (
+    UnregisteredRefusalKind,
+    user_facing_message,
+)
 from tests.transpile import support_matrix
-
-#: Text the terminal fallback in `_render_kind` emits. A rendered
-#: message containing this is a kind with no explanation registered.
-UNEXPLAINED = "no explanation registered"
 
 #: Backends the support page reports on, used to check that a kind
 #: explains itself whichever target refused it.
@@ -74,7 +78,58 @@ def _emitted_kinds() -> tuple[str, ...]:
 
 
 #: Root of the package whose raise sites are scanned statically.
-TRANSPILE_ROOT = Path(quivers.transpile.__file__).parent
+PACKAGE_ROOT = Path(quivers.transpile.__file__).parent.parent
+
+#: The exceptions whose second positional argument is a list of kinds.
+RAISING_CLASSES: frozenset[str] = frozenset(
+    {"UnsupportedConstruct", "StepResolutionError"}
+)
+
+#: Raise sites whose kinds are computed elsewhere, by file and enclosing
+#: function, with where the kinds come from. Every other site has to
+#: spell its kinds as literals or f-strings so this module can read them.
+FORWARDING_SITES: dict[tuple[str, str], str] = {
+    ("transpile/_expand_composites.py", "expand_composite_lets"): (
+        "a StepResolutionError's kinds, whose raise sites are scanned"
+    ),
+    ("transpile/_resolve.py", "resolve_step_dist"): (
+        "a StepResolutionError's kinds, whose raise sites are scanned"
+    ),
+    ("transpile/_resolve.py", "build_morphism_table"): (
+        "a StepResolutionError's kinds, whose raise sites are scanned"
+    ),
+    ("transpile/_resolve.py", "param_source_kind"): (
+        "a StepResolutionError's kinds, whose raise sites are scanned"
+    ),
+    ("transpile/_support.py", "unsupported_for"): (
+        "declaration kinds, each rendered by `_DECLARATION_MEANING`"
+    ),
+    ("transpile/plan.py", "_refuse_host_runtime_calls"): (
+        "QIEC capability diagnostics, measured on the support page"
+    ),
+    ("transpile/plan.py", "checked_program_plan"): (
+        "an elaboration gap's leading kind, a StepResolutionError kind or "
+        "one of the elaboration's own gap kinds"
+    ),
+    ("transpile/plan.py", "checked_module"): (
+        "an elaboration diagnostic, rendered as `program:elaboration:...` "
+        "unless it leads with a structured kind"
+    ),
+    ("transpile/plan.py", "forward"): (
+        "an elaboration gap's leading kind, a StepResolutionError kind or "
+        "one of the elaboration's own gap kinds"
+    ),
+    ("transpile/renderers/_qiec.py", "render_computations_dynamic"): (
+        "QIEC capability diagnostics, measured on the support page"
+    ),
+    ("transpile/renderers/_qiec.py", "refuse_static_gaps"): (
+        "QIEC capability diagnostics, measured on the support page"
+    ),
+    ("transpile/renderers/bugs.py", "_reject_list_args"): (
+        "the family lookup's and the argument emitter's kinds, whose raise "
+        "sites are scanned"
+    ),
+}
 
 
 def _kind_literal(node: ast.expr) -> str | None:
@@ -91,39 +146,90 @@ def _kind_literal(node: ast.expr) -> str | None:
             str(part.value) if isinstance(part, ast.Constant) else "X"
             for part in node.values
         )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _kind_literal(node.left)
+        if left is not None:
+            return left
     return None
 
 
+class _RaiseSite:
+    """One call of a kind-carrying exception, read off the source."""
+
+    def __init__(self, path: str, function: str, line: int, call: ast.Call) -> None:
+        self.path = path
+        self.function = function
+        self.line = line
+        self.call = call
+
+    def kinds_argument(self) -> ast.expr | None:
+        """The call's kinds list, or ``None`` when it passes none."""
+        if len(self.call.args) < 2:
+            return None
+        return self.call.args[1]
+
+    def explanation(self) -> str | None:
+        """The literal `explanation=` keyword, if the site passes one."""
+        for keyword in self.call.keywords:
+            if keyword.arg == "explanation":
+                return _kind_literal(keyword.value) or "X"
+        return None
+
+
+def _raise_sites() -> list[_RaiseSite]:
+    """Every call of a kind-carrying exception under `src/quivers`.
+
+    Returns
+    -------
+    list[_RaiseSite]
+        The sites, in file and line order.
+    """
+    sites: list[_RaiseSite] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = getattr(func, "id", None) or getattr(func, "attr", None)
+                if name in RAISING_CLASSES:
+                    sites.append(_RaiseSite(relative, function.name, node.lineno, node))
+    unique = {(site.path, site.line, site.call.col_offset): site for site in sites}
+    if not unique:
+        raise AssertionError(
+            f"no kind-carrying raise sites were found under {PACKAGE_ROOT}, "
+            f"so this test would vacuously pass."
+        )
+    return [unique[key] for key in sorted(unique)]
+
+
+RAISE_SITES: list[_RaiseSite] = _raise_sites()
+
+
 def _static_kinds() -> tuple[str, ...]:
-    """Every kind spelled at a literal `UnsupportedConstruct` raise.
+    """Every kind spelled at a literal raise site, with its explanation.
 
     The measured page only records kinds the gallery and fixture
     programs actually provoke, so a raise site no example reaches
     would go unchecked. Reading the raise sites off the source covers
     those too, which is how the mis-spelled family kinds were found.
+    A site that passes `explanation=` reaches the renderer as the kind
+    followed by the explanation, so that form is what is checked.
     """
     kinds: set[str] = set()
-    for path in sorted(TRANSPILE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = getattr(func, "id", None) or getattr(func, "attr", None)
-            if name != "UnsupportedConstruct":
-                continue
-            for argument in node.args[1:]:
-                if not isinstance(argument, ast.List | ast.Tuple):
-                    continue
-                for element in argument.elts:
-                    kind = _kind_literal(element)
-                    if kind:
-                        kinds.add(kind)
-    if not kinds:
-        raise AssertionError(
-            "no `UnsupportedConstruct` raise sites were found under "
-            f"{TRANSPILE_ROOT}, so this test would vacuously pass."
-        )
+    for site in RAISE_SITES:
+        argument = site.kinds_argument()
+        if not isinstance(argument, ast.List | ast.Tuple):
+            continue
+        explanation = site.explanation()
+        for element in argument.elts:
+            kind = _kind_literal(element)
+            if kind:
+                kinds.add(f"{kind}: {explanation}" if explanation else kind)
     return tuple(sorted(kinds))
 
 
@@ -132,17 +238,123 @@ EMITTED_KINDS: tuple[str, ...] = tuple(
 )
 
 
+def _render(target: str, kind: str) -> str:
+    """Render one kind, failing the test when it has no explanation.
+
+    Parameters
+    ----------
+    target : str
+        The backend the refusal is reported for.
+    kind : str
+        The kind.
+
+    Returns
+    -------
+    str
+        The rendered message.
+    """
+    try:
+        return user_facing_message(target, (kind,))
+    except UnregisteredRefusalKind as error:
+        pytest.fail(
+            f"transpiling to {target} can refuse with kind {kind!r}, which "
+            f"has no explanation registered ({error}). Register one in "
+            f"`_diagnostics` so the refusal says what the construct means, "
+            f"why this target has no form for it, and what to write instead."
+        )
+
+
 @pytest.mark.parametrize("kind", EMITTED_KINDS)
 @pytest.mark.parametrize("target", TARGETS)
 def test_every_emitted_kind_renders_an_explanation(target: str, kind: str) -> None:
-    """No emitted kind falls through to the report-a-bug fallback."""
-    message = user_facing_message(target, (kind,))
-    assert UNEXPLAINED not in message, (
-        f"transpiling to {target} can refuse with kind {kind!r}, and the "
-        f"user is told only that the tag has no explanation registered. "
-        f"Register one in `_diagnostics` so the refusal says what the "
-        f"construct means, why this target has no form for it, and what "
-        f"to write instead."
+    """No emitted kind lacks a registered explanation."""
+    _render(target, kind)
+
+
+def test_every_raise_site_spells_its_kinds_or_names_their_source() -> None:
+    """A raise site the static enumeration cannot read is named.
+
+    A site whose kinds are computed at run time escapes `_static_kinds`,
+    so it is accepted only when `FORWARDING_SITES` records where its
+    kinds come from; a new computed site fails here until it is spelled
+    out or recorded.
+    """
+    unread: list[str] = []
+    for site in RAISE_SITES:
+        argument = site.kinds_argument()
+        literal = isinstance(argument, ast.List | ast.Tuple) and all(
+            _kind_literal(element) is not None and not isinstance(element, ast.Starred)
+            for element in argument.elts
+        )
+        if not literal and (site.path, site.function) not in FORWARDING_SITES:
+            unread.append(f"{site.path}:{site.line} in {site.function}")
+    assert not unread, (
+        f"these raise sites pass kinds this test cannot read: {unread}. "
+        f"Spell each kind as a literal or f-string, or record the site in "
+        f"FORWARDING_SITES with where its kinds come from."
+    )
+
+
+def test_every_forwarding_site_still_exists() -> None:
+    """A recorded forwarding site that no longer raises is dropped.
+
+    Otherwise a stale entry would excuse whatever site later took its
+    file and function name.
+    """
+    present = {(site.path, site.function) for site in RAISE_SITES}
+    stale = sorted(set(FORWARDING_SITES) - present)
+    assert not stale, f"FORWARDING_SITES names sites that raise nothing: {stale}"
+
+
+@pytest.mark.parametrize("kind", _static_kinds())
+def test_every_static_kind_leads_with_an_identifier(kind: str) -> None:
+    """A kind's structured part is an identifier path, never prose.
+
+    The renderer splits a kind at its first colon-space; a raise site
+    that puts prose where the kind belongs hands the renderer a head it
+    cannot dispatch on.
+    """
+    structured = kind.partition(": ")[0]
+    assert " " not in structured, (
+        f"the kind {kind!r} carries prose in its structured part. Pass the "
+        f"prose after a colon-space, or as `explanation=` on a "
+        f"StepResolutionError."
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "no-such-head:anything",
+        "data:no-such-form:x",
+        "param-source:mlp:no-such-position:f",
+        "morphism:no-such-reason:f",
+    ],
+)
+def test_an_unregistered_kind_raises_rather_than_rendering(kind: str) -> None:
+    """The renderer refuses to ship a kind it has no explanation for."""
+    with pytest.raises(UnregisteredRefusalKind):
+        user_facing_message("qvr-stan", (kind,))
+
+
+def test_a_step_resolution_kind_must_not_carry_prose() -> None:
+    """Prose passed where a kind belongs is rejected at the raise site."""
+    with pytest.raises(ValueError, match="explanation="):
+        StepResolutionError("qvr-transpile", ["param-source:mlp", "the weights are"])
+
+
+def test_a_step_resolution_explanation_reaches_the_rendered_refusal() -> None:
+    """The raise site's account follows the kind's headline, once."""
+    error = StepResolutionError(
+        "qvr-transpile",
+        ["morphism:duplicate:f"],
+        explanation="first at line 3, again at line 7.",
+    )
+    assert error.kinds == ["morphism:duplicate:f"]
+    assert error.detail == "morphism:duplicate:f; first at line 3, again at line 7."
+    message = user_facing_message("qvr-stan", tuple(error.explained_kinds))
+    assert message == (
+        "morphism `f` is declared twice: first at line 3, again at line 7."
     )
 
 
@@ -156,7 +368,7 @@ def test_every_explanation_frames_the_tag_as_prose(target: str, kind: str) -> No
     do is hand the raw tag back, which would leave the user exactly
     where the structured token did.
     """
-    message = user_facing_message(target, (kind,))
+    message = _render(target, kind)
     assert message.strip() != kind.strip(), (
         f"{target} renders kind {kind!r} as the tag itself, which "
         f"explains nothing the tag did not."

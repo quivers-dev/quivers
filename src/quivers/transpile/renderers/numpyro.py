@@ -908,7 +908,7 @@ class NumPyroRenderer(RendererBase):
         if not isinstance(kernel_arg, IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         if kernel_arg.kernel != "rbf":
             raise UnsupportedConstruct(
@@ -1540,7 +1540,7 @@ class NumPyroRenderer(RendererBase):
         if total is None or probs is None:
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:NegativeBinomial:expected (total_count, probs)"],
+                ["family:NegativeBinomial: expected (total_count, probs)"],
             )
         total_vid = self._render_arg(ctx, total)
         probs_vid = self._render_arg(ctx, probs)

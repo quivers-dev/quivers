@@ -477,7 +477,7 @@ class Edward2Renderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -1499,7 +1499,7 @@ class Edward2Renderer(RendererBase):
         if not plate.event_dims:
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:LKJCholesky:missing matrix-dimension event axis"],
+                ["family:LKJCholesky: missing matrix-dimension event axis"],
             )
         callee = attribute(py, ("edward2", dist_class))
         dimension = _dim_expr(py, plate.event_dims[-1])
@@ -1562,7 +1562,7 @@ class Edward2Renderer(RendererBase):
         if len(args) != 3:
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:MatrixNormal:expected (loc, row_covariance, col_covariance)"],
+                ["family:MatrixNormal: expected (loc, row_covariance, col_covariance)"],
             )
         callee = attribute(py, ("edward2", dist_class))
         meta = self._lookup_meta("MatrixNormal")

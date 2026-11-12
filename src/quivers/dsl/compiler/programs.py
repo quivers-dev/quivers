@@ -4681,7 +4681,7 @@ class _ProgramsMixin:
         try:
             draws, declared = expand_program_scans(decl, self._module)
         except StepResolutionError as error:
-            raise CompileError("; ".join(error.kinds), decl.line, decl.col) from error
+            raise CompileError(error.detail, decl.line, decl.col) from error
         if draws is decl.draws:
             return decl, set()
         self._scan_step_declarations.update(declared)
@@ -4868,7 +4868,7 @@ class _ProgramsMixin:
         try:
             cell = markov_cell(cell_decl)
         except StepResolutionError as error:
-            raise CompileError("; ".join(error.kinds), step.line, step.col) from error
+            raise CompileError(error.detail, step.line, step.col) from error
         state_space = (
             self._objects.get(cell.state_object.name)
             if isinstance(cell.state_object, TypeName)

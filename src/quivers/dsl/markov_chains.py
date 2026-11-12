@@ -315,7 +315,9 @@ def _refuse(reason: str, cell: str, message: str) -> NoReturn:
     StepResolutionError
         Always.
     """
-    raise StepResolutionError("qvr-expand", [f"scan:marginal:{reason}:{cell}", message])
+    raise StepResolutionError(
+        "qvr-expand", [f"scan:marginal:{reason}:{cell}"], explanation=(message)
+    )
 
 
 def _same_object(left: ObjectExpr, right: ObjectExpr) -> bool:

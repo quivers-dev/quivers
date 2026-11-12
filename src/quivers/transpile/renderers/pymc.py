@@ -338,8 +338,7 @@ class PyMCRenderer(RendererBase):
                 callee,
                 positional=(identifier(py, dim.size_name),),
             )
-        msg = f"unknown Dim kind: {type(dim).__name__}"
-        raise UnsupportedConstruct(self.target, [msg])
+        raise UnsupportedConstruct(self.target, [f"dim-kind:{type(dim).__name__}"])
 
     # ----- per-node dispatch (PyMC walks over with-body) ----
 
@@ -465,7 +464,7 @@ class PyMCRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 self.target,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -1644,8 +1643,7 @@ def _dim_name(dim: Dim) -> str:
     type checker prove the slot is a `str`."""
     if isinstance(dim, (DimStatic, DimDynamic)):
         return dim.name
-    msg = f"unknown Dim kind: {type(dim).__name__}"
-    raise UnsupportedConstruct("qvr-pymc", [msg])
+    raise UnsupportedConstruct("qvr-pymc", [f"dim-kind:{type(dim).__name__}"])
 
 
 def _resolve_meta(family: str, target: str) -> FamilyMeta:
