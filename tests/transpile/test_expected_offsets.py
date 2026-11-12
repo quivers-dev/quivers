@@ -718,7 +718,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     #
     # `bugs` refuses the example: its word codes are observed class
     # codes, which BUGS cannot shift to `dcat`'s one-based classes.
-    ("jags", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("gen", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
