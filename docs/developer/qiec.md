@@ -181,7 +181,7 @@ The wrapper handles the program's `random` instance by replaying the sites given
 NAME=JSON` and drawing and scoring every other site. It handles the `score` instance with an
 accumulator, and it returns the program's value paired with the accumulated log weight.
 
-The program's parameters are its data inputs (names it reads but does not bind), observations, index maps (role `fibration` in the
+The program's parameters are its data inputs (names it reads but does not bind), observations, index maps (role `index_map` in the
 API), and scalars, given by position or by name (`--data NAME=JSON`). An *index map* is an integer
 array that assigns each observation row to a group. The run reads each open extent, an axis length
 that no declared object fixes, from the data. An extent that no data fixes, such as an object
