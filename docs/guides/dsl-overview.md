@@ -7,8 +7,8 @@ morphisms (parameter tables, Markov kernels, observed data), and usually one or 
 something that takes an input of type `A` and produces an output of type `B`, which
 for a kernel is random. Compiling a file gives a trainable PyTorch
 [`nn.Module`](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html),
-and the [concepts introduction](../getting-started/concepts.md) relates scores,
-kernels, and posteriors.
+and [Concepts](../getting-started/concepts.md) introduces composition, the choice of
+`Algebra`, and the steps of a program.
 
 ```python
 import torch

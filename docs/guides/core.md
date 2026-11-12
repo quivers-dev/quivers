@@ -4,7 +4,7 @@ A finite model in quivers is a table of scores. Its rows and columns are labelle
 named finite sets, called *objects*. A [*morphism*](morphisms.md#what-is-a-morphism)
 from one object to another stores one score for every row and column, and an
 [`Algebra`](../api/core/algebras.md) fixes how scores combine when morphisms are
-composed. The [concepts introduction](../getting-started/concepts.md) relates these
+composed. [Concepts](../getting-started/concepts.md) relates these
 pieces to probabilistic programs, and [Continuous Spaces](continuous-spaces.md)
 covers objects that are not finite.
 
