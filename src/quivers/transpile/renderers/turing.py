@@ -2931,6 +2931,7 @@ _ZERO_BASED_FAMILIES: dict[str, str] = {"Categorical": "qvr_categorical"}
 #: a family call can name, keyed by family and the parameter selecting it.
 _TURING_PARAMETERIZED_NAMES: dict[tuple[str, str], str] = {
     ("Bernoulli", "logits"): "BernoulliLogit",
+    ("Binomial", "logits"): "BinomialLogit",
 }
 
 

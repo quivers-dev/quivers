@@ -57,7 +57,7 @@ def _build_model(source: str, data_kw: dict) -> pymc.Model:
     invokes it with the per-point data dict, returning the constructed
     [`pymc.Model`][pymc.Model] instance.
     """
-    ns = {"pymc": pymc, "np": np}
+    ns = {"pymc": pymc, "np": np, "pt": pt}
     exec(source, ns)  # noqa: S102
     builder = ns.get("build_model")
     if builder is None:
