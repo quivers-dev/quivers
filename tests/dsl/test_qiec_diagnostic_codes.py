@@ -81,7 +81,7 @@ _CASES: dict[str, tuple[str, str]] = {
     ),
     "an eager-only builtin": (
         "define normalized(x : Tensor[Real]([2])) : Tensor[Real]([2]) !{} =\n"
-        "    return layer_norm(x)\n",
+        "    return softmin(x)\n",
         "qiec-builtin:host-only",
     ),
 }

@@ -521,6 +521,32 @@ scalar broadcasts against a tensor, and two `Int` operands give an `Int`,
 so `ys[max(t - 1, 0)]` clamps an index arithmetic expression into range
 on every target.
 
+**Conditional values and Booleans as numbers**: `select(c, a, b)` takes `a`
+where the `Bool` condition `c` holds and `b` elsewhere, entry by entry; a
+number among the three broadcasts against the tensors, and the tensors share
+one shape, so `select(v > 0.0, v, 0.1 * v)` is a leaky rectifier of a vector.
+Both branches are of one type, `Real` or `Int` (write `0.0`, not `0`, beside a
+real branch). `real(c)` and `int(c)` read a `Bool` as one where it holds and
+zero elsewhere, so a mask needs no integer clamp:
+
+<!-- compile: false -->
+```qvr
+let causal = factor i : Pos, j : Pos in real(j <= i)
+let hinge = select(margin < 1.0, 1.0 - margin, 0.0)
+```
+
+`select` evaluates both branches and then keeps one entry of either, as
+`torch.where` does, so it is not a guard: a branch that is `NaN` or infinite
+where it is not taken still is computed, and its gradient there is the
+product of zero and an infinite derivative, which is `NaN`. Where the untaken
+branch is finite its gradient is zero and the gradient is the taken branch's.
+Keep each branch finite on the whole domain (`log(max(v, 1e-12))` rather than
+`log(v)`) when the condition is what keeps it in range. Every transpile target
+spells it: `torch.where`, `jnp.where`, `pymc.math.switch`, `tf.where`, Stan's
+`c ? a : b`, Julia's `ifelse.(c, a, b)`, JAGS's `ifelse`, and a runtime
+function on WebPPL and Church; BUGS has no conditional function and computes
+`b + c * (a - b)`, which is the same wherever both branches are finite.
+
 **Pointwise transcendentals**: `exp`, `expm1`, `log`, `log1p`,
 `log2`, `log10`, `sqrt`, `rsqrt`, `square`, `abs`, `sign`,
 `reciprocal`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
@@ -544,6 +570,62 @@ and JAGS refuse `digamma`.
 **Last-axis operations**: `softmax`, `log_softmax`, `cumsum`, `sort`,
 `normalize`.
 
+**Joining and cutting the last axis**: `concat(a, b, ...)` joins two or more
+tensors of one element type along their last axis; their leading axes must
+agree, and the last extents add, so `concat(h, c)` of two `Real 4` vectors is a
+vector of 8 entries and `concat` of two `(2, 3)` tables is `(2, 6)`.
+`slice(v, start, length)` keeps the `length` entries of the last axis from
+`start` (counted from zero), so the result's last extent is `length`. Both
+bounds are non-negative integer literals, since the checked type states the
+slice's extent; a position computed at run time is read with a gather, `v[i]`.
+A number joins as the one-entry vector `[x]`, and a slice past the end of the
+axis, a zero length, a number where a tensor belongs, or tensors of different
+element types or leading axes are refused at the argument. This is how a scan
+carries a state of several parts as one vector, an LSTM's hidden and cell state
+for instance:
+
+<!-- compile: false -->
+```qvr
+let h_prev = slice(state, 0, 4)
+let c_prev = slice(state, 4, 4)
+let c_new = f * c_prev + i * g
+let h_new = o * tanh(c_new)
+let state_new = concat(h_new, c_new)
+```
+
+The checked elaboration writes each call as a tensor of entries selected at
+literal positions, under a comprehension per leading axis, so the reference
+machine and every transpile target compute it with the selections and tensor
+literals they already read; the compiled runtime calls `torch.cat` and a
+last-axis slice. Within one run of the compiled runtime the input-batch axis is
+never among a let's axes, so a `concat` or `slice` never reads it.
+
+**Products and normalizations**: `matmul(a, b)` sums the last axis of `a`
+against the first axis of `b`, which is a vector or a matrix with that axis's
+extent: a matrix times a vector is a vector, a vector times a matrix a vector,
+a vector times a vector a number, and `a` of any rank is multiplied row by row,
+so `matmul(X, W)` with `X : (T, D)` and `W : (D, H)` is `(T, H)`. The two
+extents are checked to agree. `layer_norm(v)` and `rms_norm(v)` normalize each
+row along the last axis and keep the shape: `layer_norm(v)` is
+`(v - mean(v)) / sqrt(mean((v - mean(v))^2) + eps)` (the biased variance, as
+`torch.nn.functional.layer_norm` computes it) and `rms_norm(v)` is
+`v / sqrt(mean(v^2) + eps)`. An optional second argument, a positive real
+literal, sets `eps`; it is `0.00001` and `0.000001` when omitted. Neither takes
+a learned gain or bias; multiply and add them as ordinary lets:
+
+<!-- compile: false -->
+```qvr
+let h = tanh(matmul(W_in, x_t) + matmul(W_rec, h_prev) + b)
+let normed = gain * layer_norm(h) + shift
+```
+
+The checked elaboration writes `matmul` as a sum of products under one
+comprehension per row and column, and the normalizations as row statistics
+bound once and a comprehension of quotients, so the reference machine and
+every transpile target compute them with forms they already read; the compiled
+runtime calls `torch.matmul`, `torch.nn.functional.layer_norm`, and the RMS
+formula.
+
 **Finite collections**: `map`, `fold`, `length`, and `logsumexp_over` are pure.
 `traverse` sequences a named computation and thus appears on the right
 side of `<-`. See the [collection reference](../reference/qvr/collection-expressions.md)
@@ -552,7 +634,7 @@ for their typing and shape rules.
 The eager PyTorch compiler also exposes the native-only operations `alpha_dropout`,
 `amax`, `amin`, `argmax`, `argmin`, `celu`, `clamp`, `cummax`, `cummin`,
 `cumprod`, `dropout`, `flip`, `glu`, `hardshrink`, `hardsigmoid`, `hardswish`,
-`hardtanh`, `layer_norm`, `leaky_relu`, `neg`, `norm`, `prelu`, `rms_norm`,
+`hardtanh`, `leaky_relu`, `neg`, `norm`, `prelu`,
 `rrelu`, `softmin`, `softshrink`, `std`, `swish`, `tanhshrink`, `threshold`,
 and `var`. These are an attachment boundary, not portable QIEC primitives. If
 a program uses one, `qvr check` reports `qiec-builtin:host-only` rather than

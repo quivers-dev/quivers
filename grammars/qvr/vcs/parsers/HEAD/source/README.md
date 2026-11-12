@@ -94,7 +94,7 @@ Panproto can revendor QVR from this repository using a `directory` entry:
 
 ```toml
 [qvr]
-repo = "https://github.com/FACTSlab/quivers"
+repo = "https://github.com/quivers-dev/quivers"
 extensions = ["qvr"]
 directory = "grammars/qvr"
 ```

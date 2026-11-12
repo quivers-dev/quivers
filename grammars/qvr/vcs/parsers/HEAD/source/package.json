@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/FACTSlab/quivers.git",
+    "url": "https://github.com/quivers-dev/quivers.git",
     "directory": "grammars/qvr"
   },
   "main": "bindings/node",

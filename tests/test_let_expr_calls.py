@@ -92,6 +92,9 @@ class TestBuiltinPrimitives:
                 "alpha_dropout",
                 "norm",
                 "pow",
+                "slice",
+                "select",
+                "matmul",
             }
         ),
     )
@@ -104,8 +107,8 @@ class TestBuiltinPrimitives:
         # the call doesn't crash and returns a tensor.
         assert isinstance(out, torch.Tensor)
 
-    def test_all_91_primitives_present(self):
-        assert len(_LET_EXPR_BUILTINS) == 91
+    def test_all_95_primitives_present(self):
+        assert len(_LET_EXPR_BUILTINS) == 95
 
     def test_binary_pow_uses_both_arguments(self):
         fn = _compile(_call("pow", _var("x"), _lit(2.0)))
@@ -455,13 +458,13 @@ class TestRuntimeShapeWrapping:
             compiled({"a": torch.randn(3), "b": torch.randn(4)})
 
     def test_matrix_multiply_shape_mismatch_wrapped(self):
-        def matmul(x, y):
+        def matprod(x, y):
             return x @ y
 
         # (2,3) @ (5,2): inner dims disagree.
-        node = _call("matmul", _var("a"), _var("b"))
-        compiled = _compile(node, globals_={"matmul": matmul})
-        with pytest.raises(CompileError, match="call to 'matmul' failed"):
+        node = _call("matprod", _var("a"), _var("b"))
+        compiled = _compile(node, globals_={"matprod": matprod})
+        with pytest.raises(CompileError, match="call to 'matprod' failed"):
             compiled({"a": torch.randn(2, 3), "b": torch.randn(5, 2)})
 
 

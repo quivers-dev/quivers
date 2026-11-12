@@ -198,8 +198,6 @@ def test_predictive_rejects_an_mcmc_result_for_another_model() -> None:
         log_densities=torch.zeros(1, 2),
         acceptance_rates=torch.ones(1),
         divergence_counts=torch.zeros(1, dtype=torch.int64),
-        r_hat={"tau": torch.tensor(float("nan"))},
-        ess={"tau": torch.tensor(float("nan"))},
         num_warmup=0,
         num_samples=2,
     )

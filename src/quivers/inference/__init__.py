@@ -36,6 +36,7 @@ from quivers.inference.registry import LatentRegistry, LatentSite
 from quivers.inference.guides import (
     AutoDelta,
     AutoDeltaGuide,
+    AmortizedGuide,
     AutoGuideList,
     AutoIAFGuide,
     AutoIAFNormal,
@@ -75,13 +76,29 @@ from quivers.inference.objectives import (
     VRIWAEBound,
 )
 from quivers.inference.mcmc import (
+    AdaptationSchedule,
+    CycleKernel,
+    GibbsKernel,
     HMCKernel,
+    IndependenceProposal,
+    MetropolisKernel,
+    MixtureKernel,
+    Proposal,
+    RandomWalkProposal,
     MCMC,
+    MCMCCheckpoint,
     MCMCKernel,
     MCMCResult,
     NUTSKernel,
 )
 from quivers.inference.svi import SVI
+from quivers.inference.smc import (
+    SMC,
+    ResamplingScheme,
+    SMCResult,
+    TemperedPotential,
+    resample,
+)
 from quivers.inference.predictive import Predictive
 from quivers.inference.dais import AutoDAIS
 from quivers.inference.warmup import WarmupThenHMC
@@ -124,6 +141,7 @@ __all__ = [
     "AutoIAFGuide",
     "AutoNeuralSplineGuide",
     "AutoMixtureGuide",
+    "AmortizedGuide",
     "AutoGuideList",
     "AutoStructured",
     "AutoNormal",
@@ -133,12 +151,26 @@ __all__ = [
     "AutoLaplace",
     "AutoIAFNormal",
     "MCMCKernel",
+    "AdaptationSchedule",
     "HMCKernel",
+    "MetropolisKernel",
+    "Proposal",
+    "RandomWalkProposal",
+    "IndependenceProposal",
+    "GibbsKernel",
+    "CycleKernel",
+    "MixtureKernel",
     "NUTSKernel",
     "MCMC",
     "MCMCResult",
+    "MCMCCheckpoint",
     "AutoDAIS",
     "WarmupThenHMC",
+    "SMC",
+    "SMCResult",
+    "TemperedPotential",
+    "ResamplingScheme",
+    "resample",
     "Objective",
     "ELBO",
     "IWAEBound",

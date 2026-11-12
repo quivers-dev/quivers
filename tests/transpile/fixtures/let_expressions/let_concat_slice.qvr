@@ -1,0 +1,18 @@
+# Exercises `concat`, which joins vectors along their last axis, and
+# `slice`, which keeps a window of it: a packed state of two vectors and
+# a number, split again, as a recurrent cell's state is.
+object H : FinSet 3
+object Step : FinSet 2
+
+program p : Step -> Step
+    sample h : H <- Normal(loc=0.0, scale=1.0)
+    sample c : H <- Normal(loc=0.0, scale=1.0)
+    sample s <- Normal(loc=0.0, scale=1.0)
+    let packed = concat(h, c, [s])
+    let back = slice(packed, 3, 3)
+    let front = slice(packed, 1, 3)
+    observe y : Step <- Normal(loc=s, scale=1.0)
+    score w = sum(back * front) + s * sum(packed)
+    return y
+
+export p

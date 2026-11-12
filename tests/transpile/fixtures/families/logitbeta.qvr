@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the LogitBeta family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program logitbeta_fixture : Obs -> Obs
+    sample theta <- LogitBeta(concentration1=0.5, concentration0=2.0)
+    return theta
+export logitbeta_fixture

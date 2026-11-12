@@ -230,7 +230,11 @@ torch runtime alike; a target spells such a site `theta__z`. A program over
 object parameters is a computation whose telescope binds one index variable
 per object, so `qvr run` invokes it with its statics.
 
-A program that calls a named computation has no step table the runtime
+A call of a pure computation, an effect-free chain of pure bindings ending
+in a return, is inlined into `let` steps before compilation, by the analysis
+the transpile planner inlines such calls with (`quivers.transpile._pure_calls`),
+so a program whose calls are all pure compiles to a `MonadicProgram`. A
+program that calls any other named computation has no step table the runtime
 compiler can build, so it compiles to a
 [`CheckedProgram`][quivers.effects.checked_program.CheckedProgram]: a
 morphism whose `rsample` and `log_joint` are `sample_program` and

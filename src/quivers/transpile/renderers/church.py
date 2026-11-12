@@ -569,9 +569,9 @@ class ChurchRenderer(RendererBase):
             for name, bound in self._binding_plates.items()
         }
         remaining = len(plate.batch_dims) + len(plate.event_dims)
-        for dim in plate.batch_dims:
+        for loop_var in _loop_variables(plate.batch_dims, ""):
             if let_expr_rank(expr, ranks) == remaining:
-                expr = take_row(expr, LetExprVar(name=f"m_{dim.name}"), ranks, "church")
+                expr = take_row(expr, LetExprVar(name=loop_var), ranks, "church")
             remaining -= 1
         return expr
 
@@ -1538,8 +1538,9 @@ class ChurchRenderer(RendererBase):
         shadowing).
         """
         current = inner
-        for dim in reversed(batch_dims):
-            current = self._one_map_layer(ctx, current, dim, axis_suffix)
+        names = _loop_variables(batch_dims, axis_suffix)
+        for dim, loop_var in zip(reversed(batch_dims), reversed(names), strict=True):
+            current = self._one_map_layer(ctx, current, dim, loop_var)
         return current
 
     def _one_map_layer(
@@ -1547,9 +1548,8 @@ class ChurchRenderer(RendererBase):
         ctx: RenderContext,
         inner: SchemaFragment,
         dim: object,
-        axis_suffix: str,
+        loop_var: str,
     ) -> SchemaFragment:
-        loop_var = f"m_{getattr(dim, 'name', 'i')}{axis_suffix}"
         size_form = self._dim_size_form(ctx, dim)
         lambda_form = _list(
             ctx,
@@ -1708,6 +1708,36 @@ class ChurchRenderer(RendererBase):
             iota_form = _list(ctx, (_sym(ctx, "iota"), self._dim_size_form(ctx, dim)))
             current = _list(ctx, (_sym(ctx, "map"), lambda_form, iota_form))
         return current
+
+
+def _loop_variables(dims: tuple[object, ...], suffix: str) -> tuple[str, ...]:
+    """One distinct `map` variable per axis, outermost first.
+
+    Two axes of one binding can share a name (a table over `Step` whose
+    second axis has the same extent reads as `Step` too), and nested
+    lambdas binding one name would let the inner shadow the outer, so a
+    repeated name takes a counter.
+
+    Parameters
+    ----------
+    dims : tuple[object, ...]
+        The axes.
+    suffix : str
+        Appended to every variable, to set a nested context's apart.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The variables.
+    """
+    seen: dict[str, int] = {}
+    names: list[str] = []
+    for dim in dims:
+        base = f"m_{getattr(dim, 'name', 'i')}{suffix}"
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        names.append(base if count == 0 else f"{base}_{count}")
+    return tuple(names)
 
 
 # ---------------------------------------------------------------------------

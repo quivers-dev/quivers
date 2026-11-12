@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 110 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 118 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 59 / 110   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 70 / 110   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 86 / 110   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 76 / 110   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 63 / 110   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 97 / 110   |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 84 / 110   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 99 / 110   |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 85 / 110   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 81 / 110   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 79 / 110   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 63 / 118   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 75 / 118   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 90 / 118   |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 80 / 118   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 67 / 118   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 99 / 118   |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 87 / 118   |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 101 / 118  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 87 / 118   |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 84 / 118   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 83 / 118   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -141,6 +141,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                                        | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `steps/call_step`                              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/function_linear`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/kernel_latent_weights`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/let_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_body_let_chain`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_body_plated_let`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -158,7 +160,6 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_logits_data`                    | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_mvn_host_factor`                | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
-| `steps/observe_ordered_probit`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -166,8 +167,6 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_inverse_wishart_factor`          | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
-| `steps/sample_matrix_normal`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_covariance`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_factor`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_mvn_host_loc`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -181,9 +180,13 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/sample_wishart_precision`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/scan_bidirectional`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
@@ -191,6 +194,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | Program                                       | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
 |-----------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
 | `let_expressions/let_binary_min_max`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_concat_slice`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_concat_slice_matrix`     | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_binop`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_call`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_expr_factor`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -204,6 +209,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_expr_var`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_factor_index_arithmetic` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_fold_shared_accumulator` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_function_identity`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_host_matrix_row`         | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_int_division`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_observed_read`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -220,7 +226,9 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `let_expressions/let_row_gather_sampled`      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_scalar_from_plate`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_score_host_weight`       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_select`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `let_expressions/let_template_substitution`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `let_expressions/let_tensor_builtins`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.4 Option values
 
@@ -332,6 +340,42 @@ Each backend words it differently; this is bugs's. `bugs` on `options/option_cal
 
 ```text
 the module's `loss_decl` declaration declares a training objective attached to a program, a deduction, an encoder or a decoder. A loss is something an optimiser minimises, not a term of the model's density. A probabilistic-programming target has statements for declaring data and parameters, drawing a variable from a distribution, and adding a term to the log density; BUGS has none for an optimisation objective separate from the joint it scores. This module also declares no `program`, so there is no probabilistic program here to transpile in its place. If the term belongs in the density, write it as a `score` step inside the program; if it is an optimiser objective, keep it in quivers, which is where training happens.
+```
+
+### `param-source:linear`
+
+Refused for: `steps/function_linear`.
+
+Reported kinds:
+
+```text
+param-source:linear
+```
+
+Every backend reports it in the same words. `bugs` on `steps/function_linear` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the learned function 'shift' (line 10, through shift) applies a 'linear' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+```
+
+### `param-source:linear:latent`
+
+Refused for: `steps/kernel_latent_weights`.
+
+Reported kinds:
+
+```text
+param-source:linear:latent
+```
+
+Every backend reports it in the same words. `bugs` on `steps/kernel_latent_weights` reports:
+
+```text
+no transpile target can transpile this program:
+  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+  - no transpile target can transpile this program. The refusal is tagged `the network of 'net' (line 11, through net) draws its weights as latent sites, but no target has a form for the network's affine layers applied to drawn weights. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.`, which has no explanation registered yet; please report it.
 ```
 
 ### `param-source:mlp`
@@ -455,7 +499,7 @@ QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its d
 
 ### `scan:no-lowering:cell`
 
-Refused for: `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`.
+Refused for: `steps/scan_bidirectional`, `steps/scan_cell_reads_matrix`, `steps/scan_cell_reads_matrix_data`, `steps/scan_cell_reads_vector`, `steps/scan_initial_binding`, `steps/scan_outputs_all`, `steps/scan_reverse`.
 
 Reported kinds:
 
@@ -463,7 +507,7 @@ Reported kinds:
 scan:no-lowering:cell
 ```
 
-Every backend reports it in the same words. `bugs` on `steps/scan_cell_reads_matrix` reports:
+Every backend reports it in the same words. `bugs` on `steps/scan_bidirectional` reports:
 
 ```text
 `scan(cell)` threads `cell` across the positions of a sequence, so it denotes one draw per position over intermediate states the program never names. Writing that out needs a loop whose bound is the sequence length and one sample site per position, and the sequence axis is not an object this module declares: it arrives with the data, so there is no extent to size the loop from and no name to bind the per-position states to. Write the recurrence as a program over a declared axis, giving each position its own `sample` step, or unroll the chain into one `sample` per step.
@@ -622,27 +666,6 @@ bugs cannot transpile this program:
   - bugs cannot score a draw from `OrderedLogistic`: no BUGS target name
 ```
 
-**`arg:list-literal`, `family:OrderedProbit`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-arg:list-literal
-family:OrderedProbit: no BUGS target name
-```
-
-`bugs` on `steps/observe_ordered_probit` reports:
-
-```text
-bugs cannot transpile this program:
-  - bugs cannot take a list literal `[a, b, c]` in a distribution-argument position. Bind the list as a data input, or draw from a shape-aware family that takes the elements as one vector.
-  - bugs cannot score a draw from `OrderedProbit`: no BUGS target name
-```
-
 **`arg:list-literal`, `family:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -680,48 +703,6 @@ arg:matrix-literal
 
 ```text
 bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
-```
-
-**`arg:matrix-literal`, `family:InverseWishart`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-arg:matrix-literal
-family:InverseWishart: no BUGS target name
-```
-
-`bugs` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-bugs cannot transpile this program:
-  - bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
-  - bugs cannot score a draw from `InverseWishart`: no BUGS target name
-```
-
-**`arg:matrix-literal`, `family:MatrixNormal`**
-
-Refused for: `steps/sample_matrix_normal`.
-
-Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
-
-Reported kinds:
-
-```text
-arg:matrix-literal
-family:MatrixNormal: no BUGS target name
-```
-
-`bugs` on `steps/sample_matrix_normal` reports:
-
-```text
-bugs cannot transpile this program:
-  - bugs cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
-  - bugs cannot score a draw from `MatrixNormal`: no BUGS target name
 ```
 
 **`call:graph:noisy`**
@@ -958,6 +939,24 @@ family:NegativeBinomial:logits: bugs has no NegativeBinomial parameterized by it
 bugs cannot score a draw from `NegativeBinomial`: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
+**`let-expr:LetExprFactor:wide`**
+
+Refused for: `let_expressions/let_concat_slice_matrix`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:LetExprFactor:wide: binder axes (2,) do not match the binding's declared plate (2, 6)
+```
+
+`bugs` on `let_expressions/let_concat_slice_matrix` reports:
+
+```text
+bugs cannot emit a `factor` over an axis as a `let` body: binder axes (2,) do not match the binding's declared plate (2, 6)
+```
+
 **`let-expr:axis-reduction:bugs`**
 
 Refused for: `let_expressions/let_host_matrix_row`, `let_expressions/let_reduce_matrix`, `let_expressions/let_reduce_nested`.
@@ -1112,7 +1111,7 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_matrix_normal`, `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
 
 Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1122,7 +1121,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`church` on `steps/sample_matrix_normal` reports:
+`church` on `steps/sample_mvn_covariance` reports:
 
 ```text
 church cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -1272,24 +1271,6 @@ family:HalfStudentT:no-church-target
 church has no `HalfStudentT` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
-**`family:InverseWishart:no-church-target`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:InverseWishart:no-church-target
-```
-
-`church` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-church has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:Kumaraswamy:no-church-target`**
 
 Refused for: [`kumaraswamy_bounded_outcome`](examples/kumaraswamy-bounded-outcome.md).
@@ -1416,24 +1397,6 @@ family:OrderedLogistic:no-church-target
 church has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
-**`family:OrderedProbit:no-church-target`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:OrderedProbit:no-church-target
-```
-
-`church` on `steps/observe_ordered_probit` reports:
-
-```text
-church has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:RelaxedOneHotCategorical:no-church-target`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -1528,24 +1491,6 @@ marginalize:ungrouped-over-plate:z
 
 Every program below renders on at least one other backend and is refused here.
 
-**`family:InverseWishart:no-edward2-target`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:InverseWishart:no-edward2-target
-```
-
-`edward2` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-edward2 has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:OrderedLogistic:no-edward2-target`**
 
 Refused for: `steps/observe_ordinal_code`, `steps/observe_vector_parameter_data`.
@@ -1562,24 +1507,6 @@ family:OrderedLogistic:no-edward2-target
 
 ```text
 edward2 has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
-**`family:OrderedProbit:no-edward2-target`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:OrderedProbit:no-edward2-target
-```
-
-`edward2` on `steps/observe_ordered_probit` reports:
-
-```text
-edward2 has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:Wishart:no-edward2-target`**
@@ -1748,24 +1675,6 @@ family:Geometric:logits: gen has no Geometric parameterized by its logits; write
 gen cannot score a draw from `Geometric`: gen has no Geometric parameterized by its logits; write the probability the logits name as probs
 ```
 
-**`family:InverseWishart:no-gen-target`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:InverseWishart:no-gen-target
-```
-
-`gen` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-gen has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:NegativeBinomial:logits`**
 
 Refused for: `steps/observe_negative_binomial_logits`.
@@ -1818,24 +1727,6 @@ family:OrderedLogistic:no-gen-target
 
 ```text
 gen has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
-**`family:OrderedProbit:no-gen-target`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:OrderedProbit:no-gen-target
-```
-
-`gen` on `steps/observe_ordered_probit` reports:
-
-```text
-gen has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:RelaxedOneHotCategorical:no-gen-target`**
@@ -2130,24 +2021,6 @@ family:NegativeBinomial:logits: jags has no NegativeBinomial parameterized by it
 jags cannot score a draw from `NegativeBinomial`: jags has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
-**`family:no-target-name:InverseWishart`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:no-target-name:InverseWishart
-```
-
-`jags` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-jags has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:no-target-name:LKJCholesky`**
 
 Refused for: [`lkj_cholesky_correlation`](examples/lkj-cholesky-correlation.md).
@@ -2168,9 +2041,9 @@ jags has no `LKJCholesky` distribution. Pick a family this target supports, or w
 
 **`family:no-target-name:MatrixNormal`**
 
-Refused for: `axes/matrix_kronecker`, `steps/sample_matrix_normal`.
+Refused for: `axes/matrix_kronecker`.
 
-Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -2220,24 +2093,6 @@ family:no-target-name:OrderedLogistic
 jags has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
-**`family:no-target-name:OrderedProbit`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:no-target-name:OrderedProbit
-```
-
-`jags` on `steps/observe_ordered_probit` reports:
-
-```text
-jags has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:no-target-name:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -2254,6 +2109,24 @@ family:no-target-name:RelaxedOneHotCategorical
 
 ```text
 jags has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`let-expr:LetExprFactor:wide`**
+
+Refused for: `let_expressions/let_concat_slice_matrix`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+let-expr:LetExprFactor:wide: binder axes (2,) do not match the binding's declared plate (2, 6)
+```
+
+`jags` on `let_expressions/let_concat_slice_matrix` reports:
+
+```text
+jags cannot emit a `factor` over an axis as a `let` body: binder axes (2,) do not match the binding's declared plate (2, 6)
 ```
 
 **`let-expr:axis-reduction:jags`**
@@ -2446,24 +2319,6 @@ family:Geometric:logits: pymc has no Geometric parameterized by its logits; writ
 
 ```text
 pymc cannot score a draw from `Geometric`: pymc has no Geometric parameterized by its logits; write the probability the logits name as probs
-```
-
-**`family:InverseWishart`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:InverseWishart
-```
-
-`pymc` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-pymc has no `InverseWishart` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:NegativeBinomial:logits`**
@@ -2906,24 +2761,6 @@ family:OrderedLogistic: no Turing.jl mapping
 turing cannot score a draw from `OrderedLogistic`: no Turing.jl mapping
 ```
 
-**`family:OrderedProbit`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:OrderedProbit: no Turing.jl mapping
-```
-
-`turing` on `steps/observe_ordered_probit` reports:
-
-```text
-turing cannot score a draw from `OrderedProbit`: no Turing.jl mapping
-```
-
 **`family:RelaxedOneHotCategorical`**
 
 Refused for: `steps/sample_relaxed_onehot_probs`.
@@ -3181,24 +3018,6 @@ family:NegativeBinomial:logits: webppl has no NegativeBinomial parameterized by 
 webppl cannot score a draw from `NegativeBinomial`: webppl has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
 ```
 
-**`family:no-webppl-target:InverseWishart`**
-
-Refused for: `steps/sample_inverse_wishart_factor`.
-
-Renders on: `numpyro`, `pyro`, `stan`, `turing`.
-
-Reported kinds:
-
-```text
-family:no-webppl-target:InverseWishart
-```
-
-`webppl` on `steps/sample_inverse_wishart_factor` reports:
-
-```text
-webppl has no `InverseWishart` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
 **`family:no-webppl-target:OneHotCategorical`**
 
 Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
@@ -3233,24 +3052,6 @@ family:no-webppl-target:OrderedLogistic
 
 ```text
 webppl has no `OrderedLogistic` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
-```
-
-**`family:no-webppl-target:OrderedProbit`**
-
-Refused for: `steps/observe_ordered_probit`.
-
-Renders on: `numpyro`, `pymc`, `pyro`, `stan`.
-
-Reported kinds:
-
-```text
-family:no-webppl-target:OrderedProbit
-```
-
-`webppl` on `steps/observe_ordered_probit` reports:
-
-```text
-webppl has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`family:no-webppl-target:RelaxedOneHotCategorical`**

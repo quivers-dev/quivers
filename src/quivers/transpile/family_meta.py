@@ -46,9 +46,11 @@ from quivers.continuous.families import (
     ConditionalKumaraswamy,
     ConditionalLKJCholesky,
     ConditionalLaplace,
+    ConditionalLogGamma,
     ConditionalLogNormal,
     ConditionalLogistic,
     ConditionalLogisticNormal,
+    ConditionalLogitBeta,
     ConditionalLogitNormal,
     ConditionalLowRankMVN,
     ConditionalMatrixNormal,
@@ -78,6 +80,7 @@ from quivers.continuous._zip_hurdle import (
     ZeroInflatedPoisson,
     ZeroOneInflatedBeta,
 )
+from quivers.continuous.log_space import LogGamma, LogitBeta
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.ordered import (
     ConditionalOrderedLogistic,
@@ -731,6 +734,26 @@ FAMILY_META: dict[str, FamilyMeta] = {
         arg_aliases={
             "pymc": {"concentration": "alpha", "rate": "beta"},
             "webppl": {"concentration": "shape", "rate": "scale"},
+        },
+    ),
+    "LogGamma": FamilyMeta(
+        qvr_name="LogGamma",
+        distribution_class=LogGamma,
+        quivers_class=ConditionalLogGamma,
+        target_names={
+            "stan": "log_gamma",
+            "numpyro": "LogGamma",
+            "pyro": "LogGamma",
+        },
+    ),
+    "LogitBeta": FamilyMeta(
+        qvr_name="LogitBeta",
+        distribution_class=LogitBeta,
+        quivers_class=ConditionalLogitBeta,
+        target_names={
+            "stan": "logit_beta",
+            "numpyro": "LogitBeta",
+            "pyro": "LogitBeta",
         },
     ),
     "Chi2": FamilyMeta(

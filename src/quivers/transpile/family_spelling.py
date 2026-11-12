@@ -53,6 +53,8 @@ _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
         "LogitNormal": ("LogitNormal",),
         "HalfStudentT": ("HalfStudentT",),
         "MatrixNormal": ("MatrixNormal",),
+        "LogGamma": ("LogGamma",),
+        "LogitBeta": ("LogitBeta",),
         "InverseWishart": ("InverseWishart",),
         "OrderedProbit": ("OrderedProbit",),
     },
@@ -64,6 +66,8 @@ _HELPER_ROOTS: dict[str, dict[str, tuple[str, ...]]] = {
         "LogisticNormal": ("LogisticNormal",),
         "OneHotCategorical": ("OneHotCategorical",),
         "OrderedProbit": ("OrderedProbit",),
+        "LogGamma": ("LogGamma",),
+        "LogitBeta": ("LogitBeta",),
     },
     "pymc": {
         "ContinuousBernoulli": ("ContinuousBernoulli",),
