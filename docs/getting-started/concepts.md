@@ -159,7 +159,7 @@ does not compute the marginal density, which would require an integral. It
 scores the composite along a reference path instead, which agrees with the
 marginal density when the intermediate is deterministic.
 [Continuous spaces](../guides/continuous-spaces.md#composition-sampledcomposition)
-gives the interface, and [Correspondence and limitations](../semantics/adequacy.md)
+gives the interface, and [Implementation correspondence and limits](../semantics/adequacy.md)
 states what each operation computes.
 
 ## 6. Monads and handlers describe how computations continue
@@ -199,4 +199,4 @@ computation waiting for the value. QVR declares effects and handlers directly
 | $\Gamma \vdash e : \tau$, [typing judgment](https://en.wikipedia.org/wiki/Type_system) | Under the typing context $\Gamma$, expression $e$ has type $\tau$ | [Typing](../semantics/typing.md) |
 | Effect row | The effects a computation may still perform | [Effects and handlers](../reference/qvr/effects-and-handlers.md) |
 | Guide | The family of distributions that variational inference fits to the posterior | [SVI](../guides/inference-svi.md) |
-| [Plate](https://en.wikipedia.org/wiki/Plate_notation) | Conditionally independent draws, one for each element of an object | [Programs](../guides/programs.md) |
+| [Plate](https://en.wikipedia.org/wiki/Plate_notation) | Conditionally independent draws, one for each element of an object | [Probabilistic Programs](../guides/programs.md) |
