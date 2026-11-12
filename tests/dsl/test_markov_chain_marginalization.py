@@ -698,6 +698,13 @@ BASE = _hmm(2, 3)
             ("    sample path <- chain\n", "    sample path <- hmm_step\n"),
             "scan:marginal:entry:hmm_step",
         ),
+        (
+            (
+                "observe symbol <- Categorical(probs=emission[z])",
+                "observe symbol : State <- Categorical(probs=emission[z])",
+            ),
+            "scan:marginal:observe:hmm_step",
+        ),
     ],
 )
 def test_forms_outside_the_forward_algorithm_are_refused_by_name(

@@ -120,7 +120,8 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
         out: two parameters over ``X * S`` returning ``S``; lets before
         the block and nothing after it; a block over ``S`` drawing from
         a ``Categorical``, ungrouped, reduced by log-sum-exp (the
-        default), holding only lets and observations.
+        default), holding only lets and observations of one value per
+        position.
     """
     name = declaration.name
     factors = (
@@ -208,6 +209,19 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
                 f"observations; {_describe(step)} at line {_line(step)} has no "
                 f"place in the forward algorithm",
             )
+        if isinstance(step, ObserveStep) and (
+            len(step.vars) != 1
+            or step.index is not None
+            or step.axes is not None
+            or step.via is not None
+        ):
+            _refuse(
+                "observe",
+                name,
+                f"the cell {name!r} observes one value per position; the "
+                f"observation at line {step.line} is plated, fibred, or "
+                f"destructured",
+            )
     entry, previous = declaration.params
     return MarkovCell(
         name=name,
@@ -218,26 +232,6 @@ def markov_cell(declaration: ProgramDecl) -> MarkovCell:
         state_object=declaration.codomain,
         prefix=tuple(prefix),
         block=block,
-    )
-
-
-def observed_names(cell: MarkovCell) -> tuple[str, ...]:
-    """The observations a cell scores at every position.
-
-    Parameters
-    ----------
-    cell : MarkovCell
-        The cell.
-
-    Returns
-    -------
-    tuple[str, ...]
-        The names of the block's observations, in order.
-    """
-    return tuple(
-        step.vars[0]
-        for step in cell.block.scope
-        if isinstance(step, ObserveStep) and step.vars
     )
 
 
@@ -321,10 +315,4 @@ def _line(step: ProgramStep) -> int:
     return int(line) if isinstance(line, int) else 0
 
 
-__all__ = [
-    "MarkovCell",
-    "TRANSITION_FAMILY",
-    "markov_cell",
-    "observed_names",
-    "returns_marginalized_latent",
-]
+__all__ = []
