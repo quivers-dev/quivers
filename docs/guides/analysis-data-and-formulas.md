@@ -323,7 +323,7 @@ joint_fit = fit(
 )
 ```
 
-With `method="svi"`, `num_samples` is the number of stochastic variational inference (SVI) steps. The runtime recomputes
+With `method="svi"`, `num_steps` is the number of stochastic variational inference (SVI) steps. The runtime recomputes
 `parser(sentence_features)` on every step and passes the result to the generated
 program as the data input `neural_eta`. The SVI optimizer includes the predictor parameters, so gradients
 flow through the ordinal likelihood into the parser. A trainable external
