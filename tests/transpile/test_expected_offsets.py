@@ -639,12 +639,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=2),
     ("turing", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     ("webppl", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
-    # hmm: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("webppl", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
     # horseshoe_regression: 22 HalfCauchy folded factor(s).
     ("bugs", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
     ("edward2", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
@@ -936,7 +930,7 @@ def _exported_program(module: Module, stem: str) -> ProgramDecl:
     (`ppca.qvr` exports `ppca_program`), so the export declaration is
     the authority. A module may export more than one name, since the
     probabilistic surface often sits alongside the pure composite it
-    scores (`hmm.qvr` exports both `hmm` and `hmm_program`); only the
+    scores (`ppca.qvr` exports `ppca_program`); only the
     exports naming a `program` declaration are candidates, and exactly
     one of those must exist for the count to be well defined.
     """

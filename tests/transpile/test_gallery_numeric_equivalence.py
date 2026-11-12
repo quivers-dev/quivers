@@ -175,7 +175,7 @@ for _ungrouped_backend in (
     "pymc",
     "turing",
 ):
-    for _ungrouped_example in ("changepoint", "hmm"):
+    for _ungrouped_example in ("changepoint",):
         _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, _ungrouped_example)] = (
             "marginalize:ungrouped-over-plate"
         )
@@ -382,14 +382,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -178.59840393066406,
         -113.85769653320312,
         -151.25946044921875,
-    ),
-    "hmm": (
-        267.8604736328125,
-        267.141845703125,
-        264.1581726074219,
-        266.13934326171875,
-        267.4548645019531,
-        266.83917236328125,
     ),
     "horseshoe_regression": (
         -197.0647735595703,

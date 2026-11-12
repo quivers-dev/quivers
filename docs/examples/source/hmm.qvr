@@ -1,59 +1,42 @@
-# Finite-State Path Composition
+# Hidden Markov Model
 #
-# A finite-state path-composition example inspired by a K-state
-# hidden Markov model. The top-level arrows live in the
-# product-fuzzy algebra: their entries are sigmoid-constrained,
-# but their rows are not normalized probability distributions.
-# The composed path thus demonstrates runtime-variable
-# powering, not the sum-product HMM forward algorithm.
+# A K-state hidden Markov model over a discrete alphabet. The hidden
+# chain z_0, z_1, ..., z_T starts from initial_row and moves by
+# transition_rows; each z_t (t >= 1) emits the symbol o_t from its row of
+# emission_rows. The cell marginalizes the next state and returns it, so
+# the scan sums every path of states out: the library computes the
+# likelihood, a sum over K^(T+1) paths, by the forward algorithm in
+# O(T K^2), in log space, and adds it to the joint under `path`.
 #
-# Structural form:
+# Generative structure:
 #
-#   initial    : State -> State          fuzzy initial relation
-#   transition : State -> State          fuzzy transition relation
-#   emission   : State -> Obs            fuzzy emission relation
-#   hmm        = initial >> repeat(transition) >> emission
+#   initial_row          ~ Dirichlet(1)            p(z_0)
+#   transition_rows[i]   ~ Dirichlet(1)            p(z_t | z_{t-1} = i)
+#   emission_rows[k]     ~ Dirichlet(1)            p(o_t | z_t = k)
+#   z_0 ~ initial_row,  z_t ~ transition_rows[z_{t-1}],  o_t ~ emission_rows[z_t]
 #
-# The separate hmm_program below demonstrates Dirichlet rows and
-# exact marginalization for a single shared emission state. Its
-# transition_rows draw is present for parameter-shape comparison
-# but does not enter that likelihood; it is not a multi-step HMM.
-
-composition product_fuzzy [level=algebra]
-
-object State : FinSet 8
-object Obs : FinSet 16
-object Step : FinSet 12
-object StateDist : Real 8
-
-morphism initial, transition : State -> State [role=latent]
-morphism emission : State -> Obs [role=latent]
-
-define n_step = repeat(transition) >> emission
-define hmm = initial >> n_step
-
-# Probabilistic model for transpilation: the initial, transition,
-# and emission parameter blocks are row-stochastic Dirichlet
-# draws. The initial-state vector is one draw on the State
-# simplex; transition_rows allocates one State-simplex row per
-# source state; emission_rows allocates one Obs-simplex row per
-# latent state. The marginalized body below uses initial_row and
-# emission_rows only, so transition_rows remains prior-only.
+# The scanned sequence is the observed symbols: the block observes the
+# cell's entry `symbol`, which scores the symbol at the state the chain
+# moves to. The state before the first symbol, z_0, emits nothing.
 #
-# Step is the plate the emitted sequence is observed over and
-# Obs is the alphabet each emission takes its value in, so the
-# two are separate objects. StateDist is the value space of the
-# returned initial-state vector, a point of the State simplex
-# embedded in R^8.
-program hmm_program : Step -> StateDist
+# Reference: [Rabiner 1989](https://doi.org/10.1109/5.18626).
+
+object State : FinSet 2
+object Symbol : FinSet 4
+object StateProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition_rows[z_prev])
+        observe symbol <- Categorical(probs=emission_rows[z])
+    return z
+
+define chain = scan(hmm_step, init=initial_row)
+
+program hmm : Symbol -> StateProbs
     sample initial_row <- Dirichlet(concentration=1.0) [over=State]
     sample transition_rows : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
-    sample emission_rows : State <- Dirichlet(concentration=1.0) [over=Obs, iid_over=State]
-
-    marginalize state <- Categorical(probs=initial_row) [reduction=logsumexp]
-        observe obs : Step <- Categorical(probs=emission_rows[state])
-
+    sample emission_rows : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
     return initial_row
 
 export hmm
-export hmm_program

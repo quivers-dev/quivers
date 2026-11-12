@@ -243,10 +243,19 @@ for _scan_example in (
     "bidirectional_rnn_lm",
     "gru_lm",
     "lstm_lm",
+    "stacked_rnn_lm",
     "vanilla_rnn_lm",
 ):
     for _syntax_backend in _SYNTAX_CHECKS:
         _EXPECTED_UNSUPPORTED[(_syntax_backend, _scan_example)] = "scan:no-lowering"
+
+# 5a. A scan whose cell marginalizes the state it returns is a
+#    discrete Markov chain summed out by the forward algorithm. Its
+#    positions arrive with the data and its cell's weights would have
+#    to be rendered as target code at every pair of states, so every
+#    target refuses it where the scan is written.
+for _syntax_backend in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[(_syntax_backend, "hmm")] = "scan:marginal:no-lowering"
 
 
 # 6. An ungrouped `marginalize` over a plated `observe` shares one
@@ -265,7 +274,7 @@ for _ungrouped_backend in (
     "turing",
 ):
     if _ungrouped_backend in _SYNTAX_CHECKS:
-        for _ungrouped_example in ("changepoint", "hmm"):
+        for _ungrouped_example in ("changepoint",):
             _EXPECTED_UNSUPPORTED[(_ungrouped_backend, _ungrouped_example)] = (
                 "marginalize:ungrouped-over-plate"
             )

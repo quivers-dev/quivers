@@ -71,8 +71,8 @@ If you've used Haskell's `mapAccumL` or NumPy's `np.cumsum`, this is the same id
 
 An HMM [@rabiner1989hmm] factors into an
 initial distribution, a row-stochastic transition kernel, and a row-stochastic
-emission kernel. The similarly named gallery file is deliberately narrower.
-Its first export demonstrates repeated composition of fuzzy relations:
+emission kernel. Composing relations between finite sets looks similar but
+computes something else. This module repeats a fuzzy transition relation:
 
 ```qvr
 composition product_fuzzy [level=algebra]
@@ -111,17 +111,10 @@ Other useful combinations:
 
 If neither `over` nor `iid over` is given, the family is broadcast scalar-wise. The compiler synthesizes the appropriate `PlateDraw` internally; you don't need to think about plates.
 
-The separate `hmm_program` demonstrates the parameter shapes a probabilistic
-version would use: one Dirichlet initial row, one transition row per source
-state, and one emission row per state. Its checked likelihood marginalizes a
-single state shared by the observed emission sequence. `transition_rows` is a
-prior-only draw. Consequently, the observation likelihood depends on one
-shared hidden state, and the data leave `transition_rows` at its prior.
-This program implements a finite-state marginal mixture.
-
-Use the file to study relation powering, axis roles, and one-state finite
-marginalization. A recurrent HMM carries a categorical state from position to
-position, which the next section writes with `scan`.
+Use this module to study relation powering and axis roles. A recurrent HMM
+carries a categorical state from position to position, which the next section
+writes with `scan`; the [hidden Markov model example](../../examples/hmm.md)
+fits that program to simulated sequences.
 
 ## Hidden Markov models
 

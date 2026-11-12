@@ -275,7 +275,7 @@ location.
 
 ```
 > :load docs/examples/source/hmm.qvr
-loaded docs/examples/source/hmm.qvr: 10 binding(s)
+loaded docs/examples/source/hmm.qvr: 4 binding(s)
 > :l docs/examples/source/lda.qvr
 loaded docs/examples/source/lda.qvr: 6 binding(s)
 ```
