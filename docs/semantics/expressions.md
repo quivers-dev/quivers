@@ -206,14 +206,15 @@ of the random choices of a run.
 For $f : X \times Y \to Z$, the postfixes `f.curry_right` and `f.curry_left` denote the two
 currying bijections of a closed monoidal category. $\mathbf{Mat}(\mathcal V)$ under the Cartesian
 product is compact closed, with each object its own dual, so the internal hom $[Y, Z]$ is the
-product $Y \times Z$, and the bijections are
+product $Y \times Z$, and the bijections [@maclane1998categories] are
 
 $$
 \mathbf{Mat}(\mathcal V)(X \times Y, Z) \cong \mathbf{Mat}(\mathcal V)(X, Y \times Z),
 \qquad
 \mathbf{Mat}(\mathcal V)(X \times Y, Z) \cong \mathbf{Mat}(\mathcal V)(Y, X \times Z)
 $$
-[@maclane1998categories]:
+
+The curried matrices are
 
 $$
 \llbracket f.\mathsf{curry\_right} \rrbracket(x, (y, z)) = \llbracket f \rrbracket((x, y), z),
