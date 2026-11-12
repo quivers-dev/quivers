@@ -794,8 +794,7 @@ class RendererBase(abc.ABC):
         if support.atoms == "binary":
             weight_name = (
                 support.logit_arg
-                if support.logit_arg is not None
-                and support.logit_arg in node.arg_names
+                if support.logit_arg is not None and support.logit_arg in node.arg_names
                 else support.weight_arg
             )
             weight_args: tuple[IRArg, ...] = (

@@ -881,6 +881,7 @@ ConditionalKumaraswamy = _make_family(
 )
 """Conditional Kumaraswamy(a(x), b(x)). Beta-like on (0,1), closed-form CDF."""
 
+
 class _LogSpaceContinuousBernoulli(D.ContinuousBernoulli):
     """A continuous Bernoulli distribution scored from its logits in log space.
 

@@ -683,7 +683,9 @@ def _observation_parameter(
     return theta
 
 
-def _binary_log_prior(weight: torch.Tensor, parameterization: str | None) -> torch.Tensor:
+def _binary_log_prior(
+    weight: torch.Tensor, parameterization: str | None
+) -> torch.Tensor:
     """The log weights of the atoms 0 and 1 of a Bernoulli-family prior.
 
     From ``logits`` the weights are ``log sigmoid(-l)`` and
