@@ -1,13 +1,12 @@
 # Objects
 
-Use an object to say [what each tensor axis ranges over](../../getting-started/concepts.md#1-an-object-names-the-possible-values). A set of three users and a set
-of three items have the same size but different meanings. [Products and coproducts](../../guides/core.md#productset-and-coproductset)
-contain tuples and tagged alternatives, respectively [@maclane1998categories].
-These objects describe finite indexing; continuous supports have their own
+An object names [what a tensor axis ranges over](../../getting-started/concepts.md#1-an-object-names-the-possible-values),
+so a set of three users and a set of three items have the same size and different meanings. The
+module defines finite and enumerated sets, [products and coproducts](../../guides/core.md#productset-and-coproductset)
+(tuples and tagged alternatives) [@maclane1998categories], free monoids, and `FreeResiduated`, the
+categorial (Lambek) types built from a set of atoms with `/`, `\`, and `*` up to a fixed depth
+[@lambek1958mathematics]. These objects index finite axes. Continuous supports have their own
 space types.
-
-Categorical objects including finite and enumerated sets, products,
-coproducts, free monoids, and free residuated universes.
 
 ::: quivers.core.objects
     options:
