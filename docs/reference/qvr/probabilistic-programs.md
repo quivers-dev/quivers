@@ -368,7 +368,7 @@ A cell may also be a program, whose steps run once per position under three rule
    program's binding inside the cell and is not visible after the scan. Gradients flow through the
    bindings the cell reads.
 2. **Sites.** Every site the step reaches is reached once per position. The $n$-th occurrence of a
-   site labelled `s` has the address `"s@n"`, counted from zero over the run, so for a single scan
+   site labeled `s` has the address `"s@n"`, counted from zero over the run, so for a single scan
    $n$ is the $n$-th position the scan visits: position $n$ from the left, and position $T - 1 - n$
    for a reversed scan over $T$ positions. A trace records `s@0`, `s@1`, and so on, and a replay, a
    clamp, or a joint density addresses the sites by these keys. A `let` or `score` in a program cell
