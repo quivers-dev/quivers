@@ -211,6 +211,7 @@ from quivers.dsl.pure_builtins import (
     SHAPE_BUILTINS,
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.dsl.markov_chains import markov_cell, returns_marginalized_latent
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
@@ -239,6 +240,9 @@ MARGINAL_HANDLERS: dict[tuple[bool, str], str] = {
     for grouped in (False, True)
     for reduction in MARGINAL_REDUCTIONS
 }
+#: The name of the handler enumerating a marginalized chain's next state,
+#: which answers the weighted shots one per support value.
+ENUMERATE_TABLE_HANDLER = f"{ENUMERATE_HANDLER}_table"
 #: The name of the handler collecting a marginalization scope's weights.
 COLLECT_HANDLER = "collect_marginal"
 #: The canonical instance names a program's requests address.
@@ -1812,9 +1816,12 @@ class _ProgramElaboration:
             output is the marginal ``LogWeight``; the
             ``enumerate_grouped_marginal[w]`` handlers, alike but
             answering the collected weight's type ``w`` itself, one
-            marginal per group position; and the ``collect_marginal[w]``
-            handler over ``Weight[w]``, which pairs the scope's unit
-            answer with its total.
+            marginal per group position; the ``enumerate_marginal_table[w]``
+            handler, whose input is a unit answer paired with a
+            ``LogWeight`` and whose output ``w`` is the tensor of the
+            weighted shots, one per support value; and the
+            ``collect_marginal[w]`` handler over ``Weight[w]``, which
+            pairs the scope's unit answer with its total.
 
         Raises
         ------
@@ -1822,7 +1829,7 @@ class _ProgramElaboration:
             If the module declares a handler under one of the reserved
             names.
         """
-        names = (*MARGINAL_HANDLERS.values(), COLLECT_HANDLER)
+        names = (*MARGINAL_HANDLERS.values(), ENUMERATE_TABLE_HANDLER, COLLECT_HANDLER)
         for name in names:
             declared = self.handlers.get(name)
             if declared is not None and declared.implementation != "foreign":
@@ -1854,6 +1861,18 @@ class _ProgramElaboration:
                 telescope=(weight_binder,),
                 implementation="foreign",
             )
+        declared_handlers[ENUMERATE_TABLE_HANDLER] = HandlerDef(
+            HandlerId.derive(self.source.module_name, "handler", ENUMERATE_TABLE_HANDLER),
+            ENUMERATE_TABLE_HANDLER,
+            random.ref,
+            (HandlerClauseDef(sample.id, ResumptionGrade.UNRESTRICTED),),
+            product_type(UNIT, LOG_WEIGHT),
+            weight,
+            EffectRow(),
+            total=True,
+            telescope=(weight_binder,),
+            implementation="foreign",
+        )
         declared_handlers[COLLECT_HANDLER] = HandlerDef(
             HandlerId.derive(self.source.module_name, "handler", COLLECT_HANDLER),
             COLLECT_HANDLER,
@@ -1901,6 +1920,9 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         state = _ProgramState(declaration)
+        row = self._markov_rows.get(declaration.name)
+        if row is not None:
+            state.markov_row, state.markov_entry = row
         self._program_state = state
         random = self._program_instance(RANDOM_INSTANCE, "Random")
         score = self._program_instance(SCORE_INSTANCE, "Score")
@@ -2050,6 +2072,10 @@ class _ProgramElaboration:
                     type_: TypeExpr = tensor_type(REAL, (_extent(info.real_width),))
                 elif info.finite:
                     type_ = INT
+                    if info.extent is not None:
+                        # A class-valued parameter indexes an input by its
+                        # object, as a class-valued step does.
+                        state.alphabets[name] = self._object_axis(factor, declaration)
                 else:
                     type_ = REAL
                 if name in scanned:
@@ -2620,18 +2646,33 @@ class _ProgramElaboration:
             step, scope, state, name, via=via, group=group
         )
         observed_type = self._sampled_type(distribution)
-        observed = self._declare_parameter(
-            name,
-            observed_type,
-            "observation",
-            scope,
-            state,
-            step,
-            axes=tuple(
-                axis.name
-                for axis in (*distribution.plate.batch, *distribution.plate.event)
-            ),
-        )
+        if state.markov_row is not None and name == state.markov_entry:
+            # The row of a marginalized chain's cell scores the entry it
+            # reads as the observation its next state emits.
+            entry = scope.lookup(name)
+            assert entry is not None
+            if entry.type != observed_type:
+                self._fail(
+                    step,
+                    f"the cell observes its entry {name!r} of type "
+                    f"{render_static(entry.type)} from a family over "
+                    f"{render_static(observed_type)}",
+                    code="qiec-program",
+                )
+            observed = entry
+        else:
+            observed = self._declare_parameter(
+                name,
+                observed_type,
+                "observation",
+                scope,
+                state,
+                step,
+                axes=tuple(
+                    axis.name
+                    for axis in (*distribution.plate.batch, *distribution.plate.event)
+                ),
+            )
         state.sites.append(
             ProgramSite(
                 name,
@@ -3453,6 +3494,131 @@ class _ProgramElaboration:
                     code="qiec-program",
                 )
 
+    def _scan_step_inputs(
+        self: _Elaborator,
+        step_name: str,
+        step_entry: ProgramEntry,
+        signature: ComputationSignature,
+        extent: IndexTerm,
+        scope: _Scope,
+        state: _ProgramState,
+        node: LetStep,
+    ) -> tuple[list[Local], list[bool], tuple[StaticArgument, ...], StaticSubstitution]:
+        """The inputs a scan passes its step after the entry and the state.
+
+        Parameters
+        ----------
+        step_name : str
+            The step program the scan runs at every position.
+        step_entry : ProgramEntry
+            Its entry, whose parameters after the first two are passed.
+        signature : ComputationSignature
+            Its signature, whose telescope the passed inputs fix.
+        extent : IndexTerm
+            The number of positions the scan runs over.
+        scope : _Scope
+            The scanning program's scope at the scan, which gains the
+            inputs it declares.
+        state : _ProgramState
+            The scanning program's state.
+        node : LetStep
+            The scan's step.
+
+        Returns
+        -------
+        tuple[list[Local], list[bool], tuple[StaticArgument, ...], StaticSubstitution]
+            The scanning program's local passed for each parameter; for
+            each, whether it is a sequence of observations read at the
+            position; the step's static arguments; and the substitution
+            fixing the step's open extents.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the scanning program binds a name the step observes at
+            every position, or no input fixes one of the step's open
+            extents.
+        """
+        # The step's remaining inputs pass through the recurrence from
+        # the scanning program. A name the step reads without binding
+        # it is the scanning program's binding of that name before the
+        # scan, else an input of the scanning program. An observation
+        # the step scores is one observation per position: the scanning
+        # program takes the sequence of them, and position ``t`` reads
+        # its ``t``-th entry.
+        # The step's own open extents (a table it reads as host data) are
+        # tied to extents of the scanning program, from the binding the
+        # scanning program passes or from a fresh input of its own.
+        extents: dict[str, IndexTerm] = {}
+        passed: list[Local] = []
+        positional: list[bool] = []
+        for parameter in step_entry.parameters[2:]:
+            existing = scope.lookup(parameter.name)
+            if existing is not None:
+                _tie_extents(parameter.type, existing.type, extents)
+            if parameter.role == "observation":
+                if scope.lookup(parameter.name) is not None:
+                    self._fail(
+                        node,
+                        f"the scan step {step_name!r} observes "
+                        f"{parameter.name!r} at every position, so the "
+                        f"scanning program cannot also bind {parameter.name!r}",
+                        code="qiec-program",
+                    )
+                observed = self._passed_input_type(
+                    parameter.name, parameter.type, state, extents
+                )
+                observed_shape = tensor_shape(observed)
+                sequence_type: TypeExpr = (
+                    tensor_type(observed, (extent,))
+                    if observed_shape is None
+                    else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
+                )
+                passed.append(
+                    self._declare_parameter(
+                        parameter.name,
+                        sequence_type,
+                        parameter.role,
+                        scope,
+                        state,
+                        node,
+                    )
+                )
+                positional.append(True)
+                continue
+            if existing is None:
+                existing = self._declare_parameter(
+                    parameter.name,
+                    self._passed_input_type(
+                        parameter.name, parameter.type, state, extents
+                    ),
+                    parameter.role,
+                    scope,
+                    state,
+                    node,
+                )
+            passed.append(existing)
+            positional.append(False)
+        unresolved = [
+            binder.name for binder in signature.telescope if binder.name not in extents
+        ]
+        if unresolved:
+            self._fail(
+                node,
+                f"scan steps with {step_name!r}, whose open extents "
+                f"{', '.join(unresolved)} no input of the scanning program fixes",
+                code="qiec-program",
+            )
+        step_statics: tuple[StaticArgument, ...] = tuple(
+            extents[binder.name] for binder in signature.telescope
+        )
+        substitution = StaticSubstitution(
+            indices=tuple(
+                (binder.name, extents[binder.name]) for binder in signature.telescope
+            )
+        )
+        return passed, positional, step_statics, substitution
+
     def _scan_call(
         self: _Elaborator,
         scan: ScanCall,
@@ -3556,83 +3722,8 @@ class _ProgramElaboration:
                 code="qiec-program",
             )
         self._check_scan_site_labels(step_name, state, node, written)
-        # The step's remaining inputs pass through the recurrence from
-        # the scanning program. A name the step reads without binding
-        # it is the scanning program's binding of that name before the
-        # scan, else an input of the scanning program. An observation
-        # the step scores is one observation per position: the scanning
-        # program takes the sequence of them, and position ``t`` reads
-        # its ``t``-th entry.
-        # The step's own open extents (a table it reads as host data) are
-        # tied to extents of the scanning program, from the binding the
-        # scanning program passes or from a fresh input of its own.
-        extents: dict[str, IndexTerm] = {}
-        passed: list[Local] = []
-        positional: list[bool] = []
-        for parameter in step_entry.parameters[2:]:
-            existing = scope.lookup(parameter.name)
-            if existing is not None:
-                _tie_extents(parameter.type, existing.type, extents)
-            if parameter.role == "observation":
-                if scope.lookup(parameter.name) is not None:
-                    self._fail(
-                        node,
-                        f"the scan step {step_name!r} observes "
-                        f"{parameter.name!r} at every position, so the "
-                        f"scanning program cannot also bind {parameter.name!r}",
-                        code="qiec-program",
-                    )
-                observed = self._passed_input_type(
-                    parameter.name, parameter.type, state, extents
-                )
-                observed_shape = tensor_shape(observed)
-                sequence_type: TypeExpr = (
-                    tensor_type(observed, (extent,))
-                    if observed_shape is None
-                    else tensor_type(observed_shape[0], (extent, *observed_shape[1]))
-                )
-                passed.append(
-                    self._declare_parameter(
-                        parameter.name,
-                        sequence_type,
-                        parameter.role,
-                        scope,
-                        state,
-                        node,
-                    )
-                )
-                positional.append(True)
-                continue
-            if existing is None:
-                existing = self._declare_parameter(
-                    parameter.name,
-                    self._passed_input_type(
-                        parameter.name, parameter.type, state, extents
-                    ),
-                    parameter.role,
-                    scope,
-                    state,
-                    node,
-                )
-            passed.append(existing)
-            positional.append(False)
-        unresolved = [
-            binder.name for binder in signature.telescope if binder.name not in extents
-        ]
-        if unresolved:
-            self._fail(
-                node,
-                f"scan steps with {step_name!r}, whose open extents "
-                f"{', '.join(unresolved)} no input of the scanning program fixes",
-                code="qiec-program",
-            )
-        step_statics: tuple[StaticArgument, ...] = tuple(
-            extents[binder.name] for binder in signature.telescope
-        )
-        substitution = StaticSubstitution(
-            indices=tuple(
-                (binder.name, extents[binder.name]) for binder in signature.telescope
-            )
+        passed, positional, step_statics, substitution = self._scan_step_inputs(
+            step_name, step_entry, signature, extent, scope, state, node
         )
         name = f"{state.declaration.name}__{node.name}_scan"
         if name in self.computation_signatures:
@@ -5239,6 +5330,15 @@ class _ProgramElaboration:
         # marginal per group position for the enclosing group's weights.
         result_type: TypeExpr = LOG_WEIGHT if outer_group is None else weight_type
         chooser = handlers[MARGINAL_HANDLERS[(outer_group is not None, reduction)]]
+        # The row of a marginalized chain's cell keeps the block's weighted
+        # shots, one per state, which the forward algorithm reduces.
+        table = (
+            state.markov_row == latent_name and weight_scope is None and group is None
+        )
+        if table:
+            states = self._object_axis(state.declaration.codomain, step)
+            result_type = tensor_type(LOG_WEIGHT, (states.size,))
+            chooser = handlers[ENUMERATE_TABLE_HANDLER]
         path = ("programs", state.declaration.name, "marginals", latent_name)
         choice = self._local_instance(
             f"{latent_name}_choice", "Random", (), (*path, "choice")
@@ -5291,7 +5391,7 @@ class _ProgramElaboration:
                     _origin_at(self, (*path, "weight"), "local-instance", step),
                 ),
             ),
-            (weight_type,),
+            (result_type if table else weight_type,),
         )
         body = NewInstance(
             choice.entry.instance,
@@ -5300,6 +5400,9 @@ class _ProgramElaboration:
             _origin_at(self, (*path, "choice"), "local-instance", step),
         )
         helper = self._marginal_helper(step, inner, body, scope, state, result_type)
+        if table:
+            self._bind_step(scope, latent_name, result_type, helper, step)
+            return
         weight_local = self._bind_step(scope, None, result_type, helper, step)
         if weight_scope is None:
             self._add_score(state.score, Var(weight_local), scope, state, step)
@@ -7323,6 +7426,9 @@ class _ProgramElaboration:
                 )
             index_values.append(Var(local))
         source = scope.lookup(base)
+        pinned = self._pinned_types.get(base) if source is None else None
+        if pinned is not None:
+            source = self._declare_parameter(base, pinned, "data", scope, state, node)
         if source is None:
             alphabet = state.alphabets.get(indices[0])
             if alphabet is None:
@@ -9131,6 +9237,14 @@ class _ProgramState:
     function_calls
         The number of learned-function calls bound so far, which numbers
         the binding of the next one.
+    markov_row
+        For the row of a marginalized chain's cell, the latent its block
+        marginalizes, which the row binds to the block's weighted shots
+        (one per state) rather than scoring their marginal; else
+        ``None``.
+    markov_entry
+        For such a row, the parameter holding one position's entry,
+        which an observation of that name scores in place.
     extents
         The index binders of the computation's telescope: the object
         parameters of a template, then the open extents of its inputs.
@@ -9172,6 +9286,8 @@ class _ProgramState:
     parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
     per_row: set[str] = field(default_factory=set)
     function_calls: int = 0
+    markov_row: str | None = None
+    markov_entry: str | None = None
     random: NamedEffectInstance | None = None  # type: ignore[assignment]
     score: NamedEffectInstance | None = None  # type: ignore[assignment]
 
@@ -9244,10 +9360,14 @@ def _is_entry_point(declaration: ProgramDecl) -> bool:
     -------
     bool
         ``True`` unless the program is a template over morphisms, which
-        only its call sites instantiate; scalar parameters make an
+        only its call sites instantiate, or the cell of a marginalized
+        chain, which returns the latent it marginalizes and elaborates
+        only as the row of a scan that runs it; scalar parameters make an
         ordinary computation with real or natural parameters, and object
         parameters bind the computation's telescope.
     """
+    if returns_marginalized_latent(declaration):
+        return False
     return declaration.type_params is None or not any(
         isinstance(parameter, MorphismParam) for parameter in declaration.type_params
     )

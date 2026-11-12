@@ -1018,7 +1018,10 @@ def enumerate_handler(
     ``mean`` their average. The aggregate is totalled over the plate's
     positions when the latent is plated, or kept one per position when
     a weight type is given, which is what a marginalization nested in a
-    grouped one adds to its group's weights.
+    grouped one adds to its group's weights. ``table`` aggregates
+    nothing: it answers the weighted shots themselves, one per support
+    value in support order, which is the row of a marginalized chain's
+    transition weights that the forward algorithm reduces.
 
     Parameters
     ----------
@@ -1034,7 +1037,8 @@ def enumerate_handler(
         into one ``LogWeight``.
     reduction
         How the shots aggregate: ``"logsumexp"``, ``"sum"``, or
-        ``"mean"``.
+        ``"mean"``; or ``"table"``, which keeps them one per support
+        value.
     key
         Distinguishes this handler from others of the same name.
 
@@ -1046,11 +1050,12 @@ def enumerate_handler(
     Raises
     ------
     ValueError
-        If the reduction is not one of the three.
+        If the reduction is not one of the four.
     """
-    if reduction not in ("logsumexp", "sum", "mean"):
+    if reduction not in ("logsumexp", "sum", "mean", "table"):
         raise ValueError(
-            f"enumeration reduces by logsumexp, sum, or mean, not {reduction!r}"
+            "enumeration reduces by logsumexp, sum, or mean, or keeps a table, "
+            f"not {reduction!r}"
         )
     definition = _handler_def(
         "Random.enumerate",
@@ -1112,6 +1117,13 @@ def enumerate_handler(
             weight = add_weights(prior, answer[1])
             totals.append(_entries(weight))
             shapes.append(_weight_shape(weight))
+        if reduction == "table":
+            if any(len(entries) != 1 for entries in totals):
+                raise InvalidHandlerError(
+                    "enumeration keeps a table of one weight per support value "
+                    "only for a single latent whose shots answer one weight"
+                )
+            return tuple(entries[0] for entries in totals)
         width = max(len(entries) for entries in totals)
         marginals = [
             _aggregate([entries[position] for entries in totals], reduction)

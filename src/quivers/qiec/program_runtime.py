@@ -148,7 +148,8 @@ def _marginal_handler(name: str) -> tuple[bool, str] | None:
 
     The elaborator names its enumeration handlers ``enumerate_marginal``
     and ``enumerate_grouped_marginal``, with ``_sum`` or ``_mean``
-    appended for a reduction other than ``logsumexp``.
+    appended for a reduction other than ``logsumexp``, and ``_table``
+    for the handler answering one weight per support value.
 
     Parameters
     ----------
@@ -161,7 +162,7 @@ def _marginal_handler(name: str) -> tuple[bool, str] | None:
         Whether the handler answers per group position, and its
         reduction; ``None`` for a handler of another kind.
     """
-    for reduction in ("sum", "mean"):
+    for reduction in ("sum", "mean", "table"):
         suffix = f"_{reduction}"
         if name.endswith(suffix):
             base = _marginal_handler(name[: -len(suffix)])

@@ -1431,6 +1431,10 @@ class _Elaborator(
         # scan cell specialized to its scanning program reads each name
         # that program binds before the scan at that binding's type.
         self._pinned_types: dict[str, TypeExpr] = {}
+        # The rows of marginalized chains' cells being elaborated, by
+        # program name: the latent each row binds to its block's weighted
+        # shots, and the parameter holding one position's entry.
+        self._markov_rows: dict[str, tuple[str, str]] = {}
         self.registry = KernelRegistry()
         # The type a `return` in the body being lowered should produce. It
         # is a hint for positions that cannot state their type, such as a
