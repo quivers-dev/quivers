@@ -1,11 +1,9 @@
 # Sequence functions
 
-These compiler helpers elaborate [learned functions over whole
-sequences](../../reference/qvr/probabilistic-programs.md#sequence-functions),
-a `[role=function]` morphism with `param_source=self_attention` or
-`param_source=positions(N)`, to the checked kernel's comprehensions over a
-sequence's open extent. Model authors declare these functions in QVR; the
-runtime realization is
+These compiler helpers elaborate
+[learned functions over whole sequences](../../reference/qvr/probabilistic-programs.md#sequence-functions),
+a `[role=function]` morphism with `param_source=self_attention` or `param_source=positions(N)`,
+to comprehensions of the checked core over a sequence's open extent. Their runtime form is
 [`SequenceFunction`][quivers.continuous.deterministic.SequenceFunction].
 
 !!! note "Internal module"

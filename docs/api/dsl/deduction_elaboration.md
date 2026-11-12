@@ -1,12 +1,10 @@
 # Deduction elaboration
 
-A [deduction declaration](../../reference/qvr/generated-computations.md#deduction-declarations) names rules and how their results combine. Elaboration
-represents that behavior through [explicit core families, handlers, and computations](../../tutorials/qvr/11-parsing-and-search.md#3-see-the-generated-effects).
-This is the bridge between a compact rule declaration and the structures that the
-checked execution path can inspect.
-
-Elaboration of `deduction` declarations into QIEC families, handlers, and
-computations.
+These functions elaborate a [deduction declaration](../../reference/qvr/generated-computations.md#deduction-declarations)
+into QIEC families, handlers, and computations
+([generated effects](../../tutorials/qvr/11-parsing-and-search.md#3-see-the-generated-effects)).
+The [QIEC developer note](../../developer/qiec.md#qvr-surface) lists what a deduction elaborates
+to.
 
 !!! note "Internal module"
     This module is an implementation detail of the compiler and its
