@@ -82,7 +82,7 @@ Objects, algebras, and morphisms between finite sets ([API](../api/core/objects.
 
 ### `categorical/`
 
-[Functors](https://ncatlab.org/nlab/show/functor), natural transformations, and adjunctions between categories of finite morphisms (`Functor`, `NaturalTransformation`, `Adjunction`); monoidal structures (`CartesianMonoidal`, `CoproductMonoidal`); [traced monoidal](https://ncatlab.org/nlab/show/traced+monoidal+category) structure (`TracedMonoidal`, `trace()`); and change of base between the Boolean and product fuzzy algebras (`BaseChange`).
+[Functors](https://ncatlab.org/nlab/show/functor), natural transformations, and adjunctions between categories of finite morphisms (`Functor`, `NaturalTransformation`, `Adjunction`); monoidal structures (`CartesianMonoidal`, `CoproductMonoidal`); [traced monoidal](https://ncatlab.org/nlab/show/traced+monoidal+category) structure (`TracedMonoidal`, `trace()`); and change of base between Boolean and product fuzzy weights (`BaseChange`).
 
 ### `enriched/`
 
