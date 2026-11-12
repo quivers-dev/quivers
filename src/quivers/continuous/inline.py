@@ -2873,7 +2873,9 @@ _ALTERNATIVE_BUILDERS: dict[
 def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.Tensor:
     """Keep a parameter the source names inside its family's constraint.
 
-    A probability is held off zero and one, a parameter the family's
+    A parameter whose family admits a boundary value (a Geometric
+    ``probs`` of one) is projected onto its declared bounds, any other
+    probability is held off zero and one, a parameter the family's
     specification declares takes its own inline clamp, and an alternative
     the specification does not declare (logits, a covariance or a
     precision matrix) is passed as written: logits range over the reals,
@@ -2894,9 +2896,11 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
     torch.Tensor
         The value the family is built with.
     """
+    declared = {param.name: param for param in spec.params}
+    if name in declared and declared[name].inline_bounds is not None:
+        return declared[name].inline_clamp(value)
     if name == "probs":
         return value.clamp(min=EPS, max=1.0 - EPS)
-    declared = {param.name: param for param in spec.params}
     if name in declared:
         return declared[name].inline_clamp(value)
     return value
