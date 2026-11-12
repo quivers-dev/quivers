@@ -4772,16 +4772,31 @@ class _ProgramsMixin:
             cell = markov_cell(cell_decl)
         except StepResolutionError as error:
             raise CompileError("; ".join(error.kinds), step.line, step.col) from error
-        state_space = self._resolve_any_space(cell.state_object)
+        state_space = (
+            self._objects.get(cell.state_object.name)
+            if isinstance(cell.state_object, TypeName)
+            else None
+        )
         if not isinstance(state_space, FinSet):
             raise CompileError(
-                f"the marginalized chain over {cell.name!r} sums states of "
-                f"{state_space!r}, which is not a finite set",
+                f"the marginalized chain over {cell.name!r} sums the states of "
+                f"an object that is not a declared finite set",
                 step.line,
                 step.col,
             )
         count = int(state_space.cardinality)
-        entry_space = self._resolve_any_space(cell.entry_object)
+        entry_space: AnySpace | None = None
+        if isinstance(cell.entry_object, TypeName):
+            entry_space = self._objects.get(cell.entry_object.name) or self._spaces.get(
+                cell.entry_object.name
+            )
+        if entry_space is None:
+            raise CompileError(
+                f"the cell {cell.name!r} reads entries of an object that is not "
+                f"declared",
+                step.line,
+                step.col,
+            )
         source_key: str
         if scan.sequence in bound_vars:
             source_key = scan.sequence

@@ -312,7 +312,6 @@ def test_a_first_state_with_zero_mass_somewhere_is_summed_in_log_space() -> None
         "    let start = [0.0, 1.0, 0.0]\n",
     )
     _, transition, emission = _parameters(3, 4, seed=7)
-    start = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
     symbols = _symbols(1, 4, 5, seed=8)[0].tolist()
     prior = float(
         D.Dirichlet(torch.ones(3, 3, dtype=torch.float64)).log_prob(transition).sum()
