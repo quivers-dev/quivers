@@ -3704,6 +3704,22 @@ class _ProgramsMixin:
                     # smaller than the declared codomain cardinality
                     # for sparse / minibatch fits.
                     response = env[_resp]
+                    if (
+                        response.dim() >= 2
+                        and int(response.shape[0]) != _N_decl
+                        and int(response.shape[1]) == _N_decl
+                    ):
+                        # The observation carries a leading axis of runs
+                        # before its rows.
+                        runs = int(response.shape[0])
+                        if runs != 1:
+                            raise ValueError(
+                                f"grouped marginalize: observation {_resp!r} "
+                                f"has {runs} runs on its leading axis; a "
+                                f"grouped block scores one run at a time, so "
+                                f"pass one row of input and that run's data"
+                            )
+                        response = response[0]
                     _N = int(response.shape[0]) if response.dim() >= 1 else _N_decl
                     # Resolve theta from env. Inside a grouped
                     # marginalize, ``args`` may reference per-class
