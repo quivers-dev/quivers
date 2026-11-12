@@ -34,7 +34,7 @@ shadows an outer name with the same spelling. Elaboration to the [Quivers Indexe
 so the [reference machine](../../developer/qiec.md#reference-evaluator), the library's interpreter for
 QIEC, runs it and a target that supports comprehensions renders it.
 
-## Effect-aware traverse
+## Traverse with effects {#effect-aware-traverse}
 
 `traverse` passes each item to a named computation and sequences the requests those calls make. It
 is computation syntax and uses `<-`, even when the callee performs no effect:
