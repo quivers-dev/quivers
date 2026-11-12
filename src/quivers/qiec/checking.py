@@ -3142,6 +3142,48 @@ def _infer_resume(
     )
 
 
+def _unmapped_hint(expected: TypeExpr, actual: TypeExpr) -> str:
+    """Advice for a tensor passed where its entries are expected.
+
+    A computation's parameter keeps the type it declares: a call does
+    not map a computation over the leading axes of a tensor argument.
+
+    Parameters
+    ----------
+    expected : TypeExpr
+        The parameter's type.
+    actual : TypeExpr
+        The argument's type.
+
+    Returns
+    -------
+    str
+        A clause saying to declare the parameter as the tensor and map
+        over it inside the computation, when ``actual`` is a tensor
+        whose entries (or trailing slices) have type ``expected``; else
+        empty.
+    """
+    split = tensor_shape(actual)
+    if split is None:
+        return ""
+    element, dimensions = split
+    inner = tensor_shape(expected)
+    if inner is None:
+        matches = element == expected
+    else:
+        matches = inner[0] == element and (
+            len(inner[1]) < len(dimensions)
+            and dimensions[len(dimensions) - len(inner[1]) :] == inner[1]
+        )
+    if not matches:
+        return ""
+    return (
+        f"; a call does not map a computation over a tensor's entries: "
+        f"declare the parameter as {render_static(actual)} and `map` over it "
+        f"inside the computation"
+    )
+
+
 def _infer_call(
     call: Call,
     registry: KernelRegistry,
@@ -3203,7 +3245,8 @@ def _infer_call(
         if actual != expected:
             raise KernelError(
                 f"call to {signature.name!r} argument {position}: expected "
-                f"{render_static(expected)}, got {render_static(actual)}",
+                f"{render_static(expected)}, got {render_static(actual)}"
+                f"{_unmapped_hint(expected, actual)}",
                 "qiec-call",
             )
     result = substitute_type(signature.result, substitution)

@@ -20,9 +20,9 @@ from quivers.transpile import available_targets, transpile
 
 
 _EXPECTED_DEPENDENCIES = {
-    "didactic": "0.17.1",
-    "panproto": "0.74.4",
-    "panproto-grammars-all": "0.74.4",
+    "didactic": "0.18.2",
+    "panproto": "0.77.0",
+    "panproto-grammars-all": "0.77.0",
 }
 
 

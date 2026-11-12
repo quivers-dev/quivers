@@ -26,6 +26,8 @@ from quivers.qiec.effects import (
     RowEntry,
 )
 from quivers.qiec.execution import (
+    ExecutionDiagnostic,
+    ExecutionFailure,
     ExecutionResult,
     RuntimeConfiguration,
     RuntimeProvider,
@@ -793,6 +795,112 @@ def sample_program(
     )
 
 
+def passed_data_notes(module: QiecModule, name: str) -> dict[str, str]:
+    """Where each datum a program passes straight to a computation goes.
+
+    A free name passed only as a call's argument takes the type of the
+    parameter it fills; a call does not map the computation over the
+    entries of a tensor. When a datum of another shape is supplied, the
+    refusal says which call fixed the datum's type and what to write
+    instead.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module holding the program.
+    name : str
+        The program's name.
+
+    Returns
+    -------
+    dict[str, str]
+        For each data parameter some call reads as a whole argument, a
+        located note naming the call, the parameter it fills, and the
+        remedy: declare the parameter as a tensor and ``map`` over it
+        inside the computation.
+    """
+    entry = program_entry(module, name)
+    data = {
+        parameter.name
+        for parameter in entry.parameters
+        if parameter.role in ("data", "fibration")
+    }
+    body = _computation(module, entry.computation).body
+    notes: dict[str, str] = {}
+    pending: list[Computation] = [body]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, Bind):
+            continue
+        pending.append(node.then)
+        first = node.first
+        if isinstance(first, Bind):
+            pending.append(first)
+            continue
+        if not isinstance(first, Call):
+            continue
+        callee = _computation(module, first.callee)
+        for argument, parameter in zip(first.arguments, callee.parameters):
+            if not isinstance(argument, Var) or argument.local.name not in data:
+                continue
+            datum = argument.local.name
+            where = (
+                f"line {first.origin.line}, col {first.origin.column}: "
+                if first.origin.line
+                else ""
+            )
+            notes.setdefault(
+                datum,
+                f"{where}`let {node.binder.name} <- {first.name}(...)` passes "
+                f"{datum!r} to the parameter `{parameter.name} : "
+                f"{render_static(parameter.type)}` of `{first.name}`, which "
+                f"fixes its type; a call does not map a computation over a "
+                f"tensor's entries: declare the parameter as a tensor and "
+                f"`map` over it inside the computation",
+            )
+    return notes
+
+
+def _refuse_unmapped_data(
+    module: QiecModule, entry: ProgramEntry, data: Mapping[str, object]
+) -> None:
+    """Refuse a datum whose shape is not that of the parameter it fills.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The module holding the program.
+    entry : ProgramEntry
+        The program's entry point.
+    data : Mapping[str, object]
+        The supplied data, by name.
+
+    Raises
+    ------
+    ExecutionFailure
+        Located at the call that fixes a datum's type, when the datum
+        has more or fewer axes than that type.
+    """
+    notes = passed_data_notes(module, entry.name)
+    for parameter in entry.parameters:
+        note = notes.get(parameter.name)
+        if note is None or parameter.name not in data:
+            continue
+        split = tensor_shape(parameter.type)
+        expected = 0 if split is None else len(split[1])
+        supplied = _host_rank(data[parameter.name])
+        if supplied == expected:
+            continue
+        raise ExecutionFailure(
+            ExecutionDiagnostic(
+                "qiec-run-type",
+                f"datum {parameter.name!r} has {supplied} axes, but the program "
+                f"reads it at type {render_static(parameter.type)}: {note}",
+                entry.name,
+            )
+        )
+
+
 def _run_wrapped(
     module: QiecModule,
     extended: QiecModule,
@@ -850,6 +958,7 @@ def _run_wrapped(
         If the run fails.
     """
     data = broadcast_shared_data(entry, data)
+    _refuse_unmapped_data(module, entry, data)
     arguments = tuple(data[parameter.name] for parameter in entry.parameters)
     statics = static_arguments_for(entry, data, static_arguments)
     configured = {

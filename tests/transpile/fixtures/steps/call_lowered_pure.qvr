@@ -1,0 +1,35 @@
+# Exercises calls the planner lowers to deterministic statements:
+# `shifted` calls the pure `leaky`, whose `if` between pure branches is
+# `select`, and `clamp` nests one conditional inside another.
+object Step : FinSet 2
+
+define leaky(x : Real) : Real !{} =
+    if x > 0.0 then
+        return x
+    else
+        let small = 0.1 * x
+        return small
+
+define shifted(x : Real, k : Real) : Real !{} =
+    let rectified <- leaky(x)
+    return rectified + k
+
+define clamp(x : Real, low : Real, high : Real) : Real !{} =
+    if x < low then
+        return low
+    else
+        if x > high then
+            return high
+        else
+            return x
+
+program p : Step -> Step
+    sample a <- Normal(loc=0.0, scale=1.0)
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let m <- shifted(a, 0.5)
+    let c <- clamp(b, -0.5, 0.5)
+    let mean = m + c
+    observe y : Step <- Normal(loc=mean, scale=1.0)
+    return y
+
+export p
