@@ -14,9 +14,8 @@ program.
 `quivers.inference` also re-exports the variational guides of
 `quivers.inference.guides` and the kernels and runner of
 `quivers.inference.mcmc`, so that `from quivers.inference import
-AutoNormalGuide, NUTSKernel` works. The entries below record those import
-paths with their signatures; the [Guides](guide.md) and [MCMC](mcmc.md)
-pages document each class in full.
+AutoNormalGuide, NUTSKernel` works. Each class is documented in full under
+[Guides](guide.md) or [MCMC](mcmc.md).
 
 ::: quivers.inference
     options:
