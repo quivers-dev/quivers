@@ -38,7 +38,7 @@ QVR binds transformations with `define`, composes them with `>>>`, and applies t
 with the postfix `change_base`. Transformation names live in their own namespace,
 apart from morphism names.
 
-### Singletons
+### Transformations without arguments {#singletons}
 
 These transformations take no argument:
 
