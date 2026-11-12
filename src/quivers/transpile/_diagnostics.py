@@ -11,6 +11,29 @@ from __future__ import annotations
 import didactic.api as dx
 
 
+class UnregisteredRefusalKind(LookupError):
+    """A refusal kind no renderer in this module explains.
+
+    Every kind a transpile stage raises has to render as prose that
+    says what was refused and what to write instead, so a kind with no
+    registered explanation is a defect in the transpiler rather than a
+    message to show a user.
+
+    Parameters
+    ----------
+    kind : str
+        The structured part of the unexplained kind.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(
+            f"the refusal kind {kind!r} has no explanation registered in "
+            f"`quivers.transpile._diagnostics`; register one in the renderer "
+            f"that owns its head."
+        )
+        self.kind = kind
+
+
 class RefusedDeclaration(dx.Model):
     """One top-level declaration a target's support tier rejected.
 
@@ -967,6 +990,15 @@ def _render_let_kind(backend: str, tail: str, explained: bool) -> str:
             f"with a direct `~ Family(args)` declaration, or write "
             f"one `sample` step per stochastic link."
         )
+    if tail == "chart":
+        return (
+            f"a `let` runs a deduction chart (`parse`, `chart`, "
+            f"`chart_fold`, `op_apply`, or a method call on a chart), a "
+            f"logic-programming construct outside the program calculus, "
+            f"so {_language(backend)} has no form for the value it binds. "
+            f"Run the chart with the compiled runtime and pass its result "
+            f"to the program as data."
+        )
     if tail.startswith("call:unknown:"):
         name = tail.partition("call:unknown:")[2]
         return (
@@ -1075,9 +1107,19 @@ def _render_marginalize_kind(backend: str, tail: str, explained: bool) -> str:
         return (
             f"`marginalize` over a `{family}` latent asks for a sum "
             f"over a support that is not finite, so {backend} cannot "
-            f"integrate it out at compile time. Reparameterise the "
-            f"latent as a continuous relaxation, or do the "
-            f"marginalisation in the host-side inference loop."
+            f"integrate it out at compile time. Draw the latent with "
+            f"`sample` and let inference integrate it out, or give it a "
+            f"family with finite support (`Bernoulli`, `Categorical`)."
+        )
+    if tail.startswith("group-unmapped:"):
+        latent, _, observed = tail.removeprefix("group-unmapped:").partition(":")
+        return (
+            f"the observation `{observed}` inside the `marginalize` over "
+            f"`{latent}` names no group of `{latent}` for each of its rows: "
+            f"it has no `via` map onto the group axis and is not plated over "
+            f"it, so {_language(backend)} has no group to add each row's "
+            f"log-density to. Plate the observation over the latent's axis, "
+            f"or map its rows onto that axis with `via`."
         )
     if tail.startswith("unknown-cardinality"):
         family = tail.partition(":")[2]
@@ -1243,48 +1285,22 @@ def _linear_width_mismatch_headline(detail: str) -> str:
     )
 
 
-def _render_param_source_kind(backend: str, tail: str, explained: bool) -> str:
-    """`param-source:<kind>[:...]` -- a morphism whose parameters come
-    from a network or a compiled linear map rather than from sites the
-    program declares.
+def _network_reconstruction(backend: str, headline: str) -> str:
+    """A parameter-source headline followed by why no target can
+    rebuild the parameter and what to write instead.
 
-    The raise sites carry the full account, since only they know which
-    of the three consuming positions fired; the headline names the
-    morphism and leaves the reasoning to the explanation.
+    Parameters
+    ----------
+    backend : str
+        The target the refusal is reported for.
+    headline : str
+        The kind's headline.
+
+    Returns
+    -------
+    str
+        The headline with the reason and the remedy.
     """
-    kind, _, rest = tail.partition(":")
-    name = rest.rpartition(":")[2]
-    if kind == "linear" and rest.startswith("width-mismatch:"):
-        headline = _linear_width_mismatch_headline(rest.removeprefix("width-mismatch:"))
-    elif kind == "linear":
-        headline = (
-            "a morphism between objects of different width carries a "
-            "compiled linear parameter map, whose weights are not "
-            "sites the program declares"
-        )
-    elif kind == "unnamed":
-        return (
-            f"the morphism `{name}` carries a `param_source` option "
-            f"that names no architecture, so there is nothing for any "
-            f"target to read it as. Write `[param_source=<kind>]` "
-            f"with an architecture name."
-        )
-    elif kind == "table":
-        return (
-            f"the morphism `{name}` is a kernel over a finite domain, whose "
-            f"parameters are read from a learned table with one row per "
-            f"element, and {_language(backend)} has no wire form for a "
-            f"table-indexed parameter map. Draw the row's parameters as "
-            f"sites indexed by the element, or write the step against a "
-            f"closed-form family."
-        )
-    else:
-        headline = (
-            f"a morphism draws its parameters from a `{kind}` network, "
-            f"whose weights are not sites the program declares"
-        )
-    if explained:
-        return headline
     unable = (
         "no target can reconstruct"
         if backend in _STAGE_TARGETS
@@ -1296,6 +1312,170 @@ def _render_param_source_kind(backend: str, tail: str, explained: bool) -> str:
         f"forward pass, or write the step as a `sample` / `observe` "
         f"against a closed-form family."
     )
+
+
+def _render_param_source_kind(backend: str, tail: str, explained: bool) -> str:
+    """`param-source:<kind>[:...]` -- a morphism whose parameters come
+    from a network, a learned table, or a compiled linear map rather
+    than from sites the program declares.
+
+    The recognised shapes are `param-source:<kind>` (a draw from the
+    morphism, or a learned function applying the network),
+    `param-source:<kind>:latent`,
+    `param-source:<kind>:value-position:<name>`,
+    `param-source:<kind>:composite-position:<name>`,
+    `param-source:unnamed:<name>`, `param-source:table:<name>`, and the
+    linear-map shapes `param-source:linear:width-mismatch:...`,
+    `param-source:linear:map:<name>`,
+    `param-source:linear:argument:<name>` and
+    `param-source:linear:transform:<transform>:<name>`.
+
+    Parameters
+    ----------
+    backend : str
+        The target the refusal is reported for.
+    tail : str
+        The kind after `param-source:`.
+    explained : bool
+        Whether the raise site's own account follows the headline.
+
+    Returns
+    -------
+    str
+        The rendered explanation.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the tail has none of the recognised shapes.
+    """
+    kind, _, rest = tail.partition(":")
+    reason, _, name = rest.partition(":")
+    if kind == "unnamed":
+        return (
+            f"the morphism `{rest}` carries a `param_source` option "
+            f"that names no architecture, so there is nothing for any "
+            f"target to read it as. Write `[param_source=<kind>]` "
+            f"with an architecture name."
+        )
+    if kind == "table":
+        return (
+            f"the morphism `{rest}` is a kernel over a finite domain, whose "
+            f"parameters are read from a learned table with one row per "
+            f"element, and {_language(backend)} has no wire form for a "
+            f"table-indexed parameter map. Draw the row's parameters as "
+            f"sites indexed by the element, or write the step against a "
+            f"closed-form family."
+        )
+    if kind == "linear" and reason == "width-mismatch":
+        return _network_reconstruction(backend, _linear_width_mismatch_headline(name))
+    if kind == "linear" and reason == "map":
+        return (
+            f"the morphism `{name}` maps its domain to the family's "
+            f"parameters through a linear map whose weight or bias is not a "
+            f"program input, so {_language(backend)} has no name to read the "
+            f"map's coefficients from. Pass the weight and the bias as data "
+            f"inputs of the program, or write the step against a closed-form "
+            f"family."
+        )
+    if kind == "linear" and reason == "argument":
+        return (
+            f"the morphism `{name}` applies its linear parameter map to an "
+            f"argument that is not a bound name, so {_language(backend)} has "
+            f"no value to multiply the map's weight by. Bind each argument "
+            f"of `{name}` with a `let` and pass that name."
+        )
+    if kind == "linear" and reason == "transform":
+        transform, _, morphism = name.partition(":")
+        return (
+            f"the morphism `{morphism}` passes its linear parameter map "
+            f"through `{transform}`, and {_language(backend)} renders only "
+            f"the identity and the floored exponential after a parameter "
+            f"map. Write the transform as a `let` over the map's output, or "
+            f"write the step against a closed-form family."
+        )
+    if not rest:
+        headline = (
+            f"a morphism draws its parameters from a `{kind}` network, "
+            f"whose weights are not sites the program declares"
+        )
+    elif rest == "latent":
+        headline = (
+            f"a morphism draws the weights of its `{kind}` network as "
+            f"latent sites, and no target has a form for the network's "
+            f"layers applied to drawn weights"
+        )
+    elif reason == "value-position" and name:
+        headline = (
+            f"the program reads the morphism `{name}`, whose parameters "
+            f"come from a `{kind}` network, as a value rather than drawing "
+            f"from it"
+        )
+    elif reason == "composite-position" and name:
+        headline = (
+            f"a composite consumes the morphism `{name}`, whose parameters "
+            f"come from a `{kind}` network that is not a site the program "
+            f"declares"
+        )
+    else:
+        raise UnregisteredRefusalKind(f"param-source:{tail}")
+    if explained:
+        return headline
+    if rest == "latent":
+        return (
+            f"{headline}. Write the layers as `factor` comprehensions over "
+            f"sampled weight matrices to transpile the model."
+        )
+    return _network_reconstruction(backend, headline)
+
+
+def _render_chain_kind(backend: str, tail: str, explained: bool) -> str:
+    """`chain:<reason>:<name>` -- a composite chain whose link the
+    expansion into program steps cannot place.
+
+    Parameters
+    ----------
+    backend : str
+        The target the refusal is reported for.
+    tail : str
+        The kind after `chain:`.
+    explained : bool
+        Whether the raise site's own account follows the headline.
+
+    Returns
+    -------
+    str
+        The rendered explanation.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the reason is not one the expansion raises.
+    """
+    reason, _, name = tail.partition(":")
+    if reason == "program":
+        headline = (
+            f"a composite chain uses the program `{name}` as a link, and a "
+            f"program is not a morphism the chain's operators compose"
+        )
+        remedy = (
+            f"Draw from it with `sample y <- {name}(x)`, or run it at every "
+            f"position as the cell of `scan({name})`."
+        )
+    elif reason == "sequence-function":
+        headline = (
+            f"a composite chain applies `{name}`, which reads a whole "
+            f"sequence at once, one position at a time"
+        )
+        remedy = (
+            f"Bind the sequence and apply `{name}` to it in a `let`, as in "
+            f"`sample xs <- states` then `let ys = {name}(xs)`."
+        )
+    else:
+        raise UnregisteredRefusalKind(f"chain:{tail}")
+    if explained:
+        return headline
+    return f"{headline}, so {_language(backend)} has nothing to emit for it. {remedy}"
 
 
 def _render_embed_kind(backend: str, tail: str, explained: bool) -> str:
@@ -1507,7 +1687,14 @@ def _render_family_ref_kind(backend: str, tail: str, explained: bool) -> str:
 
 def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
     """`morphism:<reason>:<name>` -- a morphism the resolver cannot
-    turn into a distribution."""
+    turn into a distribution.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the reason is not ``cycle``, ``no-init``, ``duplicate`` or
+        ``embed-initializer``.
+    """
     reason, _, rest = tail.partition(":")
     name = rest.partition(":")[0]
     if reason == "cycle":
@@ -1522,11 +1709,28 @@ def _render_morphism_kind(backend: str, tail: str, explained: bool) -> str:
         )
     elif reason == "duplicate":
         headline = f"morphism `{name}` is declared twice"
+    elif reason == "embed-initializer":
+        headline = (
+            f"the embedding `{name}` carries a `~` initializer, but an "
+            f"embedding is a Normal kernel at each element's learned centre "
+            f"and takes none"
+        )
     else:
-        headline = _cannot(backend, f"resolve morphism `{name}`")
+        raise UnregisteredRefusalKind(f"morphism:{tail}")
     if explained:
         return headline
-    return f"{headline}: {tail}"
+    remedy = {
+        "cycle": "Give one link of the chain a `~ Family(...)` declaration.",
+        "no-init": (
+            f"Declare `{name}` with `~ Family(...)`, or draw from a family directly."
+        ),
+        "duplicate": "Rename one of the two declarations.",
+        "embed-initializer": (
+            "Drop the initializer, or declare a `role=kernel` morphism with "
+            "the family you want."
+        ),
+    }[reason]
+    return f"{headline}. {remedy}"
 
 
 def _render_nested_distribution_kind(backend: str, tail: str) -> str:
@@ -1764,6 +1968,11 @@ def _render_data_kind(backend: str, tail: str) -> str:
     -------
     str
         The explanation.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If the form is not one the planner raises.
     """
     form, _, rest = tail.partition(":")
     name = rest.partition(":")[0] or "the input"
@@ -1778,11 +1987,7 @@ def _render_data_kind(backend: str, tail: str) -> str:
             f"row. Pass one vector shared by every row, or transpile to "
             f"edward2, numpyro or pyro, which take one vector per row."
         )
-    return (
-        f"{_cannot(backend, 'transpile this program')}. The refusal is "
-        f"tagged `data:{tail}`, which has no explanation registered "
-        f"yet; please report it."
-    )
+    raise UnregisteredRefusalKind(f"data:{tail}")
 
 
 # ---------------------------------------------------------------------------
@@ -1849,7 +2054,14 @@ def _render_head(
     declarations: tuple[RefusedDeclaration, ...],
     module_has_program: bool,
 ) -> str:
-    """Dispatch one kind's head to the renderer that owns it."""
+    """Dispatch one kind's head to the renderer that owns it.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If no renderer owns the head, or the owner does not recognise
+        the kind's shape.
+    """
     if head in _DECLARATION_MEANING:
         entries = tuple(e for e in declarations if e.kind == head)
         return _render_declaration_kind(backend, head, entries, module_has_program)
@@ -1897,6 +2109,8 @@ def _render_head(
         return _render_param_source_kind(backend, tail, explained)
     if head == "embed":
         return _render_embed_kind(backend, tail, explained)
+    if head == "chain":
+        return _render_chain_kind(backend, tail, explained)
     if head == "program":
         return _render_program_kind(backend, tail, explained)
     if head == "program-domain":
@@ -1963,11 +2177,7 @@ def _render_head(
         return _render_draw_arg_kind(backend, tail)
     if head == "data":
         return _render_data_kind(backend, tail)
-    return (
-        f"{_cannot(backend, 'transpile this program')}. The refusal is "
-        f"tagged `{structured}`, which has no explanation registered "
-        f"yet; please report it."
-    )
+    raise UnregisteredRefusalKind(structured)
 
 
 def user_facing_message(
@@ -1980,6 +2190,28 @@ def user_facing_message(
 
     One kind renders as one sentence-or-more; several render as a
     headed bullet list, one bullet per independent problem.
+
+    Parameters
+    ----------
+    target : str
+        The backend the refusal is reported for, such as ``"qvr-stan"``.
+    kinds : tuple[str, ...]
+        The structured kinds, each optionally followed by ``": "`` and
+        the raise site's explanation.
+    declarations : tuple[RefusedDeclaration, ...]
+        The refused top-level declarations, for a declaration kind.
+    module_has_program : bool
+        Whether the refused module declares a program.
+
+    Returns
+    -------
+    str
+        The message.
+
+    Raises
+    ------
+    UnregisteredRefusalKind
+        If a kind has no registered explanation.
     """
     backend = _backend_display_name(target)
     lines = [_render_kind(backend, k, declarations, module_has_program) for k in kinds]

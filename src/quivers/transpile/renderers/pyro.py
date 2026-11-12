@@ -437,7 +437,7 @@ class PyroRenderer(RendererBase):
         if len(args) != 2 or not isinstance(args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-pyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = args[1]
         if kernel_arg.kernel != "rbf":
@@ -1034,14 +1034,7 @@ class PyroRenderer(RendererBase):
         )
         # A grouped block keys its accumulator by group: the rows the
         # index map sends to one group are summed before the reduction.
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         if index_map is not None:
             via, group = index_map
             extent = (
@@ -1109,12 +1102,7 @@ class PyroRenderer(RendererBase):
         and ``logsigmoid(l)``, computed in log space.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=pctx.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._arg_to_vid(pctx, probs)
         family = atoms[0].weight_family

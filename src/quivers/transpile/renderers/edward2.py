@@ -477,7 +477,7 @@ class Edward2Renderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -817,14 +817,7 @@ class Edward2Renderer(RendererBase):
             Plate(event_dims=observe.plate.event_dims, batch_dims=())
         )
         prefix = f"__marg_{node.latent}"
-        index_map = marginalize_index_map(
-            node,
-            observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, observe)
         if index_map is not None:
             self._emit_grouped_marginalize(
                 py, body_vid, node, raw, atoms, index_map, input_specs, bindings
@@ -939,12 +932,7 @@ class Edward2Renderer(RendererBase):
         ``1 - p`` and ``p``, which stack into a fresh trailing axis.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._weight_ref_expr(py, probs)
         family = atoms[0].weight_family
@@ -997,12 +985,7 @@ class Edward2Renderer(RendererBase):
             The stacked log weights.
         """
         logits = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         return _tf_stack(
             py,
@@ -1499,7 +1482,7 @@ class Edward2Renderer(RendererBase):
         if not plate.event_dims:
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:LKJCholesky:missing matrix-dimension event axis"],
+                ["family:LKJCholesky: missing matrix-dimension event axis"],
             )
         callee = attribute(py, ("edward2", dist_class))
         dimension = _dim_expr(py, plate.event_dims[-1])
@@ -1562,7 +1545,7 @@ class Edward2Renderer(RendererBase):
         if len(args) != 3:
             raise UnsupportedConstruct(
                 _BACKEND_KEY,
-                ["family:MatrixNormal:expected (loc, row_covariance, col_covariance)"],
+                ["family:MatrixNormal: expected (loc, row_covariance, col_covariance)"],
             )
         callee = attribute(py, ("edward2", dist_class))
         meta = self._lookup_meta("MatrixNormal")
@@ -2349,16 +2332,13 @@ def _marginalize_is_grouped(node: IRMarginalize) -> bool:
     Returns
     -------
     bool
-        ``True`` when the block carries a grouping plate finer than
-        its observe's plate and an observe with a ``via`` index map,
-        which the renderer traces as a factor.
+        ``True`` when the block carries a grouping plate and an
+        observe with a ``via`` index map into it, whose rows
+        `marginalize_index_map` scatters into the groups and the
+        renderer traces as a factor.
     """
-    if not node.plate.batch_dims:
-        return False
     return any(
-        isinstance(inner, IRObserve)
-        and inner.via is not None
-        and inner.plate.batch_dims != node.plate.batch_dims
+        isinstance(inner, IRObserve) and marginalize_index_map(node, inner) is not None
         for inner in node.scope
     )
 

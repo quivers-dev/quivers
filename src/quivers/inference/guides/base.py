@@ -117,8 +117,8 @@ class Guide(nn.Module, ABC):
                     f"{type(self).__name__} cannot score latent {name!r} in the "
                     f"subsampled plate {held[0]!r} at the subset's rows, since "
                     "its density does not split over the plate; use "
-                    "AutoNormalGuide (or AutoDeltaGuide) for the plate's "
-                    "latents, or leave the plate unsubsampled"
+                    "AutoNormalGuide, AmortizedGuide or AutoDeltaGuide for the "
+                    "plate's latents, or leave the plate unsubsampled"
                 )
 
     @classmethod

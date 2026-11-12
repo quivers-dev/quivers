@@ -3708,6 +3708,22 @@ class _ProgramsMixin:
                     # smaller than the declared codomain cardinality
                     # for sparse / minibatch fits.
                     response = env[_resp]
+                    if (
+                        response.dim() >= 2
+                        and int(response.shape[0]) != _N_decl
+                        and int(response.shape[1]) == _N_decl
+                    ):
+                        # The observation carries a leading axis of runs
+                        # before its rows.
+                        runs = int(response.shape[0])
+                        if runs != 1:
+                            raise ValueError(
+                                f"grouped marginalize: observation {_resp!r} "
+                                f"has {runs} runs on its leading axis; a "
+                                f"grouped block scores one run at a time, so "
+                                f"pass one row of input and that run's data"
+                            )
+                        response = response[0]
                     _N = int(response.shape[0]) if response.dim() >= 1 else _N_decl
                     # Resolve theta from env. Inside a grouped
                     # marginalize, ``args`` may reference per-class
@@ -4161,45 +4177,14 @@ class _ProgramsMixin:
                             if _parameterization == "logits"
                             else torch.log(probs.clamp_min(1e-38))
                         )
-                        # A per-group prior (the categorical parameter tensor
-                        # is indexed by the grouping plate, shape
-                        # ``(|G|, K)``) denotes a per-row latent: each
-                        # response row draws its own class from its
-                        # group's prior ``theta[g(row)]``, so the row's
-                        # marginal is ``rho_k(log theta[g(row)][k] +
-                        # ll[row, k])`` and the block contributes the
-                        # sum over rows. A global ``(K,)`` prior instead
-                        # denotes one class shared across each group's
-                        # rows, scored by scatter-summing the rows'
-                        # log-likelihoods into the group before the
-                        # reduction.
-                        per_group_prior = (
-                            not _product
-                            and log_prior.dim() == 2
-                            and log_prior.shape[0] == _sizes[0]
-                        )
-                        if per_group_prior:
-                            per_group = log_prior.new_zeros((_sizes[0],))
-                            total = log_prior.new_zeros(())
-                            for ll, idx in zip(ll_list, idx_list):
-                                assert isinstance(idx, torch.Tensor)
-                                gathered = log_prior[idx]
-                                weighted = gathered + ll
-                                if _reduction == "logsumexp":
-                                    per_row = torch.logsumexp(weighted, dim=-1)
-                                elif _reduction == "sum":
-                                    per_row = weighted.sum(dim=-1)
-                                else:
-                                    per_row = weighted.mean(dim=-1)
-                                per_group = per_group.index_add(0, idx, per_row)
-                                total = total + per_row.sum()
-                            if _per_group:
-                                return per_group
-                            # The block's total is the rows' own sum: the
-                            # per-group scatter is what an enclosing block
-                            # reads, and summing the rows directly keeps the
-                            # float32 accumulation in row order.
-                            return total.reshape(1)
+                        # The block's latent is indexed by its grouping
+                        # plate: one class per group, drawn from that
+                        # group's prior row when the prior is a
+                        # ``(|G|, K)`` tensor and from the one ``(K,)``
+                        # prior otherwise. Every row an index map sends to
+                        # the group is scored under that one class, so the
+                        # rows' log-likelihoods are scatter-summed into the
+                        # group before the reduction over the class.
                         result = marginalize_grouped(
                             ll_list,
                             idx_list,
@@ -4685,7 +4670,7 @@ class _ProgramsMixin:
         try:
             draws, declared = expand_program_scans(decl, self._module)
         except StepResolutionError as error:
-            raise CompileError("; ".join(error.kinds), decl.line, decl.col) from error
+            raise CompileError(error.detail, decl.line, decl.col) from error
         if draws is decl.draws:
             return decl, set()
         self._scan_step_declarations.update(declared)
@@ -4872,7 +4857,7 @@ class _ProgramsMixin:
         try:
             cell = markov_cell(cell_decl)
         except StepResolutionError as error:
-            raise CompileError("; ".join(error.kinds), step.line, step.col) from error
+            raise CompileError(error.detail, step.line, step.col) from error
         state_space = (
             self._objects.get(cell.state_object.name)
             if isinstance(cell.state_object, TypeName)
@@ -5269,10 +5254,11 @@ class _ProgramsMixin:
 
         Supported priors are the finite-support discrete families the
         surface admits at a marginalize head: `Categorical` (support
-        ``0 .. K-1`` with per-class prior ``probs[..., k]``) and the
-        Bernoulli relaxation family (hard support ``{0, 1}`` with prior
-        ``[1 - p, p]``). Any other family raises, since its support is
-        not enumerable in closed form here.
+        ``0 .. K-1`` with per-class prior ``probs[..., k]``) and
+        `Bernoulli` (support ``{0, 1}`` with prior ``[1 - p, p]``). Any
+        other family raises: a continuous family, a relaxation of a
+        discrete one included, has no finite support, and its marginal
+        is an integral rather than a sum.
         """
         latent_name, prior_family, prior_args, body_steps = pending
 
@@ -5422,17 +5408,16 @@ class _ProgramsMixin:
         shared_vector_theta = _shared_vector_parameter(obs_family)
 
         _CATEGORICAL = prior_family == "Categorical"
-        _BERNOULLI = prior_family in (
-            "Bernoulli",
-            "ContinuousBernoulli",
-            "RelaxedBernoulli",
-        )
+        _BERNOULLI = prior_family == "Bernoulli"
         if not (_CATEGORICAL or _BERNOULLI):
             raise CompileError(
                 f"marginalize {latent_name!r}: prior family {prior_family!r} "
-                "has no closed-form finite support for the ungrouped "
-                "marginalize path; supported priors are Categorical and the "
-                "Bernoulli relaxation family",
+                "has no finite support to sum over; a marginalize block sums "
+                "its latent out over the atoms of a Categorical or a "
+                "Bernoulli. A continuous latent's marginal is an integral "
+                "over its support, which no finite sum computes: draw it with "
+                "`sample` and let inference integrate it out, or draw a "
+                "two-point latent from `Bernoulli`",
                 step.line,
                 step.col,
             )
@@ -5593,7 +5578,31 @@ class _ProgramsMixin:
         tuple of (morphism, step_args)
             The compiled morphism and the variable-only args for
             the step spec (None = use program input).
+
+        Raises
+        ------
+        CompileError
+            If the draw passes arguments to a latent morphism whose
+            `~ Family(...)` prior fixes them.
         """
+        prior = self._latent_priors.get(draw.morphism)
+        if prior is not None:
+            # A latent morphism declared `~ Family(args)` is drawn from as
+            # that family, whose arguments the declaration fixes.
+            if draw.args:
+                raise CompileError(
+                    f"latent morphism {draw.morphism!r} is drawn from as its "
+                    f"prior `{prior.family}(...)`, whose arguments its "
+                    f"declaration fixes; draw from it without arguments",
+                    draw.line,
+                    draw.col,
+                )
+            return self._resolve_draw_morphism(
+                draw.with_(morphism=prior.family, args=prior.args),
+                bound_vars,
+                program_codomain,
+                plate_rows=plate_rows,
+            )
         if draw.morphism in self._morphisms:
             morph = self._morphisms[draw.morphism]
             if isinstance(morph, LearnedFunction):

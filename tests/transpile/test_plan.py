@@ -51,14 +51,14 @@ program prog : Item -> Item
 export prog
 """
 
-RELAXED = """\
+GATED = """\
 object Resp : FinSet 6
 object Out : Real 1
 program prog : Out -> Out
     sample p <- Beta(concentration1=2.0, concentration0=2.0)
     sample rate <- Gamma(concentration=2.0, rate=1.0)
-    marginalize z : Resp <- ContinuousBernoulli(probs=p)
-        let gated = z * rate
+    marginalize z : Resp <- Bernoulli(probs=p)
+        let gated = real(z) * rate
         observe y : Resp <- Poisson(rate=gated)
     return rate
 export prog
@@ -231,10 +231,10 @@ def test_a_grouped_marginalization_states_its_index_map_on_the_observation() -> 
     assert index_map.constraint == CSIntegerInterval(lower=0, upper=7)
 
 
-def test_a_relaxed_latent_marginalizes_one_atom_pair_per_element() -> None:
-    ir = Lower().forward(parse(RELAXED))
+def test_a_gate_marginalizes_one_atom_pair_per_element() -> None:
+    ir = Lower().forward(parse(GATED))
     marginal = next(node for node in ir.body if isinstance(node, IRMarginalize))
-    assert marginal.family == "ContinuousBernoulli"
+    assert marginal.family == "Bernoulli"
     assert marginal.plate.batch_dims == (DimStatic(size=6, name="Resp"),)
     gated, observe = marginal.scope
     assert isinstance(gated, IRDeterministic)
@@ -351,3 +351,15 @@ def test_a_pure_call_is_inlined_and_an_effectful_call_is_a_call() -> None:
     assert call.plate.batch_dims == ()
     assert isinstance(observe, IRObserve)
     assert observe.args[0] == IRArgRef(name="c", indices=())
+
+
+def test_an_index_map_is_bounded_by_the_groups_not_the_rows() -> None:
+    # Twelve observation rows map into eight groups: the map's values run
+    # over the groups, so its range is 0..7, not 0..11.
+    source = GROUPED.replace(
+        "object Comp : FinSet 4\n", "object Comp : FinSet 4\nobject Resp : FinSet 12\n"
+    ).replace("observe r : Item <-", "observe r : Resp <-")
+    ir = Lower().forward(parse(source))
+    index_map = next(item for item in ir.inputs if item.name == "idx")
+    assert index_map.constraint == CSIntegerInterval(lower=0, upper=7)
+    assert index_map.plate.batch_dims == (DimStatic(size=12, name="Resp"),)

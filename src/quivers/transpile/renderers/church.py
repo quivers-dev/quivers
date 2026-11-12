@@ -645,7 +645,7 @@ class ChurchRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 _TARGET,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -877,14 +877,7 @@ class ChurchRenderer(RendererBase):
             out.extend(weight_forms)
         finally:
             self._group_plate_axes = prev_group
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         accumulate_rows = marginalize_row_rank(node) > 0
         shifted: list[str] = []
         for position, (weight, term) in enumerate(
@@ -1036,12 +1029,7 @@ class ChurchRenderer(RendererBase):
             If the atom set's weight family has no log-weight form.
         """
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         family = atoms[0].weight_family
         log_form = _sym(ctx, "log")

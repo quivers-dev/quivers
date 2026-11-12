@@ -90,13 +90,73 @@ class StepResolutionError(ValueError):
     target : str
         The consumer the resolution ran for, such as a transpile target.
     kinds : list[str]
-        Structured identifiers of what could not be resolved.
+        Structured identifiers of what could not be resolved. Each is a
+        colon-separated path of space-free segments, such as
+        ``param-source:mlp`` or ``morphism:cycle:f``, so a caller can
+        match on it.
+    explanation : str
+        The raise site's account of the failure in prose: what the
+        program does at that site and what to write instead. Empty when
+        the structured kind says everything the site knows.
+
+    Attributes
+    ----------
+    target : str
+        The consumer the resolution ran for.
+    kinds : list[str]
+        The structured identifiers.
+    explanation : str
+        The raise site's prose.
+
+    Raises
+    ------
+    ValueError
+        If a kind contains a space, which would make it prose rather
+        than an identifier a caller can match on.
     """
 
-    def __init__(self, target: str, kinds: list[str]) -> None:
-        super().__init__(f"{target}: " + "; ".join(kinds))
+    def __init__(self, target: str, kinds: list[str], *, explanation: str = "") -> None:
+        prose = [kind for kind in kinds if " " in kind]
+        if prose:
+            raise ValueError(
+                f"StepResolutionError kinds are identifiers, but {prose!r} "
+                f"contains a space; pass the prose as `explanation=`."
+            )
         self.target = target
         self.kinds = list(kinds)
+        self.explanation = explanation
+        super().__init__(f"{target}: {self.detail}")
+
+    @property
+    def detail(self) -> str:
+        """The kinds and the explanation as one diagnostic line.
+
+        Returns
+        -------
+        str
+            The kinds joined by ``"; "``, followed by the explanation
+            when there is one, so the first ``"; "``-separated segment
+            is always the first kind.
+        """
+        parts = [*self.kinds, self.explanation] if self.explanation else self.kinds
+        return "; ".join(parts)
+
+    @property
+    def explained_kinds(self) -> list[str]:
+        """The kinds in the form a transpile refusal reports them.
+
+        Returns
+        -------
+        list[str]
+            Each kind followed by ``": "`` and the explanation when
+            there is one: the form
+            [`UnsupportedConstruct`][quivers.transpile.UnsupportedConstruct]
+            renders as the kind's headline followed by the raise site's
+            account.
+        """
+        if not self.explanation:
+            return list(self.kinds)
+        return [f"{kind}: {self.explanation}" for kind in self.kinds]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -136,10 +196,7 @@ def _draw_arg_to_wire(arg: DrawArg) -> str | float:
     if isinstance(arg, DrawArgDist):
         raise StepResolutionError(
             "qvr-transpile",
-            [
-                f"nested-distribution-arg:{arg.family}: a "
-                "distribution-valued argument has no wire form"
-            ],
+            [f"nested-distribution-arg:{arg.family}"],
         )
     if isinstance(arg, DrawArgList):
         if is_matrix(arg):
@@ -464,39 +521,57 @@ _PARAM_SOURCE_REMEDY = (
 def _param_source_message(
     *, name: str, kind: str, position: str, line: int, via: str
 ) -> str:
-    """Compose the diagnostic for a parameter-source morphism consumed
-    at ``position``. The three positions fail for different reasons
-    and a target given the program would fail differently, so each
-    says what the emitted program would otherwise have done."""
+    """Compose the raise site's account of a parameter-source morphism
+    consumed at ``position``.
+
+    The kind's headline already says that the morphism's parameters come
+    from a network whose weights are not declared sites, so the account
+    says what the program does with the morphism at this step and what
+    a target given the program would otherwise have done. The three
+    positions fail for different reasons, so each says its own.
+
+    Parameters
+    ----------
+    name : str
+        The morphism.
+    kind : str
+        The network architecture its parameters come from.
+    position : str
+        Where the step consumes it: a draw site, a value, or a
+        composite.
+    line : int
+        The step's source line.
+    via : str
+        The chain of names the step reaches the morphism through.
+
+    Returns
+    -------
+    str
+        The account.
+    """
     if position == _SITE_POSITION:
         return (
-            f"morphism {name!r} draws its parameters from a {kind!r} "
-            f"network. The network's weights are model-internal and "
-            f"appear in neither the wire form nor the sample sites, so "
-            f"no backend can reconstruct the mean the morphism "
-            f"computes at line {line}. " + _PARAM_SOURCE_REMEDY
+            f"the step at line {line} draws from `{name}`, and since the "
+            f"{kind!r} network's weights appear in neither the wire form "
+            f"nor the sample sites, no target can reconstruct the mean "
+            f"`{name}` computes there. " + _PARAM_SOURCE_REMEDY
         )
     if position == _VALUE_POSITION:
         return (
-            f"morphism {name!r} draws its parameters from a {kind!r} "
-            f"network, and the program reads it as a value at line "
-            f"{line} instead of drawing from it. The morphism is "
-            f"consumed inside a composite (a `scan(...)` cell, or a "
-            f"link of a `define`d chain), and flattening that "
-            f"composite leaves its name in an ordinary expression: the "
-            f"declaration's own family contributes no density and the "
-            f"network's weights, which are model-internal, have "
-            f"nowhere to be emitted. A target given that program would "
-            f"read {name!r} as a free input and score a different "
-            f"measure. " + _PARAM_SOURCE_REMEDY
+            f"the step at line {line} reads `{name}` as a value instead of "
+            f"drawing from it. The morphism is consumed inside a composite "
+            f"(a `scan(...)` cell, or a link of a `define`d chain), and "
+            f"flattening that composite leaves its name in an ordinary "
+            f"expression: the declaration's own family contributes no "
+            f"density and the network's weights have nowhere to be "
+            f"emitted. A target given that program would read `{name}` as "
+            f"a free input and score a different measure. " + _PARAM_SOURCE_REMEDY
         )
     return (
-        f"morphism {name!r} draws its parameters from a {kind!r} "
-        f"network, and the step at line {line} consumes it through the "
-        f"composition {via}. The composite never puts {name!r} in a "
-        f"slot a target can emit: its declared family contributes no "
-        f"density and the network's weights, which are "
-        f"model-internal, have nowhere to go, so a target given that "
+        f"the step at line {line} consumes `{name}` through the "
+        f"composition {via}. The composite never puts `{name}` in a slot a "
+        f"target can emit: its declared family contributes no density and "
+        f"the network's weights have nowhere to go, so a target given that "
         f"program would score a different measure. " + _PARAM_SOURCE_REMEDY
     )
 
@@ -570,31 +645,29 @@ def _reject_reachable_param_source(
             kind = param_source_kind(decl, target="qvr-transpile") or "linear"
             raise StepResolutionError(
                 "qvr-transpile",
-                [
-                    f"param-source:{kind}:latent",
-                    f"the network of {name!r} (line {line}, through "
-                    f"{' -> '.join((*chain, name))}) draws its weights as latent "
-                    f"sites, but no target has a form for the network's affine "
-                    f"layers applied to drawn weights. Write the layers as "
-                    f"`factor` comprehensions over sampled weight matrices to "
-                    f"transpile the model.",
-                ],
+                [f"param-source:{kind}:latent"],
+                explanation=(
+                    f"the step at line {line} reaches `{name}` through "
+                    f"{' -> '.join((*chain, name))}, and `{name}` declares "
+                    f"`weights=latent`. Write the layers as `factor` "
+                    f"comprehensions over sampled weight matrices to "
+                    f"transpile the model."
+                ),
             )
         if decl is not None and _role_of(decl) == "function":
             kind = param_source_kind(decl, target="qvr-transpile") or "linear"
             if kind != "identity":
                 raise StepResolutionError(
                     "qvr-transpile",
-                    [
-                        f"param-source:{kind}",
-                        f"the learned function {name!r} (line {line}, through "
-                        f"{' -> '.join((*chain, name))}) applies a {kind!r} "
-                        f"network whose weights are model-internal: they are "
-                        f"neither sites the program declares nor data a target "
-                        f"is given, so no target can compute the value it "
-                        f"returns. Only a `param_source=identity` function, "
-                        f"which has no weights, transpiles.",
-                    ],
+                    [f"param-source:{kind}"],
+                    explanation=(
+                        f"the learned function `{name}` (line {line}, through "
+                        f"{' -> '.join((*chain, name))}) applies that network, "
+                        f"whose weights are not data a target is given either, "
+                        f"so no target can compute the value it returns. Only "
+                        f"a `param_source=identity` function, which has no "
+                        f"weights, transpiles."
+                    ),
                 )
         elif decl is not None:
             kind = param_source_kind(decl, target="qvr-transpile")
@@ -605,16 +678,14 @@ def _reject_reachable_param_source(
                 )
                 raise StepResolutionError(
                     "qvr-transpile",
-                    [
-                        f"param-source:{kind}{suffix}",
-                        _param_source_message(
-                            name=name,
-                            kind=kind,
-                            position=position,
-                            line=line,
-                            via=" -> ".join((*chain, name)),
-                        ),
-                    ],
+                    [f"param-source:{kind}{suffix}"],
+                    explanation=_param_source_message(
+                        name=name,
+                        kind=kind,
+                        position=position,
+                        line=line,
+                        via=" -> ".join((*chain, name)),
+                    ),
                 )
         reached: frozenset[str] = frozenset()
         if name in lets:
@@ -654,14 +725,28 @@ def morphism_table(module: Module) -> dict[str, MorphismDecl]:
     out: dict[str, MorphismDecl] = {}
     for stmt in module.statements:
         if isinstance(stmt, MorphismDecl):
+            if _role_of(stmt) == "embed" and (
+                stmt.init_family is not None or stmt.init_expr is not None
+            ):
+                raise StepResolutionError(
+                    "qvr-transpile",
+                    [f"morphism:embed-initializer:{stmt.names[0]}"],
+                    explanation=(
+                        f"declared at line {stmt.line}. Drop the initializer, "
+                        f"or declare a `role=kernel` morphism with the family "
+                        f"you want."
+                    ),
+                )
             for name in stmt.names:
                 if name in out:
-                    msg = (
-                        f"duplicate morphism declaration {name!r}: "
-                        f"first at line {out[name].line}, again at "
-                        f"line {stmt.line}"
+                    raise StepResolutionError(
+                        "qvr-transpile",
+                        [f"morphism:duplicate:{name}"],
+                        explanation=(
+                            f"first at line {out[name].line}, again at line "
+                            f"{stmt.line}. Rename one of the two declarations."
+                        ),
                     )
-                    raise StepResolutionError("qvr-transpile", [msg])
                 out[name] = stmt
     return out
 
@@ -764,11 +849,15 @@ def resolve_step_dist(
         )
 
     if morphism_name in _seen:
-        msg = (
-            f"morphism / let cycle while resolving {morphism_name!r}; "
-            f"chain: {' -> '.join((*_seen, morphism_name))}"
+        raise StepResolutionError(
+            target,
+            [f"morphism:cycle:{morphism_name}"],
+            explanation=(
+                f"the chain {' -> '.join((*_seen, morphism_name))} returns to "
+                f"`{morphism_name}` without reaching a family. Give one link "
+                f"of the chain a `~ Family(...)` declaration."
+            ),
         )
-        raise StepResolutionError(target, [msg])
 
     chain = (*_seen, morphism_name)
 
@@ -776,16 +865,16 @@ def resolve_step_dist(
         decl = morphisms[morphism_name]
         param_source = param_source_kind(decl, target=target)
         if param_source is not None:
-            msg = (
-                f"morphism {morphism_name!r} draws its parameters from a "
-                f"{param_source!r} network. The network's weights are "
-                f"model-internal and appear in neither the wire form nor the "
-                f"sample sites, so no backend can reconstruct the mean the "
-                f"morphism computes. Express the network as explicit sampled "
-                f"weights and a deterministic forward pass, or observe against "
-                f"a closed-form family."
+            raise StepResolutionError(
+                target,
+                [f"param-source:{param_source}"],
+                explanation=(
+                    f"the draw reads `{morphism_name}`, and since the "
+                    f"network's weights appear in neither the wire form nor "
+                    f"the sample sites, no target can reconstruct the mean "
+                    f"`{morphism_name}` computes. " + _PARAM_SOURCE_REMEDY
+                ),
             )
-            raise StepResolutionError(target, [f"param-source:{param_source}", msg])
         if decl.init_family is not None:
             return _from_init_family(
                 morphism_name=morphism_name,
@@ -828,20 +917,8 @@ def resolve_step_dist(
                 chain=chain,
             )
         if _role_of(decl) == "embed":
-            msg = (
-                f"morphism {morphism_name!r} is an embedding, which places a "
-                f"Gaussian kernel at each element's learned centre; the "
-                f"centres and scales are model-internal tables that appear "
-                f"in neither the wire form nor the sample sites, so no "
-                f"backend can reconstruct the kernel."
-            )
-            raise StepResolutionError(target, [f"embed:{morphism_name}", msg])
-        msg = (
-            f"morphism {morphism_name!r} has neither `~ Family(...)` "
-            f"nor `~ <expr>` init clause; transpile cannot derive a "
-            f"distribution"
-        )
-        raise StepResolutionError(target, [msg])
+            raise StepResolutionError(target, [f"embed:{morphism_name}"])
+        raise StepResolutionError(target, [f"morphism:no-init:{morphism_name}"])
 
     if morphism_name in lets:
         return _resolve_expr(
@@ -855,12 +932,15 @@ def resolve_step_dist(
             chain=chain,
         )
 
-    msg = (
-        f"sample / observe step references {morphism_name!r} which "
-        f"is neither a family in the registry, a declared morphism, "
-        f"nor a let-bound name"
+    raise StepResolutionError(
+        target,
+        [f"family:{morphism_name}"],
+        explanation=(
+            f"`{morphism_name}` names no family in the registry, no declared "
+            f"morphism, and no `define`d name. Check the spelling, or declare "
+            f"it before the program draws from it."
+        ),
     )
-    raise StepResolutionError(target, [f"family:{morphism_name}", msg])
 
 
 def _from_init_family(

@@ -7,8 +7,8 @@ object One : FinSet 1
 program zip_logits : Row -> One
     sample eta <- Normal(loc=0.0, scale=10.0)
     let eta_row = eta + x
-    marginalize z : Row <- ContinuousBernoulli(logits=eta_row)
-        let gated_rate = z * r
+    marginalize z : Row <- Bernoulli(logits=eta_row)
+        let gated_rate = real(z) * r
         observe y : Row <- Poisson(rate=gated_rate)
     return eta
 export zip_logits

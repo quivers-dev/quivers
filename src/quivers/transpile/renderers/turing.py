@@ -690,7 +690,7 @@ class TuringRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-turing",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -1357,14 +1357,7 @@ class TuringRenderer(RendererBase):
             term_names.append(term)
         # A grouped block keys its accumulator by group: the rows the
         # index map sends to one group are summed before the reduction.
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         if index_map is not None:
             via, group = index_map
             for term in term_names:
@@ -1600,12 +1593,7 @@ class TuringRenderer(RendererBase):
         """
         sb, counter = ctx.sb, ctx.counter
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         family = atoms[0].weight_family
         if logit_weighted(atoms[0]):

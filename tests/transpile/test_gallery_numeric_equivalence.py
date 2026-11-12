@@ -147,6 +147,10 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # and the zeros trick that would score the shifted code needs a
     # data-bound carrier, so BUGS refuses the observed code.
     ("bugs", "lda"): "observe:class-code",
+    # One topic per document sums each document's words before the
+    # reduction, and JAGS cannot write that per-group sum as one
+    # expression.
+    ("jags", "lda"): "let-expr:elementwise-axis-operator",
     # gru_lm and lstm_lm build their gate arguments with `+` between
     # two `Hidden`-wide operands. The BUGS model language has no
     # elementwise vector arithmetic: only the contracted product
@@ -432,12 +436,12 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         15.959518432617188,
     ),
     "lda": (
-        -18.173583984375,
-        -18.84844970703125,
-        -444.3291015625,
-        -437.18743896484375,
-        -20.41473388671875,
-        -442.911376953125,
+        -158.507080078125,
+        -159.038330078125,
+        -486.2562255859375,
+        -519.501708984375,
+        -155.8966064453125,
+        -508.8138427734375,
     ),
     "linear_gaussian_ssm": (
         -6.176448822021484,

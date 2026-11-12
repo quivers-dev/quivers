@@ -1140,18 +1140,13 @@ class BUGSRenderer(RendererBase):
             if isinstance(inner, IRObserve):
                 _refuse_observed_class_code(self.target, inner)
         raw = marginalize_body(node.scope, latent=node.latent, target=self.target)
-        atoms = self.marginal_atoms(
+        # Building the atoms checks the latent's support has a size
+        # the block can enumerate before the scope is inspected.
+        self.marginal_atoms(
             node,
             support_size=marginal_support_size(node),
         )
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=ctx.decl_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         if index_map is not None:
             via, group = index_map
             raise UnsupportedConstruct(
@@ -1430,7 +1425,7 @@ class BUGSRenderer(RendererBase):
         if not isinstance(family_ref, IRArgFamilyRef):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["truncated:expected IRArgFamilyRef at arg 0"],
+                ["truncated: expected IRArgFamilyRef at arg 0"],
             )
         decl = ctx.morphisms.get(family_ref.name)
         if not isinstance(decl, MorphismDecl):
@@ -1498,7 +1493,7 @@ class BUGSRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -2811,7 +2806,7 @@ class BUGSRenderer(RendererBase):
         if not bounds or len(bounds) > 2:
             raise UnsupportedConstruct(
                 f"qvr-{self.target}",
-                [f"truncation:expected 1 or 2 bounds, got {len(bounds)}"],
+                [f"truncation: expected 1 or 2 bounds, got {len(bounds)}"],
             )
         tr = self._fresh(ctx, "tr")
         ctx.sb.vertex(tr, "truncation")

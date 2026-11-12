@@ -626,14 +626,7 @@ class JAGSRenderer(RendererBase):
             node,
             support_size=marginal_support_size(node),
         )
-        index_map = marginalize_index_map(
-            node,
-            observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=ctx.decl_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, observe)
         if index_map is not None:
             via, group = index_map
             self._emit_grouped_marginal_reduction(
@@ -928,12 +921,7 @@ class JAGSRenderer(RendererBase):
         probs = irarg_letexpr(
             _BACKEND,
             marginal_weight_probs(
-                node,
-                observe,
-                atom.weight_args,
-                atom.weight_arg_names,
-                name_plates=ctx.decl_plates,
-                target=self.target,
+                node, atom.weight_args, atom.weight_arg_names, target=self.target
             ),
             {},
         )
@@ -1306,7 +1294,7 @@ class JAGSRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 f"qvr-{_BACKEND}",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":

@@ -1177,8 +1177,12 @@ class DiscreteAsContinuous(ContinuousMorphism):
     """Wrap a discrete Morphism as a ContinuousMorphism.
 
     Enables composition between discrete and continuous morphisms
-    via the >> operator. The wrapped morphism's tensor is used for
-    both log_prob evaluation and sampling.
+    via the >> operator. The kernel is the Markov kernel the wrapped
+    morphism's nonnegative matrix induces: row ``x`` normalized to sum
+    to one, ``P(y | x) = t[x, y] / sum_y' t[x, y']``. Sampling and
+    scoring both use these normalized rows, so the density `log_prob`
+    reports is the law `rsample` draws from; a stochastic matrix is
+    its own normalization.
 
     Note
     ----
@@ -1217,9 +1221,42 @@ class DiscreteAsContinuous(ContinuousMorphism):
         torch.Tensor
             Log-probabilities. Shape (batch,).
         """
-        t = self._inner.tensor
-        probs = t[x.long(), y.long()]
-        return torch.log(probs.clamp(min=1e-07))
+        rows = self._rows(x)
+        return torch.log(rows.gather(-1, y.long().unsqueeze(-1)).squeeze(-1))
+
+    def _rows(self, x: torch.Tensor) -> torch.Tensor:
+        """The normalized rows of the wrapped matrix at ``x``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Domain indices. Shape (batch,).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, |codomain|)``, each row a probability
+            vector.
+
+        Raises
+        ------
+        ValueError
+            If a row has a negative entry or sums to zero, so it
+            induces no distribution.
+        """
+        rows = self._inner.tensor[x.long()]
+        if bool((rows < 0).any()):
+            raise ValueError(
+                "DiscreteAsContinuous: the wrapped matrix has a negative "
+                "entry, so its rows are not distributions"
+            )
+        totals = rows.sum(dim=-1, keepdim=True)
+        if bool((totals <= 0).any()):
+            raise ValueError(
+                "DiscreteAsContinuous: a row of the wrapped matrix sums to "
+                "zero, so it induces no distribution over the codomain"
+            )
+        return rows / totals
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
@@ -1241,8 +1278,7 @@ class DiscreteAsContinuous(ContinuousMorphism):
         torch.Tensor
             Sampled codomain indices. Shape (*sample_shape, batch).
         """
-        t = self._inner.tensor
-        probs = t[x.long()]
+        probs = self._rows(x)
         n_samples = (
             int(torch.Size(sample_shape).numel()) if len(sample_shape) > 0 else 1
         )

@@ -1,7 +1,7 @@
 """A marginalized gate weighted from its logits scores one joint on every target.
 
 The fixture is a zero-inflated Poisson whose gate is
-``marginalize z <- ContinuousBernoulli(logits=eta)``: each row is a mixture of
+``marginalize z <- Bernoulli(logits=eta)``: each row is a mixture of
 a point mass at zero and ``Poisson(r)`` at a per-row rate ``r``, weighted by ``sigmoid(-l)`` and
 ``sigmoid(l)`` for the row's logit ``l = eta + x``. It is scored at
 predictors from -30 to 30, where the
@@ -39,7 +39,7 @@ from tests.transpile.test_numeric_equivalence import _BACKENDS_WITH_IMAGES
 
 _FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
-_MARGINAL = "steps/marginalize_continuous_bernoulli_logits"
+_MARGINAL = "steps/marginalize_bernoulli_logits"
 _OBSERVED = "steps/observe_continuous_bernoulli_logits"
 
 _COUNTS = [0, 3, 0, 5]

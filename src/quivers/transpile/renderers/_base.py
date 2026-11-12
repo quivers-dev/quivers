@@ -202,14 +202,11 @@ class IRMarginalAtom(dx.Model):
     scope's own plates carry. No latent variable is declared: the
     atoms replace it.
 
-    `weight_family` is not always the latent's own family. The
-    Bernoulli relaxations are integrated over the atoms 0 and 1 with
-    *discrete* Bernoulli weights, matching what the QVR compiler
-    enumerates, so `weight_family` reads `"Bernoulli"` and
-    `weight_args` carries only the probability argument, or the
-    logits when the call site names them (`weight_arg_names` reads
-    ``("logits",)``), which a renderer weights by ``log sigmoid(-l)``
-    and ``log sigmoid(l)`` in log space.
+    `weight_family` is the family the latent's marginalize support
+    names. For a `Bernoulli`, `weight_args` carries the probability
+    argument, or the logits when the call site names them
+    (`weight_arg_names` reads ``("logits",)``), which a renderer
+    weights by ``log sigmoid(-l)`` and ``log sigmoid(l)`` in log space.
 
     `IRMarginalAtom` is a renderer-side IR extension. `Lower`
     never constructs it.
@@ -1029,6 +1026,21 @@ def _substitute_latent_expr(expr: IRExpr, latent: str, value: IRArgNumber) -> IR
             operand=_substitute_latent_expr(expr.operand, latent, value)
         )
     if isinstance(expr, LetExprCall):
+        if (
+            expr.func == "select"
+            and len(expr.args) == 3
+            and isinstance(expr.args[0], LetExprVar)
+            and expr.args[0].name == latent
+        ):
+            # A choice conditioned on a Boolean latent (`real(z)` is
+            # `select(z, 1.0, 0.0)`) is decided at each atom: the atom 1
+            # is `true` and selects the first branch, the atom 0 is
+            # `false` and selects the second. Substituting the number
+            # into the condition would hand a target a numeric
+            # condition, which a vectorized `where` rejects or reads as
+            # truthy.
+            chosen = expr.args[1] if value.value != 0.0 else expr.args[2]
+            return _substitute_latent_expr(chosen, latent, value)
         return LetExprCall(
             func=expr.func,
             args=_substitute_latent_exprs(expr.args, latent, value),

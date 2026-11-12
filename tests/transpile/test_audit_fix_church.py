@@ -205,16 +205,15 @@ def test_intrinsic_vector_family_has_no_inner_event_map() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_marginalize_latent_reads_its_prior_through_the_index_map() -> None:
-    """The marginalized categorical declares no site: its per-document
-    topic mixture is gathered one row per token through the ``via``
-    index map and read as the log-weight of each atom."""
+def test_marginalize_latent_sums_each_document_through_the_index_map() -> None:
+    """The marginalized categorical declares no site: each document's
+    topic is one, so the words the ``via`` index map sends to it are
+    summed per atom (``group-sums``) and weighted by the document's own
+    row of ``theta``."""
     model = _nospace(_model(_church_file(_GALLERY / "lda.qvr")))
     assert "(sample(categorical" not in model
-    assert (
-        "(define__marg_z_w(broadcast1log(map(lambda(i)(list-refthetai))word_idx)))"
-        in model
-    )
+    assert "(define__marg_z_w(broadcast1logtheta))" in model
+    assert "(group-sums__marg_z_0word_idx20)" in model
     assert "(define__marg_z_w_0(take-last__marg_z_w0))" in model
     assert "(factor(sum-leaves__marg_z))" in model
 

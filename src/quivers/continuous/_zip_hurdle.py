@@ -23,6 +23,7 @@ from torch import Tensor
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
+from quivers.continuous._closed_probability import ClosedPoisson
 from quivers.continuous.measure import Mixture, Normalize, PointMass, Restrict
 
 
@@ -54,7 +55,7 @@ class ZeroInflatedPoisson(Distribution):
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
-        "rate": _constraints.positive,
+        "rate": _constraints.nonnegative,
     }
     support = _constraints.nonnegative_integer
     has_rsample = False
@@ -67,7 +68,7 @@ class ZeroInflatedPoisson(Distribution):
     ) -> None:
         self.zero_prob = zero_prob
         self.rate = rate
-        base = torch.distributions.Poisson(rate)
+        base = ClosedPoisson(rate)
         self._mixture = _two_component_inflation(zero_prob, base)
         super().__init__(
             batch_shape=self._mixture.batch_shape,

@@ -343,8 +343,7 @@ class PyMCRenderer(RendererBase):
                 callee,
                 positional=(identifier(py, dim.size_name),),
             )
-        msg = f"unknown Dim kind: {type(dim).__name__}"
-        raise UnsupportedConstruct(self.target, [msg])
+        raise UnsupportedConstruct(self.target, [f"dim-kind:{type(dim).__name__}"])
 
     # ----- per-node dispatch (PyMC walks over with-body) ----
 
@@ -470,7 +469,7 @@ class PyMCRenderer(RendererBase):
         if len(node.args) != 2 or not isinstance(node.args[1], IRArgKernel):
             raise UnsupportedConstruct(
                 self.target,
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         kernel_arg = node.args[1]
         if kernel_arg.kernel != "rbf":
@@ -967,14 +966,7 @@ class PyMCRenderer(RendererBase):
             support_size=marginal_support_size(node),
         )
         prefix = f"__marg_{node.latent}"
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         if index_map is not None:
             self._emit_grouped_marginalize(ctx, node, raw, atoms, index_map)
             return
@@ -1167,12 +1159,7 @@ class PyMCRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
@@ -1250,12 +1237,7 @@ class PyMCRenderer(RendererBase):
                 positional=(self._marginal_weights(ctx, node, raw, atoms),),
             )
         logits = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         return self._stack_atoms(
             py,
@@ -1654,8 +1636,7 @@ def _dim_name(dim: Dim) -> str:
     type checker prove the slot is a `str`."""
     if isinstance(dim, (DimStatic, DimDynamic)):
         return dim.name
-    msg = f"unknown Dim kind: {type(dim).__name__}"
-    raise UnsupportedConstruct("qvr-pymc", [msg])
+    raise UnsupportedConstruct("qvr-pymc", [f"dim-kind:{type(dim).__name__}"])
 
 
 def _resolve_meta(family: str, target: str) -> FamilyMeta:

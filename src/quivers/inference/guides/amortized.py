@@ -23,6 +23,12 @@ match the site.
 
 The data reach the guide through `Guide.observe`, which every objective
 calls with the observations of the step it evaluates.
+
+The density of a plate site is a sum over the plate's rows, so under a
+[`subsample`][quivers.effects.subsample] block the guide scores such a
+site at the subset's rows, times the plate's size over the subset's, as
+the model scores it. The encoder still reads every row of its datum,
+since a plate latent is drawn at the plate's extent.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from quivers.continuous.morphisms import (
 )
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
+from quivers.effects.subsample import active_subsets, subsampled_rows
 from quivers.inference.guides.base import Guide
 from quivers.inference.registry import LatentSite
 
@@ -194,6 +201,8 @@ class AmortizedGuide(Guide):
     TypeError
         If an encoder is not a `ContinuousMorphism`.
     """
+
+    scores_subsampled_rows = True
 
     def __init__(
         self,
@@ -483,7 +492,9 @@ class AmortizedGuide(Guide):
         For a site reached through the bijector :math:`T`,
         :math:`\\log q(v) = \\log e(T^{-1}(v) \\mid y) + \\log
         |\\det J_{T^{-1}}(v)|`; otherwise :math:`\\log e(v \\mid y)`.
-        A plate site's rows add up within a run.
+        A plate site's rows add up within a run; under a
+        [`subsample`][quivers.effects.subsample] block only the subset's
+        rows do, times the plate's size over the subset's.
 
         Parameters
         ----------
@@ -504,6 +515,7 @@ class AmortizedGuide(Guide):
         """
         batch = int(x.shape[0])
         total = torch.zeros(batch, device=x.device)
+        subsets = active_subsets()
         for name, binding in self._bindings.items():
             if name not in sites:
                 raise KeyError(f"AmortizedGuide.log_prob: missing site {name!r}")
@@ -521,13 +533,56 @@ class AmortizedGuide(Guide):
             log_q = binding.encoder.log_prob(rows, flat).reshape(leading) + log_det
             if not site.is_plate:
                 per_run = log_q
-            elif len(leading) == len(self._expected_leading(binding, batch)[0]):
-                # One value of the plate the runs share.
-                per_run = log_q.sum().expand(batch)
             else:
-                per_run = log_q.reshape(batch, -1).sum(-1)
+                per_run = self._plate_total(site, log_q, batch, subsets)
             total = total + per_run
         return total
+
+    def _plate_total(
+        self,
+        site: LatentSite,
+        log_q: torch.Tensor,
+        batch: int,
+        subsets: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """A plate site's log-density per run, over the rows it is scored at.
+
+        Parameters
+        ----------
+        site : LatentSite
+            The site.
+        log_q : torch.Tensor
+            One term per plate element, the plate's shape leading, behind
+            a run axis when each run has its own value.
+        batch : int
+            The number of runs.
+        subsets : dict[str, torch.Tensor]
+            The active subsampled plates' rows.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch,)``.
+        """
+        plate = tuple(site.plate_shape or (site.plate_index_size,))
+        per_run = log_q.reshape(-1, *plate)
+        kept = (
+            subsampled_rows(
+                site.name, self._registry.model.site_plates.get(site.name, ()), subsets
+            )
+            if subsets
+            else None
+        )
+        if kept is not None:
+            rows, factor = kept
+            for axis, index in enumerate(rows):
+                per_run = per_run.index_select(axis + 1, index.to(per_run.device))
+            per_run = factor * per_run
+        totals = per_run.reshape(per_run.shape[0], -1).sum(-1)
+        if totals.shape[0] == 1:
+            # One value of the plate the runs share.
+            return totals.expand(batch)
+        return totals
 
     @staticmethod
     def _event(site: LatentSite) -> tuple[int, ...]:

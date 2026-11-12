@@ -477,14 +477,7 @@ class NumPyroRenderer(RendererBase):
         py.required_imports.add(_MARGINALIZE_IMPORT)
         # A grouped block keys its accumulator by group: the rows the
         # index map sends to one group are summed before the reduction.
-        index_map = marginalize_index_map(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
-        )
+        index_map = marginalize_index_map(node, raw.observe)
         if index_map is not None:
             via, group = index_map
             extent = (
@@ -558,12 +551,7 @@ class NumPyroRenderer(RendererBase):
         """
         py = ctx.py
         probs = marginal_weight_probs(
-            node,
-            raw.observe,
-            atoms[0].weight_args,
-            atoms[0].weight_arg_names,
-            name_plates=py.name_plates,
-            target=self.target,
+            node, atoms[0].weight_args, atoms[0].weight_arg_names, target=self.target
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
@@ -908,7 +896,7 @@ class NumPyroRenderer(RendererBase):
         if not isinstance(kernel_arg, IRArgKernel):
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:GP:expected IRArgKernel as second arg"],
+                ["family:GP: expected IRArgKernel as second arg"],
             )
         if kernel_arg.kernel != "rbf":
             raise UnsupportedConstruct(
@@ -1540,7 +1528,7 @@ class NumPyroRenderer(RendererBase):
         if total is None or probs is None:
             raise UnsupportedConstruct(
                 "qvr-numpyro",
-                ["family:NegativeBinomial:expected (total_count, probs)"],
+                ["family:NegativeBinomial: expected (total_count, probs)"],
             )
         total_vid = self._render_arg(ctx, total)
         probs_vid = self._render_arg(ctx, probs)

@@ -39,7 +39,9 @@ from quivers.inference.mcmc import (
 )
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.smc import ResamplingScheme, _conditional_ess, _increments
-from quivers.inference.trace import trace
+from quivers.inference import smc as smc_module
+from quivers.inference.trace import Trace, trace
+from tests.test_inference_mcmc import _scale_likelihood, _score_program
 from tests.test_inference_mcmc_compose import _switch_posterior, _switch_program
 
 
@@ -176,6 +178,47 @@ def test_each_step_keeps_the_target_ess() -> None:
     assert float(result.ess[-1]) >= 0.7 - 1e-9
     assert result.num_temperatures == result.temperatures.numel() - 1
     assert result.acceptance.shape == result.ess.shape
+
+
+def test_a_seeded_run_records_its_latents_whatever_the_global_rng_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The run that fixes the latents is the first `trace` the sampler
+    # makes; a seeded sampler draws it from its own stream, so the value
+    # it records is the same whatever the global RNG holds.
+    recorded: list[float] = []
+
+    def recording_trace(
+        model: MonadicProgram, x: torch.Tensor, observations: dict[str, torch.Tensor]
+    ) -> Trace:
+        result = trace(model, x, observations=observations)
+        recorded.append(float(result.sites["b"].value.reshape(())))
+        return result
+
+    monkeypatch.setattr(smc_module, "trace", recording_trace)
+    model = _score_program(_scale_likelihood, ("b", "y"))
+    data = {"y": torch.linspace(-1.0, 1.0, 6)}
+    sampler = SMC(
+        MetropolisKernel(RandomWalkProposal(0.1)),
+        num_particles=4,
+        num_mcmc_steps=1,
+        num_pilot_steps=0,
+        seed=3,
+    )
+    firsts: list[float] = []
+    for ambient in range(6):
+        torch.manual_seed(ambient)
+        before = torch.random.get_rng_state()
+        recorded.clear()
+        try:
+            sampler.run(model, torch.zeros(1, 1), data)
+        except ValueError:
+            # A prior particle below -1 makes this likelihood raise; the
+            # recording has been made by then.
+            pass
+        assert torch.equal(torch.random.get_rng_state(), before)
+        firsts.append(recorded[0])
+    assert len(set(firsts)) == 1, firsts
 
 
 # ---------------------------------------------------------------------------

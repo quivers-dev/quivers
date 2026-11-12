@@ -791,8 +791,9 @@ class MCMC:
                 f"MCMC.run: {self.checkpoint.path} already holds a checkpoint; "
                 "continue it with MCMC.resume, or remove it to start afresh"
             )
-        setup = self._setup(model, x, observations, "MCMC.run")
-        header = self._header(setup, self._run_seed())
+        run_seed = self._run_seed()
+        setup = self._setup(model, x, observations, "MCMC.run", run_seed)
+        header = self._header(setup, run_seed)
         records: list[_ChainRecord | None] = [None] * self.num_chains
         return self._execute(setup, header, records, guide)
 
@@ -844,7 +845,9 @@ class MCMC:
         stored_header, stored_chains = read_checkpoint(
             Path(directory) / CHECKPOINT_FILENAME
         )
-        setup = self._setup(model, x, observations, "MCMC.resume")
+        setup = self._setup(
+            model, x, observations, "MCMC.resume", stored_header.run_seed
+        )
         header = self._header(setup, stored_header.run_seed)
         for field_name, what in (
             ("model_fingerprint", "a different model or data"),
@@ -884,6 +887,7 @@ class MCMC:
         x: torch.Tensor,
         observations: dict[str, torch.Tensor],
         consumer: str,
+        run_seed: int,
     ) -> _RunSetup:
         """Check the inputs and build the registry and potential.
 
@@ -897,6 +901,9 @@ class MCMC:
             The data.
         consumer : str
             The method named in errors.
+        run_seed : int
+            The run's base seed, from which the recording run's stream
+            is derived.
 
         Returns
         -------
@@ -913,9 +920,13 @@ class MCMC:
         _check_observed_support(model, observations, consumer)
         # The latents are the sites one run at (x, observations) reaches,
         # every position of a scan included. The run draws its latents
-        # from a forked stream, so Torch's global RNG is left as it was.
+        # from a stream derived from the run's seed, so a seeded run
+        # records the same latents whatever the global RNG holds, and
+        # Torch's global RNG is left as it was.
+        recording = self._chain_generator(run_seed, -1)
         try:
             with torch.random.fork_rng(devices=[]):
+                torch.random.set_rng_state(recording.get_state())
                 recorded = trace(model, x, observations=observations)
         except Exception as error:
             error.add_note(

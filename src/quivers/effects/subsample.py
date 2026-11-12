@@ -26,7 +26,9 @@ given at the plate's extent.
 
 The guides that factor over a plate's rows score a latent in a subsampled
 plate at the same rows with the same factor
-([`AutoNormalGuide`][quivers.inference.guides.AutoNormalGuide], and
+([`AutoNormalGuide`][quivers.inference.guides.AutoNormalGuide],
+[`AmortizedGuide`][quivers.inference.guides.AmortizedGuide], whose encoder
+still reads every row of its datum, and
 [`AutoDeltaGuide`][quivers.inference.guides.AutoDeltaGuide], whose density
 is constant); every other guide refuses such a latent, since its density
 does not split over the rows. MCMC, the Laplace approximation, annealed

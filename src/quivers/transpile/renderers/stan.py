@@ -360,9 +360,6 @@ class StanRenderer(RendererBase):
         self._marginalize_atom: float | None = None
         self._marginalize_latent_card: int | None = None
         self._marginalize_group_idx: tuple[str, ...] = ()
-        # True while the active marginalize keys its accumulator by
-        # the observation rather than by the grouping plate.
-        self._marginalize_per_row: bool = False
         # Scope-local let bindings inside the current marginalize
         # block; the per-k observe expands these inline since the
         # let target is never declared as a Stan parameter.
@@ -446,7 +443,6 @@ class StanRenderer(RendererBase):
         self._marginalize_atom = None
         self._marginalize_latent_card = None
         self._marginalize_group_idx = ()
-        self._marginalize_per_row = False
         self._fresh_n = 0
         self._cards = dict(ir.cards)
         # Reset the per-render lookup caches so repeated render
@@ -2075,8 +2071,7 @@ class StanRenderer(RendererBase):
         """Emit a marginalized latent.
 
         Families with declared finite marginal support are enumerated with a
-        `log_sum_exp` reduction. This includes relaxation families whose
-        marginal heads declare discrete atoms. Families without finite support
+        `log_sum_exp` reduction. Families without finite support
         become constrained Stan parameters: the renderer adds their prior
         density and emits the scope with that parameter in context. Stan then
         samples the resulting joint model.
@@ -2136,21 +2131,13 @@ class StanRenderer(RendererBase):
         outer_block = self._fresh(ctx, "mbs")
         ctx.sb.vertex(outer_block, "block_statement")
         ctx.sb.edge(parent, outer_block, "child_of")
-        # Choose what the accumulator is keyed by. A per-row prior --
-        # the probability argument is itself indexed by the grouping
-        # plate, so each observation reads its own group's row --
-        # replicates the latent per observation, and the enumeration
-        # runs once per observation. A global prior instead shares one
-        # latent across each group's rows, so the rows' contributions
-        # scatter into the group before the reduction. This is the
-        # same discriminator the QVR compiler applies.
-        per_row = self._prior_is_group_plated(node)
-        if per_row:
-            acc_dims = self._marginalize_row_dims(node)
-            acc_loop_names = self._observe_scope_loop_names(acc_dims)
-        else:
-            acc_dims = node.plate.batch_dims
-            acc_loop_names = self._marginalize_loop_names(acc_dims)
+        # The accumulator is keyed by the grouping plate: the block's
+        # latent is one class per group, drawn from that group's prior
+        # row when the prior is allocated per group and from the one
+        # prior otherwise, and every row the scope's observations send
+        # to a group is scored under that group's class.
+        acc_dims = node.plate.batch_dims
+        acc_loop_names = self._marginalize_loop_names(acc_dims)
         # 1. Declare `array[acc_dims] vector[K] lps_<latent>;`.
         lps_name = f"lps_{node.latent}"
         self._declare_lps_array(ctx, outer_block, lps_name, acc_dims, latent_card)
@@ -2168,7 +2155,7 @@ class StanRenderer(RendererBase):
             node.args,
             node.arg_names,
             meta,
-            self._prior_index_args(node, acc_loop_names, per_row),
+            tuple(IRArgRef(name=name) for name in acc_loop_names),
         )
         # 3. Walk the scope body: each scope IRObserve emits an
         #    inner-loop that accumulates per-k contributions into
@@ -2177,7 +2164,6 @@ class StanRenderer(RendererBase):
         prev_marg_family = self._marginalize_family
         prev_marg_card = self._marginalize_latent_card
         prev_group_idx = self._marginalize_group_idx
-        prev_per_row = self._marginalize_per_row
         prev_stack = self._marginalize_stack
         prev_lets = self._marginalize_let_subs
         self._marginalize_let_subs = self._resolve_scope_lets(node.scope)
@@ -2185,7 +2171,6 @@ class StanRenderer(RendererBase):
         self._marginalize_family = node.family
         self._marginalize_latent_card = latent_card
         self._marginalize_group_idx = acc_loop_names
-        self._marginalize_per_row = per_row
         self._marginalize_stack = (*self._marginalize_stack, node.plate)
         try:
             for scope_node in node.scope:
@@ -2195,7 +2180,6 @@ class StanRenderer(RendererBase):
             self._marginalize_family = prev_marg_family
             self._marginalize_latent_card = prev_marg_card
             self._marginalize_group_idx = prev_group_idx
-            self._marginalize_per_row = prev_per_row
             self._marginalize_stack = prev_stack
             self._marginalize_let_subs = prev_lets
         # 4. Accumulate the per-row log-sums into `target`.
@@ -2207,98 +2191,6 @@ class StanRenderer(RendererBase):
             acc_loop_names,
         )
         return outer_block
-
-    def _prior_is_group_plated(self, node: IRMarginalize) -> bool:
-        """True when the latent's probability argument carries the
-        marginalize's grouping plate.
-
-        A `Categorical(probs=theta)` whose `theta` is declared
-        `array[|G|] simplex[K]` gives every row of the group its own
-        draw from its group's prior, so the marginal is one
-        `log_sum_exp` per row. A bare `simplex[K]` prior instead
-        denotes one draw shared across the group's rows.
-        """
-        if not node.plate.batch_dims:
-            return False
-        for arg in node.args:
-            if not isinstance(arg, IRArgRef) or arg.indices:
-                continue
-            declared = self._declared_shapes.get(arg.name)
-            if declared is None:
-                continue
-            _, declared_plate = declared
-            if len(declared_plate.batch_dims) >= len(node.plate.batch_dims):
-                return True
-        return False
-
-    def _marginalize_row_dims(self, node: IRMarginalize) -> tuple[Dim, ...]:
-        """The plate a per-row accumulator is keyed by: the batch dims
-        of the scope's observe steps."""
-        plates = {
-            tuple(inner.plate.batch_dims)
-            for inner in node.scope
-            if isinstance(inner, IRObserve)
-        }
-        if len(plates) != 1:
-            raise UnsupportedConstruct(
-                "qvr-stan",
-                [
-                    f"marginalize:per-row-prior:{node.latent}: a "
-                    f"per-row prior needs exactly one observation "
-                    f"plate to key the accumulator by, found "
-                    f"{len(plates)}"
-                ],
-            )
-        return next(iter(plates))
-
-    def _prior_index_args(
-        self,
-        node: IRMarginalize,
-        acc_loop_names: tuple[str, ...],
-        per_row: bool,
-    ) -> tuple[IRArg, ...]:
-        """Index expressions that select the latent's prior row for
-        one accumulator entry.
-
-        In the grouped reading the accumulator is already keyed by the
-        grouping plate, so the loop variables index the prior
-        directly. In the per-row reading the accumulator is keyed by
-        the observation, so the prior row is reached through the
-        observe's `via` index map.
-        """
-        if not per_row:
-            return tuple(IRArgRef(name=name) for name in acc_loop_names)
-        via = self._marginalize_scope_via(node)
-        if via is None:
-            return tuple(IRArgRef(name=name) for name in acc_loop_names)
-        if not acc_loop_names:
-            raise UnsupportedConstruct(
-                "qvr-stan",
-                [
-                    f"marginalize:per-row-prior:{node.latent}: the "
-                    f"observe carries a `via` index map but no "
-                    f"observation plate to index it with"
-                ],
-            )
-        row_loop = IRArgRef(name=acc_loop_names[0])
-        return tuple(
-            IRArgRef(name=via, indices=(row_loop,)) for _ in node.plate.batch_dims
-        )
-
-    def _marginalize_scope_via(self, node: IRMarginalize) -> str | None:
-        """The `via` index map the scope's observe steps share, or
-        `None` when they carry none."""
-        vias = {inner.via for inner in node.scope if isinstance(inner, IRObserve)}
-        if len(vias) != 1:
-            raise UnsupportedConstruct(
-                "qvr-stan",
-                [
-                    f"marginalize:per-row-prior:{node.latent}: the "
-                    f"scope's observe steps disagree on the `via` "
-                    f"index map into the grouping plate"
-                ],
-            )
-        return next(iter(vias))
 
     def _marginalize_continuous(
         self,
@@ -2588,19 +2480,24 @@ class StanRenderer(RendererBase):
         expressions usable inside this observe's loop body.
 
         When the observe's `via` index map names a per-row indexer
-        into a group axis, the group index is `<via>[<row-loop>]`;
-        otherwise the surrounding marginalize loop variables apply
-        directly. When the marginalize has no batch dims, returns ().
+        into a group axis, the group index is `<via>[<row-loop>]`.
+        Otherwise each group dim is one of the observe's own plate
+        dims, and the observe's loop variable over that dim indexes
+        the group: the accumulation loop runs over the observe's
+        plate, outside any loop over the group, so the group's own
+        loop variables are not in scope there. When the marginalize
+        has no batch dims, returns ().
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If a group dim is neither reached through `via` nor one of
+            the observe's plate dims, so no row of the observe names
+            the group it scores into.
         """
-        del parent  # parent plate already threaded through
-        # _marginalize_group_idx by the marginalize() caller.
         group_count = len(self._marginalize_group_idx)
         if group_count == 0:
             return ()
-        if self._marginalize_per_row:
-            # The accumulator is keyed by the observation itself, so
-            # the observe's own loop variables address it directly.
-            return loop_names
         if observe.via is not None and loop_names:
             # `<via>[<observe-loop-0>]` per group dim. For
             # single-group marginalize this is exactly the spec's
@@ -2608,8 +2505,16 @@ class StanRenderer(RendererBase):
             return tuple(
                 f"{observe.via}[{loop_names[0]}]+1" for _ in range(group_count)
             )
-        # Fall through: use the marginalize group's loop names.
-        return self._marginalize_group_idx
+        observe_dims = tuple(observe.plate.batch_dims)
+        indices: list[str] = []
+        for dim in parent.plate.batch_dims:
+            if dim not in observe_dims:
+                raise UnsupportedConstruct(
+                    "qvr-stan",
+                    [f"marginalize:group-unmapped:{parent.latent}:{observe.name}"],
+                )
+            indices.append(loop_names[observe_dims.index(dim)])
+        return tuple(indices)
 
     def _build_indexed_lhs(
         self,
@@ -3111,12 +3016,10 @@ class StanRenderer(RendererBase):
         ctx.sb.edge(asn, op, "child_of")
         # RHS: <stan_name>_lpmf(<atom> | latent_args with z-><atom>)
         #
-        # A relaxation family weights its two atoms by the discrete
-        # family it relaxes, which is what it declares in its
-        # marginalize support: `ContinuousBernoulli` carries the
-        # Bernoulli's `[log(1 - p), log p]`, not its own continuous
-        # density, and its atoms are 0 and 1 rather than the loop's 1
-        # and 2.
+        # A two-atom family weights its atoms by the family its
+        # marginalize support names, the Bernoulli's
+        # `[log(1 - p), log p]`, and its atoms are 0 and 1 rather than
+        # the loop's 1 and 2.
         declared = marginalize_support(latent_meta)
         binary_atoms = declared is not None and declared.atoms == "binary"
         if declared is not None and binary_atoms and declared.weight_family is not None:
@@ -3483,8 +3386,18 @@ class StanRenderer(RendererBase):
         rejects every initial value it tries. Folded, the rate is a
         constant the gradient does not run through, which is what the
         model means: the off state of a zero-inflated count carries no
-        rate at all.
+        rate at all. A choice on a literal condition (`real(z)` is
+        `select(z, 1.0, 0.0)`) is decided first, so the gate's atom
+        reaches the product as the number it stands for.
         """
+        if (
+            isinstance(expr, LetExprCall)
+            and expr.func == "select"
+            and len(expr.args) == 3
+            and isinstance(expr.args[0], LetExprLiteral)
+        ):
+            chosen = expr.args[1] if expr.args[0].value != 0.0 else expr.args[2]
+            return self._fold_constant_products(chosen)
         if not isinstance(expr, LetExprBinOp):
             return expr
         left = self._fold_constant_products(expr.left)

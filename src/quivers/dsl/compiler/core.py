@@ -26,6 +26,7 @@ from quivers.dsl.ast_nodes import (
     LossDecl,
     Module,
     MorphismDecl,
+    MorphismInitFamily,
     ProgramDecl,
     RuleDecl,
     SchemaDecl,
@@ -165,6 +166,10 @@ class Compiler(
         self._objects: dict[str, SetObject] = {}
         self._spaces: dict = {}
         self._morphisms: dict = {}
+        # The `~ Family(...)` prior of each `role=latent` morphism that
+        # declares one: a draw from the morphism draws from this family,
+        # as the reference machine and every transpile target read it.
+        self._latent_priors: dict[str, MorphismInitFamily] = {}
         self._groups: dict[str, list[str]] = {}
         self._output_expr: Expr | None = None
         # Parametric-program templates: dependent kernels Π(p:P).Kern(dom(p),cod(p))

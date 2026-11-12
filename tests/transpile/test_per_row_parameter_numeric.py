@@ -217,6 +217,7 @@ _REFUSED: dict[tuple[str, str], str] = {
     # an expression; Gen and Turing read a marginalize's weights only from
     # a name with a declared plate.
     (_LDA, "bugs"): "observe:class-code:w",
+    (_LDA, "jags"): "let-expr:elementwise-axis-operator",
     (_LDA, "gen"): "marginalize:weight-plate:theta_tok",
     (_LDA, "turing"): "marginalize:weight-plate:theta_tok",
 }

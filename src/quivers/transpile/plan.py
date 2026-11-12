@@ -2115,14 +2115,29 @@ class _ProgramWalk:
             node = self.observed[name]
             return IRDataInput(name=name, constraint=node.constraint, plate=node.plate)
         if parameter.role == "index_map":
+            # The map sends each row of the observation's plate to a
+            # group of the enclosing block's grouping plate, so it is
+            # indexed by the rows and bounded by the groups.
             upper = None
             batch: tuple[Dim, ...] = ()
             for node in _walk(body):
-                if isinstance(node, IRObserve) and node.via == name:
-                    batch = node.plate.batch_dims
-                    first = batch[0] if batch else None
-                    upper = first.size if isinstance(first, DimStatic) else None
-                    break
+                if not isinstance(node, IRMarginalize):
+                    continue
+                observe = next(
+                    (
+                        inner
+                        for inner in node.scope
+                        if isinstance(inner, IRObserve) and inner.via == name
+                    ),
+                    None,
+                )
+                if observe is None:
+                    continue
+                batch = observe.plate.batch_dims
+                groups = node.plate.batch_dims
+                if len(groups) == 1 and isinstance(groups[0], DimStatic):
+                    upper = groups[0].size
+                break
             constraint: ConstraintSpec = (
                 CSNonnegativeInteger()
                 if upper is None
@@ -2883,11 +2898,19 @@ def _elaboration_kind(code: str, message: str) -> str:
     Returns
     -------
     str
-        The message itself when it leads with a structured kind, else
+        The message when it leads with a structured kind, with a
+        ``<kind>; <explanation>`` message read as
+        ``<kind>: <explanation>``; else
         ``program:elaboration:<code>: <message>``, whose explanation
         is the message.
     """
     if _STRUCTURED_LEAD.match(message):
+        # A step-resolution failure reads `<kind>; <explanation>`
+        # (`StepResolutionError.detail`); the refusal form is
+        # `<kind>: <explanation>`.
+        structured, separator, rest = message.partition("; ")
+        if separator and " " not in structured:
+            return f"{structured}: {rest}"
         return message
     return f"program:elaboration:{code}: {message}"
 
