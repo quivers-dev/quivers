@@ -201,3 +201,14 @@ def test_compatible_across_levels() -> None:
     """A Algebra instance is compatible with itself (degenerate
     case)."""
     assert PRODUCT_FUZZY.is_compatible(PRODUCT_FUZZY)
+
+
+def test_semigroupoid_construction_leaves_the_global_random_stream_alone() -> None:
+    """The associativity smoke check draws from a local generator: the
+    global stream continues as if no rule had been built."""
+    torch.manual_seed(1234)
+    expected = torch.rand(5)
+    torch.manual_seed(1234)
+    semigroupoid("BoundedSumMax", _bounded_sum, _max_reduce)
+    CustomSemigroupoid("Again", _bounded_sum, _max_reduce)
+    torch.testing.assert_close(torch.rand(5), expected)

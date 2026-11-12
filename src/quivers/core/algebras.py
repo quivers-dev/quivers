@@ -808,13 +808,14 @@ class CustomSemigroupoid(Semigroupoid):
 
     def _check_associativity(self) -> None:
         """Smoke-test ``(a ⊗ b) ⊗ c == a ⊗ (b ⊗ c)`` on a fixed
-        sample. Not exhaustive — a determined user can construct
-        a non-associative ``tensor_op`` that passes this check —
-        but it catches gross mistakes."""
-        torch.manual_seed(0)
-        a = torch.rand(4)
-        b = torch.rand(4)
-        c = torch.rand(4)
+        sample. Not exhaustive: a determined user can construct
+        a non-associative ``tensor_op`` that passes this check,
+        but it catches gross mistakes. The sample comes from a local
+        generator, so the global random stream is left untouched."""
+        gen = torch.Generator().manual_seed(0)
+        a = torch.rand(4, generator=gen)
+        b = torch.rand(4, generator=gen)
+        c = torch.rand(4, generator=gen)
         left = self._tensor_op(self._tensor_op(a, b), c)
         right = self._tensor_op(a, self._tensor_op(b, c))
         if not torch.allclose(left, right, atol=1e-4):
