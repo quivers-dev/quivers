@@ -242,8 +242,8 @@ that choice explicit:
 
 | Family | Event dimensions | Interpretation |
 |---|---|---|
-| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli` | 0 | Scalar; every codomain axis is iid by default |
-| `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP`, `Horseshoe` | 1 | Vector; one named event axis carries the joint distribution |
+| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |
 
 On a `morphism` declaration, `[over=<axes>] ~ Family` must list exactly as many axes as
@@ -444,8 +444,9 @@ beta = hs.rsample(x)             # shape (4, 10)
 log_p = hs.log_prob(x, beta)     # shape (4,), summed over coordinates
 ```
 
-QVR registers the family as `Horseshoe`, with one event dimension over the
-coefficients, whose marginal densities it multiplies.
+QVR registers the family as `Horseshoe` with no event dimensions: each coefficient is
+one draw, scored by its marginal density, and draws over several coefficients are
+independent.
 
 ### Choosing among multivariate priors
 
