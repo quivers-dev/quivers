@@ -1,29 +1,28 @@
 # MCMC
 
-Markov chain Monte Carlo (MCMC) generates correlated draws targeting a posterior.
-[Hamiltonian Monte Carlo (HMC)](../../guides/inference-mcmc.md#mcmc-hmc-and-nuts) uses gradients and simulated momentum; the No-U-Turn
-Sampler (NUTS) adapts the trajectory length [@neal2011mcmc; @hoffman2014nuts]. Warmup tunes the algorithm before draws are
-retained; [windowed warmup](../../guides/inference-mcmc.md#windowed-warmup) follows Stan's schedule. Compare chains for unexplored regions and inspect [effective sample sizes](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes) to
-assess the precision of posterior summaries.
-
-The acceptance rate discussed below comes from an asymptotic analysis of
-high-dimensional product targets [@beskos2013optimal]. Its assumptions determine
-when that tuning result applies.
-
-Markov-chain Monte Carlo: the [`HMC`](#quivers.inference.mcmc.HMCKernel)
-and [`NUTS`](#quivers.inference.mcmc.NUTSKernel) kernels, the
-[`MCMC`](#quivers.inference.mcmc.MCMC) runner, and the
-[`MCMCResult`](#quivers.inference.mcmc.MCMCResult) summary.
+[Markov chain Monte Carlo](https://en.wikipedia.org/wiki/Markov_chain_Monte_Carlo) (MCMC) draws a
+correlated sequence whose stationary distribution is the posterior.
+[Hamiltonian Monte Carlo](../../guides/inference-mcmc.md#mcmc-hmc-and-nuts) (HMC) proposes moves by
+simulating momentum with gradients, and the No-U-Turn Sampler (NUTS) adapts the length of each
+trajectory [@neal2011mcmc; @hoffman2014nuts]. The module gives the
+[`HMC`](#quivers.inference.mcmc.HMCKernel) and [`NUTS`](#quivers.inference.mcmc.NUTSKernel)
+kernels, the [`MCMC`](#quivers.inference.mcmc.MCMC) runner, and the
+[`MCMCResult`](#quivers.inference.mcmc.MCMCResult) summary. Warmup tunes the step size and mass
+matrix before draws are kept, and [windowed warmup](../../guides/inference-mcmc.md#windowed-warmup)
+follows Stan's schedule. The target acceptance rate comes from an asymptotic analysis of
+high-dimensional product targets [@beskos2013optimal]. Several chains reveal regions one chain
+missed, and the
+[effective sample size](../../tutorials/python/09-debugging.md#nuts-diagnostics-that-point-at-root-causes)
+measures the precision of posterior summaries [@vehtari2021rhat].
 
 The runner targets a `MonadicProgram`. Models that declare every latent
 as a `sample` site need no conversion. For models with `nn.Parameter`s
 or intermediate latent sites, the
 [`bayesian_lift_parameters`](lifts.md#quivers.inference.lifts.bayesian_lift_parameters)
-lift returns a 3-tuple `(MonadicProgram, torch.Tensor, dict[str, torch.Tensor])`,
-whose first element is the matching `MonadicProgram`. Callers pass
-that first element to the runner.
+function returns a 3-tuple `(MonadicProgram, torch.Tensor, dict[str, torch.Tensor])`,
+whose first element is the program to pass to the runner.
 
-`quivers.inference` re-exports the kernels, the runner, and its result;
+`quivers.inference` re-exports the kernels, the runner, and its result.
 `quivers.inference.mcmc` also exports the warmup adaptation primitives
 and the type aliases that parameterize the kernels and the runner.
 

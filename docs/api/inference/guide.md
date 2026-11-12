@@ -1,20 +1,17 @@
 # Variational Guides
 
-A [variational guide](https://pyro.ai/examples/svi_part_i.html#Guide) is an adjustable
-distribution over unobserved variables [@pyroSVI; @blei2017variational; @hoffman2013svi].
-[Optimization changes its parameters](../../tutorials/python/05-variational-inference.md#building-a-model) to approximate the posterior. [Independent Normal
-guides](../../guides/inference-svi.md#guides-variational-families) represent marginal locations and scales; covariance and flow guides can also
-represent dependence. Compare fits from several initializations when assessing a more
-flexible guide.
-
-Variational guide distributions for approximate inference. The guides
-live in submodules of `quivers.inference.guides` and share the `Guide`
-ABC and `LatentRegistry` introspection layer. They are
-`AutoNormalGuide`, `AutoDeltaGuide`, `AutoMultivariateNormalGuide`,
-`AutoLowRankMultivariateNormalGuide`, `AutoLaplaceApproximation`,
-`AutoNormalizingFlow`, `AutoIAFGuide`, `AutoNeuralSplineGuide`,
-`AutoMixtureGuide`, `AutoGuideList`, `AutoStructured`, and `AmortizedGuide`,
-which runs [declared encoders](../../guides/inference-svi.md#amortizedguide) on the data.
+A [variational guide](https://pyro.ai/examples/svi_part_i.html#Guide) is a family of distributions
+over the unobserved sites whose parameters
+[optimization adjusts](../../tutorials/python/05-variational-inference.md#building-a-model) to
+approximate the posterior [@pyroSVI; @blei2017variational; @hoffman2013svi]. The guides live in
+submodules of `quivers.inference.guides` and share the `Guide` abstract base class and the
+`LatentRegistry`. They are `AutoNormalGuide`, `AutoDeltaGuide`, `AutoMultivariateNormalGuide`,
+`AutoLowRankMultivariateNormalGuide`, `AutoLaplaceApproximation`, `AutoNormalizingFlow`,
+`AutoIAFGuide`, `AutoNeuralSplineGuide`, `AutoMixtureGuide`, `AutoGuideList`, `AutoStructured`, and
+`AmortizedGuide`, which runs [declared encoders](../../guides/inference-svi.md#amortizedguide) on
+the data. [Independent Normal guides](../../guides/inference-svi.md#guides-variational-families)
+represent marginal locations and scales, and covariance and flow guides also represent
+dependence.
 
 `quivers.inference` re-exports every guide, and `quivers.inference.guides`
 adds the Pyro-style short names (`AutoNormal`, `AutoMultivariateNormal`,

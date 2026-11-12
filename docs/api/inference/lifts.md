@@ -1,12 +1,10 @@
 # Bayesian Lifts
 
-[Bayesian lifting](../../semantics/programs.md#7-bayesian-lifts) assigns priors to selected trainable parameters and exposes them as
-latent variables in an inference program. Choose priors that express the intended scale
-and dependence of those parameters [@gelman2013bayesian]. The lifted program then supports fitting an
-approximation to their posterior.
-
-These functions convert non-Bayesian models to `MonadicProgram`
-instances for inference. They cover four model interfaces:
+These functions turn a model that is not Bayesian into a `MonadicProgram` for inference, by placing
+priors on its learnable parameters or by estimating a likelihood
+([lifts](../../semantics/programs.md#7-bayesian-lifts)). The priors should express the intended
+scale and dependence of the parameters [@gelman2013bayesian], and the result supports fitting an
+approximation to their posterior. The functions cover four interfaces:
 
 * [`bayesian_lift_parameters`](#quivers.inference.lifts.bayesian_lift_parameters)
   assigns Normal priors to learnable parameters. It can also lift

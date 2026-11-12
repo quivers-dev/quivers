@@ -1,9 +1,9 @@
 # Program encoding
 
-This module connects the Python program API to checked core execution. Use it when a
-caller needs to invoke a program through the [runtime module interface](../../reference/qvr/execution-and-tooling.md#runtime-providers) and collect its
-[results and scores](../../reference/qvr/probabilistic-programs.md#running-and-scoring).
-
-The kernel encoding of a `MonadicProgram`.
+This module encodes a `MonadicProgram` as a QIEC computation. Each step's Python part is a request
+on the prelude's `Compute` interface over the values it reads, and each draw is a `Random.sample`
+request on the sampleable that part returns. Running the encoding on the reference machine
+collects the program's [results and scores](../../reference/qvr/probabilistic-programs.md#running-and-scoring)
+([runtime providers](../../reference/qvr/execution-and-tooling.md#runtime-providers)).
 
 ::: quivers.effects.program_module
