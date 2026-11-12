@@ -47,12 +47,11 @@ adjunctions, and monoidal structures.
 ## Monadic Package
 
 The `monadic` package contains the typeclass hierarchy, concrete monad
-instances, comonads, algebras, distributive laws, transformers, and
+instances, comonads, algebras, distributive laws, and
 algebraic effects.
 
 - **[Typeclass Hierarchy](monadic/typeclasses.md)**: `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Foldable`, `Traversable`, `MonadTrans` ABCs
 - **[Stdlib Effect Instances](monadic/instances.md)**: `Identity`, `Maybe`, `Alternative_`, `Continuation`, `State`, `Reader`, `Writer`
-- **[Monad Transformers](monadic/transformers.md)**: `StateT`, `ReaderT`, `MaybeT`, `ContT`, `WriterT`
 - **[Algebraic Effects](monadic/algebraic.md)**: `Operation`, `EffectSignature`, `Handler`, `FreeMonad`
 - **[Bridges](monadic/bridges.md)**: `Kleisli` / `ArrowMonad` connecting the monad and arrow towers
 - **[Typeclass Theories](monadic/theories.md)**: panproto-theory mirrors

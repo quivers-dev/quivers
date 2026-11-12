@@ -1,4 +1,4 @@
-"""Monadic structures: typeclass hierarchy, instances, transformers,
+"""Monadic structures: typeclass hierarchy, instances,
 algebraic effects, comonads, algebras, and distributive laws.
 
 The `Monad` ABC lives in `typeclasses`. Concrete monad
@@ -48,13 +48,6 @@ from quivers.monadic.instances import (
     State,
     Reader,
     Writer,
-)
-from quivers.monadic.transformers import (
-    StateT,
-    ReaderT,
-    MaybeT,
-    ContT,
-    WriterT,
 )
 from quivers.monadic.algebraic import (
     Operation,
@@ -121,12 +114,6 @@ __all__ = [
     "State",
     "Reader",
     "Writer",
-    # transformers
-    "StateT",
-    "ReaderT",
-    "MaybeT",
-    "ContT",
-    "WriterT",
     # algebraic
     "Operation",
     "EffectSignature",

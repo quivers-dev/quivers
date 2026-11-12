@@ -182,7 +182,20 @@ class GiryMonad(Monad):
         -------
         Morphism
             The composite kernel ``f >> g``, ``A -> C``.
+
+        Raises
+        ------
+        ValueError
+            If ``f`` or ``g`` is not over `MARKOV`, since another
+            algebra would compose them by a rule other than matrix
+            multiplication.
         """
+        for kernel in (f, g):
+            if not kernel.algebra.is_compatible(MARKOV):
+                raise ValueError(
+                    f"GiryMonad cannot compose a morphism over {kernel.algebra.name}; "
+                    "its Kleisli composition is matrix multiplication over MARKOV"
+                )
         return f >> g
 
     def __repr__(self) -> str:

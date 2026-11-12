@@ -44,7 +44,7 @@ from quivers.core.objects import (
     SetObject,
     Unit,
 )
-from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.core.algebras import BOOLEAN, PRODUCT_FUZZY, Algebra
 from quivers.monadic.typeclasses import (
     Foldable,
     Monad,
@@ -83,6 +83,55 @@ def _decode_function(
         outputs[i] = rem % codomain_size
         rem //= codomain_size
     return tuple(outputs)
+
+
+def _function_table(f: Morphism, domain_size: int, codomain_size: int) -> list[int]:
+    """Read a morphism as a function between flat index sets.
+
+    The function-space instances are monads on finite sets and
+    functions, so their ``fmap`` and ``lift_a2`` accept a morphism only
+    when it is a function: every row has exactly one entry equal to the
+    algebra's unit and every other entry equal to its zero.
+
+    Parameters
+    ----------
+    f : Morphism
+        The morphism, with ``domain_size`` rows and ``codomain_size``
+        columns once flattened.
+    domain_size : int
+        The size of the flattened domain.
+    codomain_size : int
+        The size of the flattened codomain.
+
+    Returns
+    -------
+    list[int]
+        ``table[i]`` is the flat index of the image of ``i``.
+
+    Raises
+    ------
+    ValueError
+        If some row of ``f`` is not the indicator of a single element.
+    """
+    algebra = f.algebra
+    unit = float(algebra.unit) if isinstance(algebra, Algebra) else 1.0
+    zero = float(algebra.zero) if isinstance(algebra, Algebra) else 0.0
+    rows = f.tensor.detach().reshape(domain_size, codomain_size)
+    table: list[int] = []
+    for i in range(domain_size):
+        row = rows[i]
+        hits = [j for j in range(codomain_size) if abs(float(row[j]) - unit) <= 1e-6]
+        rest_zero = all(
+            abs(float(row[j]) - zero) <= 1e-6 or j in hits
+            for j in range(codomain_size)
+        )
+        if len(hits) != 1 or not rest_zero:
+            raise ValueError(
+                "the function-space monad instances act on functions; row "
+                f"{i} of the morphism is not the indicator of one element"
+            )
+        table.append(hits[0])
+    return table
 
 
 def _evaluation_morphism(
@@ -328,13 +377,24 @@ def reshape_unit_to_nothing(nothing: FinSet) -> Morphism:
 
 
 class Alternative_(dx.Model):
-    """The Hamblin alternative monad on the V-algebra.
+    """The Hamblin alternative monad, the powerset monad on sets.
 
-    The type-level action over ``A`` is again ``A``: alternatives are
-    encoded as V-weighted multisets in the V-relation tensor, not in
-    the carrier set. Pure injects a value as a singleton (the identity
-    relation); join is the V-relation composition with the noisy-OR
-    aggregation supplied by the underlying algebra.
+    A set of alternatives over ``A`` is a subset of ``A``, and the
+    Kleisli category of the powerset monad is Rel, the category of
+    relations [Hofmann, Seal and Tholen (2014)]. The instance works in
+    that Kleisli category over `BOOLEAN`: the type-level action over
+    ``A`` is again ``A``, a relation ``A → B`` stands for the Kleisli
+    arrow ``A → P(B)``, ``pure`` and ``join`` are identities, ``empty``
+    is the empty relation and ``alt`` is union. Its morphisms are over
+    `BOOLEAN`, under which composition is associative; a fuzzy variant
+    over an idempotent semiring is `quivers.monadic.monads.FuzzyPowersetMonad`.
+
+    References
+    ----------
+    Hofmann, D., Seal, G. J., and Tholen, W. (Eds.) (2014). *Monoidal
+    Topology: A Categorical Approach to Order, Metric, and Topology*.
+    Cambridge University Press.
+    [doi:10.1017/CBO9781107517288](https://doi.org/10.1017/CBO9781107517288)
     """
 
     name: str = "Alternative"
@@ -346,16 +406,16 @@ class Alternative_(dx.Model):
         return f  # functor action is the morphism itself
 
     def pure(self, A: SetObject) -> Morphism:
-        return id_morph(A)
+        return id_morph(A, algebra=BOOLEAN)
 
     def apply(self, A: SetObject, B: SetObject) -> Morphism:
         # apply : Alt([A → B]) ⊗ Alt(A) → Alt(B). At the V-Rel level,
         # this is the evaluation morphism with the V-algebra's natural
         # aggregation over alternatives (already baked into compose).
-        return _evaluation_morphism(A, B)
+        return _evaluation_morphism(A, B, algebra=BOOLEAN)
 
     def join(self, A: SetObject) -> Morphism:
-        return id_morph(A)
+        return id_morph(A, algebra=BOOLEAN)
 
     def bind(self, A: SetObject, B: SetObject, k: Morphism) -> Morphism:
         return k
@@ -371,24 +431,19 @@ class Alternative_(dx.Model):
     def empty(self, A: SetObject) -> Morphism:
         # empty : 1 → A is the constant-bottom V-relation: a single
         # row of zero entries.
-        data = torch.full((1, *A.shape), PRODUCT_FUZZY.zero)
-        return observed(Unit, A, data)
+        data = torch.full((1, *A.shape), BOOLEAN.zero)
+        return observed(Unit, A, data, algebra=BOOLEAN)
 
     def alt(self, A: SetObject) -> Morphism:
-        # alt : A ⊗ A → A picks an alternative from either side,
-        # realised as the V-algebra join of the two projections.
+        # alt : A ⊗ A → A is union: (a, a') relates to both a and a'.
         source = ProductSet(components=(A, A))
-        # Project to either side and let the algebra join aggregate.
-        # Implementation: data[a, a', b] = unit iff b == a OR b == a'.
-        # The join over alternatives is the algebra join across the
-        # input pair.
-        data = torch.full((A.size, A.size, A.size), PRODUCT_FUZZY.zero)
+        data = torch.full((A.size, A.size, A.size), BOOLEAN.zero)
         for a in range(A.size):
             for ap in range(A.size):
-                data[a, ap, a] = PRODUCT_FUZZY.unit
-                data[a, ap, ap] = PRODUCT_FUZZY.unit
+                data[a, ap, a] = BOOLEAN.unit
+                data[a, ap, ap] = BOOLEAN.unit
         data = data.reshape(*source.shape, *A.shape)
-        return observed(source, A, data)
+        return observed(source, A, data, algebra=BOOLEAN)
 
     def foldr(self, A: SetObject, B: SetObject) -> Morphism:
         # foldr : (A × B → B) × B × F(A) → B; for Alt where F(A)=A,
@@ -404,16 +459,16 @@ class Alternative_(dx.Model):
         # decode(step_fn_flat)[(a, b)] == b'.
         ab_size = A.size * B.size
         data = torch.full(
-            (step_fn.cardinality, B.size, A.size, B.size), PRODUCT_FUZZY.zero
+            (step_fn.cardinality, B.size, A.size, B.size), BOOLEAN.zero
         )
         for fn_flat in range(step_fn.cardinality):
             outputs = _decode_function(fn_flat, ab_size, B.size)
             for b_flat in range(B.size):
                 for a_flat in range(A.size):
                     ab_flat = a_flat * B.size + b_flat
-                    data[fn_flat, b_flat, a_flat, outputs[ab_flat]] = PRODUCT_FUZZY.unit
+                    data[fn_flat, b_flat, a_flat, outputs[ab_flat]] = BOOLEAN.unit
         data = data.reshape(*source.shape, *target.shape)
-        return observed(source, target, data)
+        return observed(source, target, data, algebra=BOOLEAN)
 
     def traverse(
         self,
@@ -481,22 +536,11 @@ class Continuation(dx.Model):
         # Pre-compute the "pre-composition" map kb → ka:
         # given kb : B → ρ and f : A → B, produce ka : A → ρ as
         # ka(a) = kb(f(a)).
-        f_outputs: dict[int, int] = {}
-        f_t = f.tensor.reshape(A.size, B.size)
-        for a in range(A.size):
-            # Deterministic functions only: find unique unit-mass output.
-            # If f is not a deterministic function, fmap collapses to
-            # an aggregation over the b-values f(a)=b weighted by the
-            # V-relation entry.
-            row = f_t[a]
-            for b in range(B.size):
-                if row[b].item() >= 1.0 - 1e-9:
-                    f_outputs[a] = b
-                    break
+        f_outputs = _function_table(f, A.size, B.size)
         precompose: dict[int, int] = {}
         for kb_flat in range(kb.cardinality):
             kb_outputs = _decode_function(kb_flat, B.size, rho.size)
-            ka_outputs = tuple(kb_outputs[f_outputs.get(a, 0)] for a in range(A.size))
+            ka_outputs = tuple(kb_outputs[f_outputs[a]] for a in range(A.size))
             # Encode ka_outputs back as a flat function-space index.
             ka_flat = 0
             for v in ka_outputs:
@@ -594,16 +638,12 @@ class Continuation(dx.Model):
         kA = self._kr_object(A)
         rho = self.answer
         # Pre-compute the function f as a deterministic map A × B → C.
-        f_t = f.tensor.reshape(A.size, B.size, C.size)
-        f_lookup: dict[tuple[int, int], int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                for c in range(C.size):
-                    if f_t[a, b, c].item() >= 1.0 - 1e-9:
-                        f_lookup[(a, b)] = c
-                        break
-                else:
-                    f_lookup[(a, b)] = 0
+        f_table = _function_table(f, A.size * B.size, C.size)
+        f_lookup: dict[tuple[int, int], int] = {
+            (a, b): f_table[a * B.size + b]
+            for a in range(A.size)
+            for b in range(B.size)
+        }
         # For each k : C → ρ and each a, build the kb_a : B → ρ defined
         # by kb_a(b) = k(f(a, b)). Then for each m, n, compute
         # n(kb_a) for each a, giving ka : A → ρ; then m(ka) = result.
@@ -677,15 +717,7 @@ class State(dx.Model):
         target_A = ProductSet(components=(A, sigma))
         target_B = ProductSet(components=(B, sigma))
         # Treat f as a deterministic A → B function via the tensor.
-        f_t = f.tensor.reshape(A.size, B.size)
-        f_lookup: dict[int, int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                if f_t[a, b].item() >= 1.0 - 1e-9:
-                    f_lookup[a] = b
-                    break
-            else:
-                f_lookup[a] = 0
+        f_lookup = _function_table(f, A.size, B.size)
         data = torch.full((sA.cardinality, sB.cardinality), PRODUCT_FUZZY.zero)
         for s_fn_flat in range(sA.cardinality):
             s_fn_outs = _decode_function(s_fn_flat, sigma.size, target_A.size)
@@ -760,16 +792,12 @@ class State(dx.Model):
         target_A = ProductSet(components=(A, sigma))
         target_B = ProductSet(components=(B, sigma))
         target_C = ProductSet(components=(C, sigma))
-        f_t = f.tensor.reshape(A.size, B.size, C.size)
-        f_lookup: dict[tuple[int, int], int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                for c in range(C.size):
-                    if f_t[a, b, c].item() >= 1.0 - 1e-9:
-                        f_lookup[(a, b)] = c
-                        break
-                else:
-                    f_lookup[(a, b)] = 0
+        f_table = _function_table(f, A.size * B.size, C.size)
+        f_lookup: dict[tuple[int, int], int] = {
+            (a, b): f_table[a * B.size + b]
+            for a in range(A.size)
+            for b in range(B.size)
+        }
         source = ProductSet(components=(sA, sB))
         data = torch.full(
             (sA.cardinality, sB.cardinality, sC.cardinality), PRODUCT_FUZZY.zero
@@ -817,15 +845,7 @@ class Reader(dx.Model):
         # fmap(f)(g) = f ∘ g, where g : ρ → A.
         rA = self.fmap_obj(A)
         rB = self.fmap_obj(B)
-        f_t = f.tensor.reshape(A.size, B.size)
-        f_lookup: dict[int, int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                if f_t[a, b].item() >= 1.0 - 1e-9:
-                    f_lookup[a] = b
-                    break
-            else:
-                f_lookup[a] = 0
+        f_lookup = _function_table(f, A.size, B.size)
         data = torch.full((rA.cardinality, rB.cardinality), PRODUCT_FUZZY.zero)
         for g_flat in range(rA.cardinality):
             g_outs = _decode_function(g_flat, self.env.size, A.size)
@@ -882,16 +902,12 @@ class Reader(dx.Model):
         rB = self.fmap_obj(B)
         rC = self.fmap_obj(C)
         rho = self.env
-        f_t = f.tensor.reshape(A.size, B.size, C.size)
-        f_lookup: dict[tuple[int, int], int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                for c in range(C.size):
-                    if f_t[a, b, c].item() >= 1.0 - 1e-9:
-                        f_lookup[(a, b)] = c
-                        break
-                else:
-                    f_lookup[(a, b)] = 0
+        f_table = _function_table(f, A.size * B.size, C.size)
+        f_lookup: dict[tuple[int, int], int] = {
+            (a, b): f_table[a * B.size + b]
+            for a in range(A.size)
+            for b in range(B.size)
+        }
         source = ProductSet(components=(rA, rB))
         data = torch.full(
             (rA.cardinality, rB.cardinality, rC.cardinality), PRODUCT_FUZZY.zero
@@ -920,20 +936,26 @@ Monad.register(Reader)
 
 
 class Writer(dx.Model):
-    """The writer monad over a chosen accumulator.
+    """The writer monad ``Writer_M(A) = A × M`` over a finite monoid ``M``.
 
-    The accumulator type ``M`` is a SetObject equipped with a
-    user-supplied `monoid_op` of type ``M × M → M`` and a
-    `unit_index` (the flat index of the monoid unit in ``M``).
-    For the default values, the implementation provides the *free
-    commutative monoid* structure on ``M`` realised as element-wise
-    pairing; bind concatenates the accumulator side via `monoid_op`.
+    The accumulator ``M`` is a finite set with an associative operation
+    ``⊕`` and a two-sided unit, the element with flat index
+    `unit_index`. ``pure(a) = (a, e)`` and ``join((a, m₁), m₂) =
+    (a, m₁ ⊕ m₂)``; the monad laws are exactly the monoid laws of
+    ``(M, ⊕, e)``.
 
-    The monoid operation defaults to the discrete-projection-to-first
-    (the "max" of two elements under the standard order on the flat
-    indices) — a valid monoid structure when one is not supplied;
-    users wanting a different monoid pass an `ObservedMorphism`
-    of the right shape.
+    The operation is given as `monoid_op_tensor`, a flat 0/1 tensor
+    over ``M × M × M`` in row-major ``(m₁, m₂, m)`` order whose
+    ``(m₁, m₂)`` row marks ``m₁ ⊕ m₂``. Without it the operation is
+    ``max`` of the flat indices, with unit index 0, the join
+    semilattice of the chain ``0 < 1 < ... < |M| - 1``.
+
+    Raises
+    ------
+    ValueError
+        When an operation is used whose table is not a function, or
+        that is not associative or does not have `unit_index` as a
+        two-sided unit.
     """
 
     monoid: SetObject
@@ -942,10 +964,19 @@ class Writer(dx.Model):
     name: str = "Writer"
 
     def _op_lookup(self) -> dict[tuple[int, int], int]:
-        """Decode `monoid_op_tensor` into a lookup map.
+        """The monoid operation as a table, checked against the monoid laws.
 
-        When not supplied, defaults to ``max`` of flat indices, which
-        is the standard order-monoid on a totally ordered finite set.
+        Returns
+        -------
+        dict[tuple[int, int], int]
+            ``table[(m1, m2)]`` is the flat index of ``m1 ⊕ m2``.
+
+        Raises
+        ------
+        ValueError
+            If the supplied table is not a function ``M × M → M``, or
+            the operation is not associative, or `unit_index` is not a
+            two-sided unit.
         """
         m = self.monoid.size
         lookup: dict[tuple[int, int], int] = {}
@@ -953,22 +984,40 @@ class Writer(dx.Model):
             for a in range(m):
                 for b in range(m):
                     lookup[(a, b)] = max(a, b)
-            return lookup
-        # Tensor entries are listed in (a, b, c) row-major order.
-        t = list(self.monoid_op_tensor)
-        idx = 0
+        else:
+            t = list(self.monoid_op_tensor)
+            if len(t) != m * m * m:
+                raise ValueError(
+                    f"Writer: monoid_op_tensor has {len(t)} entries, expected {m**3}"
+                )
+            for a in range(m):
+                for b in range(m):
+                    row = t[(a * m + b) * m : (a * m + b + 1) * m]
+                    hits = [c for c, v in enumerate(row) if v == 1.0]
+                    if len(hits) != 1 or any(
+                        v != 0.0 for c, v in enumerate(row) if c != hits[0]
+                    ):
+                        raise ValueError(
+                            f"Writer: monoid_op_tensor row ({a}, {b}) does not "
+                            "mark exactly one element"
+                        )
+                    lookup[(a, b)] = hits[0]
+        e = self.unit_index
+        if not 0 <= e < m:
+            raise ValueError(f"Writer: unit_index {e} is outside the monoid")
+        for a in range(m):
+            if lookup[(e, a)] != a or lookup[(a, e)] != a:
+                raise ValueError(
+                    f"Writer: element {e} is not a two-sided unit of the operation"
+                )
         for a in range(m):
             for b in range(m):
-                # find the column with unit-mass
-                best_c = 0
-                best_v = -1.0
                 for c in range(m):
-                    v = t[idx]
-                    idx += 1
-                    if v > best_v:
-                        best_v = v
-                        best_c = c
-                lookup[(a, b)] = best_c
+                    if lookup[(lookup[(a, b)], c)] != lookup[(a, lookup[(b, c)])]:
+                        raise ValueError(
+                            "Writer: the monoid operation is not associative at "
+                            f"({a}, {b}, {c})"
+                        )
         return lookup
 
     def fmap_obj(self, A: SetObject) -> SetObject:
@@ -992,14 +1041,13 @@ class Writer(dx.Model):
         inner = ProductSet(components=(A, self.monoid))
         outer = ProductSet(components=(inner, self.monoid))
         op = self._op_lookup()
-        data = torch.full(
-            (A.size, self.monoid.size, self.monoid.size, A.size, self.monoid.size),
-            PRODUCT_FUZZY.zero,
-        )
+        m = self.monoid.size
+        data = torch.full((A.size, m, m, A.size, m), PRODUCT_FUZZY.zero)
         for a in range(A.size):
-            for m1 in range(self.monoid.size):
-                for m2 in range(self.monoid.size):
+            for m1 in range(m):
+                for m2 in range(m):
                     data[a, m1, m2, a, op[(m1, m2)]] = PRODUCT_FUZZY.unit
+        data = data.reshape(*outer.shape, *inner.shape)
         return observed(outer, inner, data)
 
     def bind(self, A: SetObject, B: SetObject, k: Morphism) -> Morphism:
@@ -1014,16 +1062,12 @@ class Writer(dx.Model):
         wC = self.fmap_obj(C)
         source = ProductSet(components=(wA, wB))
         op = self._op_lookup()
-        f_t = f.tensor.reshape(A.size, B.size, C.size)
-        f_lookup: dict[tuple[int, int], int] = {}
-        for a in range(A.size):
-            for b in range(B.size):
-                for c in range(C.size):
-                    if f_t[a, b, c].item() >= 1.0 - 1e-9:
-                        f_lookup[(a, b)] = c
-                        break
-                else:
-                    f_lookup[(a, b)] = 0
+        f_table = _function_table(f, A.size * B.size, C.size)
+        f_lookup: dict[tuple[int, int], int] = {
+            (a, b): f_table[a * B.size + b]
+            for a in range(A.size)
+            for b in range(B.size)
+        }
         m = self.monoid.size
         data = torch.full(
             (A.size, m, B.size, m, C.size, m),
