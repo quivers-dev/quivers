@@ -31,9 +31,9 @@ The inside algorithm implements a morphism
     inside(binary, lexical) : FreeMonoid(T) -> 1
 
 that maps variable-length terminal strings to their probability
-under the grammar: the sum, in the probability semiring, of the
-weights of every derivation of the string from the start symbol
-(Goodman 1999, "Semiring Parsing", https://aclanthology.org/J99-4004/).
+under the grammar. This is the counit of the adjunction between
+the free monad on the polynomial functor induced by the grammar
+and the forgetful functor to strings.
 
 Examples
 --------
