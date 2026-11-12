@@ -1712,12 +1712,18 @@ class MarginalizeSupport(dx.Model):
     `weight_family` names the family whose log-density at an atom is
     that atom's log-prior weight, and `weight_arg` the argument
     position carrying the probability tensor that family reads.
+    `logit_arg`, when set, names the parameter a call may give on the
+    logit scale instead: the atoms 0 and 1 are then weighted by
+    ``log sigmoid(-l)`` and ``log sigmoid(l)``, computed in log space,
+    so neither weight rounds where the probability would round to zero
+    or one.
     """
 
     atoms: MarginalizeAtomSet
     weight_family: str
     weight_arg: str
     size: int | None = None
+    logit_arg: str | None = None
 
 
 # The prior families a `marginalize` block integrates, mirroring the
@@ -1732,12 +1738,14 @@ _MARGINALIZE_SUPPORT: dict[str, MarginalizeSupport] = {
         weight_family="Bernoulli",
         weight_arg="probs",
         size=2,
+        logit_arg="logits",
     ),
     "ContinuousBernoulli": MarginalizeSupport(
         atoms="binary",
         weight_family="Bernoulli",
         weight_arg="probs",
         size=2,
+        logit_arg="logits",
     ),
     "RelaxedBernoulli": MarginalizeSupport(
         atoms="binary",

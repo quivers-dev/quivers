@@ -100,6 +100,7 @@ from quivers.transpile.renderers._base import (
     RenderContext,
     assert_no_dropped_param_map,
     ir_uses_family,
+    logit_weighted,
     mixture_component_count,
     mixture_normal_components,
     reorder_negbin_args,
@@ -912,7 +913,9 @@ class JAGSRenderer(RendererBase):
         weight is that vector subscripted by the atom's value. A
         `binary` set weights the two atoms by a *discrete* Bernoulli
         on the same probability, so atom one reads the probability
-        itself and atom zero reads its complement.
+        itself and atom zero reads its complement; from the logits,
+        atom one reads their logistic function and atom zero that of
+        their negation.
 
         The probability tensor arrives from
         `marginal_weight_probs`
@@ -932,6 +935,15 @@ class JAGSRenderer(RendererBase):
             ),
             {},
         )
+        if logit_weighted(atom):
+            # From the logits `l` atom one weighs `ilogit(l)` and atom
+            # zero `ilogit(-l)`: each is the logistic function of its
+            # own argument, with no complement that could cancel.
+            if atom.value.value == 1.0:
+                return LetExprCall(func="sigmoid", args=(probs,))
+            return LetExprCall(
+                func="sigmoid", args=(LetExprUnaryOp(op="-", operand=probs),)
+            )
         if atom.weight_family == "Bernoulli":
             if atom.value.value == 1.0:
                 return probs

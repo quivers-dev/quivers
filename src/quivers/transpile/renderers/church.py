@@ -104,6 +104,7 @@ from quivers.transpile.renderers._base import (
     SchemaFragment,
     RenderContext,
     assert_no_dropped_param_map,
+    logit_weighted,
     marginalize_row_rank,
 )
 from quivers.transpile.renderers._python_helpers import (
@@ -1031,6 +1032,28 @@ class ChurchRenderer(RendererBase):
         )
         family = atoms[0].weight_family
         log_form = _sym(ctx, "log")
+        if logit_weighted(atoms[0]):
+            # From the logits `l` the atoms weigh `log sigmoid(-l)` and
+            # `log sigmoid(l)`, which the runtime's `qvr-log-sigmoid`
+            # computes in log space.
+            zero = f"{prefix}_w_0"
+            one = f"{prefix}_w_1"
+            negated = _list(ctx, (_sym(ctx, "-"), self._render_arg(ctx, probs)))
+            return (zero, one), (
+                _define(
+                    ctx,
+                    zero,
+                    _list(ctx, (_sym(ctx, "qvr-log-sigmoid"), negated)),
+                ),
+                _define(
+                    ctx,
+                    one,
+                    _list(
+                        ctx,
+                        (_sym(ctx, "qvr-log-sigmoid"), self._render_arg(ctx, probs)),
+                    ),
+                ),
+            )
         if family == "Bernoulli":
             zero = f"{prefix}_w_0"
             one = f"{prefix}_w_1"

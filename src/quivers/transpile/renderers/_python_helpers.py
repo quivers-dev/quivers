@@ -1726,7 +1726,8 @@ def marginal_weight_probs(
     target: str,
 ) -> IRArg:
     """The probability tensor weighting the atoms, aligned to the axis
-    the observed site is fibred over.
+    the observed site is fibred over: the logits instead when the call
+    site names them.
 
     A weight tensor allocated per grouping row (LDA's per-document
     `theta`) has to be gathered through the observe's `via` fibration
@@ -1747,7 +1748,13 @@ def marginal_weight_probs(
             f"qvr-{target}",
             [f"marginalize:non-finite-support:{node.family}"],
         )
-    probs = _named_arg(weight_args, weight_arg_names, support.weight_arg)
+    probs = _named_arg(
+        weight_args,
+        weight_arg_names,
+        support.logit_arg
+        if support.logit_arg is not None and support.logit_arg in weight_arg_names
+        else support.weight_arg,
+    )
     if observe.via is None:
         return probs
     if not node.plate.batch_dims:

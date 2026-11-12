@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -881,9 +882,127 @@ ConditionalKumaraswamy = _make_family(
 )
 """Conditional Kumaraswamy(a(x), b(x)). Beta-like on (0,1), closed-form CDF."""
 
+
+class _LogSpaceContinuousBernoulli(D.ContinuousBernoulli):
+    """A continuous Bernoulli distribution scored from its logits in log space.
+
+    `torch.distributions.ContinuousBernoulli` computes its normalizer
+    from the probability ``sigmoid(l)``, which rounds to one once the
+    logit passes about 17 in single precision, so the log density there
+    is off by a large fraction of a nat. In the logit the normalizer is
+    ``C(l) = l / tanh(l / 2)``, and the log density at ``x`` is
+
+        x log sigmoid(l) + (1 - x) log sigmoid(-l) + log C(l),
+
+    with ``log C(l) = log |l| - log tanh(|l| / 2)`` away from zero and
+    ``log 2 + log1p(l^2 / 12 - l^4 / 720)`` near it: every term is finite
+    and accurate at every finite logit. A distribution built from its
+    probability scores as `torch.distributions.ContinuousBernoulli` does.
+
+    Parameters
+    ----------
+    probs : torch.Tensor | None
+        The parameter on the probability scale.
+    logits : torch.Tensor | None
+        The log-odds of the success endpoint; exactly one of `probs` and
+        `logits` is given.
+    validate_args : bool | None
+        Whether to validate the parameters and the scored values.
+    """
+
+    _SERIES_BOUND = 0.1
+
+    def __init__(
+        self,
+        probs: torch.Tensor | None = None,
+        logits: torch.Tensor | None = None,
+        validate_args: bool | None = None,
+    ) -> None:
+        super().__init__(probs=probs, logits=logits, validate_args=validate_args)
+        self._source_logits: torch.Tensor | None = (
+            cast(torch.Tensor, self.logits) if logits is not None else None
+        )
+
+    def expand(
+        self,
+        batch_shape: torch.Size | Sequence[int],
+        _instance: D.ContinuousBernoulli | None = None,
+    ) -> D.ContinuousBernoulli:
+        """The distribution broadcast to a larger batch shape.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size | Sequence[int]
+            The batch shape to broadcast to.
+        _instance : D.ContinuousBernoulli | None
+            An instance to fill, as `torch.distributions` passes it.
+
+        Returns
+        -------
+        D.ContinuousBernoulli
+            The expanded distribution, scored as this one is.
+        """
+        shape = torch.Size(batch_shape)
+        new = self._get_checked_instance(_LogSpaceContinuousBernoulli, _instance)
+        expanded = super().expand(shape, _instance=new)
+        source = self._source_logits
+        new._source_logits = None if source is None else source.expand(shape)
+        return expanded
+
+    def _logit_log_norm(self, logits: torch.Tensor) -> torch.Tensor:
+        """The log normalizer ``log C(l)``, computed from the logits.
+
+        Parameters
+        ----------
+        logits : torch.Tensor
+            The logits.
+
+        Returns
+        -------
+        torch.Tensor
+            The log normalizer at each logit.
+        """
+        magnitude = logits.abs()
+        near = magnitude < self._SERIES_BOUND
+        # Each branch is evaluated at a value inside its own range, so
+        # neither forms a non-finite value (or gradient) that the other
+        # branch's mask would have to hide.
+        far_logit = torch.where(near, torch.ones_like(magnitude), magnitude)
+        near_logit = torch.where(near, magnitude, torch.zeros_like(magnitude))
+        far = torch.log(far_logit) - torch.log(torch.tanh(far_logit / 2.0))
+        square = near_logit * near_logit
+        series = math.log(2.0) + torch.log1p(square / 12.0 - square * square / 720.0)
+        return torch.where(near, series, far)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        """The log density at a point of the unit interval.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The points.
+
+        Returns
+        -------
+        torch.Tensor
+            The log densities.
+        """
+        source = self._source_logits
+        if source is None:
+            return super().log_prob(value)
+        if self._validate_args:
+            self._validate_sample(value)
+        value, logits = torch.broadcast_tensors(value, source)
+        return (
+            value * F.logsigmoid(logits)
+            + (1.0 - value) * F.logsigmoid(-logits)
+            + self._logit_log_norm(logits)
+        )
+
+
 ConditionalContinuousBernoulli = _make_family(
     "ConditionalContinuousBernoulli",
-    D.ContinuousBernoulli,
+    _LogSpaceContinuousBernoulli,
     [("logits", "id")],
     "Conditional ContinuousBernoulli(logits(x)). Continuous relaxation of Bernoulli.",
 )

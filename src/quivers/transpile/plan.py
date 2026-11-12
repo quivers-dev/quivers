@@ -111,7 +111,12 @@ import didactic.api as dx
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.qiec_ir import host_runtime_capability_diagnostics
 from quivers.transpile._expand_composites import expand_composite_lets
-from quivers.transpile.family_meta import FAMILY_META, FamilyMeta, class_index_outcome
+from quivers.transpile.family_meta import (
+    FAMILY_META,
+    FamilyMeta,
+    class_index_outcome,
+    marginalize_support,
+)
 from quivers.transpile.ir import (
     CSIntegerInterval,
     CSNonnegativeInteger,
@@ -1213,7 +1218,9 @@ class _ProgramWalk:
                     "pass the result as probs"
                 ],
             )
-        args, arg_names = self._parameterization(family, args, arg_names)
+        args, arg_names = self._parameterization(
+            family, args, arg_names, marginalized=marginalized
+        )
         constraint = _apply_declared_bounds(
             from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
             plate,
@@ -1344,7 +1351,12 @@ class _ProgramWalk:
         return out, tuple(names)
 
     def _parameterization(
-        self, family: str, args: tuple[IRArg, ...], arg_names: tuple[str, ...]
+        self,
+        family: str,
+        args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
+        *,
+        marginalized: bool = False,
     ) -> tuple[tuple[IRArg, ...], tuple[str, ...]]:
         """Hand an alternative parameterization to the target as it reads it.
 
@@ -1352,8 +1364,11 @@ class _ProgramWalk:
         receives it unchanged, under the keyword the renderer spells it
         with. A literal precision matrix reaches a target without a
         precision parameterization inverted, as the covariance it is the
-        inverse of. Any other alternative a target has no spelling for is
-        refused by name.
+        inverse of. A marginalized latent given on the logit scale its
+        family's marginalize support weighs its atoms from reaches every
+        target unchanged: no target draws it, and every renderer weighs
+        the atoms from the logits in log space. Any other alternative a
+        target has no spelling for is refused by name.
 
         Parameters
         ----------
@@ -1363,6 +1378,8 @@ class _ProgramWalk:
             The call's wire arguments.
         arg_names : tuple[str, ...]
             The parameter each argument fills.
+        marginalized : bool
+            Whether the call is a marginalized latent's prior.
 
         Returns
         -------
@@ -1375,9 +1392,13 @@ class _ProgramWalk:
             If the target has no spelling for the parameterization.
         """
         target = self.planner.target
+        meta = FAMILY_META.get(family)
+        support = marginalize_support(meta) if meta is not None else None
         for position, name in enumerate(arg_names):
             natives = _NATIVE_ALTERNATIVES.get((family, name))
             if natives is None or target in natives:
+                continue
+            if marginalized and support is not None and support.logit_arg == name:
                 continue
             argument = args[position]
             if name == "precision_matrix" and isinstance(argument, IRArgMatrix):
@@ -2408,6 +2429,7 @@ _NATIVE_ALTERNATIVES: dict[tuple[str, str], frozenset[str]] = {
         {"ir", "edward2", "numpyro", "pymc", "pyro", "stan", "turing"}
     ),
     ("Geometric", "logits"): frozenset({"ir", "edward2", "numpyro", "pyro"}),
+    ("ContinuousBernoulli", "logits"): frozenset({"ir"}),
     ("NegativeBinomial", "logits"): frozenset({"ir", "edward2", "pyro"}),
     ("MultivariateNormal", "covariance_matrix"): _EVERY_TARGET,
     ("MultivariateNormal", "precision_matrix"): frozenset(

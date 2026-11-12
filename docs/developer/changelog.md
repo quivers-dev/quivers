@@ -4,6 +4,17 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.54.0] - 2026-11-11
+
+### Added
+
+- **`ContinuousBernoulli` takes its logits.** `ContinuousBernoulli(logits=l)` is a second parameterization beside `probs=`. The compiled runtime and the reference machine score it in log space, `x log sigmoid(l) + (1 - x) log sigmoid(-l) + log C(l)` with the normalizer `C(l) = l / tanh(l / 2)`, so the density stays exact where `sigmoid(l)` rounds to zero or one (the probability form was off by more than half a nat at `|l| = 30` in single precision). `ConditionalContinuousBernoulli` scores its logits the same way. No transpile target spells the family on the logit scale, so a drawn or observed `ContinuousBernoulli(logits=...)` is refused on every target as `family:ContinuousBernoulli:logits`.
+
+### Fixed
+
+- **A marginalized Bernoulli-family latent given by its logits weighs its atoms in log space.** At a `marginalize` head, `ContinuousBernoulli(logits=eta)` or `Bernoulli(logits=eta)` weighs the atoms 0 and 1 by `log sigmoid(-eta)` and `log sigmoid(eta)` on the compiled runtime and the reference machine, so a zero-inflated model's joint agrees with the exact mixture at every predictor; the compiled runtime had read the logits as a probability. A mixture weight written as `sigmoid(eta)` or `1.0 - sigmoid(eta)` is formed in single precision before the block reads it and loses its digits once `|eta|` passes about 10; stating the weight on the logit scale avoids that. Every transpile target that renders the block weighs the atoms from the logits without forming the probability's complement (Stan `bernoulli_logit_lpmf`; the log-sigmoid functions of Pyro, NumPyro, and Edward2; `min(l, 0) - log1p(exp(-|l|))` on Turing, Gen, WebPPL, and Church; the logistic function of `l` and of `-l` for the probability-scale mixture weights of PyMC and JAGS), where each had read the logits as a probability or refused `Bernoulli(logits=...)` at a marginalize head. BUGS refuses the block as before.
+- **A literal-argument `Geometric(logits=...)` is scored in log space** like a variable one, where its literal form had been built through `torch.distributions.Geometric`.
+
 ## [0.53.5] - 2026-11-11
 
 ### Fixed

@@ -2806,6 +2806,9 @@ def _make_fixed_selected_parameters(
             else:
                 tensor = torch.full((batch, d), float(value), device=device)
             values[name] = _selected_clamp(spec, name, tensor)
+        alternative = _ALTERNATIVE_BUILDERS.get((family, parameters))
+        if alternative is not None:
+            return alternative([values[name] for name in parameters])
         return spec.dist_class(**values)
 
     return FixedDistribution(

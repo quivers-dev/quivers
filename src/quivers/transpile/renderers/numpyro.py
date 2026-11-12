@@ -81,6 +81,7 @@ from quivers.transpile.renderers._base import (
     SchemaFragment,
     RenderContext,
     assert_no_dropped_param_map,
+    logit_weighted,
     mixture_normal_components,
 )
 from quivers.transpile.qiec_ir import IRQiecModule
@@ -104,6 +105,11 @@ _MARGINALIZE_IMPORT: tuple[tuple[str, ...], str] = (
     ("jax", "scipy", "special"),
     "jsp",
 )
+
+
+#: ``import jax.nn as jnn``, whose ``log_sigmoid`` weights the atoms of
+#: a Bernoulli-family latent given by its logits.
+_LOG_SIGMOID_IMPORT: tuple[tuple[str, ...], str] = (("jax", "nn"), "jnn")
 
 
 #: Inner-family-keyed lookup table for the specialised truncated
@@ -547,7 +553,8 @@ class NumPyroRenderer(RendererBase):
         the probability tensor's own trailing axis is already the atom
         axis. A `Bernoulli` atom set weights the atoms 0 and 1 by
         ``log1p(-p)`` and ``log(p)``, which stack into a fresh trailing
-        axis.
+        axis; from its logits ``l`` the weights are ``log_sigmoid(-l)``
+        and ``log_sigmoid(l)``, computed in log space.
         """
         py = ctx.py
         probs = marginal_weight_probs(
@@ -560,6 +567,26 @@ class NumPyroRenderer(RendererBase):
         )
         probs_vid = self._render_arg(ctx, probs)
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            py.required_imports.add(_LOG_SIGMOID_IMPORT)
+            log_sigmoid = attribute(py, ("jnn", "log_sigmoid"))
+            return self._stack_last_axis(
+                py,
+                (
+                    call(
+                        py,
+                        log_sigmoid,
+                        positional=(
+                            _python_unary_minus(py, self._render_arg(ctx, probs)),
+                        ),
+                    ),
+                    call(
+                        py,
+                        attribute(py, ("jnn", "log_sigmoid")),
+                        positional=(probs_vid,),
+                    ),
+                ),
+            )
         if family == "Categorical":
             return call(py, attribute(py, ("jnp", "log")), positional=(probs_vid,))
         if family == "Bernoulli":

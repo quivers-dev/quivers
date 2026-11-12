@@ -392,6 +392,17 @@ var _qvr_log1p = function(x) {
   return Array.isArray(x) ? map(_qvr_log1p, x) : Math.log1p(x);
 };
 
+// `log(sigmoid(x))` elementwise, as `min(x, 0) - log1p(exp(-|x|))`: the
+// exponential's argument is never positive, so the form neither
+// overflows nor rounds where `sigmoid(x)` is within an ulp of one or
+// zero. A marginalized Bernoulli given by its logits weighs its atoms
+// by it.
+var _qvr_log_sigmoid = function(x) {
+  return Array.isArray(x)
+    ? map(_qvr_log_sigmoid, x)
+    : Math.min(x, 0) - Math.log1p(Math.exp(-Math.abs(x)));
+};
+
 var _qvr_log2 = function(x) {
   return Array.isArray(x) ? map(_qvr_log2, x) : Math.log2(x);
 };

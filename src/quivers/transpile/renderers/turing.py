@@ -36,6 +36,7 @@ Per the Turing.jl idiom the renderer:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import pathlib
 
 import panproto
@@ -119,6 +120,7 @@ from quivers.transpile.renderers._base import (
     SchemaFragment,
     RenderContext,
     assert_no_dropped_param_map,
+    logit_weighted,
     mixture_normal_components,
 )
 from quivers.transpile.renderers._qiec import (
@@ -1589,7 +1591,11 @@ class TuringRenderer(RendererBase):
         `log1p(-p)` and `log(p)`, both shaped like the probability
         itself. A `Categorical` atom set reads the class axis of the
         probability tensor, so the weights are slices of a single
-        `log.(probs)` binding.
+        `log.(probs)` binding. A `Bernoulli` atom set given by its
+        logits ``l`` weights the atoms by ``log sigmoid(-l)`` and
+        ``log sigmoid(l)``, written in log space as
+        ``min.(x, 0) .- log1p.(exp.(-abs.(x)))``, which neither
+        overflows nor rounds where the probability would.
         """
         sb, counter = ctx.sb, ctx.counter
         probs = marginal_weight_probs(
@@ -1601,6 +1607,21 @@ class TuringRenderer(RendererBase):
             target=self.target,
         )
         family = atoms[0].weight_family
+        if logit_weighted(atoms[0]):
+            zero = f"{prefix}_w_0"
+            one = f"{prefix}_w_1"
+            self._emit_assignment(
+                ctx,
+                zero,
+                _log_sigmoid(
+                    ctx,
+                    lambda: _unary_minus(sb, counter, _arg_to_julia(ctx, probs)),
+                ),
+            )
+            self._emit_assignment(
+                ctx, one, _log_sigmoid(ctx, lambda: _arg_to_julia(ctx, probs))
+            )
+            return (zero, one)
         if family == "Bernoulli":
             zero = f"{prefix}_w_0"
             one = f"{prefix}_w_1"
@@ -2405,6 +2426,52 @@ def _dotted_binary(
     operator, for expressions the renderer builds outside the `@.`
     macro."""
     return _binary_expr(sb, counter, left, f".{op}", right)
+
+
+def _log_sigmoid(ctx: _TuringCtx, operand: Callable[[], str]) -> str:
+    """``log sigmoid(x)`` elementwise, as ``min.(x, 0) .- log1p.(exp.(-abs.(x)))``.
+
+    The form is exact in floating point wherever ``x`` is finite: the
+    exponential's argument is never positive, so it neither overflows
+    nor, through ``log1p``, loses the small tail a large ``|x|`` leaves.
+
+    Parameters
+    ----------
+    ctx : _TuringCtx
+        The emission context.
+    operand : Callable[[], str]
+        Builds a fresh vertex for ``x`` each time it is called; the
+        form reads ``x`` twice.
+
+    Returns
+    -------
+    str
+        The expression's vertex.
+    """
+    sb, counter = ctx.sb, ctx.counter
+    floor = _broadcast_call(
+        sb,
+        counter,
+        _identifier(sb, counter, "min"),
+        (operand(), _number(sb, counter, 0.0)),
+    )
+    magnitude = _broadcast_call(
+        sb, counter, _identifier(sb, counter, "abs"), (operand(),)
+    )
+    tail = _broadcast_call(
+        sb,
+        counter,
+        _identifier(sb, counter, "log1p"),
+        (
+            _broadcast_call(
+                sb,
+                counter,
+                _identifier(sb, counter, "exp"),
+                (_unary_minus(sb, counter, magnitude),),
+            ),
+        ),
+    )
+    return _dotted_binary(sb, counter, floor, "-", tail)
 
 
 def _unary_minus(sb: panproto.SchemaBuilder, counter: list[int], operand: str) -> str:
