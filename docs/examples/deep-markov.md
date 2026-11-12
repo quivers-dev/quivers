@@ -2,208 +2,192 @@
 
 ## Overview
 
-The [deep Markov model](https://doi.org/10.1609/aaai.v31i1.10779) of Krishnan, Shalit, and Sontag (2017) is a state-space model with nonlinear, neural-network-parameterized transition and emission kernels: [@krishnan2017structured]
-
-$$
-\begin{aligned}
-s_t &= f_\theta(s_{t-1}) + \varepsilon_t,
-& \varepsilon_t &\sim \mathcal{N}(0, \sigma_s^2 I), \\
-o_t &= g_\phi(s_t) + \eta_t,
-& \eta_t &\sim \mathcal{N}(0, \sigma_o^2 I).
-\end{aligned}
-$$
-
-The transition and emission means are MLPs; per-step Normal noise gives a tractable density. A separate `scan(infer_cell)` declaration has the shape of a recognition recurrence, but it is not connected to the exported `generative_step` or used by the fitted guide below. The combinator structure mirrors the [linear-Gaussian SSM](linear-gaussian-ssm.md): only the per-step cells change.
+The deep Markov model of Krishnan, Shalit, and Sontag [@krishnan2017structured] is a state-space model whose transition and emission are Normal distributions with neural-network parameters: the next state is drawn around a nonlinear function of the previous state and an observed driver, and each observation around a nonlinear function of its state. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation, so the program's latent is the whole state path, one site per position. Each kernel is a [network kernel](../guides/dsl-declarations.md#kernel) whose one-hidden-layer `tanh` network maps its input to the mean and log-scale of a diagonal Normal, with point-estimated weights. The page checks the program's joint density against a hand-written one on both execution paths. It does not demonstrate inference of the state path or fitting of the networks; the section on inference below reports a check that failed.
 
 ## QVR source
 
 ```qvr
 # Deep Markov Model
 #
-# A state-space model with nonlinear, neural-network-parameterized
-# transition and emission kernels. The combinator structure mirrors the
-# linear-Gaussian SSM and replaces its linear maps with kernels whose
-# parameters come from an MLP.
+# A state-space model whose transition and emission are Normal kernels
+# with neural-network parameters, after Krishnan, Shalit, and Sontag.
+# Each kernel maps its input through a one-hidden-layer tanh network to
+# the mean and log-scale of a diagonal Normal. A scan threads the state
+# along the sequence of drivers: at every position the cell draws the
+# next state given the driver and the previous state, then scores that
+# position's observation under the emission.
 #
-# Generative structure:
+# Generative structure (s_{-1} = 0):
 #
-#   s_t  ~ trans_mlp(s_{t-1}, driver)             nonlinear transition
-#   o_t  ~ emit_mlp(s_t)                          nonlinear emission
-#   s_t  ~ infer_cell(o_t, s_{t-1})               variational recognition
+#   s_t  ~ Normal(m_T(u_t, s_{t-1}), diag exp(l_T(u_t, s_{t-1})))
+#   o_t  ~ Normal(m_E(s_t), diag exp(l_E(s_t)))
 #
-# The nonlinearity is the ``param_source=mlp`` option, which routes a
-# kernel's input to its Normal parameters through a tanh MLP. Without
-# it a kernel's parameters are linear in its input, and composing two
-# of them stays linear: the depth would buy nothing but a rank bound.
-#
-# The inference cell q_phi(o_t, s_{t-1}) -> s_t has the shape of a
-# recognition network. Its scan is declared separately; the exported
-# generative_step does not call it, and this file does not train an
-# amortized posterior over the latent trajectory.
+# The network weights are point estimates; the states s@0, s@1, ...
+# are the latent sites, one per position.
 #
 # Reference: [Krishnan, Shalit, and Sontag 2017](https://doi.org/10.1609/aaai.v31i1.10779).
 
-object Driver : Real 4
-object Hidden : Real 32
-object State : Real 8
+object Driver : Real 2
+object State : Real 3
 object Obs : Real 4
 
-morphism trans_mlp_1 : Driver * State -> Hidden [param_source=mlp] ~ Normal
-morphism trans_mlp_2 : Hidden -> State [param_source=mlp] ~ Normal
-morphism emit_mlp_1 : State -> Hidden [param_source=mlp] ~ Normal
-morphism emit_mlp_2 : Hidden -> Obs [param_source=mlp] ~ Normal
-morphism infer_cell : Obs * State -> State [param_source=mlp] ~ Normal
+morphism transition : Driver * State -> State [param_source=mlp(32)] ~ Normal
+morphism emission : State -> Obs [param_source=mlp(32)] ~ Normal
 
-define transition_cell = trans_mlp_1 >> trans_mlp_2
-define emission = emit_mlp_1 >> emit_mlp_2
-define generate = scan(transition_cell) >> emission
-define recognize = scan(infer_cell)
+program step(u_t, s_prev) : Driver * State -> State
+    sample s <- transition(u_t, s_prev)
+    observe o <- emission(s)
+    return s
 
-# Probabilistic model: the exported one-step kernel pushes the
-# previous (driver, state) pair through the two-layer transition
-# MLP, then scores one observation under the emission MLP. The
-# separate `generate` composition scans transition_cell and
-# applies emission to the terminal state; it does not call this
-# program or score an observation at every scan position.
-program generative_step : Driver * State -> State
-    sample s_new <- transition_cell
+define run_all = scan(step)
 
-    observe o <- emission(s_new)
-    return s_new
+program deep_markov : Driver -> State
+    sample s_last <- run_all
+    return s_last
 
-export generative_step
+export deep_markov
 ```
 
 ## Understanding the model
 
-A linear transition uses one affine map to predict the next state. Here a
-neural parameter network can bend that relationship: the same change in the
-previous state can have different consequences in different regions. The
-Normal kernel then adds uncertainty around its input-dependent mean. The
-emission uses the same idea to relate states to measurements.
+With $u_t$ the driver at position $t$ and $s_{-1} = 0$, the program scores
 
-Executing the transition and emission draws an intermediate state and then
-an observation. Scoring only the observation requires integrating over that
-state. The fitting code below supplies the synthetic states, so it evaluates
-[conditional densities](../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram) at known transitions while learning the kernel parameters.
+$$
+\begin{aligned}
+s_t &\sim \mathcal{N}\bigl(m_T(u_t, s_{t-1}), \operatorname{diag} \exp(\ell_T(u_t, s_{t-1}))\bigr), \\
+o_t &\sim \mathcal{N}\bigl(m_E(s_t), \operatorname{diag} \exp(\ell_E(s_t))\bigr),
+\end{aligned}
+$$
+
+where $(m_T, \ell_T)$ and $(m_E, \ell_E)$ are the two halves of the output of a network $W_2 \tanh(W_1 v + b_1) + b_2$ applied to the kernel's input $v$. Without the hidden layer each kernel's parameters would be affine in its input, as in the [continuous state-space model](continuous-hmm.md); the `tanh` layer is what makes the dynamics and the emission nonlinear. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
+
+Krishnan, Shalit, and Sontag fit such a model by maximizing an ELBO whose variational posterior over the path is itself a recurrent network run over the observations [@krishnan2017structured]. This page states the generative model and checks its density; it does not include that inference network.
 
 ## Walkthrough
 
-The transition stack `trans_mlp_1 >> trans_mlp_2` maps `(u_t, s_{t-1})` through a hidden width of 32 to the 8-dimensional state; the emission stack returns to the 4-dimensional observation. Both stacks compose Gaussian kernels through sampled intermediate values. They support reparameterized draws, but the marginal composite is not generally Gaussian and does not provide the invertible density transformation required of a normalizing flow.
-
-`scan(transition_cell) >> emission` is the generative pipeline. The separate `scan(infer_cell)` declaration is a [variational autoencoder](https://arxiv.org/abs/1312.6114)-style, recognition-shaped recurrence that threads the previous state and a new observation through `infer_cell`. It is not an implemented posterior until a guide connects it to the exported model and trains it against the full latent trajectory. The choice of `Driver` width controls the exogenous input; a non-driven model declares `object Driver : Real 1` and feeds a zero vector. [@kingma2014autoencoding]
+- `morphism transition : Driver * State -> State [param_source=mlp(32)] ~ Normal` is a Normal kernel whose mean and log-scale come from a `tanh` network with 32 hidden units reading the concatenation $[u_t; s_{t-1}]$. `emission` is the same construction from a state to an observation.
+- `program step` is one position: it draws `s` from the transition at the current driver and previous state, observes `o` under the emission at `s`, and returns `s`.
+- `define run_all = scan(step)` threads the state from zero along the drivers. `program deep_markov` draws the path and returns its last state.
+- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and on the reference machine, which takes the networks' weights as data.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The checks below come from a verification script whose tolerances were fixed before it was first run.
 
+### The log joint against a hand-written recursion
 
-### Generating synthetic data
-
-Pick concrete ground-truth nonlinear dynamics (tanh recurrence on the latent, tanh decoder to observations) and forward-sample a single trajectory of length `T`. The latent dimension matches `State = Real 8`; the observation dimension matches `Obs = Real 4`. The single-step program `generative_step : Driver * State -> State` reads the previous (driver, state) pair as input and returns the new state, so its codomain is `State`; the per-step pair `(s_new, o)` is supplied as the observation dict, with `true_s_new` naming the ground-truth trajectory the latent site is clamped to.
+At a traced draw of the state path on two runs of length 7, the compiled runtime's log joint must equal a float64 loop over positions computed from the networks' weights to a relative 1e-5, and the reference machine, given the same weights as data and the same states, to 1e-9. Two wrong oracles must each differ by more than a relative 1e-3: one whose emission reads the previous state rather than the one just drawn, an off-by-one in the scan's wiring that leaves every shape valid, and one that drops the transition term.
 
 ```python
+import math
+
 import torch
+import torch.distributions as D
+
 from quivers.dsl import load
+from quivers.inference import trace
+
+SOURCE = "docs/examples/source/deep_markov.qvr"
+DRIVER, STATE, OBS = 2, 3, 4
+
+
+def networks(model: torch.nn.Module) -> dict[str, torch.nn.Sequential]:
+    found: dict[str, torch.nn.Sequential] = {}
+    for path, module in model.named_modules():
+        if path.endswith("_step_s.param_source.net"):
+            found["transition"] = module
+        elif path.endswith("_step_o.param_source.net"):
+            found["emission"] = module
+    assert set(found) == {"transition", "emission"}, found
+    return found
+
+
+def weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The checked input names of both networks' weights, float64."""
+    w: dict[str, torch.Tensor] = {}
+    for name, net in networks(model).items():
+        w[f"{name}_param_layer0_weight"] = net[0].weight
+        w[f"{name}_param_layer0_bias"] = net[0].bias
+        w[f"{name}_param_weight"] = net[2].weight
+        w[f"{name}_param_bias"] = net[2].bias
+    return {k: v.detach().double() for k, v in w.items()}
+
+
+def head(w: dict[str, torch.Tensor], name: str, value: torch.Tensor, dim: int) -> D.Normal:
+    hidden = torch.tanh(w[f"{name}_param_layer0_weight"] @ value + w[f"{name}_param_layer0_bias"])
+    raw = w[f"{name}_param_weight"] @ hidden + w[f"{name}_param_bias"]
+    return D.Normal(raw[:dim], raw[dim:].exp())
+
+
+def oracle(
+    w: dict[str, torch.Tensor],
+    drivers: torch.Tensor,
+    states: torch.Tensor,
+    observations: torch.Tensor,
+    variant: str = "",
+) -> float:
+    """One run's log joint by a loop over positions, float64."""
+    total = 0.0
+    previous = torch.zeros(STATE, dtype=torch.float64)
+    for t in range(drivers.shape[0]):
+        transition = head(w, "transition", torch.cat([drivers[t], previous]), STATE)
+        if variant != "drop_transition":
+            total += float(transition.log_prob(states[t]).sum())
+        read = previous if variant == "emission_reads_previous" else states[t]
+        total += float(head(w, "emission", read, OBS).log_prob(observations[t]).sum())
+        previous = states[t]
+    return total
+
+
+def host(value: torch.Tensor) -> object:
+    return float(value) if value.dim() == 0 else tuple(host(row) for row in value)
+
 
 torch.manual_seed(0)
-prog = load("docs/examples/source/deep_markov.qvr")
-model = prog.morphism
-
-T = 32
-state_dim, obs_dim, driver_dim = 8, 4, 4
-W_s = 0.5 * torch.randn(state_dim, state_dim)
-W_o = 0.3 * torch.randn(obs_dim, state_dim)
-s = torch.zeros(T + 1, state_dim)
-o = torch.zeros(T, obs_dim)
-u = torch.randn(T, driver_dim)
-for t in range(T):
-    s[t + 1] = torch.tanh(s[t] @ W_s.T) + 0.1 * torch.randn(state_dim)
-    o[t] = torch.tanh(s[t + 1] @ W_o.T) + 0.1 * torch.randn(obs_dim)
-
-state_prev = torch.cat([u, s[:T]], dim=-1)
-true_s_new = s[1:T + 1]
-sites = {"s_new": true_s_new, "o": o}
-x_in = state_prev
-observations = sites
+program = load(SOURCE)
+model = program.morphism
+runs, length = 2, 7
+generator = torch.Generator().manual_seed(1)
+drivers = torch.randn(runs, length, DRIVER, generator=generator)
+observations = torch.randn(runs, length, OBS, generator=generator)
+recorded = trace(model, drivers, observations={"o": observations})
+w = weights(model)
+for r in range(runs):
+    states = torch.stack([recorded.sites[f"s@{t}"].value[r] for t in range(length)]).double().detach()
+    expected = oracle(w, drivers[r].double(), states, observations[r].double())
+    got = float(recorded.log_joint[r].detach())
+    wrong = {
+        label: oracle(w, drivers[r].double(), states, observations[r].double(), variant=label)
+        for label in ("emission_reads_previous", "drop_transition")
+    }
+    run = program.run(
+        "deep_markov",
+        data={
+            "driver": host(drivers[r].double()),
+            "o": host(observations[r].double()),
+            **{k: host(v) for k, v in w.items()},
+        },
+        sites={f"s@{t}": host(states[t]) for t in range(length)},
+        seed=0,
+    )
+    print(f"run {r}: compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; "
+          + ", ".join(f"{k} {v:.6f}" for k, v in wrong.items()))
+    assert math.isclose(got, expected, rel_tol=1e-5)
+    assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+    assert all(not math.isclose(got, value, rel_tol=1e-3) for value in wrong.values())
 ```
 
-### SVI fit
+### Inference of the state path: a check that failed
 
-The exported `generative_step` is a monadic program whose transition and emission MLP weights are kernel parameters without explicit priors; [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts each leaf into a unit-Normal sample site so [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) can build a mean-field surrogate over the parameters. The per-step `(s_new, o)` trajectory is supplied as the observation dict, so `log_joint` scores the clamped trajectory under each lifted parameter draw.
+The verification script also ran an inference check. It set the networks to a known generator (the seeded initial networks, with the transition's scale fixed at 0.3 and the emission's at 0.1), simulated a path of 10 states and its observations, and inferred the path with the networks frozen by SVI with a mean-field Normal guide (1500 Adam steps, 400 posterior draws). The threshold, fixed in advance, required the posterior-mean path to be closer to the true path than the prior-mean path by an RMSE ratio below 0.5. The ratio was 0.84 (RMSE 0.289 against 0.345), so the check failed.
 
-```python
-from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
-
-torch.manual_seed(1)
-prog = load("docs/examples/source/deep_markov.qvr")
-inner = prog.morphism
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    inner, x_in, observations, prior_scale=1.0,
-)
-
-guide = AutoNormalGuide(model, observed_names=set())
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=1e-2,
-)
-svi = SVI(model, guide, optim, ELBO())
-
-loss0 = svi.step(x_lift, obs_lift)
-losses = [svi.step(x_lift, obs_lift) for _ in range(300)]
-loss_final = sum(losses[-20:]) / 20.0
-oracle_ll = inner.log_joint(x_in, observations).sum().item()
-print(f"initial ELBO loss: {loss0:.1f}")
-print(f"final ELBO loss:   {loss_final:.1f}")
-print(f"oracle -log p(h):  {-oracle_ll:.1f}")
-```
-
-### NUTS posterior
-
-The lifted model carries one Normal sample site per leaf parameter; [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly.
-
-```python
-from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
-
-torch.manual_seed(2)
-prog = load("docs/examples/source/deep_markov.qvr")
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    prog.morphism, x_in, observations, prior_scale=1.0,
-)
-
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
-result = mc.run(model, x_lift, obs_lift)
-
-print("acceptance:", float(result.acceptance_rates.mean()))
-print("divergences:", int(result.divergence_counts.sum()))
-```
-
+The failure does not separate a weak inference from a weak design. The prior-mean path is already within 0.35 of the true path, close to the transition noise, so the observations had little room to improve on it, and the threshold was not calibrated against how much information they carry. On the [continuous state-space model](continuous-hmm.md), whose posterior is Gaussian, the same design failed in the same way while the exact posterior mode was recovered. For a nonlinear model no exact posterior is available to calibrate against, and this page makes no inference claim.
 
 ## Categorical perspective
 
-The transition stack is the Kleisli composition of two Gaussian kernels; the second kernel's mean depends on the sample from the first, so the joint per-step kernel is no longer Gaussian, only a reparameterizable density. `scan` realizes the iterated Kleisli composition over the time index and returns the terminal latent state. The declared `generate` path then emits one observation from that terminal state.
-
-The separately declared recognizer has the shape of an amortized inference network. The exported `generative_step` and the `AutoNormalGuide` fit on this page do not call `recognize`, however. Joint training would require using that network as, or inside, the variational guide.
-
-```mermaid
-flowchart LR
-    s__t_1_["s_{t-1}"] --> trans_mlp_1["trans_mlp_1"]
-    u_t["u_t"] --> trans_mlp_1["trans_mlp_1"]
-    trans_mlp_1["trans_mlp_1"] --> h_trans["h_trans"]
-    h_trans["h_trans"] --> trans_mlp_2["trans_mlp_2"]
-    trans_mlp_2["trans_mlp_2"] --> s_t["s_t"]
-    s_t["s_t"] --> emit_mlp_1["emit_mlp_1"]
-    emit_mlp_1["emit_mlp_1"] --> h_emit["h_emit"]
-    h_emit["h_emit"] --> emit_mlp_2["emit_mlp_2"]
-    emit_mlp_2["emit_mlp_2"] --> o_t["o_t"]
-    class s__t_1_,u_t qv-input
-    class trans_mlp_1,h_trans,trans_mlp_2,emit_mlp_1,h_emit,emit_mlp_2 qv-checked
-    class s_t qv-foundation
-    class o_t qv-output
-```
-
+The cell `step` is a Kleisli morphism $\mathrm{Driver} \otimes \mathrm{State} \to \mathrm{State}$ of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], weighted by the likelihood of the observation it scores, and `scan(step)` is its composite along the drivers in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category). The networks enter only through the kernels' parameter maps, so the categorical structure is that of the linear-Gaussian model; what changes is that the composite's posterior is no longer Gaussian, which is why it has no closed form.
 
 ## Sources and further reading
 
-- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].
-- *Structured Inference Networks for Nonlinear State Space Models* [@krishnan2017structured].
+- *Structured inference networks for nonlinear state space models* [@krishnan2017structured].
+- *A categorical approach to probability theory* [@giry1982categorical].

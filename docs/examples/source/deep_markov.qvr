@@ -1,54 +1,39 @@
 # Deep Markov Model
 #
-# A state-space model with nonlinear, neural-network-parameterized
-# transition and emission kernels. The combinator structure mirrors the
-# linear-Gaussian SSM and replaces its linear maps with kernels whose
-# parameters come from an MLP.
+# A state-space model whose transition and emission are Normal kernels
+# with neural-network parameters, after Krishnan, Shalit, and Sontag.
+# Each kernel maps its input through a one-hidden-layer tanh network to
+# the mean and log-scale of a diagonal Normal. A scan threads the state
+# along the sequence of drivers: at every position the cell draws the
+# next state given the driver and the previous state, then scores that
+# position's observation under the emission.
 #
-# Generative structure:
+# Generative structure (s_{-1} = 0):
 #
-#   s_t  ~ trans_mlp(s_{t-1}, driver)             nonlinear transition
-#   o_t  ~ emit_mlp(s_t)                          nonlinear emission
-#   s_t  ~ infer_cell(o_t, s_{t-1})               variational recognition
+#   s_t  ~ Normal(m_T(u_t, s_{t-1}), diag exp(l_T(u_t, s_{t-1})))
+#   o_t  ~ Normal(m_E(s_t), diag exp(l_E(s_t)))
 #
-# The nonlinearity is the ``param_source=mlp`` option, which routes a
-# kernel's input to its Normal parameters through a tanh MLP. Without
-# it a kernel's parameters are linear in its input, and composing two
-# of them stays linear: the depth would buy nothing but a rank bound.
-#
-# The inference cell q_phi(o_t, s_{t-1}) -> s_t has the shape of a
-# recognition network. Its scan is declared separately; the exported
-# generative_step does not call it, and this file does not train an
-# amortized posterior over the latent trajectory.
+# The network weights are point estimates; the states s@0, s@1, ...
+# are the latent sites, one per position.
 #
 # Reference: [Krishnan, Shalit, and Sontag 2017](https://doi.org/10.1609/aaai.v31i1.10779).
 
-object Driver : Real 4
-object Hidden : Real 32
-object State : Real 8
+object Driver : Real 2
+object State : Real 3
 object Obs : Real 4
 
-morphism trans_mlp_1 : Driver * State -> Hidden [param_source=mlp] ~ Normal
-morphism trans_mlp_2 : Hidden -> State [param_source=mlp] ~ Normal
-morphism emit_mlp_1 : State -> Hidden [param_source=mlp] ~ Normal
-morphism emit_mlp_2 : Hidden -> Obs [param_source=mlp] ~ Normal
-morphism infer_cell : Obs * State -> State [param_source=mlp] ~ Normal
+morphism transition : Driver * State -> State [param_source=mlp(32)] ~ Normal
+morphism emission : State -> Obs [param_source=mlp(32)] ~ Normal
 
-define transition_cell = trans_mlp_1 >> trans_mlp_2
-define emission = emit_mlp_1 >> emit_mlp_2
-define generate = scan(transition_cell) >> emission
-define recognize = scan(infer_cell)
+program step(u_t, s_prev) : Driver * State -> State
+    sample s <- transition(u_t, s_prev)
+    observe o <- emission(s)
+    return s
 
-# Probabilistic model: the exported one-step kernel pushes the
-# previous (driver, state) pair through the two-layer transition
-# MLP, then scores one observation under the emission MLP. The
-# separate `generate` composition scans transition_cell and
-# applies emission to the terminal state; it does not call this
-# program or score an observation at every scan position.
-program generative_step : Driver * State -> State
-    sample s_new <- transition_cell
+define run_all = scan(step)
 
-    observe o <- emission(s_new)
-    return s_new
+program deep_markov : Driver -> State
+    sample s_last <- run_all
+    return s_last
 
-export generative_step
+export deep_markov
