@@ -106,6 +106,95 @@ from quivers.continuous.families import (
 )
 ```
 
+### Log-space families for small shapes
+
+A [Beta](https://en.wikipedia.org/wiki/Beta_distribution) or
+[Gamma](https://en.wikipedia.org/wiki/Gamma_distribution) latent reaches
+the samplers and the guides on the real line: its unconstrained value is
+mapped into the support by a sigmoid or an exponential and scored there,
+with the map's Jacobian. When the shape is small, as it tends to be in
+sparse and stick-breaking priors, that round trip loses the tails. The
+sigmoid of `-800` is already the smallest normal float, so
+`Beta(0.001, 1)` scores the logit `-800` at about `-99` where its exact
+log density is about `-7.71`; and a Gamma sampler at shape `0.001`
+returns the smallest normal float for roughly half its draws.
+
+[`LogitBeta`][quivers.continuous.log_space.LogitBeta] and
+[`LogGamma`][quivers.continuous.log_space.LogGamma] put the variable on
+the real line from the start. `LogitBeta(concentration1=a,
+concentration0=b)` is the law of $x = \operatorname{logit}(p)$ for
+$p \sim \mathrm{Beta}(a, b)$, and `LogGamma(concentration=a, rate=r)` is
+the law of $y = \log g$ for $g \sim \mathrm{Gamma}(a, r)$:
+
+$$
+\log p(x) = a \log \sigma(x) + b \log \sigma(-x) - \log \mathrm{B}(a, b),
+\qquad
+\log p(y) = a (\log r + y) - r e^{y} - \log \Gamma(a).
+$$
+
+Both are exact for every finite argument, since no quantity is formed on
+the constrained scale. Sampling stays in log space through the shape
+augmentation of [@marsaglia2000gamma]: for independent
+$G' \sim \mathrm{Gamma}(a + 1)$ and $U \sim \mathrm{Uniform}(0, 1)$,
+$\log G' + \log(U) / a$ has the law of $\log G$ with
+$G \sim \mathrm{Gamma}(a)$, and a logit-Beta draw is the difference of two
+such draws. $G'$ has shape at least one, so it never comes near the
+underflow threshold, and its implicit reparameterization gradient carries
+through. Draws are finite for every shape at or above 64 times the
+smallest normal number of the dtype; at shape `1e-8` the median draw of
+`LogGamma` is near `-6.9e7`.
+
+Because the support is the real line, a site drawn from either family
+takes the identity bijector, so HMC, NUTS, and the guides see the exact
+density, and prior draws, `rsample`, and initialization from the prior
+all sample the declared prior. A downstream quantity on the constrained
+scale is a `let`:
+
+<!-- compile: standalone -->
+```qvr
+object Item : FinSet 20
+
+program sticks : Item -> Item
+    sample weight_logit : Item <- LogitBeta(concentration1=1.0, concentration0=0.01)
+    sample log_rate <- LogGamma(concentration=0.001, rate=1.0)
+    let weight = sigmoid(weight_logit)
+    let rate = exp(log_rate)
+    observe y : Item <- Normal(loc=weight, scale=1.0)
+    return weight
+
+export sticks
+```
+
+From Python, the distributions are ordinary `torch.distributions`
+classes, and
+[`make_fixed_logit_beta`][quivers.continuous.inline.make_fixed_logit_beta]
+and [`make_fixed_log_gamma`][quivers.continuous.inline.make_fixed_log_gamma]
+build the fixed program steps the compiler emits for literal parameters.
+Unlike the constrained families, the inline paths pass small literal
+shapes through unchanged rather than lifting them to a floor; a shape that
+is not positive raises.
+
+```python
+import torch
+from quivers.continuous import LogGamma, LogitBeta
+
+shape = torch.tensor(1e-3, dtype=torch.float64)
+prior = LogitBeta(shape, torch.tensor(1.0, dtype=torch.float64))
+prior.log_prob(torch.tensor(-800.0, dtype=torch.float64))  # about -7.71
+
+draws = LogGamma(shape, torch.tensor(1.0, dtype=torch.float64)).rsample((5,))
+assert torch.isfinite(draws).all()  # near -1000 on average, never clamped
+```
+
+The conditional forms
+[`ConditionalLogitBeta`][quivers.continuous.families.ConditionalLogitBeta]
+and [`ConditionalLogGamma`][quivers.continuous.families.ConditionalLogGamma]
+learn their shapes through a softplus head, without the shift the
+constrained Beta and Gamma heads add. Stan, NumPyro, and Pyro render both
+families through runtime helpers that carry the same densities and
+log-space samplers; the other targets refuse them by name at transpile
+time (see the [transpile support matrix](../transpile-support.md)).
+
 ### Multivariate families
 
 ```python
@@ -403,3 +492,4 @@ one named axis carries the per-coordinate marginal product.
 
 - [@gelman2013bayesian]
 - [@carvalho2010horseshoe]
+- [@marsaglia2000gamma]

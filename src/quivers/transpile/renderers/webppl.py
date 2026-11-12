@@ -2627,7 +2627,12 @@ def _reduce_last_axis(
         if (
             expr.func in _REDUCTION_FUNCS
             and len(expr.args) == 1
-            and _needs_last_axis(expr.args[0], ranks, full_ranks)
+            and (
+                _needs_last_axis(expr.args[0], ranks, full_ranks)
+                # WebPPL has no global `mean`; the helper reduces a vector
+                # whole as it reduces each row of a table.
+                or expr.func == "mean"
+            )
         ):
             helper = _LAST_AXIS_REDUCERS.get(expr.func)
             if helper is None:
@@ -2729,7 +2734,12 @@ def _let_expr_reduces_event_axis(
         if (
             expr.func in _REDUCTION_FUNCS
             and len(expr.args) == 1
-            and _needs_last_axis(expr.args[0], ranks, full_ranks)
+            and (
+                _needs_last_axis(expr.args[0], ranks, full_ranks)
+                # WebPPL has no global `mean`; the helper reduces a vector
+                # whole as it reduces each row of a table.
+                or expr.func == "mean"
+            )
         ):
             return True
         return any(

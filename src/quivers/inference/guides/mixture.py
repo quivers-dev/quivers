@@ -50,6 +50,8 @@ no single unimodal guide can capture.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -119,6 +121,17 @@ class AutoMixtureGuide(Guide):
     # ------------------------------------------------------------------
     # Sampling
     # ------------------------------------------------------------------
+
+    def observe(self, observations: Mapping[str, torch.Tensor]) -> None:
+        """Forward the step's data to every component.
+
+        Parameters
+        ----------
+        observations : Mapping[str, torch.Tensor]
+            Observed values and host data.
+        """
+        for component in self._component_guides:
+            component.observe(observations)
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Draw from the mixture density that `log_prob` scores.

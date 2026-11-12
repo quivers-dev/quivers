@@ -293,7 +293,7 @@ defined when $\mathrm{dom}(\llbracket e \rrbracket) = \mathrm{cod}(\llbracket e 
 
 A recurrent cell answers “given this input and the previous state, what is
 the next state?” A scan repeats that question at each sequence position.
-Only the final state is returned by this combinator. For a stochastic cell,
+By default the combinator returns the final state; `outputs=all` returns every state. For a stochastic cell,
 a score for one complete hidden-state trajectory and the marginal density
 of the final state are different quantities: the latter must integrate over
 all intermediate trajectories.
@@ -304,7 +304,7 @@ $$
 \mathsf{scan}(e, \mathit{init}) : A \to H.
 $$
 
-At runtime the input tensor carries an implicit time axis. `ScanMorphism` initializes $h_0$ with zeros or a learned vector, applies $h_t=e(x_t,h_{t-1})$, and returns the final state $h_T$. Its time index controls the sequence of recurrent updates. In contrast, `.trace(...)` contracts matching input and output coordinates in one morphism.
+At runtime the input tensor carries an implicit time axis. `ScanMorphism` initializes $h_0$ with zeros or a learned vector, applies $h_t=e(x_t,h_{t-1})$, and returns the final state $h_T$. With `outputs=all` the value is the whole trajectory $(h_1, \ldots, h_T)$, a sequence over the same time axis, so a later scan can run over it and $\mathsf{scan}(e_1, \mathit{all}) ; \mathsf{scan}(e_2)$ stacks two recurrences. With `reverse=true` the recursion runs $h_t = e(x_t, h_{t+1})$ from $h_{T+1} = h_0$, the final state is $h_1$, and the trajectory is still indexed by $t$; the trajectory's log density is $\sum_t \log p(h_t \mid x_t, h_{t+1})$. Inside a program, a reversed scan's sites are addressed in the order it reaches them, so `s@n` is position $T - n$ (counting positions from 1), while observations are read by position. Its time index controls the sequence of recurrent updates. In contrast, `.trace(...)` contracts matching input and output coordinates in one morphism.
 
 When a scan is drawn inside a program, its step's sites are sites of that program, reached once per position: the joint is $\sum_t \sum_{s} \log p(s_t \mid \cdot)$ over every site $s$ of the step, with the $t$-th occurrence of a site addressed `s@t`. A stochastic morphism cell is drawn at the site the scan's binding names, so `sample h <- scan(cell)` scores the trajectory $h_0, \ldots, h_{T-1}$ at `h@0`, ..., `h@{T-1}`; a program cell's own sites keep their labels, and an observation inside it is scored against the $t$-th entry of an observation sequence. The [scans reference](../reference/qvr/probabilistic-programs.md#scans) states the scoping and addressing rules.
 

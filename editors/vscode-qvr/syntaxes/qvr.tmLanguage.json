@@ -134,7 +134,7 @@
     },
     "keyword-structural": {
       "name": "keyword.declaration.structural.qvr",
-      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
+      "match": "\\b(sorts|constructors|binders|vertex_kinds|edge_kinds|binds|dim|iterations|readout|op|init|outputs|reverse|message|update|var_init|recurrent|attention|structure|primitive|factor|binder_select|body|recursive|data|index)\\b"
     },
     "keyword-deduction": {
       "name": "keyword.declaration.deduction.qvr",
@@ -178,7 +178,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.qvr",
-      "match": "\\b(identity|cup|cap|fan|repeat|stack|scan|parser|ccg|lambek|chart_fold|from_data|freeze|dagger|trace|change_base|curry_left|curry_right|FreeResiduated|FreeMonoid|abs|acos|acosh|asin|asinh|atan|atanh|ceil|cos|cosh|cumsum|digamma|elu|erf|erfc|erfinv|exp|expm1|filter|floor|fold|gelu|int|length|lgamma|log|log10|log1p|log2|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|max|mean|min|mish|normalize|pow|prod|real|reciprocal|relu|relu6|round|rsqrt|selu|sigmoid|sign|silu|sin|sinh|softmax|softplus|softsign|sort|sqrt|square|sum|tan|tanh|traverse|trunc|weight|weight_value)\\b"
+      "match": "\\b(identity|cup|cap|fan|repeat|stack|scan|parser|ccg|lambek|chart_fold|from_data|freeze|dagger|trace|change_base|curry_left|curry_right|FreeResiduated|FreeMonoid|abs|acos|acosh|asin|asinh|atan|atanh|ceil|concat|cos|cosh|cumsum|digamma|elu|erf|erfc|erfinv|exp|expm1|filter|floor|fold|gelu|int|layer_norm|length|lgamma|log|log10|log1p|log2|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|matmul|max|mean|min|mish|normalize|pow|prod|real|reciprocal|relu|relu6|rms_norm|round|rsqrt|select|selu|sigmoid|sign|silu|sin|sinh|slice|softmax|softplus|softsign|sort|sqrt|square|sum|tan|tanh|traverse|trunc|weight|weight_value)\\b"
     },
     "builtin-type": {
       "name": "support.class.builtin.qvr",
@@ -196,7 +196,7 @@
     },
     "distribution-family": {
       "name": "support.type.distribution.qvr",
-      "match": "\\b(Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogNormal|Logistic|LogisticNormal|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
+      "match": "\\b(Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogGamma|LogNormal|Logistic|LogisticNormal|LogitBeta|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
     },
     "qiec-option-value": {
       "comment": "QIEC handler-forwarding option values.",

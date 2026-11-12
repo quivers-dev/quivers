@@ -51,6 +51,7 @@ from torch.distributions.constraint_registry import biject_to
 from torch.distributions.transforms import Transform
 
 from quivers.continuous._matrix import PositiveDefiniteTransform
+from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Call, Draw, Observe, Scan
@@ -149,7 +150,10 @@ def _require_one_run(x: torch.Tensor, consumer: str) -> None:
     program, each with its own latents. MCMC, the Laplace approximation,
     and annealed importance sampling target the posterior of one run's
     latents, so they take a one-row input; the rows a program observes
-    come from its data and its plates, not from the input's rows.
+    come from its data and its plates, not from the input's rows. They
+    target the exact posterior, so they also refuse to run inside a
+    [`subsample`][quivers.effects.subsample] block, whose log joint is
+    only an unbiased estimate.
 
     Parameters
     ----------
@@ -161,8 +165,9 @@ def _require_one_run(x: torch.Tensor, consumer: str) -> None:
     Raises
     ------
     ValueError
-        If ``x`` has more than one row.
+        If ``x`` has more than one row, or a plate is subsampled.
     """
+    refuse_subsampling(consumer)
     rows = int(x.shape[0]) if x.dim() else 1
     if rows != 1:
         raise ValueError(
@@ -549,7 +554,13 @@ class LatentRegistry:
         return cls(sites, observed, model)
 
     @classmethod
-    def from_trace(cls, model: MonadicProgram, recorded: Trace) -> "LatentRegistry":
+    def from_trace(
+        cls,
+        model: MonadicProgram,
+        recorded: Trace,
+        *,
+        exclude: frozenset[str] | set[str] = frozenset(),
+    ) -> "LatentRegistry":
         """Assemble the registry from a run of the model.
 
         Every sample site the run reached that is neither observed nor
@@ -561,12 +572,19 @@ class LatentRegistry:
         ``trace(model, x, observations)`` at the input and data the
         latents are inferred at.
 
+        Sites named in ``exclude`` are left out: they are latent, but
+        held outside the flat vector, as the sites a `GibbsKernel`
+        updates are, and they need not have a support the registry can
+        biject onto (a discrete site, for instance).
+
         Parameters
         ----------
         model : MonadicProgram
             Compiled probabilistic program.
         recorded : Trace
             A trace of one run of ``model``.
+        exclude : frozenset[str] | set[str]
+            Latent sites to leave out of the registry.
 
         Returns
         -------
@@ -585,6 +603,8 @@ class LatentRegistry:
                 observed.update(label.split(","))
                 continue
             names = label.split(",")
+            if label in exclude or any(name in exclude for name in names):
+                continue
             base = label.rpartition("@")[0] or label
             spec_index = reached.get(base.split(",")[0], -1)
             for var in names:

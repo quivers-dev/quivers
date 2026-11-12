@@ -3088,6 +3088,10 @@ _STAN_PRIMITIVES: dict[str, str] = {
     "or": "({0} || {1})",
     "not": "(!{0})",
     "int_to_real": "(1.0 * {0})",
+    "bool_to_real": "({0} ? 1.0 : 0.0)",
+    "bool_to_int": "({0} ? 1 : 0)",
+    "select_real": "({0} ? {1} : {2})",
+    "select_int": "({0} ? {1} : {2})",
 }
 
 

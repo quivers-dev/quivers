@@ -192,6 +192,32 @@ suffice: interlocking cycles (e.g. an introduction / elimination
 pair over nested constructors) can diverge even when every
 individual cycle's log-weight is negative.
 
+### 2.4 Production probabilities (`normalize=lhs`)
+
+Under the deduction option `normalize=lhs`, the rules and the
+expanded lexicon entries are the productions $p$ of a grammar, each
+with a left-hand side $\mathrm{lhs}(p)$: the category of a `span`
+conclusion or of a lexical axiom, and otherwise the conclusion item
+with its position slots erased. Each production has a free
+log-weight $\phi_p$, its learnable parameter or $0$ when it is not
+learnable, and contributes
+
+$$
+\theta_p \;=\; \phi_p \;-\; \log \sum_{q \,:\, \mathrm{lhs}(q) = \mathrm{lhs}(p)} e^{\phi_q},
+$$
+
+so $\sum_{q : \mathrm{lhs}(q) = A} e^{\theta_q} = 1$ for every
+left-hand side $A$ and the deduction denotes a probabilistic
+context-free grammar [@booth1973applying]. The rule weight of §2.1
+is $\theta_r$ and the lexical weight of an entry $e$ is $\theta_e$.
+The groups must be fixed by the declaration: every rule has
+$C(r) = \varnothing$ and carries neither `parent` nor `bounded`, the
+lexicon categories are ground, items carry no logical forms, the
+axioms come from a lexicon, and the semiring is `LogProb` or
+`Viterbi`; any other deduction is refused. The checked elaboration
+computes the same $\theta_p$ from the `Param` reads of the group's
+members.
+
 The separation between a deduction structure and the semiring used to score
 it follows the semiring-parsing perspective [@goodman1999semiring].
 
@@ -474,6 +500,42 @@ The body's denotation extends the program's log-joint by the
 inside log-marginal of the input under the deduction's current
 parameters: SVI and NUTS over the program's parameter set then
 descend to the deduction's parameters automatically.
+
+A corpus of independent sentences of one length is one input of one
+run, a table with one sentence per object of a plate $P$:
+
+```
+let chart = parse(D, corpus, P)
+score log_L = chart.goal_weight()
+```
+
+and `chart.goal_weight()` denotes the semiring product of the
+sentences' inside weights, $\bigotimes_{n \in P}
+\bigoplus_{i \in \mathrm{goal}_n} \alpha_n[i]$, under `LogProb` the
+corpus log-likelihood $\sum_n \log Z(s_n)$.
+
+For a grammar normalized per left-hand side ([§2.4](#24-production-probabilities-normalizelhs)),
+the call may bind the production probabilities of every left-hand side
+$A$ with more than one production to a program value $p_A$, a vector
+over $A$'s productions in the order `production_groups` lists:
+
+```
+let chart = parse(D, corpus, P, ("A", p_A), ("B", p_B))
+```
+
+The chart then reads $\theta_q = \log p_{A,q} - \log \sum_{q'}
+p_{A,q'}$ for each production $q$ of $A$ (so $\theta_q = \log
+p_{A,q}$ on the simplex) in place of the learned weights, and a
+production alone in its group has $\theta_q = 0$. With
+$p_A \sim \mathrm{Dirichlet}(\alpha_A)$ drawn in the program, the
+program's log-joint is
+$\sum_A \log \mathrm{Dir}(p_A; \alpha_A) + \sum_n \log Z(s_n; p)$,
+the joint of a Bayesian PCFG, whose posterior the inference
+algorithms target. The binding is checked when the program is
+lowered: every bound label is a left-hand side of several
+productions, every such left-hand side is bound once, each value is a
+vector of its group's size, and a value drawn at a sample site comes
+from a family whose support is the simplex.
 
 ### 9.1 Composing deductions
 

@@ -27,7 +27,7 @@ export p
 @pytest.mark.parametrize(
     ("step", "name"),
     [
-        ("let z = matmul(v, v)", "matmul"),
+        ("let z = hypot(v, v)", "hypot"),
         ("let z = exp(where(v, v, v))", "where"),
         ("score z = sum(frobnicate(v))", "frobnicate"),
     ],

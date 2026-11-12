@@ -165,16 +165,31 @@ for _backend in ("bugs", "church", "edward2", "gen", "jags", "pymc", "turing"):
         )
 # A scan's sequence extent is runtime data, not a declared object a target
 # can use as a loop bound, so every target refuses a scan by its cell's
-# name, whatever bindings the cell reads.
+# name, whatever bindings the cell reads and whatever its options.
 for _backend in _BACKENDS:
     for _fixture in (
         "scan_cell_reads_vector",
         "scan_cell_reads_matrix",
         "scan_cell_reads_matrix_data",
+        "scan_initial_binding",
+        "scan_outputs_all",
+        "scan_reverse",
+        "scan_bidirectional",
     ):
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"
         )
+# A learned function's network weights are model-internal, neither sites
+# nor data, so every target refuses a weighted function by its network;
+# latent weights are sites, but no target has a form for the network's
+# layers applied to them.
+for _backend in _BACKENDS:
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "function_linear")] = (
+        "param-source:linear"
+    )
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "kernel_latent_weights")] = (
+        "param-source:linear:latent"
+    )
 # BUGS / JAGS `sum` contracts every axis of a two-axis operand, where the
 # QVR reduction collapses only the last.
 for _backend in ("bugs", "jags"):
@@ -407,6 +422,12 @@ for _category, _fixture in (
     _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
 # Stan's samplers draw no discrete parameter, so a sampled class is one
 # it cannot carry.
+# A `concat` or `slice` of a table elaborates to a factor whose entry is
+# a list, which BUGS and JAGS have no loop form for.
+for _backend in ("bugs", "jags"):
+    _EXPECTED_ORTHOGONAL_RAISES[
+        (_backend, "let_expressions", "let_concat_slice_matrix")
+    ] = "let-expr:LetExprFactor:"
 _EXPECTED_ORTHOGONAL_RAISES[("stan", "steps", "sample_class_code")] = (
     "sample:discrete-latent"
 )

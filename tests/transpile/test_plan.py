@@ -13,6 +13,8 @@ from quivers.transpile.ir import (
     CSIntegerInterval,
     DimStatic,
     IRArgBroadcast,
+    IRArgList,
+    IRArgNumber,
     IRArgRef,
     IRCall,
     IRDataInput,
@@ -89,7 +91,7 @@ export prog
 
 CATEGORICAL_LOGITS_MORPHISM = """\
 object Category : FinSet 3
-morphism prior : Category -> Category ~ Categorical(logits=scores)
+morphism prior : Category -> Category ~ Categorical(logits=[-2.0, 0.5, 1.25])
 program prog : Category -> Category
     observe y <- prior
     return y
@@ -179,7 +181,25 @@ def test_categorical_morphism_init_keeps_its_named_parameterization() -> None:
     observe = ir.body[0]
     assert isinstance(observe, IRObserve)
     assert observe.arg_names == ("logits",)
-    assert observe.args == (IRArgRef(name="scores", indices=()),)
+    assert observe.args == (
+        IRArgList(
+            elements=(
+                IRArgNumber(value=-2.0),
+                IRArgNumber(value=0.5),
+                IRArgNumber(value=1.25),
+            )
+        ),
+    )
+
+
+def test_a_kernel_initializer_reading_a_name_is_refused() -> None:
+    source = CATEGORICAL_LOGITS_MORPHISM.replace(
+        "logits=[-2.0, 0.5, 1.25]", "logits=scores"
+    )
+    with pytest.raises(
+        UnsupportedConstruct, match="`logits=scores` .* is not a literal"
+    ):
+        Lower().forward(parse(source))
 
 
 @pytest.mark.parametrize(

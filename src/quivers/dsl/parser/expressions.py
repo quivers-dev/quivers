@@ -328,16 +328,7 @@ def _walk_expr(t: _Tree, vid: str) -> Expr:
             col=col,
         )
     if k == "scan_expr":
-        inner_vid = t.field(vid, "inner")
-        init_vid = t.field(vid, "init")
-        if inner_vid is None:
-            raise ParseError(f"scan_expr missing inner at {vid}")
-        return ExprScan(
-            expr=_walk_expr(t, inner_vid),
-            init=t.text(init_vid) if init_vid else "zeros",
-            line=line,
-            col=col,
-        )
+        return _walk_scan_expr(t, vid, line, col)
     if k == "parser_expr":
         return _walk_parser_expr(t, vid, line, col)
     if k == "chart_fold_expr":
@@ -446,6 +437,65 @@ def _walk_expr(t: _Tree, vid: str) -> Expr:
 
 def _err_expr(t: _Tree, vid: str, field: str) -> Expr:
     raise ParseError(f"expression node {vid} missing {field}")
+
+
+def _walk_scan_expr(t: _Tree, vid: str, line: int, col: int) -> ExprScan:
+    """Walk ``scan(cell, ...)`` and its options.
+
+    Parameters
+    ----------
+    t : _Tree
+        The parsed tree.
+    vid : str
+        The ``scan_expr`` vertex.
+    line : int
+        The expression's 1-based line.
+    col : int
+        The expression's column.
+
+    Returns
+    -------
+    ExprScan
+        The scan, with ``init`` defaulting to ``zeros``, ``outputs`` to
+        ``last``, and ``reverse`` to false.
+
+    Raises
+    ------
+    ParseError
+        If the cell is missing, an option is given more than once, or
+        ``outputs`` names neither ``all`` nor ``last``.
+    """
+    inner_vid = t.field(vid, "inner")
+    if inner_vid is None:
+        raise ParseError(f"scan_expr missing inner at {vid}")
+    values: dict[str, str] = {}
+    for option in ("init", "outputs", "reverse"):
+        given = t.fields(vid, option)
+        if len(given) > 1:
+            option_line, option_col = t.line_col(given[1])
+            raise ParseError(
+                f"scan option {option!r} given twice at line {option_line}, "
+                f"col {option_col}; a scan takes each option at most once"
+            )
+        if given:
+            values[option] = t.text(given[0])
+    outputs = values.get("outputs", "last")
+    if outputs not in ("last", "all"):
+        (outputs_vid,) = t.fields(vid, "outputs")
+        option_line, option_col = t.line_col(outputs_vid)
+        raise ParseError(
+            f"scan option outputs={outputs} at line {option_line}, col "
+            f"{option_col}: a scan's outputs are 'last' (its final state) or "
+            f"'all' (its state after every position)"
+        )
+    return ExprScan(
+        expr=_walk_expr(t, inner_vid),
+        init=values.get("init", "zeros"),
+        outputs="all" if outputs == "all" else "last",
+        reverse=values.get("reverse", "false") == "true",
+        line=line,
+        col=col,
+    )
 
 
 def _walk_parser_expr(t: _Tree, vid: str, line: int, col: int) -> ExprParser:

@@ -510,9 +510,14 @@ def _emit_expr(e: Expr) -> str:
     if isinstance(e, ExprStack):
         return f"stack({_emit_expr(e.expr)}, {e.count})"
     if isinstance(e, ExprScan):
-        if e.init == "zeros":
-            return f"scan({_emit_expr(e.expr)})"
-        return f"scan({_emit_expr(e.expr)}, init={e.init})"
+        options = [_emit_expr(e.expr)]
+        if e.init != "zeros":
+            options.append(f"init={e.init}")
+        if e.outputs != "last":
+            options.append(f"outputs={e.outputs}")
+        if e.reverse:
+            options.append("reverse=true")
+        return f"scan({', '.join(options)})"
     if isinstance(e, ExprParser):
         return _emit_parser_expr(e)
     if isinstance(e, ExprChartFold):

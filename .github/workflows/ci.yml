@@ -4,96 +4,165 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+# One run per pull request or branch. A new push to a pull request
+# supersedes the run before it; a push to `main` is release-certifying
+# and always runs to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
 
 jobs:
-  changes:
-    name: Classify changes
+  detect-changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      probe: ${{ steps.filter.outputs.probe }}
+      probes: ${{ steps.filter.outputs.probes }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Determine whether release probes are required
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Determine whether probe tests are required
         id: filter
         uses: dorny/paths-filter@v3
         with:
           predicate-quantifier: every
           filters: |
-            probe:
+            probes:
               - "**"
               - "!*.md"
               - "!**/*.md"
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ env.PYTHON_VERSION }}
+
       # Pinned to the line the tree is clean under. Unpinned, a
       # linter release adds rules and every branch goes red at
       # once, for a change nobody in this repository made.
-      - run: pip install 'ruff>=0.15,<0.16'
-      - run: ruff check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
-      - run: ruff format --check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
-      - run: python tools/docstring_audit.py --check src/quivers/qiec
+      - name: Install Ruff
+        run: python -m pip install 'ruff>=0.15,<0.16'
+
+      - name: Check lint rules
+        run: ruff check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
+
+      - name: Check formatting
+        run: ruff format --check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
+
+      - name: Audit docstrings
+        run: python tools/docstring_audit.py --check src/quivers/qiec
+
       - name: Recompile VS Code extension from its lockfile
         working-directory: editors/vscode-qvr
         run: npm ci && npm run compile
+
       - name: Verify checked-in extension output
         run: git diff --exit-code -- editors/vscode-qvr/out
-      - name: Verify editor source/archive parity
+
+      - name: Verify editor source and archive parity
         run: python tools/check_editor_release.py --full
+
+  type-check:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run Pyright
+        run: pyright src/quivers
 
   # The export policy's documentation rule: every public name renders
   # in the API reference. The site build is strict, so a broken
   # cross-reference fails here too rather than at deploy time.
-  docs:
+  build-docs:
+    name: Build documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
       # The checker imports every public package, so the optional
       # runtime dependencies are installed alongside the docs toolchain.
-      - run: pip install -e ".[docs,data,diagnostics,formulas,repl,lsp]"
-      - run: mkdocs build --strict
-      - run: python tools/check_api_reference.py site
+      - name: Install package with documentation dependencies
+        run: python -m pip install -e ".[docs,data,diagnostics,formulas,repl,lsp]"
 
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - run: pip install -e ".[dev]"
-      - run: pyright src/quivers
+      - name: Build site
+        run: mkdocs build --strict
+
+      - name: Check API reference coverage
+        run: python tools/check_api_reference.py site
 
   # Native parser assets are part of the wheel's executable compatibility
   # contract. Exercise the installed artifact on every supported runner with
   # compiler discovery disabled so neither current parsing nor migration can
   # hide a missing bundled library behind a machine-local source build.
-  migration-assets:
-    name: migration-assets (${{ matrix.os }})
+  test-wheel:
+    name: Test wheel (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Enable MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - run: python -m pip install build
-      - run: python -m build --wheel
+
+      - name: Install build tooling
+        run: python -m pip install build
+
+      - name: Build wheel
+        run: python -m build --wheel
+
       - name: Install the built wheel
         shell: bash
         run: |
@@ -102,99 +171,179 @@ jobs:
             "panproto==0.74.4" \
             "panproto-grammars-all==0.74.4" \
             dist/*.whl
+
       - name: Validate current and migration parsers without a compiler
         run: python tools/release_wheel_smoke.py .
 
-  # Fast tier. Everything that does not launch a probe container, which
-  # is most of the suite by count and a small share of its runtime. This
-  # is the job a pull request waits on.
-  fast:
+  # Unit tier. Everything that neither launches a probe container nor
+  # carries the `slow` marker: most of the suite by count. The probe
+  # and slow tiers each have a job of their own below, so every test
+  # runs in exactly one job.
+  #
+  # Sharded across runners by recorded test durations, so the wall
+  # clock is the slowest shard rather than the sum. The durations are
+  # measured by the shards themselves and carried between runs in the
+  # Actions cache (`update-test-durations` below); a run with no
+  # recorded durations splits by test count instead.
+  test:
+    name: Test (shard ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up transpile toolchain
+        uses: ./.github/actions/setup-transpile-toolchain
         with:
-          python-version: "3.14"
-      # `tests/transpile/test_external_syntax.py` and the gallery
-      # compile sweep check each emitted program against the real
-      # parser for its language, and a check that finds no binary
-      # reports a gap rather than a pass. Scheme covers the Church
-      # runtime's arity shims, JAGS the JAGS and BUGS model files,
-      # `stanc` Stan, and Julia both Turing and Gen.
-      - run: sudo apt-get update && sudo apt-get install -y chezscheme jags
-      - name: Install stanc
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Snapshot restored test durations
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/stanc" \
-            https://github.com/stan-dev/stanc3/releases/download/v2.39.0/linux-stanc
-          sudo install -m 0755 "$RUNNER_TEMP/stanc" /usr/local/bin/stanc
-          stanc --version
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: "1.11"
-      # The WebPPL target's runtime is written in WebPPL's own subset,
-      # and `tests/transpile/test_qiec_host_runtimes.py` and the
-      # renderer tests run each generated program through the
-      # compiler that defines that subset.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm install -g webppl
-      # `test_audit_fix_pymc` imports pymc to check the emission
-      # against the library's own API rather than against a
-      # transcript of it, so the library has to be here: without
-      # it the module fails to import and the whole job errors.
-      - run: pip install -e ".[dev,data,diagnostics,formulas,repl,lsp,targets]"
+          if [ -f .test_durations ]; then
+            cp .test_durations "$RUNNER_TEMP/test_durations.before.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/test_durations.before.json"
+          fi
+
       # No probe container runs here, so the image build is skipped
       # outright rather than paid for and left unused.
+      # `tests/test_doc_blocks.py` runs in `test-doc-blocks`: the blocks
+      # of one page share state in order, so they cannot be split
+      # across shards.
       # `--dist loadfile` rather than the default per-test scheduling.
       # Most of this tier is thousands of sub-millisecond text checks,
       # and handing those out individually costs more than running
       # them; whole files are the unit worth distributing.
-      - run: python -m pytest tests/ -q -m "not probe" -n auto --dist loadfile
+      - name: Run test shard
+        run: >-
+          python -m pytest tests/ -m "not probe and not slow"
+          --ignore tests/test_doc_blocks.py
+          -n auto --dist loadfile
+          --splits 6 --group ${{ matrix.shard }}
+          --splitting-algorithm least_duration
+          --store-durations --durations-path .test_durations
+          --durations 25
         env:
           QUIVERS_SKIP_DOCKER: "1"
 
-  # Release tier. The probe cells, which drive eleven real PPLs in
-  # containers and carry nearly all of the suite's wall clock. Sharded
-  # across runners: the shards are independent, so the wall clock is the
-  # slowest shard rather than the sum.
-  probe:
-    needs: changes
+      # Keep only what this shard measured: the entries whose value
+      # differs from the restored file.
+      - name: Extract this shard's measured durations
+        if: success()
+        continue-on-error: true
+        run: |
+          jq --slurpfile before "$RUNNER_TEMP/test_durations.before.json" \
+            'with_entries(select($before[0][.key] != .value))' \
+            .test_durations > "test-durations-${{ matrix.shard }}.json"
+
+      - name: Upload this shard's measured durations
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-${{ matrix.shard }}
+          path: test-durations-${{ matrix.shard }}.json
+          retention-days: 1
+
+  # The blocks of one documentation page execute in order and share
+  # state, so this file runs whole, on one worker.
+  test-doc-blocks:
+    name: Test documentation blocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up transpile toolchain
+        uses: ./.github/actions/setup-transpile-toolchain
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run documentation block tests
+        run: >-
+          python -m pytest tests/test_doc_blocks.py
+          -m "not probe and not slow" --durations 25
+        env:
+          QUIVERS_SKIP_DOCKER: "1"
+
+  # Merge what each shard measured into the recorded durations and
+  # save them for the next run to split by. Recording is bookkeeping:
+  # a failure here, or in a shard's upload, never fails the run.
+  update-test-durations:
+    name: Update recorded test durations
+    needs: [test, test-slow]
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Download measured durations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-durations-*
+          path: measured
+          merge-multiple: true
+
+      - name: Merge measured durations
+        run: |
+          [ -f .test_durations ] || echo '{}' > .test_durations
+          jq --slurp --sort-keys 'add' .test_durations measured/test-durations-*.json \
+            > merged.json
+          mv merged.json .test_durations
+          jq 'length' .test_durations
+
+      - name: Save recorded test durations
+        uses: actions/cache/save@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+
+  # Probe tier. The probe cells, which drive eleven real PPLs in
+  # containers. Sharded across runners: the shards are independent, so
+  # the wall clock is the slowest shard rather than the sum.
+  test-probes:
+    name: Test probes (shard ${{ matrix.shard }}/4)
+    needs: detect-changes
     if: >-
       always() &&
-      (needs.changes.result != 'success' ||
-       needs.changes.outputs.probe == 'true')
+      (needs.detect-changes.result != 'success' ||
+       needs.detect-changes.outputs.probes == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up transpile toolchain
+        uses: ./.github/actions/setup-transpile-toolchain
         with:
-          python-version: "3.14"
-      # The transpile test modules require their target tools at
-      # import (`tests/transpile/_tools.py`), whichever tier collects
-      # them, so every tier installs the same set: Chez Scheme for the
-      # Church runtime, JAGS for the JAGS and BUGS model files, `stanc`
-      # for Stan, Julia for Turing and Gen, and Node with WebPPL for
-      # the WebPPL runtime.
-      - run: sudo apt-get update && sudo apt-get install -y chezscheme jags
-      - name: Install stanc
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/stanc" \
-            https://github.com/stan-dev/stanc3/releases/download/v2.39.0/linux-stanc
-          sudo install -m 0755 "$RUNNER_TEMP/stanc" /usr/local/bin/stanc
-          stanc --version
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: "1.11"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm install -g webppl
-      - run: pip install -e ".[dev,data,diagnostics,formulas,repl,lsp,targets]"
+          python-version: ${{ env.PYTHON_VERSION }}
+
       # The suite refuses to skip on a missing probe image and builds
       # all nine instead. They change only when their Dockerfiles do, so
       # the built images are cached against a hash of that directory and
@@ -206,9 +355,11 @@ jobs:
         with:
           path: ~/.cache/qvr-probe-images
           key: qvr-probe-images-${{ hashFiles('tests/transpile/docker/**') }}
+
       - name: Load probe images
         if: steps.probe-images.outputs.cache-hit == 'true'
         run: gunzip -c ~/.cache/qvr-probe-images/images.tar.gz | docker load
+
       # Pull requests may reuse memoised measurements for turnaround. A push to
       # main is release-certifying, so it deliberately leaves the cache unset
       # and executes every probe container against the merged tree.
@@ -220,21 +371,23 @@ jobs:
           key: qvr-probe-cache-${{ matrix.shard }}-${{ github.sha }}
           restore-keys: |
             qvr-probe-cache-${{ matrix.shard }}-
-      # No `-x`: one failure used to hide every test behind it, so a run
-      # bought one diagnosis and left the rest unexercised.
+
+      # No `-x`: one failure would hide every test behind it, so a run
+      # would buy one diagnosis and leave the rest unexercised.
       # Two levels of parallelism, because they solve different
       # problems. `--splits` divides the cells across runners, and
       # `-n auto` keeps each runner's cores busy within its share.
       # xdist's default scheduler hands out work as workers free up, so
       # one slow cell does not stall the others in the same shard.
       - name: Run probe shard
-        run: |
-          python -m pytest tests/ -q -m probe -n auto \
-            --splits 4 --group ${{ matrix.shard }}
+        run: >-
+          python -m pytest tests/ -q -m probe -n auto
+          --splits 4 --group ${{ matrix.shard }}
         env:
           QUIVERS_PROBE_CACHE: >-
             ${{ github.event_name == 'pull_request' &&
                 '~/.cache/qvr-probe-measurements' || '' }}
+
       - name: Save probe images
         if: always() && steps.probe-images.outputs.cache-hit != 'true'
         run: |
@@ -245,40 +398,96 @@ jobs:
             docker save $images | gzip -1 > ~/.cache/qvr-probe-images/images.tar.gz
           fi
 
-  # The default addopts deselect `slow`, so the gallery sweep and the
-  # recovery benchmarks never run in the tiers above. They gate here
-  # instead: an example whose prose or code stops matching the library
-  # fails CI rather than rotting unnoticed.
-  slow:
+  # Slow tier. The default addopts deselect `slow`, so the gallery sweep
+  # and the recovery benchmarks run only here: an example whose prose or
+  # code stops matching the library fails CI rather than rotting
+  # unnoticed. Sharded across runners by recorded durations, like the
+  # unit tier; each shard runs its tests one at a time, since a single
+  # recovery benchmark already uses every core of its runner.
+  test-slow:
+    name: Test slow tier (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up transpile toolchain
+        uses: ./.github/actions/setup-transpile-toolchain
         with:
-          python-version: "3.14"
-      # The transpile test modules require their target tools at
-      # import (`tests/transpile/_tools.py`), whichever tier collects
-      # them, so every tier installs the same set: Chez Scheme for the
-      # Church runtime, JAGS for the JAGS and BUGS model files, `stanc`
-      # for Stan, Julia for Turing and Gen, and Node with WebPPL for
-      # the WebPPL runtime.
-      - run: sudo apt-get update && sudo apt-get install -y chezscheme jags
-      - name: Install stanc
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.run_id }}
+          restore-keys: |
+            test-durations-
+
+      - name: Snapshot restored test durations
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/stanc" \
-            https://github.com/stan-dev/stanc3/releases/download/v2.39.0/linux-stanc
-          sudo install -m 0755 "$RUNNER_TEMP/stanc" /usr/local/bin/stanc
-          stanc --version
-      - uses: julia-actions/setup-julia@v2
+          if [ -f .test_durations ]; then
+            cp .test_durations "$RUNNER_TEMP/test_durations.before.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/test_durations.before.json"
+          fi
+
+      - name: Run slow test shard
+        run: >-
+          python -m pytest tests/ -m slow -v
+          --splits 4 --group ${{ matrix.shard }}
+          --splitting-algorithm least_duration
+          --store-durations --durations-path .test_durations
+          --durations 25
+
+      - name: Extract this shard's measured durations
+        if: success()
+        continue-on-error: true
+        run: |
+          jq --slurpfile before "$RUNNER_TEMP/test_durations.before.json" \
+            'with_entries(select($before[0][.key] != .value))' \
+            .test_durations > "test-durations-slow-${{ matrix.shard }}.json"
+
+      - name: Upload this shard's measured durations
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
-          version: "1.11"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm install -g webppl
-      # `test_audit_fix_pymc` imports pymc to check the emission
-      # against the library's own API rather than against a
-      # transcript of it, so the library has to be here: without
-      # it the module fails to import and the whole job errors.
-      - run: pip install -e ".[dev,data,diagnostics,formulas,repl,lsp,targets]"
-      - run: python -m pytest tests/ -m slow -q
+          name: test-durations-slow-${{ matrix.shard }}
+          path: test-durations-slow-${{ matrix.shard }}.json
+          retention-days: 1
+
+  # One stable check for branch protection to require: it passes only
+  # when every job above passed or was deliberately skipped.
+  ci-status:
+    name: CI status
+    if: always()
+    needs:
+      - detect-changes
+      - lint
+      - type-check
+      - build-docs
+      - test-wheel
+      - test
+      - test-doc-blocks
+      - test-probes
+      - test-slow
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every required job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::a required job finished with result '$result'"; exit 1 ;;
+            esac
+          done

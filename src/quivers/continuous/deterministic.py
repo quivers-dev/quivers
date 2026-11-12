@@ -19,18 +19,37 @@ Dirac indicator).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Literal
 
 import torch
+from torch import nn
+from torch.func import functional_call
 
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
+from quivers.continuous.param_source import ParamSource
 from quivers.continuous.spaces import (
     CholeskyFactor,
+    ContinuousSpace,
     Euclidean,
     PositiveReals,
     ProductSpace,
     Simplex,
 )
+
+type FunctionOutput = Literal["identity", "tanh", "sigmoid", "softplus", "relu"]
+"""The nonlinearity a `LearnedFunction` applies to its network's output."""
+
+_OUTPUTS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
+    "identity": lambda value: value,
+    "tanh": torch.tanh,
+    "sigmoid": torch.sigmoid,
+    "softplus": nn.functional.softplus,
+    "relu": torch.relu,
+}
+
+#: The output nonlinearities a `LearnedFunction` accepts, by name.
+FUNCTION_OUTPUTS: frozenset[str] = frozenset(_OUTPUTS)
 
 
 class DeterministicMorphism(ContinuousMorphism):
@@ -159,8 +178,405 @@ def cholesky_quad_form_morphism(dim: int) -> ContinuousMorphism:
     return DeterministicMorphism(source, target, _apply, name="cholesky_quad_form")
 
 
+def _event_width(space: AnySpace) -> int:
+    """The number of real coordinates one value of a space carries.
+
+    Parameters
+    ----------
+    space : AnySpace
+        The space.
+
+    Returns
+    -------
+    int
+        Its width.
+
+    Raises
+    ------
+    TypeError
+        If the space is not continuous.
+    """
+    if not isinstance(space, ContinuousSpace):
+        raise TypeError(
+            f"LearnedFunction: a learned function maps real coordinates, but "
+            f"{space!r} is not a continuous space"
+        )
+    return int(space.dim)
+
+
+def function_factor_widths(space: AnySpace) -> tuple[int, ...]:
+    """The width of each factor of a learned function's domain.
+
+    Parameters
+    ----------
+    space : AnySpace
+        The domain; a `ProductSpace` lists its factors in order.
+
+    Returns
+    -------
+    tuple[int, ...]
+        One width per factor, the one width of a space that is not a
+        product.
+
+    Raises
+    ------
+    TypeError
+        If a factor is not continuous.
+    """
+    if isinstance(space, ProductSpace):
+        return tuple(_event_width(component) for component in space.components)
+    return (_event_width(space),)
+
+
+def learned_function_draw_message(name: str) -> str:
+    """The refusal of a ``sample`` or ``observe`` that draws from a function.
+
+    Parameters
+    ----------
+    name : str
+        The learned function's name.
+
+    Returns
+    -------
+    str
+        The message every path raises.
+    """
+    return (
+        f"the learned function {name!r} is deterministic, so no step draws "
+        f"from it; bind its value with `let v = {name}(...)` and draw from a "
+        f"family around it, as in `sample s <- Normal(loc=v, scale=...)`"
+    )
+
+
+def weight_site_names(name: str, depth: int) -> tuple[tuple[str, str], ...]:
+    """The site names of a network's weights and biases, layer by layer.
+
+    Parameters
+    ----------
+    name : str
+        The network's morphism name.
+    depth : int
+        The number of hidden layers.
+
+    Returns
+    -------
+    tuple[tuple[str, str], ...]
+        One ``(weight, bias)`` pair per layer, hidden layers first:
+        ``<name>_param_layer<k>_weight`` and ``<name>_param_layer<k>_bias``,
+        then ``<name>_param_weight`` and ``<name>_param_bias``.
+    """
+    layers = [
+        (f"{name}_param_layer{k}_weight", f"{name}_param_layer{k}_bias")
+        for k in range(depth)
+    ]
+    layers.append((f"{name}_param_weight", f"{name}_param_bias"))
+    return tuple(layers)
+
+
+def network_weight_sites(source: nn.Module, name: str) -> dict[str, str]:
+    """The site each weight and bias of a network is drawn at.
+
+    Parameters
+    ----------
+    source : nn.Module
+        The network, whose affine layers are `torch.nn.Linear` modules
+        applied in registration order.
+    name : str
+        The network's morphism name.
+
+    Returns
+    -------
+    dict[str, str]
+        Each parameter's path in ``source`` to its site name.
+
+    Raises
+    ------
+    ValueError
+        If a layer has no bias or the network has no affine layer.
+    """
+    linears = [
+        (path, module)
+        for path, module in source.named_modules()
+        if isinstance(module, nn.Linear)
+    ]
+    if not linears:
+        raise ValueError(f"network {name!r} has no affine layer to draw weights for")
+    sites: dict[str, str] = {}
+    names = weight_site_names(name, len(linears) - 1)
+    for (path, module), (weight, bias) in zip(linears, names, strict=True):
+        if module.bias is None:
+            raise ValueError(f"network {name!r}: layer {path!r} has no bias")
+        prefix = f"{path}." if path else ""
+        sites[f"{prefix}weight"] = weight
+        sites[f"{prefix}bias"] = bias
+    return sites
+
+
+class LearnedFunction(DeterministicMorphism):
+    """A learned deterministic map ``f : X -> Y`` between continuous spaces.
+
+    The map applies a parameter source to the input's coordinates and
+    then an output nonlinearity, :math:`f(x) = \\sigma(g_\\theta(x))`,
+    with :math:`g_\\theta` a [`LinearSource`][quivers.continuous.param_source.LinearSource]
+    (the affine map :math:`W x + b`), an
+    [`MLPSource`][quivers.continuous.param_source.MLPSource], or an
+    [`IdentitySource`][quivers.continuous.param_source.IdentitySource].
+    As a kernel it is the Dirac kernel at :math:`f(x)`: it contributes
+    no density and no site, a composition through it is exact (see
+    [`point_mass_value`][quivers.continuous.deterministic.DeterministicMorphism.point_mass_value]),
+    and a scan over it is a deterministic recurrence. Its weights are
+    module parameters, fit as point estimates by the objective that
+    trains the model around it.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        The input space. A `ProductSpace` takes its factors in order,
+        concatenated into one coordinate vector.
+    codomain : AnySpace
+        The output space, as wide as the source's output.
+    source : ParamSource
+        The network from input coordinates to output coordinates.
+    output : FunctionOutput
+        The nonlinearity applied to the network's output.
+    latent : str | None
+        When given, the network's weights are latent: they are read from
+        the sites `network_weight_sites` names after this morphism name,
+        passed to each evaluation, rather than from the source's own
+        parameters, which then go unused.
+
+    Raises
+    ------
+    TypeError
+        If the domain or codomain is not continuous.
+    ValueError
+        If the source's output width is not the codomain's width, or
+        ``output`` is not a `FunctionOutput`.
+    """
+
+    def __init__(
+        self,
+        domain: AnySpace,
+        codomain: AnySpace,
+        source: ParamSource,
+        output: FunctionOutput = "identity",
+        latent: str | None = None,
+    ) -> None:
+        widths = function_factor_widths(domain)
+        width = _event_width(codomain)
+        if int(source.param_dim) != width:
+            raise ValueError(
+                f"LearnedFunction: the source writes {source.param_dim} "
+                f"coordinates, but the codomain {codomain!s} is {width} wide"
+            )
+        if output not in _OUTPUTS:
+            raise ValueError(
+                f"LearnedFunction: unknown output nonlinearity {output!r}; "
+                f"expected one of {sorted(_OUTPUTS)}"
+            )
+        super().__init__(domain, codomain, self._point, name="LearnedFunction")
+        self.source = source
+        self._output: FunctionOutput = output
+        self._factor_widths = widths
+        self._width = width
+        self._latent_sites: dict[str, str] = (
+            network_weight_sites(source, latent) if latent is not None else {}
+        )
+
+    @property
+    def latent_sites(self) -> dict[str, str]:
+        """The site each network parameter is drawn at, when latent.
+
+        Returns
+        -------
+        dict[str, str]
+            Parameter path to site name; empty for point weights.
+        """
+        return dict(self._latent_sites)
+
+    def _point(self, x: torch.Tensor) -> torch.Tensor:
+        """The map as a kernel applies it, which has no drawn weights.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            The image under point weights.
+
+        Raises
+        ------
+        ValueError
+            If the weights are latent, which a kernel application cannot
+            read.
+        """
+        return self.evaluate(x)
+
+    @property
+    def output(self) -> FunctionOutput:
+        """The nonlinearity applied to the network's output.
+
+        Returns
+        -------
+        FunctionOutput
+            Its name.
+        """
+        return self._output
+
+    @property
+    def factor_widths(self) -> tuple[int, ...]:
+        """The width of each factor of the domain, in order.
+
+        Returns
+        -------
+        tuple[int, ...]
+            One width per factor.
+        """
+        return self._factor_widths
+
+    def evaluate(
+        self, x: torch.Tensor, weights: Mapping[str, torch.Tensor] | None = None
+    ) -> torch.Tensor:
+        """Apply the map to a batch of inputs.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs, shape ``(batch, domain_dim)``, or ``(batch,)`` for a
+            one-wide domain; any leading axes before the coordinate axis
+            are kept.
+        weights : Mapping[str, torch.Tensor] | None
+            For latent weights, each site's drawn value by site name;
+            ``None`` for point weights.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(batch, codomain_dim)``, with the leading axes of
+            ``x``.
+
+        Raises
+        ------
+        ValueError
+            If the coordinate axis is not the domain's width, or latent
+            weights are missing, misshaped, or given for point weights.
+        """
+        dimension = sum(self._factor_widths)
+        if x.dim() == 1 and dimension == 1:
+            x = x.unsqueeze(-1)
+        if x.dim() == 0 or int(x.shape[-1]) != dimension:
+            raise ValueError(
+                f"LearnedFunction: expected inputs whose last axis is the "
+                f"domain's {dimension} coordinates, got shape {tuple(x.shape)}"
+            )
+        if not x.is_floating_point():
+            x = x.to(torch.get_default_dtype())
+        lead = x.shape[:-1]
+        flat = x.reshape(-1, dimension)
+        if self._latent_sites:
+            if weights is None:
+                raise ValueError(
+                    "LearnedFunction: the network's weights are latent; pass "
+                    f"the drawn values of {sorted(self._latent_sites.values())}"
+                )
+            parameters = dict(self.source.named_parameters())
+            drawn: dict[str, torch.Tensor] = {}
+            for path, site in self._latent_sites.items():
+                if site not in weights:
+                    raise ValueError(f"LearnedFunction: no value for weight {site!r}")
+                value = torch.as_tensor(weights[site])
+                shape = parameters[path].shape
+                if value.numel() != shape.numel():
+                    raise ValueError(
+                        f"LearnedFunction: weight {site!r} has shape "
+                        f"{tuple(value.shape)}, but the layer takes {tuple(shape)}"
+                    )
+                drawn[path] = value.reshape(shape).to(flat.dtype)
+            raw = functional_call(self.source, drawn, (flat,))
+        elif weights is not None:
+            raise ValueError(
+                "LearnedFunction: the network's weights are point estimates, so "
+                "it reads no drawn weights"
+            )
+        else:
+            raw = self.source(flat)
+        image = _OUTPUTS[self._output](raw)
+        return image.reshape(*lead, self._width)
+
+    def apply_values(
+        self,
+        *values: torch.Tensor,
+        weights: Mapping[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Apply the map to one value per domain factor.
+
+        This is how a program's ``let y = f(a, b)`` calls the map: each
+        argument is one factor's value, a scalar for a one-wide factor
+        or a vector of the factor's width, possibly led by axes the
+        arguments share.
+
+        Parameters
+        ----------
+        *values : torch.Tensor
+            One value per factor, in the domain's order.
+        weights : Mapping[str, torch.Tensor] | None
+            For latent weights, each site's drawn value by site name.
+
+        Returns
+        -------
+        torch.Tensor
+            The image, shape ``(*lead, codomain_dim)`` for the arguments'
+            shared leading axes ``lead``.
+
+        Raises
+        ------
+        ValueError
+            If the number of values is not the number of factors, or a
+            value's trailing axis is not its factor's width.
+        """
+        if len(values) != len(self._factor_widths):
+            raise ValueError(
+                f"LearnedFunction: the domain has {len(self._factor_widths)} "
+                f"factors, but the call passes {len(values)} arguments"
+            )
+        shaped: list[torch.Tensor] = []
+        for position, (value, width) in enumerate(
+            zip(values, self._factor_widths, strict=True)
+        ):
+            tensor = torch.as_tensor(value)
+            if not tensor.is_floating_point():
+                tensor = tensor.to(torch.get_default_dtype())
+            if tensor.dim() == 0 and width == 1:
+                tensor = tensor.reshape(1)
+            if tensor.dim() == 0 or int(tensor.shape[-1]) != width:
+                raise ValueError(
+                    f"LearnedFunction: argument {position} has shape "
+                    f"{tuple(tensor.shape)}, but its domain factor is "
+                    f"{width} wide"
+                )
+            shaped.append(tensor)
+        lead = torch.broadcast_shapes(*(tensor.shape[:-1] for tensor in shaped))
+        joined = torch.cat(
+            [tensor.expand(*lead, tensor.shape[-1]) for tensor in shaped], dim=-1
+        )
+        return self.evaluate(joined, weights)
+
+    def __repr__(self) -> str:
+        return (
+            f"LearnedFunction({self.domain!s} → {self.codomain!s}, "
+            f"source={type(self.source).__name__}, output={self._output})"
+        )
+
+
 __all__ = [
     "DeterministicMorphism",
+    "FunctionOutput",
+    "LearnedFunction",
+    "network_weight_sites",
+    "weight_site_names",
     "cholesky_quad_form_morphism",
     "cumsum_morphism",
     "softmax_morphism",

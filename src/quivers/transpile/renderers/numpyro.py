@@ -131,6 +131,8 @@ _NUMPYRO_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
         "LogisticNormal",
         "OneHotCategorical",
         "OrderedProbit",
+        "LogGamma",
+        "LogitBeta",
     }
 )
 
@@ -138,11 +140,16 @@ _NUMPYRO_RUNTIME_HELPER_FAMILIES: frozenset[str] = frozenset(
 #: Extra aliased imports each grafted helper class needs in the emitted
 #: module beyond the always-present ``jnp`` / ``numpyro`` /
 #: ``numpyro.distributions``. Keyed by the grafted class name.
-_NUMPYRO_HELPER_IMPORTS: dict[str, tuple[tuple[str, ...], str]] = {
-    "ContinuousBernoulli": (("jax", "scipy", "special"), "jss"),
-    "FisherSnedecor": (("jax", "scipy", "special"), "jss"),
-    "OneHotCategorical": (("jax", "scipy", "special"), "jss"),
-    "OrderedProbit": (("jax", "scipy", "special"), "jss"),
+_NUMPYRO_HELPER_IMPORTS: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
+    "ContinuousBernoulli": ((("jax", "scipy", "special"), "jss"),),
+    "FisherSnedecor": ((("jax", "scipy", "special"), "jss"),),
+    "OneHotCategorical": ((("jax", "scipy", "special"), "jss"),),
+    "OrderedProbit": ((("jax", "scipy", "special"), "jss"),),
+    "LogGamma": ((("jax", "scipy", "special"), "jss"), (("jax", "random"), "jrandom")),
+    "LogitBeta": (
+        (("jax", "scipy", "special"), "jss"),
+        (("jax", "random"), "jrandom"),
+    ),
 }
 
 
@@ -243,8 +250,7 @@ class NumPyroRenderer(RendererBase):
             ir, _BACKEND
         )
         for cls_name in used_helpers:
-            extra_import = _NUMPYRO_HELPER_IMPORTS.get(cls_name)
-            if extra_import is not None:
+            for extra_import in _NUMPYRO_HELPER_IMPORTS.get(cls_name, ()):
                 py.required_imports.add(extra_import)
         self._emit_imports(ctx)
         for cls_name in sorted(used_helpers):

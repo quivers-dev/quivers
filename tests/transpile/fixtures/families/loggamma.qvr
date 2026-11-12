@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the LogGamma family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program loggamma_fixture : Obs -> Obs
+    sample theta <- LogGamma(concentration=0.5, rate=2.0)
+    return theta
+export loggamma_fixture

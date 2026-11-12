@@ -1,0 +1,14 @@
+# Exercises a learned function with a linear network called in a let;
+# its weights are model-internal, so every target refuses it.
+object Item : FinSet 3
+object Val : Real 1
+
+morphism shift : Val -> Val [role=function]
+
+program p : Item -> Val
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    let m = shift(mu)
+    observe y : Item <- Normal(loc=m, scale=1.0)
+    return m
+
+export p
