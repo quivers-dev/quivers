@@ -49,7 +49,7 @@ The `repl` and `lsp` extras enable these commands:
 
 | Command | Extra | What it does |
 | --- | --- | --- |
-| `qvr repl` | `repl` | Starts the REPL: a terminal interface built on Textual, or a single-line prompt_toolkit prompt when Textual is not installed |
+| `qvr repl` | `repl` | Starts the REPL: a terminal interface built on Textual, or a prompt_toolkit prompt when Textual is not installed |
 | `qvr-kernel install`, `qvr kernel install` | `repl` | Registers the `quivers` Jupyter kernel |
 | `qvr-lsp`, `qvr lsp` | `lsp` | Runs the language server over standard input and output |
 

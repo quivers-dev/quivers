@@ -180,7 +180,7 @@ code --install-extension vscode-qvr-*.vsix
 # or: cursor --install-extension vscode-qvr-*.vsix
 ```
 
-The extension auto-discovers `qvr-lsp` in (1) the `qvr.lsp.path`
+The extension looks for `qvr-lsp` in (1) the `qvr.lsp.path`
 setting (with `${workspaceFolder}` expansion), (2)
 `<workspace>/.venv/bin/qvr-lsp`, (3) `$VIRTUAL_ENV/bin/qvr-lsp`, or
 (4) plain `qvr-lsp` on `$PATH`. Install the LSP extra with

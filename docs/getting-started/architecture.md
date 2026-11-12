@@ -68,15 +68,12 @@ same grammar whatever that dependency provides.
 
 ## Module descriptions
 
-Each package's API page lists its public names. The descriptions below give the
-role of each module.
-
 ### `core/`
 
 Objects, algebras, and morphisms between finite sets ([API](../api/core/objects.md)).
 
 - **`objects.py`:** objects as `dx.TaggedUnion` variants: `SetObject` (root), `FinSet`, `ProductSet`, `CoproductSet`, `FreeMonoid`, `EnumSet`, `FreeResiduated`, and the one-element set `Unit`.
-- **`algebras.py`:** the classes that fix how weights combine. `CompositionRule` is the root. `Semigroupoid` is a composition rule declared associative, whose morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory). `BilinearForm` is a composition rule with no associativity or identity guarantee. `Algebra` adds an identity and the operations $\otimes$ and $\bigoplus$. The concrete classes include `ProductFuzzyAlgebra`, `BooleanAlgebra`, `LukasiewiczAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `ProbabilityAlgebra`, `CountingAlgebra`, and `MarkovAlgebra`, each with a module-level instance (`PRODUCT_FUZZY`, `BOOLEAN`, `MARKOV`, and so on).
+- **`algebras.py`:** the classes that fix how weights combine. `CompositionRule` is the root. `Semigroupoid` is a composition rule declared associative, whose morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory). `BilinearForm` is a composition rule with no associativity or identity guarantee. `Algebra` adds an identity and the operations $\otimes$ and $\bigoplus$. The concrete classes include `ProductFuzzyAlgebra`, `BooleanAlgebra`, `LukasiewiczAlgebra`, `GodelAlgebra`, `TropicalAlgebra`, `MaxPlusAlgebra`, `LogProbAlgebra`, `RealAlgebra`, `ProbabilityAlgebra`, `CountingAlgebra`, and `MarkovAlgebra`, each with a shared instance (`PRODUCT_FUZZY`, `BOOLEAN`, `MARKOV`, and so on).
 - **`algebra_morphisms.py`:** `AlgebraHomomorphism`, the entrywise maps from one `Algebra`'s weights to another's, with instances such as `Embedding`, `Threshold`, and `ProbabilityToReal`.
 - **`morphism_transformations.py`:** `MorphismTransformation` and its row normalizations `Softmax`, `L1Normalize`, and `L2Normalize`, and Bayesian inversion `BayesInvert`. These and the entrywise maps are what `Morphism.change_base` applies.
 - **`morphisms.py`:** `Morphism` and its subclasses `ObservedMorphism` (fixed tensor), `LatentMorphism` (learnable tensor), `ComposedMorphism`, `ProductMorphism`, `MarginalizedMorphism`, `TransformedMorphism`, `FunctorMorphism`, `RepeatMorphism`, and `CurriedMorphism`, with the factories `morphism()`, `observed()`, `identity()`, `cup()`, and `cap()`.
@@ -217,7 +214,7 @@ Imports inside functions add further edges, among them `categorical/` to
 ## Design principles
 
 - **Tensors as morphisms:** a morphism between finite sets is a PyTorch tensor, so automatic differentiation and GPU execution come from PyTorch.
-- **Values are didactic models:** record values (AST nodes, `SetObject` and `ContinuousSpace` variants, syntactic categories, rule systems, the arrow instances) are frozen [didactic](https://pypi.org/project/didactic/) `dx.Model` values, with structural equality, JSON round trips, and cross-field checks. Recursive sums are `dx.TaggedUnion` roots with a `kind` discriminator.
+- **Values are didactic models:** record values (AST nodes, `SetObject` and `ContinuousSpace` variants, syntactic categories, rule systems, the arrow instances) are frozen [didactic](https://pypi.org/project/didactic/) `dx.Model` values, with structural equality, JSON round trips, and checks that relate several fields. Recursive sums are `dx.TaggedUnion` roots with a `kind` discriminator.
 - **Mutable tensor holders:** `Presheaf`, `Weight`, `SampleSite`, and `Trace` hold tensors that inference updates in place, and are Python dataclasses.
 - **Lazy composition:** composing morphisms builds a graph, and the tensor is computed when it is read.
 - **Checked types:** constructors and the compiler check domains and codomains before any tensor is evaluated. Constraints that depend on runtime data are checked when the data arrive.
