@@ -89,6 +89,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     factor_cells,
     half_support_truncation,
     hoist_list_operands,
+    event_loop_view,
     index_letexpr_refs,
     list_cells,
     list_sizes,
@@ -1726,17 +1727,18 @@ class BUGSRenderer(RendererBase):
         (`binary_expression`, `function_call`, `indexed_variable`,
         ...).
         """
-        loop_names = self._loop_names(node.plate, "")
-        body_id = self._open_loops(ctx, ctx.block_id, node.plate, loop_names)
+        plate, decl_plates = event_loop_view(node.plate, node.expr, ctx.decl_plates)
+        loop_names = self._loop_names(plate, "")
+        body_id = self._open_loops(ctx, ctx.block_id, plate, loop_names)
         prev_plate = ctx.enclosing_plate
         prev_loops = ctx.enclosing_loop_names
-        ctx.enclosing_plate = node.plate
+        ctx.enclosing_plate = plate
         ctx.enclosing_loop_names = loop_names
         try:
             dr_id = self._fresh(ctx, "dr")
             ctx.sb.vertex(dr_id, "deterministic_relation")
             ctx.sb.edge(body_id, dr_id, "deterministic_relation")
-            lhs_id = self._emit_lhs(ctx, node.name, node.plate, loop_names)
+            lhs_id = self._emit_lhs(ctx, node.name, plate, loop_names)
             ctx.sb.edge(dr_id, lhs_id, "variable")
             # Rewrite the expression so any var reference whose
             # declared plate axes match the surrounding loop axes
@@ -1745,9 +1747,7 @@ class BUGSRenderer(RendererBase):
             # `_push_scalar_dets_into_loops` pre-pass: the lifted
             # det's expression still names a free data input
             # (`x_design`) that the lift retagged with the new plate.
-            expr = index_letexpr_refs(
-                node.expr, ctx.decl_plates, node.plate, loop_names
-            )
+            expr = index_letexpr_refs(node.expr, decl_plates, plate, loop_names)
             let_ctx = _BugsLetCtx(
                 ctx.sb,
                 lambda p: self._fresh(ctx, p),
@@ -1757,7 +1757,7 @@ class BUGSRenderer(RendererBase):
             rhs_id = render_let_expr_bugs(
                 let_ctx,
                 expr,
-                decl_plates=ctx.decl_plates,
+                decl_plates=decl_plates,
                 row_index=loop_names[0] if loop_names else None,
             )
             ctx.sb.edge(dr_id, rhs_id, "value")

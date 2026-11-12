@@ -68,6 +68,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     factor_cells,
     half_support_truncation,
     hoist_list_operands,
+    event_loop_view,
     index_letexpr_refs,
     inline_letexpr,
     irarg_letexpr,
@@ -2591,35 +2592,32 @@ class JAGSRenderer(RendererBase):
         same loop variables so the emitted RHS pulls per-iteration
         values out of the surrounding vectors.
         """
-        loop_var_names = tuple(f"m_{_dim_name(dim)}" for dim in node.plate.batch_dims)
+        plate, decl_plates = event_loop_view(node.plate, node.expr, ctx.decl_plates)
+        loop_var_names = tuple(f"m_{_dim_name(dim)}" for dim in plate.batch_dims)
         # Open the deterministic relation. When plated, the LHS is
         # indexed by every loop variable; otherwise it is a bare name.
         dr = _fresh(ctx, "dr", "deterministic_relation")
         ctx.sb.constraint(dr, "chose-alt-fingerprint", "<-")
         ctx.sb.constraint(dr, "ptrace-1", "T<-")
-        if loop_var_names or node.plate.event_dims:
+        if loop_var_names or plate.event_dims:
             ctx.sb.constraint(dr, "ptrace-0", "Cindexed_variable")
             lhs = self._indexed_variable(
-                ctx, node.name, loop_var_names, node.plate.event_dims
+                ctx, node.name, loop_var_names, plate.event_dims
             )
         else:
             ctx.sb.constraint(dr, "ptrace-0", "Cidentifier")
             lhs = _identifier(ctx, node.name)
         ctx.sb.edge(dr, lhs, "variable")
-        rewritten = index_letexpr_refs(
-            node.expr, ctx.decl_plates, node.plate, loop_var_names
-        )
+        rewritten = index_letexpr_refs(node.expr, decl_plates, plate, loop_var_names)
         let_ctx = _jags_let_ctx(ctx, self._cards)
         val = render_let_expr_bugs(
             let_ctx,
             rewritten,
-            decl_plates=ctx.decl_plates,
+            decl_plates=decl_plates,
             row_index=loop_var_names[0] if loop_var_names else None,
         )
         ctx.sb.edge(dr, val, "value")
-        wrapped = self._wrap_in_for_loops(
-            ctx, dr, node.plate.batch_dims, override_var=None
-        )
+        wrapped = self._wrap_in_for_loops(ctx, dr, plate.batch_dims, override_var=None)
         if ctx.current_block is not None:
             ctx.sb.edge(ctx.current_block, wrapped, "child_of")
             ctx.block_children.setdefault(ctx.current_block, []).append(

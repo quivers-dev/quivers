@@ -794,6 +794,13 @@ class WebPPLRenderer(RendererBase):
         `<name>_n`. The body's `<dist>` rendering threads `n` through
         the `via` fibration when present.
         """
+        # A scalar family observed over one `over` axis scores each
+        # coordinate on its own, one observation per entry, as a batch
+        # axis does: WebPPL's scalar distributions score a number, not
+        # an array.
+        residual = plate.event_dims[: len(plate.event_dims) - meta.event_rank]
+        if not plate.batch_dims and len(residual) == 1 and meta.event_rank == 0:
+            plate = Plate(event_dims=(), batch_dims=residual)
         # When unbatched, emit a top-level observe(...) statement.
         if not plate.batch_dims:
             rendered_args = self._render_arg_tuple(

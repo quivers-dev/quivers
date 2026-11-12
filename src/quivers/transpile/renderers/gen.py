@@ -1613,8 +1613,13 @@ class GenRenderer(RendererBase):
         # and leaving the inner product uncomputed. Such a body emits
         # its own dotted operators instead.
         reduces_axis = let_expr_has_axis_reduction(shapes, node.expr)
+        # A binding of one event, a vector `z = tanh(a)` drawn over an
+        # `over` axis, is no batch the `@.` form below covers; its
+        # elementwise calls are dotted, as Julia applies `tanh` to a
+        # number and not to a vector.
+        one_event = bool(node.plate.event_dims) and not node.plate.batch_dims
         rhs = render_let_expr_julia(
-            adapter, node.expr, shapes=shapes, dotted=reduces_axis
+            adapter, node.expr, shapes=shapes, dotted=reduces_axis or one_event
         )
         # A binding whose expression produces fewer axes than its
         # plate is one value the plate replicates: `cell0 =

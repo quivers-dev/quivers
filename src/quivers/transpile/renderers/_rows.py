@@ -28,6 +28,7 @@ from quivers.dsl.ast_nodes import (
     LetExprUnaryOp,
     LetExprVar,
 )
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
 from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.ir import Plate
@@ -186,6 +187,48 @@ def _take(
     return LetExprIndex(array=expr, indices=(row,))
 
 
+def pointwise_let(expr: LetExprNode) -> bool:
+    """Whether a let expression computes each entry from the same entries.
+
+    An expression of names, literals, arithmetic, and the scalar builtins
+    the checked lowering lifts entry by entry (``exp``, ``tanh``, a
+    two-argument ``max``) has, at each position, the value of the same
+    expression over its operands' entries at that position. A reduction,
+    a last-axis transform, an index, or any other form reads more than
+    one entry.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        True when the expression is pointwise.
+    """
+    if isinstance(expr, LetExprVar | LetExprLiteral):
+        return True
+    if isinstance(expr, LetExprBinOp):
+        return pointwise_let(expr.left) and pointwise_let(expr.right)
+    if isinstance(expr, LetExprUnaryOp):
+        return pointwise_let(expr.operand)
+    if isinstance(expr, LetExprCall):
+        spec = BUILTIN_REGISTRY.get(expr.func)
+        if (
+            spec is None
+            or spec.shape_rule != "scalar-lift"
+            or expr.func in LAST_AXIS_REDUCTIONS
+            and len(expr.args) == 1
+            or not all(
+                len(signature) == len(expr.args) for signature in spec.qiec_overloads
+            )
+        ):
+            return False
+        return all(pointwise_let(argument) for argument in expr.args)
+    return False
+
+
 def scalar_parameter(family: str, parameter: str) -> bool:
     """Whether a family parameter takes one number per drawn element.
 
@@ -248,4 +291,4 @@ def visited_position(plate: Plate | None, loops: Mapping[str, str]) -> tuple[str
     return tuple(loops[name] for name in names)
 
 
-__all__ = ["scalar_parameter", "take_row", "visited_position"]
+__all__ = ["pointwise_let", "scalar_parameter", "take_row", "visited_position"]

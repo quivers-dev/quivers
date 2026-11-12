@@ -1786,7 +1786,14 @@ class TuringRenderer(RendererBase):
         shim = _JlCtxShim(sb, counter, ctx.cards, "turing")
         shapes = ctx.shapes.scoped_to(len(node.plate.batch_dims))
         reduces_axis = let_expr_has_axis_reduction(shapes, node.expr)
-        rhs = render_let_expr_julia(shim, node.expr, shapes=shapes, dotted=reduces_axis)
+        # A binding of one event, a vector `z = tanh(a)` drawn over an
+        # `over` axis, is no batch the `@.` form below covers; its
+        # elementwise calls are dotted, as Julia applies `tanh` to a
+        # number and not to a vector.
+        one_event = bool(node.plate.event_dims) and not node.plate.batch_dims
+        rhs = render_let_expr_julia(
+            shim, node.expr, shapes=shapes, dotted=reduces_axis or one_event
+        )
         missing = _plate_axes_missing(shapes, node)
         if node.name in ctx.batch_shaped_names and not reduces_axis and not missing:
             rhs = _macro_call(sb, counter, ".", rhs)
