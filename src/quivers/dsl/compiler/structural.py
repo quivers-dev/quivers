@@ -154,11 +154,25 @@ def _decode_loss_attachment(
       / ``decoder(NAME)``: ``attachment_kind`` is the call's
       function name; ``target`` is the call's single identifier
       argument; ``rule_deduction`` is None.
-    * ``[on=rule(NAME, in=DEDUCTION)]``: rule attachment;
-      ``target`` is the rule name, ``rule_deduction`` is the
-      enclosing deduction.
-    * ``[on=chart(of=DEDUCTION)]``: chart attachment; ``target``
-      is the deduction name.
+    * ``[on=rule(RULE, DEDUCTION)]``: rule attachment; ``target`` is
+      the rule name, ``rule_deduction`` is the enclosing deduction.
+    * ``[on=chart(DEDUCTION)]``: chart attachment; ``target`` is the
+      deduction name.
+
+    Parameters
+    ----------
+    decl : LossDecl
+        The loss declaration.
+
+    Returns
+    -------
+    tuple[str, str | None, str | None]
+        The attachment kind, its target, and the rule's deduction.
+
+    Raises
+    ------
+    CompileError
+        If the attachment is malformed or of an unknown kind.
     """
     call = get_option_call(
         decl.options,
@@ -182,32 +196,24 @@ def _decode_loss_attachment(
             )
         return (name, call.args[0].value, None)
     if name == "rule":
-        target: str | None = None
-        rule_ded: str | None = None
-        for arg in call.args:
-            if isinstance(arg, OptionName) and target is None:
-                target = arg.value
-        # `in=<deduction>` is encoded as a second OptionCall arg
-        # of an OptionName when the parser flattens kwargs. The
-        # parser surface ``rule(NAME, in=DED)`` is currently the
-        # only kwarg shape; we read both positional names and pick
-        # them off.
-        if len(call.args) >= 2 and isinstance(call.args[1], OptionName):
-            rule_ded = call.args[1].value
-        if target is None or rule_ded is None:
+        if len(call.args) != 2 or not all(
+            isinstance(arg, OptionName) for arg in call.args
+        ):
             raise CompileError(
-                f"loss {decl.name!r}: ``on=rule(NAME, in=DED)`` "
-                "requires both the rule name and the enclosing "
-                "deduction",
+                f"loss {decl.name!r}: ``on=rule(RULE, DEDUCTION)`` takes the "
+                "rule's name and its deduction's name",
                 ln,
                 cl,
             )
-        return ("rule", target, rule_ded)
+        rule_arg, deduction_arg = call.args
+        assert isinstance(rule_arg, OptionName)
+        assert isinstance(deduction_arg, OptionName)
+        return ("rule", rule_arg.value, deduction_arg.value)
     if name == "chart":
         if len(call.args) != 1 or not isinstance(call.args[0], OptionName):
             raise CompileError(
-                f"loss {decl.name!r}: ``on=chart(of=DED)`` takes a "
-                "single identifier argument",
+                f"loss {decl.name!r}: ``on=chart(DEDUCTION)`` takes the "
+                "deduction's name",
                 ln,
                 cl,
             )
@@ -565,10 +571,10 @@ class _StructuralMixin:
         if d is not None:
             return d
         raise CompileError(
-            f"{diag_owner}: sort {sort!r} has no dim — declare it on the "
-            f"signature's `sorts {{ … }}` block (e.g. `Term : object dim 64`) "
-            f"or override it on the encoder / decoder block "
-            f"(e.g. `dim Term = 64`)"
+            f"{diag_owner}: sort {sort!r} has no dim; declare it in the "
+            f"signature's sorts block, as in `{sort} : object [dim=64]`, "
+            f"or set it in the encoder or decoder block, as in "
+            f"`dim {sort} = 64`"
         )
 
     def _compile_encoder(self, decl: EncoderDecl) -> None:
@@ -1130,7 +1136,7 @@ class _StructuralMixin:
         out of the unified option block. ``on`` is a call-shaped
         `OptionValue`: ``program(NAME)`` / ``deduction(NAME)``
         / ``encoder(NAME)`` / ``decoder(NAME)`` /
-        ``rule(NAME, in=DEDUCTION)`` / ``chart(of=DEDUCTION)``. A
+        ``rule(RULE, DEDUCTION)`` / ``chart(DEDUCTION)``. A
         bare ``[global]`` flag selects a module-level attachment.
         """
         if not hasattr(self, "_loss_registry"):

@@ -103,15 +103,15 @@ class _ExpressionsMixin:
 
     def _require_algebra(self, op_name: str, line: int, col: int) -> None:
         """Raise ``CompileError`` if the module's composition rule
-        isn't a `Algebra`.
+        isn't an `Algebra`.
 
         Operations that need a unit, zero, dagger, or compact-closed
         structure (``identity``, ``cup``, ``cap``, ``.dagger``,
         ``.trace``) call this before constructing their result.
         The error names the operation and the active rule so the
-        user can decide whether to switch the file's
-        ``algebra`` / ``semigroupoid`` / ``bilinear_form``
-        declaration or drop the operation.
+        user can decide whether to declare an algebra-level
+        composition (``composition NAME [level=algebra]``) or drop the
+        operation.
         """
         rule = self._algebra
         if isinstance(rule, Algebra):
@@ -126,11 +126,11 @@ class _ExpressionsMixin:
             )
         )
         raise CompileError(
-            f"{op_name}: requires a Algebra composition rule (needs "
-            f"identity / unit / zero); the module declares {kind} "
-            f"{rule.name!r}, which does not have those. Switch the "
-            f"file-level declaration to ``algebra X`` for a "
-            f"Algebra X, or drop the {op_name} operation.",
+            f"{op_name}: requires an algebra-level composition rule (one "
+            f"with an identity, a unit, and a zero); the module declares "
+            f"the {kind} {rule.name!r}, which has none. Declare an algebra, "
+            f"as in `composition product_fuzzy [level=algebra]`, or drop "
+            f"the {op_name} operation.",
             line,
             col,
         )

@@ -4,7 +4,7 @@ A ``ChartParser`` is a ``DeductiveSystem`` that composes:
 
 - ``LexicalAxiom``: populates length-1 spans from a learnable lexicon.
 - ``BinarySpanDeduction``: applies binary structural rules.
-- ``UnarySpanDeduction``: applies unary rules to convergence.
+- ``UnarySpanDeduction``: closes each cell under the unary rules.
 - ``SpanGoal``: extracts the start-symbol score for the full span.
 - ``CKYSchedule``: bottom-up evaluation by span length.
 

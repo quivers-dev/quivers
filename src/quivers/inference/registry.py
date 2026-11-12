@@ -856,6 +856,50 @@ class LatentRegistry:
                 out[name] = value.unsqueeze(0).expand(batch_size, *value.shape)
         return out
 
+    def trace_draw(self, run: Trace) -> dict[str, torch.Tensor]:
+        """One draw per latent site, at its constrained shape, from a run.
+
+        A site a destructuring draw binds takes its share of the draw's
+        value, split evenly along the last axis.
+
+        Parameters
+        ----------
+        run : Trace
+            A trace of one run of the model.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Each latent site's value at `LatentSite.constrained_shape`,
+            detached from the run's graph.
+
+        Raises
+        ------
+        ValueError
+            If the run did not reach a latent site.
+        """
+        out: dict[str, torch.Tensor] = {}
+        for name, site in self._sites.items():
+            record = run.sites.get(name)
+            value: torch.Tensor | None = None
+            if record is not None:
+                value = record.value.detach()
+            else:
+                for label, candidate in run.sites.items():
+                    names = label.split(",")
+                    if name in names:
+                        value = candidate.value.detach().chunk(len(names), dim=-1)[
+                            names.index(name)
+                        ]
+                        break
+            if value is None:
+                raise ValueError(
+                    f"LatentRegistry.trace_draw: the run did not reach the latent "
+                    f"site {name!r}"
+                )
+            out[name] = value.reshape(site.constrained_shape)
+        return out
+
     def trace_row(
         self, trace_side: dict[str, torch.Tensor], row: int = 0
     ) -> dict[str, torch.Tensor]:

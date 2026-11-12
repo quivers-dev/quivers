@@ -346,7 +346,7 @@ joint_fit = fit(
     predictor=parser,
     predictor_data=sentence_features,
     method="svi",
-    num_samples=4000,
+    num_steps=4000,
 )
 ```
 
