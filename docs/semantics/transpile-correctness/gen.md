@@ -50,7 +50,7 @@ density is the product ([plates](index.md#5-plates-marginalization-and-via)).
 
 **`marginalize`.** The renderer computes the densities at the values of the latent variable, combines them
 with their prior weights, and traces the reduced log weight as a factor choice under the address
-`:qvr_factor`, reusing the emission of the Turing renderer. The summed-out variable is not a choice.
+`:qvr_factor`, reusing the emission of the Turing renderer. The variable summed out is not a choice.
 
 **`score`.** Gen has no factor primitive either. The renderer adds a distribution with one point,
 `QvrFactorDist`, whose log density at its point is the weight, and traces a score as

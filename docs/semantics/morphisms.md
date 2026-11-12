@@ -280,7 +280,7 @@ $$
 
 a softmax over negative squared distances to the bin centers. It is not deterministic: it puts
 most of its mass on the nearest center, and all of it there only in the limit $\tau \to 0$. The
-runtime class `Discretize` also has a deterministic nearest-center mode, which a QVR declaration
+runtime class `Discretize` also has a deterministic mode that returns the nearest center, which a QVR declaration
 does not select.
 
 ### 5.2 Embedding

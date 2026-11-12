@@ -17,7 +17,7 @@ laws say which rearrangements of those operations preserve meaning.
 
 ## 1. Setting {#1-setting}
 
-The definitions of [Setting and notation](setting.md) apply. An effect-typed parser fixes:
+The definitions of [Setting and notation](setting.md) apply. A parser whose categories carry effect types fixes:
 
 - a finite set $\mathcal C = \llbracket \mathrm{Cat} \rrbracket$ of categorial types, built by
   `FreeResiduated(generators, depth, ops)` ([Schemas §4](schemas.md#4-the-free-residuated-universe));
@@ -98,7 +98,7 @@ $$
 \mathrm{Chart}[i, j] \in V^{\widehat{\mathcal{C}}},
 $$
 
-vectors of weights indexed by effect-typed categories. Write $\mathrm{Chart}[i, j] \ni (\alpha ; \bar T)$
+vectors of weights indexed by categories with effect types. Write $\mathrm{Chart}[i, j] \ni (\alpha ; \bar T)$
 when the cell at span $(i, j)$ has an entry at the type $\alpha \in \mathcal C$ under the effect stack
 $\bar T$, write $\bar S \cdot \bar T$ for the concatenation of stacks and $\epsilon$ for the empty
 stack, and let $\sigma$ range over substitutions of categorial types for the variables of a schema.
@@ -145,7 +145,7 @@ performs it, so a chart never eliminates an effect.
 Let $r$ be a rule and $T$ an effect instance of the classes $\mathfrak C_1, \dots, \mathfrak C_k$. If the
 instance satisfies the laws of these classes and the chart's semiring and convergence conditions hold
 ([Weighted deduction §5](grammar.md#5-goal-depth-and-convergence)), then the weight the chart assigns to
-an effect-typed entry is the sum, over its derivations, of the composites of base rules with the
+an entry whose category has an effect type is the sum, over its derivations, of the composites of base rules with the
 operations of $T$ that the derivation uses, and it does not depend on the order in which the chart
 combined them. The argument is by cases on the class:
 
@@ -204,7 +204,7 @@ type $A$ are its arrows from the unit to $A$ [@hughes2000arrows]. The functions 
 When the list of declared effects is empty, only $\textsc{Base}$ fires, and the parser is the
 categorial grammar parser of [Weighted deduction §6](grammar.md#6-chart-denotation) with the rules it is
 given. The effects add firings and change no weight that the empty list would compute, so the
-effect-typed parser is a [conservative extension](https://en.wikipedia.org/wiki/Conservative_extension) of
+parser with effect types is a [conservative extension](https://en.wikipedia.org/wiki/Conservative_extension) of
 the plain one.
 
 ## 8. QIEC rows and handlers
@@ -251,7 +251,7 @@ targets report a `qiec:capability:*` diagnostic. The [QIEC developer note](../de
 details.
 
 The effect handlers of [`quivers.effects`](../api/effects/index.md) are handlers of this calculus, in the
-style of handler-based inference for probabilistic programs [@scibior2018functional; @nguyen2023effect]. A
+style of inference by effect handlers for probabilistic programs [@scibior2018functional; @nguyen2023effect]. A
 `MonadicProgram` runs on the reference machine as the computation
 [`program_kernel`](../api/effects/program_module.md) builds from it: each step computed in Python is a
 request to the `Compute` interface of the prelude on the values bound so far, each draw is a request

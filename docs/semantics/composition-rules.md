@@ -5,7 +5,7 @@ and a reduction $\bigoplus$, that `>>` uses to compose finite weighted morphisms
 product of [Setting §2](setting.md#2-v-enriched-relations). Every [`Algebra`](algebras.md) is a
 composition rule, and so are rules that claim fewer laws. A rule's *level* states which laws it
 claims, and the compiler allows an operation only at a level whose laws it needs. The same
-operations also evaluate many-input einsum contractions and, through morphism transformations,
+operations also evaluate einsum contractions of several inputs and, through morphism transformations,
 convert a morphism from one rule to another.
 
 ## 1. Levels

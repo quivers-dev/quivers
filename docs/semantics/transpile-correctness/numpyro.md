@@ -50,7 +50,7 @@ $B$ draws are conditionally independent, so their density is the product
 **`marginalize`.** The renderer computes, for each value of the latent variable, the log prior of the value
 and the log likelihood of the scope, stacks them, reduces them with `logsumexp`, and adds the result with
 `numpyro.factor`. A grouped block sums the rows of each group, by `via`, before the reduction. No sample site
-remains for the summed-out variable.
+remains for the variable summed out.
 
 **`score`, `let`, `return`.** `numpyro.factor("name", expr)` for a score, an assignment for a `let`, and
 Python's `return`.

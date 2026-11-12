@@ -53,7 +53,7 @@ its labels.
 of its arguments. A scalar Normal with batch size ten is ten independent scalar events, and an `MvNormal`
 with event size ten is one joint event whose covariance couples its coordinates.
 
-**`marginalize`.** A supported block is enumerated, and its summed-out log density is added with a
+**`marginalize`.** A supported block is enumerated, and its log density, with the variable summed out, is added with a
 `pymc.Potential`. The rows of each group are summed before the reduction.
 
 **`score`, `let`, `return`.** `pymc.Potential("name", expr)` for a score, an assignment for a `let`, and

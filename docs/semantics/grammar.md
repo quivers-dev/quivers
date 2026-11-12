@@ -52,7 +52,7 @@ for every substitution $\sigma$ of items for its variables: when every premise i
 $\pi_\ell\sigma$ is in the chart, the conclusion $\pi\sigma$ is derived. A rule with several
 premises is a hyperedge of a [hypergraph](https://en.wikipedia.org/wiki/Hypergraph), an edge from
 several premises to one conclusion [@klein2001parsing]. It needs all its premises at once, so it
-is not a set of separate one-premise rules. Each instance has a weight $\beta_r(\sigma) \in K$ in
+is not a set of separate rules with one premise. Each instance has a weight $\beta_r(\sigma) \in K$ in
 the deduction's semiring $K$, which is $\mathbf 1_K$ unless the rule is learnable or weighted.
 
 ### 2.1 Learnable rule weights (`#[learnable]`) {#21-learnable-rule-weights-learnable}

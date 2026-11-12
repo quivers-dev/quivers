@@ -23,12 +23,12 @@ $$
 $$
 
 - **`Check`** elaborates the module to the Quivers Indexed Effect Core (QIEC): it compiles the indexed
-  family declarations, elaborates every entry-point program to a named computation, and checks the whole
+  family declarations, elaborates every program that is an entry point to a named computation, and checks the whole
   module ([Typing and checking](typing.md)). It does not depend on the target.
 - **`Plan`** reads each program's computation and recognizes the statements a probabilistic programming
   language has: an `IRSample` for each `Random.sample` request, an `IRObserve` for each density scored at
   an observation, an `IRDeterministic` for each pure binding, an `IRScore` for each other weight, and an
-  `IRMarginalize` for each summed-out latent variable. Each node carries the support and plate shape read
+  `IRMarginalize` for each latent variable summed out. Each node carries the support and plate shape read
   from the module's types, from `FAMILY_META`, and from `arg_constraints` of the PyTorch distribution
   class. The inputs of the plan are the parameters of the entry point. The result is one `IRProgram`,
   which also holds the whole checked module as a typed tree, `IRQiecModule`. A module with no program
@@ -328,7 +328,7 @@ stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), impleme
    order PyTorch's constructor takes them, with the support resolved through `FAMILY_META` and narrowed by
    the declared bounds of the site's axes;
 5. reads pure values back as `let` expressions: primitives as their operators and builtins, gathers as
-   subscripts, comprehensions as factor expressions, and last-axis reductions as builtin calls. A shared
+   subscripts, comprehensions as factor expressions, and reductions along the last axis as builtin calls. A shared
    [`LetValue`](../api/qiec/terms.md) becomes a deterministic statement of its own, under a fresh name,
    before the statement that reads it, and a binding inside a comprehension is moved out as a comprehension
    of its value over the same axis, read at the index, so each shared value is computed once;
@@ -433,7 +433,7 @@ distribution whose rate carries the weight [@lunn2012bugs]. No other renderer im
 ## 6. An example from source to Stan and NumPyro
 
 The gallery source `docs/examples/source/lda.qvr` has documents, topics, and a vocabulary. `theta` gives
-each document its topic weights, `phi` gives each topic its word weights, `z` is a summed-out topic, and
+each document its topic weights, `phi` gives each topic its word weights, `z` is a topic that is summed out, and
 `word_idx` is the index map from tokens to documents:
 
 ```qvr
@@ -460,7 +460,7 @@ export lda
 The grouping `over=Doc` states one topic per document, shared by its tokens, a mixture of unigrams
 [@nigam2000text]. Since the prior `theta` is a plate over `Doc`, the evaluators instead give each token its
 own topic drawn from its document's weights ([Programs as kernels §2.7](programs.md#27-grouped-marginalize-with-multi-observe-fibration)),
-which is the per-token topic of latent Dirichlet allocation (LDA) [@blei2003lda]. The output below shows it.
+which is the topic for each token in latent Dirichlet allocation (LDA) [@blei2003lda]. The output below shows it.
 
 After `Lower`, the IR has:
 

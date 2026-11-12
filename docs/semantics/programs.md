@@ -152,7 +152,7 @@ shape $(n_1, \ldots, n_{k-1})$ of its row reductions. A rowwise operation (`cums
 reductions collapse one axis each, so `sum(sum(t))` sums the last two axes. The checker, the
 [reference machine](../developer/qiec.md#reference-evaluator) (the library's interpreter for QIEC), the
 [compiled runtime](../guides/dsl-overview.md#compilation-pipeline) (its PyTorch implementation), and every transpilation target read the primitives this
-way, and a target that cannot express a last-axis reduction of a given argument refuses the
+way, and a target that cannot express a reduction along the last axis of a given argument refuses the
 program. A reduction over a named axis is written as a [`contraction`](composition-rules.md#4-operadic-contractions).
 The [let-expression guide](../guides/dsl-programs-and-lets.md#checked-primitive-reference) lists
 every primitive. The compiled runtime accepts further functions for programs that use PyTorch
@@ -669,7 +669,7 @@ $$
 \mathbf{z}_{j*} \sim q_{j}(- \mid x, \theta).
 $$
 
-This is a one-sample [Monte Carlo](https://en.wikipedia.org/wiki/Monte_Carlo_method) estimate of
+This is a [Monte Carlo](https://en.wikipedia.org/wiki/Monte_Carlo_method) estimate of
 $\mathbb E_{\mathbf z \sim q}[\log p(y \mid \mathbf z, x, \theta)]$, not of the log marginal likelihood
 $\log p(y \mid x, \theta) = \log \mathbb E_{\mathbf z \sim q}[p(y \mid \mathbf z, x, \theta)]$. By
 [Jensen's inequality](https://en.wikipedia.org/wiki/Jensen%27s_inequality) the first is at most the

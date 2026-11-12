@@ -44,7 +44,7 @@ probability that at least one of several independent causes with probabilities $
 The [tropical semiring](https://en.wikipedia.org/wiki/Tropical_semiring) composes by the min-plus
 matrix product and so computes shortest paths. Ordered by $\ge$, so that its join is the infimum,
 $[0, \infty]$ is a quantale, and categories enriched in it are Lawvere's generalized metric spaces
-[@lawvere1973metric]. The max-plus semiring computes best-path scores, as in the
+[@lawvere1973metric]. The max-plus semiring computes the scores of best paths, as in the
 [Viterbi algorithm](https://en.wikipedia.org/wiki/Viterbi_algorithm). The
 [log semiring](https://en.wikipedia.org/wiki/Log_semiring) is the probability semiring carried to
 log space by $a \mapsto \log a$, with [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) as
