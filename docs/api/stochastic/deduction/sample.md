@@ -1,18 +1,11 @@
 # Forward Sampling
 
-Sampling a sentence of a fixed length requires normalizing over the candidate yields of
-that length. This routine enumerates that finite set and uses [each yield’s chart weight](../../../semantics/grammar.md#6-chart-denotation).
-The distribution is conditional on length, and enumeration can grow rapidly with
-vocabulary size and sentence length.
-
-`sample_corpus` draws length-fixed yields from the chart's
-length-conditional distribution
-$p(s \mid \text{length} = L, \mathbf{w}) =
-Z(s; \mathbf{w}) / \sum_{s' \text{ of length } L} Z(s'; \mathbf{w})$.
-The implementation enumerates every length-$L$ sequence over the
-deduction's surface vocabulary, evaluates $\log Z$ exactly via
-the chart, softmaxes the log-weights, and draws a multinomial.
-The procedure is exact (no MCMC over derivations); the $|V|^L$
-enumeration is the cost of this implementation.
+`sample_corpus` draws yields of a fixed length $L$ from the chart's distribution conditioned on
+length,
+$p(s \mid \text{length} = L, \mathbf{w}) = Z(s; \mathbf{w}) / \sum_{s' \text{ of length } L} Z(s'; \mathbf{w})$,
+where $Z$ is the [chart weight](../../../semantics/grammar.md#6-chart-denotation) of a yield. It
+enumerates every sequence of length $L$ over the deduction's vocabulary $V$, computes each
+$\log Z$ exactly by the chart, normalizes with a softmax, and draws from the resulting categorical
+distribution. The procedure is exact, and its cost is the $|V|^L$ enumeration.
 
 ::: quivers.stochastic.deduction.sample

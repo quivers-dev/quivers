@@ -3,7 +3,7 @@
 A [monad](https://ncatlab.org/nlab/show/monad) has a unit that inserts ordinary values into a
 computation and a multiplication that flattens one level of nested computation
 [@moggi1991notions; @wadler1992essence]. For lists, the unit makes a singleton list and the
-multiplication concatenates; for distributions, the multiplication averages inner distributions by
+multiplication concatenates. For distributions, the multiplication averages inner distributions by
 the outer probabilities
 ([monads and handlers](../../getting-started/concepts.md#6-monads-and-handlers-describe-how-computations-continue)).
 The module gives `FuzzyPowersetMonad`, `FreeMonoidMonad`, and `KleisliCategory`. The unit and
