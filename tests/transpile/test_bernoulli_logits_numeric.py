@@ -16,7 +16,6 @@ data block for a zeros-trick carrier, refuses the fixtures under
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-import math
 import pathlib
 
 import pytest
@@ -80,11 +79,10 @@ def _rows(v: Mapping[str, Host]) -> torch.Tensor:
 
 
 def _drawn(v: Mapping[str, Host]) -> torch.Tensor:
-    eta, z = _t(v["eta"]), _t(v["z"])
+    eta = _t(v["eta"])
     return (
         D.Normal(_t(0.0), _t(10.0)).log_prob(eta)
-        + D.Bernoulli(logits=eta).log_prob(z).sum()
-        + D.Normal(2.0 * z - 1.0, _t(1.0)).log_prob(_t(v["y"])).sum()
+        + D.Bernoulli(logits=eta).log_prob(_t(v["z"])).sum()
     )
 
 
@@ -120,7 +118,7 @@ _CASES: dict[str, tuple[str, str, dict[str, Host], list[dict[str, Host]], Oracle
     "drawn": (
         _DRAWN,
         "draw_logits",
-        {"y": [0.8, -1.1, 1.3]},
+        {},
         [
             {"eta": -30.0, "z": [0, 0, 1]},
             {"eta": 30.0, "z": [1, 0, 1]},
@@ -245,6 +243,27 @@ def _reference(case: str) -> list[float]:
     return densities
 
 
+def _outcomes(case: str) -> int:
+    """The number of Bernoulli outcomes a case scores.
+
+    Parameters
+    ----------
+    case : str
+        The key of the case in `_CASES`.
+
+    Returns
+    -------
+    int
+        The entries of its observed or drawn outcomes.
+    """
+    fixture, _, data, points, _ = _CASES[case]
+    return sum(
+        torch.as_tensor(value).numel()
+        for name, value in {**data, **points[0]}.items()
+        if name in _INTEGERS[fixture]
+    )
+
+
 @pytest.mark.parametrize("case", sorted(_CASES))
 def test_both_execution_paths_score_the_independent_joint(case: str) -> None:
     assert len(_reference(case)) == len(_CASES[case][3])
@@ -303,7 +322,7 @@ def test_target_scores_the_reference_joint(
     _equivalence.assert_log_density_match(
         _reference(case),
         [float(value) for value in raw["log_densities"]],
-        atol=_equivalence.adaptive_atol(n_obs=math.prod(shapes["y"])),
+        atol=_equivalence.adaptive_atol(n_obs=_outcomes(case)),
         context=f"{backend}@{case}",
     )
 
@@ -322,7 +341,7 @@ def test_church_scores_the_reference_joint(case: str, scratch: pathlib.Path) -> 
     _equivalence.assert_log_density_match(
         _reference(case),
         result.log_densities,
-        atol=_equivalence.adaptive_atol(n_obs=torch.as_tensor(data["y"]).numel()),
+        atol=_equivalence.adaptive_atol(n_obs=_outcomes(case)),
         context=f"church@{case}",
     )
 

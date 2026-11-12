@@ -307,15 +307,16 @@ Gen.is_discrete(::QvrFactorDist) = true
 # log-sigmoid of the signed log-odds, `log p(1) = log sigmoid(l)` and
 # `log p(0) = log sigmoid(-l)`, written `min(v, 0) - log1p(exp(-|v|))`
 # so it stays exact where the probability is within an ulp of zero or
-# one. An observed outcome is a QVR code, 0 or 1.
-struct QvrBernoulliLogitDist <: Gen.Distribution{Int} end
+# one. A draw is a Boolean, as Gen's `bernoulli` draws, and an observed
+# outcome is either a Boolean or a QVR code, 0 or 1.
+struct QvrBernoulliLogitDist <: Gen.Distribution{Bool} end
 
 const qvr_bernoulli_logit = QvrBernoulliLogitDist()
 
 _qvr_log_sigmoid(v::Real) = min(v, 0.0) - log1p(exp(-abs(v)))
 
 function Gen.random(::QvrBernoulliLogitDist, logit::Real)
-    return rand() < 1.0 / (1.0 + exp(-logit)) ? 1 : 0
+    return rand() < 1.0 / (1.0 + exp(-logit))
 end
 
 function Gen.logpdf(::QvrBernoulliLogitDist, x::Real, logit::Real)

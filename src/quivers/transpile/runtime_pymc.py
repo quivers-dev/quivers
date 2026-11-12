@@ -50,6 +50,40 @@ def _continuous_bernoulli_random(lam, rng=None, size=None):
     return np.where(near_half, u, shifted)
 
 
+def _bernoulli_logit_logp(value, logit_p):
+    """Log mass of a Bernoulli outcome ``value`` given by its log-odds.
+
+    ``value * l - softplus(l)``: PyTensor's ``softplus`` is the stable
+    ``log(1 + exp(l))``, so the mass keeps its digits where the
+    probability is within an ulp of zero or one, as reading the log of
+    the probability's complement would not."""
+    return value * logit_p - pt.softplus(logit_p)
+
+
+def _bernoulli_logit_random(logit_p, rng=None, size=None):
+    """Draw a Bernoulli outcome at log-odds ``logit_p``."""
+    logit_p = np.asarray(logit_p, dtype="float64")
+    draw_size = size if size is not None else logit_p.shape
+    u = rng.uniform(size=draw_size)
+    return (u < 1.0 / (1.0 + np.exp(-logit_p))).astype("int64")
+
+
+def BernoulliLogit(name, logit_p, **kwargs):
+    """Bernoulli random variable given by its log-odds, for PyMC.
+
+    Wraps [`pymc.CustomDist`][pymc.CustomDist] with the mass written
+    from the log-odds, under the call shape of
+    ``pymc.Bernoulli(name, logit_p=...)``."""
+    return pymc.CustomDist(
+        name,
+        logit_p,
+        logp=_bernoulli_logit_logp,
+        random=_bernoulli_logit_random,
+        dtype="int64",
+        **kwargs,
+    )
+
+
 def ContinuousBernoulli(name, probs, **kwargs):
     """Continuous-Bernoulli random variable for PyMC.
 
