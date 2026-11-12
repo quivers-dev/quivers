@@ -10,7 +10,8 @@ resolves names, checks types, and elaborates every executable declaration to the
 [Quivers Indexed Effect Core (QIEC)](../developer/qiec.md), a typed core
 language in which sampling and scoring are explicit effects (`qiec/`). The
 compiled runtime, the PyTorch implementation built on `continuous/` and
-`program.py`, runs the program with its data inputs, and `effects/` provides the
+`program.py`, runs the program with its
+[data inputs](../reference/qvr/probabilistic-programs.md#host-data), and `effects/` provides the
 handlers that trace, condition, and replay its sample sites. `inference/` fits
 it by evaluating its log joint density while it adjusts a variational guide or
 moves a Markov chain, and `diagnostics/` summarizes the result.
