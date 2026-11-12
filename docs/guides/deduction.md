@@ -124,7 +124,10 @@ probability. A non-idempotent semiring thus gives the same chart under every age
 only if each derivation is counted exactly once, and a system with cycles also needs
 the iteration to converge [@goodman1999semiring]. For an acyclic grammar under
 `LogProb`, the CKY, semi-naive, depth-first, and Earley agendas give the same goal
-weights to within `1e-5`.
+weights to within `1e-5`. When one item matches two premises of a rule, as a single
+`NP` matches both premises of `NP, NP ⊢ S`, every agenda fires the rule once for
+each premise position, so under `LogProb` that one derivation contributes $\log 2$
+instead of $0$.
 
 ## Pre-registered stdlib {#pre-registered-stdlib}
 
