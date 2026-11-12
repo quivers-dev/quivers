@@ -14,6 +14,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The 2PL IRT and zero-inflated Poisson pages score on the logit scale, and the LDA page is per-token LDA.** The IRT responses are `Bernoulli(logits=...)` and the ZIP gate is `ContinuousBernoulli(logits=...)`, so a saturated predictor keeps its precision; the targets without a Bernoulli given by its logits refuse the IRT program by name. The LDA page gives every token its own topic through a gathered prior, `theta[doc_idx]`, checks the joint against a per-token mixture on both execution paths, and separates it from a document-level mixture; its maximum-likelihood fit failed its held-out check and the page says so.
 - **Renamed gallery pages.** The case study is `examples/bayesian-semantics-case-study.md` (titled Bayesian Semantics Case Study) and the multiple context-free grammar example is `examples/wmcfg.md` with source `docs/examples/source/wmcfg.qvr` and deduction `WMCFG`.
 
+## [0.56.0] - 2026-11-12
+
+### Added
+
+- **`Bernoulli(logits=...)` on Gen, WebPPL, JAGS, and Church.** Each target scores a Bernoulli given by its log-odds `l` from the log-odds themselves, `log p(1) = log sigmoid(l)` and `log p(0) = log sigmoid(-l)` in the form `min(v, 0) - log1p(exp(-|v|))` (JAGS: `x * l - ((l + |l|) / 2 + log(1 + exp(-|l|)))`), which keeps its digits at log-odds of ±30 where the probability is within an ulp of zero or one. Gen draws through a grafted `qvr_bernoulli_logit` distribution, WebPPL through a runtime `BernoulliLogit`, Church through `flip-logit`, and JAGS scores the mass with the zeros trick, a drawn outcome declared by a uniform `dbern(0.5)` carrier. BUGS still refuses the parameterization under `family:Bernoulli:logits`: its `dbern` takes a probability, whose complement loses its digits near ±30, and it has no data block to bind the zeros-trick carrier.
+
+### Fixed
+
+- **PyMC scores `Bernoulli(logits=...)` exactly at saturated log-odds.** The site is a grafted `BernoulliLogit` `CustomDist` whose mass is `value * l - softplus(l)`, where `pymc.Bernoulli(logit_p=...)` had lost about `1e-3` of the log density at log-odds 30.
+- **Stan refuses every discrete latent draw.** A `sample` from a family with integer support (a `Bernoulli`, a `Poisson`, ...) is refused under `sample:discrete-latent`, as a class code already was, where Stan had been handed an integer parameter it does not compile.
+
+## [0.55.4] - 2026-11-12
+
+### Fixed
+
+- **A grouped marginalization batched over its observation plate reads the observe's `via` map on every target.** In `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]` with `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]`, the Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church renderings weigh word `n` by `theta_tok[token_idx[n]]`, as Stan, the compiled runtime, and the reference machine do, where they had paired it with row `n`'s weights whenever the map was not the identity. A prior whose leading axis is the grouping plate counts as allocated per group whatever axes follow it, and a prior shared by every group sums the rows a group collects before the reduction over the class, as on a coarser grouping plate.
+- **JAGS renders a per-token topic model whose prior gathers each token's document row.** A `let theta_tok = theta[doc_idx]` lowers to `theta_tok[n, k] <- theta[doc_idx[n] + 1, k]`, reading the gathered row one entry per loop iteration, where JAGS had refused the model.
+
+## [0.55.3] - 2026-11-12
+
+### Fixed
+
+- **A gathered row or slice of a table keeps the table's remaining axes on every target.** `let row_probs = table[idx]` with `table` over `(Kind, Class)` has the axes of `idx` followed by `Class`, so BUGS and JAGS compute it as `row_probs[m_Resp,m_Class] <- table[idx[m_Resp]+1,m_Class]`, where JAGS had subscripted the table with the row index alone and refused the model as a dimension mismatch whenever another object shared the class axis's extent. The same holds for a drawn index and for a slice of several axes (`table[idx]` with `table` over `(Group, Part, Class)`), which Church now reads at every axis it shares with the site. Gen and Turing refuse a slice of two or more axes gathered from a factor table under `let-expr:nested-slice-gather`, since they hold the table as a nested tower of vectors.
+- **An observe over `over` axes reads a parameter that varies along them one entry at a time on the compiled runtime.** `observe y : Row <- Normal(loc=s, scale=1.0) [over=[Part, Class]]` with `s` one `(Part, Class)` slice per row scores each entry at its own location, as the reference machine does, where every entry had been scored against the whole slice.
+
+## [0.55.2] - 2026-11-12
+
+### Fixed
+
+- **The compiled runtime scores a Poisson rate of zero and a Geometric success probability of one where they stand.** A positive count under `Poisson(rate=0)` and a positive failure count under `Geometric(probs=1)` have log probability `-inf` on the compiled runtime, as on the reference machine and every rendering target, where the inline clamp had floored the rate at `1e-7` and held the probability at `1 - 1e-7`, scoring such counts as finite. Inside a zero-inflated Poisson's `marginalize` block the structural-zero branch, whose gated rate is zero, thus puts no mass on a positive count. A rate below `1e-7` is likewise scored at its own value. Each family parameter's inline clamp may declare the closed interval it projects onto (`ParamSpec.inline_bounds`); every other parameter keeps its floor, and densities at interior values are unchanged.
+
 ## [0.55.1] - 2026-11-12
 
 ### Fixed

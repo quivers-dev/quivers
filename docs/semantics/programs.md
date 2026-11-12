@@ -697,15 +697,17 @@ cases, each an instance of the substitution lemma above.
    refused.
 2. **Conditionals between pure branches.** For a Boolean $c$ and pure
    branches,
-   $$
-   \llbracket \mathsf{if}\ c\ \mathsf{then}\ e_1\ \mathsf{else}\ e_2 \rrbracket
-     = \mathsf{select}(c, \llbracket e_1 \rrbracket, \llbracket e_2 \rrbracket),
-   $$
-   a value of the same type, piecewise differentiable in the branches'
-   inputs away from the surface where $c$ changes. When a branch draws or
-   scores, the set of sites, and with it the space the joint density is
-   defined on, depends on $c$; the compiled runtime fits a fixed space, so
-   such a conditional is refused.
+
+    $$
+    \llbracket \mathsf{if}\ c\ \mathsf{then}\ e_1\ \mathsf{else}\ e_2 \rrbracket
+      = \mathsf{select}(c, \llbracket e_1 \rrbracket, \llbracket e_2 \rrbracket),
+    $$
+
+    a value of the same type, piecewise differentiable in the branches'
+    inputs away from the surface where $c$ changes. When a branch draws or
+    scores, the set of sites, and with it the space the joint density is
+    defined on, depends on $c$; the compiled runtime fits a fixed space, so
+    such a conditional is refused.
 3. **Callees requesting only the program's `Random` and `Score`.** Such a
    body is a Kleisli arrow $A \to \mathcal M_+(B)$ built from the caller's
    own two effects, so substituting it into the caller is the program-draw
@@ -718,15 +720,17 @@ cases, each an instance of the substitution lemma above.
    runs $k(x_0), \ldots, k(x_{n-1})$ read only their own items and names bound
    before the traverse, so the sequential composite stated for `traverse`
    above factorises:
-   $$
-   \llbracket \mathsf{traverse}(x, k) \rrbracket
-     = \bigotimes_{i < n} \llbracket k \rrbracket(x_i),
-   $$
-   the product kernel an indexed bind over the axis of $x$ denotes (§2.4).
-   A pure $k$ gives a deterministic tensor, a comprehension; a drawing $k$
-   gives one plated site $y\$s$ per site $s$ of $k$. A recurrence, in which
-   a run reads its predecessor, does not factorise, and is written with
-   `scan`.
+
+    $$
+    \llbracket \mathsf{traverse}(x, k) \rrbracket
+      = \bigotimes_{i < n} \llbracket k \rrbracket(x_i),
+    $$
+
+    the product kernel an indexed bind over the axis of $x$ denotes (§2.4).
+    A pure $k$ gives a deterministic tensor, a comprehension; a drawing $k$
+    gives one plated site $y\$s$ per site $s$ of $k$. A recurrence, in which
+    a run reads its predecessor, does not factorise, and is written with
+    `scan`.
 
 On the reference machine every call runs as written, recursion and
 handlers included, so a refused program keeps its joint there; only its

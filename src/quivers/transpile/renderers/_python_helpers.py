@@ -1714,8 +1714,6 @@ def marginal_weight_probs(
         return probs
     if not node.plate.batch_dims:
         return probs
-    if observe.plate.batch_dims == node.plate.batch_dims:
-        return probs
     if not isinstance(probs, IRArgRef):
         raise UnsupportedConstruct(
             f"qvr-{target}",
@@ -1726,8 +1724,16 @@ def marginal_weight_probs(
                 f"gather them through"
             ],
         )
+    # The weights are allocated per group when their leading batch axes
+    # are the grouping plate's: a sampled `theta : Doc` over the class
+    # axis, or a `let theta_tok = theta[doc_idx]` whose rows are the
+    # grouping plate and whose trailing axis is the class axis.
     weight_plate = name_plates.get(probs.name)
-    if weight_plate is None or weight_plate.batch_dims != node.plate.batch_dims:
+    group_dims = tuple(node.plate.batch_dims)
+    if (
+        weight_plate is None
+        or tuple(weight_plate.batch_dims[: len(group_dims)]) != group_dims
+    ):
         return probs
     return IRArgRef(
         name=probs.name,
@@ -1778,8 +1784,6 @@ def marginalize_fibration(
         its own.
     """
     if observe.via is None or not node.plate.batch_dims:
-        return None
-    if observe.plate.batch_dims == node.plate.batch_dims:
         return None
     probs = marginal_weight_probs(
         node,

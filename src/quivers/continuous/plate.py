@@ -576,7 +576,11 @@ class VectorisedObserve(ContinuousMorphism):
         return self._array_shape
 
     def _array_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Repeat each row's parameters for every entry of its array.
+        """Lay each row's parameters out for every entry of its array.
+
+        A parameter one value per row is repeated for every entry of the
+        row's array; a parameter holding one value per entry, a slice
+        of a table over the array's axes, gives each entry its own.
 
         Parameters
         ----------
@@ -588,7 +592,25 @@ class VectorisedObserve(ContinuousMorphism):
         torch.Tensor
             The parameters, one row per entry of every row's array.
         """
-        return x.repeat_interleave(math.prod(self._array_shape), dim=0)
+        entries = math.prod(self._array_shape)
+        spec = getattr(self._family, "_param_spec", None)
+        if spec is not None and x.dim() == 2:
+            widths = [width for kind, width in spec if kind == "var"]
+            if (
+                widths
+                and entries > 1
+                and all(width is None or width == 1 for width in widths)
+                and int(x.shape[-1]) == len(widths) * entries
+            ):
+                # Every parameter holds one value per entry of the row's
+                # array, laid out parameter by parameter: each entry
+                # reads its own value of each.
+                return (
+                    x.reshape(x.shape[0], len(widths), entries)
+                    .transpose(1, 2)
+                    .reshape(x.shape[0] * entries, len(widths))
+                )
+        return x.repeat_interleave(entries, dim=0)
 
     @property
     def response(self) -> torch.Tensor:

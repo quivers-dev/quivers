@@ -637,6 +637,15 @@
          (* r (log (- 1.0 p)))
          (* x (log p))))))
 
+;; Bernoulli given by its log-odds `l`, as a numeric 0/1 draw. Each
+;; outcome scores by the log-sigmoid of the signed log-odds,
+;; `log p(1) = log sigmoid(l)` and `log p(0) = log sigmoid(-l)`, which
+;; stays exact where the probability is within an ulp of zero or one.
+(define (flip-logit l)
+  (make-dist
+    (lambda () (if (< (uniform-random) (/ 1.0 (+ 1.0 (exp (- l))))) 1 0))
+    (lambda (x) (if (> x 0.5) (qvr-log-sigmoid l) (qvr-log-sigmoid (- l))))))
+
 ;; Bernoulli as a numeric 0/1 draw so observed integer data scores
 ;; against the same coding rather than a boolean flip.
 (define (flip p)
