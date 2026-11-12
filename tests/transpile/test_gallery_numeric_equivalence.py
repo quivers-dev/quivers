@@ -137,16 +137,6 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # and the zeros trick that would score the shifted code needs a
     # data-bound carrier, so BUGS refuses the observed code.
     ("bugs", "lda"): "observe:class-code",
-    # gru_lm and lstm_lm build their gate arguments with `+` between
-    # two `Hidden`-wide operands. The BUGS model language has no
-    # elementwise vector arithmetic: only the contracted product
-    # lowers, to `inprod(a, b)`. Both engines therefore reject the
-    # `let` before any site is emitted, which is a statement about the
-    # target language rather than about the oracle. Both examples sit
-    # in `_SKIP_QVR_INCOMPATIBLE`, and the test consults the raises
-    # first, so pinning these four turns four cells that asserted
-    # nothing into four that assert the boundary. The remaining eight
-    # targets render both examples and stay carried by that registry.
 }
 
 # A morphism that draws its mean from an `mlp` param source keeps its
@@ -180,20 +170,6 @@ for _ungrouped_backend in (
             "marginalize:ungrouped-over-plate"
         )
 
-# `scan(cell)` denotes one draw per sequence position over
-# intermediate states the program never names, over a sequence axis
-# that is not a declared object. The expansion pass refuses before any
-# renderer runs, so the kind is the same on every target, and pinning
-# it asserts the boundary where a skip asserted nothing.
-for _scan_model in (
-    "bidirectional_rnn_lm",
-    "gru_lm",
-    "lstm_lm",
-    "vanilla_rnn_lm",
-):
-    for _scan_backend in _BACKENDS_WITH_IMAGES:
-        _EXPECTED_TRANSPILE_RAISES[(_scan_backend, _scan_model)] = "scan:no-lowering"
-
 # tree_categorical builds its leaf table with a `factor` over the
 # `Class` axis, which no plate of the program carries; the Gen helper
 # reads factor extents from plate cardinalities and refuses.
@@ -204,12 +180,7 @@ _EXPECTED_TRANSPILE_RAISES[("gen", "tree_categorical")] = "let-expr:LetExprFacto
 # statement to score them otherwise.
 _EXPECTED_TRANSPILE_RAISES[("bugs", "tree_categorical")] = "observe:class-code"
 
-for _neural_model in (
-    "deep_markov",
-    "seq2seq",
-    "transformer_lm",
-    "vae",
-):
+for _neural_model in ("vae",):
     for _neural_backend in _BACKENDS_WITH_IMAGES:
         _EXPECTED_TRANSPILE_RAISES[(_neural_backend, _neural_model)] = (
             "param-source:mlp"
@@ -232,35 +203,20 @@ for _neural_model in (
 _SKIP_DATASET_LOAD_FAILED: frozenset[str] = frozenset()
 
 # Gallery examples whose oracle joint no pin can be held to, for want
-# of a source outside the oracle.
+# of a source outside the oracle: every backend refuses the program and
+# no reconstruction in `test_oracle_reference_strength.py` re-derives
+# its joint.
 #
-# `bidirectional_rnn_lm` and `transformer_lm` carry a `sample h <-
-# backbone` latent whose backbone is a `SampledComposition` over
-# continuous intermediate objects; each factor is scored once along the
-# composition's canonical path. `gru_lm`, `lstm_lm`, and
-# `vanilla_rnn_lm` scan a program cell: the embedding and every cell
-# draw are sites of the program at every position, `x_in@t` and the
-# cell's labels at `@t`, so their joint is the sum of every position's
-# densities and the emission's. All five joints are bitwise stable
-# across global RNG seeds, which
-# `test_oracle_determinism.py::test_composition_marginalised_models_are_bitwise_deterministic`
-# measures; what they lack is a witness. Every backend refuses the scan
-# or the composition, so no container re-derives the number, and no
-# reconstruction in `test_oracle_reference_strength.py` does either.
-# `test_oracle_reference_strength.py::test_unwitnessable_exempt_examples_have_no_independent_source`
-# measures that ground per example, and
+# **Currently empty.** The sequence models that once sat here are
+# checked on their own pages against independent oracles and carry no
+# synthetic-data block, so they are not cells of this tier.
 # `test_oracle_reference_strength.py::test_composition_exemption_grounds_partition_the_registry`
-# requires it to cover this registry exactly. A reconstruction or a
-# live backend cell is what moves a row to `_QVR_REFERENCE_JOINT`.
-_SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset(
-    {
-        "bidirectional_rnn_lm",
-        "gru_lm",
-        "lstm_lm",
-        "transformer_lm",
-        "vanilla_rnn_lm",
-    }
-)
+# requires `_UNWITNESSABLE_JOINT` there to cover this registry exactly,
+# and a row added here must be measured by
+# `test_oracle_reference_strength.py::test_unwitnessable_exempt_examples_have_no_independent_source`.
+# A reconstruction or a live backend cell is what moves a row to
+# `_QVR_REFERENCE_JOINT`.
+_SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset()
 
 # ----------------------------------------------------------------------
 # The reference pin.
@@ -351,14 +307,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -188.2016143798828,
         -135.9104766845703,
     ),
-    "continuous_hmm": (
-        -21.395313262939453,
-        -21.497692108154297,
-        -21.478761672973633,
-        -22.007896423339844,
-        -22.696565628051758,
-        -21.73342514038086,
-    ),
     "factor_analysis": (
         -3338.30810546875,
         -4454.0234375,
@@ -415,14 +363,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -20.41473388671875,
         -442.911376953125,
     ),
-    "linear_gaussian_ssm": (
-        -6.176448822021484,
-        -6.644833564758301,
-        -6.308502197265625,
-        -6.5248260498046875,
-        -6.4006500244140625,
-        -6.19073486328125,
-    ),
     "logistic_noise_regression": (
         -80.29877471923828,
         -94.24589538574219,
@@ -455,14 +395,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -211.61328125,
         -210.4910430908203,
     ),
-    "pcfg": (
-        -23.014850616455078,
-        -26.371784210205078,
-        -25.505828857421875,
-        -23.08839225769043,
-        -22.200294494628906,
-        -27.879863739013672,
-    ),
     "pmf": (
         -409.01629638671875,
         -902.4696044921875,
@@ -478,14 +410,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -3519.74853515625,
         -3539.537841796875,
         -3080.2548828125,
-    ),
-    "stochastic_volatility": (
-        -307.8003845214844,
-        -497.64605712890625,
-        -374.3330078125,
-        -449.9366760253906,
-        -448.69561767578125,
-        -387.8696594238281,
     ),
     "survival_weibull": (
         -155.67352294921875,
@@ -519,22 +443,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -606.8170166015625,
         -747.0103759765625,
     ),
-    "deep_markov": (
-        -70.9559326171875,
-        -71.23564910888672,
-        -70.98413848876953,
-        -70.98515319824219,
-        -70.94621276855469,
-        -71.1627197265625,
-    ),
-    "seq2seq": (
-        -488.5443420410156,
-        -487.85491943359375,
-        -489.553466796875,
-        -490.8770751953125,
-        -489.0007629394531,
-        -489.3353576660156,
-    ),
     "vae": (
         -4664.140625,
         -4679.982421875,
@@ -551,18 +459,7 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
 # requires the reason to name a registry that independently agrees the
 # example has no reference, so an exemption cannot outlive the gap it
 # describes.
-_REFERENCE_PIN_EXEMPT: dict[str, str] = {
-    # Sequence models whose exact joint nothing outside the oracle
-    # re-derives: every backend refuses the scan or the composition,
-    # and no reconstruction exists. Each sits in
-    # `_SKIP_QVR_INCOMPATIBLE`, whose comment carries the diagnosis
-    # and names the test that measures the ground.
-    "bidirectional_rnn_lm": "no backend or reconstruction witnesses the joint",
-    "gru_lm": "no backend or reconstruction witnesses the joint",
-    "lstm_lm": "no backend or reconstruction witnesses the joint",
-    "transformer_lm": "no backend or reconstruction witnesses the joint",
-    "vanilla_rnn_lm": "no backend or reconstruction witnesses the joint",
-}
+_REFERENCE_PIN_EXEMPT: dict[str, str] = {}
 
 _REFERENCE_PIN_ULP_BUDGET = 8
 """Round-off budget for
@@ -580,11 +477,8 @@ against a guess. The raw-`torch.distributions` reconstructions in
 `test_oracle_reference_strength.py` sum the same per-site terms in a
 different order and grouping, while the CI probe replays the trace on
 independent runners. The largest observed difference is **two**
-float32 ULPs (1.95e-03, on a feed-forward chain's joint of magnitude
-15,836);
-`continuous_hmm`'s independent reconstruction differs by one ULP
-(6.10e-05 at magnitude 736). Eight ULPs is two bits of headroom above
-the measured worst case.
+float32 ULPs (1.95e-03, on a joint of magnitude 15,836). Eight ULPs is
+two bits of headroom above the measured worst case.
 
 This is a headroom figure, not a necessity: within each measured
 runtime and platform, the oracle is bit-exact run to run and across

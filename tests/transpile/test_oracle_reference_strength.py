@@ -34,7 +34,6 @@ from collections.abc import Callable
 import pytest
 import torch
 from torch import Tensor
-from torch.nn import functional as F
 from torch import distributions as td
 
 from quivers.dsl.ast_nodes.declarations import ProgramDecl
@@ -171,345 +170,6 @@ def _unknown_variant(example: str, variant: str) -> AssertionError:
 # ---------------------------------------------------------------------
 
 
-#: Factor widths of one `seq2seq` transformer block, in source order:
-#: `fan(head)`, `attn_proj`, `residual_attn`, `ff_up`, `ff_down`,
-#: `residual_ff`. `object Latent : Real 16`, `object FFHidden : Real 32`.
-_SEQ2SEQ_BLOCK_WIDTHS: tuple[int, ...] = (16, 16, 16, 32, 16, 16)
-
-
-def _seq2seq_block_prefixes(root: str) -> tuple[tuple[str, ...], ...]:
-    """Parameter prefixes of one block, in the order the source composes.
-
-    A block is `fan(head) >> attn_proj >> residual_attn >> ff_up >>
-    ff_down >> residual_ff`, composed left-associatively, so the last
-    factor sits at `right` and each earlier one gains a `left`. The
-    `fan` is the head of the chain and carries its four
-    `[replicate=4]` components. Each entry is the tuple of prefixes
-    that factor draws its parameters from: one for an ordinary factor,
-    four for the fan.
-    """
-    return (
-        tuple(
-            f"{root}.left.left.left.left.left._components.{index}.param_source"
-            for index in range(4)
-        ),
-        (f"{root}.left.left.left.left.right.param_source",),
-        (f"{root}.left.left.left.right.param_source",),
-        (f"{root}.left.left.right.param_source",),
-        (f"{root}.left.right.param_source",),
-        (f"{root}.right.param_source",),
-    )
-
-
-def _seq2seq_side(
-    root: str,
-    tokens: Tensor,
-    weights: dict[str, Tensor],
-    *,
-    activated: bool,
-) -> tuple[Tensor, Tensor]:
-    """Score one `seq2seq` tower along its canonical path.
-
-    The tower is `embed >> stack(block, 2)`. Its embedding is a
-    `Normal` whose location is the token's own centre row, so at the
-    origin it is scored there and contributes its normalizer; every
-    later factor is likewise bound to its own location, which is what
-    the base measure's origin pushes to. Returns the summed density
-    and the tower's output, which is the row the cross-attention
-    factor reads.
-    """
-    centres = weights[root + ".left.centers"]
-    scales = weights[root + ".left.log_sigma"].exp()
-    embedded = centres[tokens]
-    term = td.Normal(centres[tokens], scales[tokens]).log_prob(embedded)
-    total = term.sum(tuple(range(1, term.dim())))
-
-    current = embedded
-    factors: list[tuple[tuple[str, ...], int]] = []
-    for block in ("right.left", "right.right"):
-        prefixes = _seq2seq_block_prefixes(f"{root}.{block}")
-        factors += list(zip(prefixes, _SEQ2SEQ_BLOCK_WIDTHS, strict=True))
-
-    for prefixes, width in factors:
-        if len(prefixes) > 1:
-            # `[replicate=4]`: four heads of `object HeadOut : Real 4`,
-            # concatenated back into the 16 columns of `Latent`.
-            locations, scale_columns = [], []
-            for prefix in prefixes:
-                head_loc, head_scale = _normal_head(
-                    _mlp3_linear(
-                        current,
-                        weights,
-                        prefix + ".net.",
-                        activated=activated,
-                    ),
-                    4,
-                )
-                locations.append(head_loc)
-                scale_columns.append(head_scale)
-            location = torch.cat(locations, dim=-1)
-            scale = torch.cat(scale_columns, dim=-1)
-        else:
-            location, scale = _normal_head(
-                _mlp3_linear(
-                    current,
-                    weights,
-                    prefixes[0] + ".net.",
-                    activated=activated,
-                ),
-                width,
-            )
-        factor_term = td.Normal(location, scale).log_prob(location)
-        total = total + factor_term.sum(tuple(range(1, factor_term.dim())))
-        current = location
-    return total, current
-
-
-def _reconstruct_seq2seq(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`seq2seq.qvr`:
-
-        sample h          <- backbone
-        observe next_token <- lm_head(h)
-
-    with `backbone = (encoder @ decoder) >> cross`, each tower
-    `embed >> stack(block, 2)`, and each block
-    `fan(head) >> attn_proj >> residual_attn >> ff_up >> ff_down >>
-    residual_ff`. There is no scan here: the chain is feed-forward, so
-    the canonical path is a plain fold and the reconstruction agrees
-    with the oracle within the calibrated float32 roundoff budget.
-
-    The product scores both towers at the image of the base measure's
-    origin and hands their concatenated outputs to `cross`, which is
-    where `h` enters. `object Latent : Real 16`, `object Combined :
-    Real 32`, and `enc_head` / `dec_head` carry `[replicate=4]` over
-    `object HeadOut : Real 4`, so each fan rebuilds `Latent` from four
-    four-column heads. The MLP and embedding weights are compile-time
-    draws with no spelling in the source and are taken as given.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "seq2seq's reconstruction needs the snippet's "
-            "`(source, target)` column pair, which the dataset did "
-            "not carry."
-        )
-    known = (
-        "",
-        "drop_encoder_tower",
-        "drop_decoder_tower",
-        "drop_cross_factor",
-    )
-    if variant not in known:
-        raise _unknown_variant("seq2seq", variant)
-
-    activated = True
-    source_tokens = x_input[..., 0]
-    target_tokens = x_input[..., 1]
-    encoder_term, encoder_out = _seq2seq_side(
-        "_step_h.left.left",
-        source_tokens,
-        weights,
-        activated=activated,
-    )
-    decoder_term, decoder_out = _seq2seq_side(
-        "_step_h.left.right",
-        target_tokens,
-        weights,
-        activated=activated,
-    )
-
-    combined = torch.cat([encoder_out, decoder_out], dim=-1)
-    loc_cross, scale_cross = _normal_head(
-        _mlp3_linear(
-            combined,
-            weights,
-            "_step_h.right.param_source.net.",
-            activated=activated,
-        ),
-        32,
-    )
-    cross_term = (
-        td.Normal(loc_cross, scale_cross)
-        .log_prob(
-            values["h"],
-        )
-        .sum(-1)
-    )
-
-    head = "_step_next_token.param_source.linear."
-    logits = F.linear(
-        values["h"],
-        weights[head + "weight"],
-        weights[head + "bias"],
-    )
-    per_token = td.Categorical(logits=logits).log_prob(
-        values["next_token"],
-    )
-
-    if variant == "drop_encoder_tower":
-        encoder_term = torch.zeros_like(encoder_term)
-    if variant == "drop_decoder_tower":
-        decoder_term = torch.zeros_like(decoder_term)
-    if variant == "drop_cross_factor":
-        cross_term = torch.zeros_like(cross_term)
-    latent = encoder_term + decoder_term + cross_term
-    return {"h": latent.sum(), "next_token": per_token.sum()}
-
-
-def _mlp3_linear(
-    x: Tensor,
-    weights: dict[str, Tensor],
-    prefix: str,
-    *,
-    activated: bool = True,
-) -> Tensor:
-    """`_mlp3` spelled through `torch.nn.functional.linear`.
-
-    The two differ only in floating-point re-association, which for a
-    feed-forward chain stays below the pin tolerance. A reconstruction
-    that scores a chain of many factors calls what the parameter
-    source itself calls, so that what the value is compared against is
-    the same implemented map.
-    """
-    layer = F.linear(
-        x,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    layer = F.linear(
-        layer,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    return F.linear(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-
-
-def _mlp3(
-    x: Tensor,
-    weights: dict[str, Tensor],
-    prefix: str,
-    *,
-    activated: bool = True,
-) -> Tensor:
-    """The parameter row a three-layer `mlp` source computes.
-
-    `[param_source=mlp]` builds `Linear, tanh, Linear, tanh, Linear`,
-    whose modules are numbered `0`, `2` and `4`. `activated=False` is
-    the mutant path: the same three matrices with the nonlinearities
-    dropped, which collapses the network to a single affine map.
-    """
-    layer = _affine(
-        x,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    layer = _affine(
-        layer,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    return _affine(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-
-
-def _reconstruct_deep_markov(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """Reconstruct the path density declared by `deep_markov.qvr`.
-
-    The transition and emission sites are two-factor Normal chains. The
-    reconstruction follows each chain through the base-measure image,
-    scores all four factors, and sums over the 32-row plate. Compile-time
-    MLP weights are taken from the compiled model; wiring, layer order,
-    head splits, and densities are rebuilt.
-
-    Only whole-term removals appear in the mutant catalogue. The other
-    measured variants move this path density by less than the catalogue
-    floor, even though they remain above the pin tolerance.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "deep_markov's reconstruction needs the snippet's "
-            "`(driver, state)` row, which the dataset did not carry."
-        )
-    known = (
-        "",
-        "drop_transition_prefix",
-        "drop_emission_prefix",
-        "drop_emission_term",
-    )
-    if variant not in known:
-        raise _unknown_variant("deep_markov", variant)
-
-    raw_hidden = _mlp3(
-        x_input,
-        weights,
-        "_step_s_new.left.param_source.net.",
-    )
-    loc_hidden, scale_hidden = _normal_head(raw_hidden, 32)
-    per_hidden = td.Normal(loc_hidden, scale_hidden).log_prob(loc_hidden)
-    raw_state = _mlp3(
-        loc_hidden,
-        weights,
-        "_step_s_new.right.param_source.net.",
-    )
-    loc_state, scale_state = _normal_head(raw_state, 8)
-    per_state = td.Normal(loc_state, scale_state).log_prob(values["s_new"])
-
-    per_transition_row = per_hidden.sum(-1) + per_state.sum(-1)
-    if variant == "drop_transition_prefix":
-        transition = per_state.sum()
-    else:
-        transition = per_transition_row.sum()
-
-    raw_emit = _mlp3(
-        values["s_new"],
-        weights,
-        "_step_o.left.param_source.net.",
-    )
-    loc_emit, scale_emit = _normal_head(raw_emit, 32)
-    per_emit = td.Normal(loc_emit, scale_emit).log_prob(loc_emit)
-    raw_obs = _mlp3(
-        loc_emit,
-        weights,
-        "_step_o.right.param_source.net.",
-    )
-    loc_obs, scale_obs = _normal_head(raw_obs, 4)
-    per_obs = td.Normal(loc_obs, scale_obs).log_prob(values["o"])
-    if variant == "drop_emission_prefix":
-        observation = per_obs.sum()
-    else:
-        observation = (per_emit.sum(-1) + per_obs.sum(-1)).sum()
-
-    if variant == "drop_emission_term":
-        return {"s_new": transition, "o": torch.zeros(())}
-    return {"s_new": transition, "o": observation}
-
-
 def _reconstruct_vae(
     dataset: _gallery_data.GalleryDataset,
     values: dict[str, Tensor],
@@ -588,113 +248,6 @@ def _reconstruct_bnn(
         "sigma": td.HalfNormal(0.5).log_prob(sigma),
         "y": per_row.mean() if variant == "plate_mean" else per_row.sum(),
     }
-
-
-def _reconstruct_state_space(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-    state_dim: int,
-    obs_dim: int,
-) -> dict[str, Tensor]:
-    """`continuous_hmm.qvr` and `linear_gaussian_ssm.qvr`, which share
-    a program shape:
-
-        sample s_new <- transition(<program input>)
-        observe o    <- emission(s_new)
-
-    Both morphisms are `~ Normal` Kleisli arrows over a default linear
-    parameter source, so each step is a single affine map from its
-    conditioning row to a `(loc, log_scale)` pair. As with `bnn` the
-    affine weights are compile-time draws with no source spelling and
-    are taken as given; the wiring (which row conditions which step),
-    the head split, the density, and the per-step sum over the
-    32-element scan are rebuilt.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "a state-space reconstruction needs the snippet's "
-            "`state_prev` / `x_in` driver matrix, which the dataset "
-            "did not carry."
-        )
-    state = values["s_new"]
-
-    raw_state = _affine(
-        x_input,
-        weights["_step_s_new.param_source.linear.weight"],
-        weights["_step_s_new.param_source.linear.bias"],
-    )
-    loc_state, scale_state = _normal_head(
-        raw_state,
-        state_dim,
-        unit_scale=variant == "unit_transition_scale",
-    )
-    per_step_state = td.Normal(loc_state, scale_state).log_prob(state)
-
-    if variant == "emission_reads_previous_state":
-        emission_input = x_input
-    elif variant in (
-        "",
-        "unit_transition_scale",
-        "drop_transition_term",
-        "swap_loc_and_log_scale",
-    ):
-        emission_input = state
-    else:
-        raise _unknown_variant("state-space", variant)
-    raw_obs = _affine(
-        emission_input,
-        weights["_step_o.param_source.linear.weight"],
-        weights["_step_o.param_source.linear.bias"],
-    )
-    if variant == "swap_loc_and_log_scale":
-        loc_obs = raw_obs[..., obs_dim:]
-        scale_obs = raw_obs[..., :obs_dim].exp().clamp(min=_SCALE_FLOOR)
-    else:
-        loc_obs, scale_obs = _normal_head(raw_obs, obs_dim)
-    per_step_obs = td.Normal(loc_obs, scale_obs).log_prob(values["o"])
-
-    if variant == "drop_transition_term":
-        return {"s_new": torch.zeros(()), "o": per_step_obs.sum()}
-    return {"s_new": per_step_state.sum(), "o": per_step_obs.sum()}
-
-
-def _reconstruct_continuous_hmm(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`object State : Real 16`, `object Obs : Real 8`."""
-    return _reconstruct_state_space(
-        dataset,
-        values,
-        weights,
-        variant,
-        state_dim=16,
-        obs_dim=8,
-    )
-
-
-def _reconstruct_linear_gaussian_ssm(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`object State : Real 4`, `object Obs : Real 2`; the transition
-    additionally reads a `Driver : Real 2` row, which the snippet
-    concatenates onto the previous state before the call."""
-    return _reconstruct_state_space(
-        dataset,
-        values,
-        weights,
-        variant,
-        state_dim=4,
-        obs_dim=2,
-    )
 
 
 def _reconstruct_mixture_model(
@@ -1058,54 +611,6 @@ class _Reconstruction:
 
 
 _RECONSTRUCTIONS: dict[str, _Reconstruction] = {
-    "seq2seq": _Reconstruction(
-        _reconstruct_seq2seq,
-        (
-            "_step_h.left.left.left.centers",
-            "_step_h.left.left.left.log_sigma",
-            "_step_h.left.right.left.centers",
-            "_step_h.left.right.left.log_sigma",
-            "_step_next_token.param_source.linear.weight",
-            "_step_next_token.param_source.linear.bias",
-        ),
-        "Both embedding tables, the twenty-four block factors "
-        "of the two towers, the cross factor and the "
-        "language-model head take their weights from "
-        "compile-time draws, named in neither the `.qvr` "
-        "source nor the `.md` snippet.",
-    ),
-    "deep_markov": _Reconstruction(
-        _reconstruct_deep_markov,
-        (
-            "_step_s_new.left.param_source.net.0.weight",
-            "_step_s_new.left.param_source.net.0.bias",
-            "_step_s_new.left.param_source.net.2.weight",
-            "_step_s_new.left.param_source.net.2.bias",
-            "_step_s_new.left.param_source.net.4.weight",
-            "_step_s_new.left.param_source.net.4.bias",
-            "_step_s_new.right.param_source.net.0.weight",
-            "_step_s_new.right.param_source.net.0.bias",
-            "_step_s_new.right.param_source.net.2.weight",
-            "_step_s_new.right.param_source.net.2.bias",
-            "_step_s_new.right.param_source.net.4.weight",
-            "_step_s_new.right.param_source.net.4.bias",
-            "_step_o.left.param_source.net.0.weight",
-            "_step_o.left.param_source.net.0.bias",
-            "_step_o.left.param_source.net.2.weight",
-            "_step_o.left.param_source.net.2.bias",
-            "_step_o.left.param_source.net.4.weight",
-            "_step_o.left.param_source.net.4.bias",
-            "_step_o.right.param_source.net.0.weight",
-            "_step_o.right.param_source.net.0.bias",
-            "_step_o.right.param_source.net.2.weight",
-            "_step_o.right.param_source.net.2.bias",
-            "_step_o.right.param_source.net.4.weight",
-            "_step_o.right.param_source.net.4.bias",
-        ),
-        "All four MLPs take their weights from compile-time "
-        "draws, which are named in neither the `.qvr` source "
-        "nor the `.md` snippet.",
-    ),
     "vae": _Reconstruction(
         _reconstruct_vae,
         (
@@ -1119,30 +624,6 @@ _RECONSTRUCTIONS: dict[str, _Reconstruction] = {
         "snippet.",
     ),
     "bnn": _Reconstruction(_reconstruct_bnn, (), ""),
-    "continuous_hmm": _Reconstruction(
-        _reconstruct_continuous_hmm,
-        (
-            "_step_s_new.param_source.linear.weight",
-            "_step_s_new.param_source.linear.bias",
-            "_step_o.param_source.linear.weight",
-            "_step_o.param_source.linear.bias",
-        ),
-        "`transition` and `emission` take the default linear "
-        "parameter source, whose affine weights are compile-time "
-        "draws with no spelling in the source.",
-    ),
-    "linear_gaussian_ssm": _Reconstruction(
-        _reconstruct_linear_gaussian_ssm,
-        (
-            "_step_s_new.param_source.linear.weight",
-            "_step_s_new.param_source.linear.bias",
-            "_step_o.param_source.linear.weight",
-            "_step_o.param_source.linear.bias",
-        ),
-        "`transition_cell` and `emission` take the default linear "
-        "parameter source, whose affine weights are compile-time "
-        "draws with no spelling in the source.",
-    ),
     "mixture_model": _Reconstruction(_reconstruct_mixture_model, (), ""),
     "parametric_pooling": _Reconstruction(
         _reconstruct_parametric_pooling,
@@ -1188,52 +669,6 @@ class _Mutant:
 
 
 _MUTANTS: tuple[_Mutant, ...] = (
-    _Mutant(
-        "seq2seq",
-        "drop_encoder_tower",
-        "the encoder tower's thirteen factors are dropped and only "
-        "the decoder's are scored, which is the joint a chain that "
-        "scores one arm of a product would report.",
-        200.0,
-    ),
-    _Mutant(
-        "seq2seq",
-        "drop_decoder_tower",
-        "the decoder tower's thirteen factors are dropped and only "
-        "the encoder's are scored, the other arm of the same defect.",
-        200.0,
-    ),
-    _Mutant(
-        "seq2seq",
-        "drop_cross_factor",
-        "the cross factor is dropped, so `h` enters no density at "
-        "all and the two towers are scored without the step that "
-        "relates them.",
-        40.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_emission_prefix",
-        "the emission chain's first factor is dropped and only its "
-        "second is scored, which is the joint a chain that scores its "
-        "endpoint's marginal alone would report.",
-        1.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_transition_prefix",
-        "the transition chain's first factor is dropped and only its "
-        "second is scored, which is what a chain that scores its "
-        "endpoint's marginal alone would report.",
-        30.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_emission_term",
-        "the `observe o` term is dropped, leaving the transition "
-        "alone in a joint that claims to carry both.",
-        33.0,
-    ),
     _Mutant(
         "vae",
         "drop_activation",
@@ -1290,49 +725,6 @@ _MUTANTS: tuple[_Mutant, ...] = (
         "plate_mean",
         "the 128-row `Resp` plate is averaged instead of summed.",
         1200.0,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "drop_transition_term",
-        "the `sample s_new <- transition` prior term is dropped and "
-        "only the emission likelihood is scored.",
-        14.0,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "emission_reads_previous_state",
-        "`emission` is conditioned on the program input rather than "
-        "on the freshly-drawn `s_new`, an off-by-one in the scan's "
-        "wiring that leaves every shape valid.",
-        0.65,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "unit_transition_scale",
-        "the transition head's log-scale columns are ignored.",
-        0.7,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "swap_loc_and_log_scale",
-        "the emission head's location and log-scale columns are "
-        "transposed, which every shape check still accepts.",
-        0.16,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "drop_transition_term",
-        "the `sample s_new <- transition_cell` prior term is dropped "
-        "and only the emission likelihood is scored.",
-        3.5,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "unit_transition_scale",
-        "the transition head's log-scale columns are ignored, so the "
-        "process noise is scored at unit scale instead of at the "
-        "kernel's own.",
-        0.3,
     ),
     _Mutant(
         "mixture_model",
@@ -2281,13 +1673,12 @@ def test_reference_pin_exemptions_are_each_covered_by_a_check() -> None:
         "parse is finding declarations that are not there."
     )
 
-    assert nondeterministic, (
-        "the unwitnessed exemption category is empty, so "
-        "`test_unwitnessable_exempt_examples_have_no_independent_source` "
-        "and `test_unwitnessable_exempt_examples_sum_each_site_once` "
-        "parametrize over nothing. Every sequence model gained a "
-        "witnessed joint, which is a real change worth reading the "
-        "measurements for, not a green run."
+    assert nondeterministic == set(_UNWITNESSABLE_JOINT), (
+        f"the unwitnessed exemption category holds "
+        f"{sorted(nondeterministic)!r}, against the declared "
+        f"{sorted(_UNWITNESSABLE_JOINT)!r}. The category is empty by "
+        f"record, so its filling is a decision someone writes down "
+        f"with the measurements that ground it."
     )
 
 
@@ -2356,94 +1747,26 @@ def test_program_free_examples_are_exempt_or_pinned(example: str) -> None:
 
 
 # ---------------------------------------------------------------------
-# The sequence-model exemptions.
+# The unwitnessed exemptions.
 #
-# The five sequence models score a joint no pin can be held to, for
-# want of a second source rather than of a density.
-# `bidirectional_rnn_lm` and `transformer_lm` bind a latent to a
-# `SampledComposition` whose factors are each scored once along the
-# canonical path. `gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` scan a
-# program cell, whose embedding and cell draws are sites of the
-# program at every position, so their joint is the sum of every
-# position's densities and the emission's. Every backend refuses the
-# scan or the composition, and no reconstruction re-derives these
-# joints, which is measured below per example.
+# An example exempt from the reference pin for want of a second source
+# rather than of a density: every backend refuses it and no
+# reconstruction re-derives its joint, which is measured below per
+# example.
 # ---------------------------------------------------------------------
 
 
-_UNWITNESSABLE_JOINT: frozenset[str] = frozenset(
-    {
-        "bidirectional_rnn_lm",
-        "gru_lm",
-        "lstm_lm",
-        "transformer_lm",
-        "vanilla_rnn_lm",
-    }
-)
+_UNWITNESSABLE_JOINT: frozenset[str] = frozenset()
 """Exempt examples whose joint a pin could hold, but which nothing
 outside the oracle reproduces.
 
-Every factor of each composition, and every site a scan reaches at
-each position, carries a density scored once, so the joint is exact,
-needs no quadrature rule, and is bitwise reproducible. What is missing
-is a second source for the number. All five refuse on every backend, so
-no container re-derives them, and none carries a reconstruction here.
-
-A reconstruction is what closes each row, and for the two compositions
-it is not merely unwritten. Their chains run through a scan whose cell
-carries its own density, so the prefix is a recurrence, and as
-[`ScanMorphism.log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
-records, a perturbation of the state grows by roughly an order of
-magnitude per step.
-
-That was measured on `bidirectional_rnn_lm` rather than assumed. A
-reconstruction of it written from the source, calling the same
-``torch.nn.functional.linear`` the parameter source calls, reproduces
-the embedding, both recurrent paths, and the canonical prefix they
-produce, bitwise. What it does not reproduce bitwise is the last
-factor, which scores `h` against a combiner whose predicted scale is
-small compared with the distance it covers. That term is near -1.5e08,
-and the assembled site lands 16 nats away.
-
-Sixteen nats is not a discrepancy to chase. The float32 grid spacing
-at that magnitude *is* 16, so the reconstruction differs from the
-oracle by one unit in the last place, the smallest non-zero difference
-either can express.
-`test_reconstruction_matches_the_oracle_per_site` holds an absolute
-budget some thirty thousand times finer than that spacing, so nothing
-short of a bitwise-identical accumulation clears it.
-
-`transformer_lm` was written too, and lands in the same place from a
-different direction. It carries no recurrence at all: it is one
-feed-forward tower, the same shape as either arm of `seq2seq`, which
-*is* pinned here because its reconstruction agrees within the
-calibrated float32 roundoff budget. What
-separates them is where the chain ends. `seq2seq` hands its towers'
-origin outputs to a further factor, so every factor is scored at its
-own location and nothing is evaluated far from it; `transformer_lm`
-ends at `h`, and its last factor scores a value the canonical path did
-not produce. That single term is near -4e06 and its sensitivity to the
-prefix runs as `(h - mu) / sigma^2`, so the reconstruction's token
-likelihood reproduces exactly while its `h` lands 0.5 nats out. The
-float32 spacing at -4e06 is 0.25, so that too is two units in the last
-place, and still far finer than any budget an absolute check states.
-
-So the missing witness in both rows is not a missing afternoon.
-`test_reconstruction_matches_the_oracle_per_site` holds an absolute
-budget, and agreement against a term of this size would need the
-reconstruction to accumulate in the same order as the object under
-test, which is mirroring rather than witnessing: a pin resting on it
-would certify the implementation against itself. What would close
-these rows is the joint's conditioning improved, so that what a factor
-scores lies within reach of what it predicts, or the comparison recast
-onto the per-factor terms, each of which does agree exactly.
-
-`gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` carry no reconstruction yet,
-and their case is different. A scan of a program cell scores every
-position's embedding and cell draw at its own value, so each term is
-evaluated where it was drawn and a reconstruction from raw
-`torch.distributions` is within reach; until one lands, these rows rest
-on the missing witness alone."""
+**Currently empty.** The sequence models that carried this ground are
+checked on their own gallery pages against independent float64
+oracles and carry no synthetic-data block, so they are not cells of the
+numeric tier. A row added here must name an example in
+`_SKIP_QVR_INCOMPATIBLE`, and the two per-example tests below then
+measure that its joint is finite, moves with the point set, sums each
+site once, and has no live backend cell or reconstruction."""
 
 
 @functools.cache
@@ -2497,10 +1820,6 @@ def test_composition_exemption_grounds_partition_the_registry() -> None:
         f"{stale!r} carry a ground for exemption but are not exempt: "
         f"either they left `_SKIP_QVR_INCOMPATIBLE` or the ground "
         f"names the wrong example."
-    )
-    assert unwitnessed, (
-        "the unwitnessed ground is empty, so the checks below "
-        "parametrize over nothing and pass vacuously."
     )
 
 

@@ -222,12 +222,7 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
 #    the wire form nor the sample sites, so no backend can reconstruct
 #    the mean. The transpiler raises rather than emit a meanless
 #    observation. Every syntax-check backend is affected.
-for _neural_example in (
-    "deep_markov",
-    "seq2seq",
-    "transformer_lm",
-    "vae",
-):
+for _neural_example in ("vae",):
     for _syntax_backend in _SYNTAX_CHECKS:
         _EXPECTED_UNSUPPORTED[(_syntax_backend, _neural_example)] = "param-source:mlp"
 
@@ -241,9 +236,14 @@ for _neural_example in (
 #    renderer runs, so it is the same kind on every target.
 for _scan_example in (
     "bidirectional_rnn_lm",
+    "continuous_hmm",
+    "deep_markov",
     "gru_lm",
+    "linear_gaussian_ssm",
     "lstm_lm",
     "stacked_rnn_lm",
+    "stochastic_volatility",
+    "transformer_lm",
     "vanilla_rnn_lm",
 ):
     for _syntax_backend in _SYNTAX_CHECKS:
@@ -278,6 +278,24 @@ for _ungrouped_backend in (
             _EXPECTED_UNSUPPORTED[(_ungrouped_backend, _ungrouped_example)] = (
                 "marginalize:ungrouped-over-plate"
             )
+
+# 1b. A module that declares a deduction and no program has no
+#    probabilistic program to emit; the deduction itself is refused by
+#    name on every target.
+for _syntax_backend in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[(_syntax_backend, "pcfg")] = "deduction_decl"
+
+# 1c. The sequence-to-sequence Transformer normalizes its attention
+#    scores with a row-wise `softmax` over a comprehension, which Stan's
+#    renderer cannot compute row by row, and scores its targets under
+#    `Categorical(logits=...)`, which the graph-model and Julia targets
+#    do not expose. Pyro, NumPyro, PyMC, and Edward2 render it.
+_EXPECTED_UNSUPPORTED[("stan", "seq2seq")] = "let-expr:row:softmax"
+for _syntax_backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
+    if _syntax_backend in _SYNTAX_CHECKS:
+        _EXPECTED_UNSUPPORTED[(_syntax_backend, "seq2seq")] = (
+            "family:Categorical:logits"
+        )
 
 # 7. `tree_categorical` builds its leaf table with a `factor` over the
 #    `Class` axis, which no plate of the program carries; the Gen

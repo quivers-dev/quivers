@@ -770,10 +770,9 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
 
     observations = ns.get("observations")
     if not isinstance(observations, dict):
-        # `sites` is the alternative idiomatic name in state-space
-        # examples (continuous_hmm threads observed step values via
-        # `sites = {"s_new": ..., "o": ...}` rather than an
-        # `observations` dict).
+        # `sites` is the alternative idiomatic name for a snippet that
+        # threads observed step values as `sites = {"s_new": ..., "o":
+        # ...}` rather than as an `observations` dict.
         sites = ns.get("sites")
         if isinstance(sites, dict):
             observations = sites
