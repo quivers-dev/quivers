@@ -1,397 +1,268 @@
-# Denotational Semantics of Compositional Effects
+# Effects and type classes
 
-QVR layers monadic and applicative effects over the residuated category
-universe through two parallel typeclass towers (monads and arrows)
-and a class-driven schema-lifting system. This page assigns denotations to
-these constructs, states the assumptions for the lifting argument, and explains their conservative extension of the bare deduction fragment of
-[Weighted Deduction Fragment](grammar.md).
+Effects enter QVR in two places. A chart parser may type expressions with effects, such as a
+continuation for a quantifier or a set of alternatives for an indefinite, and lift its rules to
+these types by the operations of a functor, an applicative functor, or a monad, as in
+effect-driven interpretation [@bumford2026effect; @charlow2025scope]. The Quivers Indexed Effect
+Core (QIEC) checks every computation of a module against an effect row and runs it with
+[effect handlers](https://en.wikipedia.org/wiki/Effect_system) [@plotkin2009handlers] (§8). The
+library's Python packages `quivers.monadic` and `quivers.arrows` provide the
+[type classes](https://en.wikipedia.org/wiki/Type_class) behind the first [@wadler1989adhoc].
 
-An effect separates a request from the interpretation of that request. A
-computation may request a random value; a handler can answer by drawing,
-replaying a supplied value, or exploring several possibilities. The
-computation then continues using the answer. This separation allows one
-program description to participate in different execution strategies.
+An *algebraic effect* separates a request from its interpretation [@plotkin2003algebraic]: a
+computation requests a random value, and a handler answers by drawing one, by replaying a given
+value, or by trying every value. The computation then continues with the answer, so one program
+can be run under different strategies. A type class lists the operations a type provides, and its
+laws say which rearrangements of those operations preserve meaning.
 
-Two related uses appear here. The parser layer wraps grammatical types in
-effect constructors and lifts composition rules to work on those wrapped
-types (§§1–7). QIEC tracks explicit requests to lexical instances and checks
-the handlers that answer them (§8). A typeclass interface lists available
-operations; its mathematical laws state when rearranging those operations
-preserves meaning.
+## 1. Setting {#1-setting}
 
-For monads as a programming abstraction, see [@wadler1992essence]; for arrows,
-[@hughes2000arrows]; for the interpretation of operation requests by handlers,
-[@plotkin2009handlers]. These sources motivate the constructions, while the
-implementation-specific contracts are stated below.
+The definitions of [Setting and notation](setting.md) apply. An effect-typed parser fixes:
 
-## 1. Setting
+- a finite set $\mathcal C = \llbracket \mathrm{Cat} \rrbracket$ of categorial types, built by
+  `FreeResiduated(generators, depth, ops)` ([Schemas §4](schemas.md#4-the-free-residuated-universe));
+- a finite list of declared effects $T_1, \dots, T_n$, each an instance of one or more of the type
+  classes `Functor`, `Applicative`, `Monad`, `Alternative`, `MonadPlus`, `Traversable`,
+  `ArrowApply`, and `ArrowLoop`.
 
-We work in the V-enriched semantic universe of
-[Setting and Notation](setting.md). For an effect-typed parser we fix:
-
-- A residuated category universe $\mathcal{C}$ realized as a finite
-  set $\llbracket \mathrm{Cat} \rrbracket$. The carrier is built by
-  the `FreeResiduated(generators, depth, ops)` object class: starting
-  from a finite alphabet of atomic categories, it freely closes the
-  carrier under the constructors `ops` (which include the residuation
-  slashes $/$ and $\backslash$, the monoidal product $\otimes$, and
-  the diamond modality $\diamondsuit$) up to a finite `depth` bound,
-  yielding a finite-set object whose elements are the well-formed
-  category expressions of bounded complexity.
-- A finite list of declared effects $T_1, \dots, T_n$, each registered against
-  one or more typeclass ABCs: `Functor`, `Applicative`, `Monad`, `Alternative`,
-  `MonadPlus`, `Traversable`, `ArrowApply`, or `ArrowLoop`.
-
-The *effect-typed category universe* is
+A chart entry has a categorial type and a stack of effects applied to it, of length at most $k$,
+the `effect_depth` of `chart_fold`. Write
 
 $$
-\widehat{\mathcal{C}} \;=\; \mathcal{C} \times \mathrm{EffectStack}_{\le d}(T_1, \dots, T_n),
+\widehat{\mathcal{C}} = \mathcal{C} \times \mathrm{Stack}_{\le k}(T_1, \dots, T_n)
 $$
 
-where $\mathrm{EffectStack}_{\le d}$ is the set of finite stacks of
-effects of length at most $d$ (the `effect_depth` parameter of
-`chart_fold`). Each chart cell at span $(i, j)$ is indexed by an
-element of $\widehat{\mathcal{C}}$.
+for the set of such pairs, where $\mathrm{Stack}_{\le k}$ is the set of lists of at most $k$ effects.
+Each chart cell at a span $(i, j)$ holds weights indexed by $\widehat{\mathcal C}$.
 
-## 2. Typeclass denotations
+## 2. Type classes {#2-typeclass-denotations}
 
-The [typeclass hierarchy](../guides/effects.md#typeclass-hierarchy) distinguishes how a computation may use earlier results.
-A functor maps a pure function over a context-bearing value, such as mapping
-an increment over a possibly missing integer. An applicative combines
-context-bearing inputs using a fixed computation shape. A monad additionally
-allows the next computation to depend on the value just produced. For
-probability distributions, that is the distinction between combining draws
-with a fixed structure and choosing the next distribution after seeing an
-earlier draw. The operations and equations below make those distinctions
-precise for the representations supported here.
+The [type class guide](../guides/effects.md#typeclass-hierarchy) describes the classes in use. A
+[functor](https://en.wikipedia.org/wiki/Functor_(functional_programming)) maps a function over a value
+in a context. An [applicative functor](https://en.wikipedia.org/wiki/Applicative_functor) combines
+several values in contexts by a fixed shape of computation [@mcbride2008applicative]. A
+[monad](https://en.wikipedia.org/wiki/Monad_(functional_programming)) also lets the next computation
+depend on the value just produced [@wadler1992essence]. For probability distributions, this is the
+difference between combining independent draws and choosing the next distribution after seeing a
+draw.
 
-Each typeclass $\mathfrak{C}$ in
-[`quivers.monadic.typeclasses`](../api/index.md#monadic-package) is
-modeled by a panproto theory $\mathrm{Th}\mathfrak{C}$ in
-[`quivers.monadic.theories`](../api/index.md#monadic-package); class
-extension corresponds to theory inclusion via
-$\mathrm{colimit}$. The sorts and operations of each theory are:
+Each class in [`quivers.monadic.typeclasses`](../api/monadic/typeclasses.md) is an abstract Python
+class. Beside each, [`quivers.monadic.theories`](../api/monadic/theories.md) has a record
+(`TypeclassTheory`) that lists the sorts, operations, and laws of the class as text, with the class
+it extends:
 
-| $\mathrm{Th}\mathfrak{C}$ | Sorts | Operations | Equations |
+| Record | Extends | Operations | Laws |
 |---------------------------|-------|------------|-----------|
-| $\mathrm{ThFunctor}$ | $\mathrm{Carrier}$, $\mathrm{Hom}$ | $\mathrm{fmap\_obj}$, $\mathrm{fmap}$ | identity, composition |
-| $\mathrm{ThApplicative}$ | (extends Functor) | $\mathrm{pure}$, $\mathrm{apply}$ | identity, homomorphism, interchange, composition |
-| $\mathrm{ThMonad}$ | (extends Applicative) | $\mathrm{join}$ | left/right unit, associativity |
-| $\mathrm{ThAlternative}$ | (extends Applicative) | $\mathrm{empty}$, $\mathrm{alt}$ | identity, associativity |
-| $\mathrm{ThMonadPlus}$ | (extends Monad + Alternative) | (none new) | left zero |
-| $\mathrm{ThTraversable}$ | (extends Functor + Foldable) | $\mathrm{traverse}$ | naturality, identity, composition |
+| `ThFunctor` | | `fmap` | identity, composition |
+| `ThApplicative` | `ThFunctor` | `pure`, `apply` | identity, homomorphism, interchange, composition |
+| `ThMonad` | `ThApplicative` | `join` | left unit, right unit, associativity |
+| `ThAlternative` | `ThApplicative` | `empty`, `alt` | identity, associativity |
+| `ThMonadPlus` | `ThMonad`, `ThAlternative` | | left zero |
+| `ThTraversable` | `ThFunctor`, `ThFoldable` | `traverse` | naturality, identity, composition |
 
-An effect instance $T$ that registers against $\mathfrak{C}$ corresponds
-to a panproto theory morphism $\mathrm{Th}\mathfrak{C} \to \mathrm{ThQVR}$
-whose vertex map sends $\mathrm{Carrier}$ to the runtime carrier sort
-of the residuated universe and whose operation map realizes the
-class operations as morphisms of $\mathcal{V}\text{-}\mathbf{Rel}$ /
-$\mathbf{Stoch}$ / $\mathbf{Kern}$.
+An instance of a class is a Python object that implements its methods, with its carrier a finite set
+and its operations morphisms of [Morphisms](morphisms.md). The library does not check the laws when
+an instance is registered. [`quivers.monadic.laws`](../api/monadic/laws.md) has functions that test
+the functor and monad laws of an instance at given objects.
 
-## 3. Effect-typed schema denotations
+## 3. Lifted rules {#3-effect-typed-schema-denotations}
 
-A `SchemaDecl` whose domain or codomain mentions an `ObjectEffectApply`
-node $T(X)$ is *parametric* in its free pattern variables. For each
-choice of instantiation $X, Y \in \mathcal{C}$ the schema denotes a
-morphism
+For each declared effect $T$ and each rule of the parser, the function
+[`class_directed_lifts`](../api/stochastic/effect_lifts.md) produces lifted rule schemata according to
+the classes $T$ belongs to. In QVR's slash notation, with the result first
+([Schemas §3.1](schemas.md#31-residuation-slashes)):
 
-$$
-\llbracket r \rrbracket_{X, Y}
-\;:\; T(X/Y) \otimes T(Y) \;\to\; T(X)
-\quad \text{in } \widehat{\mathcal{C}};
-$$
+| Class of $T$ | Schema | Shape |
+|---|---|---|
+| `Applicative` | `pure_T` | $X \to T(X)$ |
+| `Applicative` | `apply_T` | $T(X / Y) \otimes T(Y) \to T(X)$ |
+| `Monad` | `bind_T` | $T(X) \otimes (T(Y) / X) \to T(Y)$ |
+| `Alternative` | `alt_T` | $T(X) \otimes T(X) \to T(X)$ |
 
-the family $\bigl(\llbracket r \rrbracket_{X, Y}\bigr)_{X, Y}$ is a
-natural transformation of bifunctors (an applicative-style lifted
-application). The applicative
-*composition law* requires that combining lifted applications in different
-bracketings give the same result. We assume a lawful applicative
-interpretation in using this equation.
+for all categorial types $X$ and $Y$. `pure_T` and `apply_T` are the unit and the lifted application
+of an applicative functor, the lifting of function application that effect-driven interpretation uses
+[@mcbride2008applicative; @bumford2026effect]. `bind_T` is monadic bind, whose second premise
+$T(Y) / X$ is the categorial type of a function from $X$ to $T(Y)$. It is the bind of $T$, not a
+morphism of the Kleisli category of $T$. A `MonadPlus` instance gets the lifts of `Monad` and of
+`Alternative`. `ArrowApply` and `ArrowLoop` add no schemata.
 
-For Monad-typed schemas the denotation is the *Kleisli composition*:
+The chart combines lifted applications in the order it builds spans. The applicative laws, in
+particular the composition law, make the result independent of that order when the instance satisfies
+them [@mcbride2008applicative]. For an instance that does not, the chart's order fixes the value.
 
-$$
-\llbracket \mathrm{bind}_T \rrbracket_{X, Y}
-\;:\; T(X) \otimes (X \backslash T(Y)) \;\to\; T(Y),
-$$
+## 4. Firing rules {#4-joint-type-and-effect-dispatch}
 
-a morphism in the Kleisli category $\mathrm{Kl}(T)$ realizing the
-canonical bind. The two presentations agree via the
-[`kleisli` / `arrow_monad` bridges](../api/index.md#monadic-package).
-
-## 4. Joint type-and-effect dispatch
-
-A chart parser over a residuated universe $\mathcal{C}$ with declared
-effects $\bar T = (T_1, \dots, T_n)$ has cells
+A chart parser over $\mathcal C$ with declared effects $T_1, \dots, T_n$ has cells
 
 $$
-\mathrm{Chart}[i, j] \;\in\; \mathcal{V}^{|\widehat{\mathcal{C}}|}
+\mathrm{Chart}[i, j] \in V^{\widehat{\mathcal{C}}},
 $$
 
-: a $\mathcal{V}$-valued vector indexed by effect-typed categories.
-Schema firings populate cells according to four rules:
-
-1. **Base firing.** A schema $r : \pi_1 \otimes \pi_2 \to \pi$ fires
-   between cells $\mathrm{Chart}[i, k]$ and $\mathrm{Chart}[k, j]$ at
-   the type coordinate when the effect-stack coordinates of both
-   cells are empty (or when the schema has been auto-lifted to admit
-   the cells' effect prefix; see rule 2).
-2. **Lift firing.** When child cells carry effect prefixes
-   $\bar{S}_1, \bar{S}_2$ that the schema's domain doesn't, the
-   class-driven lifts of
-   [`class_directed_lifts`](../api/index.md#stochastic-package) emit a
-   schema whose domain wraps the base premises in the appropriate
-   effect prefixes. The denotation of this lifted firing is exactly
-   the natural-transformation composition of [§3](#3-effect-typed-schema-denotations)
-   above.
-3. **Handler firing.** When a cell holds a $T(\alpha)$ distribution
-   and a $\mathrm{Handler}_{T \to S}$ is registered (a panproto theory
-   morphism $\mathrm{Th}T \to \mathrm{Th}S$), applying the handler
-   produces a fresh cell at $S(\alpha)$. In the special case
-   $S = \mathrm{Identity}$, the handler eliminates the effect entirely.
-4. **Commutation firing.** When a $\mathrm{DistributiveLaw}(T, U)$ is
-   registered, the $\mathrm{swap}_{T,U}$ schema realizes the natural
-   transformation $T \circ U \Rightarrow U \circ T$ on cells whose
-   effect-stack ends with $T \cdot U$.
-
-The four firings compose freely; the chart's CKY enumeration computes
-the inside score over the joint search space.
-
-### 4a. Inference rules for effect-typed firing
-
-The four firings are inference rules in the proof system of the
-chart. Let $\sigma : \mathrm{Var}(r) \to \mathcal{C}$ range over
-substitutions of the schema's free pattern variables and let
-$\bar S \cdot \bar T$ denote effect-stack concatenation. We write
-$\mathrm{Chart}[i, j] \ni (\alpha; \bar T)$ for "the cell at span
-$(i, j)$ holds an entry at type $\alpha \in \mathcal{C}$ stacked
-under effect prefix $\bar T \in \mathrm{EffectStack}_{\le d}$".
+vectors of weights indexed by effect-typed categories. Write $\mathrm{Chart}[i, j] \ni (\alpha ; \bar T)$
+when the cell at span $(i, j)$ has an entry at the type $\alpha \in \mathcal C$ under the effect stack
+$\bar T$, write $\bar S \cdot \bar T$ for the concatenation of stacks and $\epsilon$ for the empty
+stack, and let $\sigma$ range over substitutions of categorial types for the variables of a schema.
+Cells are filled by three kinds of firing, each an inference rule of a
+[weighted deduction](grammar.md):
 
 $$
 \frac{r : \pi_1 \otimes \pi_2 \to \pi \in \mathrm{Rules}
-       \qquad \mathrm{Chart}[i, k] \ni (\sigma\pi_1; \varepsilon)
-       \qquad \mathrm{Chart}[k, j] \ni (\sigma\pi_2; \varepsilon)}
-     {\mathrm{Chart}[i, j] \ni (\sigma\pi; \varepsilon)}\ \textsc{Base}
+       \qquad \mathrm{Chart}[i, k] \ni (\sigma\pi_1 ; \epsilon)
+       \qquad \mathrm{Chart}[k, j] \ni (\sigma\pi_2 ; \epsilon)}
+     {\mathrm{Chart}[i, j] \ni (\sigma\pi ; \epsilon)}\ \textsc{Base}
 $$
 
 $$
 \frac{r : \pi_1 \otimes \pi_2 \to \pi \in \mathrm{Rules}
        \qquad T \in \mathbf{Applicative}
-       \qquad \mathrm{Chart}[i, k] \ni (\sigma\pi_1; \bar S \cdot T)
-       \qquad \mathrm{Chart}[k, j] \ni (\sigma\pi_2; \bar S \cdot T)}
-     {\mathrm{Chart}[i, j] \ni (\sigma\pi; \bar S \cdot T)}\ \textsc{Lift}_T
+       \qquad \mathrm{Chart}[i, k] \ni (\sigma\pi_1 ; \bar S \cdot T)
+       \qquad \mathrm{Chart}[k, j] \ni (\sigma\pi_2 ; \bar S \cdot T)}
+     {\mathrm{Chart}[i, j] \ni (\sigma\pi ; \bar S \cdot T)}\ \textsc{Lift}_T
 $$
 
 $$
-\frac{H : \mathrm{Th}T \to \mathrm{Th}S \in \mathrm{Handlers}
-       \qquad S \neq \mathrm{Identity}
-       \qquad \mathrm{Chart}[i, j] \ni (\alpha; \bar S \cdot T)}
-     {\mathrm{Chart}[i, j] \ni (\alpha; \bar S \cdot S)}\ \textsc{Handle}_{T \to S}
+\frac{\lambda : T \circ U \Rightarrow U \circ T \in \mathrm{DistributiveLaws}
+       \qquad \mathrm{Chart}[i, j] \ni (\alpha ; \bar S \cdot T \cdot U)}
+     {\mathrm{Chart}[i, j] \ni (\alpha ; \bar S \cdot U \cdot T)}\ \textsc{Swap}_{T, U}
 $$
 
-$$
-\frac{H : \mathrm{Th}T \to \mathrm{Th}\,\mathrm{Identity} \in \mathrm{Handlers}
-       \qquad \mathrm{Chart}[i, j] \ni (\alpha; \bar S \cdot T)}
-     {\mathrm{Chart}[i, j] \ni (\alpha; \bar S)}\ \textsc{Eliminate}_T
-$$
+In $\textsc{Base}$ and $\textsc{Lift}_T$ the substitution $\sigma$ is determined by matching the types
+of the two cells against $\pi_1$ and $\pi_2$. $\textsc{Lift}_T$ is the firing of the lifted schemata of
+§3, and since every monad is an applicative functor it covers monadic effects. $\textsc{Swap}_{T, U}$
+fires the schema `swap_TU : T(U(X)) -> U(T(X))` that
+[`make_swap_schema`](../api/stochastic/effect_lifts.md) builds from a registered
+[distributive law](https://ncatlab.org/nlab/show/distributive+law) $\lambda$, a natural transformation
+that exchanges the two monads compatibly with both [@beck1969distributive]. The chart sums the weights
+of all derivations built from these firings under the conditions of
+[Weighted deduction §7](grammar.md#7-strategy-independence).
+
+The docstring of `quivers.stochastic.effect_lifts` also lists a fourth firing, which applies a
+registered handler to a cell and removes an effect from its stack. No code in `quivers.stochastic`
+performs it, so a chart never eliminates an effect.
+
+## 5. When lifting preserves the base grammar
+
+Let $r$ be a rule and $T$ an effect instance of the classes $\mathfrak C_1, \dots, \mathfrak C_k$. If the
+instance satisfies the laws of these classes and the chart's semiring and convergence conditions hold
+([Weighted deduction §5](grammar.md#5-goal-depth-and-convergence)), then the weight the chart assigns to
+an effect-typed entry is the sum, over its derivations, of the composites of base rules with the
+operations of $T$ that the derivation uses, and it does not depend on the order in which the chart
+combined them. The argument is by cases on the class:
+
+- For an applicative $T$, a lifted firing composes the base rule with `apply` of $T$. By the applicative
+  laws, successive lifts give the same composite under every bracketing [@mcbride2008applicative], so
+  the chart's left-to-right order is one of several equal choices.
+- For a monad $T$, a bind firing is Kleisli composition with the base rule, and the associativity law
+  $\mathrm{join} \circ \mathrm{fmap}(\mathrm{join}) = \mathrm{join} \circ \mathrm{join}$ makes iterated binds
+  equal to the iterated Kleisli composite.
+- For an alternative $T$, `alt` combines two analyses of one span, and its identity and associativity
+  laws make the combination independent of grouping.
+
+This is a statement about the denotation the chart computes, given lawful instances. It is not
+adequacy in the sense of programming language semantics, which relates an operational semantics to a
+denotational one [@plotkin1977lcf].
+
+## 6. Free monads and handlers
+
+A free computation records its requests before deciding how to answer them: a leaf holds a finished
+value, and an operation node holds a request and a continuation for each possible answer
+[@swierstra2008data]. A handler interprets the tree by replacing each request with its own behavior,
+a fold over the tree [@plotkin2009handlers].
+
+For an effect signature $\Sigma = \{\mathrm{op}_1 : P_1 \to R_1, \dots, \mathrm{op}_m : P_m \to R_m\}$ with
+finite parameter sets $P_i$ and finite answer sets $R_i$, the
+[free monad](https://ncatlab.org/nlab/show/free+monad) on $\Sigma$ sends a set $A$ to the trees with
+leaves in $A$ whose operation nodes $\mathrm{op}_i(p, \kappa)$ have a parameter $p \in P_i$ and a
+continuation $\kappa : R_i \to$ trees, so a node branches $|R_i|$ ways:
 
 $$
-\frac{\mathrm{swap}_{T, U} : T \circ U \Rightarrow U \circ T \in \mathrm{DistributiveLaws}
-       \qquad \mathrm{Chart}[i, j] \ni (\alpha; \bar S \cdot T \cdot U)}
-     {\mathrm{Chart}[i, j] \ni (\alpha; \bar S \cdot U \cdot T)}\ \textsc{Swap}_{T \mid U}
+\mathrm{Free}_\Sigma(A) = \bigcup_{n \ge 0} \mathrm{Tree}_{\Sigma, n}(A),
 $$
 
-In $\textsc{Base}$ and $\textsc{Lift}_T$ the substitution $\sigma$ is fixed by the cells' type coordinates (which must match $\pi_1$ and $\pi_2$ structurally); we elide its construction. $\textsc{Lift}_T$ requires only that $T$ inhabit $\mathbf{Applicative}$; every $\mathbf{Monad}$ extends $\mathbf{Applicative}$, so the rule covers monadic effects as a special case. $\textsc{Handle}_{T \to S}$ and $\textsc{Eliminate}_T$ are syntactic variants of the same handler firing, separated so each rule has a single conclusion shape.
+with $\mathrm{Tree}_{\Sigma, n}(A)$ the trees of depth at most $n$. The class
+[`FreeMonad`](../api/monadic/algebraic.md) represents only the trees of depth at most its parameter
+`depth` (default $3$), as one finite set. That set is not closed under bind, which can make a tree
+deeper, so the representation covers the binds whose results stay within the bound.
 
-The denotation of every derivation built from these four rules is
-the corresponding composite natural transformation in
-$\widehat{\mathcal{C}}$; Theorem [Lifting Adequacy](#5-adequacy-of-effect-lifting)
-below identifies the chart's inside score with that composite.
+A handler of $\Sigma$ into a monad $S$ gives a return clause $A \to S(A)$ and, for each operation, a
+clause that answers a request using the interpreted continuation. It makes $S(A)$ a model of the
+operations of $\Sigma$, and running the handler, `Handler.run`, is the unique homomorphism from the free
+model $\mathrm{Free}_\Sigma(A)$ to it, the fold over the tree [@plotkin2009handlers].
 
-## 5. Adequacy of effect lifting
+## 7. Arrows and monads {#7-bridges-and-conservativity}
 
-**Conditional lifting claim.** *Let $r$ be a base SchemaDecl and
-$T$ an effect instance implementing the typeclasses
-$\mathfrak{C}_1, \dots, \mathfrak{C}_k$. Assume their stated laws hold,
-the base interpretation and schema lifts preserve the specified operations,
-and the chart aggregation satisfies the applicable semiring and termination
-or convergence conditions. Then for every cell
-configuration over $\widehat{\mathcal{C}}$ that admits a derivation
-under the lifted schemas
-$\mathrm{class\_directed\_lifts}(r, T)$, the chart parser's
-inside score equals the categorical denotation of the composite
-natural transformation through $\mathrm{Th}\mathfrak{C}_1, \dots,
-\mathrm{Th}\mathfrak{C}_k$ in the appropriate enriched category.*
+An [arrow](https://en.wikipedia.org/wiki/Arrow_(computer_science)) generalizes the composition of
+functions [@hughes2000arrows]. Arrows with an application operation (`ArrowApply`) correspond to monads:
+the Kleisli arrows of a monad form an `ArrowApply`, and an `ArrowApply` defines a monad whose values of
+type $A$ are its arrows from the unit to $A$ [@hughes2000arrows]. The functions `kleisli` and
+`arrow_monad` of [`quivers.monadic.bridges`](../api/monadic/bridges.md) implement the two directions.
 
-*Argument by construction.* For the principal lifting cases:
+`ArrowLoop` is the class of arrows with a feedback operation `loop`. For the Kleisli arrows of a monad,
+`loop` requires the monad to support value recursion, the class `MonadFix` [@erkok2000recursive;
+@paterson2001arrows], so an `ArrowLoop` instance for Kleisli arrows exists only for such monads.
 
-- For $\mathfrak{C} = \mathbf{Applicative}$, the lifted schema is the
-  applicative *composition law*; the chart firing realizes the
-  natural transformation
-  $T(\pi_1) \otimes T(\pi_2) \Rightarrow T(\pi)$ obtained by
-  postcomposing the base $r$ with $T$'s `apply`. The applicative
-  laws (identity, homomorphism, interchange, composition) imply
-  that successive applicative lifts compose to the same denotation
-  irrespective of bracketing; the chart's left-associative scheduling
-  is thus one valid realization among many equivalent choices.
-- For $\mathfrak{C} = \mathbf{Monad}$, the bind-lift is the Kleisli
-  composition of the base schema; the monad laws imply
-  $\mathrm{join} \circ \mathrm{fmap}(\mathrm{join}) = \mathrm{join} \circ \mathrm{join}$,
-  so iterated bind-lifts compose to the iterated Kleisli of the base
-  rule.
-- For $\mathfrak{C} = \mathbf{Alternative}$, the alt-lift realizes
-  $T \otimes T \Rightarrow T$ via $T$'s `alt`; the alternative laws
-  give the equational theory of the resulting non-deterministic
-  derivation tree.
+When the list of declared effects is empty, only $\textsc{Base}$ fires, and the parser is the
+categorial grammar parser of [Weighted deduction §6](grammar.md#6-chart-denotation) with the rules it is
+given. The effects add firings and change no weight that the empty list would compute, so the
+effect-typed parser is a [conservative extension](https://en.wikipedia.org/wiki/Conservative_extension) of
+the plain one.
 
-The inside-score recurrence aggregates these derivations under the conditions
-in [Weighted Deduction Fragment §7](grammar.md#7-strategy-independence).
-Each lifting step uses the laws of the selected typeclass; the resulting
-derivation also requires the recurrence conditions just cited.
+## 8. QIEC rows and handlers
 
-## 6. Free-monad denotation
+Two state cells `counter` and `total`, both holding integers, have the same interface and different
+identities: handling a request to `counter` must leave a request to `total` alone. An *effect instance*
+is one named occurrence of an effect interface, and its handler intercepts only its own requests
+[@bauer2015programming; @biernacki2020binders]. An *effect row* lists the instances a computation may
+use [@leijen2014koka; @hillerstrom2016liberating]. The [typing rules](typing.md#7-handlers-and-scoped-instances)
+track which requests remain after handling and how many times each continuation may be resumed.
 
-A free computation records requests before deciding how to answer them.
-A leaf contains a completed value. An operation node contains a request and
-a [continuation for each possible response](https://dippl.org/chapters/03-enumeration.html#exploring-a-random-computation),
-describing what happens next [@goodman2014design].
-A handler interprets the tree by replacing each request with its chosen
-behavior. This is a fold over the request structure, analogous to evaluating
-an expression tree with a chosen interpretation of its operators.
+When a handler answers a request, its continuation is the rest of the computation. A handler for draws
+resumes once with a random value, and a handler for enumeration resumes once for each alternative. A
+*deep* handler is reinstalled around the resumed computation, while requests made by the handler's own
+clause go to the handlers outside it [@kammar2013handlers]. So the order in which handlers nest, and the
+instance a request names, both change the result.
 
-For an effect signature
-$\Sigma = \{\mathrm{op}_1 : P_1 \to R_1, \dots, \mathrm{op}_m : P_m \to R_m\}$,
-the free monad $\mathrm{FreeMonad}(\Sigma)$ has the denotation of the
-*finitely-branched signature trees* over $\Sigma$:
+Every computation of a module, including each elaborated `program`, is checked under QIEC. An applied
+interface $E[\bar a]$ describes a family of operations, and an instance $i : E[\bar a]$ gives the identity
+that appears in a row, so `counter` and `total` are separate entries. A row has the form
+$\{i_1, \ldots, i_n \mid \rho\ \mathsf{lacks}\ j_1, \ldots, j_m\}$: the tail $\rho$ is a row variable, so
+that functions may be polymorphic in the rest of the row
+([row polymorphism](https://en.wikipedia.org/wiki/Row_polymorphism)), and the `lacks` list records the
+instances the rest of the row may not contain, which extending a row and eliminating a handler need.
 
-$$
-\llbracket \mathrm{FreeMonad}(\Sigma)(A) \rrbracket
-\;=\; \bigcup_{n \ge 0} \mathrm{Tree}_{\Sigma, n}(A),
-$$
+### 8.1 Implementation
 
-where $\mathrm{Tree}_{\Sigma, n}(A)$ is the set of $\Sigma$-shaped
-trees of depth $\le n$ whose leaves are values in $A$, with trees identified across the nested depth bounds. The runtime
-realization truncates at the `depth` parameter of the enclosing
-`deduction { … }` block to keep the carrier finite.
+The [reference machine](../reference/qvr/index.md), the library's interpreter for QIEC, implements deep
+handlers bound to instances. Resuming a captured continuation reinstalls the handler that matched, and an
+effect performed in a clause body goes to the outer handlers. A request matches a handler by its instance,
+its applied interface, and its operation, so another instance of the same interface is never intercepted.
+The machine checks at run time that a clause resumes no more often than its declared resumption grade
+allows, and a continuation resumed more than once extends the address of its trace with a branch.
 
-A handler $H : \Sigma \to S$ is a panproto theory morphism
-$\mathrm{Th}\Sigma \to \mathrm{Th}S$; the denotation of
-$H.\mathrm{run} : \mathrm{FreeMonad}(\Sigma)(A) \to S(A)$ is the
-universal map of free monads (the *fold* over the operation tree
-that interprets each internal node through the corresponding
-clause of $H$).
+These rules cover the interfaces of state, abort, random choice, scoring, nondeterministic choice, and
+weighted accumulation. A handler's clauses are written in QVR, or held only in the running Python process
+and given by a provider. Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run the same typed
+computations through implementations of the QIEC runtime for each target, which dispatch by the stable
+identifiers of instances and operations, so the two state cells above stay separate. Tests compare these
+implementations with the reference machine at fixed parameter values. Stan expresses a computation with an
+empty closed row, no static parameters, and a scalar result as a user-defined function, including
+conditionals, calls, and recursion, and BUGS and JAGS refuse every call. For the other forms the static
+targets report a `qiec:capability:*` diagnostic. The [QIEC developer note](../developer/qiec.md) gives the
+details.
 
-The operation-tree view separates a computation from its interpretation
-[@plotkin2009handlers]. Binding a continuation can increase a tree's depth beyond the runtime
-bound. Thus the bounded representation covers those substitutions whose
-resulting trees remain within that bound.
+The effect handlers of [`quivers.effects`](../api/effects/index.md) are handlers of this calculus, in the
+style of handler-based inference for probabilistic programs [@scibior2018functional; @nguyen2023effect]. A
+`MonadicProgram` runs on the reference machine as the computation
+[`program_kernel`](../api/effects/program_module.md) builds from it: each step computed in Python is a
+request to the `Compute` interface of the prelude on the values bound so far, each draw is a request
+`Random.sample` to the program's `random` instance, and each density is a request `Score.add` to its `score`
+instance, made by the handler that answered the draw. A handler on the `with` stack is installed as a
+handler of one of these instances, and the run nests the handlers in a fixed order, from the outside in:
+the score accumulator, the score transformers, the scoring draw and the observations, the handlers of
+`random` in the order of the stack, the parameter store with the `param` handlers over it, and the steps.
 
-## 7. Bridges and conservativity
-
-The `kleisli` and `arrow_monad` bridges of
-[`quivers.monadic.bridges`](../api/index.md#monadic-package) realize
-the canonical theory morphisms:
-
-$$
-\mathrm{kleisli} \;:\; \mathrm{ThMonad} \;\to\; \mathrm{ThArrowApply},
-\qquad
-\mathrm{arrow\_monad} \;:\; \mathrm{ThArrowApply} \;\to\; \mathrm{ThMonad}
-$$
-
-These functions implement the ArrowApply/Monad constructions described by
-[@hughes2000arrows]. In Quivers,
-$\mathrm{arrow\_monad} \circ \mathrm{kleisli} \;\cong\; \mathrm{id}_{\mathrm{ThMonad}}$
-and $\mathrm{kleisli} \circ \mathrm{arrow\_monad} \;\cong\; \mathrm{id}_{\mathrm{ThArrowApply}}$
-are naturally isomorphic via the canonical
-$1 \otimes A \cong A$ unitor that absorbs the
-``ArrowMonad(a)(A) = a(1, A)`` boxing. Consequently the
-arrow-side and monad-side presentations of any effect agree on
-denotation up to the canonical isomorphism. When the underlying
-monad is also a *monad-fix*, admitting a least-fixed-point
-operator, the `chart_fold` runtime's `loop_arr` construction agrees
-denotationally with the Kleisli-iteration of the binary step; for
-monads without `mfix`, the arrow-side trace is the well-defined
-realization and the Kleisli side is undefined.
-
-**Conservativity.** When the declared effects list $\bar T$ is empty,
-the joint type-and-effect dispatch of [§4](#4-joint-type-and-effect-dispatch)
-collapses to the classical residuated-grammar dispatch of
-[Weighted Deduction Fragment §6](grammar.md#6-chart-denotation), and
-the inside score is the standard Lambek / CCG / multimodal-TLG
-chart-parser denotation. The effects framework is thus a strict
-extension over the bare grammar fragment.
-
-## 8. QIEC rows and lexical handlers
-
-Consider two state cells, `counter` and `total`, both storing integers.
-Their interfaces match, but their identities differ: handling a request to
-`counter` must leave a request to `total` untouched. A row lists these
-instance identities, so a handler can select the intended cell. The
-[typing rules](typing.md#7-handlers-and-scoped-instances) track which requests
-remain after handling and how often each resumption may be used.
-
-When a handler answers a request, its resumption represents the rest of the
-computation. A draw handler can resume once with a random value; an
-enumeration handler can resume once for each finite alternative. “Deep”
-means the handler is reinstated for requests in the resumed computation;
-requests made by the handler clause itself are offered outward. These rules
-explain why both nesting order and the identity of the requested instance
-matter.
-
-QIEC is the explicitly typed account of effects every computation of a module
-is checked under, the elaborated `program` included. An applied
-interface $E[\bar a]$ describes an operation family, while a lexical instance
-$i:E[\bar a]$ supplies the identity that appears in a row. The cells
-`counter` and `total` thus occupy separate entries. A row has the schematic form
-$\{i_1,\ldots,i_n\mid\rho\;\mathsf{lacks}\;j_1,\ldots,j_m\}$; its tail supports
-effect polymorphism, and its lacks set records negative constraints needed by
-row extension and handler elimination.
-
-The reference evaluator gives QIEC computations a deep, lexical handler
-semantics. Resuming a captured continuation reinstalls the matched handler,
-while an effect performed by the clause body is offered to outer handlers.
-Dispatch compares the lexical instance, applied interface, and operation.
-Thus an unrelated instance of the same interface cannot be intercepted by
-accident. Dynamic grade checks enforce the declared number of resumptions, and
-multi-shot resumptions extend their trace address with a branch path.
-
-This account of rows connects the source contracts of state, abort, random choice,
-scoring, nondeterministic choice, and weighted accumulation. A handler's
-clauses are authored in the source or remain process-local attachments. Pyro,
-NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church lower the same typed
-computation graph through corresponding implementations of the stable-ID
-runtime ABI. Conformance tests exercise these implementations in the target
-runtimes against the reference machine at clamped points. Each dispatches by
-stable instance and operation identifiers, preserving the separate state cells
-in the example above. Stan lowers a computation with an empty closed
-effect row, an empty static telescope, and a scalar result as a user-defined
-function, conditionals, calls, and recursion included; BUGS and JAGS refuse
-every call. The static targets issue precise capability diagnostics for the
-rest. The
-[QIEC developer note](../developer/qiec.md) gives the executable boundary.
-
-The effect handlers of [`quivers.effects`](../api/effects/index.md) are
-lexical handlers of this calculus. A `MonadicProgram` runs on the reference
-machine as the kernel computation
-[`program_kernel`](../api/effects/program_module.md) encodes it to: each host
-step is an instance of the prelude's `Compute` interface performed on the
-environment of every value bound so far, each draw is the canonical
-`Random.sample` request on the program's `random` instance, and each site's
-density is a `Score.add` the answering handler emits on the program's `score`
-instance. A handler on the `with` stack installs a lexical handler of one of
-those instances; the run nests them in a fixed order, the score accumulator
-outermost, then every score transformer, then the scoring draw and the run's
-observations, then every handler of `random` in stack order, then the
-parameter store and the `param` handlers layered over it, then the host
-steps. Two consequences follow. An inner handler of `random` sees a site's
-request before any outer one and sees the outer answer flow back through its
-resumption, so a trace inside a clamp records the clamped value. A site's
-density is emitted outward by whichever handler answered it, so every score
-transformer reaches every site, and a trace reads each site's density from
-what reached the accumulator under the site's provenance, which the kernel
-carries on every derived request as the site's static identity and dynamic
-address.
-
-## References
-
-For algebraic operations and their interpretation, see [@plotkin2003algebraic]. Handlers are developed mathematically in [@plotkin2009handlers] and through programming examples in [@bauer2015programming]. Arrows generalize the composition interface of monads [@hughes2000arrows]. For applications to natural-language interpretation, see the forthcoming book [@bumford2026effect] and its [author preprint](https://arxiv.org/abs/2504.00316).
+Two consequences follow. An inner handler of `random` sees a request before any outer one and receives the
+outer answer back through its continuation, so a trace inside a clamp records the clamped value. And the
+handler that answers a draw emits its density outward, so every score transformer sees every site, and a
+trace reads the density of each site from what reaches the accumulator, under the static identity and
+dynamic address that every derived request carries.
