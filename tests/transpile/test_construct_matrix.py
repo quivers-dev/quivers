@@ -321,6 +321,7 @@ for _category, _fixture in (
     ("let_expressions", "let_row_gather"),
     ("let_expressions", "let_row_gather_sampled"),
     ("steps", "observe_class_code"),
+    ("steps", "observe_shared_probs_vector"),
 ):
     _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
 # Stan's samplers draw no discrete parameter, so a sampled class is one
