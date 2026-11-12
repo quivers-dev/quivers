@@ -60,7 +60,7 @@ def _bernoulli_logit_logp(value, logit_p):
     return value * logit_p - pt.softplus(logit_p)
 
 
-def _bernoulli_logit_random(logit_p, rng=None, size=None):
+def _bernoulli_logit_random(logit_p, rng, size=None):
     """Draw a Bernoulli outcome at log-odds ``logit_p``."""
     logit_p = np.asarray(logit_p, dtype="float64")
     draw_size = size if size is not None else logit_p.shape
