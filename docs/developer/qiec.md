@@ -1,396 +1,318 @@
 # Quivers Indexed Effect Core
 
-!!! tip "Looking for the language reference?"
+The Quivers Indexed Effect Core (QIEC) is the typed core language that every executable QVR
+declaration elaborates to. It has indexed families, [effect rows](https://en.wikipedia.org/wiki/Row_polymorphism), and
+[effect handlers](https://en.wikipedia.org/wiki/Effect_system) [@plotkin2009handlers], and both
+the reference machine and the transpilers read it. *Elaboration* is the compiler step that rewrites a source declaration
+into explicit QIEC terms. Indexed families, effect interfaces, instances, handlers, and typed
+computations are written in QIEC directly. A probabilistic `program` is notation for a named
+computation over the two effect instances `random` and `score` that every module has built in.
+The source syntax, typing rules, and diagnostics of each form are specified in the
+[QVR language reference](../reference/qvr/index.md).
 
-    This page documents kernel internals, serialization, and the target runtime
-    ABI. For source syntax, typing rules, execution commands, tutorials, and
-    user-facing failure modes, start with the [QVR language
-    reference](../reference/qvr/index.md).
+A module passes through three tools on its way to QIEC. The [tree-sitter](https://tree-sitter.github.io/)
+grammar parses the whole surface into one source AST. Quivers then projects the indexed
+declarations through the public `GADT` API of [didactic](https://github.com/panproto/didactic),
+the library whose `Model` types hold the data values of quivers, and didactic checks that
+projection against its compiled first-order theory. The module finally lowers along the route
+from the source protocol `QVR_SOURCE_VERSION` (in `quivers.dsl.qiec_lowering`) to the core ABI
+identifier `qiec-core/v1alpha1`, and the result is held to the deterministic serialization
+contract of the Python core.
 
-The Quivers Indexed Effect Core (QIEC) is the typed core every executable
-declaration of a QVR module elaborates to. Indexed families, effect
-interfaces, instances, handlers, and typed computations are its surface
-directly; a probabilistic `program` is domain-specific notation for a named
-computation over the module's canonical `random` and `score` instances. The
-parser reads the whole surface into one source AST, Quivers projects the
-indexed declarations through Didactic's public `GADT` API, and the module
-lowers through the exact `qvr-source/v0.20` to `qiec-core/v1alpha1` route,
-checked against both Didactic's compiled first-order theory and the Python
-reference kernel's deterministic serialization contract.
+## Two boundaries
 
-QIEC makes two boundaries explicit. First, the **stable core boundary** contains
-only typed, deterministic data: kinds, telescopes, indexed-family declarations,
-effect interfaces, rows, handler signatures, value and computation terms,
-source provenance, and equality evidence. Second, the **[runtime attachment](../tutorials/qvr/10-effects-and-handlers.md#5-decide-between-authored-and-foreign-handlers)
-boundary** associates stable identifiers with process-local values and handler
-implementations. Host callables and mutable resources cannot cross the stable
-core boundary. This note first describes the static kernel; it then turns to
-serialization and evaluation, gives four complete examples, and closes
-with the typed IR and target-capability contract used by the transpilers.
+The *stable core boundary* contains only typed, deterministic data: kinds, telescopes,
+indexed-family declarations, effect interfaces, rows, handler signatures, value and computation
+terms, source provenance, and equality evidence. Python callables and mutable resources cannot
+cross it.
 
-## Read the core through a small program
+The *runtime attachment boundary* associates stable identifiers with values and handler
+implementations that live only in the running Python process. An *attachment* is such a value
+or handler, for instance a PyTorch module for a neural component, addressed by a stable QIEC
+identifier and never serialized with the module (`RuntimeAttachments` in
+[`quivers.qiec.evaluator`](../api/qiec/evaluator.md)). A *provider* is an object that binds
+attachments and type validators into a run ([`RuntimeProvider`](../api/qiec/execution.md)).
+The closest standard notion is a [foreign function interface](https://en.wikipedia.org/wiki/Foreign_function_interface).
 
-A source program might draw `mu`, compute a Normal density for an observed
-`y`, and return `mu`. Its core representation spells out the requests:
-construct a distribution, ask `Random` for a draw, ask `Score` to accumulate
-a log weight, and return the value. A sampling runtime, a replaying runtime,
-and a target-language implementation can interpret those same requests in
-different operational contexts while retaining the checked structure.
+Consider a source program that draws `mu`, computes a Normal density for an observed `y`, and
+returns `mu`. Its core term constructs a distribution, asks `Random` for a draw, asks `Score` to
+add a log weight, and returns the value. A sampling runtime, a replaying runtime, and a target
+language can each interpret those requests in their own way while the checked structure stays
+the same. Serializing the term keeps each operation's identity and argument types. A process
+that loads the module must obtain the implementations from a matching provider.
 
-The stable core stores descriptions that can be serialized, such as an
-operation's identity and argument types. A runtime attachment supplies a
-process-local implementation, such as a sampler or neural module. Serializing
-the description retains the operation's identity and types. A process loading
-that module must obtain the implementation from a matching runtime provider.
+The checks below use the following terms.
 
-Several terms below describe how those checks remain precise:
-
-| Term | Role in the check |
+| Term | Meaning |
 |---|---|
-| Telescope | An ordered list of typed binders; later entries may depend on earlier ones. |
-| Refinable index | Type-level information, such as a vector length, that a constructor branch can make more specific. |
+| [Telescope](https://ncatlab.org/nlab/show/telescope) | An ordered list of typed binders in which later types may mention earlier binders [@debruijn1991telescopic]. |
+| Parameter and index | The arguments of an [inductive family](https://ncatlab.org/nlab/show/inductive+family) that stay fixed across constructors (parameters) and those a constructor may refine, such as a vector length (indices) [@dybjer1994inductive]. |
 | Equality evidence | A checked justification for treating two index expressions as equal within a scope. |
-| Effect row | The effect instances a computation may still request. |
-| Continuation | The remaining computation after an operation request. |
-| Resumption grade | The permitted number of times a handler can continue that remaining computation. |
-| Stable identifier | A persistent identity used for dispatch, independent of a user-facing display name. |
+| Effect row | The effect instances a computation may still request [@leijen2014koka]. |
+| [Continuation](https://en.wikipedia.org/wiki/Continuation) | The rest of the computation after an operation request. |
+| Resumption grade | How many times a handler clause may resume its continuation: never (`0`), at most once (`aff`), exactly once (`1`), or any number of times (`omega`). These are the zero, affine, linear, and unrestricted multiplicities of [substructural typing](https://en.wikipedia.org/wiki/Substructural_type_system) [@atkey2018syntax]. |
+| Stable identifier | A persistent identity used for dispatch, independent of the name shown to a user. |
 
-The [indexed-data](../tutorials/qvr/09-indexed-data.md) and
-[handler](../tutorials/qvr/10-effects-and-handlers.md) tutorials work these
-ideas through concrete values before the kernel details below.
+## The static checker {#static-kernel}
 
-## Static kernel
+The checker separates family parameters from refinable indices. A `FamilyDecl` fixes both
+telescopes, and each `ConstructorDecl` gives its fields and result indices. Case analysis states
+an explicit `CaseMotive`, the result type as a function of the scrutinee's indices
+[@mcbride2002elimination]. Refining a branch introduces *rigid type variables*, fresh constants
+that stand for an unknown index inside that one branch [@peytonjones2006simple], together with
+local equality evidence. Neither may escape the branch in which it was introduced.
 
-The kernel separates family parameters from refinable indices. A
-`FamilyDecl` fixes both telescopes, while each `ConstructorDecl` specifies its
-fields and result indices. Case analysis uses an explicit `CaseMotive`; branch
-refinement introduces rigid skolems and local equality evidence that cannot
-escape the branch in which it was established.
+Coverage is conservative. QIEC omits a constructor only when distinct closed constructors prove
+that the branch is impossible. If refinement is unknown, the branch stays in both the coverage
+obligation and the inferred effect row. This policy may reject some valid programs, but it never
+erases effects on the basis of an unproved contradiction.
 
-Coverage is conservative. QIEC omits a constructor only when distinct closed
-constructors certify that the branch is impossible. If refinement is unknown,
-the branch remains part of both the coverage obligation and the inferred effect
-row. This policy may reject some valid programs until a stronger solver is
-available, but it does not erase effects on the basis of an unproved
-contradiction.
+Effects are parameterized interfaces, so `State[Int]` and `State[String]` share a declaration and
+remain distinct applied interfaces. Each declared instance also receives its own stable
+`EffectInstanceId`, which keeps two state cells of the same type apart in an effect row.
+Operations may bind further static arguments. Checking a request substitutes both the interface
+telescope and the operation telescope before it checks argument and result types.
 
-Effects are parameterized interfaces. Thus `State[Int]` and `State[String]`
-share a declaration but remain distinct applied interfaces. Each lexical
-instance also receives its own stable `EffectInstanceId`, so two state cells of
-the same type remain distinguishable in an effect row. Operations may bind
-additional static arguments, and request checking substitutes both the
-interface and operation telescopes before checking argument and result types.
-
-Handlers state their coverage and resumption contracts in serializable data.
-The kernel records coverage (`total` or `partial`) separately from
-unknown-operation forwarding, as well as each clause's resumption grade `0`,
-`aff`, `1`, or `omega`; the reference evaluator enforces these grades
-dynamically. A total handler removes exactly the matched lexical instance from
-the row; a partial handler retains it; and an explicitly forwarding partial
-handler passes structurally uncovered operations to an outer handler.
+Handlers state their coverage and resumption contracts as serializable data. The checker records
+coverage (`total` or `partial`) separately from forwarding of unknown operations, and records the
+resumption grade of each clause. The reference machine enforces the grades at run time. A total
+handler removes exactly the matched instance from the row. A partial handler keeps it. A partial
+handler that declares forwarding passes operations it does not cover to an outer handler.
 
 ## Stable serialization
 
-`quivers.qiec.dumps` and `quivers.qiec.loads` encode the stable core using the
-versioned `qiec-json/v1` envelope and the `qiec-core/v1alpha1` ABI identifier.
-The codec is an allowlist over QIEC records, identifiers, enums, tuples, bytes,
-and JSON scalars. It rejects unknown node tags, malformed records, non-finite
-floats, runtime attachments, and host callables. Encoding is deterministic, so
-the same core graph yields the same serialized JSON text; UTF-8 encoding thus
-yields the same bytes.
+[`quivers.qiec.dumps`](../api/qiec/serialization.md) and `quivers.qiec.loads` encode the
+stable core in the `qiec-json/v1` envelope under the ABI identifier `qiec-core/v1alpha1`. The
+codec is an allowlist over QIEC records, identifiers, enums, tuples, bytes, and JSON scalars. It
+rejects unknown node tags, malformed records, non-finite floats, runtime attachments, and Python
+callables. Encoding is deterministic: the same core graph yields the same JSON text, and thus
+the same UTF-8 bytes.
 
-These format and ABI identifiers belong to the serialization boundary. An
-authored effect declaration contains only its name, static telescope, and
-operation signatures.
+The format and ABI identifiers belong to the serialization boundary. An authored effect
+declaration contains only its name, its static telescope, and its operation signatures.
 
-This format is intentionally independent of Didactic's internal model and
-Panproto's generic carrier. Didactic checks an ephemeral GADT projection and
-negotiates the exact source and target versions before QVR lowering completes,
-while Panproto can carry the canonical envelope without inspecting its nodes.
-QIEC retains ownership of stable identities, its uniform-parameter/refinable-
-index distinction, the typed allowlist, malformed-node rejection, and reference
-semantics.
+The format does not depend on the internal model of didactic or on the generic carrier of
+[panproto](https://github.com/panproto/panproto), the schema and migration toolkit that versions
+the QVR grammar. Didactic checks a temporary GADT projection and settles the exact source and
+target versions before lowering completes. Panproto can carry the envelope without reading its
+nodes. QIEC itself owns stable identities, the distinction between parameters and indices, the
+typed allowlist, the rejection of malformed nodes, and the reference semantics.
 
-## Reference evaluator
+## Reference machine {#reference-evaluator}
 
-The evaluator gives `Return`, `Bind`, `Perform`, `Handle`, and indexed `Case` a
-small CEK-style operational semantics. Handlers are lexical and deep: a resumed
-continuation reinstalls the matching handler, while effects performed by the
-clause body itself are offered only to outer handlers. Dispatch checks the exact
-applied interface as well as the lexical instance and operation identifier.
+The *reference machine* is the library's interpreter for QIEC ([`quivers.qiec.evaluator`](../api/qiec/evaluator.md)).
+It is a small-step [CEK machine](https://en.wikipedia.org/wiki/CEK_Machine) for `Return`, `Bind`,
+`Perform`, `Handle`, and indexed `Case`, and it fixes what a checked program means operationally,
+in the manner of a [definitional interpreter](https://en.wikipedia.org/wiki/Interpreter_(computing))
+[@reynolds1972definitional]. Handlers are lexically scoped and deep [@kammar2013handlers]. A deep
+handler is reinstalled around the continuation it resumes, while effects that the clause body
+itself performs go only to outer handlers. Dispatch checks the exact applied interface as well as the instance and the
+operation identifier.
 
-Resumption grades are enforced dynamically at the attachment boundary. A
-grade-`0` clause cannot resume; an affine clause may resume at most once; a
-linear clause must resume exactly once; and an unrestricted clause may resume
-multiple times only when the captured context is declared duplicable. Each
-multi-shot branch extends the dynamic address with a resumption path, preserving
-the identity needed by traces and replay.
+The machine enforces resumption grades at the attachment boundary. A grade `0` clause cannot
+resume, an affine clause resumes at most once, and a linear clause resumes exactly once. An
+unrestricted clause may resume several times only when the captured context is declared
+duplicable. Each additional resumption extends the dynamic address with a resumption path, which
+keeps the identity that traces and replay need.
 
-The built-in prelude currently supplies declarations and reference handlers for
-the following interfaces:
+The built-in prelude declares the following interfaces, each with reference handlers:
 
-- `Random` and `Score`, including drawing, conditioning, intervention/replay,
-  and trace forwarding;
+- `Random` and `Score`, with drawing, conditioning, intervention and replay, and trace forwarding;
 - `State[S]` and `Abort[E]`;
-- `Choose` for multi-shot nondeterminism; and
-- `Weight[K]` for caller-supplied accumulation operations.
+- `Choose`, for nondeterminism that resumes more than once;
+- `Weight[K]`, for accumulation with an operation the caller gives;
+- `Compute[X, A]`, through which a program reaches a Python computation it depends on, such as a
+  morphism or a closure;
+- `Param`, through which a computation reads a learned parameter by name.
 
-These handlers specify the reference behavior in executable form; backends
-can implement that behavior with their own optimized routines. Runtime samplers, observation tables, semiring
-operations, state cells, and trace recorders remain process-local attachments.
+These handlers state the reference behaviour in executable form. A backend may implement the same
+behaviour with its own optimized routines. Samplers, observation tables, semiring operations,
+state cells, and trace recorders remain attachments.
 
-A distribution construction evaluates to a
-[`RuntimeDistribution`](../api/qiec/distributions.md), which samples and
-scores through an installed
-[`DistributionBackend`](../api/qiec/distributions.md). The reference backend
-implements every family of the semantic registry in plain Python: the scalar
-core beside the backend and the structured and compositional families in
-[`quivers.qiec.reference_families`](../api/qiec/reference_families.md), with
-the small linear algebra the matrix families need written out rather than
-taken from a host library. Each density is held to the torch definition the
-transpile probes use, or to the torch runtime's own definition where torch has
-no class, so the reference machine is an oracle a host can be checked against.
-A family whose draw has a size no parameter fixes, the LKJ families, reads it
-from the constructed type's event extents. The `Transformed` chain names its
-transforms as a comma-separated string over `exp`, `log`, `sigmoid`, `logit`,
-`softplus`, `tanh`, and `neg`, applied left to right.
+A distribution construction evaluates to a [`RuntimeDistribution`](../api/qiec/distributions.md),
+which samples and scores through an installed `DistributionBackend`. The reference backend
+implements every family of the [distribution family registry](../api/qiec/families.md) in plain
+Python. The scalar families sit beside the backend, and the structured and compositional families
+are in [`quivers.qiec.reference_families`](../api/qiec/reference_families.md). The small amount of
+linear algebra that the matrix families need is written out rather than taken from a library.
 
-### Entry-point execution boundary
+Each reference density is held to the PyTorch definition that the transpile probes use, or, where
+PyTorch has no class for the family, to the definition in the compiled runtime. The reference
+machine is thus a [test oracle](https://en.wikipedia.org/wiki/Test_oracle) against which a host
+runtime can be checked. Here and below, the *compiled runtime* is the PyTorch implementation of a
+module (`Program`, `MonadicProgram`), used for gradients, SVI, and MCMC.
 
-A checked module's executable entry points are its `define` computations and
-its programs, listed by [`entry_points`][quivers.qiec.entries.entry_points]
-and invoked by [`invoke_entry`][quivers.qiec.entries.invoke_entry]. `qvr run
-FILE ENTRY [JSON ...]`, the REPL's `:run`, and
-[`Program.run`][quivers.program.Program.run] all call it, so an entry
-validates its arguments, selects its providers, traces, and fails with the
-same `qiec-run-*` codes however it is reached.
+Two further conventions hold in the reference backend. The LKJ families, whose draw has a size
+that no parameter fixes, read that size from the event extents of the constructed type. A
+`Transformed` chain names its transforms as a comma-separated string over `exp`, `log`,
+`sigmoid`, `logit`, `softplus`, `tanh`, and `neg`, applied from left to right.
 
-A computation is selected as a `NamedComputation`, its static telescope
-specialized (`--static NAME=TERM` supplies a closed type, index, or effect
-application for each binder), its value arguments validated, and its body
-evaluated with a fresh attachment table under the configured providers
-(`--runtime FILE.json` selects the built-in `core` runtime or installed
-`quivers.qiec_runtime` providers without placing executable objects in the
-configuration file).
+### Running entry points
 
-A program is run by [`sample_program`][quivers.qiec.program_runtime.sample_program]:
-the module is extended with a wrapper computation that handles the program's
-`random` instance with a conditioning replay of the given sites (`--site
-NAME=JSON`) inside a scoring draw of every other site, and its `score`
-instance with an accumulator, and returns the program's value paired with the
-accumulated log weight. The wrapper is checked like any other computation
-before it runs. The program's parameters are its data, observations,
-fibrations, and scalars, given positionally or by name (`--data NAME=JSON`);
-its open extents are read off the data, and an extent no data fixes, a
-template's object parameter, is supplied as a static argument. Each
-invocation owns its state:
-observations and conditioned sites are arguments of the run, the module's
-parameter store answers `Param` requests from the values the run is given,
-draws use the reference generator (`--seed N` reseeds it), the score
-accumulator and the trace belong to the wrapper's attachment table, and no
-handler stack outlives the call. [`run_program`][quivers.qiec.program_runtime.run_program]
-is the replaying form, which requires every site and scores the log joint.
+A checked module's entry points are its `define` computations and its programs.
+[`entry_points`][quivers.qiec.entries.entry_points] lists them and
+[`invoke_entry`][quivers.qiec.entries.invoke_entry] runs one. `qvr run FILE ENTRY [JSON ...]`,
+the REPL command `:run`, and [`Program.run`][quivers.program.Program.run] all call
+`invoke_entry`. An entry thus validates its arguments, selects its providers, records its trace,
+and fails with the same `qiec-run-*` codes whichever of these reaches it.
 
-`--fuel STEPS` bounds the number of evaluation steps, since a recursive
-computation may otherwise never return; exhaustion is the `qiec-run-fuel`
-diagnostic. `--trace` writes stable events in plain mode, while `--json`
-includes the result, specialized result type, runtime label, trace, the
-entry's kind, and a program's log joint in one document.
+A computation is run in four steps:
 
-The REPL exposes the same boundary through `:runtime`, `:run`, and `:detach`.
-The Textual status bar shows the active runtime and the most recent result.
-Argument, specialization, provider, validator, evaluation, and result failures
-retain their `qiec-run-*` diagnostic codes across the CLI, REPL, and TUI.
+1. it is selected as a `NamedComputation`;
+2. its static telescope is specialized, with `--static NAME=TERM` giving a closed type, index, or
+   effect application for each binder;
+3. its value arguments are validated;
+4. its body is evaluated with a fresh attachment table under the configured providers.
+
+`--runtime FILE.json` selects the built-in `core` runtime or the installed `quivers.qiec_runtime`
+providers, without placing executable objects in the configuration file.
+
+A program is run by [`sample_program`][quivers.qiec.program_runtime.sample_program]. It extends the
+module with a wrapper computation, which is checked like any other computation before it runs.
+The wrapper handles the program's `random` instance by replaying the sites given with `--site
+NAME=JSON` and drawing and scoring every other site. It handles the `score` instance with an
+accumulator, and it returns the program's value paired with the accumulated log weight.
+
+The program's parameters are its data inputs, observations, index maps (role `fibration` in the
+API), and scalars, given by position or by name (`--data NAME=JSON`). An *index map* is an integer
+array that assigns each observation row to a group. The run reads each open extent, an axis length
+that no declared object fixes, from the data. An extent that no data fixes, such as an object
+parameter of a template, is passed as a static argument.
+
+Each invocation owns its state:
+
+- observations and conditioned sites are arguments of the run;
+- the module's parameter store answers `Param` requests from the values the run is given;
+- draws use the reference generator, which `--seed N` reseeds;
+- the score accumulator and the trace belong to the wrapper's attachment table;
+- no handler stack outlives the call.
+
+[`run_program`][quivers.qiec.program_runtime.run_program] is the replaying form. It requires a
+value for every site and scores the log joint density.
+
+`--fuel STEPS` bounds the number of evaluation steps, since a recursive computation may never
+return. Running out of this fuel raises the `qiec-run-fuel` diagnostic. `--trace` writes stable
+events in plain text. `--json` writes one document holding the result, the specialized result
+type, the runtime label, the trace, the kind of the entry, and, for a program, its log joint.
+
+The REPL exposes the same boundary through `:runtime`, `:run`, and `:detach`, and the status bar of
+the Textual interface shows the active runtime and the latest result. Failures of arguments,
+specialization, providers, validators, evaluation, and results keep their `qiec-run-*` codes
+across the CLI, the REPL, and the TUI.
 
 ### Programs on the reference machine
 
-A compiled `MonadicProgram` is a facade over the same machine. Its
+A compiled `MonadicProgram` runs on the same machine.
 [`rsample`][quivers.continuous.programs.MonadicProgram.rsample] and
-[`log_joint`][quivers.continuous.programs.MonadicProgram.log_joint] run the
-program's kernel encoding under the active effect handlers through the
-installed [`ProgramEvaluator`][quivers.continuous.programs.ProgramEvaluator],
-so a `clamp`, `do`, `trace`, or reweighting in scope applies to every draw
-and every score, and the joint `log_joint` reports is the one `trace`
-accumulates. Each host step is encoded over the values it reads (a draw's
-arguments, the names a closure declares through
-[`reading`][quivers.continuous.program_steps.reading], or every value bound
-so far when it declares none), and every handler the run installs resumes in
-tail position, so a program's encoding and its evaluation grow linearly with
-its length. A run owns its handlers: a program a host step runs in turn (a
-score closing over another program's joint, a sub-program drawn as a step) is
-a separate invocation, whose sites the enclosing run's handlers neither
-observe nor condition.
+[`log_joint`][quivers.continuous.programs.MonadicProgram.log_joint] run the program's encoding as a
+QIEC computation under the active effect handlers, through the installed
+[`ProgramEvaluator`][quivers.continuous.programs.ProgramEvaluator]. A `clamp`, `do`, `trace`, or
+reweighting handler in scope thus applies to every draw and every score, and the joint that
+`log_joint` reports is the one that `trace` accumulates.
 
-A consumer that scores one program at many positions, the MCMC
-[`PotentialFn`][quivers.inference.mcmc.PotentialFn], the tempered potential
-SMC moves under, and [`AutoDAIS`][quivers.inference.dais.AutoDAIS], scores it
-through a prepared joint (`quivers.effects.joint_plan`) rather than a run
-of the machine per position. Building the run's handlers, validating their
-module, and driving the machine through each request depend on the program,
-on the names and layouts of the values given, and on the handlers in scope,
-never on the values themselves. The prepared joint does that work once per
-layout: it compiles the kernel's entry computation, a chain of binds, to a
-straight-line list of instructions that call the same host-step functions
-the run's `Compute` handlers call, score each site's given value as the
-run's observation handler does, and sum the densities in the order and with
-the operations `TraceHandler` uses, so the joint and its gradient are the
-machine's bit for bit. An entry computation that is not a straight chain (a
-scan's recursive helper), a site given no value, an input of more than one
-run, host data that is not a tensor, and, checked at every call, a handler
-in scope, an overridden `log_joint`, or another installed evaluator leave
-the program to the machine. A prepared joint refuses values of any layout
-but its own, so a stale preparation raises rather than scores.
+Each Python step is encoded over the values it reads. These are a draw's arguments, the names a
+closure declares through [`reading`][quivers.continuous.program_steps.reading], or, when a closure
+declares none, every value bound so far. Every handler the run installs resumes in tail position,
+so the encoding of a program and its evaluation grow linearly with its length.
 
-A draw from another program, `sample theta <- school_effects(0.6, School)`
-or `sample (u, v) <- sub`, runs that program's steps in place under names of
-the caller's own: the objects and scalars the draw names substitute for the
-callee's template parameters, its local `z` becomes the site `theta$z`, and
-the name it returns becomes `theta` itself, on the reference machine and the
-torch runtime alike; a target spells such a site `theta__z`. A program over
-object parameters is a computation whose telescope binds one index variable
-per object, so `qvr run` invokes it with its statics.
+A run owns its handlers. A program that a Python step runs in turn, such as a score that closes
+over another program's joint or a subprogram drawn as a step, is a separate invocation. The
+handlers of the enclosing run neither observe nor condition its sites.
 
-A program's calls of computations are lowered to compiled steps before
-compilation (`quivers.dsl.compiler._call_lowering`). A pure callee, with the
-pure computations it calls inlined in turn and each `if` between pure
-branches read as `select`, becomes `let` steps, by the analysis the
-transpile planner inlines such calls with (`quivers.transpile._pure_calls`,
-`inline_call`); a callee whose only requests are the program's `Random` and
-`Score` runs in place, its site `label` named `y$label` under the binder `y`
-and a log density it scores evaluated by the internal let call `$log_prob`;
-and `traverse` maps a pure callee as a comprehension and a drawing callee as
-one plated draw per site. A program that keeps any other call (recursion, an
-`if` whose branches draw, a handled effect, `case`, static arguments) has no
-step table the runtime compiler can build, so it compiles to a
-[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram]: a
-morphism whose `rsample` and `log_joint` are `sample_program` and
-`run_program` on the module's own entry point, and whose `steps`, which
-every fitting entry point reads, raise the located refusal the lowering
-recorded. The machine scores numbers, so such a program keeps no gradient
-path to the tensors it is given.
+#### Prepared joints
 
-## QVR surface
+Some consumers score one program at many points: the MCMC
+[`PotentialFn`][quivers.inference.mcmc.PotentialFn], the tempered potential that SMC moves under
+[@delmoral2006sequential], and [`AutoDAIS`][quivers.inference.dais.AutoDAIS]
+[@zhang2021dais; @geffner2021uha]. These score through a prepared joint
+(`quivers.effects.joint_plan`) rather than one run of the machine per point.
 
-The following examples use the normative grammar. Each block parses,
-lowers to the core, validates against the kernel, and reaches a
-canonical parse–emit fixed point in the documentation tests.
+The work of a run depends on the program, on the names and layouts of the values given, and on
+the handlers in scope, but never on the values themselves. That work is building the run's
+handlers, validating their module, and driving the machine through each request. A prepared joint
+does it once per layout. It compiles the entry computation, a chain of binds, to a straight-line
+list of instructions. These instructions call the same Python step functions that the run's
+`Compute` handlers call, score each site's given value as the run's observation handler does, and
+sum the densities in the order and with the operations that `TraceHandler` uses. The joint and
+its gradient are thus equal to the machine's, bit for bit.
 
-A length-indexed vector illustrates constructor refinement:
+The following leave a program to the machine:
 
-<!-- compile: qiec -->
-```qvr
-index Nat = Z | S(Nat)
+- an entry computation that is not a straight chain, such as the recursive helper of a scan;
+- a site given no value;
+- an input with more than one row (one run per row);
+- a data input that is not a tensor;
+- checked at every call: a handler in scope, an overridden `log_joint`, or another installed
+  evaluator.
 
-family Vec[A : Type](n : Nat) : Type
-    constructor Nil : Vec[A](Z)
-    constructor Cons[m : Nat] : A * Vec[A](m) -> Vec[A](S(m))
+A prepared joint refuses values of any layout but its own, so a stale preparation raises rather
+than scores.
 
-define head[A : Type, n : Nat](xs : Vec[A](S(n))) : A !{} =
-    case xs motive (m : Nat) => A
-        Cons[n](head, tail) =>
-            return head
-```
+#### Calls between programs
 
-The scrutinee type `Vec[A](S(n))` rules out `Nil`; matching `Cons` then
-introduces a rigid local predecessor index. This refinement makes the single
-branch exhaustive, but the local index cannot escape into the type of the
-complete case.
+A draw from another program, `sample theta <- school_effects(0.6, School)` or
+`sample (u, v) <- sub`, runs that program's steps in place under names of the caller. The objects
+and scalars the draw names replace the callee's template parameters. The callee's local `z`
+becomes the site `theta$z`, and the name it returns becomes `theta` itself. This holds on the
+reference machine and on the compiled runtime alike, and a transpile target spells such a site
+`theta__z`. A program over object parameters is a computation whose telescope binds one index
+variable per object, so `qvr run` invokes it with its static arguments.
 
-Computations call one another by ordinary application, recursion included,
-and branch on Booleans with `if`. Pure expressions share the `program` let
-grammar: operators resolve to primitives of a closed registry by operand
-type, an integer operand beside a real one is converted first (the kernel
-term carries the `int_to_real`), tuples build finite products, and `t[i]`
-projects a component.
+A program's calls of computations are lowered to compiled steps before compilation
+(`quivers.dsl.compiler._call_lowering`):
 
-<!-- compile: qiec -->
-```qvr
-define triangle(n : Int) : Int !{} =
-    if n <= 0 then
-        return 0
-    else
-        let rest <- triangle(n - 1)
-        return n + rest
+- A pure callee becomes `let` steps. The pure computations it calls are inlined in turn, and each
+  `if` between pure branches is read as `select`. The analysis is the one the transpile planner
+  uses to inline such calls (`quivers.transpile._pure_calls`, `inline_call`).
+- A callee whose only requests are the program's `Random` and `Score` runs in place. Its site
+  `label` is named `y$label` under the binder `y`, and a log density it scores is evaluated by the
+  internal let call `$log_prob`.
+- `traverse` maps a pure callee as a comprehension and a drawing callee as one
+  [plated](https://en.wikipedia.org/wiki/Plate_notation) draw per site.
 
-define split(x : Int, y : Real) : Real !{} =
-    let pair = (real(x / 2) * y, x % 3)
-    let scaled = pair[0] + real(pair[1])
-    return max(scaled, 0.5)
-```
+A program that keeps any other call (recursion, an `if` whose branches draw, a handled effect,
+`case`, static arguments) has no step table the compiler can build. It compiles to a
+[`CheckedProgram`][quivers.effects.checked_program.CheckedProgram], a morphism whose `rsample`
+and `log_joint` are `sample_program` and `run_program` on the module's own entry point. Its
+`steps`, which every fitting entry point reads, raise the located refusal that the lowering
+recorded. The machine scores Python numbers, so such a program keeps no gradient path to the
+tensors it is given.
 
-Recursion runs on the reference machine's explicit stack, and on a
-trampoline in every generated host runtime, so its depth is bounded by memory
-rather than the host call stack. A run may be given a step budget, which
-turns divergence into the stable `qiec-run-fuel` diagnostic.
+## How source declarations elaborate {#qvr-surface}
 
-A parameterized state effect separates an interface from its lexical
-instances. The `left` and `right` declarations below have the same applied
-interface but different lexical identities:
+Each source form below elaborates to QIEC terms: helper computations, generated instances,
+handler kinds, input names, and site labels. The syntax, typing, and runtime behaviour of each
+form are specified in the [QVR language reference](../reference/qvr/index.md).
 
-<!-- compile: qiec -->
-```qvr
-effect State[S : Type]
-    get : Unit -> S
-    put : S -> Unit
+### Indexed families and computations
 
-instance left : State[Int]
-instance right : State[Int]
+[Indexed case analysis](../reference/qvr/types-and-indexed-families.md#indexed-case-analysis)
+refines the scrutinee's indices in each branch, and the rigid index a branch introduces cannot
+escape into the type of the whole case.
 
-handler run_state[S : Type, A : Type] for State[S] : A -> A [coverage=total, implementation=foreign]
-    get resumes 1
-    put resumes 0
+[Computations](../reference/qvr/computations.md) call one another by ordinary application,
+recursion included, and branch on Booleans with `if`. Pure expressions share the `let` grammar of
+`program`. An operator resolves by operand type to a primitive of a closed registry. An integer
+operand beside a real one is converted first, and the core term carries the `int_to_real`
+conversion. Recursion runs on the reference machine's explicit stack and on a
+[trampoline](https://en.wikipedia.org/wiki/Trampoline_(computing)) in every generated host
+runtime, so its depth is bounded by memory rather than by the host call stack.
 
-define exchange(next : Int) : Int !{left, right} =
-    let previous <- perform left.get()
-    perform right.put(next)
-    return previous
+### Effects, instances, and handlers
 
-define read_left() : Int !{} =
-    handle left with run_state[Int, Int] in
-        let current <- perform left.get()
-        return current
-```
+Two [instances](../reference/qvr/effects-and-handlers.md#scoped-instances) of one applied
+interface, such as `left` and `right` of `State[Int]`, have distinct identities, and a total
+handler of one removes only that instance from the row. A handler declaration records a stable
+signature and resumption grades. Its executable clauses are attachments keyed by the derived
+handler identifier.
 
-The row on `exchange` retains both instances. By contrast, the total
-`run_state` handler removes `left` from the row of `read_left`. The handler
-declaration records a stable signature and resumption grades; its executable
-clauses remain runtime attachments keyed by the derived handler identifier.
-
-Probabilistic operations become instances of the same effect calculus:
-
-<!-- compile: qiec -->
-```qvr
-effect Random
-    draw : Real -> Real
-
-effect Score
-    score : Real -> Unit
-
-instance random : Random
-instance score : Score
-
-handler replay for Random : Real -> Real [coverage=total, implementation=foreign]
-    draw resumes 1
-
-define replayed_model() : Real !{score} =
-    handle random with replay in
-        let x <- perform random.draw(1.0)
-        perform score.score(x)
-        return x
-```
-
-`replay` is total and handles the exact `random` instance. The remaining
-`score` entry makes the residual effect explicit. Runtime replay tables,
-samplers, and trace recorders do not enter the stable module.
-
-Distributions are values of the same calculus. Applying a family of the
-semantic registry, such as `Normal(mu, 1.0)` or `Dirichlet([1.0, 2.0, 3.0])`,
-builds a `Sampleable[A]` whose element type the registry fixes; a list
-literal is a `Tensor` whose leading dimension is its entry count, so a
-nested literal is a matrix; `site("x")` names a sample site at the `Site[A]`
-type its position expects; and `log_prob(d, x)` evaluates a distribution's
-log density as a `LogWeight`. The prelude's `Random` and `Score` interfaces
-need no declaration:
+Probabilistic operations are instances of the same effect calculus. A total `replay` handler of
+the `random` instance leaves the `score` instance in the residual row, and replay tables,
+samplers, and trace recorders never enter the stable module. Distributions are values. Applying a
+family of the registry builds a `Sampleable[A]` whose element type the registry fixes. A list
+literal is a `Tensor` whose leading dimension is its number of entries, so a nested literal is a
+matrix. `site("x")` names a sample site at the `Site[A]` type its position expects, and
+`log_prob(d, x)` evaluates a log density as a `LogWeight`.
 
 <!-- compile: qiec -->
 ```qvr
@@ -414,52 +336,35 @@ define run(mu : Real) : Real * LogWeight !{} =
             model(mu)
 ```
 
-On the reference machine a distribution value is a
-[`RuntimeDistribution`][quivers.qiec.RuntimeDistribution] that samples and
-scores through the installed
-[`DistributionBackend`][quivers.qiec.DistributionBackend]; the core runtime
-provider's `draw` and `score` handler kinds implement `draw` and `accumulate`
-above. Each dynamic target spells the construction in its own library through
-[`spell_distribution`][quivers.transpile.family_spelling.spell_distribution],
-applying the target's parameterization conventions (a rate against a scale,
-a complemented probability, a shifted support, a folded half-line family) so
-that `log_prob` agrees with the registry's density on every host.
+The `draw` and `score` handler kinds of the core runtime provider implement `draw` and
+`accumulate` above. Each dynamic target spells a distribution construction in its own library
+through [`spell_distribution`][quivers.transpile.family_spelling.spell_distribution]. It applies
+the target's parameterization conventions (a rate in place of a scale, a complemented probability,
+a shifted support, a folded family on the half line) so that `log_prob` agrees with the registry's
+density on every host.
 
-A `program` is domain-specific notation for a named computation, and
-elaborates to one. Its data, observations, and fibrations become the
-computation's typed parameters; a `sample` step performs `Random.sample`
-on the module's canonical `random` instance, an `observe` step scores
-`log_prob` of its family at the observation on the canonical `score`
-instance, a `score` step adds its value as a weight, a `let` step binds a
-pure expression, and a `marginalize` block becomes a helper computation
-that allocates a `Random` instance for the latent, handles it with the
-enumeration handler, collects the scope's weights under a `Weight`
-instance, and answers the log marginal, which the enclosing scope scores.
-Plates are typed: `xs : N <- Normal(0.0, 1.0)` samples a
-`Tensor[Real]([|N|])` from a construction plated over `N`, and a grouped
-marginalization's `via` fibration re-indexes the latent's arguments to the
-observation rows and segments the weights back to the groups. A product
-group `[over=[G, H]]` is one flat axis of extent `|G| * |H|`, and the
-product fibration `[via=[g, h]]` its row-major flattening, the last
-factor varying fastest. The block's `reduction` selects the enumeration
-handler: `enumerate_marginal` answers the log-sum-exp of the weighted
-shots, `enumerate_marginal_sum` their sum, and `enumerate_marginal_mean`
-their average; each has an `enumerate_grouped_` counterpart that answers
-one aggregate per group position, which is what a block nested inside a
-grouped block adds to the enclosing group's weights. The nested block's
-group must be the enclosing group's extent, identified with it position
-by position, or a product with the enclosing axis as a factor, whose
-per-position marginals are segment-summed onto the enclosing positions
-and whose arguments shaped by the enclosing group are gathered by that
-projection. A `sample` inside a block that reads nothing the block binds
-is drawn once, before the block, since every shot shares it; a draw that
-reads the latent is refused. A `sample` of a vector family written with
-its entries spread, `Dirichlet(1.0, 2.0, 3.0)`, gathers them into one
-concentration, and a single literal is the symmetric concentration at the
-dimension the step's plate or the program's codomain fixes. Programs and
-computations call each other by ordinary application: a program body
-binds a call with `let x <- helper(args)`, and a computation calls a
-program by its name.
+### Programs
+
+A `program` elaborates to a named computation. Its data inputs, observations, and index maps
+become the computation's typed parameters. The elaborated module records each program as a
+[`ProgramEntry`][quivers.qiec.ProgramEntry]: the roles of its parameters, its sites, and its
+return names, beside the computation itself. Each step elaborates as follows.
+
+| Step | Elaborates to |
+|---|---|
+| `sample` | `Random.sample` on the built-in `random` instance |
+| `observe` | `log_prob` of the family at the observation, added on the built-in `score` instance |
+| `score` | its value added as a weight |
+| `let` | a binding of a pure expression |
+| `marginalize` | a helper computation, described below |
+
+[`run_program`][quivers.qiec.program_runtime.run_program] wraps the entry point in a scoring
+replay of `random` and an accumulating `score`. Given data and a value for every site, the
+reference machine thus yields the program's value and its log joint density, and the tests hold
+that number to the trace of the compiled runtime on the same models.
+
+A program body binds a call of a computation with `let x <- helper(args)`, and a computation calls
+a program by its name.
 
 <!-- compile: qiec -->
 ```qvr
@@ -482,112 +387,150 @@ define twice(y : Real) : Real !{random, score} =
     return first + second
 ```
 
-The elaborated module records each program as a
-[`ProgramEntry`][quivers.qiec.ProgramEntry]: the roles of its parameters,
-its sites, and its return names, beside the computation itself.
-[`run_program`][quivers.qiec.program_runtime.run_program] wraps the entry
-point in a scoring replay of `random` and an accumulating `score`, so the
-reference machine applied to data and a value for every site yields the
-program's value and its log joint density; the tests hold that number to
-the torch runtime's trace on the same models.
+#### Marginalization
 
-An input whose shape nothing in the program fixes, such as the
-concentration vector of `sample probs <- Dirichlet(alpha)` written without
-a plate, is typed over an index variable the program's computation binds:
-the computation gains one `Nat` binder per open extent, recorded on the
-entry's `telescope`, and its parameter reads `Tensor[Real]([alpha_extent])`.
-A run reads each extent off the data, a call step from another program
-takes the extent as its own, and an authored computation names it with an
-index literal, `prog[3](alpha)`.
+A [`marginalize`](../reference/qvr/probabilistic-programs.md#exact-marginalization) block becomes
+a helper computation. The helper allocates a `Random` instance for the latent, handles it with the
+enumeration handler, collects the weights of the block's scope under a `Weight` instance, and
+returns the log marginal, which the enclosing scope scores. The block's `reduction` selects the
+handler:
 
-A draw through a declared kernel morphism reads the family's parameters
-off the morphism's parameter map, whose learned tensors are typed
-program inputs with the roles `weight`, `bias`, and `table`: a kernel
-with a real domain applies an affine map to its conditioning row, the
-step's arguments or the program's domain inputs, and the heads of the
-family read their row blocks; a kernel over a finite domain reads a row
-of a table at the element the step names. A morphism carrying
-`[param_source=mlp]` interposes hidden layers, each an affine map
-followed by `tanh`, with the widths the option spells (`mlp(a, b)`, or
-`hidden_dim`, or two layers of sixty-four), and its inputs
-`<m>_param_layer<i>_weight` and `<m>_param_layer<i>_bias` match the shapes
-of the torch runtime's `MLPSource` layer by layer. An embedding
-morphism, `[role=embed]`, is a Normal kernel over its finite domain whose
-table concatenates the centres and log scales the torch runtime learns.
-Under a plate the map applies at every row: an unbound conditioning name
-of `observe y : Resp <- net(x)` becomes a `Tensor[Real]([|Resp|, width])`
-data input, an unbound index of an embedding a `Tensor[Int]([|Resp|])`,
-and each head is a comprehension over the rows. A composite drawn from
-in one step, `sample h <- embed >> fan(head) >> out`, expands into one
-site per factor before elaboration: `fan` over a `[replicate=k]`
-morphism draws through each replica `head_0` through `head_{k-1}` and
-bundles the draws, a kernel conditioned on a bundle reads its rows in
-order, `stack(block, n)` composes `n` copies whose morphisms past the
-first are declared afresh under `_copy<i>` names with parameters of
-their own, and the branches of a tensor product `encoder @ decoder` at
-the head of a chain each read their own factor of the program's domain.
-The expanded module declares every replica and copy, so the entry's
-inputs name each one.
+| `reduction` | Handler | Answer |
+|---|---|---|
+| `logsumexp` (the default) | `enumerate_marginal` | the [log-sum-exp](https://en.wikipedia.org/wiki/LogSumExp) of the weighted shots |
+| `sum` | `enumerate_marginal_sum` | their sum |
+| `mean` | `enumerate_marginal_mean` | their average |
 
-The heads a kernel morphism's map fills follow the torch runtime's
-parameterization of the same kernel, family by family: a location is
-read as it is, a scale exponentiated and clamped at the scale floor, a
-rate or concentration through a softplus lifted off zero or shifted by
-a tenth, a probability through a sigmoid, and the logits of
-`Categorical` or `Bernoulli` as one row over the codomain's elements.
-A scalar family applied to a vector, `Normal(mu, 0.5)` with `mu` a
-`Tensor[Real]([3])`, draws one coordinate per entry, the argument's
-axes being the plate. A program calling a program with its domain
-arguments alone, `let y <- inner(x)`, passes the callee's remaining
-inputs through: each becomes an input of the caller under the callee's
-name and role.
+Each handler has a grouped counterpart (`enumerate_grouped_marginal`, with the same suffixes)
+that returns one aggregate per group position. A block nested inside a grouped block uses it to add to the enclosing group's weights.
 
-A `scan` in a chain, `sample h <- tok_embed >> scan(cell)`, expands to a
-step program `<cell>__scan_step(x_t, h_prev)`, which draws the chain's
-elements before the scan at one position's entry and applies the cell
-to the result and the previous state, and to `let h = scan(<step>, xs)`
-over the chain's input. The scanned input is a sequence, one entry per
-position of an open extent the program binds, so a scanned domain
-factor `Token` reads as `Tensor[Int]([token_extent])`. The let
-elaborates to a helper computation `<program>__<h>_scan(t, xs, h, ...)`
-that answers `h` once `t` reaches the sequence's length and otherwise
-calls the step at `xs[t]` and recurs at `t + 1`, carrying the step's
-inputs along; the initial state is zero, or, under `init=learned`, a
-`weight` input `<cell>_scan_init`. A step input the step reads without
-binding resolves to the scanning program's binding of that name at the
-scan, else becomes an input of the scanning program under the step's
-name and role. An `observation` input is the exception: the cell
-observes one value per position, so the scanning program takes
-`Tensor[A]([<input>_extent, ...])` and the helper passes the step the
-entry `obs[t]`. The step's sites are reached once per position, and
-`run_program` replays the `n`-th occurrence of a site from the value
-keyed `"<site>@<n>"`, and refuses a value keyed by the bare label of a
-site reached more than once. The labels the expansion synthesizes
-derive from the scan's binding: a morphism cell is drawn at the binding
-itself, the chain's prefix at `"<binding>$x_in"`, the step's parameters
-are `"<binding>$x_t"` and `"<binding>$h_prev"`, and a scan inside a
-longer chain or a parallel branch takes `"<binding>$<intermediate>"`.
-A program cell's own labels are the source's, and a label two sites of
-one program would share is refused, since its occurrences would not
-number the positions.
+Plates are typed. `xs : N <- Normal(0.0, 1.0)` samples a `Tensor[Real]([|N|])` from a
+construction plated over `N`. In a grouped block, the `via` index map reindexes the latent's
+arguments to the observation rows and sums the weights back into the groups. A product group
+`[over=[G, H]]` is one flat axis of extent `|G| * |H|`, and the product index map `[via=[g, h]]`
+is its [row-major](https://en.wikipedia.org/wiki/Row-_and_column-major_order) flattening, with the
+last factor varying fastest.
 
-The torch runtime compiles the same expansion for every scan in a
-program, whatever its cell. The scanning program's
-`let h = scan(<step>, xs)` becomes a
-[`Scan`][quivers.continuous.Scan] step over the compiled step program,
-whose call of the cell becomes a [`Call`][quivers.continuous.Call] step.
-The program's kernel encoding runs a scan as a recursive helper
-computation and a call as the callee's steps in a nested frame of the
-caller, so a cell's free names read the caller's bindings and its sites
-are requests of the same run. A site inside a scan carries the address
-`"<site>@<n>"`, which a host step supplies from the run's occurrence
-count; handlers, traces, and conditioning see the same keys the
-reference machine replays, and the two paths score one trajectory
-identically. No transpile target has a lowering that keeps the measure,
-since the sequence axis is not an object the module declares, and the
-boundary refuses the scan with `scan:no-lowering:<cell>`.
+A nested block's group must be one of two things. It may be the enclosing group's extent,
+identified with it position by position. Or it may be a product with the enclosing axis as a
+factor. In that case the marginals at each position are summed by segment onto the enclosing
+positions, and the arguments shaped by the enclosing group are gathered by that projection.
 
-Logic programming uses the same handler and resumption rules:
+Three further rules apply inside a block. A `sample` that reads nothing the block binds is drawn
+once, before the block, since every shot shares it, and a draw that reads the latent is refused.
+A `sample` of a vector family written with its entries spread, `Dirichlet(1.0, 2.0, 3.0)`, gathers
+them into one concentration. A single literal is the symmetric concentration at the dimension that
+the step's plate or the program's codomain fixes.
+
+#### Open extents
+
+An input whose shape nothing in the program fixes, such as the concentration vector of
+`sample probs <- Dirichlet(alpha)` written without a plate, is typed over an index variable that
+the program's computation binds. The computation gains one `Nat` binder per open extent, recorded
+on the entry's `telescope`, and its parameter reads `Tensor[Real]([alpha_extent])`. A run reads
+each extent from the data. A call step from another program takes the extent as its own, and an
+authored computation names it with an index literal, `prog[3](alpha)`.
+
+#### Network kernels
+
+A draw through a declared kernel morphism reads the family's parameters from the morphism's
+parameter map. The learned tensors of that map are typed program inputs with the roles `weight`,
+`bias`, and `table`.
+
+- A kernel with a real domain applies an affine map to its conditioning row (the step's arguments
+  or the program's domain inputs), and each head of the family reads its block of rows.
+- A kernel over a finite domain reads the row of a table at the element the step names.
+- A morphism with `[param_source=mlp]` adds hidden layers, each an affine map followed by `tanh`,
+  with the widths the option gives (`mlp(a, b)`, or `hidden_dim`, or two layers of sixty-four).
+  Its inputs `<m>_param_layer<i>_weight` and `<m>_param_layer<i>_bias` match the shapes of the
+  compiled runtime's `MLPSource`, layer by layer.
+- An embedding morphism, `[role=embed]`, is a Normal kernel over its finite domain whose table
+  concatenates the centres and log scales that the compiled runtime learns.
+
+Under a plate, the map applies at every row. An unbound conditioning name of
+`observe y : Resp <- net(x)` becomes a `Tensor[Real]([|Resp|, width])` data input, an unbound
+index of an embedding becomes a `Tensor[Int]([|Resp|])`, and each head is a comprehension over the
+rows.
+
+A composite drawn in one step, `sample h <- embed >> fan(head) >> out`, expands into one site per
+factor before elaboration:
+
+- `fan` over a `[replicate=k]` morphism draws through each replica `head_0` to `head_{k-1}` and
+  bundles the draws, and a kernel conditioned on a bundle reads its rows in order;
+- `stack(block, n)` composes `n` copies, and each morphism after the first is declared again under
+  a `_copy<i>` name with parameters of its own;
+- the branches of a tensor product `encoder @ decoder` at the head of a chain each read their own
+  factor of the program's domain.
+
+The expanded module declares every replica and copy, so the entry's inputs name each one.
+
+The heads of a kernel follow the compiled runtime's parameterization of the same kernel, family
+by family:
+
+- a location is read as it is;
+- a scale is exponentiated and clamped at the scale floor;
+- a rate or a concentration passes through a softplus lifted off zero or shifted by a tenth;
+- a probability passes through a sigmoid;
+- the logits of `Categorical` or `Bernoulli` are one row over the codomain's elements.
+
+A scalar family applied to a vector, `Normal(mu, 0.5)` with `mu` a `Tensor[Real]([3])`, draws one
+coordinate per entry, and the argument's axes act as the plate. A program that calls a program
+with its domain arguments alone, `let y <- inner(x)`, passes the callee's remaining inputs
+through. Each becomes an input of the caller under the callee's name and role.
+
+#### Scans
+
+A [`scan`](../reference/qvr/probabilistic-programs.md#scans) in a chain,
+`sample h <- tok_embed >> scan(cell)`, expands to two things. The first is a step program
+`<cell>__scan_step(x_t, h_prev)`, which draws the chain's elements before the scan at one
+position's entry and applies the cell to the result and the previous state. The second is
+`let h = scan(<step>, xs)` over the chain's input. The scanned input is a sequence with one entry
+per position of an open extent the program binds, so a scanned domain factor `Token` reads as
+`Tensor[Int]([token_extent])`.
+
+The `let` elaborates to a helper computation `<program>__<h>_scan(t, xs, h, ...)`. It returns `h`
+once `t` reaches the length of the sequence, and otherwise calls the step at `xs[t]` and recurs at
+`t + 1`, carrying the step's inputs along. The initial state is zero, or, under `init=learned`, a
+`weight` input `<cell>_scan_init`.
+
+A step input that the step reads without binding resolves to the scanning program's binding of
+that name at the scan. Otherwise it becomes an input of the scanning program under the step's name
+and role. An `observation` input is the exception. The cell observes one value per position, so
+the scanning program takes `Tensor[A]([<input>_extent, ...])` and the helper passes the step the
+entry `obs[t]`.
+
+The step's sites are reached once per position. `run_program` replays the `n`th occurrence of a
+site from the value keyed `"<site>@<n>"`, and refuses a value keyed by the bare label of a site
+reached more than once. The labels that the expansion creates derive from the scan's binding:
+
+| Site | Label |
+|---|---|
+| a morphism cell | the binding itself |
+| the chain's prefix | `"<binding>$x_in"` |
+| the step's parameters | `"<binding>$x_t"` and `"<binding>$h_prev"` |
+| a scan inside a longer chain or a parallel branch | `"<binding>$<intermediate>"` |
+
+A program cell keeps the labels of its source. A label that two sites of one program would share
+is refused, since its occurrences would not number the positions.
+
+The compiled runtime compiles the same expansion for every scan, whatever its cell. The scanning
+program's `let h = scan(<step>, xs)` becomes a [`Scan`][quivers.continuous.Scan] step over the
+compiled step program, whose call of the cell becomes a [`Call`][quivers.continuous.Call] step. The
+program's encoding runs a scan as a recursive helper computation and a call as the callee's steps
+in a nested frame of the caller. A cell's free names thus read the caller's bindings, and its sites
+are requests of the same run. A site inside a scan carries the address `"<site>@<n>"`, which a
+Python step computes from the run's occurrence count. Handlers, traces, and conditioning see the
+keys that the reference machine replays, and the two paths score one trajectory identically.
+
+No transpile target has a lowering that keeps the measure of a scan, since the sequence axis is not
+an object the module declares. The boundary refuses the scan with `scan:no-lowering:<cell>`.
+
+### Search and weighted deduction
+
+Logic programming uses the same handler and resumption rules. In the module below, the `Choose`
+clause resumes without restriction because an attachment may explore several alternatives.
+Handling `choice` leaves the `weight` instance in the row. A search attachment and a weight
+attachment thus compose without a second source calculus.
 
 <!-- compile: qiec -->
 ```qvr
@@ -610,66 +553,82 @@ define searched() : Int !{weight} =
         return selected
 ```
 
-The `Choose` clause has an unrestricted resumption because a runtime attachment
-may explore several alternatives. Handling `choice` leaves the parameterized
-`weight` instance in the row. This factorization lets a search attachment and a
-weight attachment compose without introducing another source calculus.
+A [`deduction`](../reference/qvr/generated-computations.md#deduction-declarations) declaration
+elaborates to exactly this arrangement for a
+[weighted deduction system](../guides/deduction.md) [@shieber1995principles; @goodman1999semiring].
 
-A `deduction` declaration is domain-specific notation for exactly this
-factorization, and elaborates to it. Its items become a closed family
-`<name>__Item` with one nullary constructor per atom and one constructor
-per applied symbol the rules and lexicon mention, a slot typed `Int` where
-the system uses it as a position and `<name>__Item` otherwise; a lexicon's
-logical forms number their bound variables canonically, so alpha-equivalent
-forms are one item. The module gains a `Search` effect, the operation
-`choose[a : Type, n : Nat] : Tensor[a]([n]) -> a`, a `<name>__choice`
-instance of it, a
-`<name>__weight` instance of `Weight[K]` for the carrier `K` of the declared
-semiring (`LogWeight` for `LogProb` and `Viterbi`, `Bool` for `Boolean`,
-`Int` for `Counting`), and a `params` instance of `Param` through which
-learned weights are read under the names the agenda engine keys its
-parameters by: `<name>.lex.<index>` for a lexicon entry and
-`<name>.rule.<rule>:<bindings>` for a rule, the bindings of its category
-variables (every variable that is not a chart position) rendered in name
-order by the `<name>__show` computation and joined by `|`. A slot holds a
-position exactly when it is typed `Int`, so positions never enter a weight's
-name and one weight serves a rule at every position. The recursive `<name>__derive`
-computation chooses an axiom or a group of rules with premises of one
-shape, derives each premise by recursion, matches it against the rule's
-pattern by `case` analysis (a shared pattern variable is checked by the
-family's `<name>__eq`), instantiates the conclusion, and adds the rule's
-weight; a failed match performs an empty choice. A system whose rules all
-relate `span` items derives by span, choosing split positions for the
-premises and deriving each over its own span. A system with a lexicon whose
-items are not all spans, such as a multiple context-free grammar, derives an
-item from its head symbol and its frame, the values of its position slots
-read in pairs as the components of its yield: a rule binds its conclusion's
-positions to the frame, chooses in order the positions inside each component
-where its premises' components meet, and derives each premise from its own
-frame. The lowering accepts such a system when its rules are linear (each
-conclusion component the concatenation of premise components, every
-non-empty premise component used once, so premises are derived over fewer
-tokens than their conclusion) and its unary rules form no cycle, and refuses
-it otherwise; its goal spans cover the whole sentence, as the agenda engine's
-do. Any other system takes its axioms and their weights as input. The entry `<name>__run` handles the
-weight instance with a collecting handler and the search instance with a
-handler that resumes once per alternative and combines the shots by the
-semiring's addition, so its answer is the semiring sum over derivations of
-the goal of the product of the weights along each: the inside weight the
-agenda engine tabulates. In a span system, unary rules extend a derived item
-in chains through `<name>__close`; when the unary rules may cycle, a chain
-carries the items it visited (`<name>__Chain`, counted by `<name>__count`),
-`<name>__inside` bounds how often a chain revisits an item, and
-`<name>__converge` raises that bound until two successive inside weights
-agree within the declared `tolerance` (exactly, without one), the search's
-counterpart of the chart's Kleene-star convergence. The `depth` option bounds
-the constructor depth of each rule's conclusion category through
-`<name>__depth`, the agenda engine's measure, and never the length of a
-derivation; a system without a lexicon bounds derivation height by the number
-of its axioms and rules. A program
-calls the deduction with `let chart = parse(D, sentence)`, which types
-`sentence` as a tensor of tokens over one of the program's open extents,
-and reads `chart.goal_weight()` as a real to score.
+**Items.** The items become a closed family `<name>__Item`, with one nullary constructor per atom
+and one constructor per applied symbol that the rules and lexicon mention. A slot is typed `Int`
+where the system uses it as a position and `<name>__Item` otherwise. A lexicon's logical forms
+number their bound variables in a fixed order, so
+[alpha-equivalent](https://en.wikipedia.org/wiki/Lambda_calculus#%CE%B1-conversion) forms are one
+item.
+
+**Generated instances.** The module gains:
+
+- a `Search` effect with the operation `choose[a : Type, n : Nat] : Tensor[a]([n]) -> a`, and a
+  `<name>__choice` instance of it;
+- a `<name>__weight` instance of `Weight[K]`, where `K` is the carrier of the declared semiring
+  (`LogWeight` for `LogProb` and `Viterbi`, `Bool` for `Boolean`, `Int` for `Counting`);
+- a `params` instance of `Param`, through which learned weights are read.
+
+Learned weights carry the names under which the agenda algorithm of
+[`quivers.stochastic`](../api/stochastic/agenda.md) keys its parameters: `<name>.lex.<index>` for a
+lexicon entry and `<name>.rule.<rule>:<bindings>` for a rule. The bindings are those of the rule's
+category variables (every variable that is not a chart position), rendered in name order by the
+`<name>__show` computation and joined by `|`. A slot holds a position exactly when it is typed
+`Int`, so positions never enter a weight's name and one weight serves a rule at every position.
+
+**Derivation.** The recursive `<name>__derive` computation proceeds as follows:
+
+1. it chooses an axiom, or a group of rules whose premises have one shape;
+2. it derives each premise by recursion;
+3. it matches each premise against the rule's pattern by `case` analysis, checking a shared
+   pattern variable with the family's `<name>__eq`;
+4. it instantiates the conclusion and adds the rule's weight.
+
+A failed match performs an empty choice.
+
+A system whose rules all relate `span` items derives by span: it chooses split positions for the
+premises and derives each premise over its own span. A system with a lexicon whose items are not
+all spans, such as a multiple context-free grammar [@seki1991mcfg],
+derives an item from its head symbol and its frame. The frame is the values of the item's position
+slots, read in pairs as the components of its yield. A rule binds its conclusion's positions to the
+frame, chooses in order the positions inside each component where its premises' components meet,
+and derives each premise from its own frame.
+
+The lowering accepts such a system when two conditions hold, and refuses it otherwise:
+
+- its rules are linear: each conclusion component is the concatenation of premise components, and
+  every nonempty premise component is used once, so premises are derived over fewer tokens than
+  their conclusion;
+- its unary rules form no cycle.
+
+Its goal spans cover the whole sentence, as the agenda algorithm's do. Any other system takes its
+axioms and their weights as input.
+
+**The run entry.** `<name>__run` handles the weight instance with a collecting handler and the
+search instance with a handler that resumes once per alternative and combines the shots by the
+semiring's addition. Its answer is the semiring sum, over derivations of the goal, of the product
+of the weights along each derivation. This is the
+[inside weight](https://en.wikipedia.org/wiki/Inside%E2%80%93outside_algorithm) that the agenda
+algorithm tabulates [@goodman1999semiring].
+
+**Unary chains.** In a span system, unary rules extend a derived item in chains through
+`<name>__close`. When the unary rules may cycle, a chain carries the items it visited
+(`<name>__Chain`, counted by `<name>__count`), and `<name>__inside` bounds how often a chain
+revisits an item. `<name>__converge` raises that bound until two successive inside weights agree
+within the declared `tolerance`, or exactly when no tolerance is declared. This is the search's
+counterpart of the chart's fixed-point iteration, which repeats until weights stop changing.
+
+**Depth.** The `depth` option bounds the constructor depth of each rule's conclusion category
+through `<name>__depth`, the measure the agenda algorithm uses, and never the length of a
+derivation. A system without a lexicon bounds the height of a derivation by the number of its
+axioms and rules.
+
+A program calls the deduction with `let chart = parse(D, sentence)`, which types `sentence` as a
+tensor of tokens over one of the program's open extents, and reads `chart.goal_weight()` as a real
+to score.
 
 <!-- compile: qiec -->
 ```qvr
@@ -693,190 +652,185 @@ program fit : Term -> LogWeight
 export fit
 ```
 
-Two runtime facilities make the search compose with the weights. A foreign
-clause may answer with `TailResume(value)`, which resumes its continuation
-on the machine's own stack, as an authored `resume` in tail position does,
-rather than in a nested host call that stays pending; the collecting
-`Weight` handler answers this way, so a multi-shot resumption captured
-later inside its scope may run the continuation any number of times. And
-a collecting handler configured `forkable` gives each shot its own copy of
-the total so far, which is the context cloning an unrestricted resumption
-needs.
+Two runtime facilities let the search compose with the weights. First, a foreign clause may answer
+with `TailResume(value)`. This resumes its continuation on the machine's own stack, as an authored
+`resume` in tail position does, rather than in a nested Python call that stays pending. The
+collecting `Weight` handler answers this way, so a resumption captured later inside its scope may
+run the continuation any number of times. Second, a collecting handler configured `forkable` gives
+each shot its own copy of the total so far, which is the context cloning that an unrestricted
+resumption needs.
 
 ### The fixture corpus
 
-Six source files under `tests/fixtures/qiec/` exercise the surface end to end,
-and every claim above about calls, handlers, programs, marginalization,
-deductions, and parameter maps is tested against them by
-`tests/test_qiec_fixture_corpus.py` and, on the transpile targets, by
-`tests/transpile/test_qiec_fixture_equivalence.py`:
+Six source files under `tests/fixtures/qiec/` exercise the surface end to end.
+`tests/test_qiec_fixture_corpus.py` tests every statement above about calls, handlers, programs,
+marginalization, deductions, and parameter maps against them, and
+`tests/transpile/test_qiec_fixture_equivalence.py` does the same on the transpile targets.
 
-- `recursive_indexed_traversal.qvr`: `Nat` and `Vec[A](n)`, a recursive fold
-  whose constructor branch refines the tail's length, called from another
-  computation and specialized at a closed length.
-- `authored_state_handler.qvr`: `State[S]`, an authored handler with `get`,
-  `put`, and an explicit return clause, nested scoped instances, and a
-  computation called from a clause.
-- `effectful_probabilistic_helper.qvr`: an index sort of observation status, a
-  GADT of measurements, a helper that scores a `Present` value and draws an
-  `Absent` one under a site name, and a hierarchical program that calls it
-  with both constructors.
-- `grouped_marginalization.qvr`: a per-item class integrated out of a Normal
-  mixture whose rows fibre into the items, against an independent `logsumexp`
-  oracle.
-- `ambiguous_deduction.qvr`: a prepositional-attachment grammar whose two
-  derivations are summed under an unrestricted `Choose` handler and added to
-  a program's score.
-- `network_decoder.qvr`: a morphism parameterized by a network, observed
-  through the canonical effects and backpropagated to the attached weights.
+| File | Contents |
+|---|---|
+| `recursive_indexed_traversal.qvr` | `Nat` and `Vec[A](n)`, a recursive fold whose constructor branch refines the tail's length, called from another computation and specialized at a closed length |
+| `authored_state_handler.qvr` | `State[S]`, an authored handler with `get`, `put`, and an explicit return clause, nested scoped instances, and a computation called from a clause |
+| `effectful_probabilistic_helper.qvr` | an index sort of observation status, a GADT of measurements, a helper that scores a `Present` value and draws an `Absent` one under a site name, and a hierarchical program that calls it with both constructors |
+| `grouped_marginalization.qvr` | a class for each item summed out of a Normal mixture whose rows are grouped by item through an index map, checked against an independent `logsumexp` reference |
+| `ambiguous_deduction.qvr` | a grammar with prepositional attachment ambiguity, whose two derivations are summed under an unrestricted `Choose` handler and added to a program's score |
+| `network_decoder.qvr` | a morphism parameterized by a network, observed through the built-in effects, with gradients reaching the attached weights |
 
 ## Integration contract
 
-The integration establishes five results. First, QVR has one typed surface
-for indexed families, effect interfaces and instances, handler signatures,
-stable computation terms, and programs. Second, Didactic and Panproto check
-the first-order indexed-family projection, after which the Quivers kernel
-checks branch refinement, effect rows, handler coverage, and resumption
-contracts and lowers the surface, programs included, into a serializable
-`QiecModule`. Third, the compiler attaches that checked module to its
-environment and produces a `Program` whose execution runs the module's
-computations. Fourth, `Lower` derives each program's target plan from its
-checked computation and projects the complete module into `IRQiecModule`,
-whose typed nodes retain declarations, rows, provenance, values, evidence,
-computations, and resumption grades, so a renderer receives one lowered root.
-Fifth, the CLI, TUI, REPL, language server, Pygments and tree-sitter
-highlighters, TextMate grammar, Panproto migration assets, and transpilers
-share the surface and diagnostic vocabulary.
+The integration has five parts.
 
-A potential worry is that a common IR implies identical target capabilities.
-The **QIEC capability boundary** blocks that inference. Pyro, NumPyro, PyMC,
-Edward2, Turing, Gen, WebPPL, and Church lower the complete stable computation
-graph through corresponding target-language implementations of the QIEC
-runtime ABI. That lowering retains stable operation and instance identifiers,
-dynamic addresses, lexical handler scope, indexed constructors, equality
-transport, and the four resumption grades.
+1. QVR has one typed surface for indexed families, effect interfaces and instances, handler
+   signatures, computation terms, and programs.
+2. Didactic and panproto check the first-order projection of the indexed families. The QIEC
+   checker then checks branch refinement, effect rows, handler coverage, and resumption contracts,
+   and lowers the surface, programs included, into a serializable `QiecModule`.
+3. The compiler attaches that checked module to its environment and produces a `Program` whose
+   execution runs the module's computations.
+4. `Lower` derives each program's target plan from its checked computation and projects the whole
+   module into `IRQiecModule`. Its typed nodes keep declarations, rows, provenance, values,
+   evidence, computations, and resumption grades, so a renderer receives one lowered root.
+5. The CLI, TUI, REPL, language server, Pygments and tree-sitter highlighters, TextMate grammar,
+   panproto migration assets, and transpilers share the surface and the diagnostic vocabulary.
 
-A program that calls a module computation, `let c <- noisy(b)`, reaches these
-eight targets as a call in the model body. A pure callee whose body is a chain
-of bindings is inlined by the plan before any renderer runs, so it costs the
-target nothing; every other call is rendered against the callee's generated
-entry point with the program's canonical `Random` and `Score` instances bound
-to a **native operation table** the model body builds once, so a draw inside
-the helper is a site of the model under the label the helper gives it and a
-scored weight is a term of the joint. Each host supplies the table from its
-own primitives: Pyro's `pyro.sample` and `pyro.factor`, NumPyro's
-`numpyro.sample` and `numpyro.factor`, PyMC's `register_rv` and
-`pymc.Potential`, Edward2's traced random variables and a one-point factor
-distribution, Turing's `tilde_assume!!` and `@addlogprob!` reached through
-closures placed in the model body, Gen's `@trace` and a factor distribution
-traced under the `:qvr_factor` namespace, WebPPL's `sample` and `factor`,
-and Church's `sample` and `factor`. A label the helper draws under more than
-once in one run is counted, `noise`, `noise@1`, and so on, as the reference
-machine replays it. The Python bridges also supply the host's own spellings of
-the scalar primitives, so a helper's arithmetic on a drawn value stays on the
-host's array and keeps its gradient.
+A common IR does not mean that every target accepts every module. A *capability* is a QIEC
+feature, such as search or neural attachments, that a transpile target must support to export a
+program, and a target that lacks one reports a `qiec:capability:*` diagnostic. Pyro, NumPyro,
+PyMC, Edward2, Turing, Gen, WebPPL, and Church lower the whole computation graph through their own
+implementations of the QIEC runtime ABI, the
+[application binary interface](https://en.wikipedia.org/wiki/Application_binary_interface)
+described below. That lowering keeps stable operation and instance identifiers, dynamic addresses,
+lexical handler scope, indexed constructors, equality transport, and the four resumption grades.
 
-The WebPPL target's runtime is written in WebPPL's own functional subset: a
-name is bound once, loops are recursion, `try` is absent, and the only mutable
-state is the global store, which holds the call and instance serials, the
-ambient handler stack, and one cell per handler installation. WebPPL
-trampolines every call, so a deep recursion consumes no host stack. A host
-attachment written for WebPPL follows the same discipline: a mutable binding
-holds its value in a global-store cell named by its `cell` field rather than
-in a `value` field, and every function the runtime calls out of an object
-field is reached through `apply`, since WebPPL compiles a member call as a
+### Calls on dynamic targets
+
+A program that calls a module computation, `let c <- noisy(b)`, reaches these eight targets as a
+call in the model body. The plan inlines a pure callee whose body is a chain of bindings before
+any renderer runs, so it costs the target nothing. Every other call is rendered against the
+callee's generated entry point. The program's built-in `Random` and `Score` instances are bound to
+a *native operation table*, a table of the host's own sampling and scoring primitives that the
+model body builds once. A draw inside the helper is thus a site of the model under the label the
+helper gives it, and a scored weight is a term of the joint.
+
+Each host builds the table from its own primitives:
+
+| Target | Draw | Score |
+|---|---|---|
+| Pyro | `pyro.sample` | `pyro.factor` |
+| NumPyro | `numpyro.sample` | `numpyro.factor` |
+| PyMC | `register_rv` | `pymc.Potential` |
+| Edward2 | traced random variables | a factor distribution at one point |
+| Turing | `tilde_assume!!`, through closures in the model body | `@addlogprob!`, likewise |
+| Gen | `@trace` | a factor distribution traced under the `:qvr_factor` namespace |
+| WebPPL | `sample` | `factor` |
+| Church | `sample` | `factor` |
+
+A label that the helper draws under more than once in one run is counted, `noise`, `noise@1`, and
+so on, as the reference machine replays it. The Python bridges also give the host's own spellings
+of the scalar primitives, so a helper's arithmetic on a drawn value stays on the host's arrays and
+keeps its gradient.
+
+The runtime of the WebPPL target is written in WebPPL's functional subset. A name is bound once,
+loops are recursion, `try` is absent, and the only mutable state is the global store. That store
+holds the call and instance serial numbers, the ambient handler stack, and one cell per handler
+installation. WebPPL trampolines every call, so a deep recursion uses no host stack. An attachment
+written for WebPPL follows the same discipline. A mutable binding holds its value in a cell of the
+global store named by its `cell` field, not in a `value` field, and every function the runtime
+calls from an object field is reached through `apply`, since WebPPL compiles a member call as a
 native one.
 
-Stan, BUGS, and JAGS have no run-time call, so the plan they render is judged
-by what it needs: the computations the program's calls reach, transitively,
-or every computation when the module declares no program. Stan defines a
-needed pure computation as a user-defined function when it is closed and
-monomorphic, returns a scalar, and is composed of scalar bindings,
-primitives with a Stan spelling, conditionals, calls, and recursion; the
-model body then calls it as a transformed parameter. BUGS and JAGS refuse a
-call outright as `call:graph:<callee>`, since a graph language has no
-statement that runs a computation. Every computation a static target can
-represent is defined in its output, called or not, so a module's entry points
-stay where the target has a form for them; one the program never calls and
-the target cannot represent is left out, since it is no part of the program
-the output denotes. A needed computation the target cannot represent is
-reported feature by feature as `qiec:capability:<feature>:<computation>`
-before anything is placed in the target schema.
+### Calls on static targets
+
+Stan, BUGS, and JAGS have no call at run time, so the plan they render is judged by what it needs:
+the computations that the program's calls reach, transitively, or every computation when the
+module declares no program. Stan defines a needed pure computation as a user-defined function when
+it is closed and monomorphic, returns a scalar, and is built from scalar bindings, primitives with
+a Stan spelling, conditionals, calls, and recursion. The model body then calls it as a transformed
+parameter. BUGS and JAGS refuse a call outright as `call:graph:<callee>`, since a graph language
+has no statement that runs a computation.
+
+Every computation that a static target can represent is defined in its output, whether it is
+called or not, so a module's entry points stay where the target has a form for them. A computation
+that the program never calls and the target cannot represent is left out, since it is no part of
+the program the output denotes. A needed computation that the target cannot represent is reported,
+feature by feature, as `qiec:capability:<feature>:<computation>` before anything is placed in the
+target schema.
 
 ### Target runtime ABI
 
-Each host-language renderer exports a QVR computation named `f` as
-`qiec_f`. Its source parameters come first. The entry point also accepts a
-static-specialization argument and three invocation-local mappings: `qiec_attachments`,
-`qiec_handlers`, and `qiec_operations`. The specialization argument instantiates
-the checked type, index, and effect telescope; a polymorphic entry point rejects
-an omitted argument, a wrong arity, or a static argument of the wrong kind.
-Python and Julia expose this ABI through optional or keyword arguments.
-JavaScript uses trailing positional arguments, and Church accepts an optional
-rest list. The generated `model` or `build_model` entry point is unchanged.
+Each renderer for a host language exports a QVR computation named `f` as `qiec_f`. Its source
+parameters come first. The entry point also accepts an argument for static specialization and
+three mappings local to the invocation: `qiec_attachments`, `qiec_handlers`, and
+`qiec_operations`. The specialization argument instantiates the checked type, index, and effect
+telescope. A polymorphic entry point rejects an omitted argument, a wrong arity, or a static
+argument of the wrong kind. Python and Julia expose this ABI through optional or keyword
+arguments, JavaScript through trailing positional arguments, and Church through an optional rest
+list. The generated `model` or `build_model` entry point is unchanged.
 
-The renderer tests reparse every target's emitted QIEC source and run external
-syntax checks when the target toolchain is available. Runtime tests exercise
-Python, Julia, JavaScript, and Scheme entry points, covering stable-ID dispatch,
-indexed cases, attachments, resumption grades, and handler lifecycle behavior.
-The evidence covers those tested programs and operations; adequacy for all
-well-typed programs would require a separate proof against the reference evaluator.
+The renderer tests reparse every target's emitted QIEC source and run external syntax checks when
+the target's toolchain is installed. Runtime tests exercise the entry points in Python, Julia,
+JavaScript, and Scheme, covering dispatch by stable identifier, indexed cases, attachments,
+resumption grades, and handler lifecycles. This evidence covers the tested programs and
+operations. Agreement with the reference machine for all well-typed programs would need a separate
+proof.
 
-Attachment entries are keyed by their `qiec:attachment:*` identifier and must
-be typed binding descriptors. The runtime checks the descriptor's structural
-type against the checked reference and invokes its validator before exposing
-its value; a raw host value is not an attachment. A mutable duplicable binding
-also declares a `fork` callback, which produces a fresh value from the pristine
-capture seed for each unrestricted shot.
+Attachment entries are keyed by their `qiec:attachment:*` identifier and must be typed binding
+descriptors. The runtime checks the descriptor's structural type against the checked reference and
+calls its validator before exposing its value. A raw host value is not an attachment. A mutable
+duplicable binding also declares a `fork` callback, which produces a fresh value from the
+untouched capture seed for each unrestricted shot.
 
-Handler entries are keyed by `qiec:handler:*`. The generated manifest, rather
-than the host attachment, fixes the handler's effect, coverage, forwarding
-policy, clause set, and resumption grades. The attachment's `operations` table
-is keyed by `qiec:operation:*`, and each clause receives `(request, resume,
-context)`. The request contains the stable instance, effect, operation, static
-arguments, value arguments, result type, source origin, and dynamic address.
-The context contains the specialized handler manifest, static arguments, and
-the current resumption-use count. A return clause receives
-`(value, context)`. Result validators check values passed into `resume`, while
-the handler output validator checks the clause or return-clause answer.
+Handler entries are keyed by `qiec:handler:*`. The generated manifest, not the host attachment,
+fixes the handler's effect, coverage, forwarding policy, clause set, and resumption grades. The
+attachment's `operations` table is keyed by `qiec:operation:*`, and each clause receives
+`(request, resume, context)`.
 
-A stateful handler attachment uses `context_factory` to construct one context
-per installation. Optional `on_enter`, `on_exit`, and `on_drop` callbacks form
-an exact-once lifecycle. An unrestricted resumption may capture a handler only
-when it declares `duplicable_context`; a mutable captured context must also
-provide `fork_context`. Each shot, including the first, forks from an untouched
-seed. Partial handlers forward structurally uncovered operations to an outer
-handler without changing the checked forwarding policy.
+- The request holds the stable instance, effect, operation, static arguments, value arguments,
+  result type, source origin, and dynamic address.
+- The context holds the specialized handler manifest, the static arguments, and the number of
+  times the clause has resumed so far.
+- A return clause receives `(value, context)`.
 
-Unhandled operations are keyed by the pair of `qiec:effect-instance:*` and
-`qiec:operation:*` identifiers and receive the complete `request`. Thus neither
-dispatch path assigns semantics to display names such as `Random`, `Score`, or
-`Choose`. An address contains the stable source-site identifier, dynamic
-frames, and the resumption path; each unrestricted shot appends its branch
-number before evaluating the captured continuation. Python stores active
-handler state in an invocation-local context, Julia stores it per task, and
-Scheme uses a dynamically scoped parameter. JavaScript evaluation is
-synchronous, so its scoped stack cannot overlap independent invocations.
+Result validators check the values passed to `resume`, and the handler's output validator checks
+the answer of a clause or return clause.
 
-This boundary represents QIEC-only and mixed modules without requiring a
-synthetic probabilistic `program`; a mixed module retains both its probabilistic
-nodes and its typed `IRQiecModule`. Acceptance still depends on the selected
-target. Declaration-only modules remain valid on every target. The eight
-host-language targets accept executable QIEC-only modules, while the three
-static targets accept them only when every computation satisfies the subset
-above. Mixed modules must additionally satisfy the selected target's ordinary
-probabilistic support boundary. A renderer may omit declarations that have no
-runtime effect, but it cannot drop a computation body or erase an unsupported
-effect to make the module fit.
+A stateful handler attachment uses `context_factory` to build one context per installation. The
+optional `on_enter`, `on_exit`, and `on_drop` callbacks each run exactly once. An unrestricted
+resumption may capture a handler only when the handler declares `duplicable_context`, and a mutable
+captured context must also give `fork_context`. Each shot, the first included, forks from an
+untouched seed. Partial handlers forward the operations they do not cover to an outer handler
+without changing the checked forwarding policy.
 
-Recursive calls, scoped instances, and authored handler clauses are represented
-in the checked core and exercised by the examples above. Their presence in the
-core does not imply support on every target: the target-capability checks
-apply to the reachable computation graph. Optimized handler implementations
-and larger static-target subsets remain possible extensions, each requiring
-preservation of the relevant execution and scoring behavior.
+Unhandled operations are keyed by the pair of a `qiec:effect-instance:*` and a `qiec:operation:*`
+identifier and receive the whole `request`. Neither dispatch path thus gives meaning to display
+names such as `Random`, `Score`, or `Choose`. An address contains the stable identifier of the
+source site, the dynamic frames, and the resumption path, and each unrestricted shot appends its
+branch number before it evaluates the captured continuation. Python stores active handler state in
+a context local to the invocation, Julia stores it per task, and Scheme uses a dynamically scoped
+parameter. JavaScript evaluation is synchronous, so its scoped stack cannot overlap independent
+invocations.
 
-Panproto validates persisted objects written by earlier releases against
-the version they were written under. The migration gate reads the original QVR history without
-rewriting its content-addressed object IDs, so those fixtures continue to test
-the compatibility contract rather than a regenerated approximation of it.
+### Which modules a target accepts
+
+This boundary represents modules written only in QIEC, and mixed modules, without a synthetic
+probabilistic `program`. A mixed module keeps both its probabilistic nodes and its typed
+`IRQiecModule`. Acceptance depends on the target:
+
+- modules that only declare are valid on every target;
+- the eight host-language targets accept executable modules written only in QIEC;
+- the three static targets accept them only when every computation lies in the subset above;
+- mixed modules must also satisfy the target's support for ordinary probabilistic programs.
+
+A renderer may omit declarations that have no effect at run time, but it cannot drop a computation
+body or erase an unsupported effect to make the module fit.
+
+Recursive calls, scoped instances, and authored handler clauses are represented in the checked
+core and exercised by the examples above. Their presence in the core does not imply support on
+every target, since the capability checks apply to the reachable computation graph. Optimized
+handler implementations and larger subsets for static targets are possible extensions, and each
+would have to preserve the relevant execution and scoring behaviour.
+
+Panproto validates objects persisted by earlier releases against the grammar they were written
+under. The migration gate reads the original QVR history without rewriting its content-addressed
+object identifiers, so those fixtures test the compatibility contract itself rather than a
+regenerated copy of it.
