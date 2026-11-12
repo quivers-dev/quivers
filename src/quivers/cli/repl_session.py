@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 import didactic.api as dx
 
+from quivers.core.objects import FinSet
 from quivers.dsl import (
     Compiler,
     CompileError,
@@ -777,7 +778,12 @@ class ReplSession:
             return None
         c = self._compiler
         if bare in c.objects:
-            return f"object {bare} : {_pretty_object(c.objects[bare])}"
+            obj = c.objects[bare]
+            if isinstance(obj, FinSet) and obj.name == bare:
+                # A finite set declared by its size carries its own name;
+                # its definition is the size.
+                return f"object {bare} : FinSet {obj.cardinality}"
+            return f"object {bare} : {_pretty_object(obj)}"
         if bare in c.spaces:
             return f"space {bare} : {_pretty_object(c.spaces[bare])}"
         if bare in c.signatures:

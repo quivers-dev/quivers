@@ -21,7 +21,7 @@ from quivers.stochastic import (
     expectation,
     stochastic,
 )
-from quivers.giry import GiryMonad, FinStoch
+from quivers.stochastic.giry import GiryMonad, FinStoch
 from quivers.program import Program
 
 

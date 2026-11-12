@@ -61,6 +61,7 @@ from quivers.formulas import (
     formula_from_data,
     formula_to_qvr,
 )
+from quivers.inference import SVI
 from quivers.transpile import transpile
 
 
@@ -752,6 +753,35 @@ def _posterior_means(guide, n_obs: int, num_draws: int = 400):
     return out
 
 
+class TestFitIterationCounts:
+    """Each count names the iterations of the method it applies to."""
+
+    def test_svi_runs_num_steps_optimizer_steps(self, base_df, monkeypatch):
+        """``num_steps`` is the number of SVI steps taken."""
+        calls: list[int] = []
+        original = SVI.step
+
+        def counting_step(self, *args, **kwargs):
+            calls.append(1)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(SVI, "step", counting_step)
+        fit("y ~ 1", data=base_df, method="svi", num_steps=7, seed=0)
+        assert len(calls) == 7
+
+    @pytest.mark.parametrize("count", ["num_samples", "num_warmup", "num_chains"])
+    def test_svi_refuses_mcmc_counts(self, base_df, count):
+        """An MCMC count given to SVI is refused, not read as steps."""
+        with pytest.raises(ValueError, match=f"{count} count MCMC iterations"):
+            fit("y ~ 1", data=base_df, method="svi", **{count: 5})
+
+    @pytest.mark.parametrize("method", ["nuts", "hmc"])
+    def test_mcmc_refuses_num_steps(self, base_df, method):
+        """``num_steps`` given to an MCMC method is refused."""
+        with pytest.raises(ValueError, match="num_steps counts SVI"):
+            fit("y ~ 1", data=base_df, method=method, num_steps=5)
+
+
 class TestEndToEndFit:
     def test_intercept_only_svi(self, base_df):
         result = fit(
@@ -759,7 +789,7 @@ class TestEndToEndFit:
             data=base_df,
             family="gaussian",
             method="svi",
-            num_samples=100,
+            num_steps=100,
             seed=0,
         )
         assert result.posterior is not None
@@ -771,7 +801,7 @@ class TestEndToEndFit:
             data=base_df,
             family="gaussian",
             method="svi",
-            num_samples=100,
+            num_steps=100,
             seed=0,
         )
         assert result.posterior is not None
@@ -782,7 +812,7 @@ class TestEndToEndFit:
             data=base_df,
             family="gaussian",
             method="svi",
-            num_samples=100,
+            num_steps=100,
             seed=0,
         )
         assert result.posterior is not None
@@ -796,7 +826,7 @@ class TestEndToEndFit:
             data=base_df,
             family="gaussian",
             method="svi",
-            num_samples=100,
+            num_steps=100,
             seed=0,
         )
         assert result.posterior is not None
@@ -807,7 +837,7 @@ class TestEndToEndFit:
             data=base_df,
             family="gaussian",
             method="svi",
-            num_samples=20,
+            num_steps=20,
             seed=0,
         )
         out = tmp_path / "fit.qvr"
@@ -852,7 +882,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -878,7 +908,7 @@ class TestPosteriorRecovery:
             data=df,
             family="bernoulli",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -900,7 +930,7 @@ class TestPosteriorRecovery:
             data=df,
             family="poisson",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -923,7 +953,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gamma",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -954,7 +984,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=len(ys))
@@ -998,7 +1028,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -1032,7 +1062,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -1060,7 +1090,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -1090,7 +1120,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=N)
@@ -1132,7 +1162,7 @@ class TestPosteriorRecovery:
             data=df,
             family="gaussian",
             method="svi",
-            num_samples=2000,
+            num_steps=2000,
             seed=0,
         )
         means = _posterior_means(result.posterior, n_obs=len(ys))
@@ -1405,7 +1435,7 @@ class TestOrdinalMixedNeuralModel:
             predictor=predictor,
             predictor_data=features,
             method="svi",
-            num_samples=3,
+            num_steps=3,
             seed=0,
         )
 
@@ -1461,7 +1491,7 @@ class TestCategoricalAndMixtureInference:
             data=categorical_df,
             family="categorical",
             method="svi",
-            num_samples=2,
+            num_steps=2,
             seed=0,
         )
         assert "Categorical(probs=mu)" in result.qvr_source
@@ -1479,7 +1509,7 @@ class TestCategoricalAndMixtureInference:
                 -1, 1
             ),
             method="svi",
-            num_samples=2,
+            num_steps=2,
             seed=0,
         )
         assert not torch.equal(initial, predictor.weight.detach())
@@ -1495,7 +1525,7 @@ class TestCategoricalAndMixtureInference:
                 predictor=torch.nn.Linear(1, 4),
                 predictor_data=torch.ones(len(categorical_df), 1),
                 method="svi",
-                num_samples=1,
+                num_steps=1,
             )
 
     @pytest.mark.parametrize("components", [2, 3, 7])
@@ -1508,7 +1538,7 @@ class TestCategoricalAndMixtureInference:
             family="mixture",
             mixture_components=components,
             method="svi",
-            num_samples=2,
+            num_steps=2,
             seed=0,
         )
         assert f"object FormulaComponent : FinSet {components}" in result.qvr_source
@@ -1526,7 +1556,7 @@ class TestCategoricalAndMixtureInference:
             fixed_prior="Normal(loc=0.0, scale=3.0)",
             priors={"mixture_scale": "HalfNormal(scale=0.75)"},
             method="svi",
-            num_samples=1,
+            num_steps=1,
             seed=0,
         )
         assert "intercept <- Normal(loc=0.0, scale=3.0)" in result.qvr_source
