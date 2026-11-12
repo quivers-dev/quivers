@@ -9,7 +9,7 @@ The public API of quivers, by subpackage, with each module page generated from i
 | Build a weighted computation in Python | [Objects](core/objects.md), [morphisms](core/morphisms.md), and [algebras](core/algebras.md) | Finite sets, weighted tables between them, and the rules that combine their weights |
 | Fit a model to data | [Stochastic variational inference](inference/svi.md) (SVI) or [Markov chain Monte Carlo](inference/mcmc.md) (MCMC) | An approximation to the posterior, with different computational tradeoffs |
 | Fit a regression formula | [Formulas](formulas/index.md) | A generated model and fitted result from tabular data |
-| Inspect the results | [Diagnostics](diagnostics/index.md) | Checks of inference behaviour and predictive adequacy |
+| Inspect the results | [Diagnostics](diagnostics/index.md) | Checks of inference behavior and predictive adequacy |
 | Extend checking or execution | [Quivers Indexed Effect Core](qiec/index.md) | Explicit types, computations, and effect interfaces |
 | Translate to another probabilistic programming language (PPL) | [Transpilation](transpile/index.md) | Target source, or a diagnostic naming the unsupported feature |
 

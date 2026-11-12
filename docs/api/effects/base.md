@@ -7,6 +7,6 @@ that each [sample request](../../guides/inference-foundations.md#trace-and-sampl
 through the active handlers before it receives a value. The module gives the handler stack, the
 run context, and the installation record. Conditioning,
 [tracing](../../tutorials/python/05-variational-inference.md#tracing-the-model), and the other common
-behaviours are concrete [handlers](handlers.md).
+behaviors are concrete [handlers](handlers.md).
 
 ::: quivers.effects.base

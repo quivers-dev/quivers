@@ -175,7 +175,7 @@ installed `quivers.qiec_runtime` entry point:
 The core provider accepts `passthrough`, `scripted`, and `state` handler
 configurations, and the prelude kinds `draw`, `draw-scoring`, `enumerate`,
 `replay`, `collect`, `score`, `search`, and `param`. These options give the
-clause behaviour, which lives only in the running Python process. The source
+clause behavior, which lives only in the running Python process. The source
 handler still fixes the checked effect, coverage, forwarding policy, clause
 set, and resumption grades.
 Runtime plugins are discoverable by name but are loaded only when the
