@@ -520,13 +520,14 @@ def _enumerate_reduction(options: Mapping[str, object], name: str) -> str:
     Raises
     ------
     ValueError
-        If the option is not one of ``logsumexp``, ``sum``, and ``mean``.
+        If the option is not one of ``logsumexp``, ``sum``, ``mean``,
+        and ``table``.
     """
     reduction = options.get("reduction", "logsumexp")
-    if reduction not in ("logsumexp", "sum", "mean"):
+    if reduction not in ("logsumexp", "sum", "mean", "table"):
         raise ValueError(
             f"core handler {name!r} option 'reduction' must be logsumexp, sum, "
-            f"or mean, not {reduction!r}"
+            f"mean, or table, not {reduction!r}"
         )
     return reduction
 

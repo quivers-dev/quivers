@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 129 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 137 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 65 / 129   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 78 / 129   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 95 / 129   |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 83 / 129   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 69 / 129   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 110 / 129  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 96 / 129   |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 112 / 129  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 98 / 129   |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 89 / 129   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 88 / 129   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 71 / 137   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 85 / 137   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 102 / 137  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 90 / 137   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 76 / 137   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 117 / 137  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 103 / 137  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 119 / 137  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 105 / 137  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 96 / 137   |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 95 / 137   |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -168,11 +168,17 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_negative_binomial_logits`       | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/observe_ordered_probit`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_ordinal_code`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_over_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_per_row_datum_scale`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_per_row_gamma_rate`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_plated_vector_location`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_probs_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_shared_probs_vector`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_step`                           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_latent`         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_let`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_parameter_data`          | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_vector_scale_rate`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/return_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_class_code`                      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_dirichlet_sampled_concentration` | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -187,6 +193,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/sample_onehot_sampled_probs`            | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/sample_relaxed_onehot_probs`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/sample_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_vector_location`                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_wishart_covariance`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/sample_wishart_host_factor`             | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
@@ -196,6 +203,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/scan_cell_reads_matrix_data`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_cell_reads_vector`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_initial_binding`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_marginal_chain`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_outputs_all`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/scan_reverse`                           | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/score_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -510,6 +518,22 @@ Each backend words it differently; this is bugs's. `bugs` on `schema_chart_parse
 
 ```text
 QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `scan:marginal:no-lowering:cell`
+
+Refused for: `steps/scan_marginal_chain`.
+
+Reported kinds:
+
+```text
+scan:marginal:no-lowering:cell
+```
+
+Every backend reports it in the same words. `bugs` on `steps/scan_marginal_chain` reports:
+
+```text
+`scan(cell, init=p)` sums the states of a discrete Markov chain out: `cell` returns the latent it marginalizes, so the chain's likelihood is the forward algorithm's sum over every path of states, computed from a table of the cell's weights at each position and each pair of states. no transpile target has lowering of that recursion: its positions arrive with the data, and the cell's weights would have to be rendered as target code at every pair of states. Fit the model with the compiled runtime, or score it on the reference machine with `qvr run`.
 ```
 
 ### `scan:no-lowering:cell`
@@ -1200,7 +1224,7 @@ bugs cannot emit this `observe` step: the data codes Categorical classes from ze
 
 **`observe:class-code:y`**
 
-Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`.
+Refused for: `let_expressions/let_row_gather`, `let_expressions/let_row_gather_sampled`, `steps/observe_class_code`, `steps/observe_shared_probs_vector`.
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 

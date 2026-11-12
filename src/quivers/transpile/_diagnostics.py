@@ -1687,8 +1687,31 @@ def _render_target_kind(backend: str, tail: str, explained: bool) -> str:
 
 
 def _render_scan_kind(backend: str, tail: str) -> str:
-    """`scan:no-lowering:<cell>` -- a `scan(...)` consumed at a draw."""
+    """`scan:no-lowering:<cell>` -- a `scan(...)` consumed at a draw;
+    `scan:marginal:<reason>:<name>` -- a marginalized chain."""
     cell = tail.rpartition(":")[2] or "the cell"
+    if tail.startswith("marginal:no-lowering:"):
+        return (
+            f"`scan({cell}, init=p)` sums the states of a discrete Markov "
+            f"chain out: `{cell}` returns the latent it marginalizes, so the "
+            f"chain's likelihood is the forward algorithm's sum over every "
+            f"path of states, computed from a table of the cell's weights at "
+            f"each position and each pair of states. {_has_no(backend, 'lowering of that recursion')}: "
+            f"its positions arrive with the data, and the cell's weights "
+            f"would have to be rendered as target code at every pair of "
+            f"states. Fit the model with the compiled runtime, or score it on "
+            f"the reference machine with `qvr run`."
+        )
+    if tail.startswith("marginal:"):
+        reason = tail.removeprefix("marginal:").partition(":")[0]
+        return (
+            f"the marginalized chain over `{cell}` is refused before "
+            f"lowering ({reason}): its cell must take an entry and the "
+            f"previous state, bind lets, then marginalize the next state "
+            f"from a `Categorical` and observe what it emits, and return it; "
+            f"the chain is drawn whole with `sample` from "
+            f"`scan({cell}, init=p)` and its value is not read."
+        )
     return (
         f"`scan({cell})` threads `{cell}` across the positions of a "
         f"sequence, so it denotes one draw per position over "

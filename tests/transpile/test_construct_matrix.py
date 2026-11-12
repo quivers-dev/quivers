@@ -201,6 +201,13 @@ for _backend in _BACKENDS:
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", _fixture)] = (
             "scan:no-lowering:cell"
         )
+# A marginalized chain sums its states out by the forward algorithm over
+# positions that arrive with the data; no target renders that recursion,
+# so every target refuses it by its cell's name.
+for _backend in _BACKENDS:
+    _EXPECTED_ORTHOGONAL_RAISES[(_backend, "steps", "scan_marginal_chain")] = (
+        "scan:marginal:no-lowering:cell"
+    )
 # A learned function's network weights are model-internal, neither sites
 # nor data, so every target refuses a weighted function by its network;
 # latent weights are sites, but no target has a form for the network's
@@ -446,6 +453,7 @@ for _category, _fixture in (
     ("let_expressions", "let_row_gather"),
     ("let_expressions", "let_row_gather_sampled"),
     ("steps", "observe_class_code"),
+    ("steps", "observe_shared_probs_vector"),
 ):
     _EXPECTED_ORTHOGONAL_RAISES[("bugs", _category, _fixture)] = "observe:class-code"
 # Stan's samplers draw no discrete parameter, so a sampled class is one

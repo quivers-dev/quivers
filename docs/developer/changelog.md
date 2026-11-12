@@ -4,7 +4,7 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.53.3] - 2026-11-11
 
 ### Fixed
 
@@ -13,7 +13,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **JAGS reads a per-row host datum at the loop's row.** A datum that fills a family parameter of a plated site, such as a known standard error `Normal(loc=mu, scale=se)`, renders as `se[m_School]`, as BUGS renders it, where JAGS rejected the unindexed vector.
 - **A datum gathered for a grouped marginalization's prior holds one value per group row.** In `let theta_tok = theta[doc_idx]` read by `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token]`, `doc_idx` is checked as one integer per `Token`, as a datum feeding a plated observation is, so a per-token topic model runs on both execution paths where the datum had been checked as a single `Int`.
 - **The REPL prints a draw's arguments as the source writes them.** A scoped `:info`, `:browse`, and `:graph` show `Dirichlet(concentration=1.0)` where they had printed the argument records or, in `:graph`, dropped a literal argument.
-- **Transpiling a deeply nested expression is linear in its depth.** quivers requires `didactic>=0.18.2`, whose models keep a nested child as built rather than re-encoding it at every level, so a let that sums twelve builtin calls transpiles in a fraction of a second where it had taken most of a minute. The floor brings `panproto` and `panproto-grammars-all` to `0.77.0`, which that `didactic` requires.
+
+## [0.53.2] - 2026-11-11
+
+### Fixed
+
+- **`MCMC.run` samples a program whose data include a corpus of tokens.** The run fingerprint a checkpoint is checked against renders every observation and host datum by content: tensors, numbers, and arrays by dtype, shape, and bytes (a rectangular list of numbers renders as the tensor the program reads), and strings and every other sequence or mapping item by item, so `{"corpus": [["the", "cat", "runs"], ...]}` runs, and resuming with a corpus that differs in one token, in sentence order, or in sentence boundaries is refused as different data. A datum of any other kind is refused with a `TypeError` naming it, rather than left out of the fingerprint. NUTS thus runs on a Bayesian PCFG whose `parse(...)` reads its corpus as host data, where it had stopped before its first draw with `ValueError: too many dimensions 'str'`.
+- **`:quit` in the Jupyter kernel ends the cell and leaves the kernel up.** The chunks after `:quit` are not run, and unless the cell is silent a note on standard error says to shut the kernel down from the front end. The kernel calls no shutdown hook, so under an ipykernel whose `do_shutdown` is a coroutine, `:quit` leaves no unawaited coroutine and raises no `RuntimeWarning`.
+
+## [0.53.1] - 2026-11-11
+
+### Fixed
+
+- **A vector filling a scalar family's parameter is read one entry per draw on every target.** `observe y <- Normal(loc=z, scale=0.5)` with `z` one vector over `Feat` is one Normal per entry of `z`, each at its own entry. Stan, BUGS, JAGS, Gen, WebPPL, and Church read `z` at the position their loop visits (`normal_lpdf(y[m_Feat] | z[m_Feat], 0.5)`), where they had read the whole vector into the scalar slot and scored each entry of `y` against every entry of `z`, or failed to run; Turing broadcasts the family over `z` (`product_distribution(Normal.(z, 0.5))` for an observation, `arraydist(Normal.(z, 0.5))` for a latent). The same holds for a vector in any rank-0 parameter (a scale, a rate) of a sample or an observe, replicated by the vector itself, by `[over=...]`, or by a `: Row` annotation over the vector's axis; a vector filling a parameter that reads a whole event, such as a `Categorical`'s `probs`, stays whole. The plate of such a draw is named after the vector's own axis (`Feat` rather than `z`), so the PyMC coordinate and the loop variables of every target carry that name. Turing refuses, under `sample:partial-axis-parameter`, a draw whose parameter varies along only some of the replicated axes, or a whole-event parameter carrying axes beside a broadcast one.
+- **A pointwise let of one vector computes on BUGS, JAGS, Gen, and Turing, and an `over`-axis observe scores per coordinate on WebPPL.** `let s = exp(a)` with `a` drawn over `Feat` is computed one entry at a time on BUGS and JAGS (`s[m_Feat] <- exp(a[m_Feat])`), whose scalar functions reject a vector argument, and with dotted calls on Gen and Turing (`s = exp.(a)`), where `exp(a)` raised a `MethodError`. A scalar family observed over one `over` axis on WebPPL scores each coordinate (`mapIndexed` over the observation), where the whole array reached a scalar distribution.
+- **A plated observe reads a vector over its rows one entry per row on the compiled runtime.** `observe y : Row <- Normal(loc=z, scale=0.5)` with `z` one vector over `Row` scores row `i` at `z[i]`, as the reference machine does, where the compiled runtime had scored every row against every entry of `z`.
+
+## [0.53.0] - 2026-11-11
+
+### Added
+
+- **Marginalized chains: the forward algorithm for a scan over a finite state.** A program cell `cell(x_t, z_prev) : X * S -> S`, with `S` a finite set, that binds lets, marginalizes its next state `z` from a `Categorical` reading `z_prev`, observes what `z` emits inside the block, and returns `z` is a step of a discrete Markov chain, and `sample path <- scan(cell, init=p)` sums every path of states out: `z_0 ~ p`, each position's transition and observations are weighed at every pair of states, and the chain's log marginal likelihood, computed in log space in `O(T K^2)`, is added to the joint under `path`. A long chain whose path probabilities underflow keeps a finite marginal. The compiled runtime and the reference machine both compute it, with gradients to every parameter the cell reads; an observation named after the cell's entry scores the scanned value itself, so a hidden Markov model scans its observed symbols, and the cell's lets may read the entry, so transitions can depend on a covariate. `reverse=true` runs the chain right to left. No grammar change: the form parses today. Forms the forward algorithm does not cover are refused where they are written, on both paths, under `scan:marginal:<reason>:<cell>`: another cell type, steps other than lets before the block or lets and single observations inside it, a family other than `Categorical`, a grouped block or another reduction, a chain without `init=`, with `outputs=all`, composed with other elements, observed, or inside a `marginalize` block, a later read of the chain's binding, and a draw or call of the cell outside a scan. Every transpile target refuses a marginalized chain with `scan:marginal:no-lowering:<cell>`.
+
+### Fixed
+
+- **The reference machine enumerates a `Categorical` given by its logits.** `marginalize c <- Categorical(logits=w)` sums over the classes of `w` on the checked path, where it had stopped with "Categorical enumeration needs its probabilities".
+- **A class-valued program parameter indexes host data in a draw's arguments.** In `program pick(k, u) : Kind * Val -> Val` the checked elaboration reads the alphabet of `k` off `Kind`, so `Normal(loc=means[k], ...)` types the host table `means` over `Kind` rather than refusing it as indexed by an unknown alphabet.
 
 ## [0.52.0] - 2026-11-11
 

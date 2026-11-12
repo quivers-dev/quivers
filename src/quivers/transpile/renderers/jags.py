@@ -68,6 +68,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     factor_cells,
     half_support_truncation,
     hoist_list_operands,
+    event_loop_view,
     index_letexpr_refs,
     inline_letexpr,
     irarg_letexpr,
@@ -105,6 +106,7 @@ from quivers.transpile.renderers._base import (
     reorder_weibull_args,
 )
 from quivers.transpile.renderers._qiec import render_computations_static
+from quivers.transpile.renderers._rows import scalar_parameter, visited_position
 
 
 #: The backend key consulted in
@@ -427,7 +429,6 @@ class JAGSRenderer(RendererBase):
         # Cache decl_plates so the deterministic emitter can re-index
         # let-expression refs by their declared batch_dims.
         jctx.decl_plates = build_decl_plates(ir)
-        jctx.input_plates = {inp.name: inp.plate for inp in ir.inputs}
 
         _vertex(jctx, "src", "source_file")
         # A site whose family JAGS cannot name, every `marginalize`
@@ -1699,12 +1700,14 @@ class JAGSRenderer(RendererBase):
             **_FAMILY_ALIAS_OVERRIDE.get(family, {}),
         }
         renamed_pairs: list[tuple[str, IRArg]] = []
+        scalar_slots: list[bool] = []
         for arg_name, arg in zip(arg_names, args, strict=False):
             emitted_name = aliases.get(arg_name, arg_name)
             transform = _alias_transform_for(family, emitted_name)
             if transform is not None and emitted_name != arg_name:
                 arg = IRArgTransform(inner=arg, transform=transform)
             renamed_pairs.append((emitted_name, arg))
+            scalar_slots.append(scalar_parameter(family, arg_name))
 
         # Append the trailing `df` argument for families whose JAGS
         # target is `dt(mu, tau, k)`. Cauchy / HalfCauchy fix k = 1.
@@ -1746,8 +1749,18 @@ class JAGSRenderer(RendererBase):
         # latent. The rewrite is idempotent on its output by construction
         # (the appended event-range sentinels are not themselves latents).
         rewritten_args = tuple(
-            (n, _rewrite_arg(ctx, a, batch_loop_names, axis_to_lv, via))
-            for n, a in renamed_pairs
+            (
+                n,
+                _rewrite_arg(
+                    ctx,
+                    a,
+                    batch_loop_names,
+                    axis_to_lv,
+                    via,
+                    scalar_slot=position < len(scalar_slots) and scalar_slots[position],
+                ),
+            )
+            for position, (n, a) in enumerate(renamed_pairs)
         )
 
         sr = self._build_stochastic_relation(
@@ -1890,6 +1903,7 @@ class JAGSRenderer(RendererBase):
                 loop_var_names,
                 axis_to_lv,
                 via,
+                scalar_slot=True,
             )
             vid, kind = self._render_arg_with_kind(ctx, rewritten)
             ctx.sb.edge(trunc, vid, "child_of")
@@ -2578,35 +2592,32 @@ class JAGSRenderer(RendererBase):
         same loop variables so the emitted RHS pulls per-iteration
         values out of the surrounding vectors.
         """
-        loop_var_names = tuple(f"m_{_dim_name(dim)}" for dim in node.plate.batch_dims)
+        plate, decl_plates = event_loop_view(node.plate, node.expr, ctx.decl_plates)
+        loop_var_names = tuple(f"m_{_dim_name(dim)}" for dim in plate.batch_dims)
         # Open the deterministic relation. When plated, the LHS is
         # indexed by every loop variable; otherwise it is a bare name.
         dr = _fresh(ctx, "dr", "deterministic_relation")
         ctx.sb.constraint(dr, "chose-alt-fingerprint", "<-")
         ctx.sb.constraint(dr, "ptrace-1", "T<-")
-        if loop_var_names or node.plate.event_dims:
+        if loop_var_names or plate.event_dims:
             ctx.sb.constraint(dr, "ptrace-0", "Cindexed_variable")
             lhs = self._indexed_variable(
-                ctx, node.name, loop_var_names, node.plate.event_dims
+                ctx, node.name, loop_var_names, plate.event_dims
             )
         else:
             ctx.sb.constraint(dr, "ptrace-0", "Cidentifier")
             lhs = _identifier(ctx, node.name)
         ctx.sb.edge(dr, lhs, "variable")
-        rewritten = index_letexpr_refs(
-            node.expr, ctx.decl_plates, node.plate, loop_var_names
-        )
+        rewritten = index_letexpr_refs(node.expr, decl_plates, plate, loop_var_names)
         let_ctx = _jags_let_ctx(ctx, self._cards)
         val = render_let_expr_bugs(
             let_ctx,
             rewritten,
-            decl_plates=ctx.decl_plates,
+            decl_plates=decl_plates,
             row_index=loop_var_names[0] if loop_var_names else None,
         )
         ctx.sb.edge(dr, val, "value")
-        wrapped = self._wrap_in_for_loops(
-            ctx, dr, node.plate.batch_dims, override_var=None
-        )
+        wrapped = self._wrap_in_for_loops(ctx, dr, plate.batch_dims, override_var=None)
         if ctx.current_block is not None:
             ctx.sb.edge(ctx.current_block, wrapped, "child_of")
             ctx.block_children.setdefault(ctx.current_block, []).append(
@@ -3346,6 +3357,8 @@ def _rewrite_arg(
     loop_vars: tuple[str, ...],
     axis_to_lv: dict[str, str],
     via: str | None,
+    *,
+    scalar_slot: bool = False,
 ) -> IRArg:
     """Thread latent loop-vars + event ranges + via fibration through
     every ref nested inside `arg`.
@@ -3363,6 +3376,32 @@ def _rewrite_arg(
     surrounding plate does not iterate indexes through the caller's
     `via` fibration where there is one, and through the latent's own
     fallback loop var otherwise.
+
+    An unindexed ref to any other declared value whose every axis the
+    loops visit, filling a rank-0 family parameter (`scalar_slot`),
+    is read at the loops' position: a vector `z` over `Feat` filling
+    a `Normal`'s location under a loop over `Feat` is `z[m_Feat]`.
+
+    Parameters
+    ----------
+    ctx : _JAGSCtx
+        The render context.
+    arg : IRArg
+        The argument.
+    loop_vars : tuple[str, ...]
+        The site's batch loop variables.
+    axis_to_lv : dict[str, str]
+        Each visited axis name mapped to its loop variable.
+    via : str | None
+        The fibration the site reads its groups through, if any.
+    scalar_slot : bool
+        Whether the argument fills a rank-0 family parameter.
+
+    Returns
+    -------
+    IRArg
+        The argument with every reference indexed at the loops'
+        position.
     """
     if isinstance(arg, IRArgRef):
         new_indices = tuple(
@@ -3370,9 +3409,11 @@ def _rewrite_arg(
         )
         info = ctx.latent_plate_info.get(arg.name)
         if info is None:
-            input_plate = ctx.input_plates.get(arg.name)
-            if input_plate is not None and not arg.indices:
-                return _index_input_at_row(arg, input_plate, axis_to_lv)
+            visited = visited_position(ctx.decl_plates.get(arg.name), axis_to_lv)
+            if scalar_slot and visited and not arg.indices:
+                return IRArgRef(
+                    name=arg.name, indices=tuple(IRArgRef(name=lv) for lv in visited)
+                )
             if new_indices == arg.indices:
                 return arg
             return IRArgRef(name=arg.name, indices=new_indices)
@@ -3450,65 +3491,20 @@ def _rewrite_arg(
         )
         return IRArgMatrix(rows=rows)
     if isinstance(arg, IRArgTransform):
-        inner = _rewrite_arg(ctx, arg.inner, loop_vars, axis_to_lv, via)
+        inner = _rewrite_arg(
+            ctx, arg.inner, loop_vars, axis_to_lv, via, scalar_slot=scalar_slot
+        )
         operand = (
             None
             if arg.operand is None
-            else _rewrite_arg(ctx, arg.operand, loop_vars, axis_to_lv, via)
+            else _rewrite_arg(
+                ctx, arg.operand, loop_vars, axis_to_lv, via, scalar_slot=scalar_slot
+            )
         )
         if inner is arg.inner and operand is arg.operand:
             return arg
         return IRArgTransform(inner=inner, transform=arg.transform, operand=operand)
     return arg
-
-
-def _index_input_at_row(
-    arg: IRArgRef,
-    plate: Plate,
-    axis_to_lv: dict[str, str],
-) -> IRArgRef:
-    """Read a per-row host datum at the row the enclosing loops visit.
-
-    A data input declared over batch axes is one value per row of
-    those axes; a site inside a loop over such an axis reads its row,
-    exactly as a plated latent is read. Each leading batch axis the
-    surrounding plate iterates indexes through that plate's loop
-    variable; trailing batch axes it does not iterate are read whole
-    (a slice per axis), followed by one slice per event axis, so the
-    consumer receives the event it reads. A datum whose leading axis
-    the surrounding loops do not iterate is read whole, as written.
-
-    Parameters
-    ----------
-    arg : IRArgRef
-        The unindexed reference to the datum.
-    plate : Plate
-        The datum's declared plate.
-    axis_to_lv : dict[str, str]
-        Each iterated axis name mapped to its loop variable.
-
-    Returns
-    -------
-    IRArgRef
-        The reference indexed at the current row, or `arg` unchanged.
-    """
-    led: list[IRArg] = []
-    for dim in plate.batch_dims:
-        axis = _dim_name(dim)
-        if axis not in axis_to_lv:
-            break
-        led.append(IRArgRef(name=axis_to_lv[axis]))
-    rest = plate.batch_dims[len(led) :]
-    if not led or any(_dim_name(dim) in axis_to_lv for dim in rest):
-        return arg
-    return IRArgRef(
-        name=arg.name,
-        indices=(
-            *led,
-            *(_event_range_ir(dim) for dim in rest),
-            *(_event_range_ir(dim) for dim in plate.event_dims),
-        ),
-    )
 
 
 def _has_trailing(indices: tuple[IRArg, ...], suffix: tuple[IRArg, ...]) -> bool:
@@ -3571,10 +3567,6 @@ class _JAGSCtx(RenderContext):
         #: `_emit_deterministic` to re-index plated var references
         #: inside lifted let-expressions.
         self.decl_plates: dict[str, Plate] = {}
-        #: Declared plate of every host data input, read by
-        #: `_rewrite_arg` to index a per-row datum at the row the
-        #: enclosing loops visit.
-        self.input_plates: dict[str, Plate] = {}
         #: For every previously-bound latent name, record the
         #: (fallback_loop_var, event_dims, axis_names) used at its
         #: sample site. The fallback loop var is used when no

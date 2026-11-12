@@ -900,6 +900,47 @@ the reversed scan's occurrence `@0` is its draw at the last position.
 The [scans reference](../reference/qvr/probabilistic-programs.md#scans)
 states how each site is addressed.
 
+**Marginalized chains.** A program cell whose state is a finite latent
+that it marginalizes and returns is a step of a discrete Markov chain, and
+`scan(cell, init=p)` sums every path of states out with the forward
+algorithm [@rabiner1989hmm], in `O(T K^2)` for `T` positions and `K`
+states. This is a hidden Markov model whose emissions observe the scanned
+symbols:
+
+```qvr
+object State : FinSet 2
+object Symbol : FinSet 4
+object StartProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(hmm_step, init=start)
+
+program hmm : Symbol -> StartProbs
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+
+export hmm
+```
+
+`start` is the distribution of the state before the first position,
+`transition[z_prev]` moves the chain, and the block scores each position's
+symbol at the new state. The chain adds its log marginal likelihood to the
+joint under the name `path`, which holds no state and is not read again.
+The cell's lets may read the entry, as an input-output model's transitions
+do, and an observation under another name than the entry is one observation
+per position. The
+[marginalized chains reference](../reference/qvr/probabilistic-programs.md#marginalized-chains)
+states the rules and the forms that are refused, and
+[chapter 5 of the tutorial](../tutorials/qvr/05-time-series.md#hidden-markov-models)
+checks the marginal against a forward recursion written in torch.
+
 ### Backward composition
 
 Bind a composite morphism with `define`, and write the pipeline in
