@@ -21,7 +21,7 @@ from quivers.core.morphisms import (
     identity,
 )
 from quivers.core.objects import FinSet, ProductSet
-from quivers.core.algebra_morphisms import MATERIAL_IMPLICATION
+from quivers.core.algebra_morphisms import PRODUCT_FUZZY_TO_GODEL
 from quivers.core.algebras import MARKOV
 
 
@@ -34,18 +34,18 @@ class TestChangeBaseAutograd:
 
     def test_returns_transformed_morphism(self):
         A, B, f = self._setup()
-        g = f.change_base(MATERIAL_IMPLICATION)
+        g = f.change_base(PRODUCT_FUZZY_TO_GODEL)
         assert isinstance(g, TransformedMorphism)
 
     def test_exposes_source_parameters(self):
         A, B, f = self._setup()
-        g = f.change_base(MATERIAL_IMPLICATION)
+        g = f.change_base(PRODUCT_FUZZY_TO_GODEL)
         params = list(g.module().parameters())
         assert sum(p.numel() for p in params) == 12  # 3 * 4
 
     def test_multi_step_backward(self):
         A, B, f = self._setup()
-        g = f.change_base(MATERIAL_IMPLICATION)
+        g = f.change_base(PRODUCT_FUZZY_TO_GODEL)
         g.tensor.sum().backward()
         f.raw.grad = None
         # Second backward must not raise.
@@ -54,7 +54,7 @@ class TestChangeBaseAutograd:
 
     def test_adam_moves_source(self):
         A, B, f = self._setup()
-        g = f.change_base(MATERIAL_IMPLICATION)
+        g = f.change_base(PRODUCT_FUZZY_TO_GODEL)
         initial = f.raw.detach().clone()
         opt = torch.optim.Adam(g.module().parameters(), lr=0.1)
         for _ in range(10):
@@ -172,8 +172,8 @@ class TestComposedChain:
         C = FinSet(name="C", cardinality=2)
         f = LatentMorphism(A, B)
         g = LatentMorphism(B, C)
-        chain = f.change_base(MATERIAL_IMPLICATION) >> g.change_base(
-            MATERIAL_IMPLICATION
+        chain = f.change_base(PRODUCT_FUZZY_TO_GODEL) >> g.change_base(
+            PRODUCT_FUZZY_TO_GODEL
         )
         params = list(chain.module().parameters())
         # f has 3*4 = 12 params; g has 4*2 = 8 params; total = 20.
@@ -185,8 +185,8 @@ class TestComposedChain:
         C = FinSet(name="C", cardinality=2)
         f = LatentMorphism(A, B)
         g = LatentMorphism(B, C)
-        chain = f.change_base(MATERIAL_IMPLICATION) >> g.change_base(
-            MATERIAL_IMPLICATION
+        chain = f.change_base(PRODUCT_FUZZY_TO_GODEL) >> g.change_base(
+            PRODUCT_FUZZY_TO_GODEL
         )
         chain.tensor.sum().backward()
         f.raw.grad = None

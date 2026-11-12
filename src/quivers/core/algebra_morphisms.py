@@ -20,8 +20,8 @@ entry.
 
 The shipped homomorphisms are `IdentityHom`, `Embedding` (of a
 sub-algebra such as ``BOOLEAN ↪ PRODUCT_FUZZY``) and `CountingToReal`.
-Every other shipped map (`Expectation`, `LogProb`, `MaxPlus`,
-`Threshold`, `MaterialImplication`, `ProbabilityClamp`,
+Every other shipped map (`MarkovToProductFuzzy`, `LogProb`, `MaxPlus`,
+`Threshold`, `ProductFuzzyToGodel`, `ProbabilityClamp`,
 `CountingFromReal`, `ProbabilityToReal`) is a `CarrierMap` that fails
 at least one of those equations; the test suite records a
 counterexample for each.
@@ -157,7 +157,7 @@ class Embedding(AlgebraHomomorphism):
         return t.to(dtype=torch.float32) if t.dtype == torch.bool else t
 
 
-class Expectation(CarrierMap):
+class MarkovToProductFuzzy(CarrierMap):
     """Markov → ProductFuzzyAlgebra, reading probabilities as memberships.
 
     A Markov kernel ``k : A → B`` has rows that sum to 1 (a
@@ -167,7 +167,9 @@ class Expectation(CarrierMap):
 
     The map clamps each entry to ``[0, 1]``. It does not preserve the
     join (a sum of probabilities is not their noisy-OR), so change of
-    base along it does not commute with composition.
+    base along it does not commute with composition. It is not an
+    expectation, which integrates a function against a distribution;
+    the DSL name ``expectation`` refers to this map.
     """
 
     def __init__(self) -> None:
@@ -279,14 +281,16 @@ class Threshold(CarrierMap):
         return (t > self._tau).to(dtype=torch.float32)
 
 
-class MaterialImplication(CarrierMap):
+class ProductFuzzyToGodel(CarrierMap):
     """ProductFuzzyAlgebra → Godel, keeping each entry's value.
 
     The map is the identity on ``[0, 1]`` (clamped), so subsequent
     ``>>`` composes with min and max rather than product and noisy-OR.
     It preserves neither operation (``0.5 · 0.5 = 0.25`` but
     ``min(0.5, 0.5) = 0.5``), so it is a carrier map and not a
-    homomorphism.
+    homomorphism. It is not material implication, which is a binary
+    operation (the Gödel residuum is `GodelAlgebra.residuum`); the DSL
+    name ``material_implication`` refers to this map.
     """
 
     def __init__(self) -> None:
@@ -306,16 +310,16 @@ class MaterialImplication(CarrierMap):
 
 
 # Shipped carrier-map instances, exposed as module-level
-# singletons. Users compose with ``f.change_base(EXPECTATION)`` to
+# singletons. Users compose with ``f.change_base(MARKOV_TO_PRODUCT_FUZZY)`` to
 # perform the change of base.
-EXPECTATION = Expectation()
-"""The `Expectation` carrier-map singleton, Markov to ProductFuzzy."""
+MARKOV_TO_PRODUCT_FUZZY = MarkovToProductFuzzy()
+"""The `MarkovToProductFuzzy` carrier-map singleton, Markov to ProductFuzzy."""
 LOG_PROB_MAP = LogProb()
 """The `LogProb` carrier-map singleton, ProductFuzzy to LogProb."""
 MAX_PLUS_MAP = MaxPlus()
 """The `MaxPlus` carrier-map singleton, ProductFuzzy to MaxPlus."""
-MATERIAL_IMPLICATION = MaterialImplication()
-"""The `MaterialImplication` carrier-map singleton, ProductFuzzy to Godel."""
+PRODUCT_FUZZY_TO_GODEL = ProductFuzzyToGodel()
+"""The `ProductFuzzyToGodel` carrier-map singleton, ProductFuzzy to Godel."""
 
 
 def threshold(tau: float = 0.5) -> Threshold:
@@ -461,11 +465,11 @@ COUNTING_TO_REAL = CountingToReal()
 
 
 CARRIER_MAP_REGISTRY: dict[tuple[str, str], CarrierMap] = {
-    ("Markov", "ProductFuzzy"): EXPECTATION,
+    ("Markov", "ProductFuzzy"): MARKOV_TO_PRODUCT_FUZZY,
     ("ProductFuzzy", "LogProb"): LOG_PROB_MAP,
     ("ProductFuzzy", "MaxPlus"): MAX_PLUS_MAP,
     ("ProductFuzzy", "Boolean"): Threshold(0.5),
-    ("ProductFuzzy", "Godel"): MATERIAL_IMPLICATION,
+    ("ProductFuzzy", "Godel"): PRODUCT_FUZZY_TO_GODEL,
     ("Boolean", "ProductFuzzy"): Embedding(BOOLEAN, PRODUCT_FUZZY),
     ("Real", "Probability"): PROBABILITY_CLAMP,
     ("Real", "Counting"): COUNTING_FROM_REAL,
@@ -506,19 +510,19 @@ __all__ = [
     "AlgebraHomomorphism",
     "IdentityHom",
     "Embedding",
-    "Expectation",
+    "MarkovToProductFuzzy",
     "LogProb",
     "MaxPlus",
     "Threshold",
-    "MaterialImplication",
+    "ProductFuzzyToGodel",
     "ProbabilityClamp",
     "CountingFromReal",
     "ProbabilityToReal",
     "CountingToReal",
-    "EXPECTATION",
+    "MARKOV_TO_PRODUCT_FUZZY",
     "LOG_PROB_MAP",
     "MAX_PLUS_MAP",
-    "MATERIAL_IMPLICATION",
+    "PRODUCT_FUZZY_TO_GODEL",
     "PROBABILITY_CLAMP",
     "COUNTING_FROM_REAL",
     "PROBABILITY_TO_REAL",

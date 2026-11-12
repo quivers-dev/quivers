@@ -41,10 +41,10 @@ homomorphism registry, and the transformation alias.
         - BOOLEAN_DUAL
         - DUAL_LUKASIEWICZ
         - DUAL_GODEL
-        - EXPECTATION
+        - MARKOV_TO_PRODUCT_FUZZY
         - LOG_PROB_MAP
         - MAX_PLUS_MAP
-        - MATERIAL_IMPLICATION
+        - PRODUCT_FUZZY_TO_GODEL
         - PROBABILITY_CLAMP
         - COUNTING_FROM_REAL
         - PROBABILITY_TO_REAL

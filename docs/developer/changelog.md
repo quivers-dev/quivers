@@ -42,7 +42,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **A map from observation rows to groups is an index map, not a fibration.** The QIEC parameter role `"fibration"` is `"index_map"`, the program-step fields `fibration_var` and `fibration_axes` are `index_map_var` and `index_map_axes`, the transpile diagnostic codes `qiec:fibration:<name>` and `marginalize:grouped-fibration` are `qiec:index_map:<name>` and `marginalize:grouped-index-map`, and diagnostics, help text and messages say "index map". The QVR `via` syntax is unchanged.
 
+- **`Expectation` is renamed `MarkovToProductFuzzy` and `MaterialImplication` is renamed `ProductFuzzyToGodel`** (with `EXPECTATION` as `MARKOV_TO_PRODUCT_FUZZY` and `MATERIAL_IMPLICATION` as `PRODUCT_FUZZY_TO_GODEL`). Each clamps entries to `[0, 1]`; neither computes an expectation or an implication. The DSL names `expectation` and `material_implication` still select these maps.
+
 ### Fixed
+
+- **Building a semigroupoid leaves the global random stream alone.** `CustomSemigroupoid` and `semigroupoid()` draw their associativity sample from a local generator, where they had reset the global seed to 0.
 
 - **Tracing several feedback wires at once reduces each diagonal.** `partial_trace` and `coend`/`end` over more than one dimension pair re-index the remaining pairs after each reduction (`quivers.core.tensor_ops.diagonal_reduce`), where the later pairs pointed at shifted axes; `partial_trace` over a semiring such as `REAL` no longer routes through the lattice-only `coend`.
 

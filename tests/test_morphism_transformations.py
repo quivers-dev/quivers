@@ -172,11 +172,11 @@ def test_bayes_invert_rejects_multivariate_prior() -> None:
 def test_change_base_dispatches_on_algebra_homomorphism() -> None:
     """Pointwise CarrierMap still works through
     change_base."""
-    from quivers.core.algebra_morphisms import EXPECTATION
+    from quivers.core.algebra_morphisms import MARKOV_TO_PRODUCT_FUZZY
 
     A = FinSet(name="A", cardinality=3)
     B = FinSet(name="B", cardinality=4)
-    # A Markov kernel (rows sum to 1) becomes a fuzzy morphism via Expectation.
+    # A Markov kernel (rows sum to 1) becomes a fuzzy morphism via MarkovToProductFuzzy.
     tensor = torch.tensor(
         [
             [0.5, 0.2, 0.2, 0.1],
@@ -185,7 +185,7 @@ def test_change_base_dispatches_on_algebra_homomorphism() -> None:
         ]
     )
     f = observed(A, B, tensor, algebra=MARKOV)
-    g = f.change_base(EXPECTATION)
+    g = f.change_base(MARKOV_TO_PRODUCT_FUZZY)
     assert g.algebra is PRODUCT_FUZZY
     assert torch.allclose(g.tensor, tensor.clamp(0, 1))
 

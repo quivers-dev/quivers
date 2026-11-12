@@ -17,9 +17,9 @@ import torch
 from quivers.core.algebra_morphisms import (
     COUNTING_FROM_REAL,
     COUNTING_TO_REAL,
-    EXPECTATION,
+    MARKOV_TO_PRODUCT_FUZZY,
     LOG_PROB_MAP,
-    MATERIAL_IMPLICATION,
+    PRODUCT_FUZZY_TO_GODEL,
     MAX_PLUS_MAP,
     PROBABILITY_CLAMP,
     PROBABILITY_TO_REAL,
@@ -88,11 +88,11 @@ _HOMS = {
 }
 
 _NON_HOMS = {
-    "expectation": (EXPECTATION, [0.0, 0.5, 0.75]),
+    "expectation": (MARKOV_TO_PRODUCT_FUZZY, [0.0, 0.5, 0.75]),
     "log-prob": (LOG_PROB_MAP, [0.25, 0.5, 1.0]),
     "max-plus": (MAX_PLUS_MAP, [0.25, 0.5, 1.0]),
     "threshold": (threshold(0.5), [0.6, 0.7]),
-    "material-implication": (MATERIAL_IMPLICATION, [0.5, 0.75]),
+    "material-implication": (PRODUCT_FUZZY_TO_GODEL, [0.5, 0.75]),
     "probability-clamp": (PROBABILITY_CLAMP, [-1.0, 0.5]),
     "counting-from-real": (COUNTING_FROM_REAL, [0.5, 1.5]),
     "probability-to-real": (PROBABILITY_TO_REAL, [0.5, 0.75]),

@@ -56,9 +56,9 @@ from quivers.core.morphism_transformations import (
 from quivers.core.algebra_morphisms import (
     COUNTING_FROM_REAL,
     COUNTING_TO_REAL,
-    EXPECTATION,
+    MARKOV_TO_PRODUCT_FUZZY,
     LOG_PROB_MAP as _LOG_PROB_HOM,
-    MATERIAL_IMPLICATION,
+    PRODUCT_FUZZY_TO_GODEL,
     MAX_PLUS_MAP as _MAX_PLUS_HOM,
     PROBABILITY_CLAMP,
     PROBABILITY_TO_REAL,
@@ -200,10 +200,10 @@ def _build_default_trans_singletons() -> dict:
         define g = f.change_base(phi)
     """
     return {
-        "expectation": EXPECTATION,
+        "expectation": MARKOV_TO_PRODUCT_FUZZY,
         "log_prob": _LOG_PROB_HOM,
         "max_plus": _MAX_PLUS_HOM,
-        "material_implication": MATERIAL_IMPLICATION,
+        "material_implication": PRODUCT_FUZZY_TO_GODEL,
         "threshold": _make_threshold(0.5),
         "boolean_embedding": _make_embedding(BOOLEAN, PRODUCT_FUZZY),
         "probability_clamp": PROBABILITY_CLAMP,

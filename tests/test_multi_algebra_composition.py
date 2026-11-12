@@ -50,7 +50,7 @@ from quivers.core.objects import FinSet
 from quivers.core.algebra_morphisms import (
     IdentityHom,
     LOG_PROB_MAP,
-    MATERIAL_IMPLICATION,
+    PRODUCT_FUZZY_TO_GODEL,
     MAX_PLUS_MAP,
     Threshold,
     embedding,
@@ -101,7 +101,7 @@ def test_change_base_to_godel_via_material_implication() -> None:
     B = FinSet(name="B", cardinality=2)
     data = torch.tensor([[0.4, 0.6], [0.7, 0.3]])
     f = ObservedMorphism(A, B, data)
-    g = f.change_base(MATERIAL_IMPLICATION)
+    g = f.change_base(PRODUCT_FUZZY_TO_GODEL)
     assert g.algebra.name == "Godel"
     # Material implication clamps to [0, 1] but otherwise preserves
     # entry values; the carry-through is exact for inputs already

@@ -17,7 +17,7 @@ always a single flat sequence of base transformations.
 This is the Python-side surface for the DSL's ``t1 >>> t2``
 operator: in the ``.qvr`` surface,
 ``let pipe = softmax(B) >>> expectation`` builds the same value
-that ``compose_trans(softmax(B), EXPECTATION)`` builds here.
+that ``compose_trans(softmax(B), MARKOV_TO_PRODUCT_FUZZY)`` builds here.
 """
 
 from __future__ import annotations
