@@ -9,7 +9,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 1. [Core Types & Algebras](core.md): finite objects, and the `Algebra` that fixes how
    scores combine in composition.
-2. [Transformations & Composition Rules](transformations.md): converting a morphism's
+2. [Transformations and Composition Rules](transformations.md): converting a morphism's
    scores between algebras, the levels of composition rules, and contractions of
    several morphisms.
 3. [Morphisms & Composition](morphisms.md): morphisms as score tables, composition,
@@ -17,7 +17,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 ## The QVR language
 
-4. [DSL Overview](dsl-overview.md): the file format, the compilation pipeline, the
+4. [The QVR DSL: Overview](dsl-overview.md): the file format, the compilation pipeline, the
    grammar, and comments.
 5. [DSL Declarations](dsl-declarations.md): objects, morphisms and their roles,
    kernels, learned functions, deductions, and the combinators `fan`, `repeat`,
@@ -35,7 +35,7 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
    effects, and marginalizing a discrete latent once per group.
 10. [Continuous Spaces and Morphisms](continuous-spaces.md): continuous spaces,
     conditional distributions between them, and normalizing flows.
-11. [Continuous Families](continuous-families.md): the registered distribution families,
+11. [Continuous Distribution Families](continuous-families.md): the registered distribution families,
     their event dimensions, and priors on matrices.
 12. [Stochastic Morphisms](stochastic.md): Markov kernels between finite sets,
     conditioning, Bayesian inversion, and the Giry monad.
@@ -79,6 +79,6 @@ The [QVR language reference](../reference/qvr/index.md) specifies each source fo
 
 ## Tools
 
-25. [Interactive: REPL and Language Server](repl-and-lsp.md): the REPL, the Jupyter
+25. [Interactive tools: REPL, kernel, and language server](repl-and-lsp.md): the REPL, the Jupyter
     kernel, and the editor language server.
-26. [Migrating `.qvr` Source Between Grammar Revisions](migration.md): `qvr migrate`.
+26. [Migrating `.qvr` source between grammar revisions](migration.md): `qvr migrate`.

@@ -17,7 +17,7 @@ Each object labels one or more tensor axes. The finite objects are:
 | `FinSet` | a named set of $n$ elements, indexed $0, \dots, n - 1$ | $n$ |
 | `ProductSet` | tuples, one element from each component (Cartesian product) | product of the sizes |
 | `CoproductSet` | one element of one component, tagged with the component (disjoint union) | sum of the sizes |
-| `FreeMonoid` | words over a generator set, up to a maximum length | $\sum_{k=0}^{n} \lvert G \rvert^k$ |
+| `FreeMonoid` | words over a generator set $G$, up to a maximum length $n$ | $\sum_{k=0}^{n} \lvert G \rvert^k$ |
 
 All four are subclasses of the abstract `SetObject`.
 
@@ -120,8 +120,8 @@ The built-in instances, with the standard name of each structure:
 | `LUKASIEWICZ` | $[0, 1]$ | $\max(a + b - 1, 0)$ | $\min(1, \sum_i x_i)$ | $1$, $0$ | Łukasiewicz t-norm with bounded sum | no |
 | `GODEL` | $[0, 1]$ | $\min(a, b)$ | $\max$ | $1$, $0$ | minimum t-norm with maximum | yes |
 | `TROPICAL` | $[0, \infty]$ | $a + b$ | $\min$ | $0$, $\infty$ | tropical (min-plus) semiring | yes |
-| `MAX_PLUS` | $(-\infty, \infty]$ | $a + b$ | $\max$ | $0$, $-\infty$ | max-plus semiring | yes |
-| `LOG_PROB` | $(-\infty, 0]$ | $a + b$ | $\log \sum_i e^{x_i}$ | $0$, $-\infty$ | log semiring | yes |
+| `MAX_PLUS` | $[-\infty, \infty)$ | $a + b$ | $\max$ | $0$, $-\infty$ | max-plus semiring | yes |
+| `LOG_PROB` | $[-\infty, \infty)$ | $a + b$ | $\log \sum_i e^{x_i}$ | $0$, $-\infty$ | log semiring | yes |
 | `MARKOV` | $[0, \infty)$ | $a b$ | $\sum$ | $1$, $0$ | sum-product semiring, for row-stochastic matrices | yes |
 | `REAL` | $\mathbb R$ | $a b$ | $\sum$ | $1$, $0$ | the ring $(\mathbb R, +, \times)$ | yes |
 | `PROBABILITY` | $[0, 1]$ | $a b$ | $\min(1, \sum_i x_i)$ | $1$, $0$ | product with bounded sum (no standard name) | no |
