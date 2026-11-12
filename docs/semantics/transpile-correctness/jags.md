@@ -31,7 +31,7 @@ entries:
 | `Gamma(α, β)` | `dgamma(α, β)` | as in BUGS |
 | `Bernoulli(p)` | `dbern(p)` | as in BUGS |
 | `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log odds, so write `probs` |
-| `Categorical(probs=p)` | `dcat(p)` at the code `y_code <- y + 1`, which the `data` block binds; a drawn class is read back as `code - 1` | $y \mapsto y + 1$ |
+| `Categorical(probs=p)` | `dcat(p)` at the code `y_code <- y + 1`, which the `data` block binds, and a drawn class is read back as `code - 1` | $y \mapsto y + 1$ |
 | `Normal(μ, σ)` | `dnorm(μ, 1/σ²)` | precision |
 | `FisherSnedecor(d_1, d_2)` | `df(n, m)` | BUGS has no mapping |
 

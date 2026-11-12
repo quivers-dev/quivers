@@ -39,7 +39,7 @@ $\Omega = \Sigma^{-1}$. The renderer applies the substitution through the alias 
 | `Laplace(μ, b)` | `ddexp(μ, 1/b)` | rate $1/b$ |
 | `MultivariateNormal(μ, Σ)` | `dmnorm(μ, Σ⁻¹)` | precision matrix |
 | `Dirichlet(α)` | `ddirch(α)` | identity |
-| `Categorical(probs=p)` | `dcat(p)` for a drawn class, read back as `code - 1`; an observed code is refused | $y \mapsto y + 1$ |
+| `Categorical(probs=p)` | `dcat(p)` for a drawn class, read back as `code - 1`, and an observed code is refused | $y \mapsto y + 1$ |
 | `Bernoulli(p)` | `dbern(p)` | identity |
 | `Bernoulli(logits=l)` | refused as `family:Bernoulli:logits` | `dbern` takes no log odds |
 | `LogNormal(μ, σ)` | `dlnorm(μ, 1/σ²)` | precision |
