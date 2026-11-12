@@ -35,6 +35,7 @@ from torch.distributions import constraints as _constraints
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous.param_transforms import (
     TRANSFORM_TO_BIJECTOR,
+    closed_interval_clamp,
     resolve_inline_clamp,
     resolve_transform,
 )
@@ -130,11 +131,18 @@ class ParamSpec:
         guides and pushforwards.
     kind : ParamKind
         Per-parameter shape contract on the inline call side.
+    inline_bounds : tuple[float, float] | None
+        The closed interval the inline clamp projects onto, for a
+        parameter whose family admits a boundary value that the
+        transform's default clamp would move (a Poisson ``rate`` of
+        zero, a Geometric ``probs`` of one). ``None`` keeps the
+        transform's default clamp.
     """
 
     name: str
     transform: str | Bijector
     kind: ParamKind = "scalar"
+    inline_bounds: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         # Mirror the historical converter check; store the
@@ -166,8 +174,12 @@ class ParamSpec:
     def inline_clamp(self) -> Callable[[torch.Tensor], torch.Tensor]:
         """Inline safety-clamp callable for user-supplied literal
         or runtime parameters, sourced from
-        `resolve_inline_clamp`.
+        `resolve_inline_clamp`, or projecting onto `inline_bounds`
+        when the parameter declares them.
         """
+        if self.inline_bounds is not None:
+            low, high = self.inline_bounds
+            return closed_interval_clamp(low, high).forward
         return resolve_inline_clamp(self.transform).forward
 
     @property
