@@ -316,7 +316,6 @@ for _syntax_backend, _kind in (
         _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = _kind
 
 
-
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)
 @pytest.mark.parametrize("backend", sorted(_SYNTAX_CHECKS))
 def test_gallery_example_compiles(example: Path, backend: str, tmp_path: Path) -> None:
