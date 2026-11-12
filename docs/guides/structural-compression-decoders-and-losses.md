@@ -181,7 +181,7 @@ declared decoder.
   encoder half of the autoencoder.
 - [Weighted Deduction Systems](deduction.md): the chart parser to which an encoder
   attaches.
-- [Structural autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
+- [Tree autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
   running a reconstruction loss through `Program.run`, gradients, and checkpointed
   parameters.
 - [Generated computation graphs](../reference/qvr/generated-computations.md): the

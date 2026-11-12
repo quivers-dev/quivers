@@ -270,5 +270,5 @@ They run on the same [`Encoder`](../api/structural/encoder.md) and
   a Markov kernel from vectors to terms, and the loss declarations.
 - [Weighted Deduction Systems](deduction.md): the chart parser, to which an encoder
   can attach to expose `chart.embedding(item)` as a differentiable value.
-- [Structural autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
+- [Tree autoencoders tutorial](../tutorials/qvr/12-structural-autoencoders.md):
   running entries, gradients, and checkpoints.

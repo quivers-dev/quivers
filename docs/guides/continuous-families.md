@@ -346,7 +346,7 @@ $(r + 1)/2 \sim \mathrm{Beta}(\eta - 1 + d/2, \eta - 1 + d/2)$. The
 compiled runtime, every factory over the family (the fixed and
 variable-concentration forms, a plate over it, and
 [`LKJCorrelationFactor`][quivers.continuous.families.LKJCorrelationFactor]),
-and the QIEC reference machine all draw through one implementation of
+and the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for its core language, all draw through one implementation of
 this construction, so a program's prior draws follow the same law in
 both runtimes. `rsample` is differentiable in the concentration
 through implicitly reparameterized Beta draws, and the directions $u$ do not depend
