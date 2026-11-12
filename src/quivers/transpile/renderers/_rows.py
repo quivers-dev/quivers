@@ -28,7 +28,10 @@ from quivers.dsl.ast_nodes import (
     LetExprUnaryOp,
     LetExprVar,
 )
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
+from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.ir import Plate
 from quivers.transpile.renderers._ranks import LAST_AXIS_REDUCTIONS, let_expr_rank
 from quivers.transpile.renderers._stan_helpers import _substitute_let_expr
 
@@ -184,4 +187,108 @@ def _take(
     return LetExprIndex(array=expr, indices=(row,))
 
 
-__all__ = ["take_row"]
+def pointwise_let(expr: LetExprNode) -> bool:
+    """Whether a let expression computes each entry from the same entries.
+
+    An expression of names, literals, arithmetic, and the scalar builtins
+    the checked lowering lifts entry by entry (``exp``, ``tanh``, a
+    two-argument ``max``) has, at each position, the value of the same
+    expression over its operands' entries at that position. A reduction,
+    a last-axis transform, an index, or any other form reads more than
+    one entry.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        The expression.
+
+    Returns
+    -------
+    bool
+        True when the expression is pointwise.
+    """
+    if isinstance(expr, LetExprVar | LetExprLiteral):
+        return True
+    if isinstance(expr, LetExprBinOp):
+        return pointwise_let(expr.left) and pointwise_let(expr.right)
+    if isinstance(expr, LetExprUnaryOp):
+        return pointwise_let(expr.operand)
+    if isinstance(expr, LetExprCall):
+        spec = BUILTIN_REGISTRY.get(expr.func)
+        if (
+            spec is None
+            or spec.shape_rule != "scalar-lift"
+            or expr.func in LAST_AXIS_REDUCTIONS
+            and len(expr.args) == 1
+            or not all(
+                len(signature) == len(expr.args) for signature in spec.qiec_overloads
+            )
+        ):
+            return False
+        return all(pointwise_let(argument) for argument in expr.args)
+    return False
+
+
+def scalar_parameter(family: str, parameter: str) -> bool:
+    """Whether a family parameter takes one number per drawn element.
+
+    A rank-0 parameter (`Normal`'s `loc`, `Poisson`'s `rate`) is read
+    once per element of the draw, so a value filling it that varies
+    along the axes the draw is replicated over is read at each
+    element's position. A parameter of higher rank (`Categorical`'s
+    `probs`) reads a whole event and keeps its own axes.
+
+    Parameters
+    ----------
+    family : str
+        The family's QVR name.
+    parameter : str
+        The parameter's name.
+
+    Returns
+    -------
+    bool
+        True when the family declares the parameter with rank 0.
+    """
+    record = FAMILIES.get(family)
+    if record is None or parameter not in record.parameter_names:
+        return False
+    return record.parameter(parameter).rank == 0
+
+
+def visited_position(plate: Plate | None, loops: Mapping[str, str]) -> tuple[str, ...]:
+    """The loop variables at which a value over the visited axes is read.
+
+    A renderer that visits a site one position at a time, a loop per
+    axis of the site's plate, hands each draw one entry of every
+    parameter that varies along those axes. A value whose every axis,
+    batch then event, is one the loops visit holds one entry per
+    position: a vector ``z`` over ``Feat`` filling a scalar family
+    replicated over ``Feat`` is read as ``z[m_Feat]``, where the bare
+    ``z`` would hand the scalar slot the whole vector.
+
+    Parameters
+    ----------
+    plate : Plate | None
+        The value's declared plate, if the program declares it.
+    loops : Mapping[str, str]
+        Each visited axis name mapped to its loop variable.
+
+    Returns
+    -------
+    tuple[str, ...]
+        One loop variable per axis of the value, in the value's axis
+        order; empty when the value is undeclared, has no axes, repeats
+        an axis, or has an axis the loops do not visit.
+    """
+    if plate is None:
+        return ()
+    names = tuple(str(dim.name) for dim in (*plate.batch_dims, *plate.event_dims))
+    if not names or len(set(names)) != len(names):
+        return ()
+    if any(name not in loops for name in names):
+        return ()
+    return tuple(loops[name] for name in names)
+
+
+__all__ = ["pointwise_let", "scalar_parameter", "take_row", "visited_position"]

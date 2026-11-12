@@ -1,0 +1,10 @@
+# Exercises an unplated observe whose location is a let-bound vector: `z`
+# is one vector over `Feat`, so the observation is one Normal per entry
+# of `z`, each scored at its own entry.
+object Feat : FinSet 3
+program p : Feat -> Feat
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feat]
+    let z = tanh(a)
+    observe y <- Normal(loc=z, scale=0.5)
+    return z
+export p
