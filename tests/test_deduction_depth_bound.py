@@ -15,7 +15,7 @@ import math
 
 import pytest
 
-from quivers.dsl import loads
+from quivers.dsl import CompileError, loads
 from quivers.qiec.program_runtime import run_deduction
 
 CHAIN = """
@@ -135,3 +135,11 @@ def test_a_cycle_of_unary_rules_converges_to_the_charts_fixed_point() -> None:
     expected = 3 * math.log(16 / 15)
     assert agenda == pytest.approx(expected, abs=1e-4)
     assert checked == pytest.approx(expected, abs=1e-4)
+
+
+@pytest.mark.parametrize("name", ["Logprob", "Tropical", "MaxPlus"])
+def test_an_unknown_semiring_is_refused_by_name(name: str) -> None:
+    # A misspelled or unsupported semiring would otherwise run the
+    # deduction in LogProb and return weights of another semiring.
+    with pytest.raises(CompileError, match=f"unknown semiring '{name}'"):
+        loads(ATTACH.replace("SEMIRING", name))
