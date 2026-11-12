@@ -348,11 +348,23 @@ of row $n$ of observation $m$ under class $k$, $\pi(g, k)$ is the prior weight o
 $g$, and $\operatorname{aggr}_R$ is the reduction over $k$: log-sum-exp by default, which sums the
 class out, or `sum` or `mean`.
 
-The compiled runtime and the transpilation targets compute this formula when the prior $\pi$ is the
-same for every group. When the prior is itself a plate over $G$, as in
-`marginalize z : K <- Categorical(probs=theta) [over=G]` with `theta : G`, they compute instead
-$\sum_n \log \sum_k \theta(\iota(n), k)\, p(r_n \mid k)$, the model in which every row has its own class
-drawn from its group's prior, and the grouping of the likelihoods is lost.
+The prior may be the same for every group, $\pi(g, k) = \pi(k)$, or a plate over $G$, as in
+`marginalize z : K <- Categorical(probs=theta) [over=G]` with `theta : G`, where group $g$ draws its
+one class from its own row $\theta(g, -)$. In both cases the block has one class per group, and the
+compiled runtime, the reference machine, and every transpilation target that renders the block
+compute the formula above. BUGS refuses every grouped block, and JAGS refuses one whose prior is a
+plate over $G$ ([Transpiler support](../transpile-support.md)).
+
+The model in which every row has its own class drawn from its group's row,
+$\sum_n \log \sum_k \theta(\iota(n), k)\, p(r_n \mid k)$, is a different block, whose latent is
+indexed by the rows: `let theta_row = theta[idx]` gathers each row's prior, and
+`marginalize z : K <- Categorical(probs=theta_row) [over=N]` sums out one class per row, its
+observation naming the identity map on $N$ with `via`.
+
+A grouped block scores one run of the program at a time
+([independent runs](../guides/inference-foundations.md#input-rows-are-independent-runs)). An
+observation may carry a leading axis of runs of length one before its rows, which the block drops,
+and data for several runs are refused.
 
 For a product of groups $G_1 \times G_2 \times \cdots$ paired with `via = product(idx_1, idx_2, ...)`,
 also written `via = [idx_1, idx_2, ...]`, on each observation, the groups are the tuples, ordered with the last factor varying fastest: a row

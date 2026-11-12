@@ -241,10 +241,11 @@ $$
 which extends to a measure on the product σ-algebra as the
 [product measure](https://en.wikipedia.org/wiki/Product_measure). When one operand is continuous
 and the other is a finite matrix, the runtime wraps the finite matrix as a kernel
-(`DiscreteAsContinuous`) and forms the product in $\mathbf{BorelStoch}$. This is the embedding of
-[Setting §5](setting.md#5-fragments) only when the matrix is stochastic: the wrapper samples from
-each row after normalizing it, but scores an output by the unnormalized entry, so for a matrix
-whose rows do not sum to one the two disagree.
+(`DiscreteAsContinuous`) and forms the product in $\mathbf{BorelStoch}$. The wrapper is the Markov
+kernel of the matrix $t$ with its rows normalized, $k(x, \{y\}) = t(x, y) / \sum_{y'} t(x, y')$, and it
+both samples and scores under these rows. For a stochastic matrix this is the embedding of
+[Setting §5](setting.md#5-fragments). A row with a negative entry or a zero sum defines no
+distribution, and the wrapper raises `ValueError` on it.
 
 ### 4.1 Replication
 
@@ -300,8 +301,8 @@ $$
 The means start evenly spaced for a bounded interval, uniformly at random in a bounded box, and
 near zero otherwise, and the scales start at one. Neither composite of $d$ and $e$ is an identity:
 $e ; d$ returns $i$ only with some probability below one, and $d ; e$ replaces a point by a draw
-near a learned center. The compiler accepts a `~ Family(...)` initializer on an `embed`
-declaration and does not use it.
+near a learned center. Since the role fixes the kernel, an `embed` declaration takes no
+`~ Family(...)` initializer: the compiler and every transpilation target refuse one.
 
 ## 6. Event and batch axes {#6-axis-role-specifications}
 
@@ -361,9 +362,13 @@ The clause states a prior on the entries of the table: the table is a draw from 
 the stated event and batch axes, so that a model using $f$ treats the table as one more latent
 variable.
 
-In the [compiled runtime](../guides/dsl-overview.md#compilation-pipeline), the PyTorch implementation of a module,
-the prior is not applied. The compiler checks the clause's axes against
-the family and then builds the same `LatentMorphism` as for a declaration without a clause: a free
-table initialized from a Normal with standard deviation `scale` and passed through the sigmoid. The
-compiled runtime thus fits a point estimate of the table where the clause describes a
+A program step `sample v <- f` draws $v$ from `Family(args)` and scores it under that family, on the
+[compiled runtime](../guides/dsl-overview.md#compilation-pipeline) (the PyTorch implementation of a
+module), on the reference machine, and on every transpilation target. The clause fixes the
+family's arguments, so a draw that passes arguments, `sample v <- f(x)`, is refused.
+
+Where $f$ appears in a morphism expression, such as the composition `g >> f`, the compiled runtime
+builds the same `LatentMorphism` as for a declaration without a clause: a free table initialized
+from a Normal with standard deviation `scale` and passed through the sigmoid. The clause does not
+enter that table, so a composition fits a point estimate of the table where the clause describes a
 posterior over it.

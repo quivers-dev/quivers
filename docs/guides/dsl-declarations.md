@@ -125,11 +125,16 @@ export fg
 
 ### Latent morphism prior
 
-A `latent` declaration may end with `~ Family(args)`, which places a prior with the
-given literal hyperparameters on the morphism's tensor. The compiler turns the prior
-into a sample site whose value is the tensor, so the morphism becomes a deterministic
-function of a random tensor. (A kernel's `~ Family` clause differs: there a network
-computes the family's parameters from each input.) The
+A `latent` declaration may end with `~ Family(args)`, which declares a prior with the
+given literal hyperparameters on the morphism's tensor. A program step `sample v <- W`
+draws `v` from that family and scores it under it, on the compiled runtime, the
+reference machine, and every transpilation target. In a morphism expression such as
+`f >> W`, `W` is its learnable table, a
+[`LatentMorphism`](../api/core/morphisms.md#quivers.core.morphisms.LatentMorphism)
+built as without the clause, and the prior does not enter its fit
+([Morphisms §7](../semantics/morphisms.md#7-priors-on-learnable-tables)). (A kernel's
+`~ Family` clause differs: there a network computes the family's parameters from each
+input.) The
 [`over` clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) and other
 options go in the option block, before the `~`, and the whole declaration is one line:
 
@@ -142,8 +147,8 @@ morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_c
 export W
 ```
 
-Without the prior, `W` is a free parameter, estimated by maximum likelihood or as a
-maximum a posteriori point under whatever objective trains the model.
+As a table in an expression, `W` is thus a free parameter, estimated as a point under
+whatever objective trains the model.
 
 ### Init recipes (`[init=auto]`) {#init-recipes-initauto}
 

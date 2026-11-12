@@ -506,7 +506,11 @@ A local latent inside the subsampled plate, one variable per record, is
 handled by [`AutoNormalGuide`][quivers.inference.guides.AutoNormalGuide],
 whose density factors over the plate's rows: it scores the latent at the
 subset's rows with the same factor, and a row outside the subset receives
-no gradient from the step. [`AutoDeltaGuide`][quivers.inference.guides.AutoDeltaGuide],
+no gradient from the step. [`AmortizedGuide`][quivers.inference.guides.AmortizedGuide]
+factors over the rows in the same way and scores the subset's rows with the same
+factor. Its encoder reads every row of its datum, since the latent is drawn at every
+row of the plate, so the observation the encoder reads is passed at the plate's full
+extent. [`AutoDeltaGuide`][quivers.inference.guides.AutoDeltaGuide],
 whose density is constant, also admits it. A guide whose density couples
 the rows, such as
 [`AutoMultivariateNormalGuide`][quivers.inference.guides.AutoMultivariateNormalGuide],
