@@ -63,6 +63,7 @@ from quivers.transpile.renderers._bugs_helpers import (
     TRUNCATION_FINGERPRINT,
     beta_binomial_log_pmf,
     build_decl_plates,
+    bernoulli_logit_log_pmf,
     continuous_bernoulli_log_pdf,
     factor_axis_sizes,
     factor_cells,
@@ -442,6 +443,7 @@ class JAGSRenderer(RendererBase):
             _ir_has_marginalize(ir.body)
             or _ir_has_score(ir.body)
             or any(ir_uses_family(ir.body, family) for family in _ZEROS_TRICK_FAMILIES)
+            or _ir_has_bernoulli_logits(ir.body)
             or _ir_observes_class_code(ir.body)
         ):
             jctx.sb.constraint("src", "ptrace-0", "Cdata_block")
@@ -1139,6 +1141,21 @@ class JAGSRenderer(RendererBase):
             if node.family == "GP":
                 self._emit_gp_block(ctx, node)
                 return
+            if _bernoulli_logits(node):
+                # A uniform draw over `{0, 1}` declares the node, and the
+                # zeros trick adds the mass read off the logits; the
+                # carrier's constant `log(1/2)` per draw leaves the
+                # posterior unchanged.
+                self._emit_sample(
+                    ctx,
+                    name=node.name,
+                    family="Bernoulli",
+                    args=(IRArgNumber(value=0.5),),
+                    arg_names=("probs",),
+                    plate=node.plate,
+                )
+                self._emit_bernoulli_logits(ctx, node.name, node)
+                return
             if node.family in _ZEROS_TRICK_FAMILIES:
                 self._emit_zeros_trick_latent(ctx, node)
                 return
@@ -1155,6 +1172,9 @@ class JAGSRenderer(RendererBase):
             )
             return
         if isinstance(node, IRObserve):
+            if _bernoulli_logits(node):
+                self._emit_bernoulli_logits(ctx, node.name, node)
+                return
             if node.family in _ZEROS_TRICK_FAMILIES:
                 self._emit_closed_form_density(
                     ctx,
@@ -2759,6 +2779,53 @@ class JAGSRenderer(RendererBase):
             plate=row_plate,
         )
 
+    def _emit_bernoulli_logits(
+        self, ctx: _JAGSCtx, name: str, node: IRSample | IRObserve
+    ) -> None:
+        """Score a Bernoulli given by its logits through the zeros trick.
+
+        JAGS's `dbern` takes a probability, and `log(1 - ilogit(l))`
+        keeps none of the complement's digits once `ilogit(l)` rounds
+        to within an ulp of one (`l` near 30). The mass written from
+        the logits (`bernoulli_logit_log_pmf`) stays exact there, and
+        a log mass is at most zero, so its negation is a Poisson rate
+        with no lift.
+
+        Parameters
+        ----------
+        ctx : _JAGSCtx
+            The render context.
+        name : str
+            The outcome's name.
+        node : IRSample | IRObserve
+            The site.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the site carries event axes, which the scalar mass does
+            not.
+        """
+        if node.plate.event_dims:
+            raise UnsupportedConstruct(
+                f"qvr-{_BACKEND}",
+                [
+                    f"family:Bernoulli:logits:event-axis:{name}: the scalar "
+                    f"mass carries no event shape, but the site declares "
+                    f"{[_dim_name(d) for d in node.plate.event_dims]!r}"
+                ],
+            )
+        self._emit_zeros_trick_row(
+            ctx,
+            name=name,
+            family="Bernoulli",
+            log_density=bernoulli_logit_log_pmf(
+                _BACKEND, variate=name, args=node.args, arg_names=node.arg_names
+            ),
+            row_plate=Plate(event_dims=(), batch_dims=node.plate.batch_dims),
+            lifted=False,
+        )
+
     def _emit_continuous_bernoulli(
         self,
         ctx: _JAGSCtx,
@@ -3517,6 +3584,43 @@ def _rewrite_arg(
             return arg
         return IRArgTransform(inner=inner, transform=arg.transform, operand=operand)
     return arg
+
+
+def _bernoulli_logits(node: IRSample | IRObserve) -> bool:
+    """Whether a site is a Bernoulli given by its logits.
+
+    Parameters
+    ----------
+    node : IRSample | IRObserve
+        The site.
+
+    Returns
+    -------
+    bool
+        True for a Bernoulli whose one argument is its logits.
+    """
+    return node.family == "Bernoulli" and tuple(node.arg_names) == ("logits",)
+
+
+def _ir_has_bernoulli_logits(body: tuple[IRNode, ...]) -> bool:
+    """Whether a program draws or scores a Bernoulli given by its logits.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        The IR body, searched through marginalization scopes.
+
+    Returns
+    -------
+    bool
+        True when a sample or observe is a Bernoulli given by its logits.
+    """
+    for node in body:
+        if isinstance(node, IRSample | IRObserve) and _bernoulli_logits(node):
+            return True
+        if isinstance(node, IRMarginalize) and _ir_has_bernoulli_logits(node.scope):
+            return True
+    return False
 
 
 def _has_trailing(indices: tuple[IRArg, ...], suffix: tuple[IRArg, ...]) -> bool:
