@@ -211,6 +211,10 @@ from quivers.dsl.pure_builtins import (
     SHAPE_BUILTINS,
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
+from quivers.dsl.sequence_functions import (
+    _SequenceFunctionElaboration,
+    sequence_source_kind,
+)
 from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
@@ -1644,7 +1648,7 @@ def _element_of(parameter: FamilyParameter | _ScalarParameter) -> TypeApplicatio
     return REAL
 
 
-class _ProgramElaboration:
+class _ProgramElaboration(_SequenceFunctionElaboration):
     """Program elaboration, mixed into the QIEC elaborator.
 
     The methods read and extend the elaborator's declaration tables, so
@@ -4568,6 +4572,18 @@ class _ProgramElaboration:
                 f"one per factor of its domain, but is called with "
                 f"{len(call.args)}",
                 code="qiec-program",
+            )
+        sequence_kind = sequence_source_kind(morphism)
+        if sequence_kind is not None:
+            return self._sequence_function_call(
+                morphism,
+                sequence_kind,
+                call,
+                widths[0],
+                out_width,
+                scope,
+                state,
+                node,
             )
         sources: list[Value] = []
         for position, (argument, width) in enumerate(
