@@ -64,6 +64,7 @@ from quivers.core.objects import (
 from quivers.dsl.ast_nodes import (
     AxisSpec,
     BundleDecl,
+    DiscreteConstructor,
     CategoryDecl,
     CompositionDecl,
     CompositionRuleEntry,
@@ -397,6 +398,29 @@ def _apply_auto_init(morph, domain, codomain, algebra) -> None:
         else:
             mean = _logit(spec.mean) if is_sigmoid_bijected else spec.mean
             raw.data.normal_(mean=mean, std=max(spec.std, 1e-6))
+
+
+def _is_finset_literal(expr: ObjectExpr) -> bool:
+    """Whether an object expression is a finite set given by its size.
+
+    Parameters
+    ----------
+    expr : ObjectExpr
+        The declaration's right-hand side.
+
+    Returns
+    -------
+    bool
+        ``True`` for ``FinSet N`` and a bare size ``N``.
+    """
+    if isinstance(expr, TypeName):
+        return expr.name.isdigit()
+    return (
+        isinstance(expr, DiscreteConstructor)
+        and expr.constructor == "FinSet"
+        and len(expr.args) == 1
+        and expr.args[0].isdigit()
+    )
 
 
 class _DeclarationsMixin:
@@ -855,6 +879,13 @@ class _DeclarationsMixin:
                 ) from exc
             if isinstance(resolved, ContinuousSpace):
                 self._spaces[name] = resolved
+            elif isinstance(resolved, FinSet) and _is_finset_literal(expr):
+                # A declaration of a finite set by its size introduces a
+                # new object, distinct from every other object of that
+                # size, as `FinSet(name=..., cardinality=...)` does.
+                self._objects[name] = FinSet(
+                    name=name, cardinality=resolved.cardinality
+                )
             else:
                 self._objects[name] = resolved
             return

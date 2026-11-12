@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **A finite set declared by its size is a new object.** `object B : FinSet 3` and `object C : FinSet 3` declare two distinct objects, named `B` and `C`, as `FinSet(name=..., cardinality=...)` does in Python, so a morphism into `B` no longer composes with one out of `C`; the compiler had built both as one anonymous `FinSet` of size 3. An alias (`object B2 : B`) is the object it names.
 - **`MCMC(init_strategy="prior")` draws from the prior; the old behavior is `"jitter"`, the default.** `"prior"` runs the model forward with its observed sites held at their values and maps each latent's draw into the unconstrained space; `"jitter"` draws `0.1 * N(0, I)` in the unconstrained space, which `"prior"` had done. `LatentRegistry.trace_draw(run)` reads one draw per latent site out of a trace.
 - **`quivers.giry` is removed.** Import `GiryMonad` and `FinStoch` from `quivers.stochastic.giry` or `quivers`.
 - **`ChartView.derivations(item)` returns the rule applications that derive the item.** Each is a rule name and its antecedent items in premise order, the item's incoming hyperedges in the derivation hypergraph; it had returned every item in the chart. `AgendaResult.applications` lists every rule application of a run.
