@@ -43,7 +43,7 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 | [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 89 / 142   |
 | [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 106 / 142  |
 | [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 93 / 142   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 79 / 142   |
+| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 80 / 142   |
 | [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 121 / 142  |
 | [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 107 / 142  |
 | [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 123 / 142  |
@@ -151,7 +151,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_body_plated_let`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_continuous_bernoulli_logits` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_factor_let_rows`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
+| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | yes  | yes     | yes  | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_gather`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_latent_value`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
 | `steps/marginalize_let_probs`                   | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
@@ -1217,7 +1217,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`, [`lda`](examples/lda.md).
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -2276,7 +2276,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
@@ -2689,24 +2689,6 @@ let-expr:axis-reduction:jags: sum(...) over a rank-3 operand reduces only the in
 
 ```text
 jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
-```
-
-**`let-expr:elementwise-axis-operator:jags`**
-
-Refused for: `steps/marginalize_gathered_prior_data`.
-
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
-
-Reported kinds:
-
-```text
-let-expr:elementwise-axis-operator:jags: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
-```
-
-`jags` on `steps/marginalize_gathered_prior_data` reports:
-
-```text
-jags-helper cannot lift an infix operator over an axis inside a `let`: '+' between a rank-1 and a rank-1 operand has no BUGS / JAGS *expression* form: neither language lifts an infix operator over an axis, and the elementwise result exists only as a named array built one index at a time inside a loop of its own (`for (i in 1:N) { z[i] <- a[i] + b[i] }`), which a let-binding lowered to one scalar expression has nowhere to put. The one axis-carrying operand pair that does lower as an expression is the contracted product `sum(a * b)`, to `inprod(a, b)`
 ```
 
 **`marginalize:ungrouped-over-plate:state`**
@@ -3560,7 +3542,7 @@ marginalize:ungrouped-over-plate:z
 
 Refused for: `steps/marginalize_gathered_prior_data`.
 
-Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
+Renders on: `church`, `edward2`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
 Reported kinds:
 
