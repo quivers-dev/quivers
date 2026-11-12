@@ -48,6 +48,7 @@ import torch
 from quivers.core.objects import SetObject, ProductSet
 from quivers.core.morphisms import Morphism, observed, identity
 from quivers.core.algebras import Algebra, CompositionRule, Semiring
+from quivers.core.tensor_ops import diagonal_reduce
 from quivers.categorical.monoidal import MonoidalStructure, CartesianProductMonoidal
 
 
@@ -394,15 +395,7 @@ def partial_trace(
             contra_dims.append(dom_offsets[idx] + d)
             co_dims.append(cod_offsets[idx] + d)
 
-    # use diagonal extraction and join
-    from quivers.enriched.ends_coends import coend
-
-    result = coend(
-        t,
-        contra_dims=tuple(contra_dims),
-        co_dims=tuple(co_dims),
-        algebra=q,
-    )
+    result = diagonal_reduce(t, tuple(contra_dims), tuple(co_dims), q.join)
 
     # build result objects
     if len(external_dom_comps) == 0:

@@ -43,6 +43,7 @@ import torch
 from quivers.core.objects import SetObject, ProductSet, CoproductSet
 from quivers.core.morphisms import Morphism, observed, identity
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
+from quivers.enriched._lattice import require_lattice
 from quivers.enriched.profunctors import Profunctor
 
 
@@ -153,7 +154,7 @@ class Optic(ABC):
             contra=self._source,
             co=self._target,
             tensor=tensor,
-            algebra=self._algebra,
+            algebra=require_lattice(self._algebra, "an optic's profunctor"),
         )
 
     def __repr__(self) -> str:

@@ -255,7 +255,7 @@ class ArrowMonad(ValueModel):
         """
         if isinstance(self.arrow, Function):
             return Identity()
-        if isinstance(self.arrow, Kleisli):
+        if isinstance(self.arrow, Kleisli) and isinstance(self.arrow.monad, Monad):
             return self.arrow.monad
         raise TypeError(
             "ArrowMonad needs the hom objects a(1, A) of its arrow, which "

@@ -17,6 +17,8 @@ All operations use log-space for numerical stability.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 
 from quivers.core._util import EPS
@@ -232,7 +234,66 @@ def componentwise_lift(
     return result
 
 
+def diagonal_reduce(
+    tensor: torch.Tensor,
+    contra_dims: tuple[int, ...],
+    co_dims: tuple[int, ...],
+    reduce_fn: Callable[[torch.Tensor, int], torch.Tensor],
+) -> torch.Tensor:
+    """Restrict to the diagonal of matched dimension pairs and reduce over it.
+
+    For each pair ``(contra_dims[i], co_dims[i])`` the tensor is
+    restricted to the entries whose two indices agree, and the shared
+    index is reduced with ``reduce_fn``; the other dimensions keep their
+    order.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        Input tensor.
+    contra_dims : tuple[int, ...]
+        Dimension indices of the first member of each pair.
+    co_dims : tuple[int, ...]
+        Dimension indices of the second member of each pair.
+    reduce_fn : Callable[[torch.Tensor, int], torch.Tensor]
+        Reduction taking ``(tensor, dim)``, such as an algebra's join.
+
+    Returns
+    -------
+    torch.Tensor
+        The reduced tensor.
+
+    Raises
+    ------
+    ValueError
+        If a pair's dimensions differ in size, or a dimension is used
+        twice.
+    """
+    used = list(contra_dims) + list(co_dims)
+    if len(set(used)) != len(used):
+        raise ValueError("diagonal_reduce: a dimension appears in two pairs")
+    for i, (cd, cvd) in enumerate(zip(contra_dims, co_dims)):
+        if tensor.shape[cd] != tensor.shape[cvd]:
+            raise ValueError(
+                f"dimension pair {i}: contra dim {cd} has size "
+                f"{tensor.shape[cd]} but co dim {cvd} has size "
+                f"{tensor.shape[cvd]}"
+            )
+    result = tensor
+    pairs = list(zip(contra_dims, co_dims))
+    for k, (a, b) in enumerate(pairs):
+        result = reduce_fn(torch.diagonal(result, dim1=a, dim2=b), -1)
+        lo, hi = min(a, b), max(a, b)
+
+        def shift(d: int, lo: int = lo, hi: int = hi) -> int:
+            return d - (d > lo) - (d > hi)
+
+        pairs[k + 1 :] = [(shift(c), shift(e)) for c, e in pairs[k + 1 :]]
+    return result
+
+
 __all__ = [
+    "diagonal_reduce",
     "noisy_or_contract",
     "noisy_or_reduce",
     "noisy_and_reduce",

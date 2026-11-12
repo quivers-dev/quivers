@@ -13,10 +13,10 @@ meet are those of a complete lattice, so the algebra must be an
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import torch
 
 from quivers.core.algebras import IdempotentSemiring
+from quivers.core.tensor_ops import diagonal_reduce
 from quivers.enriched._lattice import require_lattice
 
 
@@ -69,7 +69,7 @@ def coend(
     if len(contra_dims) == 0:
         return tensor
 
-    return _trace_and_reduce(tensor, contra_dims, co_dims, algebra.join)
+    return diagonal_reduce(tensor, contra_dims, co_dims, algebra.join)
 
 
 def end(
@@ -117,63 +117,7 @@ def end(
     if len(contra_dims) == 0:
         return tensor
 
-    return _trace_and_reduce(tensor, contra_dims, co_dims, algebra.meet)
-
-
-def _trace_and_reduce(
-    tensor: torch.Tensor,
-    contra_dims: tuple[int, ...],
-    co_dims: tuple[int, ...],
-    reduce_fn: Callable[..., torch.Tensor],
-) -> torch.Tensor:
-    """Extract diagonal and reduce over matched dimension pairs.
-
-    Parameters
-    ----------
-    tensor : torch.Tensor
-        Input tensor.
-    contra_dims : tuple[int, ...]
-        Contravariant dimension indices.
-    co_dims : tuple[int, ...]
-        Covariant dimension indices.
-    reduce_fn : callable
-        Reduction function (algebra.join or algebra.meet) taking
-        (tensor, dim) arguments.
-
-    Returns
-    -------
-    torch.Tensor
-        Reduced tensor.
-    """
-    # validate dimension sizes match
-    for i, (cd, cvd) in enumerate(zip(contra_dims, co_dims)):
-        if tensor.shape[cd] != tensor.shape[cvd]:
-            raise ValueError(
-                f"dimension pair {i}: contra dim {cd} has size "
-                f"{tensor.shape[cd]} but co dim {cvd} has size "
-                f"{tensor.shape[cvd]}"
-            )
-
-    # process pairs one at a time, adjusting indices as we go.
-    # strategy: for each pair, use torch.diagonal to extract the diagonal,
-    # which moves the paired dimension to the end. then reduce over it.
-    result = tensor
-
-    # sort pairs by contra_dim descending so removals don't shift indices
-    # we need to track both dims through removals
-    pairs = list(zip(contra_dims, co_dims))
-
-    for contra_d, co_d in pairs:
-        result.shape[contra_d]
-
-        # extract diagonal: moves the diagonal to the last dimension,
-        # removes contra_d and co_d from their positions
-        result = torch.diagonal(result, dim1=contra_d, dim2=co_d)
-
-        # the diagonal is now the last dimension; reduce over it
-        result = reduce_fn(result, dim=-1)
-
-    return result
+    return diagonal_reduce(tensor, contra_dims, co_dims, algebra.meet)
 
 
 __all__ = [

@@ -355,13 +355,13 @@ class Algebra(CompositionRule):
 
         return result
 
-    def is_compatible(self, other: Algebra) -> bool:
+    def is_compatible(self, other: CompositionRule) -> bool:
         """Check if two algebras are compatible for composition.
 
         Parameters
         ----------
-        other : Algebra
-            The other algebra.
+        other : CompositionRule
+            The other rule.
 
         Returns
         -------

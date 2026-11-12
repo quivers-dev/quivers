@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from quivers.categorical.monoidal import CartesianProductMonoidal
-from quivers.categorical.traced import CompactClosedTrace, trace
+from quivers.categorical.traced import CompactClosedTrace, partial_trace, trace
 from quivers.core.algebras import BOOLEAN, PRODUCT_FUZZY, REAL, Semiring
 from quivers.core.morphisms import Morphism, identity, observed
 from quivers.core.objects import FinSet, ProductSet, SetObject, Unit
@@ -105,3 +105,13 @@ def test_braiding_is_natural_and_satisfies_the_hexagon(algebra: Semiring) -> Non
     step1 = m.braiding(A, B) @ identity(c, algebra=algebra)
     step2 = identity(B, algebra=algebra) @ m.braiding(A, c)
     _close(lhs, (step1 >> step2).tensor.reshape(12, 12))
+
+
+def test_partial_trace_over_two_wires_is_the_einsum_trace() -> None:
+    """Tracing two feedback components at once sums over both
+    diagonals, independently of the order the pairs are processed in."""
+    v = FinSet(name="V", cardinality=3)
+    dom = ProductSet(components=(A, U, v))
+    f = _random(dom, dom, REAL, 12)
+    got = partial_trace(f, feedback_indices=(1, 2)).tensor
+    _close(got, torch.einsum("auvbuv->ab", f.tensor))
