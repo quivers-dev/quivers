@@ -249,13 +249,13 @@ $$
 
 **Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$, so the conditional posterior is Gaussian with mean $-9 N / 2 = -40.5$ and variance $9$ at $N = 9$. The *joint* posterior over $(v, x)$ remains funnel-shaped; only the conditional given $x = 0$ is tractable.
 
-**Capture semantics.** All five algorithms underestimate the magnitude of $v$ [@neal2003slice]. The posterior mean lies forty units below the prior mean, where the scale $e^{v/2}$ of each $x_i$ is about $e^{-20}$, and this distance and extreme scale are the likely cause. PASS means the metric *exceeds* the tolerance, confirming the underfit.
+**Capture semantics.** All five algorithms underestimate the magnitude of $v$ [@neal2003slice]. The posterior mean lies forty units below the prior mean, where the scale $e^{v/2}$ of each $x_i$ is about $e^{-20}$. The compiled `Normal` family floors its scale at $10^{-7}$, which $e^{v/2}$ reaches at $v \approx -32.2$, so below that point the compiled log density stops increasing in $v$ and the target the samplers see has its mode near $-32.2$. PASS means the metric *exceeds* the tolerance, confirming the underfit.
 
 **Metric.** `|E[v]_q - E[v]_true|`, tolerance `20.25`.
 
 ### Ill-conditioned product Gaussian
 
-**Model.** Five-dimensional product Gaussian with five orders of magnitude of prior scale and a fixed observation noise:
+**Model.** Five-dimensional product Gaussian with prior scales spanning four orders of magnitude and a fixed observation noise:
 
 $$
 x_d \sim \mathcal{N}(0, \sigma_d^{\text{prior}}), \qquad
