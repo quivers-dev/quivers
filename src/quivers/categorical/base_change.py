@@ -22,6 +22,7 @@ References
 Kelly, G. M. (1982). *Basic Concepts of Enriched Category Theory*.
 Cambridge University Press. Reprinted in *Reprints in Theory and
 Applications of Categories*, 10 (2005).
+[TAC reprint](https://www.tac.mta.ca/tac/reprints/articles/10/tr10abs.html)
 """
 
 from __future__ import annotations
