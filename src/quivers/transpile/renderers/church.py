@@ -1375,10 +1375,22 @@ class ChurchRenderer(RendererBase):
             )
             decl = self._binding_plates.get(arg.name)
             if decl is not None and _plates_align(decl, plate):
-                return IRArgRef(
-                    name=arg.name,
-                    indices=(IRArgRef(name=loop_name), *new_indices),
-                )
+                # Every leading axis the binding shares with the site's
+                # plate is read at the site's loop over it; the site's
+                # loops are `m_<axis>` (see `_wrap_observe` and
+                # `_wrap_in_maps`), the first one `loop_name`.
+                shared = [IRArgRef(name=loop_name)]
+                site_names = [str(dim.name) for dim in plate.batch_dims]
+                if loop_name == f"m_{site_names[0]}" and len(set(site_names)) == len(
+                    site_names
+                ):
+                    for declared, site in zip(
+                        decl.batch_dims[1:], plate.batch_dims[1:], strict=False
+                    ):
+                        if declared.name != site.name:
+                            break
+                        shared.append(IRArgRef(name=f"m_{site.name}"))
+                return IRArgRef(name=arg.name, indices=(*shared, *new_indices))
             if (
                 self._current_via is not None
                 and decl is not None

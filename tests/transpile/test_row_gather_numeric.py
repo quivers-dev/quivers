@@ -52,7 +52,8 @@ def _host_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
 
 def _drawn_row(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     a, y, group = v["a"], v["y"].long(), v["group"].long()
-    table = torch.sigmoid(a[:, None] + torch.arange(3, dtype=torch.float64))
+    k = torch.arange(2, dtype=torch.float64)
+    table = k * torch.sigmoid(a)[:, None] + (1.0 - k) * (1.0 - torch.sigmoid(a)[:, None])
     prior = D.Normal(0.0, 1.0).log_prob(a).sum()
     weights = torch.tensor([0.25, 0.75], dtype=torch.float64)
     return (
@@ -91,7 +92,7 @@ _CASES: dict[str, tuple[str, str, dict[str, Host], list[dict[str, Host]], Oracle
     "drawn-row": (
         _DRAWN_ROW,
         "rows",
-        {"y": [2, 0, 1, 2]},
+        {"y": [1, 0, 1, 1]},
         [
             {"a": [0.4, -1.3], "group": [0, 1, 1, 0]},
             {"a": [-0.9, 2.0], "group": [1, 1, 0, 0]},
@@ -128,8 +129,12 @@ _REFUSED: dict[tuple[str, str], str] = {
     (_DRAWN_ROW, "bugs"): "arg:list-literal",
     (_DRAWN_ROW, "jags"): "arg:list-literal",
     (_DRAWN_ROW, "stan"): "sample:discrete-latent",
-    # WebPPL carries one batch axis per observation.
+    # WebPPL carries one batch axis per observation; Gen and Turing hold
+    # the table as a nested tower of vectors, which a site cannot read
+    # one subscript per axis.
     (_HOST_SLICE, "webppl"): "batch-rank:3",
+    (_HOST_SLICE, "gen"): "let-expr:nested-slice-gather:row_slice",
+    (_HOST_SLICE, "turing"): "let-expr:nested-slice-gather:row_slice",
 }
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))

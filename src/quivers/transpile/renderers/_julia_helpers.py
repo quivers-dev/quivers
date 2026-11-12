@@ -1644,6 +1644,55 @@ def _walk_for_towers(body: tuple[IRNode, ...], out: set[str]) -> None:
             _walk_for_towers(node.scope, out)
 
 
+def refuse_nested_slice_gather(
+    target: str, node: IRDeterministic, shapes: JuliaShapes
+) -> None:
+    """Refuse a gather that leaves a slice of several axes of a nested tower.
+
+    A factor table over several binders is a nested tower of vectors
+    (`nested_tower_names`), one level per binder. Gathering a row of a
+    two-axis tower gives a vector per row, which a site reads whole or
+    by one subscript; gathering from a tower of three or more axes
+    leaves a tower of two or more levels per row, which a site would
+    read with one subscript per axis, as a dense array, or broadcast a
+    family over, neither of which a nested tower supports.
+
+    Parameters
+    ----------
+    target : str
+        The target, for the refusal's kind.
+    node : IRDeterministic
+        The binding.
+    shapes : JuliaShapes
+        The program's shape tables.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the binding gathers from a nested tower and leaves two or
+        more of its axes per gathered element.
+    """
+    expr = node.expr
+    if not isinstance(expr, LetExprIndex) or not isinstance(expr.array, LetExprVar):
+        return
+    name = expr.array.name
+    if name not in shapes.nested_names:
+        return
+    rank = shapes.name_array_rank.get(name)
+    if rank is None or rank - len(expr.indices) < 2:
+        return
+    raise UnsupportedConstruct(
+        f"qvr-{target}",
+        [
+            f"let-expr:nested-slice-gather:{node.name}: {node.name!r} gathers "
+            f"slices of {rank - len(expr.indices)} axes from the factor table "
+            f"{name!r}, which Julia holds as a nested tower of vectors, one "
+            f"level per binder; a site reads such a slice with one subscript "
+            f"per axis, which the tower does not take"
+        ],
+    )
+
+
 def name_array_rank_map(ir: IRProgram) -> dict[str, int]:
     """Map every IR-bound name to its full Julia array rank.
 
@@ -1682,6 +1731,7 @@ def _walk_for_array_ranks(body: tuple[IRNode, ...], out: dict[str, int]) -> None
 
 __all__ = [
     "JuliaShapes",
+    "refuse_nested_slice_gather",
     "infer_array_rank",
     "let_expr_has_axis_reduction",
     "name_array_rank_map",

@@ -1,13 +1,13 @@
 # Exercises a `let` that gathers rows of a two-axis `let` table by a drawn
 # index, read as Categorical `probs`, one row per observation.
 object Group : FinSet 2
-object Class : FinSet 3
+object Class : FinSet 2
 object Row : FinSet 4
 object Val : Real 1
 
 program rows : Row -> Val
     sample a : Group <- Normal(loc=0.0, scale=1.0)
-    let table = factor g : Group, k : Class in sigmoid(a[g] + real(k))
+    let table = factor g : Group, k : Class in real(k) * sigmoid(a[g]) + (1.0 - real(k)) * (1.0 - sigmoid(a[g]))
     sample group : Row <- Categorical(probs=[0.25, 0.75])
     let row_table = table[group]
     observe y : Row <- Categorical(probs=row_table)
