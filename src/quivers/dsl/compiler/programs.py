@@ -21,7 +21,12 @@ from quivers.continuous.deterministic import (
     LearnedFunction,
     learned_function_draw_message,
 )
-from quivers.continuous.family_spec import FAMILY_REGISTRY, FamilySpec
+from quivers.continuous.family_spec import (
+    FAMILY_REGISTRY,
+    FamilySpec,
+    build_torch_distribution,
+    clamp_param,
+)
 from quivers.continuous.morphisms import (
     AnySpace,
     ContinuousMorphism,
@@ -138,6 +143,8 @@ from quivers.dsl.compiler._deduction_terms import (
     atom_term,
     variable_term,
 )
+from quivers.dsl.compiler._call_lowering import lower_calls
+from quivers.transpile._pure_calls import LOG_PROB_CALL
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
     expand_program_scans,
@@ -162,7 +169,6 @@ from quivers.qiec import QiecModule
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
 from quivers.qiec.terms import Var as QiecVar
-from quivers.transpile._pure_calls import inline_pure_call
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
@@ -959,8 +965,54 @@ _LET_SPECIAL_CALLS: frozenset[str] = frozenset(
         "subst",
         "compose",
         "cholesky_quad_form",
+        LOG_PROB_CALL,
     }
 )
+
+
+def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
+    """Evaluate ``$log_prob("Family", value, "parameter", argument, ...)``.
+
+    A called computation's ``score.add(log_prob(D, v))`` lowers to this
+    internal let call: the family's log density at the value, entrywise,
+    under the parameters given by name, each clamped as an inline draw
+    from the family clamps it.
+
+    Parameters
+    ----------
+    arguments : list[LetValue]
+        The family's name, the value, then each parameter's name and
+        value.
+
+    Returns
+    -------
+    torch.Tensor
+        The log density, broadcast over the value and the parameters.
+
+    Raises
+    ------
+    CompileError
+        If the family is not registered or a parameter is not one of
+        its parameters.
+    """
+    family, value, *pairs = arguments
+    spec = FAMILY_REGISTRY.get(str(family))
+    if spec is None:
+        raise CompileError(f"no registered family {family!r} to score under")
+    parameters: dict[str, torch.Tensor] = {}
+    for position in range(0, len(pairs), 2):
+        name = str(pairs[position])
+        tensor = torch.as_tensor(
+            pairs[position + 1], dtype=torch.get_default_dtype()
+        )
+        try:
+            parameters[name] = clamp_param(spec, name, tensor)
+        except KeyError as error:
+            raise CompileError(
+                f"family {spec.name!r} has no parameter {name!r} to score under"
+            ) from error
+    observed = torch.as_tensor(value, dtype=torch.get_default_dtype())
+    return build_torch_distribution(spec, parameters).log_prob(observed)
 
 
 def _checked_layout(
@@ -1424,6 +1476,7 @@ class _ProgramsMixin:
     _output_expr: Expr | None
     _groups: dict[str, list[str]]
     _program_templates: dict[str, ProgramDecl]
+    _call_refusals: dict[str, CompileError]
     _parameter_space_stack: list[dict[str, AnySpace]]
     _value_extents_stack: list[dict[str, tuple[int, ...]]]
     _contractions: dict
@@ -2307,24 +2360,22 @@ class _ProgramsMixin:
     def _inline_pure_calls(
         self, program: str, steps: tuple[ProgramStep, ...]
     ) -> tuple[ProgramStep, ...]:
-        """Replace every call of a pure computation by its body.
+        """Lower every call of a computation to compiled runtime steps.
 
-        A call ``let y <- f(a, b)`` of a computation that performs no
-        effect, takes no static arguments, and is a chain of pure
-        bindings ending in a return becomes let steps: an argument that
-        is not a name is bound to a fresh name first, each of the
-        callee's bindings is bound under a fresh name with its
-        parameters read as the arguments, and ``y`` is bound to the
-        result. The analysis is the transpile planner's
-        (`inline_pure_call`), so the compiled runtime and every target
-        inline the same calls. The program then compiles to a
-        `MonadicProgram`, differentiable like any other, and a call
-        that is not inlinable is left in place.
+        A call of a pure computation becomes let steps (its calls of pure
+        computations inlined in turn, an ``if`` between pure branches as
+        ``select``), by the analysis the transpile planner shares; a call
+        of a computation whose only requests are the program's ``Random``
+        and ``Score`` runs in place, its sites named ``y$label``; and
+        ``traverse`` maps over its items, a drawing callee as plated
+        draws (see `lower_calls`). A call that cannot be lowered is left
+        in place, and its located refusal is kept under the program's
+        name, which fitting the program or instantiating it raises.
 
         Parameters
         ----------
         program : str
-            The program's name, for diagnostics.
+            The program's name.
         steps : tuple[ProgramStep, ...]
             The program's steps, searched through marginalization
             scopes.
@@ -2332,109 +2383,53 @@ class _ProgramsMixin:
         Returns
         -------
         tuple[ProgramStep, ...]
-            The steps with every pure call inlined.
+            The steps with every lowerable call lowered.
         """
         if not _calls_a_computation(steps):
             return steps
         module = self.qiec_module
         if module is None or module.gap:
             return steps
-        computations = {item.name: item for item in module.computations}
-        occupied = _names_in(steps)
         cards = {
             name: obj.cardinality
             for name, obj in self._objects.items()
             if isinstance(obj, FinSet)
         }
+        lowered, refusal = lower_calls(program, steps, module, cards, _names_in(steps))
+        if refusal is not None:
+            self._call_refusals[program] = refusal
+        return lowered
 
-        def rewrite(body: tuple[ProgramStep, ...]) -> tuple[ProgramStep, ...]:
-            out: list[ProgramStep] = []
-            for step in body:
-                if isinstance(step, MarginalizeStep) and step.scope:
-                    out.append(step.with_(scope=rewrite(step.scope)))
-                    continue
-                if not isinstance(step, CallStep):
-                    out.append(step)
-                    continue
-                callee = computations.get(step.call.callee)
-                if (
-                    callee is None
-                    or step.call.static_arguments
-                    or len(step.call.arguments) != len(callee.parameters)
-                ):
-                    out.append(step)
-                    continue
-                bound: list[ProgramStep] = []
-                arguments: list[QiecVar] = []
-                for parameter, argument in zip(
-                    callee.parameters, step.call.arguments, strict=True
-                ):
-                    if isinstance(argument, LetExprVar):
-                        name = argument.name
-                    else:
-                        name = _fresh_name(f"{step.name}_{parameter.name}", occupied)
-                        bound.append(
-                            LetStep(
-                                name=name,
-                                value=argument,
-                                line=step.line,
-                                col=step.col,
-                            )
-                        )
-                    arguments.append(QiecVar(Local(name, parameter.type)))
-                inlined = inline_pure_call(
-                    callee,
-                    tuple(arguments),
-                    callee.type.result,
-                    occupied,
-                    cards,
-                    program,
-                )
-                if inlined is None:
-                    out.append(step)
-                    continue
-                hoisted, result = inlined
-                out.extend(bound)
-                out.extend(
-                    LetStep(name=name, value=value, line=step.line, col=step.col)
-                    for name, value in hoisted
-                )
-                out.append(
-                    LetStep(name=step.name, value=result, line=step.line, col=step.col)
-                )
-            return tuple(out)
+    def _refuse_computation_calls(
+        self, program: str, steps: tuple[ProgramStep, ...]
+    ) -> None:
+        """Refuse to instantiate a program that keeps a call of a computation.
 
-        return rewrite(steps)
-
-    @staticmethod
-    def _refuse_computation_calls(program: str, steps: tuple[ProgramStep, ...]) -> None:
-        """Refuse to instantiate a program that calls a named computation.
-
-        A program that calls a computation runs only as its checked
-        computation; the runtime compiler instantiates a template's steps
-        in place, where no checked computation runs the call.
+        The runtime compiler instantiates a template's steps in place,
+        and a call it could not lower to steps has no step to run as.
 
         Parameters
         ----------
         program : str
             The program instantiated.
         steps : tuple[ProgramStep, ...]
-            Its steps, as the source writes them.
+            Its steps, after its calls were lowered.
 
         Raises
         ------
         CompileError
-            At the first step that calls a computation, naming it and
-            the program.
+            The refusal recorded when the call was lowered, located at
+            the call and saying why it cannot be fit.
         """
         call = _first_call_step(steps)
         if call is None:
             return
+        refusal = self._call_refusals.get(program)
+        if refusal is not None:
+            raise refusal
         raise CompileError(
             f"program {program!r} runs `let {call.name} <- {call.call.callee}"
-            f"(...)`, which calls a named computation that only the QIEC route "
-            f"runs; the runtime compiler instantiates a program's steps in "
-            f"place, where no checked computation runs the call",
+            f"(...)`, which the runtime compiler cannot instantiate in place",
             call.line,
             call.col,
         )
@@ -5136,7 +5131,13 @@ class _ProgramsMixin:
                 decl.line,
                 decl.col,
             )
-        self._morphisms[decl.name] = CheckedProgram(domain, codomain, module, decl.name)
+        self._morphisms[decl.name] = CheckedProgram(
+            domain,
+            codomain,
+            module,
+            decl.name,
+            refusal=self._call_refusals.get(decl.name),
+        )
 
     def _compile_ungrouped_marginalize(
         self,
@@ -6847,6 +6848,8 @@ class _ProgramsMixin:
                 # Higher-order combinators come first; they consume
                 # raw closure args without eager evaluation of the
                 # lambda body.
+                if func_name == LOG_PROB_CALL:
+                    return _family_log_prob([fn(env) for fn in arg_fns])
                 if func_name == "length":
                     val = arg_fns[0](env)
                     if isinstance(val, list):

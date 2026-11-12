@@ -170,6 +170,9 @@ class Compiler(
         # stored as their unsubstituted AST decl. Instantiated at each call
         # site by parameter substitution + α-renaming of internal latents.
         self._program_templates: dict[str, ProgramDecl] = {}
+        # The located refusal of the first call each program keeps
+        # because it cannot be lowered to compiled runtime steps.
+        self._call_refusals: dict[str, CompileError] = {}
         # Every ``program`` declaration of the module by name, parametric
         # or not: the scope model a program's sites are addressed through.
         self._program_decls: dict[str, ProgramDecl] = {}

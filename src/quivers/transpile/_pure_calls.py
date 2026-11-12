@@ -36,23 +36,31 @@ from quivers.dsl.ast_nodes.let_expressions import (
 )
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.module import NamedComputation
+from quivers.qiec.primitives import primitive
 from quivers.qiec.terms import (
     Bind,
     Call,
+    Case,
     Comprehension,
     Computation,
     ConstructorValue,
+    DistributionValue,
     Gather,
+    Handle,
+    If,
     LetBinding,
     LetValue,
     LiteralValue,
     Local,
     LogDensity,
+    NewInstance,
     Perform,
     PrimitiveApplication,
     Projection,
     Reduction,
+    Resume,
     Return,
     Rowwise,
     TensorValue,
@@ -61,6 +69,8 @@ from quivers.qiec.terms import (
     WeightSum,
 )
 from quivers.qiec.types import (
+    INT,
+    REAL,
     IndexLiteral,
     IndexTerm,
     IndexVariable,
@@ -145,6 +155,13 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
         return term
 
     return cast(Value, rewrite(value))
+
+
+#: The internal let function the compiled runtime evaluates a family's
+#: log density with: ``$log_prob("Family", value, "parameter", argument,
+#: ...)``. The ``$`` keeps it apart from every function a source can
+#: call.
+LOG_PROB_CALL = "$log_prob"
 
 
 #: Primitives that are conversions the target's arithmetic performs on
@@ -497,6 +514,49 @@ def _row_reduction(value: Value) -> tuple[str, Value] | None:
     return None
 
 
+def _log_prob_call(
+    density: LogDensity, cards: dict[str, int], program: str
+) -> LetExprNode:
+    """A family's log density at a value, as the compiled runtime reads it.
+
+    Parameters
+    ----------
+    density : LogDensity
+        The log density.
+    cards : dict[str, int]
+        The object cardinalities.
+    program : str
+        The program the value belongs to, for diagnostics.
+
+    Returns
+    -------
+    LetExprNode
+        ``$log_prob("Family", value, "parameter", argument, ...)``,
+        summed over the family's plate when it has one.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the density is not of a family construction.
+    """
+    sampleable = density.sampleable
+    if not isinstance(sampleable, DistributionValue):
+        raise UnsupportedConstruct(
+            f"qvr-{RUNTIME_TARGET}", [f"qiec:expression:log_density:{program}"]
+        )
+    arguments: list[LetExprNode] = [
+        LetExprString(value=sampleable.name),
+        _expression(density.value, cards, RUNTIME_TARGET, program),
+    ]
+    for parameter, value in sampleable.arguments:
+        arguments.append(LetExprString(value=parameter))
+        arguments.append(_expression(value, cards, RUNTIME_TARGET, program))
+    call = LetExprCall(func=LOG_PROB_CALL, args=tuple(arguments))
+    if sampleable.plate.batch or sampleable.plate.event:
+        return LetExprCall(func="sum", args=(call,))
+    return call
+
+
 def _expression(
     value: Value, cards: dict[str, int], target: str, program: str
 ) -> LetExprNode:
@@ -632,6 +692,8 @@ def _expression(
         return LetExprCall(
             func="sum", args=(_expression(value.value, cards, target, program),)
         )
+    if isinstance(value, LogDensity) and target == RUNTIME_TARGET:
+        return _log_prob_call(value, cards, program)
     if isinstance(value, LogDensity):
         raise UnsupportedConstruct(
             f"qvr-{target}",
@@ -653,17 +715,475 @@ def _expression(
     )
 
 
+class CallNotLowered(Exception):
+    """A call the analysis does not lower to bindings, and why.
+
+    Parameters
+    ----------
+    reason : str
+        What in the callee stops the lowering, as a clause completing
+        "the call ...".
+    effects : bool
+        Whether the obstacle is that the callee makes requests, which
+        the compiled runtime may still run as steps of the program.
+    """
+
+    def __init__(self, reason: str, *, effects: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.effects = effects
+
+
+def origin_line(term: object) -> str:
+    """The source line a term records, as a parenthetical.
+
+    Parameters
+    ----------
+    term : object
+        A checked term, whose fields are searched for a
+        [`SourceOrigin`][quivers.qiec.SourceOrigin] in order.
+
+    Returns
+    -------
+    str
+        `` (line N)`` for the first origin with a line, else empty.
+    """
+    found = _first_origin(term)
+    if found is None or not found.line:
+        return ""
+    return f" (line {found.line})"
+
+
+def _first_origin(term: object) -> SourceOrigin | None:
+    """The first source origin with a line that a term records.
+
+    Parameters
+    ----------
+    term : object
+        A checked term, whose fields are searched breadth first.
+
+    Returns
+    -------
+    SourceOrigin | None
+        The origin, or ``None`` when the term records none with a line.
+    """
+    pending: list[object] = [term]
+    while pending:
+        item = pending.pop(0)
+        if isinstance(item, SourceOrigin):
+            if item.line:
+                return item
+            continue
+        if isinstance(item, tuple):
+            pending.extend(item)
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.extend(getattr(item, field.name) for field in fields(item))
+    return None
+
+
+def free_local_names(value: Value) -> set[str]:
+    """The names of the locals a value reads.
+
+    Parameters
+    ----------
+    value : Value
+        The value.
+
+    Returns
+    -------
+    set[str]
+        The name of every variable in it, binders' own reads included.
+    """
+    found: set[str] = set()
+    pending: list[object] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Var):
+            found.add(item.local.name)
+        elif isinstance(item, tuple):
+            pending.extend(item)
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.extend(getattr(item, field.name) for field in fields(item))
+    return found
+
+
+def _bound_names(term: Computation | Value) -> set[str]:
+    """The names a term binds: its sequencing, let, and comprehension binders.
+
+    Parameters
+    ----------
+    term : Computation | Value
+        The term.
+
+    Returns
+    -------
+    set[str]
+        The names.
+    """
+    found: set[str] = set()
+    pending: list[object] = [term]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Bind | LetBinding | Comprehension):
+            found.add(item.binder.name)
+        if isinstance(item, tuple):
+            pending.extend(item)
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.extend(getattr(item, field.name) for field in fields(item))
+    return found
+
+
+def _select(
+    condition: Value, then: Value, otherwise: Value, result_type: TypeExpr, owner: str, term: If
+) -> Value:
+    """A conditional between two pure values, as ``select``.
+
+    Parameters
+    ----------
+    condition : Value
+        The condition.
+    then : Value
+        The value where it holds.
+    otherwise : Value
+        The value where it does not.
+    result_type : TypeExpr
+        The type both branches return.
+    owner : str
+        The computation holding the conditional, for the diagnostic.
+    term : If
+        The conditional, for the diagnostic's line.
+
+    Returns
+    -------
+    Value
+        ``select(condition, then, otherwise)``, entrywise over a tensor.
+
+    Raises
+    ------
+    CallNotLowered
+        If the branches return neither real nor integer values.
+    """
+    split = tensor_shape(result_type)
+    element = result_type if split is None else split[0]
+    if element == REAL:
+        name = "select_real"
+    elif element == INT:
+        name = "select_int"
+    else:
+        raise CallNotLowered(
+            f"runs an `if` in `{owner}`{origin_line(term)} whose branches return "
+            f"{render_static(result_type)}, which `select` cannot choose "
+            f"between: it chooses between real or integer values"
+        )
+    signature = primitive(name)
+    return PrimitiveApplication(
+        signature.id,
+        name,
+        (condition, then, otherwise),
+        result_type,
+        _origin_of(condition),
+    )
+
+
+def _origin_of(value: Value) -> SourceOrigin:
+    """The origin a lowered conditional records: its condition's.
+
+    Parameters
+    ----------
+    value : Value
+        The condition.
+
+    Returns
+    -------
+    SourceOrigin
+        The condition's own origin when it records one, else an origin
+        naming the lowering.
+    """
+    found = _first_origin(value)
+    if found is not None:
+        return found
+    return SourceOrigin("lowered", ("if",), "primitive", "qiec-lowering")
+
+
+def inline_call(
+    callee: NamedComputation,
+    arguments: tuple[Value, ...],
+    result_type: TypeExpr,
+    computations: Mapping[str, NamedComputation],
+    active: tuple[str, ...] = (),
+) -> Value:
+    """A pure computation's call as one value, its calls inlined in turn.
+
+    The body is read at the arguments: a parameter whose argument is a
+    variable or a literal is read in place, unless a binder of the body
+    has a name the argument reads, and any other argument is bound
+    first. A pure computation the body calls is inlined the same way,
+    and an ``if`` between pure branches is ``select`` of its branches.
+
+    Parameters
+    ----------
+    callee : NamedComputation
+        The computation called.
+    arguments : tuple[Value, ...]
+        The call's arguments, one per parameter.
+    result_type : TypeExpr
+        The type of the call's result.
+    computations : Mapping[str, NamedComputation]
+        The module's computations, by name.
+    active : tuple[str, ...]
+        The computations whose bodies enclose this call, outermost
+        first, which the call may not reenter.
+
+    Returns
+    -------
+    Value
+        The body's value: a [`LetValue`][quivers.qiec.LetValue] of the
+        bound arguments and the body's bindings around the returned
+        value, or the returned value alone when nothing is bound.
+
+    Raises
+    ------
+    CallNotLowered
+        If the callee takes static arguments, is reentered, makes a
+        request (``effects`` set), handles an effect, branches with
+        ``case``, or chooses with ``if`` between values ``select``
+        cannot.
+    """
+    if callee.name in active:
+        raise CallNotLowered(recursion_reason((*active, callee.name)))
+    if callee.telescope:
+        raise CallNotLowered(
+            f"passes static arguments to `{callee.name}`, which the compiled "
+            f"runtime does not instantiate in a call"
+        )
+    if len(arguments) != len(callee.parameters):
+        raise CallNotLowered(
+            f"passes {len(arguments)} argument(s) to `{callee.name}`, which "
+            f"takes {len(callee.parameters)}"
+        )
+    if callee.type.effects.entries:
+        raise CallNotLowered(
+            f"calls `{callee.name}`, which makes requests", effects=True
+        )
+    captured = _bound_names(callee.body)
+    replaced: dict[Local, Value] = {}
+    bindings: list[LetBinding] = []
+    for parameter, argument in zip(callee.parameters, arguments, strict=True):
+        if isinstance(argument, Var | LiteralValue) and not (
+            free_local_names(argument) & captured
+        ):
+            replaced[parameter] = argument
+        else:
+            bindings.append(LetBinding(parameter, argument))
+    body = computation_value(
+        callee.body, replaced, result_type, callee, computations, (*active, callee.name)
+    )
+    if not bindings:
+        return body
+    return LetValue(tuple(bindings), body, result_type)
+
+
+def computation_value(
+    term: Computation,
+    replaced: Mapping[Local, Value],
+    result_type: TypeExpr,
+    owner: NamedComputation,
+    computations: Mapping[str, NamedComputation],
+    active: tuple[str, ...],
+) -> Value:
+    """A pure computation term as one value.
+
+    Parameters
+    ----------
+    term : Computation
+        A chain of binds whose steps return pure values, call pure
+        computations, or branch with ``if`` between pure computations.
+    replaced : Mapping[Local, Value]
+        The value each of the owner's locals read so far stands for.
+    result_type : TypeExpr
+        The type of the term's result.
+    owner : NamedComputation
+        The computation whose body holds the term, for diagnostics.
+    computations : Mapping[str, NamedComputation]
+        The module's computations, by name.
+    active : tuple[str, ...]
+        The computations whose bodies enclose the term, the owner last.
+
+    Returns
+    -------
+    Value
+        The term's value, a [`LetValue`][quivers.qiec.LetValue] when it
+        binds anything.
+
+    Raises
+    ------
+    CallNotLowered
+        If the term makes a request (``effects`` set), reenters a
+        computation, handles an effect, branches with ``case``, or
+        chooses between values ``select`` cannot.
+    """
+    bindings: list[LetBinding] = []
+    node = term
+    while isinstance(node, Bind):
+        first = node.first
+        if isinstance(first, Bind):
+            # A nested sequence associates into the enclosing one; its
+            # binder is fresh to the continuation.
+            node = Bind(first.binder, first.first, Bind(node.binder, first.then, node.then))
+            continue
+        bindings.append(
+            LetBinding(
+                node.binder,
+                _step_value(first, replaced, node.binder.type, owner, computations, active),
+            )
+        )
+        node = node.then
+    result = _step_value(node, replaced, result_type, owner, computations, active)
+    if not bindings:
+        return result
+    return LetValue(tuple(bindings), result, result_type)
+
+
+def _step_value(
+    term: Computation,
+    replaced: Mapping[Local, Value],
+    result_type: TypeExpr,
+    owner: NamedComputation,
+    computations: Mapping[str, NamedComputation],
+    active: tuple[str, ...],
+) -> Value:
+    """One pure step of a body as a value.
+
+    Parameters
+    ----------
+    term : Computation
+        The step.
+    replaced : Mapping[Local, Value]
+        The value each of the owner's locals read so far stands for.
+    result_type : TypeExpr
+        The type of the step's result.
+    owner : NamedComputation
+        The computation whose body holds the step.
+    computations : Mapping[str, NamedComputation]
+        The module's computations, by name.
+    active : tuple[str, ...]
+        The computations whose bodies enclose the step, the owner last.
+
+    Returns
+    -------
+    Value
+        The step's value.
+
+    Raises
+    ------
+    CallNotLowered
+        As `computation_value` does.
+    """
+    if isinstance(term, Return):
+        return replace_locals(term.value, replaced)
+    if isinstance(term, Call):
+        callee = computations.get(term.name)
+        if callee is None:
+            raise CallNotLowered(
+                f"calls `{term.name}` from `{owner.name}`, which is not a "
+                f"computation of the module"
+            )
+        return inline_call(
+            callee,
+            tuple(replace_locals(item, replaced) for item in term.arguments),
+            result_type,
+            computations,
+            active,
+        )
+    if isinstance(term, If):
+        condition = replace_locals(term.condition, replaced)
+        then = computation_value(
+            term.then, replaced, result_type, owner, computations, active
+        )
+        otherwise = computation_value(
+            term.otherwise, replaced, result_type, owner, computations, active
+        )
+        return _select(condition, then, otherwise, result_type, owner.name, term)
+    if isinstance(term, Perform):
+        raise CallNotLowered(
+            f"makes a `{term.request.effect.name}` request in `{owner.name}`"
+            f"{origin_line(term)}",
+            effects=True,
+        )
+    if isinstance(term, Case):
+        raise CallNotLowered(
+            f"branches on a family value with `case` in `{owner.name}`"
+            f"{origin_line(term)}; the compiled runtime lowers only an `if` "
+            f"whose branches are pure, as `select`"
+        )
+    if isinstance(term, Handle | NewInstance | Resume):
+        raise CallNotLowered(handled_reason(owner, term))
+    raise CallNotLowered(
+        f"runs a {type(term).__name__} in `{owner.name}`, which the compiled "
+        f"runtime has no step for"
+    )
+
+
+def recursion_reason(chain: tuple[str, ...]) -> str:
+    """Why a recursive call is refused, and what to write instead.
+
+    Parameters
+    ----------
+    chain : tuple[str, ...]
+        The computations entered, ending with the one reentered.
+
+    Returns
+    -------
+    str
+        The reason clause.
+    """
+    start = chain.index(chain[-1])
+    cycle = " -> ".join(f"`{name}`" for name in chain[start:])
+    return (
+        f"reaches a recursive call ({cycle}), so how many steps the call runs "
+        f"depends on the values it is given, while the compiled runtime runs a "
+        f"fixed chain of steps; write the repetition without recursion: a "
+        f"reduction such as `sum` or `fold`, or `map`, over a tensor of fixed "
+        f"length, or `scan` over a sequence for a recurrence"
+    )
+
+
+def handled_reason(owner: NamedComputation, term: Computation) -> str:
+    """Why a callee that handles an effect is refused.
+
+    Parameters
+    ----------
+    owner : NamedComputation
+        The callee.
+    term : Computation
+        The handling, instance, or resumption term.
+
+    Returns
+    -------
+    str
+        The reason clause.
+    """
+    return (
+        f"handles an effect inside `{owner.name}`{origin_line(term)}, and the "
+        f"compiled runtime runs only the program's own `Random` and `Score` "
+        f"requests, not a handler and its resumptions"
+    )
+
+
 def pure_call_bindings(
     callee: NamedComputation,
     arguments: tuple[Value, ...],
     result_type: TypeExpr,
     floater: _LetFloater,
+    computations: Mapping[str, NamedComputation],
 ) -> tuple[tuple[LetBinding, ...], Value] | None:
     """A pure computation's call as hoisted bindings and a result.
 
     The analysis both the planner and the runtime compiler inline a
-    pure call with: the callee's body at the arguments
-    (`_pure_body`), its bindings hoisted to fresh names by ``floater``.
+    pure call with: the callee's body at the arguments, with every pure
+    computation it calls inlined in turn and every ``if`` between pure
+    branches read as ``select`` (`inline_call`), its bindings hoisted to
+    fresh names by ``floater``.
 
     Parameters
     ----------
@@ -675,127 +1195,20 @@ def pure_call_bindings(
         The type of the call's result.
     floater : _LetFloater
         The floater that names the hoisted bindings.
+    computations : Mapping[str, NamedComputation]
+        The module's computations, by name.
 
     Returns
     -------
     tuple[tuple[LetBinding, ...], Value] | None
         The bindings in evaluation order and the result reading them,
-        or ``None`` when the computation is not a chain of pure bindings
-        (it performs an effect, takes static arguments, or calls
-        anything, a recursive call included).
+        or ``None`` when `inline_call` does not lower the call.
     """
-    shared = _pure_body(callee, arguments, result_type)
-    if shared is None:
+    try:
+        shared = inline_call(callee, arguments, result_type, computations)
+    except CallNotLowered:
         return None
     return floater.value(shared, {})
-
-
-def inline_pure_call(
-    callee: NamedComputation,
-    arguments: tuple[Value, ...],
-    result_type: TypeExpr,
-    occupied: set[str],
-    cards: dict[str, int],
-    program: str,
-) -> tuple[tuple[tuple[str, LetExprNode], ...], LetExprNode] | None:
-    """A pure call as let expressions the compiled runtime evaluates.
-
-    Parameters
-    ----------
-    callee : NamedComputation
-        The computation called.
-    arguments : tuple[Value, ...]
-        The call's arguments.
-    result_type : TypeExpr
-        The type of the call's result.
-    occupied : set[str]
-        Every name the program uses; the hoisted bindings take fresh
-        names outside it, which are added to it.
-    cards : dict[str, int]
-        The object cardinalities, which name a comprehension's axis.
-    program : str
-        The calling program, for diagnostics.
-
-    Returns
-    -------
-    tuple[tuple[tuple[str, LetExprNode], ...], LetExprNode] | None
-        Each hoisted binding's name and expression, in order, and the
-        result's expression; ``None`` when the call is not inlinable
-        (see `pure_call_bindings`) or binds a value the expression
-        language has no form for.
-    """
-    found = pure_call_bindings(callee, arguments, result_type, _LetFloater(occupied))
-    if found is None:
-        return None
-    hoisted, result = found
-    try:
-        return (
-            tuple(
-                (
-                    binding.binder.name,
-                    _expression(binding.value, cards, RUNTIME_TARGET, program),
-                )
-                for binding in hoisted
-            ),
-            _expression(result, cards, RUNTIME_TARGET, program),
-        )
-    except UnsupportedConstruct:
-        return None
-
-
-def _pure_body(
-    callee: NamedComputation,
-    arguments: tuple[Value, ...],
-    result_type: TypeExpr,
-) -> Value | None:
-    """A pure computation's body at the arguments, as one shared value.
-
-    Parameters
-    ----------
-    callee : NamedComputation
-        The computation called.
-    arguments : tuple[Value, ...]
-        The call's arguments, one per parameter.
-    result_type : TypeExpr
-        The type of the call's result.
-
-    Returns
-    -------
-    Value | None
-        A [`LetValue`][quivers.qiec.LetValue] binding each parameter to
-        its argument (a variable or literal argument is read in place)
-        and each of the body's bindings to its value, whose body is the
-        returned value; ``None`` when the computation
-        performs an effect, takes static arguments, or does anything but
-        bind pure values and return one.
-    """
-    if callee.type.effects.entries or callee.telescope:
-        return None
-    if len(arguments) != len(callee.parameters):
-        return None
-    # A variable or literal argument is read in place; any other is
-    # bound once, like the body's own bindings.
-    replaced: dict[Local, Value] = {}
-    bindings: list[LetBinding] = []
-    for parameter, argument in zip(callee.parameters, arguments, strict=True):
-        if isinstance(argument, Var | LiteralValue):
-            replaced[parameter] = argument
-        else:
-            bindings.append(LetBinding(parameter, argument))
-    node: Computation = callee.body
-    while isinstance(node, Bind):
-        if not isinstance(node.first, Return):
-            return None
-        bindings.append(
-            LetBinding(node.binder, replace_locals(node.first.value, replaced))
-        )
-        node = node.then
-    if not isinstance(node, Return):
-        return None
-    body = replace_locals(node.value, replaced)
-    if not bindings:
-        return body
-    return LetValue(tuple(bindings), body, result_type)
 
 
 __all__: list[str] = []

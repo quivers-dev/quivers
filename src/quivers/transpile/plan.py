@@ -845,7 +845,13 @@ class _ProgramWalk:
             expression language has no form for; such a call is made
             through the target's host runtime.
         """
-        found = pure_call_bindings(callee, call.arguments, binder.type, self.floater)
+        found = pure_call_bindings(
+            callee,
+            call.arguments,
+            binder.type,
+            self.floater,
+            self.planner.computations,
+        )
         if found is None:
             return None
         hoisted, result = found
