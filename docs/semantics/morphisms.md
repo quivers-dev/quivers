@@ -320,10 +320,12 @@ number of event dimensions $r_F$, read from the event dimension of its support i
 A family may be used both as the initializer of a declaration and as an inline draw
 (`sample x <- Family(args)`), with the same parameters, support, and density.
 
-The clause `~ F(args) over <axes> [iid over <axes>]` states which named factors of the domain and
-codomain are event axes. For $f : A \to B$ whose factors are $a_1, \dots, a_m$ and
-$b_1, \dots, b_n$, with sizes $d_i$, the clause names a set $E$ of $r_F$ factors as event axes. All
-other factors, on either side, are batch axes, and the clause declares
+In a declaration `morphism f : A -> B [over=E, iid=I] ~ F(args)`, the option `over` states which
+named factors of the domain and codomain are event axes, and `iid` names batch axes. Each takes one
+axis name or a bracketed list, as in `[over=cod, iid=dom]` or `[over=[dom, cod]]`. For
+$f : A \to B$ whose factors are $a_1, \dots, a_m$ and $b_1, \dots, b_n$, with sizes $d_i$, `over`
+names a set $E$ of $r_F$ factors as event axes. All other factors, on either side, are batch axes,
+and the declaration states
 
 $$
 \llbracket f \rrbracket \sim \prod_{\text{batch indices}} F\Bigl(\prod_{e \in E} d_e\Bigr),
@@ -340,7 +342,7 @@ $r_F \le 1$ may list $n > r_F$ axes $e_1, \dots, e_n$. The last $r_F$ are event 
 others are batch axes, in the order written. A matrix family in a step still needs $|E| = r_F$.
 
 **Order of event axes.** For a family with two event axes (rows and columns for `MatrixNormal`,
-the two indices for `LKJCholesky`), `over (e_1, e_2)` binds them in the family's order.
+the two indices for `LKJCholesky`), `over=[e_1, e_2]` binds them in the family's order.
 
 **Changing a signature.** If a domain or codomain is refactored, for instance $B$ into
 $B_1 \times B_2$, an axis name that no longer exists is a type error, not silently rebound.
@@ -349,10 +351,10 @@ product, each factor must be named.
 
 ## 7. Priors on learnable tables
 
-A `latent` declaration accepts a family clause:
+A `latent` declaration accepts a family clause, with the `over` and `iid` options of §6:
 
 ```
-morphism f : τ₁ -> τ₂ [role=latent] ~ Family(args) [over <axes> [iid over <axes>]]
+morphism f : τ₁ -> τ₂ [role=latent, over=E, iid=I] ~ Family(args)
 ```
 
 The clause states a prior on the entries of the table: the table is a draw from the family over
