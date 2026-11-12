@@ -113,7 +113,7 @@ pipe = compose_trans(softmax(B), EXPECTATION)
 g    = f.change_base(pipe)
 ```
 
-## The hierarchy of composition rules
+## The hierarchy of composition rules {#the-composition-rule-hierarchy}
 
 A *composition rule* (class [`CompositionRule`](../api/core/algebras.md)) is the
 pair of operations $\otimes$ and $\bigoplus$ that `>>` uses:
