@@ -86,8 +86,8 @@ session. With a file, it loads and elaborates the file before showing
 the prompt. `--plain` uses the plain front end that reads one line at a time instead of the
 TUI, and `--target TARGET` makes every load report the capability
 diagnostics of that transpile target beside the module's own, as
-`qvr check --target` does. See
-[REPL and Language Server](../guides/repl-and-lsp.md).
+`qvr check --target` does
+([Interactive tools](../guides/repl-and-lsp.md#the-repl)).
 
 ## `qvr run FILE [ENTRY [ARGUMENTS...]]`
 
@@ -194,8 +194,8 @@ the selected transpiler. Editor extensions invoke this command over the
 Language Server Protocol. The server accepts later target changes through
 `workspace/didChangeConfiguration`, with either
 `{"qvr": {"transpileTarget": "TARGET"}}` or
-`{"transpileTarget": "TARGET"}`, and an empty target turns these diagnostics off.
-See [REPL and Language Server](../guides/repl-and-lsp.md).
+`{"transpileTarget": "TARGET"}`, and an empty target turns these diagnostics off
+([Interactive tools](../guides/repl-and-lsp.md#the-language-server)).
 
 ## `qvr transpile FILE`
 
