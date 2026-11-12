@@ -60,7 +60,6 @@ LET_CALL_SYMBOLS: dict[str, dict[str, CallEntry]] = {
 }
 
 
-
 #: The targets the Python helpers render.
 PYTHON_TARGETS: frozenset[str] = frozenset(LET_CALL_SYMBOLS)
 
