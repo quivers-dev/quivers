@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 142 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 46 programs of the [examples gallery](examples/index.md) and for 144 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 73 / 142   |
-| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 89 / 142   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 106 / 142  |
-| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 93 / 142   |
-| [jags](semantics/transpile-correctness/jags.md)       | 30 / 46          | 79 / 142   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 121 / 142  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 107 / 142  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 123 / 142  |
-| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 108 / 142  |
-| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 99 / 142   |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 98 / 142   |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 25 / 46          | 73 / 144   |
+| [church](semantics/transpile-correctness/church.md)   | 25 / 46          | 91 / 144   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 31 / 46          | 108 / 144  |
+| [gen](semantics/transpile-correctness/gen.md)         | 31 / 46          | 95 / 144   |
+| [jags](semantics/transpile-correctness/jags.md)       | 29 / 46          | 80 / 144   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 32 / 46          | 123 / 144  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 31 / 46          | 109 / 144  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 32 / 46          | 125 / 144  |
+| [stan](semantics/transpile-correctness/stan.md)       | 32 / 46          | 110 / 144  |
+| [turing](semantics/transpile-correctness/turing.md)   | 31 / 46          | 101 / 144  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 32 / 46          | 100 / 144  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -80,7 +80,7 @@ Each backend links to its transpilation-correctness page, which documents the st
 | [`horseshoe_regression`](examples/horseshoe-regression.md)               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`irt_2pl`](examples/irt-2pl.md)                                         | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`kumaraswamy_bounded_outcome`](examples/kumaraswamy-bounded-outcome.md) | no   | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| [`lda`](examples/lda.md)                                                 | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| [`lda`](examples/lda.md)                                                 | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`linear_gaussian_ssm`](examples/linear-gaussian-ssm.md)                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`lkj_cholesky_correlation`](examples/lkj-cholesky-correlation.md)       | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | [`logistic_noise_regression`](examples/logistic-noise-regression.md)     | yes  | no     | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -138,78 +138,80 @@ One minimal program per surface construct, so a `no` here isolates the construct
 
 #### 1.2.2 Program steps
 
-| Program                                         | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
-|-------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
-| `steps/call_lowered_pure`                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/call_step`                               | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/function_linear`                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/function_positions`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/function_self_attention`                 | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/kernel_latent_weights`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/let_step`                                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/marginalize_body_let_chain`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_body_plated_let`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_continuous_bernoulli_logits` | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/marginalize_factor_let_rows`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_gathered_prior_data`         | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
-| `steps/marginalize_latent_gather`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_latent_value`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_let_probs`                   | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_let_vector_probs`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
-| `steps/marginalize_step`                        | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_bernoulli_logits`                | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_bernoulli_logits_rows`           | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_binomial_logits`                 | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/observe_class_code`                      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_continuous_bernoulli_logits`     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/observe_gather_event_vector`             | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/observe_gather_matrix_row`               | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
-| `steps/observe_geometric_logits`                | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_logits_data`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_mvn_host_factor`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_mvn_lkj_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_negative_binomial_logits`        | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
-| `steps/observe_ordered_probit`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_ordinal_code`                    | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/observe_over_vector_location`            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_per_row_datum_scale`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_per_row_gamma_rate`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_plated_vector_location`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_probs_data`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_shared_probs_vector`             | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_step`                            | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_location_latent`          | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_location_let`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/observe_vector_parameter_data`           | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/observe_vector_scale_rate`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/return_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_class_code`                       | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
-| `steps/sample_dirichlet_sampled_concentration`  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_inverse_wishart_factor`           | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
-| `steps/sample_matrix_normal`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_covariance`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_factor`                       | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_host_loc`                     | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_precision`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_mvn_sampled_loc`                  | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_onehot_probs`                     | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/sample_onehot_sampled_probs`             | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
-| `steps/sample_relaxed_onehot_probs`             | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
-| `steps/sample_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_vector_location`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
-| `steps/sample_wishart_covariance`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/sample_wishart_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/sample_wishart_host_factor`              | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
-| `steps/sample_wishart_precision`                | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
-| `steps/scan_bidirectional`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_matrix`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_matrix_data`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_cell_reads_vector`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_initial_binding`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_marginal_chain`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_outputs_all`                        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/scan_reverse`                            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
-| `steps/score_step`                              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| Program                                          | bugs | church | edward2 | gen | jags | numpyro | pymc | pyro | stan | turing | webppl |
+|--------------------------------------------------|------|--------|---------|-----|------|---------|------|------|------|--------|--------|
+| `steps/call_lowered_pure`                        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/call_step`                                | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/function_linear`                          | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_positions`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/function_self_attention`                  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/kernel_latent_weights`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/let_step`                                 | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_bernoulli_logits`             | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_body_let_chain`               | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_body_plated_let`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_factor_let_rows`              | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_gathered_prior_data`          | no   | yes    | yes     | no  | no   | yes     | yes  | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_gather`                | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_latent_value`                 | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_probs`                    | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_let_vector_probs`             | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | no     | yes    |
+| `steps/marginalize_per_group_prior_shared_class` | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_shared_prior_scalar_let`      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/marginalize_step`                         | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernoulli_logits`                 | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_bernoulli_logits_rows`            | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_binomial_logits`                  | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/observe_class_code`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_continuous_bernoulli_logits`      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_gather_event_vector`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/observe_gather_matrix_row`                | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
+| `steps/observe_geometric_logits`                 | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_logits_data`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_mvn_host_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_mvn_lkj_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_negative_binomial_logits`         | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/observe_ordered_probit`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_ordinal_code`                     | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/observe_over_vector_location`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_per_row_datum_scale`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_per_row_gamma_rate`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_plated_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_probs_data`                       | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_shared_probs_vector`              | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_latent`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_location_let`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_vector_parameter_data`            | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_vector_scale_rate`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/return_step`                              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_class_code`                        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
+| `steps/sample_dirichlet_sampled_concentration`   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_inverse_wishart_factor`            | no   | no     | no      | no  | no   | yes     | no   | yes  | yes  | yes    | no     |
+| `steps/sample_matrix_normal`                     | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_covariance`                    | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_factor`                        | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_host_loc`                      | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_precision`                     | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_mvn_sampled_loc`                   | no   | no     | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_onehot_probs`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_onehot_sampled_probs`              | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/sample_relaxed_onehot_probs`              | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/sample_step`                              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_vector_location`                   | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/sample_wishart_covariance`                | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_factor`                    | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/sample_wishart_host_factor`               | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
+| `steps/sample_wishart_precision`                 | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
+| `steps/scan_bidirectional`                       | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_matrix`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_matrix_data`              | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_cell_reads_vector`                   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_initial_binding`                     | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_marginal_chain`                      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_outputs_all`                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/scan_reverse`                             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/score_step`                               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 
 #### 1.2.3 Let-expressions
 
@@ -341,15 +343,13 @@ Refused for: `steps/function_linear`.
 Reported kinds:
 
 ```text
-param-source:linear
+param-source:linear: the learned function `shift` (line 10, through shift) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 Every backend reports it in the same words. `bugs` on `steps/function_linear` reports:
 
 ```text
-no transpile target can transpile this program:
-  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
-  - no transpile target can transpile this program. The refusal is tagged `the learned function 'shift' (line 10, through shift) applies a 'linear' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+a morphism draws its parameters from a `linear` network, whose weights are not sites the program declares: the learned function `shift` (line 10, through shift) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `param-source:linear:latent`
@@ -359,15 +359,13 @@ Refused for: `steps/kernel_latent_weights`.
 Reported kinds:
 
 ```text
-param-source:linear:latent
+param-source:linear:latent: the step at line 11 reaches `net` through net, and `net` declares `weights=latent`. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.
 ```
 
 Every backend reports it in the same words. `bugs` on `steps/kernel_latent_weights` reports:
 
 ```text
-no transpile target can transpile this program:
-  - a morphism between objects of different width carries a compiled linear parameter map, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
-  - no transpile target can transpile this program. The refusal is tagged `the network of 'net' (line 11, through net) draws its weights as latent sites, but no target has a form for the network's affine layers applied to drawn weights. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.`, which has no explanation registered yet; please report it.
+a morphism draws the weights of its `linear` network as latent sites, and no target has a form for the network's layers applied to drawn weights: the step at line 11 reaches `net` through net, and `net` declares `weights=latent`. Write the layers as `factor` comprehensions over sampled weight matrices to transpile the model.
 ```
 
 ### `param-source:mlp`
@@ -377,15 +375,17 @@ Refused for: [`bnn`](examples/bnn.md), [`deep_markov`](examples/deep-markov.md),
 Reported kinds:
 
 ```text
-param-source:mlp
+param-source:mlp: the step at line 33 draws from `net`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `net` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+param-source:mlp: the step at line 47 draws from `head_0`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `head_0` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+param-source:mlp: the step at line 49 draws from `trans_mlp_1`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `trans_mlp_1` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+param-source:mlp: the step at line 55 draws from `dec_deep`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `dec_deep` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+param-source:mlp: the step at line 59 draws from `enc_head_0`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `enc_head_0` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
 ```
 
 Every backend reports it in the same words. `bugs` on `bnn` reports:
 
 ```text
-no transpile target can transpile this program:
-  - no transpile target can transpile this program. The refusal is tagged `morphism 'net' draws its parameters from a 'mlp' network. The network's weights are model-internal and appear in neither the wire form nor the sample sites, so no backend can reconstruct the mean the morphism computes at line 33. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.`, which has no explanation registered yet; please report it.
-  - a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares: the step at line 33 draws from `net`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `net` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
 ```
 
 ### `param-source:positions`
@@ -395,15 +395,13 @@ Refused for: `steps/function_positions`.
 Reported kinds:
 
 ```text
-param-source:positions
+param-source:positions: the learned function `pos` (line 9, through pos) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 Every backend reports it in the same words. `bugs` on `steps/function_positions` reports:
 
 ```text
-no transpile target can transpile this program:
-  - a morphism draws its parameters from a `positions` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
-  - no transpile target can transpile this program. The refusal is tagged `the learned function 'pos' (line 9, through pos) applies a 'positions' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+a morphism draws its parameters from a `positions` network, whose weights are not sites the program declares: the learned function `pos` (line 9, through pos) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `param-source:self_attention`
@@ -413,15 +411,13 @@ Refused for: `steps/function_self_attention`.
 Reported kinds:
 
 ```text
-param-source:self_attention
+param-source:self_attention: the learned function `attn` (line 9, through attn) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 Every backend reports it in the same words. `bugs` on `steps/function_self_attention` reports:
 
 ```text
-no transpile target can transpile this program:
-  - a morphism draws its parameters from a `self_attention` network, whose weights are not sites the program declares, so no target can reconstruct the parameter it computes. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
-  - no transpile target can transpile this program. The refusal is tagged `the learned function 'attn' (line 9, through attn) applies a 'self_attention' network whose weights are model-internal`, which has no explanation registered yet; please report it.: they are neither sites the program declares nor data a target is given, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
+a morphism draws its parameters from a `self_attention` network, whose weights are not sites the program declares: the learned function `attn` (line 9, through attn) applies that network, whose weights are not data a target is given either, so no target can compute the value it returns. Only a `param_source=identity` function, which has no weights, transpiles.
 ```
 
 ### `qiec:capability:neural-attachment:dec`, `qiec:capability:neural-attachment:dec__nll`, `qiec:capability:neural-attachment:enc`
@@ -1123,6 +1119,24 @@ let-expr:axis-reduction:bugs: sum(...) over a rank-3 operand reduces only the in
 bugs-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `let` body: sum(...) over a rank-2 operand reduces only the innermost axis in QVR, and BUGS / JAGS `sum` contracts every axis; there is no target spelling for the partial reduction
 ```
 
+**`marginalize:grouped-fibration:c`**
+
+Refused for: `steps/marginalize_per_group_prior_shared_class`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+marginalize:grouped-fibration:c: the rows `idx` sends to each `Grp` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
+```
+
+`bugs` on `steps/marginalize_per_group_prior_shared_class` reports:
+
+```text
+bugs cannot marginalize this latent out: the rows `idx` sends to each `Grp` are summed before the reduction over the atoms, and BUGS has no statement that adds the per-group log-density to the joint
+```
+
 **`marginalize:grouped-fibration:cls`**
 
 Refused for: `steps/marginalize_step`.
@@ -1143,7 +1157,7 @@ bugs cannot marginalize this latent out: the rows `idx` sends to each `Item` are
 
 **`marginalize:no-collapse:z`**
 
-Refused for: `steps/marginalize_continuous_bernoulli_logits`, [`zip_regression`](examples/zip-regression.md).
+Refused for: `steps/marginalize_bernoulli_logits`, `steps/marginalize_shared_prior_scalar_let`, [`zip_regression`](examples/zip-regression.md).
 
 Renders on: `church`, `edward2`, `gen`, `jags`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
 
@@ -1153,7 +1167,7 @@ Reported kinds:
 marginalize:no-collapse:z: the scope is no categorical mixture, and BUGS has no statement that adds its integrated log-density to the joint
 ```
 
-`bugs` on `steps/marginalize_continuous_bernoulli_logits` reports:
+`bugs` on `steps/marginalize_bernoulli_logits` reports:
 
 ```text
 bugs cannot marginalize this latent out: the scope is no categorical mixture, and BUGS has no statement that adds its integrated log-density to the joint
@@ -2693,7 +2707,7 @@ jags-helper cannot emit a `let` body the IR carries as `axis-reduction` as a `le
 
 **`let-expr:elementwise-axis-operator:jags`**
 
-Refused for: `steps/marginalize_gathered_prior_data`.
+Refused for: `steps/marginalize_gathered_prior_data`, `steps/marginalize_per_group_prior_shared_class`, [`lda`](examples/lda.md).
 
 Renders on: `church`, `edward2`, `numpyro`, `pymc`, `pyro`, `stan`, `webppl`.
 
