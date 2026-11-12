@@ -89,7 +89,7 @@ forms:
 
 A set given by enumeration is determined by its labels: two such sets with the same number of
 elements and different labels are different objects. A `category C_1, ..., C_n` declaration binds
-each name to a set with one label ([Schemas §1](schemas.md#1-category-atoms)). There is one
+no object: it adds atomic syntactic categories ([Schemas §1](schemas.md#1-category-atoms)). There is one
 declaration keyword, `object`, for finite sets and spaces alike. The value decides which
 environment receives the name.
 
