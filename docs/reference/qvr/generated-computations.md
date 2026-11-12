@@ -1,6 +1,6 @@
 # Generated computation graphs
 
-Several QVR declarations elaborate to QIEC definitions that the declaration does not spell out.
+Several QVR declarations elaborate to definitions of the [Quivers Indexed Effect Core](index.md) (QIEC) that the declaration does not spell out.
 Elaboration may add families, instances, [handlers](effects-and-handlers.md#handler-declarations),
 and helper computations, and every generated definition is typed, visible to the tooling, and
 carries the source range of the declaration it came from, so a diagnostic in generated code points
@@ -118,7 +118,7 @@ A process that deserializes the module attaches compatible providers before it i
 needs them. A transpile target without such a provider refuses the entry with
 `qiec:capability:neural-attachment:<entry>`.
 
-The [structural autoencoder tutorial](../../tutorials/qvr/12-structural-autoencoders.md) and the
+The [tree autoencoder tutorial](../../tutorials/qvr/12-structural-autoencoders.md) and the
 [Term Autoencoder](../../examples/term-autoencoder.md) example build one end to end.
 
 ## Programs that call generated entries

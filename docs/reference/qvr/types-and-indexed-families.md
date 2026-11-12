@@ -144,7 +144,7 @@ define head[A : Type, n : Nat](xs : Vec[A](S(n))) : A !{} =
 ## Pure expressions
 
 Computation values and `program` expressions draw on one registry of checked primitives, the
-portable set that QIEC lowering and program elaboration share. The eager PyTorch compiler accepts
+portable set that lowering to the [Quivers Indexed Effect Core](index.md) (QIEC) and program elaboration share. The eager PyTorch compiler accepts
 further names of its own, and those names do not become QIEC primitives.
 
 Operators associate to the left within each precedence level:

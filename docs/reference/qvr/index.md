@@ -131,6 +131,6 @@ drops an unsupported body. What each target accepts is listed under
 The QVR tutorials on [indexed data and total functions](../../tutorials/qvr/09-indexed-data.md),
 [effects and handlers](../../tutorials/qvr/10-effects-and-handlers.md),
 [parsing as an effectful computation](../../tutorials/qvr/11-parsing-and-search.md), and
-[structural autoencoders](../../tutorials/qvr/12-structural-autoencoders.md) build one feature
+[tree autoencoders](../../tutorials/qvr/12-structural-autoencoders.md) build one feature
 each. The [Amortized Bayesian Semantics](../../examples/amortized-bayesian-semantics.md) example
-combines indexed data, effects, probabilistic programs, and structural attachments in one model.
+combines indexed data, effects, probabilistic programs, and attachments in one model.

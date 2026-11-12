@@ -1,7 +1,7 @@
 # Probabilistic programs
 
-A `program` declares a probabilistic model as a sequence of steps, and elaborates to one QIEC
-computation that performs through the module's two built-in
+A `program` declares a probabilistic model as a sequence of steps, and elaborates to one computation
+of the [Quivers Indexed Effect Core](index.md) (QIEC) that performs through the module's two built-in
 [effect instances](effects-and-handlers.md#prelude-interfaces), `random : Random` and
 `score : Score`. Each draw becomes a `Random.sample` request at a named *sample site*, and each
 observation or score term becomes a `Score.add` request that adds a log density to the run's
