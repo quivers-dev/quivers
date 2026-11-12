@@ -37,7 +37,14 @@ from quivers.core.algebras import MARKOV
 
 
 class GiryMonad(Monad):
-    """A finite tensor adapter for probability-kernel composition.
+    """The identity monad on FinStoch, presenting the finite Giry monad's Kleisli category.
+
+    On finite sets the Giry monad is the distribution monad, and its
+    Kleisli category is FinStoch: stochastic matrices under matrix
+    multiplication. This class works in that Kleisli category, so as a
+    monad on it ``G(A) = A``, ``fmap(f) = f`` and ``η = μ = id``: it is
+    the identity monad on FinStoch, and its Kleisli composition is the
+    composition of FinStoch.
 
     At the finite-set level, G(A) = A because probability distributions
     over A are represented as tensors indexed by A (i.e., functions

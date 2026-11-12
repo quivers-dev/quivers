@@ -326,22 +326,18 @@ class Morphism(ABC):
 
     @property
     def dagger(self) -> "TransformedMorphism":
-        """Transpose / dagger of ``self : A → B``, producing a
-        morphism ``B → A`` whose tensor has the domain and codomain
-        axes swapped.
+        """Transpose (relational converse) of ``self : A → B``.
 
-        The compact-closed structure of V-Cat means every object is
-        self-dual (``A^* = A``), so the dagger is well-defined for
-        every algebra. The semantic interpretation depends on the
-        algebra: ProductFuzzyAlgebra gives the tensor transpose, Markov
-        the Bayes-uniform-prior inversion, Viterbi the max-plus
-        reversal, Boolean the relational converse.
-
-        Categorically:
-        ``f^† = (ε_B ⊗ id_A) ∘ (id_B ⊗ f^* ⊗ id_A) ∘ (id_B ⊗ η_A)``
-        — but for finite-set objects the unit / counit collapse to
-        the diagonal / co-diagonal, and the dagger reduces to a
-        tensor transpose along the domain/codomain axes.
+        Returns the morphism ``B → A`` whose tensor has the domain and
+        codomain axes swapped, ``f^†(b, a) = f(a, b)``, under every
+        algebra: for Boolean relations it is the converse relation, and
+        for a Markov kernel it is the transposed matrix, which is not a
+        Bayesian inversion and is not row-stochastic in general. When
+        the algebra is a commutative `Semiring`, V-matrices are compact
+        closed with every object self-dual, the transpose is the dagger
+        of that dagger-compact structure, and it equals
+        ``(ε_B ⊗ id_A) ∘ (id_B ⊗ f ⊗ id_A) ∘ (id_B ⊗ η_A)`` with the
+        identity matrices as cup and cap.
 
         Returns
         -------
