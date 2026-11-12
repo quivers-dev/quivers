@@ -1,29 +1,14 @@
 # 2. Generalized linear models
 
-Linear regression is the corner case of a generalized linear model [@nelder1972glm] with an identity link and a normal likelihood. Loosening either gives you a much wider family: logistic regression for binary outcomes, Poisson regression for counts, ordinal regression for graded responses. This chapter does the first two end to end in QVR, with calibration checks on the [posterior predictive](../python/08-analysis-pipelines.md#posterior-predictive-checks).
-
-The model template is the same in every case:
+A [generalized linear model](https://en.wikipedia.org/wiki/Generalized_linear_model) (GLM) passes a linear predictor through an inverse link function and uses the result as the parameter of a response distribution [@nelder1972glm]. Let $x_i$ be the predictors of observation $i$, $\beta$ the coefficients, $g$ the link function, and $\mathcal F$ the response family:
 
 $$
-\theta_i = g^{-1}(\beta^\top x_i), \qquad y_i \sim \mathcal{F}(\theta_i),
+\theta_i = g^{-1}(\beta^\top x_i), \qquad y_i \sim \mathcal{F}(\theta_i).
 $$
 
-where $g$ is the link function and $\mathcal{F}$ is the response family. We pick $(g^{-1}, \mathcal{F})$ together.
-
-The linear predictor can be any real number, while a probability must lie
-between zero and one and a Poisson rate must be positive. An [inverse link](../../examples/beta-regression.md#understanding-the-model)
-connects these requirements. At linear predictor zero, `sigmoid(0)` gives
-probability `0.5`, while `exp(0)` gives rate `1`. Under a [logistic link](https://mc-stan.org/docs/stan-users-guide/regression.html#logistic-probit-regression.section),
-a coefficient increase changes log-odds by a fixed amount [@stanRegression].
-Its effect on probability is smaller near zero or one than near the midpoint.
-
-The response family describes remaining variation after that transformation.
-A Bernoulli draw is a binary outcome, even though its probability is continuous;
-a Poisson draw is a nonnegative count, even though its rate is continuous.
+Linear regression ([chapter 1](01-first-model.md)) is the case with identity link and Normal family. This chapter fits logistic regression (logit link, Bernoulli family) and Poisson regression (log link, Poisson family) in QVR [@stanRegression].
 
 ## Logistic regression
-
-Binary response, sigmoid link, Bernoulli likelihood.
 
 === "QVR"
 
@@ -62,26 +47,24 @@ Binary response, sigmoid link, Bernoulli likelihood.
         numpyro.sample("y", dist.Bernoulli(logits=logit), obs=y)
     ```
 
-`Bernoulli` also takes the log-odds directly, so the same likelihood can be written `observe y : Item <- Bernoulli(logits=logit)` without the `sigmoid` let. Scored from its logits, the density keeps its precision where the linear predictor saturates, while `sigmoid(logit)` in single precision rounds to one once `logit` passes about 17. The transpile targets that have a logit-parameterized Bernoulli (Stan's `bernoulli_logit`, Turing's `BernoulliLogit`, PyMC's `logit_p`, and the `logits` keyword of Pyro, NumPyro, and Edward2) render it natively; BUGS, JAGS, Church, Gen, and WebPPL refuse it by name.
+`Bernoulli` also accepts the log odds directly: `observe y : Item <- Bernoulli(logits=logit)` drops the `sigmoid` step. Scoring from the logits keeps the log density accurate where the linear predictor is large, whereas `sigmoid(logit)` in single precision rounds to one once `logit` exceeds about 17. Which [transpile targets](../../transpile-support.md) accept the `logits` form is listed there.
 
-QVR's let-arithmetic exposes the standard nonlinearities so you can name the inverse link explicitly. The full builtin set:
+`let` expressions provide the usual inverse links and nonlinearities, among them:
 
 | Builtin | Domain | Codomain | Use |
 |---|---|---|---|
-| `sigmoid(x)` | $\mathbb{R}$ | $(0, 1)$ | logistic inverse link |
-| `softmax(x)` | $\mathbb{R}^K$ | simplex on $K$ | categorical inverse link |
-| `log_softmax(x)` | $\mathbb{R}^K$ | log-simplex | numerically stable categorical link |
-| `exp(x)` | $\mathbb{R}$ | $\mathbb{R}_{>0}$ | log inverse link (Poisson, Gamma) |
-| `log(x)` | $\mathbb{R}_{>0}$ | $\mathbb{R}$ | forward log link |
-| `softplus(x)` | $\mathbb{R}$ | $\mathbb{R}_{>0}$ | positive output without the exp blowup |
+| `sigmoid(x)` | $\mathbb{R}$ | $(0, 1)$ | inverse of the logit link |
+| `softmax(x)` | $\mathbb{R}^K$ | simplex on $K$ | inverse link of a categorical response |
+| `log_softmax(x)` | $\mathbb{R}^K$ | log of the simplex | the same, in log space |
+| `exp(x)` | $\mathbb{R}$ | $\mathbb{R}_{>0}$ | inverse of the log link (Poisson, Gamma) |
+| `log(x)` | $\mathbb{R}_{>0}$ | $\mathbb{R}$ | log link |
+| `softplus(x)` | $\mathbb{R}$ | $\mathbb{R}_{>0}$ | positive output that grows linearly rather than exponentially |
 | `tanh(x)` | $\mathbb{R}$ | $(-1, 1)$ | bounded nonlinearity |
-| `relu(x)` | $\mathbb{R}$ | $\mathbb{R}_{\ge 0}$ | rectified linear |
-| `clamp(x, lo, hi)` | $\mathbb{R}$ | $[\text{lo}, \text{hi}]$ | constrain |
-| `sum(x)`, `prod(x)`, `cumsum(x)`, `logsumexp(x)` | tensor | scalar / tensor | reductions over an axis |
+| `relu(x)` | $\mathbb{R}$ | $\mathbb{R}_{\ge 0}$ | rectified linear unit |
+| `sum(x)`, `prod(x)`, `logsumexp(x)` | $\mathbb{R}^K$ | $\mathbb{R}$ | reduce the last axis |
+| `cumsum(x)` | $\mathbb{R}^K$ | $\mathbb{R}^K$ | cumulative sum along the last axis |
 
-(A *link function* is the deterministic map $g$ in $g(\theta_i) = \beta^\top x_i$. We compose with its inverse $g^{-1}$ to turn the linear predictor into the chosen response parameter, such as a probability or mean.)
-
-Fitting is the same as chapter 1:
+The [checked primitive reference](../../guides/dsl-programs-and-lets.md#checked-primitive-reference) lists the rest. Fit the model as in chapter 1:
 
 ```python
 import torch
@@ -122,9 +105,9 @@ for step in range(50):                          # bump to ~3000 for real fits
     svi.step(x_tensor, observations)
 ```
 
-## Posterior-predictive calibration
+## Calibration of the posterior mean probability
 
-A logistic regression is well-calibrated if, of all observations where the model predicts $p = 0.7$, roughly 70% actually have $y = 1$.
+A classifier is [calibrated](https://en.wikipedia.org/wiki/Calibration_(statistics)) when, among the observations to which it assigns probability near $p$, a share near $p$ has $y = 1$. The block below averages the success probability over 500 guide draws of $(\beta_0, \beta_1)$, bins the observations by that posterior mean, and compares each bin's observed frequency with a central 95% binomial interval at the bin midpoint.
 
 ```python
 from scipy.stats import binom
@@ -151,9 +134,19 @@ for lo, hi in zip(bins[:-1], bins[1:]):
           f"  observed={empirical:.2f}  [{band_lo/n:.2f}, {band_hi/n:.2f}]  {in_band}")
 ```
 
-## Poisson regression
+After 50 steps the output is
 
-Count response, log link, Poisson likelihood.
+```text
+  [0.3, 0.4)  n=  4  predicted=0.35  observed=0.00  [0.00, 0.75]  ok
+  [0.4, 0.5)  n= 66  predicted=0.45  observed=0.21  [0.33, 0.58]  miss
+  [0.5, 0.6)  n=116  predicted=0.55  observed=0.67  [0.46, 0.64]  miss
+  [0.6, 0.7)  n= 13  predicted=0.65  observed=1.00  [0.38, 0.92]  miss
+  [0.7, 0.8)  n=  1  predicted=0.75  observed=1.00  [0.00, 1.00]  ok
+```
+
+The guide has not moved far from its initialization, so the predicted probabilities crowd around 0.5 while the observed frequencies spread from 0.2 to 1. With 3000 steps the predictions spread over all ten bins, and nine of the ten observed frequencies fall inside their intervals. This check uses the posterior mean of the success probability only. A [posterior predictive check](08-diagnostics-and-comparison.md) compares the data with replicated data drawn from the fitted model.
+
+## Poisson regression
 
 ```qvr
 object Item : FinSet 150
@@ -168,39 +161,26 @@ program poisson_reg : Item -> Item [effects=[Sample, Score]]
 export poisson_reg
 ```
 
-The fit code is identical to the logistic case; only the model file changes.
-`Predictive` handles the count-valued likelihood without additional
-configuration.
+The fitting code is the logistic code with this source and count data in place of binary data.
 
 ## Common mistakes
 
-Most "why does this fail at runtime" questions trace to one of three slips:
+1. **A data input missing from `observed_names`.** If the body reads `x_design` and the guide receives `observed_names={"y"}`, guide construction or the first run fails for want of a value. `loads` cannot detect this, because it records free names as [data inputs](01-first-model.md#data-inputs-and-the-observations-dict). Every name that the body reads and no `sample`, `let`, or `marginalize` step binds belongs in `observed_names`.
+2. **A data input of the wrong length.** If `x_design` has shape `(200,)` and `Item` has size 100, broadcasting over `Item` fails with a PyTorch shape error at the first run. The compiler does not know the tensor's shape, so compare tensor lengths with the sizes of the declared objects.
+3. **Rebinding a name.** A name bound by `sample` cannot be bound again: `let beta_0 = beta_0 + 1` fails with `variable 'beta_0' already bound in program`. Use a fresh name.
 
-1. **`observed_names` mismatch.** If the body references `x_design` but you pass `observed_names={"y"}`, the inference boundary lacks a host-data value. `loads` records such free names as program inputs; guide construction or the first execution, rather than source compilation, diagnoses a missing runtime value. Rule of thumb: every name that appears in the body but is not introduced by `<-`, `let`, or `marginalize` belongs in `observed_names`.
-2. **Shape mismatch in host data.** If `x_design` has shape `(200,)` but the object `Item` was declared `: 100`, the per-row broadcast over `Item` fails with a torch shape error. The compiler doesn't know `x_design`'s runtime shape, so this one surfaces at the first forward pass. Sanity-check tensor lengths against object cardinalities.
-3. **Re-using an `<-` name on the LHS of `let`.** Once a name is bound by a sample step, you can't reassign it. To name a deterministic transform, pick a fresh name (`let mu = beta_0 + beta_1 * x`, not `let beta_0 = beta_0 + 1`).
+## Comparison with Pyro and NumPyro
 
-## What QVR adds
-
-Three observations from this chapter you may have already noticed:
-
-1. **No `pyro.plate` / `numpyro.plate` wrapping.** Plates are inferred from object cardinalities and the domain/codomain typing. If you need an explicit indexed family (say a per-group intercept), chapter 3 introduces the plate-draw syntax (`v : G <- Normal(loc=0, scale=sigma)`).
-2. **`let` is not sampling.** PyMC `pm.Deterministic`, NumPyro `numpyro.deterministic`, Pyro `pyro.deterministic`: every PPL has a different name for "this is computed from existing variables without a new draw." QVR uses `let`. The compiler tracks the dependency for autograd.
-3. **Several entries, one module.** A `.qvr` file may declare several
-   programs and computations. `Program.entry_points()` lists the checked
-   entry points; `export` selects the classic compiled morphism exposed
-   as `program.morphism`.
+1. **Plates come from types.** The annotation `y : Item` on the observe statement makes it a [plate](https://en.wikipedia.org/wiki/Plate_notation) over `Item`, so there is no `pyro.plate` block. [Chapter 3](03-hierarchical.md) draws a group effect `v : G <- Normal(loc=0, scale=sigma)` the same way.
+2. **`let` does not sample.** It plays the part of `pm.Deterministic` in PyMC and `numpyro.deterministic` in NumPyro.
+3. **One file, several entry points.** A `.qvr` file may declare several programs and computations. `Program.entry_points()` lists them, and `export` selects the one exposed as `program.morphism`.
 
 ## Try this
 
-- Add a constant offset (`offset`) to the Poisson model: `let log_rate = beta_0 + beta_1 * x + offset`. The compiler treats `offset` as a free variable and exposes it as a model input alongside `x`.
-- Switch the Bernoulli likelihood to a Binomial with a known trial count `n_trials`. The Binomial constructor takes `(n, p)`.
-- Run NUTS instead of SVI. Skip ahead to chapter 6, line "Calling NUTS"; it's a five-line change.
+- Add an exposure offset to the Poisson model, `let log_rate = beta_0 + beta_1 * x_design + offset`. The compiler records `offset` as a second data input, so add it to `observed_names` and to `observations`.
+- Replace the Bernoulli likelihood with `Binomial(total_count=n_trials, probs=p)`, where `n_trials` is a data input.
+- Fit the logistic model with NUTS instead of SVI, as in [chapter 6](06-inference-zoo.md#step-1-vi-mcmc-or-hybrid).
 
 ## Next
 
-[Chapter 3](03-hierarchical.md) covers hierarchical models: the place where mean-field VI starts to misbehave and where NUTS earns its keep.
-
-## Sources and further reading
-
-- *Generalized Linear Models* [@nelder1972glm].
+[Chapter 3](03-hierarchical.md) fits hierarchical models, where a mean-field guide tends to misfit and NUTS needs a reparameterization.
