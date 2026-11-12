@@ -444,17 +444,18 @@ prints the didactic AST `repr()` instead.
 program lda(alpha : Real, beta : Real) : Token -> Mix
     sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
     sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+    let theta_tok = theta[doc_idx]
 
-    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
     return theta
 
--- declared at docs/examples/source/lda.qvr:24:0
+-- declared at docs/examples/source/lda.qvr:22:0
 
 > :info lda::theta
 sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
--- sample-site inside lda at docs/examples/source/lda.qvr:25:4
+-- sample-site inside lda at docs/examples/source/lda.qvr:23:4
 ```
 
 #### `:doc NAME`
@@ -481,13 +482,19 @@ inner scope.
 > :browse
 objects:
   Doc : FinSet 20
-  Token : FinSet 200
+  Token : FinSet 1000
   Topic : FinSet 3
   Vocab : FinSet 50
 spaces:
   Mix : Real 3
 programs:
   lda(alpha : Real, beta : Real) : Token -> Mix
+    sample theta : Doc <- Dirichlet(concentration=alpha)
+    sample phi : Topic <- Dirichlet(concentration=beta)
+    let theta_tok = ...
+    marginalize z : Topic <- Categorical(probs=theta_tok)
+      observe w : Token <- Categorical(probs=phi[z])
+    return theta
 
 > :browse lda
 program lda(alpha : Real, beta : Real) : Token -> Mix
@@ -495,12 +502,13 @@ program lda(alpha : Real, beta : Real) : Token -> Mix
   param beta : Real
   sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
   sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
-  marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
+  let theta_tok = …
+  marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
   return theta
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-  observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+  observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 ```
 
 #### `:plate PROGRAM [--mermaid|--dot|--tikz|--daft|--open]` / `:p PROGRAM`
@@ -514,17 +522,18 @@ rendered image.
 > :plate lda
 plate graph of lda  (Token -> Mix)
 
-#  kind            variable  family       plates       parents
--  --------------  --------  -----------  -----------  -------
-1  ○ latent        theta     Dirichlet    Doc          alpha
-2  ○ latent        phi       Dirichlet    Topic        beta
-3  ⊘ marginalized  z         Categorical  Topic        theta
-4  ● observed      w         Categorical  Doc x Token  phi, z
+#  kind             variable   family       plates  parents
+-  ---------------  ---------  -----------  ------  ---------
+1  ○ latent         theta      Dirichlet    Doc     alpha
+2  ○ latent         phi        Dirichlet    Topic   beta
+3  · deterministic  theta_tok  -            -       -
+4  ⊘ marginalized   z          Categorical  Topic   theta_tok
+5  ● observed       w          Categorical  Token   phi, z
 
 plates:
   Doc [20]
   Topic [3]
-  Token [200] parent=Doc
+  Token [1000] parent=Token
 ```
 
 | Flag | Output |
@@ -557,12 +566,13 @@ the rows are *steps* (program-source order) rather than
 > :graph lda
 program lda: Token -> Mix
 
-#  kind          step                                            parents
--  ------------  ----------------------------------------------  -------
-1  latent        sample theta : Doc <- Dirichlet(alpha)          alpha
-2  latent        sample phi : Topic <- Dirichlet(beta)           beta
-3  marginalized  marginalize z : Topic <- Categorical(theta)     theta
-4  observed      observe w : Doc x Token <- Categorical(phi, z)  phi, z
+#  kind           step                                                                                     parents
+-  -------------  ---------------------------------------------------------------------------------------  ---------
+1  latent         sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]          alpha
+2  latent         sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]         beta
+3  deterministic  let theta_tok = …                                                                        -
+4  marginalized   marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]  theta_tok
+5  observed       observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]                           phi, z
 ```
 
 Same `--mermaid` / `--dot` / `--open` flags as `:plate`.
@@ -647,13 +657,14 @@ chain depth before fitting.
 
 ```
 > :shape lda
-chain shape (log_prob):
+chain shape (product_fuzzy):
   #  depth  kind         name        size
   -  -----  -----------  ----------  ----
   1   1      latent       theta       20
   2   2      latent       phi         3
-  3   3      marginalize  z           3
-  4   4      observe      w           200
+  3   2      let          theta_tok   ?
+  4   3      marginalize  z           3
+  5   4      observe      w           1000
 ```
 
 #### `:dump NAME [--json]`
@@ -778,8 +789,8 @@ that declaration's scope. Examples on the LDA gallery example:
 theta :: Doc -> Topic
 
 > :browse lda::z
-marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-  observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+  observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
 > :where theta
 references to 'theta':

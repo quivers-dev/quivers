@@ -39,7 +39,7 @@ particular statistical family.
 | schema and bundle elaboration, generated search and weight effects | [Schema-Bundled Chart Parser](schema-chart-parser.md) | classic chart against `run_deduction` |
 | direct deduction, learned rule weights, program-to-deduction call | [PCFG](pcfg.md) and [CCG](ccg.md) | inside weights, parameter store, scored parser call |
 | structural signature, encoder, decoder, loss, typed PyTorch attachments | [Term Autoencoder](term-autoencoder.md) | `Program.run("reconstruct", term)` and autograd |
-| grouped and fibred exact marginalization | [Document-level topic mixture](lda.md) | `over`, `via`, and the per-group reduction |
+| per-row exact marginalization with gathered weights | [Latent Dirichlet Allocation](lda.md) | `over`, `via`, a gathered prior, and the per-token reduction |
 | program templates and subprogram calls | [Parametric Partial Pooling](parametric-pooling.md) | static object arguments, prefixed sites, labeled tuple return |
 | learned deterministic functions threaded by a scan | [Vanilla RNN LM](vanilla-rnn-lm.md) | per-position observation sites and maximum-likelihood training |
 | network kernel computation | [Bayesian Neural Network](bnn.md) | MLP parameter source and reference-machine boundary |
@@ -84,7 +84,7 @@ examples state both where they differ.
 
 - [Bayesian Factor Analysis](factor-analysis.md): latent factors and loadings with a free uniqueness per observed coordinate.
 - [Probabilistic Principal Component Analysis](ppca.md): the factor model with one isotropic noise scale, checked against its principal-subspace solution.
-- [Document-level topic mixture](lda.md): Dirichlet priors with one topic shared by every word of a document, summed out exactly; contrasted with token-level LDA.
+- [Latent Dirichlet Allocation](lda.md): one topic per token, summed out exactly; checked against a per-token mixture and separated from a document-level one.
 - [Bayesian Gaussian Mixture Model](mixture-model.md): mixing weights, locations, and scales inferred under a closed-form mixture likelihood.
 - [Variational Autoencoder](vae.md): a neural decoder fitted with an amortized encoder guide.
 - [Bayesian Neural Network](bnn.md): a one-hidden-layer tanh regression network whose weights are sample sites.
