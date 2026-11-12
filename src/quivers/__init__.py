@@ -183,6 +183,7 @@ from quivers.enriched.optics import (
     Prism,
     Adapter,
     Grate,
+    ComposedOptic,
     compose_optics,
 )
 from quivers.categorical.traced import (
@@ -455,6 +456,7 @@ __all__ = [
     "Prism",
     "Adapter",
     "Grate",
+    "ComposedOptic",
     "compose_optics",
     # traced monoidal
     "TracedMonoidal",

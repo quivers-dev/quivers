@@ -63,6 +63,7 @@ from quivers.enriched.optics import (
     Prism,
     Adapter,
     Grate,
+    ComposedOptic,
     compose_optics,
 )
 
@@ -102,5 +103,6 @@ __all__ = [
     "Prism",
     "Adapter",
     "Grate",
+    "ComposedOptic",
     "compose_optics",
 ]

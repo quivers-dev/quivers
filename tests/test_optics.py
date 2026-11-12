@@ -4,7 +4,7 @@ import torch
 import pytest
 from quivers.core.objects import FinSet, ProductSet, CoproductSet
 from quivers.core.morphisms import observed, identity
-from quivers.enriched.optics import Lens, Prism, Adapter, compose_optics
+from quivers.enriched.optics import Adapter, ComposedOptic, Lens, Prism, compose_optics
 
 
 class TestLens:
@@ -141,3 +141,52 @@ class TestComposeOptics:
         fwd = composed.forward()
         composed.backward()
         assert fwd.codomain.shape == a.shape
+
+
+class TestLensLaws:
+    """GetPut, PutGet and PutPut for `Lens.forward` and `Lens.put`, as
+    equations between functions on ``S = A × B``."""
+
+    @staticmethod
+    def _setup():
+        a = FinSet(name="A", cardinality=2)
+        b = FinSet(name="B", cardinality=3)
+        whole = ProductSet(components=(a, b))
+        return a, b, whole, Lens(whole, focus_index=0)
+
+    def test_lens_laws(self):
+        a, b, whole, lens = self._setup()
+        get = lens.forward().tensor.reshape(6, 2)
+        put = lens.put().tensor.reshape(6, 2, 6)
+        get_f = get.argmax(dim=1)
+        put_f = put.argmax(dim=2)
+        assert torch.equal(get.sum(dim=1), torch.ones(6))
+        assert torch.equal(put.sum(dim=2), torch.ones(6, 2))
+        for s in range(6):
+            assert put_f[s, get_f[s]] == s  # GetPut
+            for x in range(2):
+                assert get_f[put_f[s, x]] == x  # PutGet
+                for y in range(2):
+                    assert put_f[put_f[s, x], y] == put_f[s, y]  # PutPut
+
+    def test_backward_is_the_converse_of_get(self):
+        _, _, _, lens = self._setup()
+        get = lens.forward().tensor.reshape(6, 2)
+        back = lens.backward().tensor.reshape(2, 6)
+        torch.testing.assert_close(back, get.T)
+
+
+class TestAdapterAndComposition:
+    def test_adapter_refuses_a_pair_that_is_not_an_isomorphism(self):
+        a = FinSet(name="A", cardinality=2)
+        collapse = observed(a, a, torch.tensor([[1.0, 0.0], [1.0, 0.0]]))
+        with pytest.raises(ValueError, match="not mutually inverse"):
+            Adapter(collapse, collapse)
+
+    def test_composed_lenses_are_not_adapters(self):
+        a = FinSet(name="A", cardinality=2)
+        b = FinSet(name="B", cardinality=3)
+        whole = ProductSet(components=(a, b))
+        composed = compose_optics(Lens(whole, 0), Adapter(identity(a), identity(a)))
+        assert isinstance(composed, ComposedOptic)
+        assert not isinstance(composed, Adapter)

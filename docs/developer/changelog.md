@@ -38,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **`FreeMonoidFunctor.map_morphism` requires a morphism over a `Semiring`.** It is a functor on V-matrices only when composition is associative and distributive; a morphism over `PRODUCT_FUZZY` raises `TypeError`. Its docstring states that it has no monad structure.
 
+- **`Lens.put` is the lens update, `Adapter` checks its isomorphism, and `compose_optics` returns a `ComposedOptic`.** `Lens.put()` is the function `S × A → S` that replaces the focus, satisfying GetPut, PutGet and PutPut with `Lens.forward`; `Lens.backward` is documented as the converse of the projection. `Adapter` raises `ValueError` unless its two morphisms are mutually inverse (it takes an `atol`), and the composite of two optics is a `ComposedOptic`, not an `Adapter`.
+
 ### Fixed
 
 - **The residuum is the internal hom of each lattice.** `weighted_limit_morphisms` and `yoneda_lemma` use `IdempotentSemiring.residuum`, where an approximation `¬(w ⊗ ¬x)` gave wrong values for `GODEL` (`[0.5, 0.25]` came out as `1` rather than `0.25`). `day_convolution` matches the monoidal product to an object by equality, not by tensor shape, and raises `ValueError` when the objects are not closed under the product.
