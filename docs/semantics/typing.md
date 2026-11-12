@@ -96,7 +96,7 @@ The source checker classifies the names in a body:
 | a declared parameter of the program | an explicit value or scalar parameter |
 | bound by `sample`, a call, or `let` | a local binding in $\Phi$ |
 | the response of an `observe` | an observation input |
-| given by `via` | an index map, an integer input (role `fibration` in the API) |
+| given by `via` | an index map, an integer input (role `index_map` in the API) |
 | read and bound nowhere | a data input |
 
 Elaboration records `offset` above as a typed parameter of the entry point. Its value is given when the

@@ -26,41 +26,50 @@ which evaluates for any rule. Which equations it satisfies depends on the laws o
   associative composition and need not have identities [@tilson1987categories]. The matrix
   product is associative when $\otimes$ is associative, $\bigoplus$ is associative and commutative
   with a zero, and $\otimes$ distributes over $\bigoplus$ on both sides.
-- A category also has identities. The matrix product has them when, in addition, $\otimes$ has a
-  unit $\mathbf 1$ and the zero of $\bigoplus$ annihilates, that is, when $\mathcal V$ is a
-  semiring ([Setting §2](setting.md#2-v-enriched-relations)).
+- The matrix product has identities when $\otimes$ has a unit $\mathbf 1$, $\bigoplus$ has a
+  zero $\mathbf 0$, and $\mathbf 0$ annihilates. With associativity as well, that is, when
+  $\mathcal V$ is a semiring, finite sets and matrices form a category
+  ([Setting §2](setting.md#2-v-enriched-relations)).
 - A rule with neither guarantee makes composites of three or more morphisms depend on the
   parenthesization. The morphisms then form a
   [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no associativity and no
   identities.
 
-The library has one class for each level a module may declare:
+The library has one class for each claim:
 
 ```mermaid
 graph TD
   CR["CompositionRule"]
-  BF["BilinearForm"]
+  MG["Magmoid"]
   SG["Semigroupoid"]
-  Q["Algebra"]
-  CR --> BF
+  AL["Algebra"]
+  SR["Semiring"]
+  IS["IdempotentSemiring"]
+  CR --> MG
   CR --> SG
-  SG --> Q
+  CR --> AL
+  SG --> SR
+  AL --> SR
+  SR --> IS
   class CR qv-input
-  class BF,SG qv-checked
-  class Q qv-output
+  class MG,SG,AL qv-checked
+  class SR,IS qv-output
 ```
 
-| Level keyword | Class | Claim |
+| Class | Level keyword | Claim |
 |---|---|---|
-| `rule` | `CompositionRule` | none |
-| `bilinear_form` | `BilinearForm` | none |
-| `semigroupoid` | `Semigroupoid` | associative composition |
-| `algebra` | `Algebra` | associative composition with identities, plus a meet and a negation |
+| `CompositionRule` | `rule` | none |
+| `Magmoid` | `bilinear_form` | none |
+| `Semigroupoid` | `semigroupoid` | associative composition |
+| `Algebra` | `algebra` | identities, with a unit, a zero, a meet, and a negation |
+| `Semiring` | `algebra` or `semigroupoid` | the semiring laws, so composition is associative and has identities |
+| `IdempotentSemiring` | `algebra` or `semigroupoid` | a semiring whose $\bigoplus$ is idempotent, so its values form a lattice |
 
-`BilinearForm` names a rule with no associativity or identity guarantee. It is not a bilinear form
-in the sense of linear algebra, which is linear in each argument. Linearity in each argument is
-the distributivity that this level does not claim. A level is a claim the library does not prove:
-the eleven built-in instances are all of class `Algebra`, and three of them fail distributivity
+A `Semiring` is both an `Algebra` and a `Semigroupoid`, so a module that declares either level
+accepts it. A level is a claim the library does not prove at run time. Of the eleven built-in
+instances, the eight semirings are of class `Semiring`, four of them (Boolean, Gödel, tropical, and
+max-plus) `IdempotentSemiring`. Product with noisy-OR, Łukasiewicz with bounded sum, and product
+with bounded sum are of class `Algebra` only, and they fail distributivity
 ([Semirings, t-norms, and change of base §2](algebras.md#2-algebraic-scope)).
 
 ## 2. The denotation of `>>` at each level {#2-the-denotation-of-at-each-level}
@@ -120,14 +129,14 @@ level. The compiler checks that:
    `unit` and `zero` at the `algebra` level;
 2. `tensor_op`, `join`, `negation`, and `meet` are written as functions, `key(params) = body`,
    and `unit` and `zero` as values, `key = body`;
-3. the class built for the rule (`CustomAlgebra`, `CustomSemigroupoid`, or `CustomBilinearForm`)
+3. the class built for the rule (`CustomAlgebra`, `CustomSemigroupoid`, or `CustomMagmoid`)
    matches the level.
 
-Beyond these checks, the laws a level claims are the author's responsibility. At the
-`semigroupoid` level the constructor tests associativity of $\otimes$ on one fixed random sample
-of four scalars, which does not test distributivity. At the `algebra` level it tests
-$\mathbf 1 \otimes a = a = a \otimes \mathbf 1$ and $\mathbf 0 \otimes a = \mathbf 0$ on five values
-of $a$ in $[0, 1]$.
+Beyond these checks, the laws a level claims are the author's responsibility: the compiler builds
+an inline rule without testing any law. The Python constructors test a little. `CustomSemigroupoid`
+tests associativity of $\otimes$ on one fixed random sample of four scalars, which does not test
+distributivity, and `CustomAlgebra` tests $\mathbf 1 \otimes a = a = a \otimes \mathbf 1$ and
+$\mathbf 0 \otimes a = \mathbf 0$ on five values of $a$ in $[0, 1]$.
 
 ## 4. Einsum contractions {#4-operadic-contractions}
 
@@ -174,7 +183,7 @@ For other rules no such equation is claimed.
 ## 5. Morphism transformations {#5-first-class-transformations}
 
 A *transformation* is a value that converts a morphism over one rule into a morphism over
-another. It is either an entrywise map of class `AlgebraHomomorphism`
+another. It is either an entrywise map of class `CarrierMap`
 ([Semirings, t-norms, and change of base §3](algebras.md#3-base-change)) or a
 `MorphismTransformation`, the library's class for maps that rewrite a whole matrix, such as a row
 normalization. Each transformation $t$ has a source rule and a target rule, and we write

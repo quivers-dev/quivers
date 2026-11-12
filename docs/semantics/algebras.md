@@ -22,14 +22,14 @@ these laws at run time.
 |---|---|---|---|---|---|---|
 | `ProductFuzzyAlgebra` (`ProductFuzzy`) | $[0, 1]$ | $ab$ | $1 - \prod_i (1 - a_i)$ | $1$ | $0$ | product t-norm with probabilistic sum, not a semiring |
 | `BooleanAlgebra` (`Boolean`) | $\{0, 1\}$ | $a \wedge b$ | $\bigvee_i a_i$ | $1$ | $0$ | Boolean semiring and quantale |
-| `LukasiewiczAlgebra` (`Lukasiewicz`) | $[0, 1]$ | $\max(0, a + b - 1)$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | Łukasiewicz t-norm with bounded sum, not a semiring |
+| `StandardMVAlgebra` (`Lukasiewicz`) | $[0, 1]$ | $\max(0, a + b - 1)$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | Łukasiewicz t-norm with bounded sum, not a semiring |
 | `GodelAlgebra` (`Godel`) | $[0, 1]$ | $\min(a, b)$ | $\max_i a_i$ | $1$ | $0$ | minimum t-norm with maximum, a semiring and a quantale |
 | `TropicalAlgebra` (`Tropical`) | $[0, \infty]$ | $a + b$ | $\min_i a_i$ | $0$ | $\infty$ | tropical (min-plus) semiring and quantale |
 | `MaxPlusAlgebra` (`MaxPlus`) | $[-\infty, \infty)$ | $a + b$ | $\max_i a_i$ | $0$ | $-\infty$ | max-plus semiring |
 | `LogProbAlgebra` (`LogProb`) | $[-\infty, \infty)$ | $a + b$ | $\log \sum_i e^{a_i}$ | $0$ | $-\infty$ | log semiring |
 | `MarkovAlgebra` (`Markov`) | $[0, \infty)$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | probability (sum-product) semiring |
 | `RealAlgebra` (`Real`) | $\mathbb R$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | the ring of real numbers |
-| `ProbabilityAlgebra` (`Probability`) | $[0, 1]$ | $ab$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | product with bounded sum, not a semiring |
+| `BoundedSumProductAlgebra` (`Probability`) | $[0, 1]$ | $ab$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | product with bounded sum, not a semiring |
 | `CountingAlgebra` (`Counting`) | $\mathbb N$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | counting semiring |
 
 The default for a finite weighted morphism is `ProductFuzzyAlgebra`.
@@ -99,8 +99,10 @@ categories [@kelly1982basic]. A map that preserves neither may still be applied 
 converting before and after composition then give different results. Thresholding at $\tfrac12$
 is such a map: two entries of $0.6$ each pass the threshold, but their product $0.36$ does not.
 
-The class [`AlgebraHomomorphism`](../api/core/transformations.md) is the library's type of entrywise maps
-between instances, whatever laws they satisfy. `lookup_homomorphism(source, target)` returns the
+The class [`CarrierMap`](../api/core/transformations.md) is the library's type of entrywise maps
+between instances, whatever laws they satisfy, and its subclass `AlgebraHomomorphism` holds the maps
+that preserve $\otimes$, $\bigoplus$, $\mathbf 1$, and $\mathbf 0$ (`IdentityHom`, `Embedding`, and
+`CountingToReal`). `lookup_carrier_map(source, target)` returns the
 registered map for a pair of instances, or the identity when the two are the same. The registered
 maps are:
 
@@ -108,8 +110,8 @@ maps are:
 |---|---|---|---|
 | Boolean to ProductFuzzy | `Embedding` | inclusion $\{0, 1\} \hookrightarrow [0, 1]$ | preserves $\otimes$, $\bigoplus$, units |
 | ProductFuzzy to Boolean | `Threshold` | $a \mapsto [a > \tfrac12]$ | preserves neither operation |
-| ProductFuzzy to Gödel | `MaterialImplication` | clamp to $[0, 1]$, the identity on the carrier | preserves neither operation |
-| Markov to ProductFuzzy | `Expectation` | clamp to $[0, 1]$ | preserves $\otimes$ on $[0, 1]$, not $\bigoplus$ |
+| ProductFuzzy to Gödel | `ProductFuzzyToGodel` | clamp to $[0, 1]$, the identity on the carrier | preserves neither operation |
+| Markov to ProductFuzzy | `MarkovToProductFuzzy` | clamp to $[0, 1]$ | preserves $\otimes$ on $[0, 1]$, not $\bigoplus$ |
 | ProductFuzzy to LogProb | `LogProb` | $a \mapsto \log \max(a, 10^{-30})$ | preserves $\otimes$ away from $0$, not $\bigoplus$ |
 | ProductFuzzy to MaxPlus | `MaxPlus` | $a \mapsto \log \max(a, 10^{-30})$ | preserves $\otimes$ away from $0$, not $\bigoplus$ |
 | Real to Probability | `ProbabilityClamp` | clamp to $[0, 1]$ | preserves neither operation |
@@ -120,7 +122,7 @@ maps are:
 Only `CountingToReal` and the identity are semiring homomorphisms between semirings, and only for
 them is $h_*$ a functor. `Embedding` preserves both operations, but its target is not a semiring.
 The two logarithm maps send $0$ to $\log 10^{-30} \approx -69$ instead of to the zero $-\infty$ of
-the target. `Morphism.change_base` applies either an `AlgebraHomomorphism` or a
+the target. `Morphism.change_base` applies either a `CarrierMap` or a
 [morphism transformation](composition-rules.md#5-first-class-transformations), such as softmax
 row normalization, which rewrites a whole matrix and is not an entrywise map.
 

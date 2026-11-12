@@ -107,7 +107,7 @@ Summing out a value for each row would give each row its own latent variable.
 
 `via=` names an [index map](../programs.md#27-grouped-marginalize-with-multi-observe-fibration) from
 observation rows to groups. Each observation must contribute once to the factor of its group, which
-`tests/transpile/test_via_fibration_numeric.py` checks on selected cases.
+`tests/transpile/test_via_index_map_numeric.py` checks on selected cases.
 
 ## 6. Evidence {#6-evidence-tiers}
 

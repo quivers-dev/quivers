@@ -124,7 +124,7 @@ $$
 \llbracket e.\mathsf{change\_base}(t) \rrbracket = \llbracket t \rrbracket\bigl(\llbracket e \rrbracket\bigr),
 $$
 
-a morphism over $\mathcal W$. The action of $t$ is entrywise for an `AlgebraHomomorphism` and acts
+a morphism over $\mathcal W$. The action of $t$ is entrywise for a `CarrierMap` and acts
 on whole rows or matrices for a `MorphismTransformation`. Bayesian inversion also swaps the domain
 and the codomain.
 

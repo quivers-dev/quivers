@@ -336,7 +336,7 @@ marginalize c : K <- F(args) [over = G, reduction = R]
 
 `over = G` names the group set (or `over = product(G_1, G_2, ...)`, also written
 `over = [G_1, G_2, ...]`, for a product of groups), and `via = idx_m` names the index map
-$\iota_m : N_m \to G$ of the $m$-th observation, given as an integer array (role `fibration` in the
+$\iota_m : N_m \to G$ of the $m$-th observation, given as an integer array (role `index_map` in the
 API). The block contributes the log weight
 
 $$
