@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **`fit` takes the SVI step count as `num_steps`.** `fit(..., method="svi", num_steps=N)` runs `N` optimization steps (1000 by default) at the Adam rate `learning_rate` (0.01 by default); `num_warmup`, `num_samples`, and `num_chains` count MCMC iterations only (500, 1000, and 4 by default). Passing an MCMC count with `method="svi"`, or `num_steps` with NUTS or HMC, raises a `ValueError`, where `num_samples` had been read as the SVI step count.
 - **`UnarySpanDeduction` takes no `iterations` argument.** It closes each chart cell under its unary rules by their Kleene star, which has no round count; `UnarySpanDeduction.closure` returns the star and `UnarySpanDeduction.rule_matrix` the rule matrix.
 - **A schema-backed `parser(...)` whose unary rules cycle has no reference-machine entry point.** The reference machine enumerates derivation trees, which a unary cycle makes unbounded; the module records the gap and the compiled parser still scores sentences.
 
