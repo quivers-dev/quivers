@@ -1,0 +1,9 @@
+# Exercises a plated observe whose vector parameter reads a whole event:
+# `w` is one simplex over `K` shared by every row of `y`, which is plated
+# over `K` too, so no row reads a single entry of `w`.
+object K : FinSet 3
+program p : K -> K
+    sample w : K <- Dirichlet(concentration=1.0)
+    observe y : K <- Categorical(probs=w)
+    return w
+export p

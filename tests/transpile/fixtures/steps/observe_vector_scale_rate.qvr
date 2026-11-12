@@ -1,0 +1,11 @@
+# Exercises a vector filling a family parameter other than a location: `s`
+# is one positive vector over `Feat`, read entry by entry as a Normal's
+# scale and as a Poisson's rate.
+object Feat : FinSet 3
+program p : Feat -> Feat
+    sample a <- Normal(loc=0.0, scale=1.0) [over=Feat]
+    let s = exp(a)
+    observe y <- Normal(loc=1.0, scale=s)
+    observe c <- Poisson(rate=s)
+    return a
+export p
