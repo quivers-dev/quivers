@@ -20,16 +20,16 @@ these laws at run time.
 
 | Class (`name`) | Carrier | $a \otimes b$ | $\bigoplus_i a_i$ | $\mathbf 1$ | $\mathbf 0$ | Structure |
 |---|---|---|---|---|---|---|
-| `ProductFuzzyAlgebra` (`ProductFuzzy`) | $[0, 1]$ | $ab$ | $1 - \prod_i (1 - a_i)$ | $1$ | $0$ | product t-norm with probabilistic sum; not a semiring |
-| `BooleanAlgebra` (`Boolean`) | $\{0, 1\}$ | $a \wedge b$ | $\bigvee_i a_i$ | $1$ | $0$ | Boolean semiring; a quantale |
-| `LukasiewiczAlgebra` (`Lukasiewicz`) | $[0, 1]$ | $\max(0, a + b - 1)$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | Łukasiewicz t-norm with bounded sum; not a semiring |
-| `GodelAlgebra` (`Godel`) | $[0, 1]$ | $\min(a, b)$ | $\max_i a_i$ | $1$ | $0$ | minimum t-norm with maximum; a semiring and a quantale |
-| `TropicalAlgebra` (`Tropical`) | $[0, \infty]$ | $a + b$ | $\min_i a_i$ | $0$ | $\infty$ | tropical (min-plus) semiring; a quantale |
+| `ProductFuzzyAlgebra` (`ProductFuzzy`) | $[0, 1]$ | $ab$ | $1 - \prod_i (1 - a_i)$ | $1$ | $0$ | product t-norm with probabilistic sum, not a semiring |
+| `BooleanAlgebra` (`Boolean`) | $\{0, 1\}$ | $a \wedge b$ | $\bigvee_i a_i$ | $1$ | $0$ | Boolean semiring and quantale |
+| `LukasiewiczAlgebra` (`Lukasiewicz`) | $[0, 1]$ | $\max(0, a + b - 1)$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | Łukasiewicz t-norm with bounded sum, not a semiring |
+| `GodelAlgebra` (`Godel`) | $[0, 1]$ | $\min(a, b)$ | $\max_i a_i$ | $1$ | $0$ | minimum t-norm with maximum, a semiring and a quantale |
+| `TropicalAlgebra` (`Tropical`) | $[0, \infty]$ | $a + b$ | $\min_i a_i$ | $0$ | $\infty$ | tropical (min-plus) semiring and quantale |
 | `MaxPlusAlgebra` (`MaxPlus`) | $[-\infty, \infty)$ | $a + b$ | $\max_i a_i$ | $0$ | $-\infty$ | max-plus semiring |
 | `LogProbAlgebra` (`LogProb`) | $[-\infty, \infty)$ | $a + b$ | $\log \sum_i e^{a_i}$ | $0$ | $-\infty$ | log semiring |
 | `MarkovAlgebra` (`Markov`) | $[0, \infty)$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | probability (sum-product) semiring |
 | `RealAlgebra` (`Real`) | $\mathbb R$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | the ring of real numbers |
-| `ProbabilityAlgebra` (`Probability`) | $[0, 1]$ | $ab$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | product with bounded sum; not a semiring |
+| `ProbabilityAlgebra` (`Probability`) | $[0, 1]$ | $ab$ | $\min(1, \sum_i a_i)$ | $1$ | $0$ | product with bounded sum, not a semiring |
 | `CountingAlgebra` (`Counting`) | $\mathbb N$ | $ab$ | $\sum_i a_i$ | $1$ | $0$ | counting semiring |
 
 The default for a finite weighted morphism is `ProductFuzzyAlgebra`.
