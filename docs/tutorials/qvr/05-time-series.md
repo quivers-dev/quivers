@@ -10,7 +10,8 @@ QVR has three constructs for sequence-shaped problems such as time series, text,
   deduction guide describes its complete API.
 
 This chapter covers the first two, then distinguishes the finite-state path
-demonstration in the gallery from a normalized hidden Markov model (HMM).
+demonstration in the gallery from a normalized hidden Markov model (HMM),
+which a `scan` over a cell that marginalizes its state expresses.
 
 A repeated measurement axis and a recurrent state do different jobs. A plate
 repeats a distribution across indexed positions, conditionally independently
@@ -118,12 +119,103 @@ prior-only draw. Consequently, the observation likelihood depends on one
 shared hidden state, and the data leave `transition_rows` at its prior.
 This program implements a finite-state marginal mixture.
 
-This boundary is structural. `scan` currently requires a vector-valued hidden
-state, so it cannot carry a categorical state index. Expressing the forward
-recursion as nested finite marginalization also exceeds the checked runtime's
-current nested-group support. Until those forms gain a semantics-preserving
-lowering, use the file to study relation powering, axis roles, and one-state
-finite marginalization rather than as a fitted recurrent HMM.
+Use the file to study relation powering, axis roles, and one-state finite
+marginalization. A recurrent HMM carries a categorical state from position to
+position, which the next section writes with `scan`.
+
+## Hidden Markov models
+
+A program cell may marginalize the next state and return it. Returning the
+latent of a `marginalize` block carries it to the next position, so its sum
+extends over the rest of the chain, and `scan(cell, init=p)` sums every path
+of states out with the forward algorithm:
+
+```qvr
+object State : FinSet 2
+object Symbol : FinSet 4
+object StartProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(hmm_step, init=start)
+
+program hmm : Symbol -> StartProbs
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+
+export hmm
+```
+
+The chain starts from `z_0 ~ start`, moves by `transition`, and emits each
+symbol from the state it moves to. The block observes the cell's entry, so
+the scanned sequence is the observed symbols. The program's log joint is the
+three Dirichlet priors plus the log marginal likelihood, which a forward
+recursion written in torch reproduces:
+
+```python
+import torch
+import torch.distributions as D
+from quivers.dsl import loads
+
+source = """
+object State : FinSet 2
+object Symbol : FinSet 4
+object StartProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(hmm_step, init=start)
+
+program hmm : Symbol -> StartProbs
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+
+export hmm
+"""
+model = loads(source).morphism
+
+start = torch.tensor([0.5, 0.5])
+transition = torch.tensor([[0.9, 0.1], [0.2, 0.8]])
+emission = torch.tensor([[0.6, 0.3, 0.05, 0.05], [0.05, 0.05, 0.3, 0.6]])
+symbols = torch.tensor([[0, 1, 0, 3, 3, 2, 3, 0]])
+
+log_joint = model.log_joint(
+    symbols, {"start": start, "transition": transition, "emission": emission}
+)
+
+log_alpha = torch.log(start)
+for symbol in symbols[0]:
+    log_alpha = torch.logsumexp(
+        log_alpha[:, None] + torch.log(transition) + torch.log(emission[:, symbol]),
+        dim=0,
+    )
+priors = (
+    D.Dirichlet(torch.ones(2)).log_prob(start)
+    + D.Dirichlet(torch.ones(2)).log_prob(transition).sum()
+    + D.Dirichlet(torch.ones(4)).log_prob(emission).sum()
+)
+assert torch.allclose(log_joint, priors + torch.logsumexp(log_alpha, dim=0), atol=1e-5)
+```
+
+The recursion stays in log space, so a chain of thousands of positions, whose
+path probabilities underflow, still has a finite log marginal. A trace
+records the marginal under `path` and no per-position state. The cell's lets
+may read the entry, so transitions can depend on a covariate, and an
+observation named other than the entry is one observation per position. The
+[marginalized chains reference](../../reference/qvr/probabilistic-programs.md#marginalized-chains)
+states the rules.
 
 ## State-space models
 

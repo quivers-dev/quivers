@@ -18,6 +18,7 @@ from quivers.dsl.ast_nodes import (
     ProgramStep,
 )
 from quivers.dsl.composite_lets import expand_composite_lets as _expand_composite_lets
+from quivers.dsl.composite_lets import scan_let_call
 from quivers.dsl.step_resolution import StepResolutionError
 from quivers.transpile._api import UnsupportedConstruct
 
@@ -72,7 +73,9 @@ def _refuse_scans(steps: tuple[ProgramStep, ...]) -> None:
     Raises
     ------
     UnsupportedConstruct
-        If a let step calls ``scan``.
+        If a let step calls ``scan``: a marginalized chain under
+        ``scan:marginal:no-lowering:<cell>``, any other scan under
+        ``scan:no-lowering:<cell>``.
     """
     for step in steps:
         if isinstance(step, MarginalizeStep):
@@ -82,6 +85,11 @@ def _refuse_scans(steps: tuple[ProgramStep, ...]) -> None:
             and isinstance(step.value, LetExprCall)
             and step.value.func == "scan"
         ):
+            scan = scan_let_call(step.value)
+            if scan is not None and scan.marginal:
+                raise UnsupportedConstruct(
+                    "qvr-transpile", [f"scan:marginal:no-lowering:{scan.step}"]
+                )
             cell = (
                 step.value.args[0].name.split("__scan_step", 1)[0]
                 if step.value.args and isinstance(step.value.args[0], LetExprVar)

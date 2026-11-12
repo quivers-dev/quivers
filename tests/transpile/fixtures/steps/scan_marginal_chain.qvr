@@ -1,0 +1,19 @@
+# Exercises a marginalized chain: the cell marginalizes and returns its
+# next state, so `scan(cell, init=p)` sums every state path out.
+object State : FinSet 2
+object Symbol : FinSet 3
+
+program cell(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition[z_prev])
+        observe symbol <- Categorical(probs=emission[z])
+    return z
+
+define chain = scan(cell, init=start)
+
+program prog : Symbol -> State
+    sample start <- Dirichlet(concentration=1.0) [over=State]
+    sample transition : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
+    sample emission : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
+    return start
+export prog
