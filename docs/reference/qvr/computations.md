@@ -1,7 +1,8 @@
 # Computations
 
-A `define` declaration introduces a named checked computation. Its signature
-separates [static binders](types-and-indexed-families.md#kinds-and-binders), runtime parameters, result type, and [effect row](effects-and-handlers.md#effect-rows):
+A `define` declaration introduces a named computation that the checker verifies. Its signature
+gives its [static binders](types-and-indexed-families.md#kinds-and-binders), its runtime
+parameters, its result type, and its [effect row](effects-and-handlers.md#effect-rows):
 
 <!-- compile: qiec -->
 ```qvr
@@ -15,27 +16,21 @@ define clamp(x : Real, low : Real, high : Real) : Real !{} =
             return x
 ```
 
-Calls are checked against this four-part signature; the body is then checked to ensure that it
-returns the declared type and performs no effects outside the row.
+A call is checked against the signature, and the body is checked to return the declared type and
+to perform no effect outside the row.
 
 ## Declaration form
-
-Read the signature from left to right: brackets supply information
-needed for specialization, parentheses supply runtime values, the type
-after `:` describes the returned value, and `!{...}` lists unhandled
-effect instances. In `clamp`, all arguments and the result are real
-values and `!{}` permits no unhandled effects. With `x=8`, `low=0`,
-and `high=5`, only the second condition succeeds and the result is `5`.
-
 
 ```text
 define NAME[STATIC_BINDERS](VALUE_PARAMETERS) : RESULT !{EFFECT_ROW} =
     COMPUTATION
 ```
 
-Both telescopes are optional. A computation with no value parameters still
-writes `()`. Static binders may range over `Type`, an index sort, or `Effect`.
-A `Nat` binder may receive an integer literal at a call site.
+The brackets hold the binders that specialization closes, the parentheses hold runtime values, the
+type after `:` is the type of the returned value, and `!{...}` lists the effect instances the body
+may leave unhandled. Both telescopes are optional, but a computation with no value parameters still
+writes `()`. A static binder ranges over `Type`, an index type, or `Effect`, and a `Nat` binder may
+receive an integer literal at a call site.
 
 <!-- compile: qiec -->
 ```qvr
@@ -49,21 +44,17 @@ define four() : Int !{} =
 
 ## Pure and effectful binding
 
-`=` names a value expression. `<-` sequences a computation and names
-what it returns. This syntax tracks the distinction even when that
-computation currently has no effects; the caller uses its declared
-computation interface. Thus changing a helper's implementation does not
-require pretending a computation call was an ordinary value expression.
-
-
-QVR deliberately distinguishes two forms:
-
-| Form | Right-hand side | Meaning |
+| Form | Right side | Meaning |
 | --- | --- | --- |
-| `let x = value` | pure expression | bind a value without sequencing an effect |
+| `let x = value` | pure expression | bind a value, sequencing no effect |
 | `let x <- computation` | call, request, or [resumption](effects-and-handlers.md#resumption-grades) | run a computation, then bind its result |
 
-An inline computation may appear without a binding when its result is `Unit`:
+A call to a computation always uses `<-`, even when the callee's row is empty, and there is no
+implicit coercion from a call to a value expression. If `helper` is declared with `define`, the
+binding is `let result <- helper(args)`. A caller thus depends on the callee's declared interface,
+and a change to the callee's body does not change how the caller is written.
+
+A computation whose result is `Unit` may appear as a statement, without a binding:
 
 <!-- compile: qiec -->
 ```qvr
@@ -75,27 +66,19 @@ define penalize(x : Real) : Real !{score} =
     return squared
 ```
 
-There is no implicit coercion from a call to a value expression. If `helper`
-is declared with `define`, write `let result <- helper(args)`, even when its
-row is empty.
-
-The same distinction governs [collections](collection-expressions.md#effect-aware-traverse). `map(xs, x -> value)` is pure and
-uses `=`, while `traverse(xs, x -> helper(x))` sequences computation calls and
-uses `<-`. The latter joins `helper`'s effects into the caller's row. See
-[Finite collection expressions](collection-expressions.md) for folds,
-[normalization](../../guides/stochastic.md#normalization), and shape restrictions.
+The same distinction governs [collections](collection-expressions.md#effect-aware-traverse).
+`map(xs, x -> value)` is pure and uses `=`, and `traverse(xs, x -> helper(x))` sequences calls,
+uses `<-`, and joins `helper`'s effects into the caller's row. Folds,
+[normalization](../../guides/stochastic.md#normalization), and the shape restrictions are
+specified in [Finite collection expressions](collection-expressions.md).
 
 ## Calls and row propagation
 
-A **residual row** lists effects still unhandled after local [handlers](effects-and-handlers.md#handler-declarations)
-have run. If a helper may request `random`, a caller must also account
-for `random`, either by exposing it in its own row or handling it.
-The row lists the requests a computation may make. A row containing
-`random` permits repeated random requests; their number and order are
-determined by the computation body.
-
-
-One call syntax covers ordinary application and recursion:
+The *residual row* of a computation is the effect row left after its own
+[handlers](effects-and-handlers.md#handler-declarations) have run. A caller's row must include the
+callee's residual row after the static arguments are substituted. If a helper may request
+`random`, a caller either lists `random` in its own row or handles it. One call syntax covers
+ordinary application and recursion:
 
 <!-- compile: qiec -->
 ```qvr
@@ -107,19 +90,18 @@ define triangle(n : Int) : Int !{} =
         return n + rest
 ```
 
-A caller's row must include the callee's residual row after static arguments
-are substituted. The checker follows the reachable call graph, so a pure
-wrapper around an effectful callee remains effectful unless it handles the
-effect.
+The checker follows the reachable call graph, so a wrapper with an empty body row around an
+effectful callee is effectful unless it handles the effect. The row bounds which requests a
+computation may make, and the body determines how many it makes and in what order.
 
-Recursion uses the reference machine's explicit stack. Set an execution fuel
-limit while developing a recursive computation; exhaustion reports
-`qiec-run-fuel` rather than overflowing the host stack.
+Recursion runs on the reference machine's explicit stack, not on the Python stack. A run may be
+given *fuel*, a bound on its number of evaluation steps (`--fuel` in
+[execution controls](execution-and-tooling.md#execution-controls)), and a run that exhausts it stops
+with `qiec-run-fuel`.
 
 ## Requests
 
-A request names an instance and an operation and may supply operation-level
-static arguments:
+A request names an instance and an operation and may give the operation's static arguments:
 
 <!-- compile: qiec -->
 ```qvr
@@ -130,17 +112,15 @@ define draw_normal(location : Real, scale : Real) : Real !{random} =
     return value
 ```
 
-The `[Real]` argument specializes the operation's result type `A`. The
-instance's interface parameters were already fixed by its `instance`
-declaration. The checker substitutes both telescopes before it verifies the
-request arguments and result.
+The `[Real]` argument specializes the operation's result type `A`. The interface's own parameters
+are fixed by the `instance` declaration. The checker substitutes both telescopes before it checks
+the request's arguments and result.
 
 ## Handling and scoped instances
 
-`handle INSTANCE with HANDLER[STATICS] in` installs a lexical handler around
-its indented body. `with instance NAME : EFFECT in` creates an instance for
-its body. Both forms contain computations and thus participate in row
-checking:
+`handle INSTANCE with HANDLER[STATICS] in` installs a handler around its indented body, and
+`with instance NAME : EFFECT in` creates an instance that exists only in its body. Both contain
+computations, so both take part in row checking:
 
 <!-- compile: qiec -->
 ```qvr
@@ -160,23 +140,22 @@ define echoed(value : String) : String !{} =
             return result
 ```
 
-See [Effects and handlers](effects-and-handlers.md) for coverage, forwarding,
-and resumption grades.
+Coverage, forwarding, and resumption grades are specified in
+[Effects and handlers](effects-and-handlers.md).
 
 ## Conditionals and indexed cases
 
-`if` branches at computation level and evaluates only the selected branch.
-Both branches must return the same type; their [effect rows](effects-and-handlers.md#effect-rows) are joined.
+`if` branches at the level of computations and evaluates only the selected branch. Both branches
+return the same type, and their [effect rows](effects-and-handlers.md#effect-rows) are joined.
 
-`case` eliminates a family value and carries an explicit motive. Constructor
-patterns may bind static indices and runtime fields. The result of every
-reachable branch must inhabit the motive under that branch's refinement. See
-[Types and indexed families](types-and-indexed-families.md#indexed-case-analysis)
-for the full form.
+`case` eliminates a value of an indexed family and states a motive. A constructor pattern may bind
+static indices and runtime fields, and the result of every reachable branch must have the motive's
+type under that branch's refinement
+([indexed case analysis](types-and-indexed-families.md#indexed-case-analysis)).
 
 ## Constructor values
 
-Three application-shaped forms remain syntactically distinct:
+Three forms that look like applications stay distinct in the syntax:
 
 | Form | Position | Example |
 | --- | --- | --- |
@@ -184,37 +163,37 @@ Three application-shaped forms remain syntactically distinct:
 | effect request | computation | `perform random.sample[Real](...)` |
 | constructor | value | `construct Present(x) as Measurement(Observed)` |
 
-This separation prevents an unqualified operation or a constructor from being
-resolved as an ordinary call.
+An operation without its instance, or a constructor, is thus never resolved as an ordinary call.
 
 ## Built-in values and distributions
 
-The same pure-expression registry is available here and in a `program`.
-Distribution applications such as `Normal(mu, sigma)`,
-`Dirichlet([1.0, 2.0])`, `PointMass(0)`, or
-`Mixture([0.3, 0.7], [PointMass(0), Poisson(rate)])` produce typed
-`Sampleable` values. `Restrict`/`Truncate`, `Normalize`,
-`Transformed`/`Pushforward`, and `Independent` are distribution families too,
-so the measure algebra remains explicit in the checked term.
+A `define` body and a `program` share one registry of pure primitives
+([pure expressions](types-and-indexed-families.md#pure-expressions)). A distribution application
+such as `Normal(mu, sigma)`, `Dirichlet([1.0, 2.0])`, `PointMass(0)`, or
+`Mixture([0.3, 0.7], [PointMass(0), Poisson(rate)])` builds a typed `Sampleable` value. The
+constructions on distributions are families as well, so they stay explicit in the checked term:
+`Restrict` (or `Truncate`) restricts a distribution to an interval, `Normalize` rescales a measure
+to total mass one, `Transformed` (or `Pushforward`) takes the
+[pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) along a bijection, and
+`Independent` reinterprets batch axes as event axes.
 
-The reference backend implements every family in the semantic registry.
-Parameter order and support follow the [continuous-family
-reference](../../guides/continuous-families.md); target renderers apply any
-host-specific parameter conversion at emission.
+The reference machine implements every family in the
+[distribution family registry](../../api/qiec/families.md). Parameter order and support follow the
+[continuous family reference](../../guides/continuous-families.md), and each target renderer
+converts parameters to the target's own conventions when it emits code. Inside a `program` step,
+family arguments are named ([fixed and conditional families](probabilistic-programs.md#fixed-and-conditional-families)).
 
-## Entry-point status
+## Entry points
 
-Every user-authored `define` is executable unless it is an internal helper
-generated by elaboration. List entries with:
+Every `define` in the source is an [entry point](execution-and-tooling.md#list-entry-points). The
+helpers that elaboration generates are not. The entries of a file are listed with:
 
 ```bash
 qvr run model.qvr --list
 ```
 
-An entry with a nonempty residual row also needs handlers supplied by the
-selected runtime provider. Authored handlers inside the body need no external
-attachment. Static binders must be closed at invocation with repeated
-`--static NAME=TERM` options.
-
-For the invocation forms and stable diagnostics, continue to [Execution and
-tooling](execution-and-tooling.md).
+An entry with a nonempty residual row needs handlers for its remaining instances from the selected
+[runtime provider](execution-and-tooling.md#runtime-providers), and a handler written in the body
+needs nothing external. Static binders are closed at invocation with one
+`--static NAME=TERM` option each. The invocation forms and the stable diagnostics are specified in
+[Execution and tooling](execution-and-tooling.md).
