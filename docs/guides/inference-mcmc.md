@@ -1,43 +1,39 @@
 # MCMC and Hybrid Samplers
 
-This page covers gradient-based MCMC (HMC, NUTS), the hybrid
-samplers that combine a variational warm-up with HMC chains, and
+[Markov chain Monte Carlo](https://en.wikipedia.org/wiki/Markov_chain_Monte_Carlo)
+(MCMC) draws a sequence of dependent values whose stationary distribution is the
+posterior, proposing and accepting new latent values by the model's log density.
+quivers provides gradient-based MCMC, kernels that compose several moves, tempered
+sequential Monte Carlo, samplers that combine a variational fit with MCMC, and
 [posterior predictive](inference-svi.md#predictive-sampling) sampling from an
-[`MCMCResult`](../api/inference/mcmc.md). The variational
-families and [ELBO](inference-svi.md#elbo-evidence-lower-bound) objectives live in
-[the SVI guide](inference-svi.md).
+[`MCMCResult`](../api/inference/mcmc.md). [Variational Inference](inference-svi.md)
+covers the alternative of fitting a guide.
 
 ## MCMC: HMC and NUTS
 
-The algorithmic treatments are [@neal2011mcmc] for HMC and
-[@hoffman2014nuts] for NUTS.
+[Hamiltonian Monte Carlo](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) (HMC)
+proposes moves through a continuous latent space by simulating Hamiltonian dynamics
+with an auxiliary momentum, using the gradient of the log density [@neal2011mcmc]. The
+simulation advances by *leapfrog* steps of a given step size, and the *mass matrix*
+sets the scale of the momentum in each direction. The No-U-Turn Sampler (NUTS) chooses
+the length of each trajectory by stopping where the path starts to turn back
+[@hoffman2014nuts]. *Warmup* iterations tune the step size and the mass matrix before
+the draws that are kept, and separate *chains* started from different values allow
+comparing runs. Draws within a chain are correlated.
 
-**Markov chain Monte Carlo (MCMC)** generates a sequence of dependent
-draws designed to have the posterior as its stationary distribution.
-The transition rule uses the model’s log density to propose and accept
-new latent values. **Hamiltonian Monte Carlo (HMC)**
-uses gradients of the log density and auxiliary momentum to propose
-moves through continuous latent space. The **No-U-Turn Sampler (NUTS)**
-adapts trajectory length to avoid continuing a path that turns back.
-
-*Warmup* tunes the sampler before the retained draws. Separate *chains*
-allow comparison of runs started from different initial values.
-Successive draws within each chain remain correlated. The registry's unconstrained coordinates accommodate positive
-or bounded continuous latents. The gradient-based kernels move only
-those coordinates; a discrete latent site is sampled by a
-[Gibbs block](#composing-kernels) composed with them, or marginalized
-in the model.
-
-Gradient-based MCMC is an alternative to fitting a variational family. The kernel runs on the registry's unconstrained vector;
-gradients flow through
+The kernels run on the latent registry's unconstrained vector
+([Inference Foundations](inference-foundations.md#the-variational-pipeline)), so
+positive or bounded continuous latents need no special treatment, and gradients come
+from
 [`torch.autograd.grad`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad.html).
+They move continuous coordinates only. A discrete latent site is updated by a
+[Gibbs block](#composing-kernels) composed with them or summed out in the model.
 
-MCMC targets the posterior of one run of the program, so `MCMC.run`
-takes a one-row input, such as `x = torch.zeros(1, 1)`, and refuses more
-rows: [an input of `B` rows is `B` independent runs](inference-foundations.md#input-rows-are-independent-runs),
-and the rows a program observes come from its data and its plates. Its
-latents are the sites one run at `(x, observations)` reaches, every
-position of a scanned program cell included.
+MCMC targets the posterior of one run of the program, so `MCMC.run` takes a one-row
+input such as `x = torch.zeros(1, 1)` and refuses more rows
+([Input rows are independent runs](inference-foundations.md#input-rows-are-independent-runs)).
+Its latents are the sites one run at `(x, observations)` reaches, every position of a
+scanned program cell included.
 
 <!-- python: skip -->
 ```python
@@ -65,15 +61,12 @@ print(result.total_divergences) # sum across chains
 samples = result.samples        # dict[str, Tensor]: (chains, draws, *constrained_shape)
 ```
 
-Both
-[`HMCKernel`](../api/inference/mcmc.md) and
-[`NUTSKernel`](../api/inference/mcmc.md) implement
-Nesterov dual-averaging [@hoffman2014nuts]
-step-size adaptation during warmup, and Welford-online mass-matrix
-adaptation when `mass_matrix` is set to `"diagonal"` or `"dense"`
-(`"identity"`, the `HMCKernel` default, disables mass-matrix
-adaptation; `NUTSKernel` defaults to `"diagonal"`). Chains
-run sequentially: the driver loops over `num_chains`, and within
+[`HMCKernel`](../api/inference/mcmc.md) and [`NUTSKernel`](../api/inference/mcmc.md)
+adapt the step size during warmup by Nesterov dual averaging [@hoffman2014nuts], and
+adapt the mass matrix when `mass_matrix` is `"diagonal"` or `"dense"`, from a
+running estimate of the posterior covariance updated one draw at a time. `"identity"`,
+the `HMCKernel` default, turns mass-matrix adaptation off, and `NUTSKernel` defaults
+to `"diagonal"`. Chains run sequentially: the driver loops over `num_chains`, and within
 each chain warmup and sampling advance one leapfrog step at a time.
 Each leapfrog step evaluates the target once, through
 [`PotentialFn.value_and_grad`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.value_and_grad)
@@ -83,48 +76,44 @@ selected proposal's gradient into the next transition, so a
 transition costs one target evaluation per leapfrog step and nothing
 more.
 
-An evaluation costs little beyond the model's own tensor arithmetic.
-The potential does not run the program on the reference machine at
-every position: the first evaluation at a layout of the values (the
-shapes, dtypes, and devices of the latents, the data, and the values a
-Gibbs component conditions on) compiles the program's scoring run to a
-straight-line sequence of its host steps and site densities, and every
-later evaluation replays that sequence with the same tensor operations
-in the same order. Draws, log densities, gradients, and evaluation
-counts are thus those of
+An evaluation costs little beyond the model's own tensor arithmetic. The first
+evaluation for a given set of shapes, dtypes, and devices (of the latents, the data,
+and the values a Gibbs block conditions on) records the program's scoring run as a
+fixed sequence of tensor operations, and every later evaluation replays that sequence
+in the same order. Draws, log densities, gradients, and evaluation counts are thus
+those of
 [`MonadicProgram.log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint),
 bit for bit. A program with a scan, whose recursion runs over its
 sequence, is scored by `log_joint` at every evaluation, and so is any
 evaluation made while an effect handler is in scope or of a program
 whose `log_joint` is overridden.
 
-Each chain derives an independent local generator from `seed`; that
-stream controls initialization, momentum, tree direction, subtree
+Each chain derives an independent local generator from `seed`, and that stream
+controls initialization, momentum, tree direction, subtree
 selection, and acceptance. Thus repeated runs with the same seed are
 reproducible without changing Torch's global RNG state. Pass a CPU
-`torch.Generator` as `generator=` instead when successive calls should
-advance a caller-owned stream. `seed` and `generator` are mutually
+`torch.Generator` as `generator=` instead to have successive calls advance a stream
+the caller owns. `seed` and `generator` are mutually
 exclusive. Step-size and mass-matrix adaptation start fresh for every
 chain and every call to `run`.
 
 Before sampling, `MCMC.run` scores each chain's initial position with
 [`PotentialFn.check_initial`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.check_initial),
-which converts no error: observed values that are not finite or lie
-outside a likelihood's support, row counts that disagree, and errors in
-a custom score function raise there, with a note naming the chain, and
-a non-finite initial log density raises naming the offending terms.
-During sampling a position scores $-\infty$, and is rejected, only when
-it lies outside the model's support: a `torch.distributions` parameter
-or value validation error, recognised by the validator that raised it,
-or a `torch.linalg.LinAlgError` from a matrix the position makes
-non-positive-definite. Every other error propagates.
+which lets every error through. Observed values that are not finite or lie outside a
+likelihood's support, row counts that disagree, and errors in a custom score function
+raise there with a note naming the chain, and a non-finite initial log density raises
+naming the offending terms. During sampling a position scores $-\infty$, and is
+rejected, only when it lies outside the model's support: a `torch.distributions`
+parameter or value validation error, recognized by the validator that raised it, or a
+`torch.linalg.LinAlgError` from a matrix the position makes non-positive-definite.
+Every other error propagates.
 
 The [`MCMCResult`](../api/inference/mcmc.md) holds each site's draws at
 `(num_chains, num_samples, *constrained_shape)`, where
 `constrained_shape` is the shape of one draw: `()` for a scalar site,
-`(d,)` for a vector site, and `(n, ...)` for a plate of size `n`. It exposes per-site convergence and effective sample size diagnostics
-[@vehtari2021rhat] via
-`r_hat`, `ess`, and `ess_tail`, each of shape `constrained_shape` (zero-dimensional
+`(d,)` for a vector site, and `(n, ...)` for a plate of size `n`. It exposes the
+convergence diagnostic $\hat R$ and the effective sample size (ESS) of each site
+[@vehtari2021rhat] as `r_hat`, `ess`, and `ess_tail`, each of shape `constrained_shape` (zero-dimensional
 for a scalar site), computed from the draws on first access by
 [`rhat`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.rhat) and
 [`ess`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.ess). [Latent site shapes](inference-foundations.md#latent-site-shapes)
@@ -132,12 +121,26 @@ relates these shapes to the `(batch, ...)` values that `log_joint`
 and the guides exchange. Each `r_hat` coordinate is the conservative
 maximum of the rank-normalized and folded split statistics, while
 `ess` is the rank-normalized cross-chain bulk ESS and `ess_tail` the
-smaller of the 5% and 95% quantile ESS values. The same functions
-diagnose derived quantities and draws from custom sampling loops; see
-[convergence diagnostics for any draws](analysis-fitting-and-diagnostics.md#convergence-diagnostics-for-any-draws). The result also
-exposes per-chain divergence counts via `divergence_counts` (with
-`total_divergences` summing across chains), and posterior log
-densities per draw via `log_densities`.
+smaller of the 5% and 95% quantile ESS values. The same functions diagnose derived
+quantities and draws from custom sampling loops
+([convergence diagnostics for any draws](analysis-fitting-and-diagnostics.md#convergence-diagnostics-for-any-draws)).
+The result also gives the number of divergences per chain, `divergence_counts`, their
+sum, `total_divergences`, and the posterior log density of each draw,
+`log_densities`.
+
+$\hat R$ compares the variation within chains with the variation between them, so
+chains that stay in different regions raise it, while chains trapped in the same region
+can agree, which is why chains should start from dispersed values. The ESS accounts for
+autocorrelation: 8,000 kept draws might give the precision of only 500 independent
+ones. A divergence is a trajectory whose numerical integration error blew up, a sign of
+curvature the step size cannot follow [@betancourt2016diagnosing]. Located in parameter
+plots, divergences show whether a smaller step size or a different parameterization
+would help. These diagnostics compare chains with each other, so a sampler that mixes
+well around the wrong distribution passes them.
+[Simulation-based calibration](analysis-fitting-and-diagnostics.md#simulation-based-calibration)
+checks the sampler against the model instead, by fitting data simulated from the
+prior and testing whether the true parameters' ranks among the posterior draws are
+uniform.
 
 ### Windowed warmup
 
@@ -145,9 +148,9 @@ By default both kernels adapt in one phase (`adaptation="single"`):
 dual averaging runs over the whole warmup under the initial metric, the
 covariance estimate accumulates every warmup position, and the metric is
 installed once, when warmup ends. Two problems may follow on a target
-whose scales differ from one. The estimate includes the initial
-transient, which can inflate it by orders of magnitude when a chain
-starts far from the typical set, and the frozen step size was tuned
+whose scales differ from one. The estimate includes the initial transient, which can
+inflate it by orders of magnitude when a chain starts far from the region where most
+of the posterior mass lies, and the frozen step size was tuned
 for the identity metric rather than the metric the chain samples with.
 
 `adaptation="windowed"` follows Stan's schedule instead
@@ -157,7 +160,7 @@ splits the warmup into three phases: (i) an initial fast interval
 (`init_buffer`, default 75 iterations) that adapts only the step size;
 (ii) slow windows, the first `base_window` (default 25) iterations long
 and each later one twice as long, that each accumulate a fresh
-covariance estimate and install it, regularised as
+covariance estimate and install it, regularized as
 $\frac{n}{n+5}\hat\Sigma + 10^{-3}\frac{5}{n+5} I$, at the window's
 end, after which the step size is re-initialized by doubling or halving
 under the new metric and dual averaging restarts from it; and (iii) a
@@ -208,9 +211,7 @@ print(kernel.step_size, kernel.inverse_mass_matrix)
 The windowed schedule suits warmups long enough for its buffers, 150
 iterations under the defaults. A shorter warmup is rescaled, and its
 terminal interval may then last only a few iterations, too few for dual
-averaging to settle, which is why `"single"` remains the default. Under
-`"single"` mode the fixed-seed draws of a run are those the kernels have
-always produced.
+averaging to settle, which is why `"single"` is the default.
 
 ## Composing kernels
 
@@ -246,7 +247,7 @@ continuous ones.
   ([`PotentialFn.condition`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.condition)).
   A site with a boolean or bounded integer support (a Bernoulli or
   Categorical draw, a plate of them) is updated by enumeration, element
-  by element; any other block takes an `update=` function
+  by element. Any other block takes an `update=` function
   ([`GibbsUpdate`](../api/inference/mcmc.md#quivers.inference.mcmc.GibbsUpdate))
   that draws from its full conditional, such as a conjugate update. Every
   discrete latent must belong to a Gibbs block, and `MCMC.run` raises
@@ -255,7 +256,7 @@ continuous ones.
   applies its components in order on every transition, and
   [`MixtureKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MixtureKernel)
   applies one, chosen with fixed probabilities. Both forward the
-  chain-local generator and warmup to every component; a mixture draws
+  chain-local generator and warmup to every component, and a mixture draws
   its warmup choices when warmup starts, so each component adapts over
   exactly the transitions that select it.
 
@@ -336,7 +337,7 @@ and potential evaluations in one call. They are checked between
 transitions, so a chain stops at a transition boundary, possibly one
 transition past the budget. `MCMCResult.stopped_by` records why each chain
 stopped, `num_draws` how many draws each made, and `truncated` whether a
-budget cut any short; the per-draw arrays then keep the first
+budget cut any short. The per-draw arrays then keep the first
 `min(num_draws)` draws of every chain. A `callback(chain, iteration,
 state, phase)` sees every transition as it happens.
 
@@ -383,7 +384,7 @@ print(result.sample_stats["tree_depth"].max(), result.num_evaluations)
 `MCMCResult.sample_stats` holds each transition's statistics at
 `(num_chains, num_samples)`. For NUTS these are `accept_prob`, `accepted`,
 `diverged`, `step_size`, `tree_depth`, `num_steps` (leapfrog steps), and
-`energy`, the Hamiltonian at the draw; a composite kernel's appear under
+`energy`, the Hamiltonian at the draw, and a composite kernel's appear under
 each component's name. `energy` is what the energy plot and the
 energy Bayesian fraction of missing information (E-BFMI) need
 [@betancourt2016diagnosing], and
@@ -471,24 +472,8 @@ print(result.samples["mu"].shape)   # (200,): equally weighted particles
 
 ## Hybrid samplers
 
-`r_hat` compares variation within chains with variation between chains.
-If chains stay in different regions, their means can differ enough to raise
-`r_hat`. Chains trapped in the same region can agree, so compare runs from
-dispersed initial values as well. `ess` accounts for autocorrelation: 8,000
-saved draws might provide precision comparable to only 500 independent
-draws. Divergences mark inaccurate numerical trajectories. Locate them in
-parameter plots, then assess whether a smaller step size or a different
-parameterization improves exploration.
-
-These diagnostics compare chains with each other, so a sampler that
-mixes well around the wrong distribution passes them.
-[Simulation-based calibration](analysis-fitting-and-diagnostics.md#simulation-based-calibration)
-checks the sampler against the model instead, by fitting data simulated
-from the prior and testing whether the true parameters' ranks among the
-posterior draws are uniform.
-
-Hybrid methods use variational fitting to construct a proposal
-distribution or choose initial chain values, as specified below.
+Hybrid samplers use a variational fit to build a proposal distribution or to choose
+the starting values of MCMC chains.
 
 ### AutoDAIS
 
@@ -539,10 +524,9 @@ guide = AutoDAIS(
 
 ### WarmupThenHMC
 
-Train a variational guide for a configured number of SVI steps, then
-initialize HMC chains from the guide's posterior mean. This provides
-an informed starting point; convergence still depends on the HMC
-warmup and diagnostics.
+`WarmupThenHMC` trains a variational guide for `svi_steps` SVI steps and then starts
+HMC chains at the guide's posterior mean. The chains start near the posterior, and
+their convergence still depends on the HMC warmup and its diagnostics.
 
 <!-- python: skip -->
 ```python
@@ -562,9 +546,9 @@ svi_losses, result = sampler.run(model, x, observations)
 
 ## Predictive with MCMC
 
-Posterior draws represent uncertainty about latent quantities. Predictive
-draws add the outcome noise: [take a posterior latent draw, then generate
-a new response from its likelihood](https://mc-stan.org/docs/stan-users-guide/posterior-predictive-checks.html#simulating-from-the-posterior-predictive-distribution) [@stanPredictiveChecks]. Thus an interval for new observations
+Posterior draws represent uncertainty about the latent quantities, and predictive draws
+add the outcome noise: each takes a posterior draw of the latents and generates a new
+response from the likelihood [@stanPredictiveChecks]. Thus an interval for new observations
 includes both uncertainty about the latent mean and variability of the
 response around it. The same calculation uses draws from either an MCMC
 result or a variational guide. Comparing these replicated responses with
@@ -576,7 +560,7 @@ the observations gives a [posterior predictive check](analysis-fitting-and-diagn
 `MCMCResult`, it iterates over posterior samples instead of calling
 `guide.rsample`; each recorded draw is one value every run of the
 predictive input shares, so both posteriors yield predictive draws of
-shape `(num_samples, batch, ...)` for non-plate sites.
+shape `(num_samples, batch, ...)` for sites outside any plate.
 
 <!-- python: skip -->
 ```python
@@ -600,7 +584,3 @@ samples = predictive(x_new)
 - [Analysis Pipelines: Fitting and Diagnostics](analysis-fitting-and-diagnostics.md):
   the high-level `fit(...)` API that wraps the MCMC and SVI
   drivers under one entry point.
-
-## Further reading
-
-- [@vehtari2021rhat]
