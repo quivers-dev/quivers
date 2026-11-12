@@ -155,7 +155,7 @@ class InsideAlgorithm(nn.Module):
         log_binary = torch.log(self._binary.tensor.clamp(min=1e-30))
         log_lexical = torch.log(self._lexical.tensor.clamp(min=1e-30))
         log_unary = (
-            torch.log(self._unary.tensor.clamp(min=1e-30))
+            _unary_star(torch.log(self._unary.tensor.clamp(min=1e-30)))
             if self._unary is not None
             else None
         )
@@ -293,41 +293,73 @@ def _masked_logsumexp(scores: torch.Tensor, dim: int) -> torch.Tensor:
     return torch.where(all_empty, torch.full_like(reduced, float("-inf")), reduced)
 
 
-def _apply_unary_closure(
-    log_cell: torch.Tensor, log_unary: torch.Tensor, max_iters: int = 8
-) -> torch.Tensor:
-    """Reflexive-transitive closure under unary rules in log-space.
+def _unary_star(log_unary: torch.Tensor) -> torch.Tensor:
+    """The log of the reflexive-transitive closure of the unary rules.
 
-    Iteratively updates ``cell[A] ← logsumexp_B(cell[B] + log_unary[B, A])``
-    and joins with the original ``cell`` until a fixed point is reached
-    (or ``max_iters`` is exceeded). Convergence is guaranteed for unary
-    matrices whose absorbing spectrum is below the algebra's unit.
+    With ``U`` the matrix of unary rule probabilities, a cell's weights
+    after any number of unary steps, zero included, are ``c U*`` for the
+    star ``U* = sum_{k >= 0} U^k = (I - U)^{-1}``, the closure in the
+    probability semiring (Goodman 1999, "Semiring Parsing",
+    https://aclanthology.org/J99-4004/). The series converges, and
+    the inverse is that sum, exactly when the spectral radius of ``U``
+    is below one.
+
+    Parameters
+    ----------
+    log_unary : torch.Tensor
+        Shape ``(N, N)``: the log-probability of each unary rule, the
+        entry at ``[B, A]`` weighing ``B`` into ``A``.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(N, N)``: ``log U*``, ``-inf`` where the closure is zero.
+
+    Raises
+    ------
+    ValueError
+        If the spectral radius of ``U`` is at least one, so the unary
+        rules derive infinite weight and the star does not exist.
+    """
+    unary = log_unary.exp()
+    radius = float(torch.linalg.eigvals(unary.detach().double()).abs().max())
+    if radius >= 1.0:
+        raise ValueError(
+            f"the unary rules have spectral radius {radius:.6g}, at least one, "
+            "so chains of unary steps carry unbounded weight and their closure "
+            "does not exist; the rules out of each category must sum to "
+            "less than one along every cycle"
+        )
+    eye = torch.eye(unary.shape[0], dtype=unary.dtype, device=unary.device)
+    star = torch.linalg.inv(eye - unary)
+    positive = star > 0
+    safe = torch.where(positive, star, torch.ones_like(star))
+    return torch.where(positive, torch.log(safe), torch.full_like(star, float("-inf")))
+
+
+def _apply_unary_closure(
+    log_cell: torch.Tensor, log_star: torch.Tensor
+) -> torch.Tensor:
+    """A cell's log weights after any number of unary steps.
+
+    ``cell[A] <- logsumexp_B(cell[B] + log_star[B, A])``, the cell times
+    the closure ``U*`` of the unary rules: the fixed point of
+    ``x = c + x U``, which every derivation that ends in a chain of unary
+    rules contributes to once.
 
     Parameters
     ----------
     log_cell : torch.Tensor
-        Shape ``(batch, N)``: the current cell's log-probabilities
-        for each nonterminal.
-    log_unary : torch.Tensor
-        Shape ``(N, N)``: the log-probability matrix of unary rules.
-    max_iters : int
-        Closure-iteration cap.
+        Shape ``(batch, N)``: the cell's log weights before unary steps.
+    log_star : torch.Tensor
+        Shape ``(N, N)``: the log closure from `_unary_star`.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(batch, N)``.
     """
-    cell = log_cell
-    for _ in range(max_iters):
-        # cell_unary[batch, A] = logsumexp_B(cell[batch, B] + log_unary[B, A])
-        cell_unary = _masked_logsumexp(
-            cell.unsqueeze(2) + log_unary.unsqueeze(0), dim=1
-        )
-        # Algebra-join (noisy-OR in log-space) of cell and cell_unary
-        # ≈ logaddexp, taken as a masked reduction so a category
-        # unreachable on both sides stays unreachable without a
-        # ``nan`` gradient.
-        new_cell = _masked_logsumexp(torch.stack((cell, cell_unary), dim=-1), dim=-1)
-        if torch.allclose(new_cell, cell, atol=1e-6, rtol=1e-6):
-            return new_cell
-        cell = new_cell
-    return cell
+    return _masked_logsumexp(log_cell.unsqueeze(2) + log_star.unsqueeze(0), dim=1)
 
 
 __all__ = [
