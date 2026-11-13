@@ -40,6 +40,7 @@ from torch.distributions import constraints as _constraints
 from quivers.core.objects import Unit
 from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
 from quivers.continuous._lkj import OnionLKJCholesky
+from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous.log_space import LogGamma, LogitBeta
 from quivers.continuous._ordered import OrderedLogistic, OrderedProbit
@@ -64,7 +65,6 @@ from quivers.continuous.family_spec import (
     FAMILY_REGISTRY,
     FamilySpec,
 )
-from quivers.core._util import EPS
 import quivers.continuous.param_transforms as parameter_domains
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
@@ -1479,56 +1479,9 @@ def _bernoulli_builder(params: list[torch.Tensor]) -> D.Distribution:
 
 
 def _truncated_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
-    """Build TruncatedNormal from [mu, sigma, low, high].
-
-    Returns a proxy object with rsample and log_prob that performs
-    inverse-CDF truncated normal sampling.
-    """
-    mu, sigma, low_t, high_t = params
-    sigma = parameter_domains.positive_parameter(sigma)
-    low = float(low_t.flatten()[0])
-    high = float(high_t.flatten()[0])
-
-    class _TruncNorm:
-        """Minimal truncated-normal distribution interface.
-
-        Exposes the same ``event_shape`` and ``batch_shape``
-        attributes the generic `torch.distributions` interface
-        carries, so callers walking the family registry's
-        ``log_prob`` path treat it uniformly with stock families.
-        """
-
-        event_shape: torch.Size = torch.Size()
-        batch_shape: torch.Size = mu.shape
-
-        def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-            normal = D.Normal(0, 1)
-            alpha = normal.cdf((low - mu) / sigma)
-            beta_cdf = normal.cdf((high - mu) / sigma)
-            u = torch.rand(*sample_shape, *mu.shape, device=mu.device, dtype=mu.dtype)
-            u_scaled = alpha + u * (beta_cdf - alpha)
-            u_scaled = u_scaled.clamp(min=EPS, max=1.0 - EPS)
-            return normal.icdf(u_scaled) * sigma + mu
-
-        def log_prob(self, y: torch.Tensor) -> torch.Tensor:
-            log_phi = (
-                -0.5 * ((y - mu) / sigma) ** 2
-                - sigma.log()
-                - 0.5 * math.log(2 * math.pi)
-            )
-            normal = D.Normal(0, 1)
-            log_Z = torch.log(
-                (
-                    normal.cdf((high - mu) / sigma) - normal.cdf((low - mu) / sigma)
-                ).clamp(min=EPS)
-            )
-            return log_phi - log_Z
-
-        def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-            with torch.no_grad():
-                return self.rsample(sample_shape)
-
-    return _TruncNorm()
+    """Build TruncatedNormal from [mu, sigma, low, high]."""
+    mu, sigma, low, high = params
+    return TruncatedNormal(mu, parameter_domains.positive_parameter(sigma), low, high)
 
 
 def _logitnormal_builder(params: list[torch.Tensor]) -> D.Distribution:
