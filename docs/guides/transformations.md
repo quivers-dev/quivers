@@ -113,6 +113,44 @@ pipe = compose_trans(softmax(B), MARKOV_TO_PRODUCT_FUZZY)
 g    = f.change_base(pipe)
 ```
 
+### Support maps
+
+The [support map][quivers.core.SupportMap] sends a positive weight to `1`
+and zero to `0`. It accepts `BOOLEAN`, `PRODUCT_FUZZY`, `GODEL`,
+`PROBABILITY`, `COUNTING`, and `MARKOV`. On each carrier, a sum is positive
+exactly when at least one summand is positive, and a product is positive
+exactly when both factors are positive. Thus support preserves both
+operations and their identities:
+
+$$
+s(a \oplus b)=s(a)\lor s(b),\qquad
+s(a\otimes b)=s(a)\land s(b),\qquad s(0)=0,\quad s(1)=1.
+$$
+
+Applying support entrywise commutes with binary matrix composition. For
+Boolean, Gödel, Counting, and Markov, whose operations form semirings, this
+defines a functor between matrix categories. ProductFuzzy and Probability
+preserve the displayed operations, but their matrix composition is not
+associative. Standard MV has nonzero factors whose product is zero, and
+signed real addition can cancel, so neither admits this support map.
+
+```python
+import torch
+from quivers.core import FinSet, MARKOV, SupportMap, observed
+
+state = FinSet(name="State", cardinality=2)
+weights = observed(
+    state, state, torch.tensor([[0.0, 0.2], [1.0, 0.0]]), algebra=MARKOV
+)
+relation = weights.change_base(SupportMap(MARKOV))
+assert relation.tensor.tolist() == [[0.0, 1.0], [1.0, 0.0]]
+```
+
+`SupportMap` validates the declared carrier and is not differentiable.
+The laws hold for mathematical carrier values; floating-point products
+can underflow to zero. The `threshold` transformation uses `0.5`, while
+`SupportMap(source)` selects positivity explicitly through the Python API.
+
 ## The hierarchy of composition rules {#the-composition-rule-hierarchy}
 
 A *composition rule* (class [`CompositionRule`](../api/core/algebras.md)) is the

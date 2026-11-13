@@ -8,6 +8,12 @@ entrywise map that preserves $\otimes$, $\oplus$, and their units commutes with 
 then applying it is a [change of base](https://ncatlab.org/nlab/show/change+of+enriching+category)
 [@kelly1982basic].
 
+[SupportMap][quivers.core.SupportMap] is an
+[algebra homomorphism](../../guides/transformations.md#support-maps) from
+its declared nonnegative source carriers to Boolean values. It uses strict
+positivity, validates carrier membership, and preserves the two combining
+operations and their identities.
+
 ::: quivers.core.algebra_morphisms
     options:
       filters:

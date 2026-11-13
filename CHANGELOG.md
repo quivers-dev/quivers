@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **Support maps preserve the declared algebra operations.** `SupportMap(source)` maps positive entries to Boolean truth for Boolean, ProductFuzzy, Gödel, Probability, Counting, and Markov carriers, with explicit carrier validation and homomorphism tests.
+
 ### Fixed
 
 - **Empty semiring joins return their additive identities.** Boolean, Gödel, log-probability, and max-plus reductions and matrix compositions through the empty object preserve shape, dtype, and zero input gradients. Empty Boolean and Gödel meets return the lattice top.

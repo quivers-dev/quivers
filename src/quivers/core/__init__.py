@@ -72,6 +72,7 @@ from quivers.core.algebras import (
 from quivers.core.algebra_morphisms import (
     CarrierMap,
     AlgebraHomomorphism,
+    SupportMap,
     IdentityHom,
     Embedding,
     MarkovToProductFuzzy,
@@ -204,6 +205,7 @@ __all__ = [
     # algebra_morphisms
     "CarrierMap",
     "AlgebraHomomorphism",
+    "SupportMap",
     "IdentityHom",
     "Embedding",
     "MarkovToProductFuzzy",
