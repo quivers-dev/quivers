@@ -127,7 +127,10 @@ trace records each site's density per run, shape `(B,)`, and its `log_joint` agr
 value given to `log_joint`, to a trace, or to a handler is either one value per run,
 along a leading axis of length `B`, or one value that every run shares. Each `let` and
 `score` step reads one run's values, so a `factor`, a collection, a reduction, or an
-index reads the binding's own axes and never the batch axis.
+index reads the binding's own axes and never the batch axis. A
+[grouped `marginalize`](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents)
+scores one run at a time: its observations may carry a batch axis of length one, and
+data for several runs raise `ValueError`.
 
 The drivers that target one run's latents refuse an input of more than one row and say
 to pass one. They are [MCMC](inference-mcmc.md#mcmc-hmc-and-nuts), the

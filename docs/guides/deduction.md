@@ -330,7 +330,7 @@ from a family whose support is the probability simplex (a Dirichlet draw, or a
 `softmax` of an unconstrained draw for a logistic-normal prior), and the grammar
 declares `normalize=lhs`. Without bindings, the call reads the learned weights. In
 Python,
-[`DeductionSystem.__call__`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem.__call__)
+[`DeductionSystem.__call__`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem)
 and
 [`DeductionSystem.corpus`](../api/stochastic/agenda.md#quivers.stochastic.agenda.DeductionSystem.corpus)
 take the same probabilities as a mapping from left-hand side to vector. No transpile
