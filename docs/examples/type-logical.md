@@ -255,7 +255,7 @@ assert ("span", 0, 1, object_raised) not in dict(ded(["Kim"]).chart.items())
 
 ### Derivations versus readings
 
-L has spurious ambiguity: distinct proofs of one sequent that a semantics would not distinguish. The goal weight sums over proofs, so a sentence with more proofs carries more mass at equal parameter values. The [Counting semiring](../semantics/grammar.md#3-semiring) makes the proof count visible. "Kim sleeps" has two proofs (`bwd_app` directly, or `raise_subj` then `fwd_app`) and "Kim gives Lee books" has seven.
+L has spurious ambiguity: distinct proofs of one sequent that a semantics would not distinguish. The goal weight sums over proofs, so a sentence with more proofs carries more mass at equal parameter values. The [Counting semiring](../semantics/grammar.md#3-semirings) makes the proof count visible. "Kim sleeps" has two proofs (`bwd_app` directly, or `raise_subj` then `fwd_app`) and "Kim gives Lee books" has seven.
 
 ```python
 # Derivations, not readings: one sentence can have several L proofs.
