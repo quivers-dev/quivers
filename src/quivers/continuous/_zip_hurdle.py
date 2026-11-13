@@ -1,19 +1,8 @@
-"""Sugar wrappers for zero-inflated, hurdle, and mixture families.
+"""Zero-inflated, hurdle, and Normal mixture families.
 
-Each class here desugars at construction time to a composition in the
-[measure algebra][quivers.continuous.measure]:
-
-* `ZeroInflatedPoisson(pi, rate) := Mixture([pi, 1-pi], [PointMass(0), Poisson(rate)])`
-* `HurdlePoisson(pi, rate) := Mixture([pi, 1-pi], [PointMass(0), Restrict(Poisson(rate), low=1)])`
-* `MixtureNormal(w, loc, scale) := Mixture(w, [Normal(loc_k, scale_k) for k])`
-
-Internally each is a [`Mixture`][quivers.continuous.measure.Mixture]
-of [`PointMass`][quivers.continuous.measure.PointMass] and
-[`Restrict`][quivers.continuous.measure.Restrict] / base components,
-which the rewrite pass recognises and lifts to the canonical
-Bernoulli-branch + conditional-density form Stan / PyMC / NumPyro
-expect. A single Mixture-with-PointMass emitter covers every family
-in place of per-family per-base Cartesian-product renderer logic.
+The inflation and Normal-mixture families compose probability measures.
+The hurdle family scores a normalized positive Poisson component directly,
+including its point-mass limit at rate zero.
 """
 
 from __future__ import annotations
@@ -23,8 +12,12 @@ from torch import Tensor
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
-from quivers.continuous._closed_probability import ClosedPoisson
-from quivers.continuous.measure import Mixture, Normalize, PointMass, Restrict
+from quivers.continuous._closed_probability import ClosedPoisson, _count_log
+from quivers.continuous._zero_truncated_poisson import (
+    positive_poisson_mean,
+    positive_poisson_sample,
+)
+from quivers.continuous.measure import Mixture, PointMass
 
 
 def _two_component_inflation(
@@ -88,21 +81,19 @@ class ZeroInflatedPoisson(Distribution):
 
 
 class HurdlePoisson(Distribution):
-    """`Mixture([pi, 1-pi], [PointMass(0), Restrict(Poisson(rate), low=1)])`.
+    """A point mass at zero mixed with a normalized positive Poisson.
 
-    Two-stage hurdle model: a Bernoulli`(1 - pi)` decides whether the
-    response is zero or positive; conditional on positivity, the
-    response is a zero-truncated Poisson. Because the two components
-    have measure-disjoint supports, the joint log-density factors
-    into a Bernoulli plus a zero-truncated Poisson term, and the
-    rewrite pass emits that factored form to every backend.
+    A Bernoulli with probability ``1 - zero_prob`` selects the positive
+    component. At rate zero that component is the point mass at one,
+    giving the continuous extension in the rate. Negative rates are
+    refused. The disjoint supports permit direct scoring of each branch.
 
     Reference: [Mullahy 1986](https://doi.org/10.1016/0304-4076(86)90002-3).
     """
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
-        "rate": _constraints.positive,
+        "rate": _constraints.nonnegative,
     }
     support = _constraints.nonnegative_integer
     has_rsample = False
@@ -113,32 +104,69 @@ class HurdlePoisson(Distribution):
         rate: Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.zero_prob = zero_prob
-        self.rate = rate
-        base = torch.distributions.Poisson(rate)
-        # Wrap the truncated component in `Normalize` so the hurdle's
-        # second component is a probability measure on `{1, 2, ...}`
-        # before mixing; the resulting Mixture has total mass one and
-        # the user-facing `log_prob` returns the proper hurdle
-        # density rather than the unnormalised sub-measure form.
-        truncated_base = Normalize(Restrict(base, low=1.0))
-        self._mixture = _two_component_inflation(zero_prob, truncated_base)
+        self.zero_prob, self.rate = torch.broadcast_tensors(zero_prob, rate)
         super().__init__(
-            batch_shape=self._mixture.batch_shape,
-            event_shape=self._mixture.event_shape,
+            batch_shape=self.rate.shape,
             validate_args=validate_args,
         )
 
     @property
     def mean(self) -> Tensor:
-        survival = -torch.expm1(-self.rate)
-        return (1.0 - self.zero_prob) * self.rate / survival.clamp_min(1e-12)
+        """The hurdle mean, with the positive component's limit at zero."""
+        return (1.0 - self.zero_prob) * positive_poisson_mean(self.rate)
 
     def log_prob(self, value: Tensor) -> Tensor:
-        return self._mixture.log_prob(value)
+        """Score counts against the normalized hurdle distribution.
+
+        Parameters
+        ----------
+        value : Tensor
+            Nonnegative integer observations.
+
+        Returns
+        -------
+        Tensor
+            Log probabilities broadcast over observations and parameters.
+
+        Raises
+        ------
+        ValueError
+            If validation is enabled and an observation is outside the support.
+        """
+        if self._validate_args:
+            self._validate_sample(value)
+        safe_value = torch.where(value > 0, value, torch.ones_like(value))
+        one = torch.ones_like(self.rate)
+        positive = (
+            _count_log(one, 1 - self.zero_prob)
+            + _count_log(safe_value - 1, self.rate)
+            - self.rate
+            + positive_poisson_mean(self.rate).log()
+            - torch.lgamma(safe_value + 1)
+        )
+        result = torch.where(value == 0, _count_log(one, self.zero_prob), positive)
+        return torch.where(
+            _constraints.nonnegative_integer.check(value), result, -torch.inf
+        )
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
-        return self._mixture.sample(sample_shape).long()
+        """Draw counts using a conditioned first arrival for the positive branch.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Dimensions prepended to the parameter batch shape.
+
+        Returns
+        -------
+        Tensor
+            Nonnegative integer draws, including the rate-zero limit.
+        """
+        with torch.no_grad():
+            shape = self._extended_shape(sample_shape)
+            positive = positive_poisson_sample(self.rate.expand(shape))
+            zero = torch.bernoulli(self.zero_prob.expand(shape)).bool()
+            return torch.where(zero, torch.zeros_like(positive), positive).long()
 
 
 class MixtureNormal(Distribution):

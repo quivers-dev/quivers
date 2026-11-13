@@ -814,10 +814,8 @@ def _categorical_log_prior(
         If the weights do not define a categorical distribution.
     """
     if parameterization == "logits":
-        distribution = torch.distributions.Categorical(
-            logits=weight, validate_args=True
-        )
-        return distribution.logits
+        _validate_parameter(weight, _constraints.real)
+        return torch.log_softmax(weight, dim=-1)
     _validate_parameter(weight, _constraints.nonnegative)
     probs = torch.distributions.Categorical(probs=weight, validate_args=True).probs
     return _count_log(torch.ones_like(probs), probs)

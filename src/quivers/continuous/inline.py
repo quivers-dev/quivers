@@ -1820,13 +1820,13 @@ def _hurdle_poisson_builder(
     """Build `HurdlePoisson` from ``[zero_prob, rate]``.
 
     A ``zero_prob`` of one is the point mass at zero and one of zero
-    the zero-truncated Poisson. Values outside ``[0, 1]`` are refused. The
-    zero-truncated Poisson needs a positive ``rate``; a nonpositive
-    value is refused.
+    the zero-truncated Poisson. Values outside ``[0, 1]`` are refused.
+    The rate is nonnegative, with the positive component concentrated
+    at one when the rate is zero.
     """
     return HurdlePoisson(
         parameter_domains._validate_parameter(params[0], _constraints.unit_interval),
-        parameter_domains.positive_parameter(params[1]),
+        parameter_domains._validate_parameter(params[1], _constraints.nonnegative),
     )
 
 
@@ -2858,7 +2858,7 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
     """Keep a parameter the source names inside its family's constraint.
 
     A parameter whose family admits a boundary value (a Geometric
-    ``probs`` of one) is projected onto its declared bounds, any other
+    ``probs`` of one) is validated against its declared bounds, any other
     probability retains its value, a parameter the family's
     specification declares takes its own inline clamp, and an alternative
     the specification does not declare (logits, a covariance or a

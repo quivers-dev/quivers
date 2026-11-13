@@ -108,6 +108,16 @@ def test_binary_prior_refuses_invalid_probabilities(value: float) -> None:
         _binary_log_prior(torch.tensor(value), "probs")
 
 
+def test_categorical_logits_preserve_common_offset_invariance() -> None:
+    logits = torch.full((2,), -1e100, dtype=torch.float64)
+    torch.testing.assert_close(
+        _categorical_log_prior(logits, "logits"),
+        torch.full((2,), -math.log(2), dtype=torch.float64),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 @pytest.mark.parametrize("probability", [0.0, 1e-50, 0.3, 1.0])
 def test_prior_mixture_gradients_are_finite_at_boundaries(probability: float) -> None:
     q = torch.tensor(probability, dtype=torch.float64, requires_grad=True)

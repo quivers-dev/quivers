@@ -3855,20 +3855,23 @@ def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
     -------
     object
         Zero with the hurdle probability, else a zero-truncated Poisson
-        draw by rejection.
+        draw using the first-arrival construction, or one at rate zero.
     """
     if rng.random() < real_parameter(a, "zero_prob", "HurdlePoisson"):
         return 0
     rate = real_parameter(a, "rate", "HurdlePoisson")
-    limit = math.exp(-rate)
-    while True:
-        count = 0
-        product = rng.random()
-        while product > limit:
-            count += 1
-            product *= rng.random()
-        if count > 0:
-            return count
+    u = rng.random()
+    remaining = (
+        math.log1p((1 - u) * math.expm1(rate))
+        if rate <= 8
+        else rate + math.log1p(u * math.expm1(-rate))
+    )
+    count = 1
+    elapsed = rng.expovariate(1.0)
+    while elapsed < remaining:
+        count += 1
+        elapsed += rng.expovariate(1.0)
+    return count
 
 
 def _hurdle_density(a: Mapping[str, object], value: object) -> float:
@@ -3894,11 +3897,45 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         return -math.inf
     if count == 0:
         return _log(zero_prob)
+    if rate == 0.0:
+        return _log(1.0 - zero_prob) if count == 1 else -math.inf
     return (
         _log(1.0 - zero_prob)
-        + _poisson_log_mass(count, rate)
-        - math.log(-math.expm1(-rate))
+        + (count - 1) * math.log(rate)
+        - rate
+        - math.lgamma(count + 1)
+        + math.log(rate / -math.expm1(-rate))
     )
+
+
+def _zoib_parameters(a: Mapping[str, object]) -> tuple[float, float, float, float]:
+    """Read valid mean, precision, inflation, and conditional-one parameters.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+
+    Returns
+    -------
+    tuple[float, float, float, float]
+        The validated parameters in their declared order.
+
+    Raises
+    ------
+    DistributionError
+        If the mean is not strictly between zero and one, the precision
+        is not positive, or a mixture probability is outside the unit interval.
+    """
+    mu = real_parameter(a, "mu", "ZeroOneInflatedBeta")
+    phi = _positive_parameter(a, "phi", "ZeroOneInflatedBeta")
+    zoi = real_parameter(a, "zoi", "ZeroOneInflatedBeta")
+    coi = real_parameter(a, "coi", "ZeroOneInflatedBeta")
+    if not 0 < mu < 1:
+        raise DistributionError("ZeroOneInflatedBeta requires 0 < mu < 1")
+    if not 0 <= zoi <= 1 or not 0 <= coi <= 1:
+        raise DistributionError("ZeroOneInflatedBeta requires zoi and coi in [0, 1]")
+    return mu, phi, zoi, coi
 
 
 def _zoib_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -3917,12 +3954,9 @@ def _zoib_sample(a: Mapping[str, object], rng: random.Random) -> object:
         An endpoint with the inflation probabilities, else a beta draw in
         the mean-precision parameterization.
     """
-    zoi = real_parameter(a, "zoi", "ZeroOneInflatedBeta")
-    coi = real_parameter(a, "coi", "ZeroOneInflatedBeta")
+    mu, phi, zoi, coi = _zoib_parameters(a)
     if rng.random() < zoi:
         return 1.0 if rng.random() < coi else 0.0
-    mu = real_parameter(a, "mu", "ZeroOneInflatedBeta")
-    phi = real_parameter(a, "phi", "ZeroOneInflatedBeta")
     return rng.betavariate(mu * phi, (1.0 - mu) * phi)
 
 
@@ -3944,20 +3978,17 @@ def _zoib_density(a: Mapping[str, object], value: object) -> float:
         outside the closed unit interval.
     """
     point = finite_value(value, "ZeroOneInflatedBeta")
-    zoi = real_parameter(a, "zoi", "ZeroOneInflatedBeta")
-    coi = real_parameter(a, "coi", "ZeroOneInflatedBeta")
+    mu, phi, zoi, coi = _zoib_parameters(a)
     if point < 0.0 or point > 1.0:
         return -math.inf
     if point == 0.0:
-        return math.log(zoi) + math.log1p(-coi)
+        return _log(zoi) + (math.log1p(-coi) if coi < 1 else -math.inf)
     if point == 1.0:
-        return math.log(zoi) + math.log(coi)
-    mu = real_parameter(a, "mu", "ZeroOneInflatedBeta")
-    phi = real_parameter(a, "phi", "ZeroOneInflatedBeta")
+        return _log(zoi) + _log(coi)
     first = mu * phi
     second = (1.0 - mu) * phi
     return (
-        math.log1p(-zoi)
+        (math.log1p(-zoi) if zoi < 1 else -math.inf)
         + (first - 1.0) * math.log(point)
         + (second - 1.0) * math.log1p(-point)
         - _log_beta(first, second)

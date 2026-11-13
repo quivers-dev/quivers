@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **The inflated Beta reference family preserves impossible branches.** Zero mixture weights score as negative infinity, invalid mean and precision parameters are refused before either branch is evaluated, and the semantic registry records the mean's open unit interval.
+- **The hurdle Poisson includes its zero-rate limit.** Its positive component becomes the point mass at one at rate zero. Tiny positive rates retain their normalized density, mean, and finite limiting gradients. Sampling uses a conditioned first arrival rather than rejection of zero counts, on both the compiled runtime and reference machine.
 - **Marginalized priors retain exact atom weights.** Bernoulli and categorical marginalization preserve zero and arbitrarily small probabilities. Grouped and ungrouped categorical priors normalize nonnegative weights, so rescaling those weights does not change the density.
 - **Invalid inline parameters raise instead of selecting a boundary distribution.** Negative rates, trial counts, and probabilities outside the unit interval are refused by generic and hand-written family builders. Valid closed endpoints remain available. MCMC rejects invalid proposals while preserving strict initial validation and unrelated errors.
 
