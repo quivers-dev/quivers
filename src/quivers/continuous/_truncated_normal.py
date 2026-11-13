@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor
@@ -131,12 +132,6 @@ class TruncatedNormal(Distribution):
         Whether to validate parameter and observation constraints.
     """
 
-    arg_constraints = {
-        "loc": constraints.real,
-        "scale": constraints.positive,
-        "low": constraints.real,
-        "high": constraints.real,
-    }
     has_rsample = True
 
     def __init__(
@@ -153,6 +148,16 @@ class TruncatedNormal(Distribution):
         if not bool((self.low < self.high).all()):
             raise ValueError("TruncatedNormal requires low < high")
         super().__init__(self.loc.shape, torch.Size(), validate_args=validate_args)
+
+    @property
+    def arg_constraints(self) -> dict[str, constraints.Constraint]:
+        """Return the constraints on distribution parameters."""
+        return {
+            "loc": constraints.real,
+            "scale": constraints.positive,
+            "low": constraints.real,
+            "high": constraints.real,
+        }
 
     @property
     def support(self) -> constraints.Constraint:
@@ -270,12 +275,12 @@ class TruncatedNormal(Distribution):
             value <= self.low, 0.0, torch.where(value >= self.high, 1.0, result)
         )
 
-    def rsample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+    def rsample(self, sample_shape: Sequence[int] = torch.Size()) -> Tensor:
         """Draw reparameterized samples by inverse CDF.
 
         Parameters
         ----------
-        sample_shape : torch.Size
+        sample_shape : Sequence[int]
             Leading sample dimensions.
 
         Returns
@@ -284,20 +289,20 @@ class TruncatedNormal(Distribution):
             Draws with shape sample_shape + batch_shape.
         """
         uniforms = torch.rand(
-            sample_shape + self.batch_shape,
+            torch.Size(sample_shape) + self.batch_shape,
             dtype=self.loc.dtype,
             device=self.loc.device,
         )
         return self.icdf(uniforms)
 
     def expand(
-        self, batch_shape: torch.Size, _instance: TruncatedNormal | None = None
+        self, batch_shape: Sequence[int], _instance: TruncatedNormal | None = None
     ) -> TruncatedNormal:
         """Broadcast the distribution to a batch shape.
 
         Parameters
         ----------
-        batch_shape : torch.Size
+        batch_shape : Sequence[int]
             Target batch dimensions.
         _instance : TruncatedNormal or None
             Optional instance for the Distribution expansion protocol.
@@ -307,6 +312,7 @@ class TruncatedNormal(Distribution):
         TruncatedNormal
             A distribution sharing the expanded parameter tensors.
         """
+        batch_shape = torch.Size(batch_shape)
         new = self._get_checked_instance(TruncatedNormal, _instance)
         new.loc = self.loc.expand(batch_shape)
         new.scale = self.scale.expand(batch_shape)
