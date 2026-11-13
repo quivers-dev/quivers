@@ -185,7 +185,7 @@ assert svi_mae < 0.5 * baseline_mae
 
 [`NUTSKernel`](../api/inference/mcmc.md) samples the 140-dimensional posterior
 over the full response matrix and is held to the same three recovery checks.
-Four chains each use 500 warmup iterations and 1,000 retained draws. Before
+Four chains each use 1,000 warmup iterations and 4,000 retained draws. Before
 comparing posterior means, the example checks rank-normalized split
 $\hat R < 1.01$ and bulk and tail effective sample sizes above 400 for every
 parameter [@vehtari2021rhat]. These
@@ -196,7 +196,7 @@ sampling precision across abilities, difficulties, and discriminations.
 from quivers.inference import MCMC, NUTSKernel
 
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9)
-mc = MCMC(kernel, num_warmup=500, num_samples=1000, num_chains=4, seed=2)
+mc = MCMC(kernel, num_warmup=1000, num_samples=4000, num_chains=4, seed=2)
 result = mc.run(model, x_in, observations)
 
 for k in truth:
