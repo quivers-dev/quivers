@@ -1082,35 +1082,14 @@ def test_gallery_backend_logdensity_matches_qvr(
 
     points = _gallery_data.points_from_dataset(dataset)
     labels = _gallery_data.perturbation_labels(len(points))
-    qvr_probe = QvrProbe()
     # Isolate the bind-mounted scratch per (backend, example) so a
     # probe never mounts a source or helper file another backend's run
     # left behind in a shared directory.
     scratch = pathlib.Path("/tmp") / f"qvr_gallery_eq_{example.stem}_{backend}"
     scratch.mkdir(exist_ok=True, parents=True)
-    # One probe call per point: the probe's `observations` keyword
-    # overrides the flat per-point payload (it is the only channel that
-    # preserves multi-axis shapes), so a perturbed point needs its own
-    # pre-shaped observation dict. Passing the dataset's ground-truth
-    # observations once for the whole set would score the QVR side at
-    # the unperturbed data while the container scored the perturbed
-    # data.
-    qvr_lps: list[float] = []
-    for point in points:
-        qvr_lps.extend(
-            qvr_probe.evaluate(
-                source,
-                example.stem,
-                [point],
-                scratch=scratch,
-                monadic=dataset.monadic,
-                x_input=dataset.x_input,
-                observations=_gallery_data.observations_for_point(
-                    dataset,
-                    point,
-                ),
-            ).log_densities
-        )
+    qvr_lps = _gallery_data.reference_log_densities(
+        example, dataset, points, scratch=scratch
+    )
 
     script_path = pathlib.Path(__file__).parent / "probes" / "_scripts" / script_name
     raw_result = _docker.run_probe(
