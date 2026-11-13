@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Coproduct feedback uses finite Kleene closure.** `KleeneStarTrace` sums all paths through Boolean, Counting, Markov, log-probability, or max-plus feedback, with explicit carrier and object validation. Divergent feedback raises `DivergentClosureError`. The trace is partial, including definedness conditions for nested feedback.
 - **Support maps preserve the declared algebra operations.** `SupportMap(source)` maps positive entries to Boolean truth for Boolean, ProductFuzzy, Gödel, Probability, Counting, and Markov carriers, with explicit carrier validation and homomorphism tests.
 
 ### Fixed

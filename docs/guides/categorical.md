@@ -270,6 +270,80 @@ assert traced_f.domain == Y
 assert traced_f.codomain == Z
 ```
 
+### Coproduct feedback
+
+A [Kleene star](https://en.wikipedia.org/wiki/Kleene_algebra) combines paths of
+every finite length, including the empty path. For a matrix
+$f : A + U \to B + U$, split the rows into $A,U$ and the columns into $B,U$.
+[`KleeneStarTrace`](../api/categorical/traced.md#quivers.categorical.traced.KleeneStarTrace)
+computes
+
+$$
+\operatorname{Tr}^{U}(f)
+= f_{AB} \oplus f_{AU}\,(f_{UU})^*\,f_{UB}.
+$$
+
+Products and sums use the declared semiring. The first term follows a direct
+edge from $A$ to $B$. The second enters $U$, follows any finite sequence of
+feedback edges, and exits to $B$. This row-domain convention places the entry
+block on the left of the closure.
+
+The operation is a partial trace: its equations include conditions on when each
+side is defined [@malherbe2012partially]. Here the domain requires a finite
+closure for the entire feedback block, including components unreachable from
+the external input. The supported
+[semirings](../semantics/algebras.md) have the following domains.
+
+| Semiring | Condition for finite feedback closure |
+|----------|---------------------------------------|
+| Boolean | Every finite graph |
+| Counting | No directed cycle of positive-weight edges |
+| Markov | Nonnegative feedback matrix has spectral radius below one |
+| Log-probability | Exponentiated feedback matrix has spectral radius below one |
+| Max-plus | No directed cycle with positive total weight |
+
+For nonnegative weights, summing paths can be regrouped without cancellation.
+Partitioning a path into visits to two feedback blocks gives the same sum
+whether those blocks are closed together or in sequence. If the combined
+closure is finite, each inner closure and the resulting outer closure are
+finite. Conversely, finite inner and outer closures bound all the combined
+path sums. For Boolean weights, this argument concerns reachability; for
+max-plus weights, it concerns maximal path weight and the absence of positive
+cycles. These path decompositions give the trace equations, including the
+definedness conditions for nested feedback. Signed real weights are excluded:
+convergence of a signed matrix series alone does not give the partial trace
+axioms [@malherbe2012partially].
+
+In this example, the feedback loop has weight $1/2$, so the external weight is
+$1 + 1/2 + 1/4 + \cdots = 2$.
+
+```python
+import torch
+from quivers.categorical import KleeneStarTrace
+from quivers.core import MARKOV, CoproductSet, FinSet, observed
+
+A = FinSet(name="A", cardinality=1)
+B = FinSet(name="B", cardinality=1)
+U = FinSet(name="U", cardinality=1)
+f = observed(
+    CoproductSet(components=(A, U)),
+    CoproductSet(components=(B, U)),
+    torch.tensor([[0.0, 1.0], [1.0, 0.5]], dtype=torch.float64),
+    algebra=MARKOV,
+)
+result = KleeneStarTrace(MARKOV).trace(f, feedback=U, domain=A, codomain=B)
+assert result.tensor.item() == 2.0
+```
+
+Matrices must use float32 or float64 and contain only values in their semiring's
+carrier. The result retains the external objects' tensor shapes and the input
+precision. Floating-point roundoff still limits the numerical equations,
+especially near divergent feedback. An undefined closure raises
+[`DivergentClosureError`](../api/categorical/traced.md#quivers.categorical.traced.DivergentClosureError).
+The logarithmic implementation retains finite log weights without converting
+them to ordinary probabilities, so an edge with log weight $-1000$ remains
+present.
+
 ## Summary
 
 | Structure | What it gives | Library entry point |

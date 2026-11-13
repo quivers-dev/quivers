@@ -45,7 +45,7 @@ from quivers.stochastic.semiring import (
 
 
 class DivergentClosureError(ValueError):
-    """The unary rules' closure is an infinite sum with no finite value."""
+    """A path closure has no finite value in the declared semiring."""
 
 
 def _check_square(matrix: torch.Tensor) -> int:

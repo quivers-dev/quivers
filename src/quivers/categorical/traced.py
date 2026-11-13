@@ -30,6 +30,8 @@ This module provides:
     trace()              — apply the trace operator
     partial_trace()      — trace over a subset of feedback wires
 
+    KleeneStarTrace       — partial coproduct trace from finite path closure
+
 References
 ----------
 Joyal, A., Street, R., and Verity, D. (1996). Traced monoidal
@@ -45,11 +47,206 @@ import itertools
 
 import torch
 
-from quivers.core.objects import SetObject, ProductSet
-from quivers.core.morphisms import Morphism, observed, identity
-from quivers.core.algebras import Algebra, CompositionRule, Semiring
+from quivers.core.objects import SetObject, ProductSet, CoproductSet
+from quivers.core.morphisms import Morphism, ObservedMorphism, observed, identity
+from quivers.core.algebras import (
+    Algebra,
+    CompositionRule,
+    Semiring,
+    BooleanAlgebra,
+    CountingAlgebra,
+    MarkovAlgebra,
+    LogProbAlgebra,
+    MaxPlusAlgebra,
+)
+from quivers.core._carriers import validate_carrier
 from quivers.core.tensor_ops import diagonal_reduce
-from quivers.categorical.monoidal import MonoidalStructure, CartesianProductMonoidal
+from quivers.categorical.monoidal import (
+    MonoidalStructure,
+    CartesianProductMonoidal,
+    CoproductMonoidal,
+)
+from quivers.stochastic._kleene import DivergentClosureError, kleene_star
+from quivers.stochastic.semiring import (
+    ChartSemiring,
+    BooleanSemiring,
+    CountingSemiring,
+    LogProbSemiring,
+    ViterbiSemiring,
+)
+
+
+_STAR_SEMIRINGS: dict[type[Semiring], ChartSemiring] = {
+    BooleanAlgebra: BooleanSemiring(),
+    CountingAlgebra: CountingSemiring(),
+    MarkovAlgebra: CountingSemiring(),
+    LogProbAlgebra: LogProbSemiring(),
+    MaxPlusAlgebra: ViterbiSemiring(),
+}
+
+
+class KleeneStarTrace:
+    """Partial trace of matrices under coproduct, defined by path closure.
+
+    For a matrix ``f: A + U -> B + U`` in row-to-column convention,
+    the result is ``f_AB + f_AU (f_UU)* f_UB``, with addition and
+    multiplication taken in the declared semiring. The star includes
+    paths of every finite length, including the empty path.
+
+    Boolean closure is always finite. Counting closure is finite on
+    acyclic feedback graphs. Markov and log-probability closure require
+    spectral radius below one in the nonnegative representation.
+    Max-plus closure excludes positive cycles. Divergent feedback is
+    undefined even when no external path reaches that component.
+
+    Nonnegative path sums can be regrouped without cancellation. This
+    gives the partial trace axioms, including the definedness condition
+    for nested feedback. Signed real matrices are excluded: convergence
+    of an individual feedback block does not establish those axioms on
+    the signed matrix category. This partial operator is independent of
+    the total cartesian `TracedMonoidal` interface.
+
+    Parameters
+    ----------
+    algebra : Semiring
+        Exactly a built-in Boolean, Counting, Markov, LogProb, or MaxPlus
+        algebra. Custom subclasses are not accepted.
+
+    Raises
+    ------
+    TypeError
+        If the source algebra is not one of the declared semirings.
+
+    References
+    ----------
+    Malherbe, O., Scott, P. J., and Selinger, P. (2012). Partially
+    traced categories. Journal of Pure and Applied Algebra, 216(12),
+    2563-2585. DOI: 10.1016/j.jpaa.2012.03.026. Definition 3.2 gives
+    the partial trace axioms; Proposition 3.10 gives the obstruction
+    for a convergence-based star on signed real matrices.
+    """
+
+    def __init__(self, algebra: Semiring) -> None:
+        if type(algebra) not in _STAR_SEMIRINGS:
+            raise TypeError(
+                f"no coproduct Kleene-star trace is declared for {algebra!r}"
+            )
+        self._algebra = algebra
+        self._semiring = _STAR_SEMIRINGS[type(algebra)]
+        self._monoidal = CoproductMonoidal(algebra)
+
+    @property
+    def algebra(self) -> Semiring:
+        """The semiring whose finite path weights are combined."""
+        return self._algebra
+
+    @property
+    def monoidal(self) -> CoproductMonoidal:
+        """The coproduct monoidal structure used by this partial trace."""
+        return self._monoidal
+
+    def trace(
+        self,
+        morph: Morphism,
+        feedback: SetObject,
+        domain: SetObject,
+        codomain: SetObject,
+    ) -> ObservedMorphism:
+        """Sum all paths through the feedback block when its closure is finite.
+
+        Parameters
+        ----------
+        morph : Morphism
+            Matrix ``A + U -> B + U`` over this trace's algebra, with a
+            float32 or float64 tensor. Values must lie in its carrier.
+        feedback : SetObject
+            Feedback object ``U``, including the empty object.
+        domain : SetObject
+            External domain ``A``; it may have several tensor axes.
+        codomain : SetObject
+            External codomain ``B``; it may have several tensor axes.
+
+        Returns
+        -------
+        ObservedMorphism
+            Matrix ``A -> B`` with the external tensor shapes restored.
+            Input precision is retained. Markov and log-probability
+            evaluations retain input gradients.
+
+        Raises
+        ------
+        DivergentClosureError
+            If the feedback closure has no finite value.
+        TypeError
+            If the input tensor is not float32 or float64.
+        ValueError
+            If objects, algebra, tensor shape, or carrier values disagree,
+            or a finite mathematical result exceeds the numeric carrier.
+        """
+        q = self._algebra
+        expected_domain = CoproductSet(components=(domain, feedback))
+        expected_codomain = CoproductSet(components=(codomain, feedback))
+        if morph.domain != expected_domain or morph.codomain != expected_codomain:
+            raise ValueError(
+                "Kleene-star trace requires the declared A + U -> B + U objects"
+            )
+        if type(morph.algebra) is not type(q):
+            raise ValueError(
+                "the morphism and Kleene-star trace must use the same algebra"
+            )
+        matrix = morph.tensor
+        expected_shape = (domain.size + feedback.size, codomain.size + feedback.size)
+        if tuple(matrix.shape) != expected_shape:
+            raise ValueError(
+                f"expected coproduct matrix shape {expected_shape}, got {tuple(matrix.shape)}"
+            )
+        if matrix.dtype not in (torch.float32, torch.float64):
+            raise TypeError("Kleene-star trace requires a float32 or float64 tensor")
+        validate_carrier(matrix, q)
+        direct = matrix[: domain.size, : codomain.size]
+        if feedback.size == 0:
+            result = direct
+        else:
+            entrance = matrix[: domain.size, codomain.size :]
+            exit_weights = matrix[domain.size :, : codomain.size]
+            loop = matrix[domain.size :, codomain.size :]
+            closure = kleene_star(loop, self._semiring)
+            through = q.compose(q.compose(entrance, closure, 1), exit_weights, 1)
+            result = q.join(torch.stack((direct, through)), dim=0)
+        validate_carrier(result, q)
+        return observed(
+            domain, codomain, result.reshape(*domain.shape, *codomain.shape), algebra=q
+        )
+
+    def verify_yanking(self, feedback: SetObject, atol: float = 1e-6) -> bool:
+        """Check that tracing the coproduct swap returns the identity.
+
+        Parameters
+        ----------
+        feedback : SetObject
+            Object whose swap is traced.
+        atol : float
+            Absolute comparison tolerance, with zero relative tolerance.
+
+        Returns
+        -------
+        bool
+            Whether the yanking equation holds.
+        """
+        swap = self._monoidal.braiding(feedback, feedback)
+        actual = self.trace(swap, feedback, feedback, feedback).tensor
+        expected = identity(feedback, algebra=self._algebra).tensor
+        return torch.allclose(actual, expected, atol=atol, rtol=0)
+
+    def __repr__(self) -> str:
+        """Identify the semiring used for coproduct feedback.
+
+        Returns
+        -------
+        str
+            Constructor name and declared algebra.
+        """
+        return f"KleeneStarTrace({self._algebra!r})"
 
 
 def _require_semiring(algebra: CompositionRule) -> Semiring:
@@ -413,6 +610,8 @@ def partial_trace(
 
 
 __all__ = [
+    "KleeneStarTrace",
+    "DivergentClosureError",
     "TracedMonoidal",
     "CompactClosedTrace",
     "trace",
