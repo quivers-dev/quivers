@@ -5,15 +5,16 @@ Coverage:
 * **Correlated regression** — a near-collinear design produces a
   strongly-correlated posterior. Mean-field VI collapses the
   off-diagonal; full-rank MVN and HMC recover.
-* **Neal's funnel** — the canonical scale-of-scale dependency
-  (Neal 2003). Mean-field VI cannot fit the joint; HMC needs
-  reparameterized mass adaptation.
+* **Neal's funnel conditional**: a univariate Gaussian given nine
+  zero observations, with mean forty units below initialization.
 * **Ill-conditioned product Gaussian** — per-dim posteriors with
   scales spanning four orders of magnitude. Stress for mass-matrix
   adaptation; AutoNormalGuide with appropriate init_scale handles it.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 
@@ -130,41 +131,33 @@ def test_hmc_recovers_correlation_and_means() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_autonormal_funnel_captures_negative_bias() -> None:
-    """Capture test for the funnel pathology: AutoNormalGuide's
-    posterior over v has the right sign (negative, away from the
-    prior mean of zero) but under-estimates the magnitude. The
-    mean-field Gaussian cannot reach the deep apex of the funnel, so
-    it recovers only a fraction of the analytical mean. This documents
-    the known mean-field failure on funnel-shaped posteriors. This is
-    analogous to the ``test_autonormal_fails_to_recover_correlation``
-    capture for the correlated-regression case.
+def test_autonormal_recovers_funnel_conditional() -> None:
+    """The Gaussian conditional at x=0 has mean -40.5 and variance 9.
+
+    Six thousand updates allow the location to move forty units at
+    learning rate 0.02. The mean tolerance is one third of the posterior
+    standard deviation, about fifteen Monte Carlo standard errors for
+    2,000 draws. The standard deviation tolerance is about six of its
+    Monte Carlo standard errors.
     """
-    torch.manual_seed(0)
-    data = neal_funnel()
-    ref = neal_funnel_reference(data)
-    guide = AutoNormalGuide(data.model, observed_names={"x"})
-    _train(data.model, guide, data.observations, steps=1500, lr=2e-2)
-    samples = torch.stack(
-        [
-            guide.rsample(torch.zeros(1, 1))["v"].detach().reshape(-1)[0]
-            for _ in range(2000)
-        ]
-    )
-    recovered_mean = float(samples.mean())
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        data = neal_funnel()
+        ref = neal_funnel_reference(data)
+        guide = AutoNormalGuide(data.model, observed_names={"x"})
+        _train(data.model, guide, data.observations, steps=6000, lr=2e-2)
+        samples = torch.stack(
+            [
+                guide.rsample(torch.zeros(1, 1))["v"].detach().reshape(-1)[0]
+                for _ in range(2000)
+            ]
+        )
     target_mean = float(ref["v_mean"])
-    assert recovered_mean < 0.0, (
-        f"AutoNormal / Neal-funnel: posterior mean over v should be "
-        f"negative; got {recovered_mean:.4f}"
-    )
-    # The capture is that the recovered magnitude falls short of the
-    # analytical target: the mean-field guide under-estimates the
-    # apex it cannot reach.
-    assert abs(recovered_mean) < 0.8 * abs(target_mean), (
-        f"AutoNormal / Neal-funnel: posterior mean over v "
-        f"{recovered_mean:.2f} is too close to analytical "
-        f"{target_mean:.2f}; expected under-estimation"
-    )
+    assert abs(float(samples.mean()) - target_mean) < 1.0
+    assert abs(float(samples.std()) - 3.0) < 0.3
+    # The prior and the scale-floor boundary are both rejected.
+    assert abs(0.0 - target_mean) > 1.0
+    assert abs(2 * math.log(1e-7) - target_mean) > 1.0
 
 
 # ---------------------------------------------------------------------------

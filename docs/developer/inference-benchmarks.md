@@ -11,8 +11,7 @@ posterior variance, tails, correlations, or a different latent site. A variation
 [guide](../tutorials/qvr/06-inference-zoo.md#step-2-which-variational-guide), the family of
 approximate posteriors fitted by stochastic variational inference (SVI), can recover a mean while underestimating uncertainty.
 
-The *capture* rows reverse the usual meaning of PASS: they pass when a known failure remains
-detectable, so their metric is read before their status. Throughput has different units across
+Throughput has different units across
 families, since one SVI update and one Markov chain Monte Carlo (MCMC) draw are different amounts of statistical work. The
 tables compare the five algorithms at the listed budgets, and changing the number of updates,
 draws, or particles changes both cost and accuracy.
@@ -35,7 +34,6 @@ Throughput is reported as SVI iterations per second for the variational guides a
 - **PASS**: recovered moment is within tolerance of the reference.
 - **FAIL**: algorithm runs cleanly but the moment is outside tolerance.
 - **ERROR**: algorithm raised during execution (NaN gradient, a value that blows up at the boundary of the support, divergent trajectory, etc.).
-- *capture* problems invert the convention: PASS means the metric *exceeds* the tolerance, confirming a documented failure mode.
 
 Determinism: every cell calls `torch.manual_seed(0)` before constructing the problem, so the same `(algorithm, problem)` pair reproduces across runs given fixed PyTorch and NumPy versions.
 
@@ -142,21 +140,21 @@ Posterior accuracy (metric / tolerance):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---|---|---|---|---|
-| Beta-Bernoulli | **PASS** `0.0398 / 0.05` | **PASS** `0.0402 / 0.05` | **PASS** `0.00926 / 0.05` | **PASS** `0.000594 / 0.05` | **PASS** `0.00157 / 0.05` |
-| Normal-Normal | **PASS** `0.123 / 0.15` | **PASS** `0.124 / 0.15` | **PASS** `4.77e-07 / 0.15` | **PASS** `0.000607 / 0.15` | **PASS** `0.0225 / 0.15` |
-| Normal-Inverse-Gamma | **PASS** `0.0345 / 0.2` | **PASS** `0.0298 / 0.2` | **PASS** `5.96e-08 / 0.2` | **PASS** `0.00715 / 0.2` | **PASS** `0.0068 / 0.2` |
-| Gamma-Exponential | **PASS** `0.0513 / 0.3` | **PASS** `0.057 / 0.3` | **PASS** `0.0249 / 0.3` | **PASS** `0.00806 / 0.3` | **PASS** `0.0163 / 0.3` |
-| Bayesian linear regression | **PASS** `0.0113 / 0.1` | **PASS** `0.00401 / 0.1` | **PASS** `1.79e-07 / 0.1` | **PASS** `0.000134 / 0.1` | **PASS** `0.00127 / 0.1` |
+| Beta-Bernoulli | **PASS** `0.0398 / 0.05` | **PASS** `0.0402 / 0.05` | **PASS** `0.00926 / 0.05` | **PASS** `0.00269 / 0.05` | **PASS** `0.000477 / 0.05` |
+| Normal-Normal | **PASS** `0.123 / 0.15` | **PASS** `0.124 / 0.15` | **PASS** `4.77e-07 / 0.15` | **PASS** `0.000519 / 0.15` | **PASS** `0.00767 / 0.15` |
+| Normal-Inverse-Gamma | **PASS** `0.0345 / 0.2` | **PASS** `0.0298 / 0.2` | **PASS** `5.96e-08 / 0.2` | **PASS** `0.00594 / 0.2` | **PASS** `0.0213 / 0.2` |
+| Gamma-Exponential | **PASS** `0.0513 / 0.3` | **PASS** `0.057 / 0.3` | **PASS** `0.0249 / 0.3` | **PASS** `0.0016 / 0.3` | **PASS** `0.0212 / 0.3` |
+| Bayesian linear regression | **PASS** `0.0113 / 0.1` | **PASS** `0.00401 / 0.1` | **PASS** `1.79e-07 / 0.1` | **PASS** `0.000189 / 0.1` | **PASS** `0.003 / 0.1` |
 
 Throughput (iters/s for SVI, draws/s for MCMC):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---:|---:|---:|---:|---:|
-| Beta-Bernoulli | 1149.7 | 868.0 | 1863.5 | 114.2 | 167.9 |
-| Normal-Normal | 2013.3 | 1395.7 | 3451.5 | 236.8 | 256.7 |
-| Normal-Inverse-Gamma | 883.0 | 571.8 | 1574.8 | 102.6 | 51.0 |
-| Gamma-Exponential | 1803.4 | 1153.3 | 3276.4 | 233.1 | 180.0 |
-| Bayesian linear regression | 1222.2 | 710.6 | 2305.4 | 163.5 | 40.8 |
+| Beta-Bernoulli | 453.4 | 411.3 | 598.2 | 89.6 | 183.5 |
+| Normal-Normal | 587.2 | 501.0 | 592.3 | 138.6 | 237.8 |
+| Normal-Inverse-Gamma | 333.1 | 269.8 | 419.2 | 66.6 | 44.4 |
+| Gamma-Exponential | 570.1 | 441.7 | 758.5 | 172.3 | 122.7 |
+| Bayesian linear regression | 383.5 | 303.6 | 498.8 | 96.1 | 35.9 |
 
 ## Tier 2: hierarchical posteriors
 
@@ -204,19 +202,19 @@ Posterior accuracy (metric / tolerance):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---|---|---|---|---|
-| Eight Schools (centered) | **PASS** `5.4 / 12` | **PASS** `5.51 / 12` | **PASS** `5.4 / 12` | **PASS** `4.38 / 12` | **PASS** `5.75 / 12` |
-| Eight Schools (non-centered) | **PASS** `0.891 / 8` | **PASS** `1.06 / 8` | **PASS** `2.01 / 8` | **PASS** `1.74 / 8` | **PASS** `1.45 / 8` |
+| Eight Schools (centered) | **PASS** `4.51 / 12` | **PASS** `3.81 / 12` | **PASS** `4.5 / 12` | **PASS** `1.4 / 12` | **PASS** `1.58 / 12` |
+| Eight Schools (non-centered) | **PASS** `2.01 / 8` | **PASS** `1.88 / 8` | **PASS** `2.01 / 8` | **PASS** `1.72 / 8` | **PASS** `1.34 / 8` |
 
 Throughput (iters/s for SVI, draws/s for MCMC):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---:|---:|---:|---:|---:|
-| Eight Schools (centered) | 776.5 | 559.8 | 1498.0 | 113.0 | 28.0 |
-| Eight Schools (non-centered) | 729.2 | 572.4 | 1448.6 | 110.3 | 34.1 |
+| Eight Schools (centered) | 297.0 | 256.2 | 434.3 | 81.3 | 18.3 |
+| Eight Schools (non-centered) | 299.4 | 256.2 | 383.5 | 67.8 | 37.4 |
 
 ## Tier 3: hard posterior geometry
 
-These problems expose known failure modes of mean-field variational inference and of HMC under poor preconditioning.
+Correlated and ill-conditioned Gaussian targets test covariance approximation and preconditioning. The conditional from Neal's funnel tests recovery of a Gaussian mean far from initialization.
 
 ### Correlated regression
 
@@ -236,7 +234,7 @@ The mean-field guide ignores this correlation. The metric on the first moment be
 
 **Metric.** `|E[a]_q - E[a]_true|`, tolerance `0.2`.
 
-### Neal's funnel (under-estimation capture) *(capture)*
+### Neal's funnel conditional
 
 **Model.** Neal's funnel:
 
@@ -247,11 +245,11 @@ $$
 
 **Data.** Condition on $x_i = 0$ (inference target is $p(v \mid x = 0)$).
 
-**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$, so the conditional posterior is Gaussian with mean $-9 N / 2 = -40.5$ and variance $9$ at $N = 9$. The *joint* posterior over $(v, x)$ remains funnel-shaped, and only the conditional given $x = 0$ is tractable.
+**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$. Completing the square with the prior gives $v \mid x = 0 \sim \mathcal{N}(-9N/2, 3)$, hence mean $-40.5$ and variance $9$ at $N = 9$.
 
-**Capture semantics.** All five algorithms underestimate the magnitude of $v$ [@neal2003slice]. The posterior mean lies forty units below the prior mean, where the scale $e^{v/2}$ of each $x_i$ is about $e^{-20}$. The compiled `Normal` family floors its scale at $10^{-7}$, which $e^{v/2}$ reaches at $v \approx -32.2$, so below that point the compiled log density stops increasing in $v$ and the target the samplers see has its mode near $-32.2$. PASS means the metric *exceeds* the tolerance, confirming the underfit.
+The joint distribution of $(v, x)$ has Neal's funnel geometry [@neal2003slice]. Conditioning every $x_i$ at zero leaves one Gaussian latent, which a Normal guide can represent exactly. The benchmark measures recovery of this conditional mean, forty units from the initialization. Its tolerance is $1$, one third of the posterior standard deviation, fixed independently of the algorithm outputs. A failed cell measures error at the listed computation budget.
 
-**Metric.** `|E[v]_q - E[v]_true|`, tolerance `20.25`.
+**Metric.** `|E[v]_q - E[v]_true|`, tolerance `1`.
 
 ### Ill-conditioned product Gaussian
 
@@ -276,17 +274,17 @@ Posterior accuracy (metric / tolerance):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---|---|---|---|---|
-| Correlated regression | **PASS** `0.0365 / 0.2` | **PASS** `0.0308 / 0.2` | **PASS** `7.41e-05 / 0.2` | **PASS** `0.0512 / 0.2` | **PASS** `0.0569 / 0.2` |
-| Neal's funnel (under-estimation capture) *(capture)* | **PASS** `40.6 / 20.2` | **PASS** `40.6 / 20.2` | **PASS** `40.5 / 20.2` | **PASS** `42 / 20.2` | **PASS** `40.9 / 20.2` |
-| Ill-conditioned product Gaussian | **PASS** `0.00643 / 0.3` | **PASS** `0.00333 / 0.3` | **PASS** `7.15e-07 / 0.3` | **PASS** `0.086 / 0.3` | **PASS** `0.0424 / 0.3` |
+| Correlated regression | **PASS** `0.0365 / 0.2` | **PASS** `0.0308 / 0.2` | **PASS** `7.41e-05 / 0.2` | **PASS** `0.0273 / 0.2` | **PASS** `0.104 / 0.2` |
+| Neal's funnel conditional | FAIL `10.8 / 1` | FAIL `10.8 / 1` | FAIL `19.3 / 1` | FAIL `2.58 / 1` | FAIL `2.2 / 1` |
+| Ill-conditioned product Gaussian | **PASS** `0.00643 / 0.3` | **PASS** `0.00333 / 0.3` | **PASS** `7.15e-07 / 0.3` | **PASS** `0.061 / 0.3` | **PASS** `0.0707 / 0.3` |
 
 Throughput (iters/s for SVI, draws/s for MCMC):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---:|---:|---:|---:|---:|
-| Correlated regression | 1150.7 | 681.6 | 2314.7 | 167.3 | 67.1 |
-| Neal's funnel (under-estimation capture) *(capture)* | 1795.3 | 1279.6 | 2807.7 | 281.0 | 1027.6 |
-| Ill-conditioned product Gaussian | 482.0 | 461.1 | 876.7 | 68.3 | 54.5 |
+| Correlated regression | 363.5 | 289.6 | 512.2 | 99.6 | 23.7 |
+| Neal's funnel conditional | 478.8 | 448.3 | 596.9 | 226.8 | 404.1 |
+| Ill-conditioned product Gaussian | 151.6 | 154.2 | 207.1 | 40.7 | 39.6 |
 
 ## Tier 4: constrained support
 
@@ -330,15 +328,15 @@ Posterior accuracy (metric / tolerance):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---|---|---|---|---|
-| HalfNormal scale | **PASS** `0.0265 / 0.15` | **PASS** `0.0458 / 0.15` | **PASS** `0.0247 / 0.15` | **PASS** `0.00324 / 0.15` | **PASS** `0.0124 / 0.15` |
-| TruncatedNormal recovery | **PASS** `0.0318 / 0.05` | **PASS** `0.0309 / 0.05` | **PASS** `0.000249 / 0.05` | **PASS** `0.00095 / 0.05` | **PASS** `0.00257 / 0.05` |
+| HalfNormal scale | **PASS** `0.0265 / 0.15` | **PASS** `0.0458 / 0.15` | **PASS** `0.0247 / 0.15` | **PASS** `0.00456 / 0.15` | **PASS** `0.0127 / 0.15` |
+| TruncatedNormal recovery | **PASS** `0.0318 / 0.05` | **PASS** `0.0309 / 0.05` | **PASS** `0.000249 / 0.05` | **PASS** `0.000353 / 0.05` | **PASS** `0.00189 / 0.05` |
 
 Throughput (iters/s for SVI, draws/s for MCMC):
 
 | Problem | AutoNormal | AutoMVN | AutoLaplace | HMC | NUTS |
 |---|---:|---:|---:|---:|---:|
-| HalfNormal scale | 1561.4 | 1045.9 | 2725.6 | 190.0 | 90.7 |
-| TruncatedNormal recovery | 1355.7 | 1038.6 | 2152.0 | 145.2 | 105.1 |
+| HalfNormal scale | 476.5 | 445.3 | 589.5 | 115.1 | 36.5 |
+| TruncatedNormal recovery | 381.0 | 401.7 | 466.8 | 58.8 | 42.0 |
 
 ## Reproducing the grid
 

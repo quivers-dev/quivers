@@ -21,6 +21,7 @@ from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
 from quivers.continuous.bijectors import Bijector
+from quivers.continuous._truncated_normal import TruncatedNormal
 
 
 _NEG_INF = float("-inf")
@@ -136,6 +137,30 @@ class PointMass(Measure):
         return self.value.expand(shape) if shape else self.value
 
 
+def _normal_interval(
+    base: torch.distributions.Normal, low: Tensor | None, high: Tensor | None
+) -> TruncatedNormal:
+    """Construct the normal interval distribution for a restriction.
+
+    Parameters
+    ----------
+    base : torch.distributions.Normal
+        The untruncated distribution.
+    low : Tensor or None
+        Lower bound, or an unbounded left endpoint.
+    high : Tensor or None
+        Upper bound, or an unbounded right endpoint.
+
+    Returns
+    -------
+    TruncatedNormal
+        The normalized restriction with the base's dtype and device.
+    """
+    lower = base.loc.new_tensor(-torch.inf) if low is None else low.to(base.loc)
+    upper = base.loc.new_tensor(torch.inf) if high is None else high.to(base.loc)
+    return TruncatedNormal(base.loc, base.scale, lower, upper)
+
+
 class Restrict(Measure):
     """Restriction of a base distribution to a sub-interval.
 
@@ -152,10 +177,9 @@ class Restrict(Measure):
     discipline that makes the algebra close, per
     [Di Lavore-Roman-Sobocinski 2025](https://arxiv.org/abs/2502.03477).
 
-    Numerically, the log-normaliser is computed via the base's
-    `cdf` (and the `1 - cdf` complement when only `low` is finite)
-    with the `logsubexp` stable variant. Bases without a closed-form
-    CDF raise at construction time.
+    Normal interval masses use log-CDF differences with tail reflection.
+    Other continuous bases use their CDF difference, and discrete bases
+    use interval probabilities that include both endpoints.
     """
 
     arg_constraints: dict = {}
@@ -215,6 +239,8 @@ class Restrict(Measure):
         # the support `{low, low+1, ..., high}` includes both
         # endpoints; the survival uses `1 - cdf(low - 1)` so the mass
         # at `low` is included.
+        if isinstance(self.base, torch.distributions.Normal):
+            return _normal_interval(self.base, self.low, self.high).log_normalizer()
         try:
             if self.low is None:
                 cdf_high = self.base.cdf(self.high)
@@ -326,6 +352,8 @@ class Restrict(Measure):
             or inverse CDF, or is discrete (its inverse CDF does not
             give the conditioned mass function).
         """
+        if isinstance(self.base, torch.distributions.Normal):
+            return _normal_interval(self.base, self.low, self.high).sample(sample_shape)
         if getattr(self.base.support, "is_discrete", False):
             return None
         # The CDF values and the inversion run in double precision: an

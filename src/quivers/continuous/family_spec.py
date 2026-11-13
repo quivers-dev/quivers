@@ -132,11 +132,10 @@ class ParamSpec:
     kind : ParamKind
         Per-parameter shape contract on the inline call side.
     inline_bounds : tuple[float, float] | None
-        The closed interval the inline clamp projects onto, for a
-        parameter whose family admits a boundary value that the
-        transform's default clamp would move (a Poisson ``rate`` of
-        zero, a Geometric ``probs`` of one). ``None`` keeps the
-        transform's default clamp.
+        A closed interval for the inline parameter's projection, such as
+        the nonnegative domain of a Poisson ``rate``. ``None`` uses
+        the transform's domain map, which preserves positive values
+        and refuses nonpositive values for a positive parameter.
     """
 
     name: str
@@ -145,8 +144,7 @@ class ParamSpec:
     inline_bounds: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
-        # Mirror the historical converter check; store the
-        # validated value back onto the frozen instance.
+        # Validate the transform before storing the immutable field.
         validated = _validate_transform(self.transform)
         object.__setattr__(self, "transform", validated)
 
@@ -172,15 +170,16 @@ class ParamSpec:
 
     @property
     def inline_clamp(self) -> Callable[[torch.Tensor], torch.Tensor]:
-        """Inline safety-clamp callable for user-supplied literal
-        or runtime parameters, sourced from
-        `resolve_inline_clamp`, or projecting onto `inline_bounds`
-        when the parameter declares them.
+        """Domain map for explicit literal or runtime parameters.
+
+        Valid positive values are preserved and nonpositive values
+        are refused. A declared `inline_bounds` interval instead
+        projects onto that closed interval.
         """
         if self.inline_bounds is not None:
             low, high = self.inline_bounds
-            return closed_interval_clamp(low, high).forward
-        return resolve_inline_clamp(self.transform).forward
+            return closed_interval_clamp(low, high)
+        return resolve_inline_clamp(self.transform)
 
     @property
     def transform_name(self) -> str:

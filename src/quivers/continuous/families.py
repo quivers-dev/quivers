@@ -43,6 +43,7 @@ from quivers.continuous._closed_probability import (
 )
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._ordered import OrderedLogistic
+from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers.core.objects import SetObject
 from quivers.continuous._zip_hurdle import (
     HurdlePoisson,
@@ -658,47 +659,24 @@ class ConditionalTruncatedNormal(ContinuousMorphism):
         # initialize mu near center of interval
         mu = raw[..., : self._d] + (self._low + self._high) / 2.0
         log_sigma = raw[..., self._d :]
-        sigma = log_sigma.exp().clamp(min=EPS)
+        sigma = log_sigma.exp()
         return mu, sigma
 
-    def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def _distribution(self, x: torch.Tensor) -> TruncatedNormal:
         mu, sigma = self._get_params(x)
-
-        log_phi = (
-            -0.5 * ((y - mu) / sigma) ** 2 - sigma.log() - 0.5 * math.log(2 * math.pi)
+        return TruncatedNormal(
+            mu, sigma, mu.new_tensor(self._low), mu.new_tensor(self._high)
         )
 
-        normal = D.Normal(0, 1)
-        log_Z = torch.log(
-            (
-                normal.cdf((self._high - mu) / sigma)
-                - normal.cdf((self._low - mu) / sigma)
-            ).clamp(min=EPS)
-        )
-
-        return (log_phi - log_Z).sum(dim=-1)
+    def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return self._distribution(x).log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
         x: torch.Tensor,
         sample_shape: torch.Size = torch.Size(),
     ) -> torch.Tensor:
-        mu, sigma = self._get_params(x)
-
-        normal = D.Normal(0, 1)
-        alpha = normal.cdf((self._low - mu) / sigma)
-        beta = normal.cdf((self._high - mu) / sigma)
-
-        u = torch.rand(
-            *sample_shape,
-            *mu.shape,
-            device=mu.device,
-            dtype=mu.dtype,
-        )
-        u_scaled = alpha + u * (beta - alpha)
-        u_scaled = u_scaled.clamp(min=EPS, max=1.0 - EPS)
-
-        return normal.icdf(u_scaled) * sigma + mu
+        return self._distribution(x).rsample(sample_shape)
 
 
 class ConditionalDirichlet(ContinuousMorphism):
@@ -1061,7 +1039,7 @@ ConditionalGeometric = _make_family(
     "Conditional Geometric(probs(x)). Number of failures before first success.",
     # A success probability of one is the point mass at zero failures;
     # one of zero puts no mass on any count.
-    inline_bounds={"probs": (EPS, 1.0)},
+    inline_bounds={"probs": (0.0, 1.0)},
 )
 """Conditional Geometric(probs(x)). Number of failures before first success."""
 
@@ -1073,8 +1051,8 @@ ConditionalNegativeBinomial = _make_family(
     "Discrete, over-dispersed count distribution.",
     # A total count of zero, or a success probability of zero, is the
     # point mass at zero; a success probability of one is no
-    # distribution, so it is held below one.
-    inline_bounds={"total_count": (0.0, math.inf), "probs": (0.0, 1.0 - EPS)},
+    # distribution, so the distribution validates that open endpoint.
+    inline_bounds={"total_count": (0.0, math.inf), "probs": (0.0, 1.0)},
 )
 """Conditional NegativeBinomial(total_count(x), probs(x)). Discrete, over-dispersed count distribution."""
 

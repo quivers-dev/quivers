@@ -213,6 +213,13 @@ class MixtureNormal(Distribution):
         return self._mixture.sample(sample_shape)
 
 
+class _OpenUnitInterval(_constraints.Constraint):
+    """Strictly interior probabilities."""
+
+    def check(self, value: Tensor) -> Tensor:
+        return (value > 0) & (value < 1)
+
+
 class ZeroOneInflatedBeta(Distribution):
     """Zero-one inflated beta distribution.
 
@@ -225,8 +232,9 @@ class ZeroOneInflatedBeta(Distribution):
       the density of ``Beta(mu * phi, (1 - mu) * phi)``.
 
     Parameters follow the mean-precision Beta reparameterization and the
-    brms ``zoi`` / ``coi`` inflation probabilities (all on the unit
-    interval). Formula frontend emits
+    brms ``zoi`` / ``coi`` inflation probabilities. The mean is strictly
+    between zero and one, precision is positive, and inflation
+    probabilities include both endpoints. Formula frontend emits
     ``ZeroOneInflatedBeta(mu, phi, zoi, coi)``.
 
     For the distributional background, see [Ospina and Ferrari
@@ -236,7 +244,7 @@ class ZeroOneInflatedBeta(Distribution):
     """
 
     arg_constraints = {
-        "mu": _constraints.unit_interval,
+        "mu": _OpenUnitInterval(),
         "phi": _constraints.positive,
         "zoi": _constraints.unit_interval,
         "coi": _constraints.unit_interval,
@@ -252,11 +260,10 @@ class ZeroOneInflatedBeta(Distribution):
         coi: Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.mu = mu
-        self.phi = phi
-        self.zoi = zoi
-        self.coi = coi
-        batch_shape = torch.broadcast_shapes(mu.shape, phi.shape, zoi.shape, coi.shape)
+        self.mu, self.phi, self.zoi, self.coi = torch.broadcast_tensors(
+            mu, phi, zoi, coi
+        )
+        batch_shape = self.mu.shape
         super().__init__(
             batch_shape=batch_shape,
             event_shape=torch.Size(),
@@ -264,21 +271,34 @@ class ZeroOneInflatedBeta(Distribution):
         )
 
     def _beta(self) -> torch.distributions.Beta:
-        mu = self.mu.clamp(1e-6, 1.0 - 1e-6)
-        phi = self.phi.clamp_min(1e-6)
-        return torch.distributions.Beta(mu * phi, (1.0 - mu) * phi)
+        return torch.distributions.Beta(
+            self.mu * self.phi,
+            (1.0 - self.mu) * self.phi,
+            validate_args=self._validate_args,
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
-        zoi = self.zoi.clamp(1e-6, 1.0 - 1e-6)
-        coi = self.coi.clamp(1e-6, 1.0 - 1e-6)
-        # Exact boundary atoms (censoring / rounding produce exact 0/1).
-        is_zero = value <= 0.0
-        is_one = value >= 1.0
-        lp_zero = torch.log(zoi * (1.0 - coi))
-        lp_one = torch.log(zoi * coi)
-        y_mid = value.clamp(1e-6, 1.0 - 1e-6)
-        lp_mid = torch.log1p(-zoi) + self._beta().log_prob(y_mid)
-        return torch.where(is_zero, lp_zero, torch.where(is_one, lp_one, lp_mid))
+        if self._validate_args:
+            self._validate_sample(value)
+        is_zero = value == 0.0
+        is_one = value == 1.0
+        is_interior = (value > 0.0) & (value < 1.0)
+        # Inactive components use interior arguments so their derivatives
+        # cannot introduce NaNs into the selected component.
+        zero_zoi = torch.where(is_zero, self.zoi, 1.0)
+        zero_coi = torch.where(is_zero, self.coi, 0.0)
+        one_zoi = torch.where(is_one, self.zoi, 1.0)
+        one_coi = torch.where(is_one, self.coi, 1.0)
+        mid_zoi = torch.where(is_interior, self.zoi, 0.0)
+        mid_value = torch.where(is_interior, value, 0.5)
+        lp_zero = zero_zoi.log() + torch.log1p(-zero_coi)
+        lp_one = one_zoi.log() + one_coi.log()
+        lp_mid = torch.log1p(-mid_zoi) + self._beta().log_prob(mid_value)
+        return torch.where(
+            is_zero,
+            lp_zero,
+            torch.where(is_one, lp_one, torch.where(is_interior, lp_mid, -torch.inf)),
+        )
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         shape = sample_shape + self.batch_shape

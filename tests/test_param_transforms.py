@@ -15,8 +15,8 @@ The tests verify:
 4. A user-defined custom `Bijector` subclass plugs into any
    family via `ParamSpec(name=..., transform=CustomBij())` without
    touching the string registry.
-5. The inline safety clamp is likewise bijector-typed and returns
-   `Identity()` for a user-supplied bijector transform.
+5. Inline domain maps are callables, preserve valid parameters, and
+   use the identity for a user-supplied bijector transform.
 """
 
 from __future__ import annotations
@@ -32,12 +32,11 @@ from quivers.continuous.bijectors import (
     AffineBijector,
     Bijector,
     ComposeBijector,
-    IdentityBijector,
     SoftplusBijector,
 )
 from quivers.continuous.family_spec import ParamSpec
 from quivers.continuous.param_transforms import (
-    INLINE_CLAMP_TO_BIJECTOR,
+    INLINE_CLAMPS,
     TRANSFORM_TO_BIJECTOR,
     resolve_inline_clamp,
     resolve_transform,
@@ -63,7 +62,7 @@ def test_every_registry_entry_is_a_bijector() -> None:
 
 
 def test_inline_clamp_registry_matches_transform_registry_keys() -> None:
-    assert set(INLINE_CLAMP_TO_BIJECTOR) == set(TRANSFORM_TO_BIJECTOR)
+    assert set(INLINE_CLAMPS) == set(TRANSFORM_TO_BIJECTOR)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +145,9 @@ def test_resolve_inline_clamp_bijector_returns_identity() -> None:
     the bijector's forward is trusted to land in-support.
     """
     clamp = resolve_inline_clamp(SoftplusBijector())
-    assert isinstance(clamp, IdentityBijector)
+    values = torch.tensor([-3.0, 0.0, 3.0])
+    torch.testing.assert_close(clamp(values), values)
+    assert not isinstance(clamp, Bijector)
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +193,36 @@ def test_paramspec_transform_name_for_bijector() -> None:
 
 def test_paramspec_inline_clamp_string_softplus() -> None:
     p = ParamSpec(name="scale", transform="softplus")
-    x = torch.tensor([-1.0, 0.0, 1.0, 1e-9])
-    y = p.inline_clamp(x)
-    assert (y >= EPS).all()
+    values = torch.tensor([1e-12, 1e-9, 1.0], dtype=torch.float64)
+    torch.testing.assert_close(p.inline_clamp(values), values, rtol=0, atol=0)
+    for invalid in (-1.0, 0.0):
+        with pytest.raises(ValueError, match="greater than zero"):
+            p.inline_clamp(torch.tensor(invalid))
 
 
 def test_paramspec_inline_clamp_string_sigmoid_bounds_unit_interval() -> None:
     p = ParamSpec(name="probs", transform="sigmoid")
-    x = torch.tensor([-1.0, 0.0, 0.5, 1.0, 2.0])
-    y = p.inline_clamp(x)
-    assert (y >= EPS).all()
-    assert (y <= 1.0 - EPS).all()
+    values = torch.tensor(
+        [-1.0, 0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0, 2.0], dtype=torch.float64
+    )
+    expected = torch.tensor(
+        [0.0, 0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0, 1.0], dtype=torch.float64
+    )
+    torch.testing.assert_close(p.inline_clamp(values), expected, rtol=0, atol=0)
+
+
+def test_exponential_transform_inverse_and_jacobian_below_epsilon() -> None:
+    values = torch.tensor(
+        [-40.0, -25.0, -10.0, 0.0], dtype=torch.float64, requires_grad=True
+    )
+    transform = resolve_transform("exp")
+    mapped = transform.forward(values)
+    torch.testing.assert_close(transform.inverse(mapped), values, rtol=0, atol=1e-12)
+    derivative = torch.autograd.grad(mapped.sum(), values)[0]
+    torch.testing.assert_close(
+        derivative.log(), transform.forward_log_det_jacobian(values)
+    )
+    assert not torch.allclose(mapped, mapped.clamp_min(EPS), rtol=0, atol=1e-12)
 
 
 def test_paramspec_inline_clamp_bijector_is_identity() -> None:

@@ -209,11 +209,19 @@ def correlated_regression(
 
 
 def neal_funnel(seed: int = 0) -> BenchmarkData:
-    """Neal's funnel: posterior over (v, x_1..x_9) with no observations.
+    """Condition Neal's funnel on nine observations equal to zero.
 
-    The 'data' is the prior itself: we condition on x = 0 to expose
-    the conditional posterior of v, which is then compared against
-    its analytical form.
+    Parameters
+    ----------
+    seed : int
+        Accepted by the shared data-factory interface. The fixed zero
+        observations require no random draws.
+
+    Returns
+    -------
+    BenchmarkData
+        The model and observations defining the Gaussian conditional
+        over v, with analytical mean -40.5 and variance 9.
     """
     model = _load_model("neal_funnel")
     # Condition on x_i = 0 so the inference target is p(v | x = 0).

@@ -189,7 +189,7 @@ def neal_funnel_reference(data: BenchmarkData) -> dict[str, float]:
 
     i.e. a Gaussian with mean ``-9 N / 2`` and variance ``9``. With
     9 dimensions this gives ``mean = -40.5``, ``variance = 9``.
-    Note that the *joint* posterior over ``(v, x_1, ..., x_9)`` is
+    The *joint* distribution over ``(v, x_1, ..., x_9)`` is
     still funnel-shaped; only the conditional given ``x = 0`` is
     Gaussian.
     """

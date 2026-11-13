@@ -2,9 +2,8 @@
 
 A Poisson ``rate`` of zero is the point mass at zero, and a Geometric
 ``probs`` of one is the point mass at zero failures: a positive count has
-log probability ``-inf`` under either. The compiled runtime's inline
-clamp holds every other parameter strictly inside its boundary, so it
-must leave these two in place. Both execution paths are checked against
+log probability ``-inf`` under either. The compiled runtime preserves valid parameters, including these
+boundary values. Both execution paths are checked against
 `torch.distributions` and a float64 closed form, at the boundary, on a
 zero-inflated Poisson whose structural branch gates the rate to zero,
 and at interior points, where the densities must not move.
@@ -361,25 +360,26 @@ def test_the_poisson_rate_clamp_projects_onto_the_nonnegative_reals() -> None:
     assert moved.tolist() == pytest.approx([0.0, 0.0, 1e-9, 3.0], abs=0.0)
 
 
-def test_the_geometric_probs_clamp_admits_one_and_not_zero() -> None:
+def test_the_geometric_probs_map_preserves_its_positive_domain() -> None:
     spec = get_family_spec("Geometric")
     assert spec is not None
     (probs,) = spec.params
-    moved = probs.inline_clamp(_f64([-0.5, 0.0, 0.25, 1.0, 1.5]))
-    assert moved.tolist() == pytest.approx([EPS, EPS, 0.25, 1.0, 1.0], abs=0.0)
+    values = _f64([1e-12, 0.25, 1.0])
+    torch.testing.assert_close(probs.inline_clamp(values), values, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("family", ["Normal", "Exponential", "Gamma", "Bernoulli"])
-def test_a_family_with_an_open_boundary_keeps_its_floor(family: str) -> None:
+def test_inline_domain_maps_preserve_valid_parameters(family: str) -> None:
     spec = get_family_spec(family)
     assert spec is not None
     for param in spec.params:
         if param.transform_name in ("softplus", "softplus_shifted", "exp"):
-            assert float(param.inline_clamp(torch.tensor(0.0))) == pytest.approx(EPS)
+            with pytest.raises(ValueError, match="greater than zero"):
+                param.inline_clamp(torch.tensor(0.0))
+            small = _f64(1e-12)
+            torch.testing.assert_close(param.inline_clamp(small), small, rtol=0, atol=0)
         if param.transform_name == "sigmoid":
-            assert float(param.inline_clamp(torch.tensor(1.0))) == pytest.approx(
-                1.0 - EPS
-            )
+            assert float(param.inline_clamp(torch.tensor(1.0))) == 1.0
 
 
 def test_a_closed_interval_clamp_refuses_an_empty_interval() -> None:

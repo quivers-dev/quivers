@@ -32,6 +32,7 @@ from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
+from quivers.continuous.param_transforms import positive_parameter
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.joint_plan import JointPlans
 from quivers.effects.subsample import refuse_subsampling
@@ -40,21 +41,27 @@ from quivers.inference.trace import trace
 
 
 _DISTRIBUTION_VALIDATION_CODE = frozenset(
-    {Distribution.__init__.__code__, Distribution._validate_sample.__code__}
+    {
+        Distribution.__init__.__code__,
+        Distribution._validate_sample.__code__,
+        positive_parameter.__code__,
+    }
 )
-"""Code objects of the two `torch.distributions` validators: the
-parameter-constraint check in `Distribution.__init__` and the value
-check in `Distribution._validate_sample`."""
+"""Raising frames for distribution parameter and value constraints.
+
+Includes Torch's constructor and observation validators and the inline
+positive-parameter validator.
+"""
 
 
 def _rejects_position(error: BaseException) -> bool:
     """Whether an error raised while scoring a position means the
     position lies outside the model's support.
 
-    Two kinds of error qualify. A ``ValueError`` raised by one of
-    `torch.distributions`' own validators (a parameter that fails its
-    constraint, or a value outside its support) is identified by the
-    code object of the innermost traceback frame, not by its message.
+    A ``ValueError`` raised by a Torch distribution validator or the
+    inline positive-parameter validator marks a constraint violation.
+    The code object of the innermost traceback frame identifies the
+    validator, independently of the error message.
     A `torch.linalg.LinAlgError` is a factorization of a matrix that
     the position makes numerically non-positive-definite. Every other
     error is a defect of the program or its data.
@@ -518,10 +525,10 @@ class PotentialFn:
         `MCMCResult` carry no such axis.
 
         A position outside the model's support scores ``-inf``, and
-        the kernel rejects it. Two errors from ``log_joint`` mean
-        that: a ``ValueError`` from `torch.distributions`' own
-        parameter or value validation (a scale that underflows to
-        zero, a latent value pushed onto its support's boundary), and
+        the kernel rejects it. Errors from ``log_joint`` that mark
+        this are a ``ValueError`` from Torch distribution validation
+        or the inline positive-parameter validator (a scale that
+        underflows to zero, a latent pushed onto its boundary), and
         a `torch.linalg.LinAlgError` from factorizing a matrix the
         position makes non-positive-definite. They are recognised by
         where they are raised, not by their message. Every other
