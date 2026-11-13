@@ -854,3 +854,35 @@ def test_integrated_marginal_replaced_by_draw_is_rejected(
         f"fixture's point set lost variation; re-derive the floor only "
         f"after confirming the grid still moves both sections."
     )
+
+
+@pytest.mark.parametrize("plated", (True, False), ids=("within-plate", "across-sites"))
+def test_edward2_accumulates_log_terms_without_float32_cancellation(
+    plated: bool,
+) -> None:
+    """Preserve an exact unit term between opposite large log factors."""
+    runtime = (
+        _REPO_ROOT / "src/quivers/transpile/runtime_factor_edward2.py"
+    ).read_text()
+    imports = (
+        "import tensorflow as tf\n"
+        "import tensorflow_probability as tfp\n"
+        "import edward2\n"
+    )
+    body = (
+        '  _qvr_qiec_factor("terms", weights)\n'
+        if plated
+        else "".join(
+            f'  _qvr_qiec_factor("term_{index}", weights[{index}])\n'
+            for index in range(3)
+        )
+    )
+    source = imports + runtime + "\ndef model(weights):\n" + body + "  return 0.\n"
+    weights = [[1e8, 1.0, -1e8], [1e8, 2.0, -1e8]]
+    actual = _run_probe(
+        backend="edward2",
+        points=[{"params": {}, "data": {"weights": values}} for values in weights],
+        source_text=source,
+        scratch_name=f"edward2_log_term_precision_{plated}",
+    )
+    assert actual == [math.fsum(values) for values in weights]

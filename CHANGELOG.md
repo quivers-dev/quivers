@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **CI checks the current gallery models and numerical precision.** Probe offsets account for folded densities and scored factors, mutation controls exercise live backend cells, and IRT export permutations retain the response extent. Edward2 log-density reductions use float64 accumulators. The cancellation-sensitive Kumaraswamy reference is evaluated independently at every point with unchanged comparison bounds. HMC moment checks use the effective sample size of the statistic being estimated.
 - **The Beta and negative-binomial gallery examples preserve parameter precision.** Beta evaluates its complementary concentration through `sigmoid(-eta)`. NB2 runs in float64 so its documented prior-recording draws retain probabilities below one. Both retain their statistical models, export parameterizations, and recovery tolerances.
 - **The ZIP gallery checks posterior sampling precision.** Its NUTS example uses four independently seeded chains, checks rank-normalized split R-hat and bulk and tail effective sample sizes, and retains the stated parameter-recovery and SVI-agreement tolerances.
 
