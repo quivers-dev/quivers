@@ -5,6 +5,9 @@ Each renderer consumes only `PlateGraph` and does not inspect the source AST.
 
 from __future__ import annotations
 
+from rich.table import Table
+from rich.text import Text
+
 from quivers.analysis.plate_graph import PlateGraph, PlateNode
 
 
@@ -28,7 +31,7 @@ _KIND_STYLE: dict[str, str] = {
 }
 
 
-def render_table(graph: PlateGraph):  # type: ignore[no-untyped-def]
+def render_table(graph: PlateGraph) -> Table:
     """Return a `rich.table.Table` describing ``graph``.
 
     The caller is responsible for printing it (`Console.print` for
@@ -44,9 +47,6 @@ def render_table(graph: PlateGraph):  # type: ignore[no-untyped-def]
     rich.table.Table
         One row per node, with its kind, family, plates, and parents.
     """
-    from rich.table import Table
-    from rich.text import Text
-
     title = Text()
     title.append("plate graph of ", style="dim")
     title.append(graph.program_name, style="bold")

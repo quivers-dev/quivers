@@ -57,7 +57,7 @@ from quivers.continuous.morphisms import (
     SampledComposition,
     _event_dim,
 )
-from quivers.continuous.spaces import ProductSpace
+from quivers.continuous.spaces import ContinuousSpace, ProductSpace
 from quivers.continuous.program_steps import (
     Call,
     Draw,
@@ -73,7 +73,7 @@ from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.deterministic import SequenceFunction
 from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import Morphism, as_torch_module
-from quivers.core.objects import FinSet
+from quivers.core.objects import FinSet, ProductSet
 from quivers.qiec.types import TypeExpr
 
 
@@ -649,9 +649,6 @@ class MonadicProgram(ContinuousMorphism):
         list[int]
             Feature dimensions for each component.
         """
-        from quivers.core.objects import ProductSet
-        from quivers.continuous.spaces import ContinuousSpace, ProductSpace
-
         if isinstance(space, (ProductSet, ProductSpace)):
             dims = []
 
@@ -685,9 +682,6 @@ class MonadicProgram(ContinuousMorphism):
         list[bool]
             True for continuous components, False for discrete.
         """
-        from quivers.core.objects import ProductSet
-        from quivers.continuous.spaces import ContinuousSpace, ProductSpace
-
         if isinstance(space, (ProductSet, ProductSpace)):
             return [isinstance(c, ContinuousSpace) for c in space.components]
 

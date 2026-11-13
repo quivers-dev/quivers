@@ -37,7 +37,7 @@ from collections.abc import Callable, Mapping
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
-from quivers.core.objects import Unit
+from quivers.core.objects import ProductSet, Unit
 from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._truncated_normal import TruncatedNormal
@@ -59,7 +59,7 @@ from quivers.continuous.measure import (
     Pushforward as _MeasurePushforward,
     Restrict as _MeasureRestrict,
 )
-from quivers.continuous.spaces import Euclidean
+from quivers.continuous.spaces import ContinuousSpace, Euclidean, ProductSpace
 from quivers.continuous.morphisms import ContinuousMorphism, AnySpace
 from quivers.continuous.family_spec import (
     FAMILY_REGISTRY,
@@ -2951,9 +2951,6 @@ def _infer_domain(
         if vtype is not None:
             return vtype
         return Euclidean(name="_inline_domain", dim=1)
-    from quivers.core.objects import ProductSet
-    from quivers.continuous.spaces import ContinuousSpace, ProductSpace
-
     components = []
     for vn in var_names:
         vtype = _argument_type(vn, variable_types)

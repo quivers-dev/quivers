@@ -47,6 +47,7 @@ from __future__ import annotations
 import torch
 import torch.distributions as D
 import torch.nn as nn
+from torch.distributions import constraints as _constraints
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.inference.guides.base import Guide
@@ -215,8 +216,6 @@ class _ReversePermutation(TransformModule):
 
     def __init__(self, dim: int) -> None:
         super().__init__(cache_size=0)
-        from torch.distributions import constraints as _constraints
-
         self.domain = _constraints.real_vector
         self.codomain = _constraints.real_vector
         self.register_buffer("perm", torch.arange(dim - 1, -1, -1, dtype=torch.long))
