@@ -563,11 +563,63 @@ def test_windowed_kernels_recover_a_conjugate_posterior(kind: str) -> None:
         _normal_normal_model(), torch.zeros(1, 1), {"y": y}
     )
     draws = result.samples["mu"]
-    ess = float(effective_sample_size(draws.to(torch.float64), method="mean"))
-    # Five standard errors of the posterior mean and of the variance.
-    assert abs(float(draws.mean()) - post_mean) < 5.0 * post_sd / math.sqrt(ess)
-    assert abs(float(draws.var()) / post_sd**2 - 1.0) < 5.0 * math.sqrt(2.0 / ess)
+    _assert_normal_moments(draws, post_mean, post_sd)
     assert result.total_divergences == 0
+
+
+def _assert_normal_moments(
+    draws: torch.Tensor, post_mean: float, post_sd: float
+) -> None:
+    """Check Gaussian mean and variance with their respective Monte Carlo errors.
+
+    Parameters
+    ----------
+    draws : torch.Tensor
+        Posterior draws, with chain and draw axes.
+    post_mean : float
+        Analytic posterior mean.
+    post_sd : float
+        Analytic posterior standard deviation.
+
+    Raises
+    ------
+    AssertionError
+        If either moment differs by more than five standard errors.
+    """
+    values = draws.to(torch.float64)
+    mean_ess = float(effective_sample_size(values, method="mean"))
+    variance_ess = float(effective_sample_size(values, method="sd"))
+    assert abs(float(values.mean()) - post_mean) < 5.0 * post_sd / math.sqrt(mean_ess)
+    assert abs(float(values.var()) / post_sd**2 - 1.0) < 5.0 * math.sqrt(
+        2.0 / variance_ess
+    )
+
+
+def test_normal_recovery_check_rejects_incorrect_variance() -> None:
+    """Independent Gaussian draws pass; doubling their variance fails."""
+    generator = torch.Generator().manual_seed(154)
+    draws = torch.randn(4, 2000, generator=generator, dtype=torch.float64)
+    _assert_normal_moments(draws, 0.0, 1.0)
+    with pytest.raises(AssertionError):
+        _assert_normal_moments(math.sqrt(2.0) * draws, 0.0, 1.0)
+
+
+def test_antithetic_mean_ess_does_not_measure_variance_precision() -> None:
+    """An antithetic Gaussian AR(1) mixes its sign faster than its square."""
+    generator = torch.Generator().manual_seed(31)
+    draws = torch.randn(4, 5000, generator=generator, dtype=torch.float64)
+    rho = -0.9
+    for step in range(1, draws.shape[1]):
+        draws[:, step] = (
+            rho * draws[:, step - 1] + math.sqrt(1 - rho**2) * draws[:, step]
+        )
+    mean_ess = float(effective_sample_size(draws, method="mean"))
+    square_ess = float(effective_sample_size(draws, method="sd"))
+    # Gaussian AR(1) squared deviations have lag-k correlation rho**(2*k).
+    analytic_square_ess = draws.numel() * (1 - rho**2) / (1 + rho**2)
+    assert 0.5 < square_ess / analytic_square_ess < 1.5
+    assert mean_ess > 10 * square_ess
+    _assert_normal_moments(draws, 0.0, 1.0)
 
 
 def test_windowed_runs_are_reproducible_and_leave_global_rng_alone() -> None:

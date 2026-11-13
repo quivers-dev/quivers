@@ -34,7 +34,7 @@ program beta_regression : Resp -> Val
     let eta = b0 + b1 * x
     let mu = sigmoid(eta)
     let alpha = mu * p
-    let beta_p = (1.0 - mu) * p
+    let beta_p = sigmoid(-eta) * p
 
     observe y : Resp <- Beta(concentration1=alpha, concentration0=beta_p)
     return beta_1

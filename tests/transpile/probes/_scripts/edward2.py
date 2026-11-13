@@ -191,16 +191,14 @@ def main() -> None:
             )
             raise RuntimeError(msg)
 
+        # Preserve small log terms when a plate or the joint contains
+        # cancelling factors. Widen before either reduction; widening
+        # an already-rounded float32 sum cannot recover the lost terms.
         log_terms = []
         for name, rv in recorded.items():
-            if name in direct_scores:
-                # Use the conditioned distribution and the user-supplied
-                # value (which carries the true observation shape).
-                log_terms.append(
-                    tf.reduce_sum(rv.distribution.log_prob(direct_scores[name]))
-                )
-            else:
-                log_terms.append(tf.reduce_sum(rv.distribution.log_prob(rv.value)))
+            value = direct_scores[name] if name in direct_scores else rv.value
+            log_prob = rv.distribution.log_prob(value)
+            log_terms.append(tf.reduce_sum(tf.cast(log_prob, tf.float64)))
         total = tf.add_n(log_terms)
         log_densities.append(float(total.numpy()))
 

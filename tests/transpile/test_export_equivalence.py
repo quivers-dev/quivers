@@ -910,7 +910,7 @@ _PERMUTATION_MIN_MARGIN = 5.0e5
 """Floor on the deviation an `exported_vector_permuted` mutant
 produces.
 
-`irt_2pl` exports the 64-element response-probability vector `p`;
+`irt_2pl` exports the 2000-element response-probability vector `p`;
 reversing it moves individual entries by up to 0.988, so the
 worst-point ratio measures 1.036e6. The margin is bounded by how far
 apart the vector's extremes sit rather than by the vector's own
@@ -1030,7 +1030,7 @@ EXPORT_MUTATIONS: tuple[ExportMutation, ...] = (
         ),
     ),
     # --- permute a vector export -----------------------------------
-    # `irt_2pl` exports the 64-element `p`. A permutation leaves every
+    # `irt_2pl` exports the 2000-element `p`. A permutation leaves every
     # element of the exported multiset in place and every log-density
     # term untouched, so it is invisible to any check that reads only
     # the joint or only the export's summary statistics.
@@ -1071,8 +1071,8 @@ EXPORT_MUTATIONS: tuple[ExportMutation, ...] = (
         probe_refuses=False,
         rewrites=(
             _mutations.SourceRewrite(
-                old="array [64] real p_value = p;",
-                new="array [64] real p_value = reverse(p);",
+                old="array [2000] real p_value = p;",
+                new="array [2000] real p_value = reverse(p);",
             ),
         ),
     ),
@@ -1086,7 +1086,7 @@ EXPORT_MUTATIONS: tuple[ExportMutation, ...] = (
         rewrites=(
             _mutations.SourceRewrite(
                 old="p_value[m_Resp] <- p[m_Resp]",
-                new="p_value[m_Resp] <- p[65-m_Resp]",
+                new="p_value[m_Resp] <- p[2001-m_Resp]",
             ),
         ),
     ),

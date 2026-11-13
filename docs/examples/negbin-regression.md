@@ -198,13 +198,24 @@ assert (post["dispersion"].log() - true_dispersion.log()).abs().max() < 0.7
 truth and agree with the SVI posterior means to within 0.15, since the two
 methods target one posterior.
 
+The MCMC run uses float64. The broad coefficient priors can make
+`mu / (disp + mu)` so close to one that float32 rounds it to the excluded
+endpoint during the preliminary recording run. Converting the existing data
+preserves every observation and retains these probabilities in this seeded run.
+Finite precision still limits how close a probability can be to one.
+
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
+torch.set_default_dtype(torch.float64)
+mc_observations = {
+    name: value.double() if value.is_floating_point() else value
+    for name, value in observations.items()
+}
 torch.manual_seed(2)
 kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
 mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
-result = mc.run(model, x_in, observations)
+result = mc.run(model, x_in.double(), mc_observations)
 
 for k in ("beta_0", "beta_1"):
     s = result.samples[k].reshape(-1, D)
