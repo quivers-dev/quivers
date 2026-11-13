@@ -8,8 +8,8 @@ reports:
 * ``status``: PASS / FAIL / SKIP / ERROR
 * ``metric``: the primary diagnostic (mean error, correlation
   error, ...) along with the tolerance
-* ``samples_per_sec``: end-to-end throughput in posterior draws
-  per second (including any SVI warmup)
+* ``samples_per_sec``: SVI updates per second for variational guides,
+  posterior draws per second for MCMC (including warmup)
 * ``notes``: a one-line description (e.g. "guide collapsed
   off-diagonal correlation" for the AutoNormal × correlated-MVN
   capture)
@@ -173,9 +173,9 @@ $$
 
 **Data.** $N = 60$ Normal draws at $\mu^\star = 0.3$, $\sigma^{2\star} = 1.5$.
 
-**Reference.** NIG posterior updates (Murphy 2007 §5) give marginal mean $\mu_N = (\kappa_0 \mu_0 + N \bar{y}) / (\kappa_0 + N)$.
+**Reference.** NIG posterior updates [@murphy2007gaussian] (Section 5) give marginal mean $\mu_N = (\kappa_0 \mu_0 + N \bar{y}) / (\kappa_0 + N)$.
 
-Stress test for guides handling two latents with mixed supports: the unconstrained $\mu$ and the positive $\sigma^2$ (whose bijector is $\exp$ / softplus)."""
+The problem tests guides on two latents with different supports: the unconstrained $\mu$ and the positive $\sigma^2$, whose bijector is $\exp$ or softplus."""
 
 _GAMMA_EXP_MATH = r"""**Model.** Conjugate Gamma prior on an Exponential rate:
 
@@ -188,7 +188,7 @@ $$
 
 **Reference.** $r \mid y \sim \mathrm{Gamma}\bigl(a_0 + N,\ b_0 + \sum_i y_i\bigr)$, with mean $a / b$."""
 
-_BLR_MATH = r"""**Model.** Two-parameter linear regression with iid standard-Normal design and known observation noise:
+_BLR_MATH = r"""**Model.** Linear regression with two parameters, a design drawn iid from $\mathcal{N}(0, 1)$, and known observation noise:
 
 $$
 a, b \sim \mathcal{N}(0, 1), \qquad
@@ -209,13 +209,13 @@ $$
 y_j \mid \theta_j \sim \mathcal{N}(\theta_j, 12),
 $$
 
-for $j = 1, \dots, 8$ on the canonical Rubin (1981) effect sizes $y = (28, 8, -3, 7, -1, 1, 18, 12)$.
+for $j = 1, \dots, 8$ on Rubin's effect sizes $y = (28, 8, -3, 7, -1, 1, 18, 12)$.
 
 **Reference.** Cached NUTS moments (4 chains, 5000 post-warmup draws): $\mathbb{E}[\mu] \approx 5.4$, posterior standard deviation $\approx 4$.
 
-Tolerance is set at three reference standard deviations: a loose target reflecting how hard the funnel geometry is for VI."""
+The tolerance is three reference standard deviations, a loose target that reflects how hard the funnel geometry is for variational inference."""
 
-_8S_NONCENTERED_MATH = r"""**Model.** Same priors as the centered model, with the group-level draws reparameterised:
+_8S_NONCENTERED_MATH = r"""**Model.** Same priors as the centered model, with the group-level draws reparameterized:
 
 $$
 \eta_j \sim \mathcal{N}(0, 1), \qquad
@@ -226,9 +226,9 @@ decoupling $\tau$ from $\theta_j$ and eliminating the funnel in the prior.
 
 **Reference.** Same cached NUTS moments as the centered model.
 
-Tolerance is tightened to two reference standard deviations: the reparam should pay off."""
+The tolerance is two reference standard deviations, tighter than for the centered model, since the non-centered parameterization removes the funnel."""
 
-_CORR_REG_MATH = r"""**Model.** Linear regression as in the conjugate group, but with a near-constant design:
+_CORR_REG_MATH = r"""**Model.** Linear regression as in Tier 1, but with a near-constant design:
 
 $$
 a, b \sim \mathcal{N}(0, 1), \qquad
@@ -238,9 +238,9 @@ $$
 
 with $\rho = 0.95$ and $N = 50$.
 
-**Reference.** Closed-form Gaussian posterior with off-diagonal correlation $\rho \approx 0.95+$.
+**Reference.** Closed-form Gaussian posterior in which $a$ and $b$ have a correlation near $-0.99$.
 
-The mean-field guide ignores this correlation; the first-moment metric below still passes (the documented underfit lives in the second moment)."""
+The mean-field guide ignores this correlation. The metric on the first moment below still passes, since the underfit shows in the second moments."""
 
 _NEAL_MATH = r"""**Model.** Neal's funnel:
 
@@ -251,11 +251,11 @@ $$
 
 **Data.** Condition on $x_i = 0$ (inference target is $p(v \mid x = 0)$).
 
-**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$, so the conditional posterior is Gaussian with mean $-9 N / 2 = -40.5$ and variance $9$ at $N = 9$. The *joint* posterior over $(v, x)$ remains funnel-shaped; only the conditional given $x = 0$ is tractable.
+**Reference.** The log-likelihood is linear in $v$: $\log p(x_i = 0 \mid v) = -\tfrac{1}{2}\log(2\pi) - v / 2$. Completing the square with the prior gives $v \mid x = 0 \sim \mathcal{N}(-9N/2, 3)$, hence mean $-40.5$ and variance $9$ at $N = 9$.
 
-**Capture semantics.** All five algorithms under-estimate the magnitude of $v$. PASS means the metric *exceeds* the tolerance, confirming the documented underfit."""
+The joint distribution of $(v, x)$ has Neal's funnel geometry [@neal2003slice]. Conditioning every $x_i$ at zero leaves one Gaussian latent, which a Normal guide can represent exactly. The benchmark measures recovery of this conditional mean, forty units from the initialization. Its tolerance is $1$, one third of the posterior standard deviation, fixed independently of the algorithm outputs. A failed cell measures error at the listed computation budget."""
 
-_ILL_COND_MATH = r"""**Model.** Five-dimensional product Gaussian with five orders of magnitude of prior scale and a fixed observation noise:
+_ILL_COND_MATH = r"""**Model.** Five-dimensional product Gaussian with prior scales spanning four orders of magnitude and a fixed observation noise:
 
 $$
 x_d \sim \mathcal{N}(0, \sigma_d^{\text{prior}}), \qquad
@@ -264,9 +264,9 @@ $$
 
 with $\sigma^{\text{prior}} = (100, 10, 1, 0.1, 0.01)$.
 
-**Reference.** Per-dimension Gaussian: $x_d \mid y_d \sim \mathcal{N}\bigl(y_d / (1 + (0.1 / \sigma_d)^2),\ (1 / \sigma_d^2 + 1 / 0.01)^{-1}\bigr)$.
+**Reference.** A Gaussian in each dimension: $x_d \mid y_d \sim \mathcal{N}\bigl(y_d / (1 + (0.1 / \sigma_d)^2),\ (1 / \sigma_d^2 + 1 / 0.01)^{-1/2}\bigr)$, writing $\sigma_d$ for $\sigma_d^{\text{prior}}$.
 
-Tracks the middle scale $x_3$, where the diagonal mass matrix is roughly correct but the gradient signal is dwarfed by the larger-scale dimensions."""
+The metric tracks the middle scale $x_3$, where the diagonal mass matrix is roughly correct but the gradient signal is small beside that of the dimensions with larger scales."""
 
 _HALFNORMAL_MATH = r"""**Model.**
 
@@ -290,7 +290,7 @@ $$
 y_i \mid \mu \sim \mathrm{TruncatedNormal}(\mu, 0.2, 0, 1), \quad i = 1, \dots, 60.
 $$
 
-**Reference.** Evaluate the truncated-Normal log-likelihood on a 4096-point $\mu$-grid in $(0, 1)$ with stable log-CDF differences for the truncation constant; normalise for the posterior moments."""
+**Reference.** Evaluate the truncated-Normal log-likelihood on a 4096-point $\mu$-grid in $(0, 1)$ with stable log-CDF differences for the truncation constant, and normalize it for the posterior moments."""
 
 
 PROBLEMS: dict[str, ProblemSpec] = {
@@ -393,18 +393,17 @@ PROBLEMS: dict[str, ProblemSpec] = {
         tolerance=0.2,
         metric_fn=_mean_error_against_ref_key("a_mean"),
     ),
-    "neal_funnel_mean_field_capture": ProblemSpec(
-        label="Neal's funnel (under-estimation capture)",
-        description="capture: every algorithm under-estimates v's posterior magnitude",
+    "neal_funnel_conditional": ProblemSpec(
+        label="Neal's funnel conditional",
+        description="Gaussian conditional given nine zero observations",
         math=_NEAL_MATH,
         data_factory=neal_funnel,
         reference_factory=neal_funnel_reference,
         observed_names={"x"},
         site="v",
         metric_name="|E[v]_q - E[v]_true|",
-        tolerance=0.5 * abs(float(neal_funnel_reference(neal_funnel())["v_mean"])),
+        tolerance=1.0,
         metric_fn=_mean_error_against_ref_key("v_mean"),
-        capture=True,
     ),
     "ill_conditioned_mvn": ProblemSpec(
         label="Ill-conditioned product Gaussian",
@@ -457,11 +456,9 @@ class ProblemGroup:
 
 PROBLEM_GROUPS: list[ProblemGroup] = [
     ProblemGroup(
-        title="Conjugate posteriors",
+        title="Tier 1: conjugate posteriors",
         description=(
-            "Five textbook problems with closed-form posteriors. They "
-            "establish a floor: every algorithm should match the analytical "
-            "moment to within a tight tolerance."
+            "These five problems have closed-form posteriors and set a floor: every algorithm should match the analytical moment to within a tight tolerance."
         ),
         problems=[
             "beta_bernoulli",
@@ -472,11 +469,9 @@ PROBLEM_GROUPS: list[ProblemGroup] = [
         ],
     ),
     ProblemGroup(
-        title="Hierarchical posteriors",
+        title="Tier 2: hierarchical posteriors",
         description=(
-            "The Eight Schools problem (Rubin 1981) in both parameterisations. "
-            "Tests how each algorithm handles the funnel geometry that arises "
-            "when a group-level scale tau shrinks toward zero."
+            "The Eight Schools problem [@rubin1981parallel] in both parameterizations tests how each algorithm handles the funnel geometry that arises when the group scale $\\tau$ shrinks toward zero."
         ),
         problems=[
             "eight_schools_centered",
@@ -484,23 +479,20 @@ PROBLEM_GROUPS: list[ProblemGroup] = [
         ],
     ),
     ProblemGroup(
-        title="Hard posterior geometry",
+        title="Tier 3: hard posterior geometry",
         description=(
-            "Problems chosen to expose specific failure modes of mean-field "
-            "VI and of HMC under poor preconditioning."
+            "Correlated and ill-conditioned Gaussian targets test covariance approximation and preconditioning. The conditional from Neal's funnel tests recovery of a Gaussian mean far from initialization."
         ),
         problems=[
             "correlated_regression",
-            "neal_funnel_mean_field_capture",
+            "neal_funnel_conditional",
             "ill_conditioned_mvn",
         ],
     ),
     ProblemGroup(
-        title="Constrained-support stress",
+        title="Tier 4: constrained support",
         description=(
-            "Latents on a half-line or in a bounded interval. References "
-            "come from dense-grid quadrature; variational guides must "
-            "traverse a non-linear bijector to reach the constrained scale."
+            "These latents lie on a half-line or in a bounded interval. References come from quadrature on a dense grid, and variational guides must pass through a nonlinear bijector to reach the constrained scale."
         ),
         problems=[
             "half_normal_scale",
@@ -513,15 +505,15 @@ PROBLEM_GROUPS: list[ProblemGroup] = [
 # Human-readable algorithm descriptions for the report preface.
 ALGORITHM_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "AutoNormal": (
-        "Mean-field SVI, factorised diagonal Normal in unconstrained space",
-        "Adam, lr=0.05, 800 steps (1500 for positive-support sites), 1500 posterior draws",
+        "Mean-field SVI, factorized diagonal Normal in unconstrained space",
+        "Adam, lr=0.05, 800 steps (1500 for sites with positive support), 1500 posterior draws",
     ),
     "AutoMVN": (
         "Full-covariance SVI, single MVN in unconstrained space",
-        "Adam, lr=0.05, 800 steps (1500 for positive-support sites), `init_scale=0.3`, 1500 draws",
+        "Adam, lr=0.05, 800 steps (1500 for sites with positive support), `init_scale=0.3`, 1500 draws",
     ),
     "AutoLaplace": (
-        "MAP plus a Gaussian centred at the mode with Hessian covariance",
+        "MAP plus a Gaussian centered at the mode with Hessian covariance [@tierney1986laplace]",
         "Adam, lr=0.05, 500 steps, 1500 draws",
     ),
     "HMC": (
@@ -778,6 +770,60 @@ def _throughput_cell(res: CellResult | None) -> str:
     return f"{res.samples_per_sec:.1f}"
 
 
+_REPORT_INTRO = r"""# Inference benchmark results
+
+Five posterior inference algorithms of [`quivers.inference`](../api/index.md#inference-package) are measured on how well they recover known posterior moments on a deterministic suite of synthetic problems. `tests/benchmarks/runner.py` regenerates the grid from the seeded data factories and analytical references in `tests/benchmarks/`. Throughout, $\mathcal{N}(m, s)$ is the Normal distribution with mean $m$ and standard deviation $s$.
+
+## How to read a result
+
+A cell compares one estimated posterior summary with one reference summary.
+For instance, `0.0398 / 0.05` means the absolute error in the chosen mean is
+`0.0398`, within the allowed error `0.05`. It says nothing directly about
+posterior variance, tails, correlations, or a different latent site. A variational
+[guide](../tutorials/qvr/06-inference-zoo.md#step-2-which-variational-guide), the family of
+approximate posteriors fitted by stochastic variational inference (SVI), can recover a mean while underestimating uncertainty.
+
+Throughput has different units across
+families, since one SVI update and one Markov chain Monte Carlo (MCMC) draw are different amounts of statistical work. The
+tables compare the five algorithms at the listed budgets, and changing the number of updates,
+draws, or particles changes both cost and accuracy.
+
+## What the suite tests
+
+Every benchmark is an `(algorithm, problem)` cell. A *problem* fixes:
+
+1. A generative model written in QVR and loaded from `tests/benchmarks/models/*.qvr`.
+2. A deterministic data generator (fixed `torch.manual_seed`) that produces the observations the model is conditioned on.
+3. A *reference posterior* moment for one latent site, computed analytically (conjugate problems), by quadrature on a dense grid (problems with constrained support), or by a long cached run of the No-U-Turn Sampler (NUTS) (Eight Schools).
+4. A scalar metric (almost always $|\mathbb{E}_q[\cdot] - \mathbb{E}_{\text{ref}}[\cdot]|$) and a tolerance.
+
+A *cell* runs the algorithm on the problem, draws posterior samples for the target site, and compares the recovered moment against the reference.
+
+Throughput is reported as SVI iterations per second for the variational guides and as posterior draws per second (summed across chains) for the MCMC kernels.
+
+## Cell statuses
+
+- **PASS**: recovered moment is within tolerance of the reference.
+- **FAIL**: algorithm runs cleanly but the moment is outside tolerance.
+- **ERROR**: algorithm raised during execution (NaN gradient, a value that blows up at the boundary of the support, divergent trajectory, etc.).
+
+Determinism: every cell calls `torch.manual_seed(0)` before constructing the problem, so the same `(algorithm, problem)` pair reproduces across runs given fixed PyTorch and NumPy versions.
+
+## Algorithms
+
+All algorithms are evaluated on every problem with hyperparameters held fixed across problems. The grid thus measures performance under that common configuration, and tuning a method for one problem can change its result. The variational guides are fitted by SVI [@blei2017variational], and the samplers are Hamiltonian Monte Carlo (HMC) [@neal2011mcmc] and the No-U-Turn Sampler (NUTS) [@hoffman2014nuts]."""
+
+_REPORT_GUIDES = r"""Variational guides operate in unconstrained space via the bijector attached to each latent's support, so sites with positive and with bounded support are exercised through `exp` / `softplus` / `sigmoid` transforms rather than through constrained Gaussian families."""
+
+_REPORT_REPRODUCTION = r"""## Reproducing the grid
+
+```bash
+python -m tests.benchmarks.runner
+```
+
+The runner accepts `--algorithms` and `--problems` flags for partial runs and writes the regenerated tables to `docs/developer/inference-benchmarks.md` by default. `tests/benchmarks/runner.py` defines the cells and `tests/benchmarks/references.py` the reference posteriors."""
+
+
 def emit_markdown(
     results: dict[tuple[str, str], CellResult],
     algorithms: list[str],
@@ -785,97 +831,16 @@ def emit_markdown(
     out_path: Path,
 ) -> None:
     """Write a markdown report with one section per problem group."""
-    lines: list[str] = []
-    lines.append("# Inference benchmark results")
-    lines.append("")
-    lines.append(
-        "This page reports how each posterior inference algorithm in "
-        "[`quivers.inference`](../api/inference.md) recovers known posterior "
-        "moments on a deterministic suite of synthetic problems. The grid is "
-        "regenerated by `tests/benchmarks/runner.py` from the seeded data "
-        "factories and analytical references in `tests/benchmarks/`."
-    )
-    lines.append("")
-
-    lines.append("## What the suite tests")
-    lines.append("")
-    lines.append(
-        "Every benchmark is an `(algorithm, problem)` cell. A *problem* fixes:"
-    )
-    lines.append("")
-    lines.append(
-        "1. A generative model written in QVR and loaded from `tests/benchmarks/models/*.qvr`."
-    )
-    lines.append(
-        "2. A deterministic data generator (fixed `torch.manual_seed`) that "
-        "produces the observations the model is conditioned on."
-    )
-    lines.append(
-        "3. A *reference posterior* moment for one latent site, computed "
-        "analytically (conjugate problems), by quadrature on a dense grid "
-        "(constrained-support problems), or by a long cached NUTS run (Eight Schools)."
-    )
-    lines.append(
-        r"4. A scalar metric (almost always $|\mathbb{E}_q[\cdot] - \mathbb{E}_{\text{ref}}[\cdot]|$) and a tolerance."
-    )
-    lines.append("")
-    lines.append(
-        "A *cell* runs the algorithm on the problem, draws posterior samples "
-        "for the target site, and compares the recovered moment against the reference."
-    )
-    lines.append("")
-    lines.append(
-        "Throughput is reported as SVI iterations per second for the variational "
-        "guides and as posterior draws per second (summed across chains) for the MCMC kernels."
-    )
-    lines.append("")
-
-    lines.append("## Cell statuses")
-    lines.append("")
-    lines.append("- **PASS**: recovered moment is within tolerance of the reference.")
-    lines.append(
-        "- **FAIL**: algorithm runs cleanly but the moment is outside tolerance."
-    )
-    lines.append(
-        "- **ERROR**: algorithm raised during execution (NaN gradient, "
-        "support-boundary explosion, divergent trajectory, etc.)."
-    )
-    lines.append(
-        "- *capture* problems invert the convention: PASS means the metric "
-        "*exceeds* the tolerance, confirming a documented failure mode."
-    )
-    lines.append("")
-    lines.append(
-        "Determinism: every cell calls `torch.manual_seed(0)` before constructing "
-        "the problem, so the same `(algorithm, problem)` pair reproduces across runs "
-        "given fixed PyTorch and NumPy versions."
-    )
-    lines.append("")
-
-    lines.append("## Algorithms")
-    lines.append("")
-    lines.append(
-        "All algorithms are evaluated on every problem. Hyperparameters are "
-        "uniform across problems so that the grid measures the algorithms, "
-        "not a per-problem tuning effort."
-    )
-    lines.append("")
-    lines.append("| Algorithm | Family | Key hyperparameters |")
-    lines.append("|---|---|---|")
+    lines = [
+        _REPORT_INTRO,
+        "",
+        "| Algorithm | Family | Key hyperparameters |",
+        "|---|---|---|",
+    ]
     for alg_name in algorithms:
-        if alg_name in ALGORITHM_DESCRIPTIONS:
-            family, hp = ALGORITHM_DESCRIPTIONS[alg_name]
-            lines.append(f"| `{alg_name}` | {family} | {hp} |")
-        else:
-            lines.append(f"| `{alg_name}` | (no description) | (no description) |")
-    lines.append("")
-    lines.append(
-        "Variational guides operate in unconstrained space via the bijector "
-        "attached to each latent's support, so positive-support and "
-        "bounded-support sites are exercised through `exp` / `softplus` / "
-        "`sigmoid` transforms rather than through constrained Gaussian families."
-    )
-    lines.append("")
+        family, hp = ALGORITHM_DESCRIPTIONS[alg_name]
+        lines.append(f"| `{alg_name}` | {family} | {hp} |")
+    lines.extend(["", _REPORT_GUIDES, ""])
 
     for group in PROBLEM_GROUPS:
         lines.append(f"## {group.title}")
@@ -928,22 +893,10 @@ def emit_markdown(
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
 
-    lines.append("## Reproducing the grid")
-    lines.append("")
-    lines.append("```bash")
-    lines.append("python -m tests.benchmarks.runner")
-    lines.append("```")
-    lines.append("")
-    lines.append(
-        "The runner accepts `--algorithms` and `--problems` flags for partial "
-        "runs and writes the regenerated table back to this file by default. "
-        "See `tests/benchmarks/runner.py` for the cell definitions and "
-        "`tests/benchmarks/references.py` for the reference posteriors."
-    )
-    lines.append("")
+    lines.extend([_REPORT_REPRODUCTION, ""])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines) + "\n")
+    out_path.write_text("\n".join(lines).rstrip() + "\n")
 
 
 def main() -> None:
