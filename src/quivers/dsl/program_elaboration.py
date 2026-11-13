@@ -6331,7 +6331,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.
-            resolved = ResolvedDist(step.morphism, (), step.morphism)
+            resolved = ResolvedDist(
+                family=step.morphism, args=(), original_morphism_name=step.morphism
+            )
         else:
             try:
                 resolved = resolve_step_dist(
@@ -9178,13 +9180,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if morphism is None:
             return None
         if f"embed:{step.morphism}" in kinds:
-            return ResolvedDist("Normal", (), step.morphism)
+            return ResolvedDist(
+                family="Normal", args=(), original_morphism_name=step.morphism
+            )
         if "param-source:mlp" not in kinds and "param-source:linear" not in kinds:
             return None
         family = _bare_init_family(morphism)
         if family is None or family not in _CONDITIONAL_HEADS:
             return None
-        return ResolvedDist(family, (), step.morphism)
+        return ResolvedDist(
+            family=family, args=(), original_morphism_name=step.morphism
+        )
 
     def _finite_domain(
         self: _Elaborator, morphism: MorphismDecl

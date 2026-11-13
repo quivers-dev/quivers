@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- **Breaking: CLI records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, and grammar history reports use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`.
+- **Breaking: Structured records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, grammar history reports, and resolved distributions use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`.
 
 ### Fixed
 
