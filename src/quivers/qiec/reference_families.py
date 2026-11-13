@@ -3841,6 +3841,33 @@ def _zip_density(a: Mapping[str, object], value: object) -> float:
     return _log(1.0 - zero_prob) + _poisson_log_mass(count, rate)
 
 
+def _hurdle_parameters(a: Mapping[str, object]) -> tuple[float, float]:
+    """Read a valid hurdle probability and nonnegative Poisson rate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        The family's named parameters.
+
+    Returns
+    -------
+    tuple[float, float]
+        The zero probability and rate.
+
+    Raises
+    ------
+    DistributionError
+        If a parameter lies outside its domain.
+    """
+    zero_prob = real_parameter(a, "zero_prob", "HurdlePoisson")
+    rate = real_parameter(a, "rate", "HurdlePoisson")
+    if not 0 <= zero_prob <= 1 or not rate >= 0:
+        raise DistributionError(
+            "HurdlePoisson requires zero_prob in [0, 1] and rate >= 0"
+        )
+    return zero_prob, rate
+
+
 def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``HurdlePoisson``.
 
@@ -3857,9 +3884,9 @@ def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
         Zero with the hurdle probability, else a zero-truncated Poisson
         draw using the first-arrival construction, or one at rate zero.
     """
-    if rng.random() < real_parameter(a, "zero_prob", "HurdlePoisson"):
+    zero_prob, rate = _hurdle_parameters(a)
+    if rng.random() < zero_prob:
         return 0
-    rate = real_parameter(a, "rate", "HurdlePoisson")
     u = rng.random()
     remaining = (
         math.log1p((1 - u) * math.expm1(rate))
@@ -3891,8 +3918,7 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
     count = int(finite_value(value, "HurdlePoisson"))
-    zero_prob = real_parameter(a, "zero_prob", "HurdlePoisson")
-    rate = real_parameter(a, "rate", "HurdlePoisson")
+    zero_prob, rate = _hurdle_parameters(a)
     if count < 0:
         return -math.inf
     if count == 0:

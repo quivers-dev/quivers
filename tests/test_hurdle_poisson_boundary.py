@@ -126,3 +126,15 @@ def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
     assert set(draws) == {0, 1}
     assert abs(draws.count(0) / 2000 - 0.3) < 6 * math.sqrt(0.21 / 2000)
     assert dist.log_prob(2) == -math.inf
+
+
+@pytest.mark.parametrize("zero_prob,rate", [(1.0, -1.0), (-0.1, 1.0), (1.1, 1.0)])
+def test_reference_hurdle_refuses_invalid_parameters_before_either_branch(
+    zero_prob: float, rate: float
+) -> None:
+    dist = RuntimeDistribution("HurdlePoisson", {"zero_prob": zero_prob, "rate": rate})
+    for value in [0, 1]:
+        with pytest.raises(ValueError):
+            dist.log_prob(value)
+    with pytest.raises(ValueError):
+        dist.sample(random.Random(119))
