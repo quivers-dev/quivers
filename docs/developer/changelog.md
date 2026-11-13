@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The ZIP gallery checks posterior sampling precision.** Its NUTS example uses four independently seeded chains, checks rank-normalized split R-hat and bulk and tail effective sample sizes, and retains the stated parameter-recovery and SVI-agreement tolerances.
+
 ## [0.60.1] - 2026-11-13
 
 ### Fixed

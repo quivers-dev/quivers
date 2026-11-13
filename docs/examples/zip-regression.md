@@ -216,17 +216,33 @@ assert (post["beta_zero"] - true_beta_zero).abs().max() < 1.2
 ### NUTS posterior
 
 [`NUTSKernel`](../api/inference/mcmc.md) samples the same marginal posterior
-over all 400 rows; no branch indicator is sampled. Its posterior means should meet the
-same tolerances against the truth and agree with the SVI posterior means to
-within two standard errors.
+over all 400 rows. No branch indicator is sampled. Its posterior means should meet the
+same recovery tolerances and agree with the SVI means within 0.2 for the rate
+coefficients and 0.6 for the structural-zero coefficients.
+
+Four chains each use 500 warmup iterations and 1,000 retained draws.
+Before comparing means, the example checks rank-normalized
+split $\hat R < 1.01$ and bulk and tail effective sample sizes above 400 for
+every coefficient [@vehtari2021rhat]. These
+[diagnostics](../guides/inference-mcmc.md#mcmc-hmc-and-nuts) assess mixing and sampling
+precision. The density check compares the implemented likelihood with its
+closed form at the generating coefficients.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9)
+mc = MCMC(kernel, num_warmup=500, num_samples=1000, num_chains=4, seed=2)
 result = mc.run(model, x_in, observations)
+
+for k in truth:
+    print(f"{k:>10}: max R-hat {result.r_hat[k].max():.4f}, "
+          f"min bulk ESS {result.ess[k].min():.0f}, "
+          f"min tail ESS {result.ess_tail[k].min():.0f}")
+    assert (result.r_hat[k] < 1.01).all()
+    assert (result.ess[k] > 400).all()
+    assert (result.ess_tail[k] > 400).all()
+assert int(result.divergence_counts.sum()) == 0
 
 tolerance = {"alpha_rate": 0.4, "beta_rate": 0.4, "alpha_zero": 1.2, "beta_zero": 1.2}
 for k, tol in tolerance.items():
