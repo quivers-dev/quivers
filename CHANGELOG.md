@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Inflated Beta densities preserve exact mixture weights and interior parameters.** Impossible boundary atoms have log probability `-inf`; valid tiny means, precisions and observations are scored without floors. The Beta mean must be strictly between zero and one, observations outside the support are rejected, and sampling broadcasts all parameter batches.
+
 - **Inline family parameters retain valid small values and their gradients.** Hand-written and generic family constructors preserve positive scales, rates, concentrations, and degrees of freedom below `1e-7`, and probabilities arbitrarily close to an admitted boundary. A nonpositive value for a strictly positive parameter raises instead of selecting a different distribution. Closed boundaries declared through `ParamSpec.inline_bounds` remain available. The conditioned Neal funnel has the stated Normal density and derivative below its narrow scale.
 
 ## [0.59.0] - 2026-11-12
