@@ -555,29 +555,23 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "beta_regression"): _derived(half_sites=3, dropped_sites=3),
     ("turing", "beta_regression"): _derived(half_sites=3, dropped_sites=0),
     ("webppl", "beta_regression"): _derived(half_sites=3, dropped_sites=3),
-    # changepoint: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "changepoint"): _derived(half_sites=0, dropped_sites=0),
+    # changepoint: no folded-family site. These four targets emit
+    # the shared marginalized latent and owe no additive offset.
     ("numpyro", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "changepoint"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "changepoint"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "changepoint"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    # factor_analysis: 1 HalfCauchy folded factor(s).
-    ("bugs", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("edward2", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("gen", "factor_analysis"): _derived(half_sites=1, dropped_sites=1),
-    ("jags", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("numpyro", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("pymc", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("pyro", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("stan", "factor_analysis"): _derived(half_sites=1, dropped_sites=1),
-    ("turing", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
-    ("webppl", "factor_analysis"): _derived(half_sites=1, dropped_sites=1),
+    # factor_analysis: one HalfCauchy per coordinate of ObsDim (six).
+    ("bugs", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("edward2", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("gen", "factor_analysis"): _derived(half_sites=6, dropped_sites=6),
+    ("jags", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("numpyro", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("pymc", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("pyro", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("stan", "factor_analysis"): _derived(half_sites=6, dropped_sites=6),
+    ("turing", "factor_analysis"): _derived(half_sites=6, dropped_sites=0),
+    ("webppl", "factor_analysis"): _derived(half_sites=6, dropped_sites=6),
     # gamma_regression: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("bugs", "gamma_regression"): _derived(half_sites=0, dropped_sites=0),
@@ -638,7 +632,7 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # `jags` also owes the zeros-trick lift: it has no `Kumaraswamy`
     # distribution, so `_emit_kumaraswamy` writes the closed-form
     # density into a Poisson rate and lifts that rate by
-    # `_ZEROS_TRICK_OFFSET` on each of the 64 rows of `Resp`. `bugs` is
+    # `_ZEROS_TRICK_OFFSET` on each of the 200 rows of `Resp`. `bugs` is
     # absent because the cell raises in transpile: the BUGS family
     # registry has no target name for `Kumaraswamy` and its renderer
     # carries no closed-form path to reach one.
@@ -647,7 +641,7 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("jags", "kumaraswamy_bounded_outcome"): _derived(
         half_sites=1,
         dropped_sites=0,
-        lifted_rows=64,
+        lifted_rows=200,
     ),
     ("numpyro", "kumaraswamy_bounded_outcome"): _derived(half_sites=1, dropped_sites=0),
     ("pymc", "kumaraswamy_bounded_outcome"): _derived(half_sites=1, dropped_sites=0),
@@ -683,14 +677,14 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # mixture_model: 3 HalfNormal folded factor(s). `jags` also owes
     # the zeros-trick lift: it has no `MixtureNormal` distribution, so
     # it writes the closed-form mixture density into a Poisson rate and
-    # lifts that rate by `_ZEROS_TRICK_OFFSET` on each of the 100 rows
+    # lifts that rate by `_ZEROS_TRICK_OFFSET` on each of the 200 rows
     # of `Resp`. `bugs` is absent because the cell raises in transpile.
     ("edward2", "mixture_model"): _derived(half_sites=3, dropped_sites=0),
     ("gen", "mixture_model"): _derived(half_sites=3, dropped_sites=3),
     ("jags", "mixture_model"): _derived(
         half_sites=3,
         dropped_sites=0,
-        lifted_rows=100,
+        lifted_rows=200,
     ),
     ("numpyro", "mixture_model"): _derived(half_sites=3, dropped_sites=0),
     ("pymc", "mixture_model"): _derived(half_sites=3, dropped_sites=0),
@@ -721,12 +715,17 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "ppca"): _derived(half_sites=1, dropped_sites=1),
     ("turing", "ppca"): _derived(half_sites=1, dropped_sites=0),
     ("webppl", "ppca"): _derived(half_sites=1, dropped_sites=1),
-    # survival_weibull: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
+    # survival_weibull: no folded family. The single aggregate score
+    # for the event hazard ratio is one lifted zeros-trick factor
+    # on BUGS and JAGS, irrespective of the Item plate cardinality.
+    ("bugs", "survival_weibull"): _derived(
+        half_sites=0, dropped_sites=0, lifted_rows=1
+    ),
     ("edward2", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
     ("gen", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
+    ("jags", "survival_weibull"): _derived(
+        half_sites=0, dropped_sites=0, lifted_rows=1
+    ),
     ("numpyro", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
@@ -736,12 +735,11 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # tree_categorical: 1 HalfNormal folded factor(s). `sigma_v` is
     # the example's only folded site and it carries no axis, so the
     # count is one whatever `Verb`, `Class` and `Resp` are sized at.
-    # `stan` is absent because the cell raises in transpile.
+    # BUGS refuses zero-based observed Categorical codes.
     ("stan", "tree_categorical"): _derived(
         half_sites=1,
         dropped_sites=1,
     ),
-    ("bugs", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("edward2", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("gen", "tree_categorical"): _derived(half_sites=1, dropped_sites=1),
     ("jags", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
@@ -750,25 +748,40 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("pyro", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("turing", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("webppl", "tree_categorical"): _derived(half_sites=1, dropped_sites=1),
-    # parametric_pooling: a draw from a program template inlines its
-    # `Normal` plate under `theta$z`, spelled `theta__z` on every
-    # target; no folded-family site anywhere. Its `score` step is one
-    # lifted zeros-trick row on `jags` and `bugs`, and nothing
-    # elsewhere.
-    ("bugs", "parametric_pooling"): _derived(
-        half_sites=0, dropped_sites=0, lifted_rows=1
-    ),
-    ("edward2", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "parametric_pooling"): _derived(
-        half_sites=0, dropped_sites=0, lifted_rows=1
-    ),
-    ("numpyro", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "parametric_pooling"): _derived(half_sites=0, dropped_sites=0),
+    # bnn: one scalar HalfNormal observation scale.
+    ("bugs", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("edward2", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("gen", "bnn"): _derived(half_sites=1, dropped_sites=1),
+    ("jags", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("numpyro", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("pymc", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("pyro", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("stan", "bnn"): _derived(half_sites=1, dropped_sites=1),
+    ("turing", "bnn"): _derived(half_sites=1, dropped_sites=0),
+    ("webppl", "bnn"): _derived(half_sites=1, dropped_sites=1),
+    # pmf: one scalar HalfCauchy rating scale.
+    ("bugs", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("edward2", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("gen", "pmf"): _derived(half_sites=1, dropped_sites=1),
+    ("jags", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("numpyro", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("pymc", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("pyro", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("stan", "pmf"): _derived(half_sites=1, dropped_sites=1),
+    ("turing", "pmf"): _derived(half_sites=1, dropped_sites=0),
+    ("webppl", "pmf"): _derived(half_sites=1, dropped_sites=1),
+    # parametric_pooling: one scalar HalfCauchy between-school scale; the likelihood
+    # is Normal, so there is no zeros-trick lift.
+    ("bugs", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("edward2", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("gen", "parametric_pooling"): _derived(half_sites=1, dropped_sites=1),
+    ("jags", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("numpyro", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("pymc", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("pyro", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("stan", "parametric_pooling"): _derived(half_sites=1, dropped_sites=1),
+    ("turing", "parametric_pooling"): _derived(half_sites=1, dropped_sites=0),
+    ("webppl", "parametric_pooling"): _derived(half_sites=1, dropped_sites=1),
     # zip_regression: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
