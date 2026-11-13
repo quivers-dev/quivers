@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Breaking: CLI records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, and grammar history reports use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`.
 
+### Fixed
+
+- **Seeded formula fits preserve the caller's random stream.** Compilation and inference run within an isolated CPU random state, restored on success or failure. The explicit fit seed also initializes the MCMC driver's chain streams.
+
 ## [0.61.0] - 2026-11-13
 
 ### Added
