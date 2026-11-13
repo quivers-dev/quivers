@@ -132,7 +132,7 @@ reference machine, and every transpilation target that supports the declaration.
 
 In a morphism expression such as `f >> W`, `W` is its learnable table, a
 [`LatentMorphism`](../api/core/morphisms.md#quivers.core.morphisms.LatentMorphism)
-built as without the clause, and the family clause does not enter its fit
+constructed as for a declaration without the clause. The family clause does not affect its fit
 ([Morphisms §7](../semantics/morphisms.md#7-priors-on-learnable-tables)). For a kernel,
 a network computes the family's parameters from each input. The
 [`over` clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) and other

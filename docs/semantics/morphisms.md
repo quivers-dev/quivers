@@ -241,7 +241,7 @@ $$
 which extends to a measure on the product σ-algebra as the
 [product measure](https://en.wikipedia.org/wiki/Product_measure). When one operand is continuous
 and the other is a finite matrix, the runtime wraps the finite matrix as a kernel
-(`DiscreteAsContinuous`) and forms the product in $\mathbf{BorelStoch}$. The wrapper is the Markov
+([`DiscreteAsContinuous`](../api/continuous/morphisms.md#quivers.continuous.morphisms.DiscreteAsContinuous)) and forms the product in $\mathbf{BorelStoch}$. The wrapper is the Markov
 kernel of the matrix $t$ with its rows normalized, $k(x, \{y\}) = t(x, y) / \sum_{y'} t(x, y')$, and it
 both samples and scores under these rows. For a stochastic matrix this is the embedding of
 [Setting §5](setting.md#5-fragments). A row with a negative entry or a zero sum defines no
